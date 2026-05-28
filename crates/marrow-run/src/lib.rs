@@ -6,7 +6,9 @@
 //! interpolation, and calls between functions of a checked program. Saved data,
 //! output, and structured errors build on this spine.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 use marrow_check::{CheckedFunction, CheckedProgram};
 use marrow_syntax::{
@@ -22,6 +24,14 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Str(String),
+}
+
+/// The result of running an entry function: its returned value (if any) and
+/// everything it wrote to the output stream via `print`/`write`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutput {
+    pub value: Option<Value>,
+    pub output: String,
 }
 
 /// A runtime fault: a stable `run.*` code, a human-readable message, and the
@@ -59,12 +69,20 @@ pub fn evaluate_function(
     args: &[Value],
 ) -> Result<Option<Value>, RuntimeError> {
     let program = CheckedProgram::default();
+    let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    invoke(&program, &names, &function.body, function.span, args)
+    invoke(
+        &program,
+        output,
+        &names,
+        &function.body,
+        function.span,
+        args,
+    )
 }
 
 /// Run the function named by `entry` — `"module::function"`, or a bare name
@@ -74,19 +92,31 @@ pub fn run_entry(
     program: &CheckedProgram,
     entry: &str,
     args: &[Value],
-) -> Result<Option<Value>, RuntimeError> {
+) -> Result<RunOutput, RuntimeError> {
     let segments: Vec<String> = entry.split("::").map(str::to_string).collect();
     let function = resolve_function(program, &segments).ok_or_else(|| RuntimeError {
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{entry}`"),
         span: SourceSpan::default(),
     })?;
+    let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    invoke(program, &names, &function.body, function.span, args)
+    let value = invoke(
+        program,
+        Rc::clone(&output),
+        &names,
+        &function.body,
+        function.span,
+        args,
+    )?;
+    Ok(RunOutput {
+        value,
+        output: output.borrow().clone(),
+    })
 }
 
 /// Bind `args` to `param_names`, evaluate `body` in a fresh activation, and
@@ -94,6 +124,7 @@ pub fn run_entry(
 /// and call evaluation.
 fn invoke(
     program: &CheckedProgram,
+    output: Rc<RefCell<String>>,
     param_names: &[&str],
     body: &Block,
     span: SourceSpan,
@@ -110,7 +141,7 @@ fn invoke(
             span,
         });
     }
-    let mut env = Env::new(program);
+    let mut env = Env::new(program, output);
     env.push_scope();
     for (name, arg) in param_names.iter().zip(args) {
         env.bind((*name).to_string(), arg.clone(), false);
@@ -172,6 +203,10 @@ fn eval_call(
     {
         return Err(unsupported("named or out/inout arguments", span));
     }
+    // `print` and `write` are output builtins, not program functions.
+    if segments.len() == 1 && matches!(segments[0].as_str(), "print" | "write") {
+        return eval_output(&segments[0], args, span, env);
+    }
     let program = env.program;
     let function = resolve_function(program, segments).ok_or_else(|| RuntimeError {
         code: RUN_UNKNOWN_FUNCTION,
@@ -187,7 +222,39 @@ fn eval_call(
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    invoke(program, &names, &function.body, function.span, &values)
+    invoke(
+        program,
+        Rc::clone(&env.output),
+        &names,
+        &function.body,
+        function.span,
+        &values,
+    )
+}
+
+/// Evaluate a `print`/`write` output builtin: render the single argument to text
+/// and append it to the output stream (`print` adds a trailing newline). Neither
+/// produces a value.
+fn eval_output(
+    name: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    let [arg] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: format!("`{name}` takes one argument"),
+            span,
+        });
+    };
+    let text = render(eval_expr(&arg.value, env)?);
+    let mut output = env.output.borrow_mut();
+    output.push_str(&text);
+    if name == "print" {
+        output.push('\n');
+    }
+    Ok(None)
 }
 
 /// Where control flow stands after a statement or block.
@@ -208,12 +275,14 @@ struct Binding {
     mutable: bool,
 }
 
-/// A lexical environment: a stack of scopes, each a list of bindings, plus the
-/// checked program used to resolve calls. A resource has few locals, so lookups
-/// are linear and innermost-first.
+/// A lexical environment: a stack of scopes, the checked program (to resolve
+/// calls), and the shared output stream (so `print`/`write` from any activation
+/// append to one buffer). A resource has few locals, so lookups are linear and
+/// innermost-first.
 struct Env<'p> {
     scopes: Vec<Vec<(String, Binding)>>,
     program: &'p CheckedProgram,
+    output: Rc<RefCell<String>>,
 }
 
 /// Why an assignment did not land.
@@ -223,9 +292,10 @@ enum AssignError {
 }
 
 impl<'p> Env<'p> {
-    fn new(program: &'p CheckedProgram) -> Self {
+    fn new(program: &'p CheckedProgram, output: Rc<RefCell<String>>) -> Self {
         Self {
             scopes: Vec::new(),
+            output,
             program,
         }
     }

@@ -24,7 +24,7 @@ fn function(source: &str) -> FunctionDecl {
 }
 
 /// Wrap every function in `source` into a one-module checked program named
-/// `test`, so `run_entry(&program, "test::name", ...)` resolves calls between
+/// `test`, so `run(&program, "test::name", ...)` resolves calls between
 /// them. Parameter types are left `Unknown` — the runtime binds by name.
 fn checked_program(source: &str) -> CheckedProgram {
     let parsed = parse_source(source);
@@ -65,6 +65,15 @@ fn checked_program(source: &str) -> CheckedProgram {
             resources: Vec::new(),
         }],
     }
+}
+
+/// Run an entry function and return only its value, dropping any output.
+fn run(
+    program: &CheckedProgram,
+    entry: &str,
+    args: &[Value],
+) -> Result<Option<Value>, marrow_run::RuntimeError> {
+    run_entry(program, entry, args).map(|outcome| outcome.value)
 }
 
 #[test]
@@ -422,7 +431,7 @@ fn interpolation_unescapes_literal_braces() {
 fn run_entry_evaluates_a_function_by_qualified_name() {
     let program = checked_program("fn add(a: int, b: int): int\n    return a + b\n");
     assert_eq!(
-        run_entry(&program, "test::add", &[Value::Int(2), Value::Int(3)]),
+        run(&program, "test::add", &[Value::Int(2), Value::Int(3)]),
         Ok(Some(Value::Int(5)))
     );
 }
@@ -433,7 +442,7 @@ fn a_function_can_call_another() {
         "fn double(n: int): int\n    return n + n\n\nfn quad(n: int): int\n    return double(n) + double(n)\n",
     );
     assert_eq!(
-        run_entry(&program, "test::quad", &[Value::Int(3)]),
+        run(&program, "test::quad", &[Value::Int(3)]),
         Ok(Some(Value::Int(12)))
     );
 }
@@ -444,7 +453,7 @@ fn functions_recurse() {
         "fn fact(n: int): int\n    if n <= 1\n        return 1\n    return n * fact(n - 1)\n",
     );
     assert_eq!(
-        run_entry(&program, "test::fact", &[Value::Int(5)]),
+        run(&program, "test::fact", &[Value::Int(5)]),
         Ok(Some(Value::Int(120)))
     );
 }
@@ -454,10 +463,7 @@ fn a_void_call_runs_as_a_statement() {
     let program = checked_program(
         "fn note(n: int)\n    let doubled = n + n\n\nfn caller(): int\n    note(3)\n    return 2\n",
     );
-    assert_eq!(
-        run_entry(&program, "test::caller", &[]),
-        Ok(Some(Value::Int(2)))
-    );
+    assert_eq!(run(&program, "test::caller", &[]), Ok(Some(Value::Int(2))));
 }
 
 #[test]
@@ -465,7 +471,7 @@ fn using_a_void_call_as_a_value_is_rejected() {
     let program = checked_program(
         "fn note(n: int)\n    let doubled = n + n\n\nfn caller(): int\n    return note(3)\n",
     );
-    let result = run_entry(&program, "test::caller", &[]);
+    let result = run(&program, "test::caller", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_NO_VALUE),
         "{result:?}"
@@ -477,14 +483,48 @@ fn an_unknown_function_is_rejected() {
     let program = checked_program("fn f(): int\n    return 1\n");
     // Unknown entry point...
     assert!(matches!(
-        run_entry(&program, "test::missing", &[]),
+        run(&program, "test::missing", &[]),
         Err(ref error) if error.code == RUN_UNKNOWN_FUNCTION
     ));
     // ...and an unknown function called from within a body.
     let calls_missing = checked_program("fn f(): int\n    return g(1)\n");
-    let result = run_entry(&calls_missing, "test::f", &[]);
+    let result = run(&calls_missing, "test::f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNKNOWN_FUNCTION),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn print_writes_a_line_to_output() {
+    let program = checked_program("fn main()\n    print($\"hello {1}\")\n");
+    let outcome = run_entry(&program, "test::main", &[]).expect("run");
+    assert_eq!(outcome.value, None);
+    assert_eq!(outcome.output, "hello 1\n");
+}
+
+#[test]
+fn write_does_not_add_a_newline() {
+    let program = checked_program("fn main()\n    write(\"a\")\n    write(\"b\")\n");
+    let outcome = run_entry(&program, "test::main", &[]).expect("run");
+    assert_eq!(outcome.output, "ab");
+}
+
+#[test]
+fn output_accumulates_across_calls() {
+    let program = checked_program(
+        "fn greet(name: string)\n    print($\"hi {name}\")\n\nfn main()\n    greet(\"a\")\n    greet(\"b\")\n",
+    );
+    let outcome = run_entry(&program, "test::main", &[]).expect("run");
+    assert_eq!(outcome.output, "hi a\nhi b\n");
+}
+
+#[test]
+fn print_takes_one_argument() {
+    let program = checked_program("fn main()\n    print()\n");
+    let result = run_entry(&program, "test::main", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
     );
 }
