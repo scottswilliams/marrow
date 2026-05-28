@@ -6,8 +6,9 @@ use std::cell::RefCell;
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
     Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED,
-    RunOutput, Value, evaluate_function, run_entry, run_entry_with_host,
+    RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW,
+    RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function, run_entry,
+    run_entry_with_host,
 };
 use marrow_schema::compile_resource;
 use marrow_store::mem::MemStore;
@@ -249,6 +250,163 @@ fn std_builtins_reject_wrong_argument_types() {
 
     let program = checked_program("pub fn f(): int\n    return std::math::absInt(\"x\")\n");
     assert_eq!(run(&program, "test::f", &[]).unwrap_err().code, RUN_TYPE);
+}
+
+#[test]
+fn throw_surfaces_as_an_uncaught_error() {
+    let program = checked_program(
+        "pub fn bad()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
+    );
+    let error = run(&program, "test::bad", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+    assert!(error.message.contains("book.absent"), "{}", error.message);
+    assert!(error.message.contains("no book"), "{}", error.message);
+}
+
+#[test]
+fn error_constructor_requires_code_and_message() {
+    let program = checked_program("pub fn bad()\n    throw Error(code: \"x.y\")\n");
+    assert_eq!(run(&program, "test::bad", &[]).unwrap_err().code, RUN_TYPE);
+}
+
+#[test]
+fn throw_is_an_error_value() {
+    // `throw` of a non-Error value is a type error, not a thrown error.
+    let program = checked_program("pub fn bad()\n    throw 7\n");
+    assert_eq!(run(&program, "test::bad", &[]).unwrap_err().code, RUN_TYPE);
+}
+
+#[test]
+fn catch_binds_the_thrown_error_and_recovers() {
+    let program = checked_program(
+        "pub fn safe(): string\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    catch err: Error\n        return err.message\n",
+    );
+    assert_eq!(
+        run(&program, "test::safe", &[]),
+        Ok(Some(Value::Str("boom".into())))
+    );
+}
+
+#[test]
+fn a_try_that_succeeds_skips_catch() {
+    let program = checked_program(
+        "pub fn ok(): int\n    try\n        return 1\n    catch err: Error\n        return 2\n",
+    );
+    assert_eq!(run(&program, "test::ok", &[]), Ok(Some(Value::Int(1))));
+}
+
+#[test]
+fn finally_runs_on_success_and_on_throw() {
+    let program = checked_program(
+        "pub fn run_it(do_throw: bool)\n    try\n        if do_throw\n            throw Error(code: \"x.y\", message: \"b\")\n    catch err: Error\n        write(\"caught \")\n    finally\n        write(\"cleanup\")\n",
+    );
+    let out = |b| {
+        run_full(&program, "test::run_it", &[Value::Bool(b)])
+            .unwrap()
+            .output
+    };
+    assert_eq!(out(false), "cleanup");
+    assert_eq!(out(true), "caught cleanup");
+}
+
+#[test]
+fn a_runtime_fault_in_try_is_not_caught() {
+    // `catch` handles thrown Errors, not runtime faults; the fault propagates.
+    let program = checked_program(
+        "pub fn f(): int\n    try\n        return 1 / 0\n    catch err: Error\n        return 2\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap_err().code,
+        RUN_DIVIDE_BY_ZERO
+    );
+}
+
+#[test]
+fn finally_runs_after_a_fault_and_can_replace_it() {
+    // The try body faults (not catchable); finally still runs and its throw
+    // replaces the fault, proving finally ran.
+    let program = checked_program(
+        "pub fn f(): int\n    try\n        return 1 / 0\n    finally\n        throw Error(code: \"cleanup.failed\", message: \"x\")\n",
+    );
+    let error = run(&program, "test::f", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+    assert!(
+        error.message.contains("cleanup.failed"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn an_uncaught_throw_without_a_catch_propagates_through_finally() {
+    let program = checked_program(
+        "pub fn f()\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    finally\n        write(\"cleanup\")\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap_err().code,
+        RUN_UNCAUGHT_THROW
+    );
+}
+
+#[test]
+fn a_throw_in_finally_replaces_the_outcome() {
+    let program = checked_program(
+        "pub fn f(): int\n    try\n        return 1\n    finally\n        throw Error(code: \"from.finally\", message: \"x\")\n",
+    );
+    let error = run(&program, "test::f", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+    assert!(error.message.contains("from.finally"), "{}", error.message);
+}
+
+#[test]
+fn a_clean_finally_preserves_a_return() {
+    // A finally that completes normally lets the try's `return` through.
+    let program = checked_program(
+        "pub fn f(): int\n    try\n        return 7\n    finally\n        write(\"cleanup\")\n",
+    );
+    assert_eq!(run(&program, "test::f", &[]), Ok(Some(Value::Int(7))));
+}
+
+#[test]
+fn a_throw_caught_inside_a_transaction_commits() {
+    // The throw is handled within the transaction, so the body completes normally
+    // and the catch's write commits.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         pub fn safe(id: int)\n    transaction\n        try\n            throw Error(code: \"x.y\", message: \"b\")\n        catch err: Error\n            ^books(id).title = \"recovered\"\n\n\
+         pub fn title(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::safe", &[Value::Int(1)]).expect("safe runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::title", &[Value::Int(1)])
+            .unwrap()
+            .value,
+        Some(Value::Str("recovered".into()))
+    );
+}
+
+#[test]
+fn throw_inside_a_transaction_rolls_back() {
+    // An escaping throw rolls the transaction back, like any other escape.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         pub fn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        throw Error(code: \"x.y\", message: \"boom\")\n\n\
+         pub fn has_book(id: int): bool\n    return exists(^books(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    assert_eq!(
+        run_entry(&program, &store, "test::risky", &[Value::Int(1)])
+            .unwrap_err()
+            .code,
+        RUN_UNCAUGHT_THROW
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::has_book", &[Value::Int(1)])
+            .unwrap()
+            .value,
+        Some(Value::Bool(false))
+    );
 }
 
 #[test]

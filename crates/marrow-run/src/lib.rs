@@ -93,6 +93,9 @@ pub const RUN_CAPABILITY: &str = "run.capability";
 /// A `std::assert::*` testing assertion did not hold. `marrow test` reports these
 /// as located test failures.
 pub const RUN_ASSERT: &str = "run.assertion";
+/// An `Error` raised by `throw` reached the top of a function with no `catch` to
+/// handle it. The fault message carries the error's own code and message.
+pub const RUN_UNCAUGHT_THROW: &str = "run.uncaught_error";
 
 /// The host capabilities a run may use. Pure runs need none; host modules such
 /// as `std::clock` require the matching capability, and a call made without it
@@ -239,11 +242,33 @@ fn invoke(
     match flow {
         Flow::Return(value) => Ok(value),
         Flow::Normal => Ok(None),
+        Flow::Throw(value) => Err(uncaught_throw(value, span)),
         Flow::Break(_) | Flow::Continue(_) => Err(RuntimeError {
             code: RUN_NO_ENCLOSING_LOOP,
             message: "`break` or `continue` outside a loop".into(),
             span,
         }),
+    }
+}
+
+/// Map a thrown `Error` value that left the function uncaught to a runtime fault,
+/// surfacing the error's own `code` and `message` in the fault message. Assumes a
+/// well-formed Error (string `code`/`message`); a malformed one renders blank,
+/// which the constructor and the throw guard make unreachable in practice.
+fn uncaught_throw(value: Value, span: SourceSpan) -> RuntimeError {
+    let field = |name: &str| match &value {
+        Value::Resource(fields) => fields.iter().find_map(|(field, value)| match value {
+            Value::Str(text) if field == name => Some(text.clone()),
+            _ => None,
+        }),
+        _ => None,
+    };
+    let code = field("code").unwrap_or_default();
+    let message = field("message").unwrap_or_default();
+    RuntimeError {
+        code: RUN_UNCAUGHT_THROW,
+        message: format!("uncaught error [{code}]: {message}"),
+        span,
     }
 }
 
@@ -359,6 +384,13 @@ fn eval_call(
     // `out`/`inout` argument modes are deferred for every call.
     if args.iter().any(|arg| arg.mode.is_some()) {
         return Err(unsupported("out/inout arguments", span));
+    }
+    // `Error(...)` is the builtin error constructor (named arguments), not a
+    // program function.
+    if let [name] = segments.as_slice()
+        && name == "Error"
+    {
+        return eval_error_constructor(args, span, env).map(Some);
     }
     // Builtins and the host capability take positional arguments only; a call
     // carrying named arguments is a program-function call, handled last.
@@ -655,6 +687,38 @@ fn int_modulo(a: i64, b: i64, span: SourceSpan) -> Result<i64, RuntimeError> {
     })
 }
 
+/// Build a builtin `Error(...)` value from named arguments as a resource-shaped
+/// `Value`. `code` and `message` are required; `help` and `data` are optional.
+/// Positional, duplicate, or unknown fields are type errors.
+fn eval_error_constructor(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let mut fields: Vec<(String, Value)> = Vec::new();
+    for arg in args {
+        let Some(name) = &arg.name else {
+            return Err(type_error("`Error(...)` takes named arguments", span));
+        };
+        if !matches!(name.as_str(), "code" | "message" | "help" | "data") {
+            return Err(type_error(&format!("`Error` has no field `{name}`"), span));
+        }
+        if fields.iter().any(|(existing, _)| existing == name) {
+            return Err(type_error(
+                &format!("`{name}` is supplied more than once"),
+                span,
+            ));
+        }
+        fields.push((name.clone(), eval_expr(&arg.value, env)?));
+    }
+    for required in ["code", "message"] {
+        if !fields.iter().any(|(name, _)| name == required) {
+            return Err(type_error(&format!("`Error` requires `{required}`"), span));
+        }
+    }
+    Ok(Value::Resource(fields))
+}
+
 /// Evaluate `get(path, default)`: the value at a sparse saved path, or `default`
 /// when it is absent. Schema/type errors are not hidden — only absence falls
 /// back to the default.
@@ -772,6 +836,9 @@ enum Flow {
     Break(Option<String>),
     /// A `continue`, targeting the named loop, or the innermost when unlabeled.
     Continue(Option<String>),
+    /// A `throw`, carrying the thrown `Error` value, unwinding until a `catch`
+    /// handles it or it leaves the function as an uncaught-error fault.
+    Throw(Value),
 }
 
 /// A name binding: its value and whether it may be reassigned (`var` vs `let`).
@@ -1028,6 +1095,12 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 .begin()
                 .map_err(|error| store_error(error, *span))?;
             match eval_block(body, env) {
+                // A throw escapes the transaction, so it rolls back like an error
+                // rather than committing.
+                Ok(Flow::Throw(value)) => {
+                    let _ = env.store.borrow_mut().rollback();
+                    Ok(Flow::Throw(value))
+                }
                 Ok(flow) => {
                     env.store
                         .borrow_mut()
@@ -1039,6 +1112,46 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                     let _ = env.store.borrow_mut().rollback();
                     Err(error)
                 }
+            }
+        }
+        Statement::Throw { value, span } => {
+            let thrown = eval_expr(value, env)?;
+            // `throw` requires an `Error` value (resource-shaped). The checker does
+            // not yet type-check throw operands, so guard here.
+            if !matches!(thrown, Value::Resource(_)) {
+                return Err(type_error("`throw` requires an `Error` value", *span));
+            }
+            Ok(Flow::Throw(thrown))
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            let outcome = eval_block(body, env);
+            // `catch` handles only an explicit throw; runtime faults and any other
+            // control flow (return/break/continue) pass through unchanged.
+            let handled = match (outcome, catch) {
+                (Ok(Flow::Throw(error)), Some(clause)) => {
+                    env.push_scope();
+                    env.bind(clause.name.clone(), error, false);
+                    let caught = eval_block(&clause.block, env);
+                    env.pop_scope();
+                    caught
+                }
+                (outcome, _) => outcome,
+            };
+            // `finally` always runs. A throwing or faulting finally replaces the
+            // pending outcome; a normal one is cleanup and the outcome proceeds.
+            // (The checker forbids return/break/continue in `finally`.)
+            match finally {
+                Some(block) => match eval_block(block, env) {
+                    Ok(Flow::Throw(error)) => Ok(Flow::Throw(error)),
+                    Err(error) => Err(error),
+                    Ok(_) => handled,
+                },
+                None => handled,
             }
         }
         other => Err(unsupported("this statement", other.span())),
