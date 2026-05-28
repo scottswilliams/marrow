@@ -812,12 +812,33 @@ fn bool_conditions_are_not_flagged() {
 }
 
 #[test]
-fn an_unknown_condition_is_not_flagged() {
-    // `mystery` is unbound, so its type is unknown; only a known non-bool is flagged.
+fn an_unresolved_condition_is_flagged() {
+    // Strict typing: `mystery` is unbound (unknown type), so the condition cannot
+    // be shown to be `bool` — a `check.untyped_value` error (not a
+    // `check.condition_type` non-bool mismatch).
     let found = check_script(
         "cond-unknown",
         "fn f()\n    if mystery\n        return\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let non_bool = check_script(
+        "cond-unknown",
+        "fn f()\n    if mystery\n        return\n",
         "check.condition_type",
+    );
+    assert!(non_bool.is_empty(), "{non_bool:#?}");
+}
+
+#[test]
+fn an_exists_condition_is_not_flagged() {
+    // `exists(...)` resolves to `bool`, so a presence-check condition is clean.
+    let found = check_module(
+        "cond-exists",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    if exists(^books(1))\n        return\n",
+        "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
 }

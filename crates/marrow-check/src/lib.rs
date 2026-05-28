@@ -723,11 +723,9 @@ fn check_condition(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let condition_type = infer_type(program, condition, scope, file, diagnostics);
-    if let Some(primitive) = as_primitive(&condition_type)
-        && primitive != PrimitiveType::Bool
-    {
-        let span = condition.span();
-        diagnostics.push(CheckDiagnostic {
+    let span = condition.span();
+    match as_primitive(&condition_type) {
+        Some(primitive) if primitive != PrimitiveType::Bool => diagnostics.push(CheckDiagnostic {
             code: CHECK_CONDITION_TYPE.to_string(),
             severity: Severity::Error,
             file: file.to_path_buf(),
@@ -737,7 +735,20 @@ fn check_condition(
             ),
             line: span.line,
             column: span.column,
-        });
+        }),
+        // Strict typing: a condition whose type cannot be resolved cannot be shown
+        // to be `bool`.
+        None if matches!(condition_type, MarrowType::Unknown) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNTYPED_VALUE.to_string(),
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: "condition has no known type; it must be `bool`".to_string(),
+                line: span.line,
+                column: span.column,
+            });
+        }
+        _ => {}
     }
 }
 
