@@ -951,6 +951,50 @@ fn a_call_return_type_feeds_further_type_checks() {
     assert_eq!(found.len(), 1, "{found:#?}");
 }
 
+#[test]
+fn rejects_a_return_of_the_wrong_type() {
+    // The function is declared to return `int`, but `true` is a bool.
+    let found = check_script(
+        "ret-type",
+        "fn f(): int\n    return true\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_returned_local_of_the_wrong_type() {
+    // `s` is inferred `string` from its initializer, but `f` returns `int`.
+    let found = check_script(
+        "ret-local",
+        "fn f(): int\n    const s = \"hi\"\n    return s\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn correct_returns_are_not_flagged() {
+    // Each returned value matches the function's declared return type.
+    let found = check_script(
+        "ret-ok",
+        "fn f(): int\n    return 1\n\nfn g(b: bool): bool\n    return b\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_return_of_unknown_type_is_not_flagged() {
+    // `mystery()` does not resolve, so its type is unknown; only a known mismatch flags.
+    let found = check_script(
+        "ret-unknown",
+        "fn f(): int\n    return mystery()\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,

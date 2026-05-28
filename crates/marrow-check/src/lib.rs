@@ -42,6 +42,8 @@ pub const CHECK_CONDITION_TYPE: &str = "check.condition_type";
 /// A call passes the wrong number of arguments, or names a parameter that does
 /// not exist, for the function it resolves to.
 pub const CHECK_CALL_ARGUMENT: &str = "check.call_argument";
+/// A `return` value's type does not match the function's declared return type.
+pub const CHECK_RETURN_TYPE: &str = "check.return_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -472,7 +474,20 @@ fn check_function_types(
         .map(|param| (param.name.clone(), MarrowType::resolve(&param.ty, &[])))
         .collect();
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![params];
-    check_block_types(program, file, &function.body, &mut scope, diagnostics);
+    // The declared return type (unknown for a void function), used to check each
+    // `return` expression's type as the walk reaches it.
+    let return_type = function
+        .return_type
+        .as_ref()
+        .map_or(MarrowType::Unknown, |ty| MarrowType::resolve(ty, &[]));
+    check_block_types(
+        program,
+        file,
+        &return_type,
+        &function.body,
+        &mut scope,
+        diagnostics,
+    );
 }
 
 /// Type-check every statement in a block, with a scope frame for the
@@ -480,13 +495,14 @@ fn check_function_types(
 fn check_block_types(
     program: &CheckedProgram,
     file: &Path,
+    return_type: &MarrowType,
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     scope.push(HashMap::new());
     for statement in &block.statements {
-        check_statement_types(program, file, statement, scope, diagnostics);
+        check_statement_types(program, file, return_type, statement, scope, diagnostics);
     }
     scope.pop();
 }
@@ -496,6 +512,7 @@ fn check_block_types(
 fn check_statement_types(
     program: &CheckedProgram,
     file: &Path,
+    return_type: &MarrowType,
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -524,9 +541,10 @@ fn check_statement_types(
         Statement::Delete { path, .. } => {
             infer_type(program, path, scope, file, diagnostics);
         }
-        Statement::Return { value, .. } => {
+        Statement::Return { value, span } => {
             if let Some(value) = value {
-                infer_type(program, value, scope, file, diagnostics);
+                let value_type = infer_type(program, value, scope, file, diagnostics);
+                check_return_type(file, *span, return_type, &value_type, diagnostics);
             }
         }
         Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
@@ -540,20 +558,27 @@ fn check_statement_types(
             ..
         } => {
             check_condition(program, file, condition, scope, diagnostics);
-            check_block_types(program, file, then_block, scope, diagnostics);
+            check_block_types(program, file, return_type, then_block, scope, diagnostics);
             for else_if in else_ifs {
                 check_condition(program, file, &else_if.condition, scope, diagnostics);
-                check_block_types(program, file, &else_if.block, scope, diagnostics);
+                check_block_types(
+                    program,
+                    file,
+                    return_type,
+                    &else_if.block,
+                    scope,
+                    diagnostics,
+                );
             }
             if let Some(block) = else_block {
-                check_block_types(program, file, block, scope, diagnostics);
+                check_block_types(program, file, return_type, block, scope, diagnostics);
             }
         }
         Statement::While {
             condition, body, ..
         } => {
             check_condition(program, file, condition, scope, diagnostics);
-            check_block_types(program, file, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, diagnostics);
         }
         Statement::For {
             binding,
@@ -570,15 +595,15 @@ fn check_statement_types(
                 frame.insert(second.clone(), MarrowType::Unknown);
             }
             scope.push(frame);
-            check_block_types(program, file, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, diagnostics);
             scope.pop();
         }
         Statement::Transaction { body, .. } => {
-            check_block_types(program, file, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, diagnostics);
         }
         Statement::Lock { path, body, .. } => {
             infer_type(program, path, scope, file, diagnostics);
-            check_block_types(program, file, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, diagnostics);
         }
         Statement::Try {
             body,
@@ -586,7 +611,7 @@ fn check_statement_types(
             finally,
             ..
         } => {
-            check_block_types(program, file, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, diagnostics);
             if let Some(clause) = catch {
                 // The catch clause binds an Error value for the duration of its block.
                 let mut frame = HashMap::new();
@@ -595,11 +620,18 @@ fn check_statement_types(
                     MarrowType::Primitive(PrimitiveType::Error),
                 );
                 scope.push(frame);
-                check_block_types(program, file, &clause.block, scope, diagnostics);
+                check_block_types(
+                    program,
+                    file,
+                    return_type,
+                    &clause.block,
+                    scope,
+                    diagnostics,
+                );
                 scope.pop();
             }
             if let Some(finally) = finally {
-                check_block_types(program, file, finally, scope, diagnostics);
+                check_block_types(program, file, return_type, finally, scope, diagnostics);
             }
         }
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
@@ -646,6 +678,36 @@ fn check_condition(
             message: format!(
                 "condition must be `bool`, found `{}`",
                 primitive_name(primitive)
+            ),
+            line: span.line,
+            column: span.column,
+        });
+    }
+}
+
+/// Flag a `return` value whose type does not match the function's declared
+/// return type. Fires only when both are known, incompatible primitives, so a
+/// void function (unknown return type), a non-primitive return (a resource or
+/// identity), or an unresolved returned value is left alone. Value presence is
+/// checked separately by `check.return_value`.
+fn check_return_type(
+    file: &Path,
+    span: SourceSpan,
+    return_type: &MarrowType,
+    value_type: &MarrowType,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if let (Some(expected), Some(actual)) = (as_primitive(return_type), as_primitive(value_type))
+        && expected != actual
+    {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_RETURN_TYPE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "function returns `{}`, but this value is `{}`",
+                primitive_name(expected),
+                primitive_name(actual),
             ),
             line: span.line,
             column: span.column,
