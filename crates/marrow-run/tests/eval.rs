@@ -338,6 +338,37 @@ fn base64_decode_rejects_invalid_text() {
 }
 
 #[test]
+fn splits_a_string_and_iterates_the_sequence() {
+    // `std::text::split` yields a sequence the `for` loop iterates in order.
+    let program = checked_program(
+        "pub fn f(): string\n\
+         \x20   var result = \"\"\n\
+         \x20   for word in std::text::split(\"a,b,c\", \",\")\n\
+         \x20       result = result _ word\n\
+         \x20   return result\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("abc".into()))
+    );
+}
+
+#[test]
+fn iterates_a_sequence_counting_its_elements() {
+    let program = checked_program(
+        "pub fn count(): int\n\
+         \x20   var n = 0\n\
+         \x20   for word in std::text::split(\"a,b,c,d\", \",\")\n\
+         \x20       n = n + 1\n\
+         \x20   return n\n",
+    );
+    assert_eq!(
+        run(&program, "test::count", &[]).unwrap(),
+        Some(Value::Int(4))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

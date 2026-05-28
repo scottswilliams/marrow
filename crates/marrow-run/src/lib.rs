@@ -49,6 +49,9 @@ pub enum Value {
     /// Arbitrary bytes. Saves and loads as the `bytes` type; has no direct text
     /// form (use `std::bytes::base64Encode`).
     Bytes(Vec<u8>),
+    /// An ordered, in-memory `sequence[T]` value, e.g. from `std::text::split`.
+    /// Iterated by a `for` loop; not itself a scalar saved value.
+    Sequence(Vec<Value>),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
@@ -624,6 +627,18 @@ fn eval_std(
             let text = eval_text(text, env, span)?;
             let needle = eval_text(needle, env, span)?;
             Ok(Value::Bool(text.contains(&needle)))
+        }
+        ("text", "split") => {
+            let [text, separator] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let text = eval_text(text, env, span)?;
+            let separator = eval_text(separator, env, span)?;
+            let parts = text
+                .split(separator.as_str())
+                .map(|part| Value::Str(part.to_string()))
+                .collect();
+            Ok(Value::Sequence(parts))
         }
         ("math", "absInt") => {
             let [value] = args else {
@@ -1444,16 +1459,23 @@ fn range_bounds(
 /// path — e.g. `keys(^books.byShelf("fiction"))` yields the book ids on that
 /// shelf, for index traversal.
 fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
-    let Expression::Call { callee, args, span } = iterable else {
-        return Err(unsupported("iterating this value", iterable.span()));
-    };
+    // `keys(^root.index(args…))` is index-traversal syntax; every other iterable
+    // must evaluate to an in-memory sequence (e.g. `std::text::split(...)`).
     let is_keys = matches!(
-        callee.as_ref(),
-        Expression::Name { segments, .. } if segments.len() == 1 && segments[0] == "keys"
+        iterable,
+        Expression::Call { callee, .. }
+            if matches!(callee.as_ref(),
+                Expression::Name { segments, .. } if segments.len() == 1 && segments[0] == "keys")
     );
     if !is_keys {
-        return Err(unsupported("iterating this value", *span));
+        return match eval_expr(iterable, env)? {
+            Value::Sequence(items) => Ok(items),
+            _ => Err(unsupported("iterating this value", iterable.span())),
+        };
     }
+    let Expression::Call { args, span, .. } = iterable else {
+        return Err(unsupported("iterating this value", iterable.span()));
+    };
     let [path] = args.as_slice() else {
         return Err(RuntimeError {
             code: RUN_TYPE,
@@ -2189,7 +2211,8 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
             scale: d.scale(),
         },
         Value::Bytes(b) => SavedValue::Bytes(b),
-        Value::Resource(_) => return None,
+        // A whole sequence or resource is a tree, not a scalar saved value.
+        Value::Sequence(_) | Value::Resource(_) => return None,
     })
 }
 
@@ -2389,8 +2412,8 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Str(s) => Some(SavedKey::Str(s)),
         Value::Instant(n) => Some(SavedKey::Instant(n)),
         Value::Bytes(b) => Some(SavedKey::Bytes(b)),
-        // Decimal keys are not supported (order-preserving decimal keys are deferred).
-        Value::Decimal(_) | Value::Resource(_) => None,
+        // Decimal keys are deferred; sequences and resources are not scalar keys.
+        Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) => None,
     }
 }
 
@@ -2444,6 +2467,7 @@ fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
         Value::Str(s) => s,
         Value::Decimal(d) => d.to_text(),
         Value::Bytes(_) => return Err(unsupported("rendering a bytes value", span)),
+        Value::Sequence(_) => return Err(unsupported("rendering a sequence value", span)),
         Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
     })
