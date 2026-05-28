@@ -275,6 +275,23 @@ pub fn check_project(
         })
         .collect();
     for (file, parsed) in &parsed_files {
+        // A module's top-level constants are in scope (bare) for its functions.
+        // Annotated constants carry their type; unannotated ones stay unknown.
+        let module_constants: HashMap<String, MarrowType> = parsed
+            .file
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                marrow_syntax::Declaration::Const(constant) => Some((
+                    constant.name.clone(),
+                    constant
+                        .ty
+                        .as_ref()
+                        .map_or(MarrowType::Unknown, |ty| resolve_type(ty, &program)),
+                )),
+                _ => None,
+            })
+            .collect();
         for declaration in &parsed.file.declarations {
             match declaration {
                 marrow_syntax::Declaration::Function(function) => {
@@ -302,7 +319,13 @@ pub fn check_project(
                         function.return_type.is_some(),
                         &mut report.diagnostics,
                     );
-                    check_function_types(&program, &file.path, function, &mut report.diagnostics);
+                    check_function_types(
+                        &program,
+                        &file.path,
+                        function,
+                        &module_constants,
+                        &mut report.diagnostics,
+                    );
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
                             code: CHECK_MISSING_RETURN.to_string(),
@@ -472,16 +495,17 @@ fn check_function_types(
     program: &CheckedProgram,
     file: &Path,
     function: &marrow_syntax::FunctionDecl,
+    module_constants: &HashMap<String, MarrowType>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // The base scope frame is the parameter list, resolved against the project's
-    // resources so a resource-typed parameter feeds field-type inference.
-    let params = function
-        .params
-        .iter()
-        .map(|param| (param.name.clone(), resolve_type(&param.ty, program)))
-        .collect();
-    let mut scope: Vec<HashMap<String, MarrowType>> = vec![params];
+    // The base scope frame is the module's constants overlaid with the parameter
+    // list (a parameter shadows a like-named constant). Types resolve against the
+    // project's resources so resource-typed bindings feed field-type inference.
+    let mut base = module_constants.clone();
+    for param in &function.params {
+        base.insert(param.name.clone(), resolve_type(&param.ty, program));
+    }
+    let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];
     // The declared return type (unknown for a void function), used to check each
     // `return` expression's type as the walk reaches it.
     let return_type = function

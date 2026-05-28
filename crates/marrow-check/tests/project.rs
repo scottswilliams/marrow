@@ -1079,6 +1079,30 @@ fn a_whole_resource_read_into_a_local_types_its_fields() {
 }
 
 #[test]
+fn a_module_constant_is_in_scope_and_typed() {
+    // A top-level `const` is in scope (bare) for the module's functions and carries
+    // its annotated type, so `M` is `int` and storing it into a `string` mismatches.
+    let found = check_module(
+        "module-const",
+        "module m\nconst M: int = 5\n\nfn f()\n    var x: string = M\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_module_constant_reference_is_not_unresolved() {
+    // The bare constant reference resolves (it is in scope), so it is not flagged
+    // as an untyped value when stored into a matching place.
+    let found = check_module(
+        "module-const-ok",
+        "module m\nconst M: int = 5\n\nfn f()\n    var x: int = M\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_for_binding_over_a_sequence_types_the_element() {
     // `std::text::split` yields `sequence[string]`, so `part` is `string` and
     // `part + 1` is string-plus-int.
