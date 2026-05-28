@@ -1062,3 +1062,59 @@ fn copies_a_whole_resource() {
     assert_eq!(read("test::title_of"), Some(Value::Str("Mort".into())));
     assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
 }
+
+/// The sample's `add` shape: allocate an id, build a local resource field by
+/// field, and save it.
+const BOOK_ADD: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+fn add(title: string, shelf: string): int
+    let id = nextId(^books)
+    var book: Book
+    book.title = title
+    book.shelf = shelf
+    ^books(id) = book
+    return id
+
+fn title_of(id: int): string
+    return ^books(id).title
+
+fn shelf_of(id: int): string
+    return ^books(id).shelf
+";
+
+#[test]
+fn builds_a_local_resource_and_saves_it() {
+    let program = checked_program(BOOK_ADD);
+    let store = RefCell::new(MemStore::new());
+    let id = run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Str("Mort".into()), Value::Str("fiction".into())],
+    )
+    .expect("add")
+    .value;
+    assert_eq!(id, Some(Value::Int(1)));
+    let read = |entry: &str| {
+        run_entry(&program, &store, entry, &[Value::Int(1)])
+            .expect("run")
+            .value
+    };
+    assert_eq!(read("test::title_of"), Some(Value::Str("Mort".into())));
+    assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
+}
+
+#[test]
+fn reads_a_local_resource_field() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn echo(t: string): string\n    var book: Book\n    book.title = t\n    return book.title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let value = run_entry(&program, &store, "test::echo", &[Value::Str("Mort".into())])
+        .expect("run")
+        .value;
+    assert_eq!(value, Some(Value::Str("Mort".into())));
+}

@@ -527,17 +527,24 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
         Statement::Var {
             name,
             keys,
+            ty,
             value,
             span,
-            ..
         } => {
             if !keys.is_empty() {
                 return Err(unsupported("a keyed local variable", *span));
             }
-            let value = value
-                .as_ref()
-                .ok_or_else(|| unsupported("an uninitialized variable", *span))?;
-            let value = eval_expr(value, env)?;
+            let value = match value {
+                Some(expr) => eval_expr(expr, env)?,
+                // An uninitialized var of a resource type starts as an empty
+                // resource value, filled field by field before use.
+                None => match ty {
+                    Some(ty) if is_resource_type(env.program, &ty.text) => {
+                        Value::Resource(Vec::new())
+                    }
+                    _ => return Err(unsupported("an uninitialized variable", *span)),
+                },
+            };
             env.bind(name.clone(), value, true);
             Ok(Flow::Normal)
         }
@@ -550,7 +557,11 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             // `^root(key…)` target is a whole-resource write; a bare name is a
             // local reassignment.
             if let Expression::Field { base, name, .. } = target {
-                eval_saved_field_write(base, name, value, *span, env)?;
+                if is_saved_path(base) {
+                    eval_saved_field_write(base, name, value, *span, env)?;
+                } else {
+                    eval_local_field_set(base, name, value, *span, env)?;
+                }
             } else if let Expression::Call { .. } = target {
                 eval_resource_write(target, value, *span, env)?;
             } else {
@@ -910,8 +921,17 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
             }),
         },
         Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
-        // A dotted field read off a saved root, e.g. `^books(id).title`.
-        Expression::Field { .. } => eval_saved_field(expr, env),
+        // A dotted field read: off a saved root (`^books(id).title`) it is a
+        // saved read; off a local it reads the resource value's field.
+        Expression::Field {
+            base, name, span, ..
+        } => {
+            if is_saved_path(base) {
+                eval_saved_field(expr, env)
+            } else {
+                eval_local_field_get(base, name, *span, env)
+            }
+        }
         other => Err(unsupported("this expression", other.span())),
     }
 }
@@ -1158,6 +1178,89 @@ fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p Reso
                 .saved_root
                 .as_ref()
                 .is_some_and(|saved| saved.root == root)
+        })
+}
+
+/// Whether `name` is a resource type declared in the program (for an
+/// uninitialized `var book: Book` to start as an empty resource value).
+fn is_resource_type(program: &CheckedProgram, name: &str) -> bool {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .any(|resource| resource.name == name)
+}
+
+/// Whether an expression denotes a saved path (rooted at a `^root`), as opposed
+/// to a local value. Field access and key lookups on a saved path are saved
+/// reads; on a local resource value they read its materialized fields.
+fn is_saved_path(expr: &Expression) -> bool {
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Call { callee, .. } => is_saved_path(callee),
+        Expression::Field { base, .. } => is_saved_path(base),
+        _ => false,
+    }
+}
+
+/// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated
+/// field is an absent-element error.
+fn eval_local_field_get(
+    base: &Expression,
+    field: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let Value::Resource(fields) = eval_expr(base, env)? else {
+        return Err(unsupported("a field of a non-resource value", span));
+    };
+    fields
+        .into_iter()
+        .find(|(name, _)| name == field)
+        .map(|(_, value)| value)
+        .ok_or_else(|| RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`{field}` is absent"),
+            span,
+        })
+}
+
+/// Set a field of a local resource variable, e.g. `book.title = t`. The base
+/// must be a mutable local bound to a resource value; the field is updated (or
+/// inserted) and the variable rebound.
+fn eval_local_field_set(
+    base: &Expression,
+    field: &str,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let Expression::Name { segments, .. } = base else {
+        return Err(unsupported("setting a field of this value", span));
+    };
+    let [name] = segments.as_slice() else {
+        return Err(unsupported("setting a field of this value", span));
+    };
+    let new_value = eval_expr(value, env)?;
+    let Some(Value::Resource(mut fields)) = env.lookup(name).cloned() else {
+        return Err(unsupported("setting a field of a non-resource local", span));
+    };
+    match fields.iter().position(|(existing, _)| existing == field) {
+        Some(index) => fields[index].1 = new_value,
+        None => fields.push((field.to_string(), new_value)),
+    }
+    env.assign(name, Value::Resource(fields))
+        .map_err(|error| match error {
+            AssignError::Immutable => RuntimeError {
+                code: RUN_TYPE,
+                message: format!("cannot assign to immutable `{name}`"),
+                span,
+            },
+            AssignError::Unbound => RuntimeError {
+                code: RUN_UNBOUND_NAME,
+                message: format!("`{name}` is not bound"),
+                span,
+            },
         })
 }
 
