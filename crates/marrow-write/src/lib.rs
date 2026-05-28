@@ -129,6 +129,21 @@ pub fn plan_resource_write(
             value: encode_value(saved),
         });
     }
+
+    // Write generated non-unique index entries for the new values. An entry
+    // exists only when every indexed value is populated. (Index teardown on
+    // re-write, and unique indexes with conflict detection, are later slices.)
+    for index in &schema.indexes {
+        if index.unique {
+            continue;
+        }
+        if let Some(keys) = index_keys(&index.args, root, identity, value) {
+            steps.push(PlanStep::Write {
+                path: encode_path(&index_path(root, &index.name, &keys)),
+                value: INDEX_MARKER.to_vec(),
+            });
+        }
+    }
     Ok(WritePlan { steps })
 }
 
@@ -175,6 +190,59 @@ fn field_path(root: &SavedRootSchema, identity: &[SavedKey], field: &str) -> Vec
     let mut path = identity_path(root, identity);
     path.push(PathSegment::Field(field.into()));
     path
+}
+
+/// The marker stored at a non-unique index entry. A non-unique entry records
+/// only presence; the resource itself remains the place to read fields.
+const INDEX_MARKER: &[u8] = b"1";
+
+/// Resolve an index's argument names to key values from the resource being
+/// written: an argument naming an identity key takes that key; one naming a
+/// top-level field takes that field's value. Returns `None` when any argument is
+/// absent or is a type with no key encoding, so no entry is written.
+fn index_keys(
+    args: &[String],
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    value: &ResourceValue,
+) -> Option<Vec<SavedKey>> {
+    let mut keys = Vec::with_capacity(args.len());
+    for arg in args {
+        if let Some(position) = root.identity_keys.iter().position(|key| &key.name == arg) {
+            keys.push(identity[position].clone());
+        } else {
+            match value.fields.iter().find(|(name, _)| name == arg) {
+                Some((_, FieldValue::Saved(saved))) => keys.push(saved_value_to_key(saved)?),
+                _ => return None,
+            }
+        }
+    }
+    Some(keys)
+}
+
+/// The encoded-path segments for an index entry, `^root.index(keys...)`.
+fn index_path(root: &SavedRootSchema, index: &str, keys: &[SavedKey]) -> Vec<PathSegment> {
+    let mut path = vec![
+        PathSegment::Root(root.root.clone()),
+        PathSegment::Index(index.into()),
+    ];
+    path.extend(keys.iter().cloned().map(PathSegment::IndexKey));
+    path
+}
+
+/// The key form of a saved value, or `None` for a value with no order-preserving
+/// key encoding (decimal, for now).
+fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
+    Some(match value {
+        SavedValue::Int(value) => SavedKey::Int(*value),
+        SavedValue::Bool(value) => SavedKey::Bool(*value),
+        SavedValue::Str(value) | SavedValue::ErrorCode(value) => SavedKey::Str(value.clone()),
+        SavedValue::Bytes(value) => SavedKey::Bytes(value.clone()),
+        SavedValue::Date(value) => SavedKey::Date(*value),
+        SavedValue::Duration(value) => SavedKey::Duration(*value),
+        SavedValue::Instant(value) => SavedKey::Instant(*value),
+        SavedValue::Decimal { .. } => return None,
+    })
 }
 
 /// Check that `value` matches the field's declared scalar type name.

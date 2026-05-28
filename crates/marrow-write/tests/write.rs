@@ -36,6 +36,15 @@ resource Book at ^books(id: int)
     shelf: string
 ";
 
+/// `Book` with a non-unique index over the shelf and identity.
+const BOOK_INDEXED: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+    index byShelf(shelf, id)
+";
+
 fn saved(text: &str) -> FieldValue {
     FieldValue::Saved(SavedValue::Str(text.into()))
 }
@@ -183,4 +192,47 @@ fn next_id_allocates_after_the_highest_record() {
         .commit(&mut store);
     }
     assert_eq!(next_id("books", &store), Ok(6));
+}
+
+#[test]
+fn a_write_emits_non_unique_index_entries() {
+    let book = schema(BOOK_INDEXED);
+    let value = ResourceValue {
+        fields: vec![
+            ("title".into(), saved("Mort")),
+            ("shelf".into(), saved("fiction")),
+        ],
+    };
+    let mut store = MemStore::new();
+    plan_resource_write(&book, &[SavedKey::Int(42)], &value)
+        .expect("write")
+        .commit(&mut store);
+
+    // ^books.byShelf("fiction", 42) marks the entry.
+    let entry = encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::Index("byShelf".into()),
+        PathSegment::IndexKey(SavedKey::Str("fiction".into())),
+        PathSegment::IndexKey(SavedKey::Int(42)),
+    ]);
+    assert_eq!(store.read(&entry), Some(&b"1"[..]), "index entry present");
+}
+
+#[test]
+fn no_index_entry_when_an_indexed_field_is_absent() {
+    let book = schema(BOOK_INDEXED);
+    // `shelf` (an index argument) is omitted, so the byShelf entry is not written.
+    let value = ResourceValue {
+        fields: vec![("title".into(), saved("Mort"))],
+    };
+    let mut store = MemStore::new();
+    plan_resource_write(&book, &[SavedKey::Int(42)], &value)
+        .expect("write")
+        .commit(&mut store);
+
+    let by_shelf = encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::Index("byShelf".into()),
+    ]);
+    assert_eq!(store.scan(&by_shelf, usize::MAX).entries.len(), 0);
 }
