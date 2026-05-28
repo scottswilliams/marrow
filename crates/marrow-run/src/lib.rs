@@ -7,9 +7,9 @@
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
 //! groups writes in a `transaction` (commit/rollback with read-your-writes), and
 //! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
-//! `std::assert::*` testing builtins, and the `std::clock::now()` host capability.
-//! Whole-resource writes, `merge`, index traversal, and structured errors build on
-//! this spine.
+//! `std::assert`/`std::text`/`std::math` library helpers, and the
+//! `std::clock::now()` host capability. Whole-resource writes, `merge`, index
+//! traversal, and structured errors build on this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -390,6 +390,13 @@ fn eval_call(
         {
             return eval_assert(op, args, span, env);
         }
+        // Pure `std::text::*` / `std::math::*` helpers.
+        if let [first, second, op] = segments.as_slice()
+            && first == "std"
+            && (second == "text" || second == "math")
+        {
+            return eval_std(second, op, args, span, env).map(Some);
+        }
     }
     let ctx = Context {
         program: env.program,
@@ -545,6 +552,107 @@ fn eval_assert(
         }
         other => Err(unsupported(&format!("std::assert::{other}"), span)),
     }
+}
+
+/// Evaluate a pure `std::text::*` or `std::math::*` helper. These take positional
+/// arguments and return a value; they need no host capability.
+fn eval_std(
+    module: &str,
+    op: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    match (module, op) {
+        ("text", "length") => {
+            let [text] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            Ok(Value::Int(
+                eval_text(text, env, span)?.chars().count() as i64
+            ))
+        }
+        ("text", "trim") => {
+            let [text] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            Ok(Value::Str(eval_text(text, env, span)?.trim().to_string()))
+        }
+        ("text", "contains") => {
+            let [text, needle] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let text = eval_text(text, env, span)?;
+            let needle = eval_text(needle, env, span)?;
+            Ok(Value::Bool(text.contains(&needle)))
+        }
+        ("math", "absInt") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            Ok(Value::Int(
+                eval_int(&value.value, env)?
+                    .checked_abs()
+                    .ok_or_else(|| overflow(span))?,
+            ))
+        }
+        ("math", "remainder") => {
+            let [a, b] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let remainder =
+                int_remainder(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
+            Ok(Value::Int(remainder))
+        }
+        ("math", "modulo") => {
+            let [a, b] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let modulo = int_modulo(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
+            Ok(Value::Int(modulo))
+        }
+        _ => Err(unsupported(&format!("std::{module}::{op}"), span)),
+    }
+}
+
+/// The wrong-argument-count error for a `std::*` helper.
+fn std_arity(module: &str, op: &str, span: SourceSpan) -> RuntimeError {
+    type_error(
+        &format!("`std::{module}::{op}` got the wrong number of arguments"),
+        span,
+    )
+}
+
+/// Evaluate `arg` to a string, or a type error.
+fn eval_text(arg: &Argument, env: &mut Env<'_>, span: SourceSpan) -> Result<String, RuntimeError> {
+    match eval_expr(&arg.value, env)? {
+        Value::Str(text) => Ok(text),
+        _ => Err(type_error("expected a string", span)),
+    }
+}
+
+/// Truncated integer remainder (sign of the dividend), rejecting a zero divisor
+/// and the `i64::MIN % -1` overflow.
+fn int_remainder(a: i64, b: i64, span: SourceSpan) -> Result<i64, RuntimeError> {
+    if b == 0 {
+        return Err(RuntimeError {
+            code: RUN_DIVIDE_BY_ZERO,
+            message: "integer remainder by zero".into(),
+            span,
+        });
+    }
+    a.checked_rem(b).ok_or_else(|| overflow(span))
+}
+
+/// Floored integer modulo (sign of the divisor).
+fn int_modulo(a: i64, b: i64, span: SourceSpan) -> Result<i64, RuntimeError> {
+    let remainder = int_remainder(a, b, span)?;
+    // Shift the truncated remainder toward the divisor's sign when they differ.
+    Ok(if remainder != 0 && (remainder < 0) != (b < 0) {
+        remainder + b
+    } else {
+        remainder
+    })
 }
 
 /// Evaluate `get(path, default)`: the value at a sparse saved path, or `default`
