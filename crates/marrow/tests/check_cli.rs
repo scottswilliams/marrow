@@ -102,3 +102,38 @@ fn check_jsonl_reports_diagnostics_and_summary() {
     assert_eq!(records[1]["status"], "failed");
     assert_eq!(records[1]["diagnostics"], 1);
 }
+
+/// Create an empty temporary project directory (caller fills it).
+fn temp_project_dir(name: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
+    fs::create_dir_all(dir.join("src")).expect("create project src dir");
+    dir
+}
+
+#[test]
+fn check_reports_schema_diagnostics_for_a_project_directory() {
+    // Checking a project directory (one with marrow.json) runs the whole-project
+    // checker, which surfaces schema diagnostics that single-file parsing cannot.
+    let dir = temp_project_dir("schema-project");
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("src/shelf.mw"),
+        "module shelf\nresource Book at ^books(id: int)\n    note: unknown\n",
+    )
+    .expect("write source");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&dir)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_dir_all(&dir).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("schema.unknown_in_saved"), "{stderr}");
+}
