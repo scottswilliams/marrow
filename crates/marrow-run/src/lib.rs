@@ -25,7 +25,7 @@ use marrow_syntax::{
 };
 use marrow_write::{
     FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write,
-    plan_resource_delete, plan_resource_write,
+    plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -586,6 +586,14 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             eval_delete(path, *span, env)?;
             Ok(Flow::Normal)
         }
+        Statement::Merge {
+            target,
+            value,
+            span,
+        } => {
+            eval_resource_merge(target, value, *span, env)?;
+            Ok(Flow::Normal)
+        }
         Statement::Return { value, .. } => {
             let value = value
                 .as_ref()
@@ -1126,15 +1134,7 @@ fn eval_resource_write(
     };
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("writing this saved root", span))?;
-    let mut resource_fields = Vec::with_capacity(fields.len());
-    for (name, field_value) in fields {
-        let saved = value_to_saved(field_value)
-            .ok_or_else(|| unsupported("a nested resource field", span))?;
-        resource_fields.push((name, FieldValue::Saved(saved)));
-    }
-    let value = ResourceValue {
-        fields: resource_fields,
-    };
+    let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
         plan_resource_write(resource, &identity, &value, &store).map_err(|error| RuntimeError {
@@ -1145,6 +1145,51 @@ fn eval_resource_write(
     };
     plan.commit(&mut env.store.borrow_mut());
     Ok(())
+}
+
+/// Apply a managed merge `merge ^root(key…) = value`, where `value` is a
+/// materialized [`Value::Resource`]: drives [`marrow_write::plan_resource_merge`]
+/// (copy supplied fields, keep absent ones) and commits.
+fn eval_resource_merge(
+    target: &Expression,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let (root, identity) = lower_record_identity(target, env)?;
+    let Value::Resource(fields) = eval_expr(value, env)? else {
+        return Err(unsupported("merging a non-resource value", span));
+    };
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("merging this saved root", span))?;
+    let value = resource_value_of(fields, span)?;
+    let plan = {
+        let store = env.store.borrow();
+        plan_resource_merge(resource, &identity, &value, &store).map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        })?
+    };
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(())
+}
+
+/// Lower a materialized resource value's present fields to a `ResourceValue` for
+/// the managed-write planners. A nested resource field is unsupported.
+fn resource_value_of(
+    fields: Vec<(String, Value)>,
+    span: SourceSpan,
+) -> Result<ResourceValue, RuntimeError> {
+    let mut resource_fields = Vec::with_capacity(fields.len());
+    for (name, value) in fields {
+        let saved =
+            value_to_saved(value).ok_or_else(|| unsupported("a nested resource field", span))?;
+        resource_fields.push((name, FieldValue::Saved(saved)));
+    }
+    Ok(ResourceValue {
+        fields: resource_fields,
+    })
 }
 
 /// Apply a whole-resource delete `delete ^root(key…)`, driving

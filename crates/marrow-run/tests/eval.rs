@@ -1118,3 +1118,36 @@ fn reads_a_local_resource_field() {
         .value;
     assert_eq!(value, Some(Value::Str("Mort".into())));
 }
+
+#[test]
+fn merge_updates_supplied_fields_and_keeps_the_rest() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn move_to(id: int, s: string)\n    var patch: Book\n    patch.shelf = s\n    merge ^books(id) = patch\n\nfn title_of(id: int): string\n    return ^books(id).title\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    seed_field(&store, 1, "title", "Mort");
+    seed_field(&store, 1, "shelf", "fiction");
+    // Merge a patch that supplies only `shelf`.
+    run_entry(
+        &program,
+        &store,
+        "test::move_to",
+        &[Value::Int(1), Value::Str("history".into())],
+    )
+    .expect("merge");
+    let read = |entry: &str| {
+        run_entry(&program, &store, entry, &[Value::Int(1)])
+            .expect("run")
+            .value
+    };
+    assert_eq!(
+        read("test::shelf_of"),
+        Some(Value::Str("history".into())),
+        "shelf updated"
+    );
+    assert_eq!(
+        read("test::title_of"),
+        Some(Value::Str("Mort".into())),
+        "title kept"
+    );
+}
