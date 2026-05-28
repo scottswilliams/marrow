@@ -410,6 +410,124 @@ fn parse_instant_rejects_invalid_text() {
 }
 
 #[test]
+fn formats_and_parses_dates() {
+    // A date round-trips through its canonical YYYY-MM-DD text (leap day).
+    let program = checked_program(
+        "pub fn f(): string\n    return std::clock::formatDate(std::clock::parseDate(\"2024-02-29\"))\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("2024-02-29".into()))
+    );
+}
+
+#[test]
+fn formats_and_parses_durations() {
+    // A duration round-trips through its canonical PT<seconds>S text.
+    let program = checked_program(
+        "pub fn f(): string\n    return std::clock::formatDuration(std::clock::parseDuration(\"PT90S\"))\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("PT90S".into()))
+    );
+}
+
+#[test]
+fn clock_add_offsets_an_instant_by_a_duration() {
+    // add(instant, duration): one hour after noon UTC is 13:00.
+    let program = checked_program(
+        "pub fn f(): string\n    return std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), std::clock::parseDuration(\"PT3600S\")))\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("2026-05-28T13:00:00Z".into()))
+    );
+}
+
+#[test]
+fn clock_today_reads_the_host_clock_capability() {
+    // `today()` is the host clock's UTC calendar date.
+    let program = checked_program(
+        "pub fn f(): string\n    return std::clock::formatDate(std::clock::today())\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    // 2023-11-14T22:13:20Z.
+    let host = Host::new().with_clock(1_700_000_000_000_000_000);
+    let outcome = run_entry_with_host(&program, &store, &host, "test::f", &[]).expect("today");
+    assert_eq!(outcome.value, Some(Value::Str("2023-11-14".into())));
+}
+
+#[test]
+fn clock_today_without_a_clock_capability_is_a_capability_error() {
+    let program = checked_program("fn t(): date\n    return std::clock::today()\n");
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::t", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_date_round_trips_through_saved_data() {
+    // A `date` value saves and loads through a managed field write and read.
+    let program = checked_program(
+        "resource Event at ^events(id: int)\n    on: date\n\nfn record(id: int, text: string)\n    ^events(id).on = std::clock::parseDate(text)\n\nfn dateOf(id: int): string\n    return std::clock::formatDate(^events(id).on)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::record",
+        &[Value::Int(1), Value::Str("2024-02-29".into())],
+    )
+    .expect("record");
+    let outcome = run_entry(&program, &store, "test::dateOf", &[Value::Int(1)]).expect("read");
+    assert_eq!(outcome.value, Some(Value::Str("2024-02-29".into())));
+}
+
+#[test]
+fn temporal_values_order_and_equate() {
+    // Dates, instants, and durations compare by their underlying counts, matching
+    // the ordered/equatable types the checker already advertises.
+    let program = checked_program(
+        "fn dateBefore(a: string, b: string): bool\n    return std::clock::parseDate(a) < std::clock::parseDate(b)\nfn dateSame(a: string, b: string): bool\n    return std::clock::parseDate(a) = std::clock::parseDate(b)\nfn instantBefore(a: string, b: string): bool\n    return std::clock::parseInstant(a) < std::clock::parseInstant(b)\nfn durationBefore(a: string, b: string): bool\n    return std::clock::parseDuration(a) < std::clock::parseDuration(b)\n",
+    );
+    let call = |entry: &str, a: &str, b: &str| {
+        run(
+            &program,
+            entry,
+            &[Value::Str(a.into()), Value::Str(b.into())],
+        )
+    };
+    assert_eq!(
+        call("test::dateBefore", "2024-01-01", "2024-12-31"),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        call("test::dateBefore", "2024-12-31", "2024-01-01"),
+        Ok(Some(Value::Bool(false)))
+    );
+    assert_eq!(
+        call("test::dateSame", "2024-02-29", "2024-02-29"),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        call(
+            "test::instantBefore",
+            "2026-05-28T12:00:00Z",
+            "2026-05-28T13:00:00Z"
+        ),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        call("test::durationBefore", "PT60S", "PT3600S"),
+        Ok(Some(Value::Bool(true)))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

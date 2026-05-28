@@ -45,6 +45,12 @@ pub enum Value {
     /// A UTC instant in nanoseconds since the Unix epoch, e.g. from
     /// `std::clock::now()`. Saves and loads as the `instant` type.
     Instant(i128),
+    /// A UTC calendar date as days since the Unix epoch, e.g. from
+    /// `std::clock::today()`. Saves and loads as the `date` type.
+    Date(i32),
+    /// A signed time span in nanoseconds, e.g. from `std::clock::parseDuration`.
+    /// Saves and loads as the `duration` type.
+    Duration(i128),
     /// An exact base-10 decimal. Saves and loads as the `decimal` type.
     Decimal(Decimal),
     /// Arbitrary bytes. Saves and loads as the `bytes` type; has no direct text
@@ -716,13 +722,14 @@ fn eval_call(
                 _ => {}
             }
         }
-        // `std::clock::now()` is a host-capability builtin, not a program function.
-        if let [first, second, third] = segments.as_slice()
+        // `std::clock::now()`/`today()` read the host clock capability; the rest of
+        // `std::clock` is pure (matched later via `eval_std`).
+        if let [first, second, op] = segments.as_slice()
             && first == "std"
             && second == "clock"
-            && third == "now"
+            && (op == "now" || op == "today")
         {
-            return eval_clock_now(args, span, env).map(Some);
+            return eval_clock_capability(op, args, span, env).map(Some);
         }
         // `std::env::*` reads the run's environment capability.
         if let [first, second, op] = segments.as_slice()
@@ -1121,6 +1128,58 @@ fn eval_std(
                 _ => Err(type_error("parseInstant: invalid instant text", span)),
             }
         }
+        // Dates and durations share the instant codec route: format and parse go
+        // through their canonical text (`YYYY-MM-DD`, `PT<seconds>S`).
+        ("clock", "formatDate") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let days = eval_date_arg(value, env, span)?;
+            let text = String::from_utf8(encode_value(&SavedValue::Date(days)))
+                .expect("a canonical date encodes as UTF-8 text");
+            Ok(Value::Str(text))
+        }
+        ("clock", "parseDate") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let text = eval_text(value, env, span)?;
+            match decode_value(text.as_bytes(), ValueType::Date) {
+                Some(SavedValue::Date(days)) => Ok(Value::Date(days)),
+                _ => Err(type_error("parseDate: invalid date text", span)),
+            }
+        }
+        ("clock", "formatDuration") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let nanos = eval_duration_arg(value, env, span)?;
+            let text = String::from_utf8(encode_value(&SavedValue::Duration(nanos)))
+                .expect("a canonical duration encodes as UTF-8 text");
+            Ok(Value::Str(text))
+        }
+        ("clock", "parseDuration") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let text = eval_text(value, env, span)?;
+            match decode_value(text.as_bytes(), ValueType::Duration) {
+                Some(SavedValue::Duration(nanos)) => Ok(Value::Duration(nanos)),
+                _ => Err(type_error("parseDuration: invalid duration text", span)),
+            }
+        }
+        // `add(instant, duration)`: shift an instant by a signed span of nanos.
+        ("clock", "add") => {
+            let [instant, span_arg] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let nanos = eval_instant_arg(instant, env, span)?;
+            let offset = eval_duration_arg(span_arg, env, span)?;
+            nanos
+                .checked_add(offset)
+                .map(Value::Instant)
+                .ok_or_else(|| overflow(span))
+        }
         _ => Err(unsupported(&format!("std::{module}::{op}"), span)),
     }
 }
@@ -1259,6 +1318,26 @@ fn eval_instant_arg(
     match eval_expr(&arg.value, env)? {
         Value::Instant(nanos) => Ok(nanos),
         _ => Err(type_error("expected an instant", span)),
+    }
+}
+
+/// Evaluate `arg` to a date (days since the Unix epoch), or a type error.
+fn eval_date_arg(arg: &Argument, env: &mut Env<'_>, span: SourceSpan) -> Result<i32, RuntimeError> {
+    match eval_expr(&arg.value, env)? {
+        Value::Date(days) => Ok(days),
+        _ => Err(type_error("expected a date", span)),
+    }
+}
+
+/// Evaluate `arg` to a duration (signed nanoseconds), or a type error.
+fn eval_duration_arg(
+    arg: &Argument,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<i128, RuntimeError> {
+    match eval_expr(&arg.value, env)? {
+        Value::Duration(nanos) => Ok(nanos),
+        _ => Err(type_error("expected a duration", span)),
     }
 }
 
@@ -1422,23 +1501,37 @@ fn eval_append(
     Ok(Value::Int(pos))
 }
 
-/// Evaluate `std::clock::now()`: the run's current UTC instant from the host's
-/// clock capability. A run with no clock capability raises a typed capability
-/// error rather than reading the wall clock implicitly.
-fn eval_clock_now(
+/// Number of nanoseconds in a UTC day, for `today()`'s instant-to-date reduction.
+const NANOS_PER_DAY: i128 = 86_400_000_000_000;
+
+/// Evaluate `std::clock::now()` (an instant) or `std::clock::today()` (the UTC
+/// calendar date) from the host's clock capability. A run with no clock
+/// capability raises a typed capability error rather than reading the wall clock
+/// implicitly.
+fn eval_clock_capability(
+    op: &str,
     args: &[Argument],
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     if !args.is_empty() {
-        return Err(type_error("`std::clock::now` takes no arguments", span));
+        return Err(type_error(
+            &format!("`std::clock::{op}` takes no arguments"),
+            span,
+        ));
     }
     let nanos = env.host.clock.ok_or_else(|| RuntimeError {
         code: RUN_CAPABILITY,
-        message: "this run provides no clock capability for `std::clock::now`".into(),
+        message: format!("this run provides no clock capability for `std::clock::{op}`"),
         span,
     })?;
-    Ok(Value::Instant(nanos))
+    match op {
+        "now" => Ok(Value::Instant(nanos)),
+        // The UTC calendar date is the floored day count, matching the store's
+        // instant-to-date reduction.
+        "today" => Ok(Value::Date(nanos.div_euclid(NANOS_PER_DAY) as i32)),
+        _ => Err(unsupported(&format!("std::clock::{op}"), span)),
+    }
 }
 
 /// Evaluate a `std::env::*` builtin against the host's environment capability:
@@ -2904,6 +2997,8 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Bool(b) => SavedValue::Bool(b),
         Value::Str(s) => SavedValue::Str(s),
         Value::Instant(n) => SavedValue::Instant(n),
+        Value::Date(d) => SavedValue::Date(d),
+        Value::Duration(n) => SavedValue::Duration(n),
         Value::Decimal(d) => SavedValue::Decimal {
             coefficient: d.coefficient(),
             scale: d.scale(),
@@ -3109,6 +3204,8 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Bool(b) => Some(SavedKey::Bool(b)),
         Value::Str(s) => Some(SavedKey::Str(s)),
         Value::Instant(n) => Some(SavedKey::Instant(n)),
+        Value::Date(d) => Some(SavedKey::Date(d)),
+        Value::Duration(n) => Some(SavedKey::Duration(n)),
         Value::Bytes(b) => Some(SavedKey::Bytes(b)),
         // Decimal keys are deferred; sequences and resources are not scalar keys.
         Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) => None,
@@ -3123,6 +3220,8 @@ fn saved_value_to_value(value: SavedValue) -> Option<Value> {
         SavedValue::Bool(b) => Some(Value::Bool(b)),
         SavedValue::Str(s) => Some(Value::Str(s)),
         SavedValue::Instant(n) => Some(Value::Instant(n)),
+        SavedValue::Date(d) => Some(Value::Date(d)),
+        SavedValue::Duration(n) => Some(Value::Duration(n)),
         SavedValue::Decimal { coefficient, scale } => {
             Decimal::from_parts(coefficient, scale).map(Value::Decimal)
         }
@@ -3167,6 +3266,8 @@ fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
         Value::Bytes(_) => return Err(unsupported("rendering a bytes value", span)),
         Value::Sequence(_) => return Err(unsupported("rendering a sequence value", span)),
         Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
+        Value::Date(_) => return Err(unsupported("rendering a date value", span)),
+        Value::Duration(_) => return Err(unsupported("rendering a duration value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
     })
 }
@@ -3391,6 +3492,10 @@ fn compare_values(
         (Value::Str(a), Value::Str(b)) => a.cmp(&b),
         (Value::Decimal(a), Value::Decimal(b)) => a.cmp(&b),
         (Value::Bytes(a), Value::Bytes(b)) => a.cmp(&b),
+        // Temporal values order by their underlying instant/day/nanosecond count.
+        (Value::Instant(a), Value::Instant(b)) => a.cmp(&b),
+        (Value::Date(a), Value::Date(b)) => a.cmp(&b),
+        (Value::Duration(a), Value::Duration(b)) => a.cmp(&b),
         _ => {
             return Err(type_error(
                 "cannot order values of different or unordered types",
@@ -3428,6 +3533,9 @@ fn values_equal(
         (Value::Str(a), Value::Str(b)) => Ok(a == b),
         (Value::Decimal(a), Value::Decimal(b)) => Ok(a == b),
         (Value::Bytes(a), Value::Bytes(b)) => Ok(a == b),
+        (Value::Instant(a), Value::Instant(b)) => Ok(a == b),
+        (Value::Date(a), Value::Date(b)) => Ok(a == b),
+        (Value::Duration(a), Value::Duration(b)) => Ok(a == b),
         _ => Err(type_error("cannot compare values of different types", span)),
     }
 }
