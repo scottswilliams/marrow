@@ -1,11 +1,14 @@
 //! The Marrow runtime: evaluate checked `.mw` functions.
 //!
-//! The evaluator runs functions over scalar values — integers, booleans, and
-//! strings: literals, locals (`let`/`var`), arithmetic, comparison, logical, and
-//! `_` concatenation operators, conditionals, `while`/`for` loops, string
-//! interpolation, calls between functions, scalar reads and managed field writes
-//! of saved data (`^books(id).title`), and `print`/`write` output. Transactions,
-//! whole-resource writes, and structured errors build on this spine.
+//! The evaluator runs functions over scalar values (integers, booleans,
+//! strings) with locals, arithmetic/comparison/logical/`_` operators,
+//! conditionals, `while`/`for` loops, interpolation, and calls between
+//! functions. It reads saved data (fields and keyed-leaf entries) and writes it
+//! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
+//! groups writes in a `transaction` (commit/rollback with read-your-writes), and
+//! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins.
+//! Whole-resource writes, `merge`, index traversal, and structured errors build
+//! on this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -209,6 +212,11 @@ fn eval_call(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
+    // A call whose callee is a saved field is a keyed-leaf read, e.g.
+    // `^books(id).tags(pos)`, not a function call.
+    if let Expression::Field { .. } = callee {
+        return eval_saved_leaf_read(callee, args, span, env).map(Some);
+    }
     let Expression::Name { segments, .. } = callee else {
         return Err(unsupported("calling this expression", span));
     };
@@ -810,6 +818,59 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
         })
 }
 
+/// Read a keyed-leaf entry off a saved record, e.g. `^books(id).tags(pos)`. The
+/// `callee` is the layer field `^books(id).tags` and `keys` are the layer key
+/// arguments. Lowers the path, reads the store, and decodes with the layer's
+/// leaf type; an absent entry is an absent-element error.
+fn eval_saved_leaf_read(
+    callee: &Expression,
+    keys: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let Expression::Field {
+        base, name: layer, ..
+    } = callee
+    else {
+        return Err(unsupported("this read", span));
+    };
+    if keys
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported(
+            "a keyed lookup with named or out arguments",
+            span,
+        ));
+    }
+    let (root, identity) = lower_record_identity(base, env)?;
+    let mut segments = vec![PathSegment::Root(root.clone())];
+    segments.extend(identity.into_iter().map(PathSegment::RecordKey));
+    segments.push(PathSegment::ChildLayer(layer.clone()));
+    for arg in keys {
+        let key = value_to_key(eval_expr(&arg.value, env)?)
+            .ok_or_else(|| unsupported("a key of this type", span))?;
+        segments.push(PathSegment::IndexKey(key));
+    }
+    let leaf_type = resource_layer_leaf_type(env.program, &root, layer)
+        .ok_or_else(|| unsupported("reading this layer", span))?;
+    let store = env.store.borrow();
+    let Some(bytes) = store.read(&encode_path(&segments)) else {
+        return Err(RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`{layer}` entry is absent"),
+            span,
+        });
+    };
+    decode_value(bytes, leaf_type)
+        .and_then(saved_value_to_value)
+        .ok_or_else(|| RuntimeError {
+            code: RUN_TYPE,
+            message: format!("stored value in `{layer}` did not decode to a runtime value"),
+            span,
+        })
+}
+
 /// Apply a managed field write `^root(key…).field = value`. Lowers the identity,
 /// evaluates the value, and drives [`marrow_write::plan_field_write`] — which
 /// validates the field and value and keeps generated indexes coherent — then
@@ -967,6 +1028,21 @@ fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Opt
         })?;
     let field = resource.fields.iter().find(|field_| field_.name == field)?;
     value_type_for(&field.ty.text)
+}
+
+/// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
+/// `string` of `tags(pos: int): string`).
+fn resource_layer_leaf_type(
+    program: &CheckedProgram,
+    root: &str,
+    layer: &str,
+) -> Option<ValueType> {
+    let resource = find_resource(program, root)?;
+    let layer = resource
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)?;
+    value_type_for(&layer.leaf_type.as_ref()?.text)
 }
 
 /// The [`ValueType`] a scalar type name denotes, or `None` for a non-scalar type.

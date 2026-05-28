@@ -857,3 +857,48 @@ fn append_writes_at_the_next_position() {
     assert_eq!(tag(1), Some(SavedValue::Str("a".into())));
     assert_eq!(tag(2), Some(SavedValue::Str("b".into())));
 }
+
+#[test]
+fn appends_then_reads_back_keyed_leaf_entries() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add_tag",
+        &[Value::Int(5), Value::Str("a".into())],
+    )
+    .expect("append");
+    run_entry(
+        &program,
+        &store,
+        "test::add_tag",
+        &[Value::Int(5), Value::Str("b".into())],
+    )
+    .expect("append");
+    let tag = |pos: i64| {
+        run_entry(
+            &program,
+            &store,
+            "test::tag_at",
+            &[Value::Int(5), Value::Int(pos)],
+        )
+        .expect("read")
+        .value
+    };
+    assert_eq!(tag(1), Some(Value::Str("a".into())));
+    assert_eq!(tag(2), Some(Value::Str("b".into())));
+    // Reading an absent position is an absent-element error.
+    let missing = run_entry(
+        &program,
+        &store,
+        "test::tag_at",
+        &[Value::Int(5), Value::Int(3)],
+    );
+    assert!(
+        matches!(missing, Err(ref error) if error.code == RUN_ABSENT),
+        "{missing:?}"
+    );
+}
