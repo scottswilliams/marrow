@@ -1,0 +1,12 @@
+[package]
+name = "marrow-store"
+description = "Marrow's saved-tree encoding and backend contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
