@@ -1037,6 +1037,46 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 }
 
 #[test]
+fn keyword_field_name_reports_a_parse_error() {
+    // `at` is a reserved word (`resource X at ^root`). Used as a bare field
+    // name it violates `field_name = identifier | string_lit`, so the parser
+    // must report it rather than silently dropping the statement as Unparsed.
+    let source = "fn touch(id: int)\n    ^events(id).at = now\n";
+    let parsed = parse_source(source);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("keyword") && d.message.contains("field name"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a keyword field-name diagnostic: {:#?}",
+                parsed.diagnostics
+            )
+        });
+    // The diagnostic points at the offending `.at`.
+    assert_eq!(
+        &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+        ".at"
+    );
+}
+
+#[test]
+fn quoted_keyword_field_name_parses() {
+    // The documented escape (syntax.md): quote a reserved word to name data
+    // with it. `."at"` is a string-literal field segment, so it parses cleanly.
+    let parsed = parse_source("const At = ^events(id).\"at\"\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    assert!(
+        matches!(&decl.value, Expression::Field { name, quoted: true, .. } if name == "at"),
+        "expected quoted field `at`, got {:?}",
+        decl.value
+    );
+}
+
+#[test]
 fn parses_named_and_moded_call_arguments() {
     let parsed = parse_source("const Made = save(book: draft, out result, inout total)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);

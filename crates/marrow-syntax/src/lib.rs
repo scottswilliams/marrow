@@ -1339,9 +1339,39 @@ impl<'a> Parser<'a> {
             }
         }
 
+        self.report_keyword_field_names();
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
+        }
+    }
+
+    /// Report bare keywords used as field names. A `.` is always data field
+    /// access, and `field_name = identifier | string_lit` (grammar.md), so a
+    /// reserved word immediately after `.` is never a valid field name and must
+    /// be quoted (`."at"`). The structural parsers cannot build such a field and
+    /// leave the line `Unparsed`, so the diagnostic is raised here from the
+    /// token stream, where the `.` and the keyword are both visible.
+    fn report_keyword_field_names(&mut self) {
+        for pair in self.tokens.windows(2) {
+            let [dot, name] = pair else { continue };
+            if dot.kind != TokenKind::Dot || !matches!(name.kind, TokenKind::Keyword(_)) {
+                continue;
+            }
+            let keyword = name.text(self.source);
+            let span = join_spans(dot.span, name.span);
+            self.diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                kind: "parse",
+                severity: Severity::Error,
+                message: format!("`{keyword}` is a keyword and cannot be used as a field name"),
+                help: Some(format!(
+                    "quote the reserved word to use it as a data name: .\"{keyword}\""
+                )),
+                span,
+                line: span.line,
+                column: span.column,
+            });
         }
     }
 

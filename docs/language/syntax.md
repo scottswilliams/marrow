@@ -234,6 +234,9 @@ Quoted field segments are allowed for existing data with non-identifier names:
 Managed resource declarations use identifier field names. Quoted segments are
 for raw data, import, export, migration, and repair paths.
 
+Reserved words are not identifiers, so a data name spelled like a keyword must
+be quoted too (`^events(id)."at"`). A bare keyword after `.` is a parse error.
+
 ## Named Arguments And Resource Literals
 
 Function calls may use named arguments:
