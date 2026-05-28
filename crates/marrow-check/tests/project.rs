@@ -53,6 +53,28 @@ fn surfaces_resource_schema_errors() {
 }
 
 #[test]
+fn reports_two_resources_owning_one_saved_root() {
+    let root = temp_project("dup-root", |root| {
+        // A saved root has one managed owner; two resources on `^books` collide.
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             resource Tome at ^books(id: int)\n\
+             \x20   required title: string\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let owners = with_code(&report, "schema.duplicate_root_owner");
+    assert_eq!(owners.len(), 1, "{:#?}", report.diagnostics);
+    assert!(owners[0].message.contains("books"), "{}", owners[0].message);
+}
+
+#[test]
 fn clean_project_has_no_diagnostics() {
     let root = temp_project("clean", |root| {
         write(root, "src/shelf/books.mw", "module shelf::books\n");

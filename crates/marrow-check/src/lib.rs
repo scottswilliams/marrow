@@ -30,6 +30,10 @@ pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
+/// Two resources in the project claim the same saved root. A saved root has one
+/// managed owner. This is a schema-model rule, but it is cross-resource, so the
+/// project checker reports it rather than per-resource schema compilation.
+pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 
 /// A problem found while checking a project, located in a specific file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +75,9 @@ pub fn check_project(
     // that name; later files declaring it are duplicates. This is also the set
     // of resolvable project module names for `use` resolution.
     let mut declared: HashMap<String, PathBuf> = HashMap::new();
+    // The first resource (in file then source order) to claim each saved root
+    // owns it; a later resource on the same root is a duplicate owner.
+    let mut root_owners: HashMap<String, PathBuf> = HashMap::new();
     // Parsed sources kept from pass 1 so pass 2 can resolve imports against the
     // full project module set without re-reading files.
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
@@ -144,6 +151,26 @@ pub fn check_project(
                             line: error.span.line,
                             column: error.span.column,
                         });
+                    }
+                    // A saved root has one managed owner across the project.
+                    if let Some(saved) = &schema.saved_root {
+                        match root_owners.get(&saved.root) {
+                            Some(first) => report.diagnostics.push(CheckDiagnostic {
+                                code: SCHEMA_DUPLICATE_ROOT_OWNER.to_string(),
+                                severity: Severity::Error,
+                                file: file.path.clone(),
+                                message: format!(
+                                    "saved root `^{}` is already owned by a resource in `{}`",
+                                    saved.root,
+                                    first.display()
+                                ),
+                                line: resource.span.line,
+                                column: resource.span.column,
+                            }),
+                            None => {
+                                root_owners.insert(saved.root.clone(), file.path.clone());
+                            }
+                        }
                     }
                     resources.push(schema);
                 }
