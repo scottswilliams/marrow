@@ -748,3 +748,32 @@ fn next_id_allocates_past_the_highest_record() {
         Some(Value::Int(5))
     );
 }
+
+#[test]
+fn delete_removes_a_record() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn set_title(id: int, t: string)\n    ^books(id).title = t\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::set_title",
+        &[Value::Int(1), Value::Str("Mort".into())],
+    )
+    .expect("write");
+    assert_eq!(
+        run_entry(&program, &store, "test::has_book", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Bool(true))
+    );
+    run_entry(&program, &store, "test::remove", &[Value::Int(1)]).expect("delete");
+    assert_eq!(
+        run_entry(&program, &store, "test::has_book", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Bool(false)),
+        "the record is gone after delete"
+    );
+}

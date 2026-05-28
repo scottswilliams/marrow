@@ -20,7 +20,7 @@ use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, SourceSpan, Statement, UnaryOp,
 };
-use marrow_write::{next_id, plan_field_write};
+use marrow_write::{next_id, plan_field_write, plan_resource_delete};
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
 /// trees, identities, and error values arrive with the features that produce
@@ -502,6 +502,10 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             }
             Ok(Flow::Normal)
         }
+        Statement::Delete { path, span } => {
+            eval_delete(path, *span, env)?;
+            Ok(Flow::Normal)
+        }
         Statement::Return { value, .. } => {
             let value = value
                 .as_ref()
@@ -768,6 +772,26 @@ fn eval_saved_field_write(
                 message: error.message,
                 span,
             }
+        })?
+    };
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(())
+}
+
+/// Apply a whole-resource delete `delete ^root(key…)`, driving
+/// [`marrow_write::plan_resource_delete`] (which removes the record and tears
+/// down its generated index entries) and committing it. Field and layer deletes
+/// are not yet supported.
+fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result<(), RuntimeError> {
+    let (root, identity) = lower_record_identity(path, env)?;
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("deleting from this saved root", span))?;
+    let plan = {
+        let store = env.store.borrow();
+        plan_resource_delete(resource, &identity, &store).map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
         })?
     };
     plan.commit(&mut env.store.borrow_mut());
