@@ -1,4 +1,5 @@
-//! The Marrow project configuration file, `marrow.json`.
+//! The Marrow project configuration file, `marrow.json`, and the mapping from
+//! source-root-relative paths to module names.
 //!
 //! A project is source plus an explicit storage selection. The file stays
 //! small enough for the CLI, language services, and editors to agree on it: it
@@ -6,6 +7,7 @@
 //! secrets.
 
 use std::fmt;
+use std::path::{Component, Path};
 
 use serde::Deserialize;
 
@@ -115,6 +117,38 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         store,
         tests: raw.tests,
     })
+}
+
+/// The module name a library file must declare, derived from its path relative
+/// to a source root: `shelf/books.mw` → `shelf::books`, `books.mw` → `books`.
+///
+/// Returns `None` when the path is not a `.mw` file or steps outside the source
+/// root (a `.`/`..`/absolute component), so it can never name a module.
+pub fn expected_module_name(relative_path: &Path) -> Option<String> {
+    if relative_path.extension().and_then(|ext| ext.to_str()) != Some("mw") {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    if let Some(parent) = relative_path.parent() {
+        for component in parent.components() {
+            match component {
+                Component::Normal(name) => segments.push(name.to_str()?.to_string()),
+                // Curdir is harmless (`./shelf/books.mw`); anything else escapes
+                // the source root and cannot form a module path.
+                Component::CurDir => {}
+                _ => return None,
+            }
+        }
+    }
+    segments.push(relative_path.file_stem()?.to_str()?.to_string());
+    Some(segments.join("::"))
+}
+
+/// Whether a library file at `relative_path` (relative to a source root) may
+/// declare `module_name`. The declaration must match the path exactly.
+pub fn module_matches_path(module_name: &str, relative_path: &Path) -> bool {
+    expected_module_name(relative_path).is_some_and(|expected| expected == module_name)
 }
 
 /// The on-disk JSON shape. `deny_unknown_fields` rejects typos and stray keys,
