@@ -20,7 +20,7 @@ use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, SourceSpan, Statement, UnaryOp,
 };
-use marrow_write::plan_field_write;
+use marrow_write::{next_id, plan_field_write};
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
 /// trees, identities, and error values arrive with the features that produce
@@ -222,6 +222,7 @@ fn eval_call(
             "print" | "write" => return eval_output(name, args, span, env),
             "exists" => return eval_exists(args, span, env).map(Some),
             "get" => return eval_get(args, span, env).map(Some),
+            "nextId" => return eval_next_id(args, span, env).map(Some),
             _ => {}
         }
     }
@@ -311,6 +312,32 @@ fn eval_get(args: &[Argument], span: SourceSpan, env: &mut Env<'_>) -> Result<Va
         Err(error) if error.code == RUN_ABSENT => eval_expr(&default.value, env),
         other => other,
     }
+}
+
+/// Evaluate `nextId(^root)`: the next integer identity for a single-`int` keyed
+/// saved root (one past the highest existing key, or 1 when empty).
+fn eval_next_id(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`nextId` takes one argument".into(),
+            span,
+        });
+    };
+    let Expression::SavedRoot { name, .. } = &arg.value else {
+        return Err(unsupported("`nextId` of this path", span));
+    };
+    let store = env.store.borrow();
+    let next = next_id(name, &store).map_err(|error| RuntimeError {
+        code: error.code,
+        message: error.message,
+        span,
+    })?;
+    Ok(Value::Int(next))
 }
 
 /// Where control flow stands after a statement or block.

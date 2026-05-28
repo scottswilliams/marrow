@@ -716,3 +716,35 @@ fn get_returns_the_value_when_present() {
     .value;
     assert_eq!(value, Some(Value::Str("A Discworld Novel".into())));
 }
+
+#[test]
+fn next_id_allocates_past_the_highest_record() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): int\n    return nextId(^books)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    // Empty root: the next id is 1.
+    assert_eq!(
+        run_entry(&program, &store, "test::fresh", &[])
+            .expect("run")
+            .value,
+        Some(Value::Int(1))
+    );
+    // Seed records 1 and 4; the next id is one past the highest.
+    for id in [1, 4] {
+        store.borrow_mut().write(
+            &encode_path(&[
+                PathSegment::Root("books".into()),
+                PathSegment::RecordKey(SavedKey::Int(id)),
+                PathSegment::Field("title".into()),
+            ]),
+            encode_value(&SavedValue::Str("t".into())),
+        );
+    }
+    assert_eq!(
+        run_entry(&program, &store, "test::fresh", &[])
+            .expect("run")
+            .value,
+        Some(Value::Int(5))
+    );
+}
