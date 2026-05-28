@@ -335,7 +335,13 @@ pub fn lex_source(source: &str) -> LexedSource {
 }
 
 pub fn parse_source(source: &str) -> ParsedSource {
-    Parser::new(source).parse()
+    let lex_diagnostics = lex_source(source).diagnostics;
+    let mut parsed = Parser::new(source).parse();
+    let mut combined = lex_diagnostics;
+    combined.append(&mut parsed.diagnostics);
+    combined.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
+    parsed.diagnostics = combined;
+    parsed
 }
 
 struct Lexer<'a> {
@@ -1299,27 +1305,11 @@ impl<'a> Parser<'a> {
         false
     }
 
-    fn reject_tabs(&mut self, line: Line<'a>) -> bool {
-        let Some(tab) = line.text.find('\t') else {
-            return false;
-        };
-        self.diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
-            kind: "parse",
-            severity: Severity::Error,
-            message: "tabs are not allowed in Marrow source; use spaces for indentation"
-                .to_string(),
-            help: Some("Replace the tab with spaces.".to_string()),
-            span: SourceSpan {
-                start_byte: line.start_byte + tab,
-                end_byte: line.start_byte + tab + 1,
-                line: line.number,
-                column: (tab + 1) as u32,
-            },
-            line: line.number,
-            column: (tab + 1) as u32,
-        });
-        true
+    fn reject_tabs(&self, line: Line<'a>) -> bool {
+        // The lexer reports tabs with a dedicated diagnostic; the outline parser
+        // only needs to know whether to skip the line, since tabs corrupt
+        // indentation-based parsing.
+        line.text.contains('\t')
     }
 
     fn error(&mut self, line: Line<'a>, message: impl Into<String>) {

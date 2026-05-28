@@ -54,6 +54,27 @@ fn check_reports_parse_diagnostics() {
 }
 
 #[test]
+fn check_reports_obsolete_operators_in_function_bodies() {
+    let path = temp_source(
+        "obsolete-op-body",
+        "module app\nfn main()\n    return a == b\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("`==`"), "{stderr}");
+    assert!(stderr.contains("Use `=` for equality"), "{stderr}");
+}
+
+#[test]
 fn check_jsonl_reports_diagnostics_and_summary() {
     let path = temp_source("jsonl-invalid", "module app\n\tpub fn main()\n");
 

@@ -171,6 +171,57 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     assert_eq!(parsed.diagnostics[0].line, 2);
     assert_eq!(parsed.diagnostics[0].column, 1);
     assert!(parsed.diagnostics[0].message.contains("tabs"));
+    let tab_reports = parsed
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.message.contains("tabs"))
+        .count();
+    assert_eq!(tab_reports, 1, "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn surfaces_lexer_diagnostics_for_function_body_tokens() {
+    let parsed = parse_source("module app\nfn main()\n    return a == b\n");
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let obsolete = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("`==`"))
+        .expect("expected obsolete operator diagnostic");
+    assert_eq!(obsolete.code, "parse.syntax");
+    assert_eq!(obsolete.kind, "parse");
+    assert_eq!(obsolete.line, 3);
+    assert_eq!(
+        obsolete.help.as_deref(),
+        Some("Use `=` for equality."),
+        "{:#?}",
+        obsolete.help
+    );
+}
+
+#[test]
+fn merges_lexer_and_parser_diagnostics_in_source_order() {
+    let parsed = parse_source(concat!(
+        "module ;-bad-name\n",
+        "fn main()\n",
+        "    return ~~~\n",
+    ));
+
+    assert!(parsed.has_errors());
+    let mut lines = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.line)
+        .collect::<Vec<_>>();
+    let mut sorted = lines.clone();
+    sorted.sort();
+    assert_eq!(lines, sorted, "diagnostics not in source order: {lines:?}");
+    lines.dedup();
+    assert!(
+        lines.contains(&1) && lines.contains(&3),
+        "expected diagnostics on lines 1 and 3, saw {lines:?}"
+    );
 }
 
 #[test]
