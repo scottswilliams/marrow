@@ -101,10 +101,27 @@ pub fn check_project(
 
         check_duplicate_declarations(&file.path, &parsed.file, &mut report.diagnostics);
 
-        // Structural statement rules apply to every function body.
+        // Structural statement rules apply to every function body; resources are
+        // compiled to schemas so structural schema problems surface here too.
         for declaration in &parsed.file.declarations {
-            if let marrow_syntax::Declaration::Function(function) = declaration {
-                rules::check_function_body(&file.path, &function.body, &mut report.diagnostics);
+            match declaration {
+                marrow_syntax::Declaration::Function(function) => {
+                    rules::check_function_body(&file.path, &function.body, &mut report.diagnostics);
+                }
+                marrow_syntax::Declaration::Resource(resource) => {
+                    let (_schema, errors) = marrow_schema::compile_resource(resource);
+                    for error in errors {
+                        report.diagnostics.push(CheckDiagnostic {
+                            code: error.code.to_string(),
+                            severity: Severity::Error,
+                            file: file.path.clone(),
+                            message: error.message,
+                            line: error.span.line,
+                            column: error.span.column,
+                        });
+                    }
+                }
+                marrow_syntax::Declaration::Const(_) => {}
             }
         }
 

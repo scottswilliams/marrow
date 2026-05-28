@@ -23,6 +23,7 @@ name = "marrow-check"
 version = "0.1.0"
 dependencies = [
  "marrow-project",
+ "marrow-schema",
  "marrow-syntax",
 ]
 

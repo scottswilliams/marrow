@@ -26,6 +26,33 @@ fn config() -> marrow_project::ProjectConfig {
 }
 
 #[test]
+fn surfaces_resource_schema_errors() {
+    let root = temp_project("schema-error", |root| {
+        // An index is only valid as a direct member of a saved resource, not
+        // inside a child layer.
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \x20   notes(noteId: string)\n\
+             \x20       index bad(noteId)\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema.index_in_group"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn clean_project_has_no_diagnostics() {
     let root = temp_project("clean", |root| {
         write(root, "src/shelf/books.mw", "module shelf::books\n");
