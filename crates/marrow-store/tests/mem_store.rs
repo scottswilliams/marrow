@@ -146,3 +146,63 @@ fn a_corrupt_stored_path_is_a_typed_error() {
         Err(StoreError::CorruptPath { .. })
     ));
 }
+
+#[test]
+fn store_errors_expose_stable_codes_and_messages() {
+    use std::path::PathBuf;
+
+    use marrow_store::mem::StoreError;
+
+    let cases = [
+        (
+            StoreError::CorruptPath { path: vec![0xFF] },
+            "store.corrupt_path",
+        ),
+        (
+            StoreError::Io {
+                op: "read",
+                message: "disk gone".into(),
+            },
+            "store.io",
+        ),
+        (
+            StoreError::Locked {
+                data_dir: PathBuf::from("/data/marrow.redb"),
+            },
+            "store.locked",
+        ),
+        (
+            StoreError::FormatVersion {
+                found: 2,
+                supported: 1,
+            },
+            "store.format_version",
+        ),
+        (
+            StoreError::Corruption {
+                message: "torn page".into(),
+            },
+            "store.corruption",
+        ),
+        (
+            StoreError::LimitExceeded {
+                limit: "key length",
+            },
+            "store.limit",
+        ),
+    ];
+    for (error, code) in cases {
+        assert_eq!(error.code(), code, "code for {error:?}");
+        // Every variant renders a non-empty human message.
+        assert!(!error.to_string().is_empty(), "message for {error:?}");
+    }
+
+    // A lock error names the store file it could not open, not "the data
+    // directory" (the path is a `.redb` file).
+    let locked = StoreError::Locked {
+        data_dir: PathBuf::from("/data/marrow.redb"),
+    };
+    let message = locked.to_string();
+    assert!(message.contains("already open"), "{message}");
+    assert!(message.contains("marrow.redb"), "{message}");
+}

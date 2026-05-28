@@ -56,4 +56,6 @@ Marrow surfaces use dotted Marrow error codes and typed error values.
 
 Storage errors include the failed operation, a safe path or prefix when one is
 available, and the capability or limit involved. Machine-readable facts belong
-in `data`; clients do not parse `message`.
+in `data`; clients do not parse `message`. The store reports a `store.*` code:
+`store.io`, `store.locked`, `store.format_version`, `store.corruption`,
+`store.limit`, and `store.corrupt_path`.

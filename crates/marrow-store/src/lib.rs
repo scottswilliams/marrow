@@ -18,3 +18,8 @@ pub mod path;
 #[cfg(feature = "native")]
 pub mod redb;
 pub mod value;
+
+/// The shared backend error, re-exported at the crate root: it is part of the
+/// [`Backend`](backend::Backend) contract, not specific to the in-memory store
+/// it is defined alongside.
+pub use mem::StoreError;

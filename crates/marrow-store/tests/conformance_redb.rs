@@ -34,6 +34,18 @@ fn redb_persists_and_reopens() {
     assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
 }
 
+#[test]
+fn redb_rejects_a_second_writer() {
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let path = dir.path().join("store.redb");
+    let _first = RedbStore::open(&path).expect("open the first writer");
+    // A second writer for the same open file is refused with a typed lock error.
+    match RedbStore::open(&path) {
+        Ok(_) => panic!("a second writer must be refused"),
+        Err(error) => assert_eq!(error.code(), "store.locked"),
+    }
+}
+
 /// The encoded path `^books(id).title`.
 fn book_title(id: i64) -> Vec<u8> {
     encode_path(&[
