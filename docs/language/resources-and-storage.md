@@ -102,7 +102,7 @@ Keys in the `at ^root(...)` clause identify the saved resource:
 resource Book at ^books(id: int)
     required title: string
 
-let id = Book::Id(17)
+const id = Book::Id(17)
 ^books(id).title = "Small Gods"
 ```
 
@@ -128,7 +128,7 @@ does not also declare a field or child layer named `id`.
 Ordinary typed code addresses a managed root with the generated identity type:
 
 ```mw
-let id = Enrollment::Id(
+const id = Enrollment::Id(
     studentId: "student-1",
     courseId: "course-9",
 )
@@ -216,7 +216,7 @@ A unique index can omit the identity key because each populated lookup path
 points to one resource identity.
 
 ```mw
-let id: Book::Id = ^books.byIsbn(isbn)
+const id: Book::Id = ^books.byIsbn(isbn)
 ```
 
 For a composite resource identity, a non-unique index includes all identity
@@ -255,7 +255,7 @@ Marrow reads saved data with paths, traversal, and declared indexes.
 Use the primary saved root when identity is known:
 
 ```mw
-let title = ^books(id).title
+const title = ^books(id).title
 ```
 
 Use an index when the access pattern matters:
@@ -390,7 +390,7 @@ order.
 Read and write fields directly:
 
 ```mw
-let title: string = ^books(id).title
+const title: string = ^books(id).title
 ^books(id).shelf = "fiction"
 ```
 
@@ -445,7 +445,7 @@ Rules:
 if exists(^books(id).subtitle)
     write(^books(id).subtitle)
 
-let subtitle: string = get(^books(id).subtitle, "")
+const subtitle: string = get(^books(id).subtitle, "")
 ```
 
 ## Delete And Merge

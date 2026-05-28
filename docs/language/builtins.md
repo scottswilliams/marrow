@@ -15,7 +15,7 @@ if exists(^books(id))
 default:
 
 ```mw
-let subtitle = get(^books(id).subtitle, "")
+const subtitle = get(^books(id).subtitle, "")
 ```
 
 Prefer typed resources and `exists(...)` checks over wide use of `get`.
@@ -81,7 +81,7 @@ String and byte lengths use `std::text::length(text)` and
 the 1-based key it wrote:
 
 ```mw
-let pos: int = append(^books(id).tags, "fiction")
+const pos: int = append(^books(id).tags, "fiction")
 ```
 
 This writes:
@@ -141,15 +141,15 @@ merge draftBook = ^books(id)
 Conversion builtins validate dynamic values:
 
 ```mw
-let id: int = int(raw)
-let amount: decimal = decimal(raw)
-let title: string = string(raw)
-let ok: bool = bool(raw)
-let payload: bytes = bytes(title)
-let code: ErrorCode = ErrorCode(raw)
-let day: date = date(raw)
-let at: instant = instant(raw)
-let span: duration = duration(raw)
+const id: int = int(raw)
+const amount: decimal = decimal(raw)
+const title: string = string(raw)
+const ok: bool = bool(raw)
+const payload: bytes = bytes(title)
+const code: ErrorCode = ErrorCode(raw)
+const day: date = date(raw)
+const at: instant = instant(raw)
+const span: duration = duration(raw)
 ```
 
 `raw` means a value whose static type is not known. Avoid keeping values raw
@@ -165,13 +165,13 @@ boundaries.
 with the default integer identity policy:
 
 ```mw
-let id = nextId(^books)
+const id = nextId(^books)
 ```
 
 For a typed resource root, `nextId` returns that resource's ID type:
 
 ```mw
-let id: Book::Id = nextId(^books)
+const id: Book::Id = nextId(^books)
 ```
 
 `nextId(...)` is an effectful value function. The checker tracks the
@@ -195,7 +195,7 @@ in application or host code, then construct the generated identity value before
 writing the resource:
 
 ```mw
-let id = Book::Id(17)
+const id = Book::Id(17)
 ```
 
 ## Errors
@@ -203,7 +203,7 @@ let id = Book::Id(17)
 `Error(...)` constructs a builtin error resource value:
 
 ```mw
-let err = Error(
+const err = Error(
     code: "book.absent",
     message: "Book does not exist.",
 )

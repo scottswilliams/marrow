@@ -35,13 +35,13 @@ typed capability error.
 ```mw
 use std::clock
 
-let now: instant = clock::now()
+const now: instant = clock::now()
 ```
 
 Fully qualified calls are always valid:
 
 ```mw
-let now: instant = std::clock::now()
+const now: instant = std::clock::now()
 ```
 
 ## `std::clock`

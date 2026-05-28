@@ -62,7 +62,7 @@ pub fn add(title: string, author: string, shelf: string): Book::Id
     book.author = author
     book.shelf = shelf
 
-    let id: Book::Id = nextId(^books)
+    const id: Book::Id = nextId(^books)
     ^books(id) = book
 
     return id
@@ -142,8 +142,8 @@ pub fn loan(id: Book::Id, borrower: string): bool
 
 pub fn printShelf(shelf: string)
     for id in keys(^books.byShelf(shelf))
-        let title: string = ^books(id).title
-        let author: string = ^books(id).author
+        const title: string = ^books(id).title
+        const author: string = ^books(id).author
         print($"{title} by {author}")
 ```
 

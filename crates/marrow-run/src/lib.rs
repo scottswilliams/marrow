@@ -676,7 +676,7 @@ fn eval_statements(statements: &[Statement], env: &mut Env<'_>) -> Result<Flow, 
 
 fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
     match statement {
-        Statement::Let { name, value, .. } => {
+        Statement::Const { name, value, .. } => {
             let value = eval_expr(value, env)?;
             env.bind(name.clone(), value, false);
             Ok(Flow::Normal)

@@ -145,7 +145,7 @@ fn reinserts_minimal_parentheses_for_precedence() {
 fn formats_statement_blocks_with_indentation() {
     let source = "module app\n\
          fn run(n: int)\n\
-         \x20   let total: int = 0\n\
+         \x20   const total: int = 0\n\
          \x20   var seen(id: int): bool\n\
          \x20   if n < 0\n\
          \x20       print(\"neg\")\n\
@@ -157,7 +157,7 @@ fn formats_statement_blocks_with_indentation() {
          \x20       delete ^books(id)\n\
          \x20   return total\n";
     let expected = "\
-         \x20   let total: int = 0\n\
+         \x20   const total: int = 0\n\
          \x20   var seen(id: int): bool\n\
          \x20   if n < 0\n\
          \x20       print(\"neg\")\n\

@@ -90,7 +90,7 @@ if exists(^books(id).subtitle)
 Use `get(path, default)` when absence is expected:
 
 ```mw
-let subtitle: string = get(^books(id).subtitle, "")
+const subtitle: string = get(^books(id).subtitle, "")
 ```
 
 Directly reading an unpopulated element raises an absent-element error unless
@@ -142,15 +142,15 @@ draft.title = "Small Gods"
 draft.author = "Terry Pratchett"
 draft.shelf = "fiction"
 
-let id = Book::Id(1)
+const id = Book::Id(1)
 ^books(id) = draft
-let saved: Book = ^books(id)
+const saved: Book = ^books(id)
 ```
 
 Resource constructors create local resource values:
 
 ```mw
-let draft = Book(
+const draft = Book(
     title: "Small Gods",
     author: "Terry Pratchett",
     shelf: "fiction",
@@ -235,7 +235,7 @@ var localScores(playerId: string): int
 resource Game at ^games(id: int)
     scores(playerId: string): int
 
-let gameId = Game::Id(1)
+const gameId = Game::Id(1)
 ^games(gameId).scores(playerId) = 42
 ```
 
@@ -248,7 +248,7 @@ single-key resource:
 resource Book at ^books(id: int)
     required title: string
 
-let id: Book::Id = nextId(^books)
+const id: Book::Id = nextId(^books)
 ```
 
 A singleton saved resource such as `resource Settings at ^settings` has no
@@ -265,8 +265,8 @@ Other identity shapes are application-provided.
 A managed saved root is addressed by one identity value:
 
 ```mw
-let id: Book::Id = nextId(^books)
-let title = ^books(id).title
+const id: Book::Id = nextId(^books)
+const title = ^books(id).title
 ```
 
 The declaration lists the stored key components; ordinary typed code passes
@@ -274,7 +274,7 @@ the generated identity type, not the raw key literal. Use the generated
 identity constructor when an identity enters from a boundary:
 
 ```mw
-let id = Book::Id(17)
+const id = Book::Id(17)
 ```
 
 Composite-key resources also define one identity type:
@@ -288,7 +288,7 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
 one identity value rather than a general tuple:
 
 ```mw
-let id = Enrollment::Id(
+const id = Enrollment::Id(
     studentId: "student-1",
     courseId: "course-9",
 )
@@ -302,16 +302,21 @@ IDs behind.
 
 ## Mutability
 
-`const` declares a module-level compile-time constant:
+`const` introduces an immutable binding; `var` introduces a mutable one. Scope
+decides whether a `const` is a module constant or a local binding.
+
+A module-level `const` is a compile-time constant; its initializer must be a
+constant expression:
 
 ```mw
 const MaxLoans: int = 5
 ```
 
-`let` declares an immutable local:
+A local `const` is an immutable binding; its initializer may be any expression,
+including a runtime-computed value:
 
 ```mw
-let title = "Small Gods"
+const id = Book::Id(1)
 ```
 
 `var` declares a mutable local:
@@ -328,7 +333,7 @@ Function parameters are read-only unless declared `out` or `inout`.
 Local variables can infer obvious types:
 
 ```mw
-let title = "Small Gods"   ; string
+const title = "Small Gods"   ; string
 var loanCount = 0          ; int
 ```
 
@@ -343,15 +348,15 @@ the boundary where a value changes shape.
 Conversion functions validate dynamic values:
 
 ```mw
-let n: int = int(raw)
-let amount: decimal = decimal(raw)
-let text: string = string(raw)
-let ok: bool = bool(raw)
-let payload: bytes = bytes(text)
-let code: ErrorCode = ErrorCode(raw)
-let day: date = date(raw)
-let at: instant = instant(raw)
-let span: duration = duration(raw)
+const n: int = int(raw)
+const amount: decimal = decimal(raw)
+const text: string = string(raw)
+const ok: bool = bool(raw)
+const payload: bytes = bytes(text)
+const code: ErrorCode = ErrorCode(raw)
+const day: date = date(raw)
+const at: instant = instant(raw)
+const span: duration = duration(raw)
 ```
 
 `raw` means a value whose type is not known statically, usually from host IO

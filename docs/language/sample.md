@@ -31,7 +31,7 @@ pub fn add(title: string, author: string, shelf: string, changedAt: instant): Bo
     book.shelf = shelf
     book.currentVersion = 1
 
-    let id: Book::Id = nextId(^books)
+    const id: Book::Id = nextId(^books)
 
     transaction
         ^books(id) = book
@@ -43,7 +43,7 @@ pub fn add(title: string, author: string, shelf: string, changedAt: instant): Bo
 
 pub fn moveToShelf(id: Book::Id, shelf: string, changedAt: instant)
     transaction
-        let version: int = ^books(id).currentVersion + 1
+        const version: int = ^books(id).currentVersion + 1
         ^books(id).shelf = shelf
         ^books(id).currentVersion = version
         ^books(id).versions(version).title = ^books(id).title
@@ -78,8 +78,8 @@ pub fn printShelf(shelf: string)
         print($"{id}: {^books(id).title}")
 
 pub fn main()
-    let now: instant = std::clock::now()
-    let id = add(
+    const now: instant = std::clock::now()
+    const id = add(
         title: "Small Gods",
         author: "Terry Pratchett",
         shelf: "fiction",

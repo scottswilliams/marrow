@@ -343,7 +343,7 @@ fn block_touches_saved_data(block: &marrow_syntax::Block) -> bool {
 fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
     use marrow_syntax::Statement;
     match statement {
-        Statement::Let { value, .. } | Statement::Throw { value, .. } => {
+        Statement::Const { value, .. } | Statement::Throw { value, .. } => {
             expr_touches_saved_data(value)
         }
         Statement::Var { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),

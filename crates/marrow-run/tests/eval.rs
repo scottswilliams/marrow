@@ -169,7 +169,7 @@ fn equality_compares_values() {
 #[test]
 fn a_function_that_returns_nothing_yields_none() {
     // Falls off the end with no `return`.
-    let f = function("fn f(a: int)\n    let x = a + 1\n");
+    let f = function("fn f(a: int)\n    const x = a + 1\n");
     assert_eq!(evaluate_function(&f, &[Value::Int(1)]), Ok(None));
 }
 
@@ -205,12 +205,22 @@ fn rejects_an_unbound_name() {
 
 #[test]
 fn rejects_assignment_to_an_immutable_binding() {
-    let f = function("fn f(): int\n    let x = 1\n    x = 2\n    return x\n");
+    let f = function("fn f(): int\n    const x = 1\n    x = 2\n    return x\n");
     let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
     );
+}
+
+#[test]
+fn a_local_const_binds_a_runtime_computed_value() {
+    // `const` is the immutable local binding. Unlike a module constant, its
+    // initializer may be any expression — here a call resolved at run time.
+    let program = checked_program(
+        "fn double(n: int): int\n    return n * 2\nfn f(): int\n    const x = double(5)\n    return x\n",
+    );
+    assert_eq!(run(&program, "test::f", &[]), Ok(Some(Value::Int(10))));
 }
 
 #[test]
@@ -246,9 +256,10 @@ fn an_if_condition_must_be_boolean() {
 
 #[test]
 fn an_inner_scope_shadows_then_restores_an_outer_binding() {
-    // `let x = 1` inside the if-block shadows only within that block; after it,
+    // `const x = 1` inside the if-block shadows only within that block; after it,
     // the outer `x` (99) is what `return x` sees.
-    let f = function("fn f(): int\n    let x = 99\n    if true\n        let x = 1\n    return x\n");
+    let f =
+        function("fn f(): int\n    const x = 99\n    if true\n        const x = 1\n    return x\n");
     assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(99))));
 }
 
@@ -483,7 +494,7 @@ fn functions_recurse() {
 #[test]
 fn a_void_call_runs_as_a_statement() {
     let program = checked_program(
-        "fn note(n: int)\n    let doubled = n + n\n\nfn caller(): int\n    note(3)\n    return 2\n",
+        "fn note(n: int)\n    const doubled = n + n\n\nfn caller(): int\n    note(3)\n    return 2\n",
     );
     assert_eq!(run(&program, "test::caller", &[]), Ok(Some(Value::Int(2))));
 }
@@ -491,7 +502,7 @@ fn a_void_call_runs_as_a_statement() {
 #[test]
 fn using_a_void_call_as_a_value_is_rejected() {
     let program = checked_program(
-        "fn note(n: int)\n    let doubled = n + n\n\nfn caller(): int\n    return note(3)\n",
+        "fn note(n: int)\n    const doubled = n + n\n\nfn caller(): int\n    return note(3)\n",
     );
     let result = run(&program, "test::caller", &[]);
     assert!(
@@ -796,7 +807,7 @@ fn a_transaction_commits_on_normal_exit() {
 #[test]
 fn a_transaction_rolls_back_on_an_escaping_error() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        let x = 1 / 0\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        const x = 1 / 0\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
     );
     let store = RefCell::new(MemStore::new());
     let result = run_entry(&program, &store, "test::risky", &[Value::Int(1)]);
@@ -1071,7 +1082,7 @@ resource Book at ^books(id: int)
     shelf: string
 
 fn add(title: string, shelf: string): int
-    let id = nextId(^books)
+    const id = nextId(^books)
     var book: Book
     book.title = title
     book.shelf = shelf
@@ -1153,14 +1164,14 @@ fn merge_updates_supplied_fields_and_keeps_the_rest() {
 }
 
 /// A program that records the run's clock instant into a saved `instant` field
-/// and reads it back, exercising `std::clock::now()` through `let` and a managed
+/// and reads it back, exercising `std::clock::now()` through `const` and a managed
 /// write.
 const CLOCK_SAMPLE: &str = "\
 resource Event at ^events(id: int)
     required changedAt: instant
 
 fn record(id: int)
-    let now: instant = std::clock::now()
+    const now: instant = std::clock::now()
     ^events(id).changedAt = now
 
 fn changed_at_of(id: int): instant

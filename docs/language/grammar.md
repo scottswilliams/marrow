@@ -161,7 +161,7 @@ dynamic payloads.
 
 ```ebnf
 statement       =
-      let_stmt
+      const_stmt
     | var_stmt
     | assignment_stmt
     | delete_stmt
@@ -179,7 +179,7 @@ statement       =
     | expression_stmt
     ;
 
-let_stmt        = "let" identifier type_annotation? "=" expression NEWLINE ;
+const_stmt      = "const" identifier type_annotation? "=" expression NEWLINE ;
 var_stmt        =
     "var" identifier key_params? type_annotation? ("=" expression)? NEWLINE ;
 

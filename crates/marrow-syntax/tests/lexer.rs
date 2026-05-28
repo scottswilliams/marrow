@@ -20,7 +20,7 @@ fn texts(source: &str) -> Vec<String> {
 #[test]
 fn lexes_indentation_tokens_for_blocks() {
     let source =
-        "module shelf::books\nfn main()\n    let title = \"Small Gods\"\n    write(title)\n";
+        "module shelf::books\nfn main()\n    const title = \"Small Gods\"\n    write(title)\n";
 
     assert_eq!(
         kinds(source),
@@ -36,7 +36,7 @@ fn lexes_indentation_tokens_for_blocks() {
             TokenKind::RightParen,
             TokenKind::Newline,
             TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Let),
+            TokenKind::Keyword(Keyword::Const),
             TokenKind::Identifier,
             TokenKind::Equal,
             TokenKind::String,
@@ -58,12 +58,12 @@ fn lexes_indentation_tokens_for_blocks() {
         .find(|token| token.text(source) == "title")
         .expect("title token");
     assert_eq!(title.span.line, 3);
-    assert_eq!(title.span.column, 9);
+    assert_eq!(title.span.column, 11);
 }
 
 #[test]
 fn blank_lines_and_comments_do_not_close_blocks() {
-    let source = "fn main()\n    let title = \"Small Gods\"\n\n    ; keep the block open\n    return title\n";
+    let source = "fn main()\n    const title = \"Small Gods\"\n\n    ; keep the block open\n    return title\n";
 
     assert_eq!(
         kinds(source),
@@ -74,7 +74,7 @@ fn blank_lines_and_comments_do_not_close_blocks() {
             TokenKind::RightParen,
             TokenKind::Newline,
             TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Let),
+            TokenKind::Keyword(Keyword::Const),
             TokenKind::Identifier,
             TokenKind::Equal,
             TokenKind::String,
@@ -162,12 +162,12 @@ fn indented_doc_comments_follow_block_layout() {
 
 #[test]
 fn lexes_literals_operators_and_punctuation_boundaries() {
-    let source = "let row = ^books(id).\"old-title\" != b\"gone\" and note _ \"ok\"\n";
+    let source = "const row = ^books(id).\"old-title\" != b\"gone\" and note _ \"ok\"\n";
 
     assert_eq!(
         texts(source),
         vec![
-            "let",
+            "const",
             "row",
             "=",
             "^",
@@ -191,7 +191,7 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
     assert_eq!(
         kinds(source),
         vec![
-            TokenKind::Keyword(Keyword::Let),
+            TokenKind::Keyword(Keyword::Const),
             TokenKind::Identifier,
             TokenKind::Equal,
             TokenKind::Caret,

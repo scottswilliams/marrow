@@ -105,7 +105,7 @@ versions(version: int)
 Marrow statements are explicit:
 
 ```mw
-let title: string = "Small Gods"
+const title: string = "Small Gods"
 var loanCount: int = 0
 loanCount = loanCount + 1
 ^books(id).title = title
@@ -128,6 +128,23 @@ effectful and return values.
 General statement chaining and postconditionals are not part of Marrow `.mw`.
 Use normal `if` blocks.
 
+## Bindings
+
+`const` introduces an immutable binding; `var` introduces a mutable one. Scope
+decides whether a `const` is a module constant or a local binding.
+
+```mw
+const left: int = 1      ; immutable local binding
+var right: int = 1       ; mutable local binding
+var book: Book           ; mutable local resource, built up field by field
+const id = Book::Id(1)   ; immutable local value; runtime-computed is fine
+const MaxLoans: int = 5  ; module-level constant, evaluated at compile time
+```
+
+A module-level `const` must be a compile-time constant expression; a local
+`const` may bind any value, including runtime results. A `const` cannot be
+reassigned.
+
 ## Equality And Assignment
 
 `=` means assignment only in statement position:
@@ -142,7 +159,7 @@ In expression and condition position, `=` means equality:
 if book.title = "Small Gods"
     write("found")
 
-let same: bool = (left = right)
+const same: bool = (left = right)
 ```
 
 Equality is non-associative. `a = b = c` is rejected; use parentheses if you
@@ -191,7 +208,7 @@ operator.
 Ordinary strings are byte-exact UTF-8 text:
 
 ```mw
-let title = "Small Gods"
+const title = "Small Gods"
 ```
 
 Interpolation is explicit with `$"..."`:
@@ -210,7 +227,7 @@ implicit conversion for assignment, calls, or saved writes.
 Byte literals use `b"..."`:
 
 ```mw
-let marker: bytes = b"marrow"
+const marker: bytes = b"marrow"
 ```
 
 ## Paths And Calls
@@ -248,7 +265,7 @@ saveBook(book: draft, notify: true)
 Resource values can be constructed with the resource name:
 
 ```mw
-let err = Error(
+const err = Error(
     code: "book.absent",
     message: $"Book {id} does not exist.",
 )
@@ -257,7 +274,7 @@ let err = Error(
 Generated resource identity types are constructed explicitly at boundaries:
 
 ```mw
-let id = Book::Id(17)
+const id = Book::Id(17)
 ```
 
 ## Spelling
@@ -276,7 +293,7 @@ Marrow reserves:
 ```text
 module use pub fn resource at index unique
 required
-const let var if else while for in break continue return delete merge
+const var if else while for in break continue return delete merge
 transaction lock try catch finally throw out inout true false
 not and or
 int decimal bool string bytes date instant duration

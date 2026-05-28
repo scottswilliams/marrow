@@ -31,7 +31,7 @@ pub fn add(title: string, author: string, shelf: string, changedAt: instant): Bo
     book.shelf = shelf
     book.currentVersion = 1
 
-    let id: Book::Id = nextId(^books)
+    const id: Book::Id = nextId(^books)
 
     transaction
         ^books(id) = book
@@ -159,7 +159,7 @@ fn parses_simple_statements_in_function_bodies() {
     let parsed = parse_source(
         "module app\n\
          fn main()\n\
-         \x20   let title: string = \"Small Gods\"\n\
+         \x20   const title: string = \"Small Gods\"\n\
          \x20   var count: int = 0\n\
          \x20   count = count + 1\n\
          \x20   print(title)\n\
@@ -173,7 +173,7 @@ fn parses_simple_statements_in_function_bodies() {
     assert!(
         matches!(
             &statements[0],
-            Statement::Let { name, ty: Some(ty), value: Expression::Literal { .. }, .. }
+            Statement::Const { name, ty: Some(ty), value: Expression::Literal { .. }, .. }
                 if name == "title" && ty.text == "string"
         ),
         "stmt 0: {:?}",
@@ -603,7 +603,7 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
     let parsed = parse_source(
         "module app\n\
          fn run()\n\
-         \x20   let ready = true\n\
+         \x20   const ready = true\n\
          \x20   for id in keys(^books)\n\
          \x20       if ready\n\
          \x20           print(id)\n",
@@ -613,7 +613,7 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 2, "{statements:#?}");
     assert!(
-        matches!(&statements[0], Statement::Let { name, .. } if name == "ready"),
+        matches!(&statements[0], Statement::Const { name, .. } if name == "ready"),
         "stmt 0: {:?}",
         statements[0]
     );

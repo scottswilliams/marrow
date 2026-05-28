@@ -279,7 +279,7 @@ pub struct Block {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
-    Let {
+    Const {
         name: String,
         ty: Option<TypeRef>,
         value: Expression,
@@ -395,7 +395,7 @@ pub struct ForBinding {
 impl Statement {
     pub fn span(&self) -> SourceSpan {
         match self {
-            Self::Let { span, .. }
+            Self::Const { span, .. }
             | Self::Var { span, .. }
             | Self::Assign { span, .. }
             | Self::Delete { span, .. }
@@ -572,7 +572,6 @@ pub enum Keyword {
     Unique,
     Required,
     Const,
-    Let,
     Var,
     If,
     Else,
@@ -2912,8 +2911,8 @@ impl<'a> StmtParser<'a> {
 fn parse_simple_statement(source: &str, line: &[Token]) -> Option<Statement> {
     let first = line.first()?;
     match first.kind {
-        TokenKind::Keyword(Keyword::Let) => parse_let_or_var(source, line, false),
-        TokenKind::Keyword(Keyword::Var) => parse_let_or_var(source, line, true),
+        TokenKind::Keyword(Keyword::Const) => parse_const_or_var(source, line, false),
+        TokenKind::Keyword(Keyword::Var) => parse_const_or_var(source, line, true),
         TokenKind::Keyword(Keyword::Return) => parse_return(source, line),
         TokenKind::Keyword(Keyword::Delete) => {
             let value = expr_of(source, &line[1..])?;
@@ -2936,7 +2935,7 @@ fn parse_simple_statement(source: &str, line: &[Token]) -> Option<Statement> {
     }
 }
 
-fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statement> {
+fn parse_const_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statement> {
     let keyword = line[0];
     let name_token = line.get(1)?;
     if name_token.kind != TokenKind::Identifier {
@@ -2946,7 +2945,7 @@ fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statem
     let mut index = 2;
 
     // A keyed `var` declares a local keyed tree: `var counts(name: string): int`.
-    // `let` has no key parameters.
+    // `const` has no key parameters.
     let mut keys = Vec::new();
     if line.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
         if !is_var {
@@ -2983,7 +2982,7 @@ fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statem
                     span,
                 }
             } else {
-                Statement::Let {
+                Statement::Const {
                     name,
                     ty,
                     value,
@@ -2991,7 +2990,7 @@ fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statem
                 }
             })
         }
-        // `var name[(keys)][: type]` without an initializer is allowed; `let` is not.
+        // `var name[(keys)][: type]` without an initializer is allowed; `const` is not.
         None if is_var => Some(Statement::Var {
             name,
             keys,
@@ -3231,7 +3230,7 @@ fn walk_block_arguments(block: &Block, diagnostics: &mut Vec<Diagnostic>) {
 
 fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnostic>) {
     match statement {
-        Statement::Let { value, .. }
+        Statement::Const { value, .. }
         | Statement::Expr { value, .. }
         | Statement::Throw { value, .. } => walk_expr_arguments(value, diagnostics),
         Statement::Var { value, .. } | Statement::Return { value, .. } => {
@@ -3430,7 +3429,6 @@ fn keyword(text: &str) -> Option<Keyword> {
         "unique" => Keyword::Unique,
         "required" => Keyword::Required,
         "const" => Keyword::Const,
-        "let" => Keyword::Let,
         "var" => Keyword::Var,
         "if" => Keyword::If,
         "else" => Keyword::Else,

@@ -29,8 +29,8 @@ declare their module name explicitly.
 use std::clock
 use shelf::books
 
-let now: instant = clock::now()
-let id = books::add(
+const now: instant = clock::now()
+const id = books::add(
     title: "Small Gods",
     author: "Terry Pratchett",
     shelf: "fiction",
@@ -41,7 +41,7 @@ let id = books::add(
 Fully qualified calls are always valid:
 
 ```mw
-let now: instant = std::clock::now()
+const now: instant = std::clock::now()
 ```
 
 `use` imports a module name. It does not copy that module's declarations into
@@ -74,7 +74,7 @@ Top-level constants are private to their module.
 
 They are compile-time constant expressions over literals and other top-level
 constants. They do not read saved data or call host modules. Local immutable
-values use `let`.
+values use `const`.
 
 Resource declarations do not take visibility markers. A resource belongs to
 its module and can be named with that module path where the project schema is
@@ -113,7 +113,7 @@ fn addBook(title: string, author: string, shelf: string): Book::Id
     book.author = author
     book.shelf = shelf
 
-    let id: Book::Id = nextId(^books)
+    const id: Book::Id = nextId(^books)
     ^books(id) = book
     return id
 
@@ -204,7 +204,7 @@ for options and resource constructors:
 ```mw
 saveBook(book: draft, notify: true)
 
-let err = Error(
+const err = Error(
     code: "book.absent",
     message: $"Book {id} does not exist.",
 )
@@ -214,10 +214,10 @@ Positional and named arguments are not mixed after the first named argument.
 
 ## Locals And Scope
 
-`let` and `var` are lexically scoped:
+`const` and `var` are lexically scoped:
 
 ```mw
-let title = "Small Gods"
+const title = "Small Gods"
 var loanCount = 0
 
 if loanCount < 5

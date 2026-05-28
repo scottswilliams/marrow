@@ -215,10 +215,10 @@ pub fn format_block(source: &str, block: &Block, level: usize) -> String {
 pub fn format_statement(source: &str, statement: &Statement, level: usize) -> String {
     let pad = INDENT.repeat(level);
     match statement {
-        Statement::Let {
+        Statement::Const {
             name, ty, value, ..
         } => format!(
-            "{pad}let {name}{} = {}",
+            "{pad}const {name}{} = {}",
             format_type_annotation(ty),
             format_expression(value)
         ),
