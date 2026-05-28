@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram};
 use marrow_schema::{LayerMember, ResourceSchema};
+use marrow_store::Decimal;
 use marrow_store::backend::Backend;
 use marrow_store::mem::{MemStore, Presence, StoreError};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
@@ -43,6 +44,8 @@ pub enum Value {
     /// A UTC instant in nanoseconds since the Unix epoch, e.g. from
     /// `std::clock::now()`. Saves and loads as the `instant` type.
     Instant(i128),
+    /// An exact base-10 decimal. Saves and loads as the `decimal` type.
+    Decimal(Decimal),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
@@ -2040,6 +2043,10 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Bool(b) => SavedValue::Bool(b),
         Value::Str(s) => SavedValue::Str(s),
         Value::Instant(n) => SavedValue::Instant(n),
+        Value::Decimal(d) => SavedValue::Decimal {
+            coefficient: d.coefficient(),
+            scale: d.scale(),
+        },
         Value::Resource(_) => return None,
     })
 }
@@ -2239,7 +2246,8 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Bool(b) => Some(SavedKey::Bool(b)),
         Value::Str(s) => Some(SavedKey::Str(s)),
         Value::Instant(n) => Some(SavedKey::Instant(n)),
-        Value::Resource(_) => None,
+        // Decimal keys are not supported (order-preserving decimal keys are deferred).
+        Value::Decimal(_) | Value::Resource(_) => None,
     }
 }
 
@@ -2251,6 +2259,9 @@ fn saved_value_to_value(value: SavedValue) -> Option<Value> {
         SavedValue::Bool(b) => Some(Value::Bool(b)),
         SavedValue::Str(s) => Some(Value::Str(s)),
         SavedValue::Instant(n) => Some(Value::Instant(n)),
+        SavedValue::Decimal { coefficient, scale } => {
+            Decimal::from_parts(coefficient, scale).map(Value::Decimal)
+        }
         _ => None,
     }
 }
@@ -2287,6 +2298,7 @@ fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => s,
+        Value::Decimal(d) => d.to_text(),
         Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
     })
@@ -2304,7 +2316,16 @@ fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value
             }),
         LiteralKind::Bool => Ok(Value::Bool(text == "true")),
         LiteralKind::String => eval_string_literal(text, span),
-        LiteralKind::Decimal | LiteralKind::Bytes => Err(unsupported("this literal type", span)),
+        LiteralKind::Decimal => {
+            Decimal::parse(text)
+                .map(Value::Decimal)
+                .ok_or_else(|| RuntimeError {
+                    code: RUN_OVERFLOW,
+                    message: format!("decimal literal `{text}` is out of range"),
+                    span,
+                })
+        }
+        LiteralKind::Bytes => Err(unsupported("this literal type", span)),
     }
 }
 
@@ -2333,8 +2354,11 @@ fn eval_unary(
             .checked_neg()
             .map(Value::Int)
             .ok_or_else(|| overflow(span)),
+        (UnaryOp::Neg, Value::Decimal(d)) => Decimal::from_parts(-d.coefficient(), d.scale())
+            .map(Value::Decimal)
+            .ok_or_else(|| overflow(span)),
         (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-        (UnaryOp::Neg, _) => Err(type_error("negation expects an integer", span)),
+        (UnaryOp::Neg, _) => Err(type_error("negation expects a number", span)),
         (UnaryOp::Not, _) => Err(type_error("`not` expects a boolean", span)),
     }
 }
@@ -2351,10 +2375,33 @@ fn eval_binary(
         // the left does not already decide the result.
         BinaryOp::And => Ok(Value::Bool(eval_bool(left, env)? && eval_bool(right, env)?)),
         BinaryOp::Or => Ok(Value::Bool(eval_bool(left, env)? || eval_bool(right, env)?)),
-        BinaryOp::Add => int_op(left, right, env, span, i64::checked_add),
-        BinaryOp::Subtract => int_op(left, right, env, span, i64::checked_sub),
-        BinaryOp::Multiply => int_op(left, right, env, span, i64::checked_mul),
-        BinaryOp::Divide => int_div(left, right, env, span, i64::checked_div),
+        BinaryOp::Add => numeric_op(
+            left,
+            right,
+            env,
+            span,
+            i64::checked_add,
+            Decimal::checked_add,
+        ),
+        BinaryOp::Subtract => numeric_op(
+            left,
+            right,
+            env,
+            span,
+            i64::checked_sub,
+            Decimal::checked_sub,
+        ),
+        BinaryOp::Multiply => numeric_op(
+            left,
+            right,
+            env,
+            span,
+            i64::checked_mul,
+            Decimal::checked_mul,
+        ),
+        // `/` always yields a decimal (docs/language/syntax.md), so integer
+        // operands divide as decimals too: `1 / 2` is `0.5`.
+        BinaryOp::Divide => decimal_div(left, right, env, span),
         BinaryOp::Remainder => int_div(left, right, env, span, i64::checked_rem),
         BinaryOp::Less => compare_values(left, right, env, span, |o| o == Ordering::Less),
         BinaryOp::LessEqual => compare_values(left, right, env, span, |o| o != Ordering::Greater),
@@ -2369,21 +2416,68 @@ fn eval_binary(
     }
 }
 
-/// Apply a checked integer operation, mapping `None` (overflow) to `run.overflow`.
-fn int_op(
+/// Apply a checked numeric operation to two operands of the same numeric type —
+/// both integers or both decimals — mapping overflow to `run.overflow`. The
+/// checker rejects mixed int/decimal operands, so a mismatch here is a type error.
+fn numeric_op(
     left: &Expression,
     right: &Expression,
     env: &mut Env<'_>,
     span: SourceSpan,
-    op: fn(i64, i64) -> Option<i64>,
+    int_op: fn(i64, i64) -> Option<i64>,
+    decimal_op: fn(Decimal, Decimal) -> Option<Decimal>,
 ) -> Result<Value, RuntimeError> {
-    let a = eval_int(left, env)?;
-    let b = eval_int(right, env)?;
-    op(a, b).map(Value::Int).ok_or_else(|| overflow(span))
+    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+        (Value::Int(a), Value::Int(b)) => {
+            int_op(a, b).map(Value::Int).ok_or_else(|| overflow(span))
+        }
+        (Value::Decimal(a), Value::Decimal(b)) => decimal_op(a, b)
+            .map(Value::Decimal)
+            .ok_or_else(|| overflow(span)),
+        _ => Err(type_error(
+            "arithmetic expects two operands of the same numeric type",
+            span,
+        )),
+    }
 }
 
-/// Apply a checked division/remainder, rejecting a zero divisor and the
-/// `i64::MIN / -1` overflow.
+/// Divide two numeric operands as decimals (`/` always yields a decimal). A zero
+/// divisor is `run.divide_by_zero`; a result outside the decimal envelope is
+/// `run.overflow`.
+fn decimal_div(
+    left: &Expression,
+    right: &Expression,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    let dividend = to_decimal(eval_expr(left, env)?, span)?;
+    let divisor = to_decimal(eval_expr(right, env)?, span)?;
+    if divisor.is_zero() {
+        return Err(RuntimeError {
+            code: RUN_DIVIDE_BY_ZERO,
+            message: "division by zero".into(),
+            span,
+        });
+    }
+    dividend
+        .checked_div(divisor)
+        .map(Value::Decimal)
+        .ok_or_else(|| overflow(span))
+}
+
+/// Coerce a numeric value to a decimal: an integer becomes an exact decimal, a
+/// decimal is itself. Any other type is a runtime type error.
+fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, RuntimeError> {
+    match value {
+        Value::Decimal(decimal) => Ok(decimal),
+        Value::Int(n) => Decimal::from_parts(i128::from(n), 0)
+            .ok_or_else(|| type_error("an integer that is not a valid decimal", span)),
+        _ => Err(type_error("division expects numeric operands", span)),
+    }
+}
+
+/// Apply a checked integer remainder (`%`), rejecting a zero divisor and the
+/// `i64::MIN % -1` overflow. (`/` yields a decimal and uses `decimal_div`.)
 fn int_div(
     left: &Expression,
     right: &Expression,
@@ -2415,6 +2509,7 @@ fn compare_values(
     let ordering = match (eval_expr(left, env)?, eval_expr(right, env)?) {
         (Value::Int(a), Value::Int(b)) => a.cmp(&b),
         (Value::Str(a), Value::Str(b)) => a.cmp(&b),
+        (Value::Decimal(a), Value::Decimal(b)) => a.cmp(&b),
         _ => {
             return Err(type_error(
                 "cannot order values of different or unordered types",
@@ -2450,6 +2545,7 @@ fn values_equal(
         (Value::Int(a), Value::Int(b)) => Ok(a == b),
         (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
         (Value::Str(a), Value::Str(b)) => Ok(a == b),
+        (Value::Decimal(a), Value::Decimal(b)) => Ok(a == b),
         _ => Err(type_error("cannot compare values of different types", span)),
     }
 }

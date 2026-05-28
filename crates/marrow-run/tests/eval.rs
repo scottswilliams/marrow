@@ -117,6 +117,93 @@ fn respects_arithmetic_precedence() {
 }
 
 #[test]
+fn evaluates_decimal_literals_and_arithmetic() {
+    // Decimal `+`, `*`, and `-` over decimal operands, rendered to text.
+    let program = checked_program(
+        "pub fn f(): string\n    return $\"{1.5 + 2.5} {1.5 * 2.0} {5.5 - 0.5}\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("4 3 5".into()))
+    );
+}
+
+#[test]
+fn negates_a_decimal() {
+    // Unary `-` on a decimal, and a subtraction that produces a negative decimal.
+    let program = checked_program("pub fn f(): string\n    return $\"{-1.5} {0.0 - 2.5}\"\n");
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("-1.5 -2.5".into()))
+    );
+}
+
+#[test]
+fn division_yields_a_decimal() {
+    // `/` always yields a decimal, even for integer operands (1/2 = 0.5).
+    let program =
+        checked_program("pub fn f(): string\n    return $\"{1 / 2} {7 / 2} {1.0 / 4.0}\"\n");
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("0.5 3.5 0.25".into()))
+    );
+}
+
+#[test]
+fn decimal_division_rounds_half_even() {
+    // 1/3 rounds half-even to 34 significant digits.
+    let program = checked_program("pub fn f(): string\n    return $\"{1 / 3}\"\n");
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str(format!("0.{}", "3".repeat(34))))
+    );
+}
+
+#[test]
+fn decimal_division_by_zero_is_a_runtime_error() {
+    let program = checked_program("pub fn f(): decimal\n    return 1.0 / 0.0\n");
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap_err().code,
+        RUN_DIVIDE_BY_ZERO
+    );
+}
+
+#[test]
+fn compares_decimal_values() {
+    // Ordering and equality compare by value (1.50 equals 1.5).
+    let program = checked_program(
+        "pub fn f(): string\n    return $\"{1.5 < 2.0} {1.50 = 1.5} {2.5 > 3.0}\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("true true false".into()))
+    );
+}
+
+#[test]
+fn decimal_round_trips_through_saved_data() {
+    // A decimal field saves and loads unchanged.
+    let program = checked_program(
+        "resource Account at ^accts(id: int)\n\
+         \x20   balance: decimal\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^accts(1).balance = 9.99\n\
+         \n\
+         pub fn balance(): string\n\
+         \x20   return $\"{^accts(1).balance}\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::balance", &[])
+            .unwrap()
+            .value,
+        Some(Value::Str("9.99".into()))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");
@@ -575,8 +662,8 @@ fn rejects_an_argument_count_mismatch() {
 
 #[test]
 fn reports_an_unsupported_construct() {
-    // A decimal value is not yet evaluable in this slice.
-    let f = function("fn f(): decimal\n    return 1.5\n");
+    // A bytes value is not yet evaluable in this slice.
+    let f = function("fn f(): bytes\n    return b\"hi\"\n");
     let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
@@ -624,7 +711,9 @@ fn an_else_if_chain_selects_the_matching_branch() {
 
 #[test]
 fn detects_min_over_negative_one_overflow() {
-    let f = function("fn f(a: int, b: int): int\n    return a / b\n");
+    // `i64::MIN % -1` overflows. (`/` now yields a decimal, so `%` is the only
+    // integer-division-family operator that can overflow this way.)
+    let f = function("fn f(a: int, b: int): int\n    return a % b\n");
     let result = evaluate_function(&f, &[Value::Int(i64::MIN), Value::Int(-1)]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
