@@ -4,6 +4,7 @@ members = [
     "crates/marrow",
     "crates/marrow-check",
     "crates/marrow-project",
+    "crates/marrow-schema",
     "crates/marrow-syntax",
 ]
 

@@ -1,0 +1,15 @@
+[package]
+name = "marrow-schema"
+description = "Compiles parsed Marrow resources into typed-tree schemas."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-syntax = { path = "../marrow-syntax" }
+
+[lints]
+workspace = true
