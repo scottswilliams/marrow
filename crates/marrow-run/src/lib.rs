@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram};
 use marrow_schema::{LayerMember, ResourceSchema};
+use marrow_store::backend::Backend;
 use marrow_store::mem::{MemStore, Presence, StoreError};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
@@ -154,7 +155,7 @@ pub fn evaluate_function(
 /// same `program`.
 pub fn run_entry(
     program: &CheckedProgram,
-    store: &RefCell<MemStore>,
+    store: &RefCell<dyn Backend>,
     entry: &str,
     args: &[Value],
 ) -> Result<RunOutput, RuntimeError> {
@@ -166,7 +167,7 @@ pub fn run_entry(
 /// run needs.
 pub fn run_entry_with_host(
     program: &CheckedProgram,
-    store: &RefCell<MemStore>,
+    store: &RefCell<dyn Backend>,
     host: &Host,
     entry: &str,
     args: &[Value],
@@ -445,7 +446,10 @@ fn eval_exists(
     };
     let segments = lower_saved_path(&arg.value, env)?;
     let store = env.store.borrow();
-    let present = !matches!(store.presence(&encode_path(&segments)), Presence::Absent);
+    let presence = store
+        .presence(&encode_path(&segments))
+        .map_err(|error| store_error(error, span))?;
+    let present = !matches!(presence, Presence::Absent);
     Ok(Value::Bool(present))
 }
 
@@ -580,7 +584,7 @@ struct Binding {
 #[derive(Clone, Copy)]
 struct Context<'p> {
     program: &'p CheckedProgram,
-    store: &'p RefCell<MemStore>,
+    store: &'p RefCell<dyn Backend>,
     host: &'p Host,
 }
 
@@ -591,7 +595,7 @@ struct Context<'p> {
 struct Env<'p> {
     scopes: Vec<Vec<(String, Binding)>>,
     program: &'p CheckedProgram,
-    store: &'p RefCell<MemStore>,
+    store: &'p RefCell<dyn Backend>,
     host: &'p Host,
     output: Rc<RefCell<String>>,
 }
@@ -812,18 +816,25 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             body,
             span,
         } => eval_for(label, binding, iterable, body, *span, env),
-        Statement::Transaction { body, .. } => {
-            // Snapshot the store, then run the block. Any non-error exit
-            // (fall-through, `return`, `break`, `continue`) commits — the staged
-            // writes simply stay. An escaping error rolls the store back to the
-            // snapshot. Local variables and output already produced are not
-            // rewound. A nested transaction snapshots independently, so it is a
-            // savepoint within the outer one.
-            let snapshot = env.store.borrow().clone();
+        Statement::Transaction { body, span, .. } => {
+            // Open a backend transaction; the backend's savepoint stack handles
+            // nesting. Any non-error exit (fall-through, `return`, `break`,
+            // `continue`) commits; an escaping error rolls back. Local variables
+            // and output already produced are not rewound.
+            env.store
+                .borrow_mut()
+                .begin()
+                .map_err(|error| store_error(error, *span))?;
             match eval_block(body, env) {
-                Ok(flow) => Ok(flow),
+                Ok(flow) => {
+                    env.store
+                        .borrow_mut()
+                        .commit()
+                        .map_err(|error| store_error(error, *span))?;
+                    Ok(flow)
+                }
                 Err(error) => {
-                    *env.store.borrow_mut() = snapshot;
+                    let _ = env.store.borrow_mut().rollback();
                     Err(error)
                 }
             }
@@ -1137,14 +1148,17 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     let field_type = resource_field_type(env.program, &root, name)
         .ok_or_else(|| unsupported("reading this field", expr.span()))?;
     let store = env.store.borrow();
-    let Some(bytes) = store.read(&encode_path(&segments)) else {
+    let Some(bytes) = store
+        .read(&encode_path(&segments))
+        .map_err(|error| store_error(error, expr.span()))?
+    else {
         return Err(RuntimeError {
             code: RUN_ABSENT,
             message: format!("`{name}` is absent"),
             span: expr.span(),
         });
     };
-    decode_value(bytes, field_type)
+    decode_value(&bytes, field_type)
         .and_then(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
@@ -1174,14 +1188,17 @@ fn eval_group_field_read(
     segments.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
     segments.push(PathSegment::Field(field.to_string()));
     let store = env.store.borrow();
-    let Some(bytes) = store.read(&encode_path(&segments)) else {
+    let Some(bytes) = store
+        .read(&encode_path(&segments))
+        .map_err(|error| store_error(error, span))?
+    else {
         return Err(RuntimeError {
             code: RUN_ABSENT,
             message: format!("`{field}` entry is absent"),
             span,
         });
     };
-    decode_value(bytes, member_type)
+    decode_value(&bytes, member_type)
         .and_then(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
@@ -1215,14 +1232,17 @@ fn eval_saved_leaf_read(
     let leaf_type = resource_layer_leaf_type(env.program, &root, layer)
         .ok_or_else(|| unsupported("reading this layer", span))?;
     let store = env.store.borrow();
-    let Some(bytes) = store.read(&encode_path(&segments)) else {
+    let Some(bytes) = store
+        .read(&encode_path(&segments))
+        .map_err(|error| store_error(error, span))?
+    else {
         return Err(RuntimeError {
             code: RUN_ABSENT,
             message: format!("`{layer}` entry is absent"),
             span,
         });
     };
-    decode_value(bytes, leaf_type)
+    decode_value(&bytes, leaf_type)
         .and_then(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
@@ -1269,12 +1289,15 @@ fn eval_resource_read(
     for field in &resource.fields {
         let mut segments = prefix.clone();
         segments.push(PathSegment::Field(field.name.clone()));
-        let Some(bytes) = store.read(&encode_path(&segments)) else {
+        let Some(bytes) = store
+            .read(&encode_path(&segments))
+            .map_err(|error| store_error(error, span))?
+        else {
             continue;
         };
         let value_type = value_type_for(&field.ty.text)
             .ok_or_else(|| unsupported("reading this field type", span))?;
-        let value = decode_value(bytes, value_type)
+        let value = decode_value(&bytes, value_type)
             .and_then(saved_value_to_value)
             .ok_or_else(|| RuntimeError {
                 code: RUN_TYPE,
