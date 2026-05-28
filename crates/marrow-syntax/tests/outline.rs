@@ -1,5 +1,6 @@
 use marrow_syntax::{
-    ArgMode, BinaryOp, Declaration, Expression, LiteralKind, ResourceMember, UnaryOp, parse_source,
+    ArgMode, BinaryOp, Declaration, Expression, InterpolationPart, LiteralKind, ResourceMember,
+    UnaryOp, parse_source,
 };
 
 fn reference_sample() -> &'static str {
@@ -234,9 +235,9 @@ fn parses_const_values_into_expression_nodes() {
             Expectation::Name(&["std", "math", "PI"]),
         ),
         (
-            // Interpolation is not decomposed by the expression parser yet.
-            "const Label: string = $\"book {id}\"\n",
-            Expectation::Unparsed("$\"book {id}\""),
+            // Quoted field segments are not decomposed by the parser yet.
+            "const Old = ^books(id).\"old-title\"\n",
+            Expectation::Unparsed("^books(id).\"old-title\""),
         ),
     ];
 
@@ -321,6 +322,63 @@ fn parses_const_unary_and_grouping() {
             }
         ),
         "operand should be the inner add, got {operand:?}"
+    );
+}
+
+#[test]
+fn parses_interpolation_into_text_and_expression_parts() {
+    let parsed = parse_source("const Label: string = $\"book {id}: {{ready}}\"\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Interpolation { parts, .. } = &decl.value else {
+        panic!("expected interpolation, got {:?}", decl.value);
+    };
+    assert_eq!(parts.len(), 3, "{parts:#?}");
+    assert!(
+        matches!(&parts[0], InterpolationPart::Text { text, .. } if text == "book "),
+        "part 0: {:?}",
+        parts[0]
+    );
+    assert!(
+        matches!(
+            &parts[1],
+            InterpolationPart::Expr(Expression::Name { segments, .. }) if segments == &["id"]
+        ),
+        "part 1: {:?}",
+        parts[1]
+    );
+    // `{{ready}}` stays escaped inside literal text.
+    assert!(
+        matches!(&parts[2], InterpolationPart::Text { text, .. } if text == ": {{ready}}"),
+        "part 2: {:?}",
+        parts[2]
+    );
+}
+
+#[test]
+fn parses_interpolation_with_embedded_call_path() {
+    // From the reference sample: $"{id}: {^books(id).title}".
+    let parsed = parse_source("const Line: string = $\"{id}: {^books(id).title}\"\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Interpolation { parts, .. } = &decl.value else {
+        panic!("expected interpolation, got {:?}", decl.value);
+    };
+    let exprs = parts
+        .iter()
+        .filter(|part| matches!(part, InterpolationPart::Expr(_)))
+        .count();
+    assert_eq!(exprs, 2, "expected two embedded expressions: {parts:#?}");
+    assert!(
+        matches!(
+            parts.last(),
+            Some(InterpolationPart::Expr(Expression::Field { name, .. })) if name == "title"
+        ),
+        "last embedded expr should be a field access: {parts:#?}"
     );
 }
 

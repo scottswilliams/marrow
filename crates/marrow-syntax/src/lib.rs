@@ -111,9 +111,14 @@ pub enum Expression {
         right: Box<Expression>,
         span: SourceSpan,
     },
+    /// An interpolated string `$"..."` as a sequence of literal text and
+    /// embedded expression parts, in source order.
+    Interpolation {
+        parts: Vec<InterpolationPart>,
+        span: SourceSpan,
+    },
     /// Expression text the outline parser does not yet decompose, such as
-    /// interpolation, resource literals with quoted segments, and ranges with
-    /// quoted field names. Future syntax-tree slices replace `Unparsed` with
+    /// quoted field segments. Future syntax-tree slices replace `Unparsed` with
     /// concrete variants.
     Unparsed { text: String, span: SourceSpan },
 }
@@ -128,9 +133,18 @@ impl Expression {
             | Self::Field { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
+            | Self::Interpolation { span, .. }
             | Self::Unparsed { span, .. } => *span,
         }
     }
+}
+
+/// One segment of an interpolated string: either literal text (with `{{`/`}}`
+/// still escaped as written) or an embedded expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InterpolationPart {
+    Text { text: String, span: SourceSpan },
+    Expr(Expression),
 }
 
 /// One argument in a call expression. `name` is set for named arguments
@@ -2161,7 +2175,42 @@ impl<'a> ExprParser<'a> {
                     None
                 }
             }
+            TokenKind::InterpolationStart => self.interpolation_expr(),
             _ => None,
+        }
+    }
+
+    fn interpolation_expr(&mut self) -> Option<Expression> {
+        let start = self.advance();
+        let mut parts = Vec::new();
+        loop {
+            let token = *self.tokens.get(self.pos)?;
+            match token.kind {
+                TokenKind::InterpolationText => {
+                    self.advance();
+                    parts.push(InterpolationPart::Text {
+                        text: token.text(self.source).to_string(),
+                        span: token.span,
+                    });
+                }
+                TokenKind::InterpolationExprStart => {
+                    self.advance();
+                    let expr = self.expression()?;
+                    if !matches!(self.peek(), Some(TokenKind::InterpolationExprEnd)) {
+                        return None;
+                    }
+                    self.advance();
+                    parts.push(InterpolationPart::Expr(expr));
+                }
+                TokenKind::InterpolationEnd => {
+                    self.advance();
+                    return Some(Expression::Interpolation {
+                        parts,
+                        span: join_spans(start.span, token.span),
+                    });
+                }
+                _ => return None,
+            }
         }
     }
 
