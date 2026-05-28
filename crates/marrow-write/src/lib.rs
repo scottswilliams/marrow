@@ -12,7 +12,7 @@
 use marrow_schema::{ResourceSchema, SavedRootSchema};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_store::value::{SavedValue, ValueType, encode_value};
+use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
 
 /// A field's value in a write: a saved value, or explicitly absent (omitted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,13 +75,17 @@ impl WritePlan {
 
 /// Plan a whole-resource write: replace the resource at `identity` with `value`.
 /// Validates required fields and value types against `schema` before staging
-/// anything, then plans to clear the old subtree and write each present field.
-/// Returns a [`WritePlan`] to commit, or a [`WriteError`] if the value does not
-/// satisfy the schema.
+/// anything, then plans to clear the old subtree, write each present field, and
+/// keep generated non-unique index entries coherent (delete the entries for the
+/// currently-stored values, write entries for the new values). `store` is read,
+/// not written; apply the returned [`WritePlan`] with [`WritePlan::commit`].
+/// Returns a [`WriteError`] if the value does not satisfy the schema.
+/// (Unique-index conflict detection is a later slice.)
 pub fn plan_resource_write(
     schema: &ResourceSchema,
     identity: &[SavedKey],
     value: &ResourceValue,
+    store: &MemStore,
 ) -> Result<WritePlan, WriteError> {
     let root = schema.saved_root.as_ref().ok_or_else(|| WriteError {
         code: WRITE_NO_SAVED_ROOT,
@@ -130,16 +134,22 @@ pub fn plan_resource_write(
         });
     }
 
-    // Write generated non-unique index entries for the new values. An entry
-    // exists only when every indexed value is populated. (Index teardown on
-    // re-write, and unique indexes with conflict detection, are later slices.)
+    // Keep generated non-unique index entries coherent: delete the entry for the
+    // currently-stored values, then write the entry for the new values. An entry
+    // exists only when every indexed value is populated. (Unique indexes with
+    // conflict detection are a later slice.)
     for index in &schema.indexes {
         if index.unique {
             continue;
         }
-        if let Some(keys) = index_keys(&index.args, root, identity, value) {
+        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store) {
+            steps.push(PlanStep::Delete {
+                path: encode_path(&index_path(root, &index.name, &old_keys)),
+            });
+        }
+        if let Some(new_keys) = index_keys(&index.args, root, identity, value) {
             steps.push(PlanStep::Write {
-                path: encode_path(&index_path(root, &index.name, &keys)),
+                path: encode_path(&index_path(root, &index.name, &new_keys)),
                 value: INDEX_MARKER.to_vec(),
             });
         }
@@ -215,6 +225,31 @@ fn index_keys(
                 Some((_, FieldValue::Saved(saved))) => keys.push(saved_value_to_key(saved)?),
                 _ => return None,
             }
+        }
+    }
+    Some(keys)
+}
+
+/// Resolve an index's argument names to the key values currently STORED for this
+/// identity, for index teardown: identity-key args take the identity; field args
+/// read and decode the stored field. Returns `None` if any field is absent or
+/// undecodable, so nothing is torn down for it.
+fn stored_index_keys(
+    args: &[String],
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    schema: &ResourceSchema,
+    store: &MemStore,
+) -> Option<Vec<SavedKey>> {
+    let mut keys = Vec::with_capacity(args.len());
+    for arg in args {
+        if let Some(position) = root.identity_keys.iter().position(|key| &key.name == arg) {
+            keys.push(identity[position].clone());
+        } else {
+            let field = schema.fields.iter().find(|field| &field.name == arg)?;
+            let value_type = value_type_for(&field.ty.text)?;
+            let bytes = store.read(&encode_path(&field_path(root, identity, arg)))?;
+            keys.push(saved_value_to_key(&decode_value(bytes, value_type)?)?);
         }
     }
     Some(keys)
