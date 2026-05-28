@@ -6,7 +6,8 @@
 //! structured errors, and calls between functions build on this spine.
 
 use marrow_syntax::{
-    BinaryOp, Block, Expression, FunctionDecl, LiteralKind, SourceSpan, Statement, UnaryOp,
+    BinaryOp, Block, Expression, ForBinding, FunctionDecl, LiteralKind, SourceSpan, Statement,
+    UnaryOp,
 };
 
 /// A runtime value. This slice models the scalar shapes a pure function needs;
@@ -36,6 +37,8 @@ pub const RUN_UNBOUND_NAME: &str = "run.unbound_name";
 pub const RUN_OVERFLOW: &str = "run.overflow";
 /// Integer division or remainder by zero.
 pub const RUN_DIVIDE_BY_ZERO: &str = "run.divide_by_zero";
+/// A `break` or `continue` reached the top of a function with no loop to target.
+pub const RUN_NO_ENCLOSING_LOOP: &str = "run.no_enclosing_loop";
 /// A construct this slice of the runtime does not yet evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 
@@ -64,10 +67,15 @@ pub fn evaluate_function(
     }
     let flow = eval_block(&function.body, &mut env)?;
     env.pop_scope();
-    Ok(match flow {
-        Flow::Return(value) => value,
-        Flow::Normal => None,
-    })
+    match flow {
+        Flow::Return(value) => Ok(value),
+        Flow::Normal => Ok(None),
+        Flow::Break(_) | Flow::Continue(_) => Err(RuntimeError {
+            code: RUN_NO_ENCLOSING_LOOP,
+            message: "`break` or `continue` outside a loop".into(),
+            span: function.span,
+        }),
+    }
 }
 
 /// Where control flow stands after a statement or block.
@@ -76,6 +84,10 @@ enum Flow {
     Normal,
     /// A `return`, carrying its value if it had one.
     Return(Option<Value>),
+    /// A `break`, targeting the named loop, or the innermost when unlabeled.
+    Break(Option<String>),
+    /// A `continue`, targeting the named loop, or the innermost when unlabeled.
+    Continue(Option<String>),
 }
 
 /// A name binding: its value and whether it may be reassigned (`var` vs `let`).
@@ -239,7 +251,126 @@ fn eval_statement(statement: &Statement, env: &mut Env) -> Result<Flow, RuntimeE
                 None => Ok(Flow::Normal),
             }
         }
+        Statement::Break { label, .. } => Ok(Flow::Break(label.clone())),
+        Statement::Continue { label, .. } => Ok(Flow::Continue(label.clone())),
+        Statement::While {
+            label,
+            condition,
+            body,
+            ..
+        } => eval_while(label, condition, body, env),
+        Statement::For {
+            label,
+            binding,
+            iterable,
+            body,
+            span,
+        } => eval_for(label, binding, iterable, body, *span, env),
         other => Err(unsupported("this statement", other.span())),
+    }
+}
+
+/// How a loop body's resulting flow affects a loop labelled `label`.
+enum LoopStep {
+    /// Run the next iteration (the body fell through, or `continue`d this loop).
+    Iterate,
+    /// Stop the loop (a `break` targeting this loop).
+    Stop,
+    /// Leave the loop carrying an outward jump: a `return`, or a `break` /
+    /// `continue` aimed at an enclosing loop.
+    Propagate(Flow),
+}
+
+/// Classify a loop body's flow for a loop labelled `label`.
+fn classify(flow: Flow, label: &Option<String>) -> LoopStep {
+    match flow {
+        Flow::Normal => LoopStep::Iterate,
+        Flow::Continue(ref target) if targets_this_loop(target, label) => LoopStep::Iterate,
+        Flow::Break(ref target) if targets_this_loop(target, label) => LoopStep::Stop,
+        other => LoopStep::Propagate(other),
+    }
+}
+
+/// Whether a `break`/`continue` carrying `jump_label` targets a loop labelled
+/// `loop_label`: an unlabelled jump targets the innermost (this) loop; a
+/// labelled jump targets only the loop with the matching label.
+fn targets_this_loop(jump_label: &Option<String>, loop_label: &Option<String>) -> bool {
+    match jump_label {
+        None => true,
+        Some(name) => loop_label.as_deref() == Some(name.as_str()),
+    }
+}
+
+fn eval_while(
+    label: &Option<String>,
+    condition: &Expression,
+    body: &Block,
+    env: &mut Env,
+) -> Result<Flow, RuntimeError> {
+    while eval_bool(condition, env)? {
+        match classify(eval_block(body, env)?, label) {
+            LoopStep::Iterate => {}
+            LoopStep::Stop => break,
+            LoopStep::Propagate(flow) => return Ok(flow),
+        }
+    }
+    Ok(Flow::Normal)
+}
+
+fn eval_for(
+    label: &Option<String>,
+    binding: &ForBinding,
+    iterable: &Expression,
+    body: &Block,
+    span: SourceSpan,
+    env: &mut Env,
+) -> Result<Flow, RuntimeError> {
+    if binding.second.is_some() {
+        return Err(unsupported("a two-name loop binding over a range", span));
+    }
+    let (start, end, inclusive) = range_bounds(iterable, env)?;
+    let mut current = start;
+    while if inclusive {
+        current <= end
+    } else {
+        current < end
+    } {
+        // Each iteration binds the loop variable in a fresh scope.
+        env.push_scope();
+        env.bind(binding.first.clone(), Value::Int(current), false);
+        let flow = eval_block(body, env);
+        env.pop_scope();
+        match classify(flow?, label) {
+            LoopStep::Iterate => {}
+            LoopStep::Stop => break,
+            LoopStep::Propagate(flow) => return Ok(flow),
+        }
+        // Stop rather than overflow when the endpoint reaches `i64::MAX`.
+        match current.checked_add(1) {
+            Some(next) => current = next,
+            None => break,
+        }
+    }
+    Ok(Flow::Normal)
+}
+
+/// The `(start, end, inclusive)` bounds of a range iterable. Only integer ranges
+/// (`a..b`, `a..=b`) are iterable in this slice; other iterables are unsupported.
+fn range_bounds(iterable: &Expression, env: &mut Env) -> Result<(i64, i64, bool), RuntimeError> {
+    match iterable {
+        Expression::Binary {
+            op: BinaryOp::RangeExclusive,
+            left,
+            right,
+            ..
+        } => Ok((eval_int(left, env)?, eval_int(right, env)?, false)),
+        Expression::Binary {
+            op: BinaryOp::RangeInclusive,
+            left,
+            right,
+            ..
+        } => Ok((eval_int(left, env)?, eval_int(right, env)?, true)),
+        other => Err(unsupported("iterating this value", other.span())),
     }
 }
 

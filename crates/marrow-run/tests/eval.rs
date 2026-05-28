@@ -2,8 +2,8 @@
 //! locals, and conditionals over integer and boolean values.
 
 use marrow_run::{
-    RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNSUPPORTED, Value,
-    evaluate_function,
+    RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME,
+    RUN_UNSUPPORTED, Value, evaluate_function,
 };
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
 
@@ -201,6 +201,90 @@ fn detects_min_over_negative_one_overflow() {
     let result = evaluate_function(&f, &[Value::Int(i64::MIN), Value::Int(-1)]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn evaluates_a_while_loop() {
+    let sum = function(
+        "fn sum(n: int): int\n    var total = 0\n    var i = 1\n    while i <= n\n        total = total + i\n        i = i + 1\n    return total\n",
+    );
+    assert_eq!(
+        evaluate_function(&sum, &[Value::Int(5)]),
+        Ok(Some(Value::Int(15)))
+    );
+}
+
+#[test]
+fn evaluates_an_inclusive_for_range() {
+    let sum = function(
+        "fn sum(n: int): int\n    var total = 0\n    for i in 1..=n\n        total = total + i\n    return total\n",
+    );
+    assert_eq!(
+        evaluate_function(&sum, &[Value::Int(5)]),
+        Ok(Some(Value::Int(15)))
+    );
+}
+
+#[test]
+fn an_exclusive_for_range_stops_before_the_end() {
+    let count = function(
+        "fn count(n: int): int\n    var c = 0\n    for i in 0..n\n        c = c + 1\n    return c\n",
+    );
+    assert_eq!(
+        evaluate_function(&count, &[Value::Int(5)]),
+        Ok(Some(Value::Int(5)))
+    );
+}
+
+#[test]
+fn break_exits_the_loop() {
+    let f = function(
+        "fn f(n: int): int\n    var i = 0\n    while true\n        if i > n\n            break\n        i = i + 1\n    return i\n",
+    );
+    assert_eq!(
+        evaluate_function(&f, &[Value::Int(3)]),
+        Ok(Some(Value::Int(4)))
+    );
+}
+
+#[test]
+fn continue_skips_to_the_next_iteration() {
+    let f = function(
+        "fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i = 1\n            continue\n        c = c + 1\n    return c\n",
+    );
+    // The first iteration is skipped; the rest count.
+    assert_eq!(
+        evaluate_function(&f, &[Value::Int(3)]),
+        Ok(Some(Value::Int(2)))
+    );
+}
+
+#[test]
+fn a_labeled_break_exits_the_outer_loop() {
+    let f = function(
+        "fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j = 2\n                break outer\n            count = count + 1\n    return count\n",
+    );
+    // i=1: j=1 counts (1), j=2 breaks the outer loop entirely.
+    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(1))));
+}
+
+#[test]
+fn an_unlabeled_break_exits_only_the_inner_loop() {
+    let f = function(
+        "fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j = 2\n                break\n            count = count + 1\n    return count\n",
+    );
+    // Each outer iteration counts j=1 then breaks the inner loop: 2 total.
+    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(2))));
+}
+
+#[test]
+fn break_outside_a_loop_is_an_error() {
+    let f = function("fn f()\n    break\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_NO_ENCLOSING_LOOP),
         "{result:?}"
     );
 }
