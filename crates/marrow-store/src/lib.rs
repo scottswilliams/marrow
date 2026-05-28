@@ -11,6 +11,7 @@
 //! values over those ordered paths and implements the [`Backend`](backend::Backend)
 //! contract.
 
+pub mod archive;
 pub mod backend;
 pub mod conformance;
 pub mod mem;
