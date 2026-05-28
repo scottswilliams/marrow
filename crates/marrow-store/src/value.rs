@@ -21,6 +21,12 @@ pub enum SavedValue {
     Duration(i128),
     /// A UTC instant, held as a signed count of nanoseconds since the epoch.
     Instant(i128),
+    /// An exact base-10 decimal with value `coefficient * 10^(-scale)`, kept
+    /// value-canonical (no trailing-zero scale).
+    Decimal {
+        coefficient: i128,
+        scale: u32,
+    },
 }
 
 /// The type to decode saved bytes as. A typed read knows this from the schema.
@@ -34,6 +40,7 @@ pub enum ValueType {
     Date,
     Duration,
     Instant,
+    Decimal,
 }
 
 /// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
@@ -49,6 +56,9 @@ pub fn encode_value(value: &SavedValue) -> Vec<u8> {
         SavedValue::Date(days) => format_date(*days).into_bytes(),
         SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
         SavedValue::Instant(nanos) => format_instant(*nanos).into_bytes(),
+        SavedValue::Decimal { coefficient, scale } => {
+            format_decimal(*coefficient, *scale).into_bytes()
+        }
     }
 }
 
@@ -72,6 +82,7 @@ pub fn decode_value(bytes: &[u8], ty: ValueType) -> Option<SavedValue> {
         ValueType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
         ValueType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
         ValueType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
+        ValueType::Decimal => parse_decimal(bytes),
     }
 }
 
@@ -290,4 +301,83 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
     };
     let seconds_of_day = i128::from(hours * 3600 + minutes * 60 + seconds);
     Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)
+}
+
+/// The decimal envelope: at most 34 significant digits and 34 fractional places
+/// (docs/language/types.md).
+const DECIMAL_MAX_DIGITS: u32 = 34;
+
+/// Format a decimal (`coefficient * 10^(-scale)`) as canonical decimal text:
+/// no leading zeros, no trailing-zero fraction, no exponent. Normalizes its
+/// input first, so any equal-valued (coefficient, scale) produces one spelling.
+fn format_decimal(mut coefficient: i128, mut scale: u32) -> String {
+    while scale > 0 && coefficient % 10 == 0 {
+        coefficient /= 10;
+        scale -= 1;
+    }
+    if coefficient == 0 {
+        return "0".to_string();
+    }
+    let sign = if coefficient < 0 { "-" } else { "" };
+    let digits = coefficient.unsigned_abs().to_string();
+    if scale == 0 {
+        return format!("{sign}{digits}");
+    }
+    let scale = scale as usize;
+    let padded = format!("{digits:0>width$}", width = scale + 1);
+    let point = padded.len() - scale;
+    format!("{sign}{}.{}", &padded[..point], &padded[point..])
+}
+
+/// Parse canonical decimal text to a value-canonical [`SavedValue::Decimal`].
+/// Rejects leading zeros, trailing-zero or empty fractions, `-0`, exponents, and
+/// anything outside the decimal envelope.
+fn parse_decimal(bytes: &[u8]) -> Option<SavedValue> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (integer, fraction) = match rest.split_once('.') {
+        Some((integer, fraction)) => (integer, Some(fraction)),
+        None => (rest, None),
+    };
+
+    if integer.is_empty() || !integer.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if integer.len() > 1 && integer.starts_with('0') {
+        return None; // leading zero
+    }
+    if let Some(fraction) = fraction
+        && (fraction.is_empty()
+            || fraction.ends_with('0')
+            || !fraction.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None; // empty, trailing-zero, or non-digit fraction
+    }
+
+    let scale = fraction.map_or(0, str::len) as u32;
+    let digits = match fraction {
+        Some(fraction) => format!("{integer}{fraction}"),
+        None => integer.to_string(),
+    };
+    let magnitude: i128 = digits.parse().ok()?; // out-of-range coefficient -> None
+    if negative && magnitude == 0 {
+        return None; // `-0` is not canonical
+    }
+    if significant_digits(magnitude) > DECIMAL_MAX_DIGITS || scale > DECIMAL_MAX_DIGITS {
+        return None;
+    }
+    let coefficient = if negative { -magnitude } else { magnitude };
+    Some(SavedValue::Decimal { coefficient, scale })
+}
+
+/// The number of significant digits in a non-negative magnitude; zero has none.
+fn significant_digits(magnitude: i128) -> u32 {
+    if magnitude == 0 {
+        0
+    } else {
+        magnitude.unsigned_abs().to_string().len() as u32
+    }
 }

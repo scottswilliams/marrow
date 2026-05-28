@@ -182,3 +182,49 @@ fn non_canonical_instants_are_rejected() {
         );
     }
 }
+
+#[test]
+fn decimals_round_trip_through_canonical_text() {
+    for text in [
+        "0", "5", "-5", "0.25", "1.5", "-1.5", "123.45", "0.025", "-0.5",
+    ] {
+        let value = decode_value(text.as_bytes(), ValueType::Decimal).expect("valid decimal");
+        assert_eq!(encode_value(&value), text.as_bytes(), "re-encode {text}");
+    }
+}
+
+#[test]
+fn decimal_encoding_is_value_canonical() {
+    let enc = |coefficient, scale| encode_value(&SavedValue::Decimal { coefficient, scale });
+    // Trailing-zero scale is normalized away to one spelling per value.
+    assert_eq!(enc(15, 1), b"1.5");
+    assert_eq!(enc(150, 2), b"1.5");
+    assert_eq!(enc(0, 0), b"0");
+    assert_eq!(enc(0, 5), b"0");
+    assert_eq!(enc(-25, 2), b"-0.25");
+}
+
+#[test]
+fn non_canonical_decimals_are_rejected() {
+    for bad in [
+        "1.0", "1.50", "01", "-0", ".5", "1.", "+1", "1e3", "00", "0.0",
+    ] {
+        assert_eq!(
+            decode_value(bad.as_bytes(), ValueType::Decimal),
+            None,
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn decimals_outside_the_envelope_are_rejected() {
+    // 35 significant digits exceeds the 34-digit envelope.
+    assert_eq!(
+        decode_value("1".repeat(35).as_bytes(), ValueType::Decimal),
+        None
+    );
+    // 35 fractional places exceeds the 34-place scale.
+    let too_deep = format!("0.{}", "1".repeat(35));
+    assert_eq!(decode_value(too_deep.as_bytes(), ValueType::Decimal), None);
+}
