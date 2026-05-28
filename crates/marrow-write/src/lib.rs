@@ -12,7 +12,8 @@
 //! fields — build on this.
 
 use marrow_schema::{LayerMember, ResourceSchema, SavedRootSchema};
-use marrow_store::mem::MemStore;
+use marrow_store::backend::Backend;
+use marrow_store::mem::StoreError;
 use marrow_store::path::{
     ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
 };
@@ -66,6 +67,14 @@ pub const WRITE_NOT_A_GROUP_LAYER: &str = "write.not_a_group_layer";
 /// A keyed-layer write supplies the wrong number of layer keys.
 pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 
+/// Wrap a store error met while planning a write into a `write.store` failure.
+fn store_failed(error: StoreError) -> WriteError {
+    WriteError {
+        code: WRITE_STORE,
+        message: format!("the store could not be read while planning: {error:?}"),
+    }
+}
+
 /// One staged store operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PlanStep {
@@ -85,14 +94,16 @@ pub struct WritePlan {
 }
 
 impl WritePlan {
-    /// Apply the staged operations to `store`, in order.
-    pub fn commit(self, store: &mut MemStore) {
+    /// Apply the staged operations to `store`, in order. A backend write may fail
+    /// (e.g. a persistent store meeting I/O), so this is fallible.
+    pub fn commit(self, store: &mut dyn Backend) -> Result<(), StoreError> {
         for step in self.steps {
             match step {
-                PlanStep::Write { path, value } => store.write(&path, value),
-                PlanStep::Delete { path } => store.delete(&path),
+                PlanStep::Write { path, value } => store.write(&path, value)?,
+                PlanStep::Delete { path } => store.delete(&path)?,
             }
         }
+        Ok(())
     }
 }
 
@@ -108,7 +119,7 @@ pub fn plan_resource_write(
     schema: &ResourceSchema,
     identity: &[SavedKey],
     value: &ResourceValue,
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
 
@@ -157,7 +168,9 @@ pub fn plan_resource_write(
     // exists only when every indexed value is populated. A unique entry stores
     // the owning identity; a non-unique entry stores a presence marker.
     for index in &schema.indexes {
-        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store) {
+        if let Some(old_keys) =
+            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
+        {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
             });
@@ -179,14 +192,16 @@ pub fn plan_resource_write(
 pub fn plan_resource_delete(
     schema: &ResourceSchema,
     identity: &[SavedKey],
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&identity_path(root, identity)),
     }];
     for index in &schema.indexes {
-        if let Some(keys) = stored_index_keys(&index.args, root, identity, schema, store) {
+        if let Some(keys) =
+            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
+        {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &keys)),
             });
@@ -213,7 +228,7 @@ pub fn plan_field_write(
     identity: &[SavedKey],
     field: &str,
     value: &SavedValue,
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let declared = schema
@@ -230,7 +245,8 @@ pub fn plan_field_write(
     for index in &schema.indexes {
         if index.unique && index.args.iter().any(|arg| arg == field) {
             let new_keys =
-                field_write_index_keys(&index.args, root, identity, field, value, schema, store);
+                field_write_index_keys(&index.args, root, identity, field, value, schema, store)
+                    .map_err(store_failed)?;
             check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
         }
     }
@@ -248,13 +264,16 @@ pub fn plan_field_write(
         if !index.args.iter().any(|arg| arg == field) {
             continue;
         }
-        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store) {
+        if let Some(old_keys) =
+            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
+        {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
             });
         }
         if let Some(new_keys) =
             field_write_index_keys(&index.args, root, identity, field, value, schema, store)
+                .map_err(store_failed)?
         {
             steps.push(PlanStep::Write {
                 path: encode_path(&index_path(root, &index.name, &new_keys)),
@@ -279,7 +298,7 @@ pub fn plan_resource_merge(
     schema: &ResourceSchema,
     identity: &[SavedKey],
     value: &ResourceValue,
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
 
@@ -297,6 +316,7 @@ pub fn plan_resource_merge(
                 if field.required
                     && store
                         .read(&encode_path(&field_path(root, identity, &field.name)))
+                        .map_err(store_failed)?
                         .is_none()
                 {
                     return Err(WriteError {
@@ -314,7 +334,8 @@ pub fn plan_resource_merge(
     // Reject a unique-index conflict on the effective resource before staging.
     for index in &schema.indexes {
         if index.unique {
-            let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store);
+            let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)
+                .map_err(store_failed)?;
             check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
         }
     }
@@ -332,8 +353,10 @@ pub fn plan_resource_merge(
     // left alone (so an entry resting on an untouched field survives), a changed
     // key moves.
     for index in &schema.indexes {
-        let old_keys = stored_index_keys(&index.args, root, identity, schema, store);
-        let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store);
+        let old_keys =
+            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?;
+        let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)
+            .map_err(store_failed)?;
         if old_keys == new_keys {
             continue;
         }
@@ -476,7 +499,7 @@ pub fn plan_layer_merge(
     from: &[SavedKey],
     to: &[SavedKey],
     layer: &str,
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, from)?;
     if to.len() != root.identity_keys.len() {
@@ -506,7 +529,7 @@ pub fn plan_layer_merge(
     // Overlay: copy each source entry to the matching target path — the suffix
     // after the layer prefix (keys and any nested fields) is identical — and
     // leave target entries the source does not cover untouched.
-    let page = store.scan(&source, usize::MAX);
+    let page = store.scan(&source, usize::MAX).map_err(store_failed)?;
     let mut steps = Vec::with_capacity(page.entries.len());
     for (path, value) in page.entries {
         let mut target_path = target.clone();
@@ -547,7 +570,7 @@ fn resolve_saved_root<'a>(
 /// highest existing integer record key, or `1` when the root is empty. This is
 /// the default `nextId` policy (docs/implementation.md). Non-integer immediate
 /// children — such as index names — are ignored.
-pub fn next_id(root: &str, store: &MemStore) -> Result<i64, WriteError> {
+pub fn next_id(root: &str, store: &dyn Backend) -> Result<i64, WriteError> {
     let children = store
         .child_keys(&encode_path(&[PathSegment::Root(root.into())]))
         .map_err(|_| WriteError {
@@ -575,7 +598,7 @@ pub fn next_layer_pos(
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layer: &str,
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<i64, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     if !schema.layers.iter().any(|declared| declared.name == layer) {
@@ -691,16 +714,21 @@ fn stored_arg_key(
     root: &SavedRootSchema,
     identity: &[SavedKey],
     schema: &ResourceSchema,
-    store: &MemStore,
-) -> Option<SavedKey> {
+    store: &dyn Backend,
+) -> Result<Option<SavedKey>, StoreError> {
     if let Some(position) = root.identity_keys.iter().position(|key| key.name == arg) {
-        Some(identity[position].clone())
-    } else {
-        let field = schema.fields.iter().find(|field| field.name == arg)?;
-        let value_type = value_type_for(&field.ty.text)?;
-        let bytes = store.read(&encode_path(&field_path(root, identity, arg)))?;
-        saved_value_to_key(&decode_value(bytes, value_type)?)
+        return Ok(Some(identity[position].clone()));
     }
+    let Some(field) = schema.fields.iter().find(|field| field.name == arg) else {
+        return Ok(None);
+    };
+    let Some(value_type) = value_type_for(&field.ty.text) else {
+        return Ok(None);
+    };
+    let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
+        return Ok(None);
+    };
+    Ok(decode_value(&bytes, value_type).and_then(|value| saved_value_to_key(&value)))
 }
 
 /// Resolve an index's argument names to the key values currently STORED for this
@@ -711,8 +739,8 @@ fn stored_index_keys(
     root: &SavedRootSchema,
     identity: &[SavedKey],
     schema: &ResourceSchema,
-    store: &MemStore,
-) -> Option<Vec<SavedKey>> {
+    store: &dyn Backend,
+) -> Result<Option<Vec<SavedKey>>, StoreError> {
     args.iter()
         .map(|arg| stored_arg_key(arg, root, identity, schema, store))
         .collect()
@@ -729,12 +757,12 @@ fn field_write_index_keys(
     field: &str,
     value: &SavedValue,
     schema: &ResourceSchema,
-    store: &MemStore,
-) -> Option<Vec<SavedKey>> {
+    store: &dyn Backend,
+) -> Result<Option<Vec<SavedKey>>, StoreError> {
     args.iter()
         .map(|arg| {
             if arg == field {
-                saved_value_to_key(value)
+                Ok(saved_value_to_key(value))
             } else {
                 stored_arg_key(arg, root, identity, schema, store)
             }
@@ -753,11 +781,11 @@ fn effective_index_keys(
     identity: &[SavedKey],
     value: &ResourceValue,
     schema: &ResourceSchema,
-    store: &MemStore,
-) -> Option<Vec<SavedKey>> {
+    store: &dyn Backend,
+) -> Result<Option<Vec<SavedKey>>, StoreError> {
     args.iter()
         .map(|arg| match supplied_value(value, arg) {
-            Some(FieldValue::Saved(saved)) => saved_value_to_key(saved),
+            Some(FieldValue::Saved(saved)) => Ok(saved_value_to_key(saved)),
             _ => stored_arg_key(arg, root, identity, schema, store),
         })
         .collect()
@@ -818,15 +846,18 @@ fn check_unique_conflict(
     root: &SavedRootSchema,
     identity: &[SavedKey],
     new_keys: Option<&[SavedKey]>,
-    store: &MemStore,
+    store: &dyn Backend,
 ) -> Result<(), WriteError> {
     let Some(new_keys) = new_keys else {
         return Ok(());
     };
-    let Some(bytes) = store.read(&encode_path(&index_path(root, index, new_keys))) else {
+    let stored = store
+        .read(&encode_path(&index_path(root, index, new_keys)))
+        .map_err(store_failed)?;
+    let Some(bytes) = stored else {
         return Ok(());
     };
-    match decode_identity(bytes, root) {
+    match decode_identity(&bytes, root) {
         Some(holder) if holder == identity => Ok(()),
         Some(_) => Err(WriteError {
             code: WRITE_UNIQUE_CONFLICT,

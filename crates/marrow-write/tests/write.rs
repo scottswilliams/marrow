@@ -116,7 +116,8 @@ fn write(
 ) {
     plan_resource_write(schema, identity, &value, store)
         .expect("valid write")
-        .commit(store);
+        .commit(store)
+        .expect("commit succeeds");
 }
 
 /// Plan and commit a single-field write against the current store state.
@@ -129,7 +130,8 @@ fn write_field(
 ) {
     plan_field_write(schema, identity, field, &value, store)
         .expect("valid field write")
-        .commit(store);
+        .commit(store)
+        .expect("commit succeeds");
 }
 
 /// Plan and commit a merge against the current store state.
@@ -141,7 +143,8 @@ fn merge(
 ) {
     plan_resource_merge(schema, identity, &value, store)
         .expect("valid merge")
-        .commit(store);
+        .commit(store)
+        .expect("commit succeeds");
 }
 
 /// Plan and commit a keyed-leaf write of `^books(id).tags(pos)`.
@@ -154,7 +157,8 @@ fn write_tag(store: &mut MemStore, schema: &ResourceSchema, id: i64, pos: i64, v
         &SavedValue::Str(value.into()),
     )
     .expect("valid keyed-leaf write")
-    .commit(store);
+    .commit(store)
+    .expect("commit succeeds");
 }
 
 /// The encoded path `^books(id).tags(pos)` of a keyed-leaf entry.
@@ -187,7 +191,8 @@ fn write_note(store: &mut MemStore, schema: &ResourceSchema, id: i64, note: &str
         &SavedValue::Str(text.into()),
     )
     .expect("valid group-entry field write")
-    .commit(store);
+    .commit(store)
+    .expect("commit succeeds");
 }
 
 /// The encoded path `^books(id).notes(noteId).text` of a group-entry field.
@@ -495,7 +500,7 @@ fn deleting_a_resource_removes_its_fields_and_index_entries() {
     );
 
     let plan = plan_resource_delete(&book, &[SavedKey::Int(42)], &store).expect("delete");
-    plan.commit(&mut store);
+    plan.commit(&mut store).expect("commit succeeds");
 
     assert_eq!(store.read(&field_path(42, "title")), None, "field removed");
     assert_eq!(
@@ -801,7 +806,8 @@ fn re_writing_the_same_record_with_the_same_unique_key_is_not_a_conflict() {
         &store,
     )
     .expect("self re-write is not a conflict")
-    .commit(&mut store);
+    .commit(&mut store)
+    .expect("commit succeeds");
     assert_owns(&store, &by_isbn_entry("X"), 1);
 }
 
@@ -863,7 +869,8 @@ fn deleting_a_resource_removes_its_unique_index_entry() {
     );
     plan_resource_delete(&book, &[SavedKey::Int(1)], &store)
         .expect("delete")
-        .commit(&mut store);
+        .commit(&mut store)
+        .expect("commit succeeds");
     assert_eq!(
         store.read(&by_isbn_entry("X")),
         None,
@@ -1544,7 +1551,8 @@ fn a_group_entry_field_write_touches_only_that_member() {
         &SavedValue::Str("Mort".into()),
     )
     .expect("title write")
-    .commit(&mut store);
+    .commit(&mut store)
+    .expect("commit succeeds");
     plan_layer_field_write(
         &book,
         &[SavedKey::Int(5)],
@@ -1554,7 +1562,8 @@ fn a_group_entry_field_write_touches_only_that_member() {
         &SavedValue::Str("fiction".into()),
     )
     .expect("shelf write")
-    .commit(&mut store);
+    .commit(&mut store)
+    .expect("commit succeeds");
 
     assert_eq!(
         decode_value(
@@ -1715,7 +1724,8 @@ fn merge_tags(store: &mut MemStore, schema: &ResourceSchema, from: i64, to: i64)
         store,
     )
     .expect("valid layer merge")
-    .commit(store);
+    .commit(store)
+    .expect("commit succeeds");
 }
 
 #[test]

@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram};
 use marrow_schema::{LayerMember, ResourceSchema};
-use marrow_store::mem::{MemStore, Presence};
+use marrow_store::mem::{MemStore, Presence, StoreError};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{
@@ -484,7 +484,7 @@ fn eval_next_id(
         return Err(unsupported("`nextId` of this path", span));
     };
     let store = env.store.borrow();
-    let next = next_id(name, &store).map_err(|error| RuntimeError {
+    let next = next_id(name, &*store).map_err(|error| RuntimeError {
         code: error.code,
         message: error.message,
         span,
@@ -520,7 +520,7 @@ fn eval_append(
         .ok_or_else(|| unsupported("appending a resource value", span))?;
     let pos = {
         let store = env.store.borrow();
-        next_layer_pos(resource, &identity, layer, &store).map_err(|error| RuntimeError {
+        next_layer_pos(resource, &identity, layer, &*store).map_err(|error| RuntimeError {
             code: error.code,
             message: error.message,
             span,
@@ -532,7 +532,8 @@ fn eval_append(
             message: error.message,
             span,
         })?;
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(Value::Int(pos))
 }
 
@@ -1317,7 +1318,7 @@ fn eval_saved_field_write(
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_field_write(resource, &identity, field, &saved, &store).map_err(|error| {
+        plan_field_write(resource, &identity, field, &saved, &*store).map_err(|error| {
             RuntimeError {
                 code: error.code,
                 message: error.message,
@@ -1325,7 +1326,8 @@ fn eval_saved_field_write(
             }
         })?
     };
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(())
 }
 
@@ -1356,7 +1358,8 @@ fn eval_group_field_write(
             message: error.message,
             span,
         })?;
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(())
 }
 
@@ -1382,13 +1385,14 @@ fn eval_resource_write(
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_write(resource, &identity, &value, &store).map_err(|error| RuntimeError {
+        plan_resource_write(resource, &identity, &value, &*store).map_err(|error| RuntimeError {
             code: error.code,
             message: error.message,
             span,
         })?
     };
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(())
 }
 
@@ -1410,13 +1414,14 @@ fn eval_resource_merge(
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_merge(resource, &identity, &value, &store).map_err(|error| RuntimeError {
+        plan_resource_merge(resource, &identity, &value, &*store).map_err(|error| RuntimeError {
             code: error.code,
             message: error.message,
             span,
         })?
     };
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(())
 }
 
@@ -1457,7 +1462,7 @@ fn eval_layer_merge(
         .ok_or_else(|| unsupported("merging into this saved root", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_layer_merge(resource, &from_identity, &to_identity, layer, &store).map_err(
+        plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store).map_err(
             |error| RuntimeError {
                 code: error.code,
                 message: error.message,
@@ -1465,7 +1470,8 @@ fn eval_layer_merge(
             },
         )?
     };
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(())
 }
 
@@ -1496,13 +1502,14 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_delete(resource, &identity, &store).map_err(|error| RuntimeError {
+        plan_resource_delete(resource, &identity, &*store).map_err(|error| RuntimeError {
             code: error.code,
             message: error.message,
             span,
         })?
     };
-    plan.commit(&mut env.store.borrow_mut());
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
     Ok(())
 }
 
@@ -2011,6 +2018,14 @@ fn eval_bool(expr: &Expression, env: &mut Env<'_>) -> Result<bool, RuntimeError>
     match eval_expr(expr, env)? {
         Value::Bool(b) => Ok(b),
         _ => Err(type_error("expected a boolean", expr.span())),
+    }
+}
+
+fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        code: RUN_STORE,
+        message: format!("a saved-data operation failed: {error:?}"),
+        span,
     }
 }
 
