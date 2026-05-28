@@ -546,6 +546,60 @@ fn known_types_are_not_flagged_as_unknown() {
     );
 }
 
+#[test]
+fn reports_a_bare_return_in_a_value_returning_function() {
+    let root = temp_project("bare-return", |root| {
+        // The bare `return` (inside the `if`) leaves a value-returning function
+        // without a value on that path.
+        write(
+            root,
+            "src/m.mw",
+            "module m\nfn f(c: bool): int\n    if c\n        return\n    return 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        with_code(&report, "check.return_value").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn reports_a_value_return_in_a_void_function() {
+    let root = temp_project("void-return", |root| {
+        write(root, "src/m.mw", "module m\nfn g()\n    return 1\n");
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        with_code(&report, "check.return_value").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn matching_returns_are_not_flagged() {
+    let root = temp_project("ok-return", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nfn ok(c: bool): int\n    if c\n        return 1\n    return 2\n\nfn void_fn(c: bool)\n    if c\n        return\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.return_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,

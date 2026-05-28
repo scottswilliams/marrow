@@ -30,6 +30,9 @@ pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
 /// A type annotation names a type the checker does not recognize.
 pub const CHECK_UNKNOWN_TYPE: &str = "check.unknown_type";
+/// A `return` carries a value in a function with no return type, or omits one in a
+/// value-returning function.
+pub const CHECK_RETURN_VALUE: &str = "check.return_value";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -274,6 +277,12 @@ pub fn check_project(
                             &mut report.diagnostics,
                         );
                     }
+                    check_return_values(
+                        &file.path,
+                        &function.body,
+                        function.return_type.is_some(),
+                        &mut report.diagnostics,
+                    );
                 }
                 marrow_syntax::Declaration::Const(constant) => {
                     if let Some(ty) = &constant.ty {
@@ -313,6 +322,67 @@ fn check_type_annotation(
             line: span.line,
             column: span.column,
         });
+    }
+}
+
+/// Flag each `return` whose value presence does not match the function's declared
+/// return type: a value-returning function must return a value, and a function
+/// with no return type must not return one. Recurses into nested blocks; `finally`
+/// is left to `check.finally_control_flow`, and the "every reachable path returns"
+/// rule is a later slice.
+fn check_return_values(
+    file: &Path,
+    body: &marrow_syntax::Block,
+    returns_value: bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    for statement in &body.statements {
+        match statement {
+            Statement::Return { value, span } => {
+                let message = match (returns_value, value.is_some()) {
+                    (true, false) => "a value-returning function must return a value",
+                    (false, true) => "a function with no return type cannot return a value",
+                    _ => continue,
+                };
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_RETURN_VALUE.to_string(),
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: message.to_string(),
+                    line: span.line,
+                    column: span.column,
+                });
+            }
+            Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                check_return_values(file, then_block, returns_value, diagnostics);
+                for else_if in else_ifs {
+                    check_return_values(file, &else_if.block, returns_value, diagnostics);
+                }
+                if let Some(block) = else_block {
+                    check_return_values(file, block, returns_value, diagnostics);
+                }
+            }
+            Statement::While { body, .. }
+            | Statement::For { body, .. }
+            | Statement::Transaction { body, .. }
+            | Statement::Lock { body, .. } => {
+                check_return_values(file, body, returns_value, diagnostics);
+            }
+            Statement::Try { body, catch, .. } => {
+                check_return_values(file, body, returns_value, diagnostics);
+                if let Some(clause) = catch {
+                    check_return_values(file, &clause.block, returns_value, diagnostics);
+                }
+                // `finally` cannot contain `return` (check.finally_control_flow).
+            }
+            _ => {}
+        }
     }
 }
 
