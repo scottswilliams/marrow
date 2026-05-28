@@ -28,6 +28,13 @@ use crate::path::{ChildSegment, decode_child_segment, root_name, segment_len};
 /// The single table holding every encoded (path, value) pair.
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
 
+/// A small table holding store metadata, currently just the format version.
+const META: TableDefinition<&str, u32> = TableDefinition::new("marrow.meta");
+
+/// The on-disk format version this build writes and accepts. A file recording a
+/// different version is refused rather than misread (no auto-migration).
+const FORMAT_VERSION: u32 = 1;
+
 /// One undone change: a path and the value it held before the change (`None` if
 /// it was absent). Replaying it restores that prior state.
 type Undo = (Vec<u8>, Option<Vec<u8>>);
@@ -94,11 +101,45 @@ macro_rules! read_view {
 }
 
 impl RedbStore {
-    /// Open the store at `path`, creating the redb file and table if needed.
+    /// Open the redb-backed store at `path`, creating the file if needed. A
+    /// second writer for the same file is rejected as [`StoreError::Locked`]
+    /// (redb holds an OS lock), and a file recording a different
+    /// [`FORMAT_VERSION`] is rejected as [`StoreError::FormatVersion`].
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let db = Database::create(path).map_err(io("open"))?;
-        // Create the table now so later reads never meet a missing table.
+        let db = Database::create(path).map_err(|error| match error {
+            redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
+                data_dir: path.to_path_buf(),
+            },
+            other => StoreError::Io {
+                op: "open",
+                message: other.to_string(),
+            },
+        })?;
         let write = db.begin_write().map_err(io("open"))?;
+        {
+            // Check or stamp the format version before touching data. Read the
+            // value into an owned `Option<u32>` first so the access guard drops
+            // before the `insert` below.
+            let mut meta = write.open_table(META).map_err(io("open"))?;
+            let recorded = meta
+                .get("format_version")
+                .map_err(io("open"))?
+                .map(|guard| guard.value());
+            match recorded {
+                Some(found) if found != FORMAT_VERSION => {
+                    return Err(StoreError::FormatVersion {
+                        found,
+                        supported: FORMAT_VERSION,
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    meta.insert("format_version", FORMAT_VERSION)
+                        .map_err(io("open"))?;
+                }
+            }
+        }
+        // Create the data table now so later reads never meet a missing table.
         write.open_table(TABLE).map_err(io("open"))?;
         write.commit().map_err(io("open"))?;
         Ok(Self {
