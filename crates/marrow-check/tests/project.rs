@@ -1034,6 +1034,51 @@ fn passing_a_resource_to_a_mismatched_resource_parameter_is_not_flagged() {
 }
 
 #[test]
+fn a_std_call_return_type_feeds_operator_checks() {
+    // `std::text::length` returns `int`, so `+ true` is int-plus-bool.
+    let found = check_module(
+        "std-return-op",
+        "module m\nfn f()\n    var x = std::text::length(\"hi\") + true\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_std_call_return_type_feeds_the_return_type_check() {
+    // `std::clock::now()` is `instant`, but `f` returns `int`.
+    let found = check_module(
+        "std-return-mismatch",
+        "module m\nfn f(): int\n    return std::clock::now()\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_correctly_typed_std_call_return_is_not_flagged() {
+    // `std::text::length` returns `int`, matching `f`'s declared `int` return.
+    let found = check_module(
+        "std-return-ok",
+        "module m\nfn f(): int\n    return std::text::length(\"hi\")\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_sequence_returning_std_call_is_not_flagged() {
+    // `std::text::split` returns `sequence[string]` (non-primitive), so the checks
+    // — which gate on primitives — never flag it, even against an `int` return.
+    let found = check_module(
+        "std-return-seq",
+        "module m\nfn f(): int\n    return std::text::split(\"a,b\", \",\")\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.

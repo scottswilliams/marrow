@@ -1230,8 +1230,14 @@ fn check_call(
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
         return MarrowType::Unknown;
     };
-    if args.iter().any(|arg| arg.mode.is_some()) || is_builtin_call(segments) {
+    if args.iter().any(|arg| arg.mode.is_some()) {
         return MarrowType::Unknown;
+    }
+    // Builtins and std helpers dispatch before user functions, so their arguments
+    // are the runtime's responsibility — but a std helper's return type is known
+    // and feeds the surrounding type checks.
+    if is_builtin_call(segments) {
+        return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
     }
     let Some(function) = resolve_function(program, segments) else {
         return MarrowType::Unknown;
@@ -1339,6 +1345,50 @@ fn is_builtin_call(segments: &[String]) -> bool {
         ),
         [first, _, _] => first == "std",
         _ => false,
+    }
+}
+
+/// The declared return type of a value-returning `std::module::op` helper, per
+/// `docs/language/standard-library.md`. Void helpers (`std::log`, `std::assert`,
+/// `std::io::write*`) and single-name builtins return `None`, leaving the call
+/// `Unknown` for the surrounding checks. Argument typing for std helpers stays the
+/// runtime's job; this only supplies the result type.
+fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
+    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, String};
+    let [first, module, op] = segments else {
+        return None;
+    };
+    if first != "std" {
+        return None;
+    }
+    let primitive = |p| Some(MarrowType::Primitive(p));
+    match (module.as_str(), op.as_str()) {
+        ("text", "length") => primitive(Int),
+        ("text", "trim") => primitive(String),
+        ("text", "contains") => primitive(Bool),
+        ("text", "split") => Some(MarrowType::Sequence(Box::new(MarrowType::Primitive(
+            String,
+        )))),
+        ("bytes", "length") => primitive(Int),
+        ("bytes", "base64Encode") => primitive(String),
+        ("bytes", "base64Decode") => primitive(Bytes),
+        ("math", "absInt") => primitive(Int),
+        ("math", "absDecimal") => primitive(Decimal),
+        ("math", "floor") => primitive(Int),
+        ("math", "modulo") => primitive(Int),
+        ("math", "remainder") => primitive(Int),
+        ("clock", "now") => primitive(Instant),
+        ("clock", "today") => primitive(Date),
+        ("clock", "parseInstant") => primitive(Instant),
+        ("clock", "parseDate") => primitive(Date),
+        ("clock", "parseDuration") => primitive(Duration),
+        ("clock", "formatInstant" | "formatDate" | "formatDuration") => primitive(String),
+        ("clock", "add") => primitive(Instant),
+        ("env", "exists") => primitive(Bool),
+        ("env", "get" | "require") => primitive(String),
+        ("io", "readText") => primitive(String),
+        ("io", "readBytes") => primitive(Bytes),
+        _ => None,
     }
 }
 
