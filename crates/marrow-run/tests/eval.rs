@@ -12,7 +12,7 @@ use marrow_run::{
 use marrow_schema::compile_resource;
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
-use marrow_store::value::{SavedValue, encode_value};
+use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
 
 /// Parse `source` and return the single function it declares.
@@ -822,4 +822,38 @@ fn reads_inside_a_transaction_see_earlier_writes() {
     let store = RefCell::new(MemStore::new());
     let outcome = run_entry(&program, &store, "test::rww", &[Value::Int(1)]).expect("run");
     assert_eq!(outcome.value, Some(Value::Str("fresh".into())));
+}
+
+#[test]
+fn append_writes_at_the_next_position() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let appended = |t: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add_tag",
+            &[Value::Int(5), Value::Str(t.into())],
+        )
+        .expect("run")
+        .value
+    };
+    // Successive appends take positions 1 then 2 (no hole-filling).
+    assert_eq!(appended("a"), Some(Value::Int(1)));
+    assert_eq!(appended("b"), Some(Value::Int(2)));
+    // The values landed at `^books(5).tags(1)` and `tags(2)`.
+    let tag = |pos: i64| -> Option<SavedValue> {
+        let store = store.borrow();
+        let bytes = store.read(&encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(5)),
+            PathSegment::ChildLayer("tags".into()),
+            PathSegment::IndexKey(SavedKey::Int(pos)),
+        ]))?;
+        decode_value(bytes, ValueType::Str)
+    };
+    assert_eq!(tag(1), Some(SavedValue::Str("a".into())));
+    assert_eq!(tag(2), Some(SavedValue::Str("b".into())));
 }

@@ -20,7 +20,9 @@ use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, SourceSpan, Statement, UnaryOp,
 };
-use marrow_write::{next_id, plan_field_write, plan_resource_delete};
+use marrow_write::{
+    next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write, plan_resource_delete,
+};
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
 /// trees, identities, and error values arrive with the features that produce
@@ -223,6 +225,7 @@ fn eval_call(
             "exists" => return eval_exists(args, span, env).map(Some),
             "get" => return eval_get(args, span, env).map(Some),
             "nextId" => return eval_next_id(args, span, env).map(Some),
+            "append" => return eval_append(args, span, env).map(Some),
             _ => {}
         }
     }
@@ -338,6 +341,49 @@ fn eval_next_id(
         span,
     })?;
     Ok(Value::Int(next))
+}
+
+/// Evaluate `append(^root(key…).layer, value)`: write `value` at the next 1-based
+/// position of a keyed-leaf layer and return that position. Reuses marrow-write's
+/// `next_layer_pos` (over the live store) and `plan_layer_leaf_write`.
+fn eval_append(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [target, value] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`append` takes a layer path and a value".into(),
+            span,
+        });
+    };
+    let Expression::Field {
+        base, name: layer, ..
+    } = &target.value
+    else {
+        return Err(unsupported("appending to this path", span));
+    };
+    let (root, identity) = lower_record_identity(base, env)?;
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("appending under this saved root", span))?;
+    let saved = value_to_saved(eval_expr(&value.value, env)?);
+    let pos = {
+        let store = env.store.borrow();
+        next_layer_pos(resource, &identity, layer, &store).map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        })?
+    };
+    let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
+        .map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        })?;
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(Value::Int(pos))
 }
 
 /// Where control flow stands after a statement or block.
