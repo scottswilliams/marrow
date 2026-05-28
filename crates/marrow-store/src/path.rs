@@ -17,6 +17,8 @@ pub enum SavedKey {
     Str(String),
     /// A calendar date as days since the Unix epoch (1970-01-01).
     Date(i32),
+    /// An elapsed span as a signed count of nanoseconds.
+    Duration(i128),
 }
 
 /// One segment of a saved path.
@@ -48,10 +50,12 @@ const KIND_NAMED: u8 = 0x03;
 const KIND_INDEX_KEY: u8 = 0x04;
 
 // Key-type tags, in Marrow's typed key order: booleans, numbers, then dates,
-// then strings (docs/language/types.md).
+// instants, and durations, then strings (docs/language/types.md). 0x04 is
+// reserved for instants.
 const KEY_BOOL: u8 = 0x01;
 const KEY_INT: u8 = 0x02;
 const KEY_DATE: u8 = 0x03;
+const KEY_DURATION: u8 = 0x05;
 const KEY_STR: u8 = 0x07;
 
 /// Encode a saved path to its ordered byte key.
@@ -106,6 +110,12 @@ fn encode_key(key: &SavedKey, out: &mut Vec<u8>) {
             // Days since the epoch, sign-flipped big-endian, so dates sort
             // chronologically just like signed integers.
             out.extend_from_slice(&((*value as u32) ^ (1u32 << 31)).to_be_bytes());
+        }
+        SavedKey::Duration(value) => {
+            out.push(KEY_DURATION);
+            // Signed nanoseconds, sign-flipped big-endian, so durations sort by
+            // signed length: more-negative spans first.
+            out.extend_from_slice(&((*value as u128) ^ (1u128 << 127)).to_be_bytes());
         }
         SavedKey::Str(value) => {
             out.push(KEY_STR);
@@ -184,6 +194,7 @@ fn key_len(bytes: &[u8]) -> Option<usize> {
         KEY_BOOL => Some(2),
         KEY_INT => Some(9),
         KEY_DATE => Some(5),
+        KEY_DURATION => Some(17),
         KEY_STR => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
         _ => None,
     }
@@ -203,6 +214,12 @@ fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
             let raw: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
             Some(SavedKey::Date(
                 (u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32,
+            ))
+        }
+        KEY_DURATION => {
+            let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
+            Some(SavedKey::Duration(
+                (u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128,
             ))
         }
         KEY_STR => {

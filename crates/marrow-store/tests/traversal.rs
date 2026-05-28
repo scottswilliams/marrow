@@ -103,6 +103,28 @@ fn child_keys_round_trip_date_records() {
 }
 
 #[test]
+fn child_keys_round_trip_duration_records() {
+    let mut store = MemStore::new();
+    for nanos in [1_500_000_000i128, -1_000_000_000, 0] {
+        let path = [
+            PathSegment::Root("spans".into()),
+            PathSegment::RecordKey(SavedKey::Duration(nanos)),
+            PathSegment::Field("note".into()),
+        ];
+        store.write(&encode_path(&path), b"x".to_vec());
+    }
+    let children = store.child_keys(&encode_path(&[PathSegment::Root("spans".into())]));
+    assert_eq!(
+        children,
+        vec![
+            ChildSegment::Key(SavedKey::Duration(-1_000_000_000)),
+            ChildSegment::Key(SavedKey::Duration(0)),
+            ChildSegment::Key(SavedKey::Duration(1_500_000_000)),
+        ]
+    );
+}
+
+#[test]
 fn roots_are_listed_in_order_without_duplicates() {
     let mut store = MemStore::new();
     store.write(&encode_path(&seq(1)), b"x".to_vec());

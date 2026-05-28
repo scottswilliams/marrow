@@ -142,3 +142,23 @@ fn date_keys_order_chronologically() {
         ]
     );
 }
+
+#[test]
+fn duration_keys_order_by_signed_length() {
+    let mut encoded: Vec<(Vec<u8>, i128)> = [1_500_000_000i128, -1_000_000_000, 0, 1, -250_000_000]
+        .into_iter()
+        .map(|nanos| {
+            let path = [
+                PathSegment::Root("spans".into()),
+                PathSegment::RecordKey(SavedKey::Duration(nanos)),
+            ];
+            (encode_path(&path), nanos)
+        })
+        .collect();
+    encoded.sort_by(|a, b| a.0.cmp(&b.0));
+    let order: Vec<i128> = encoded.into_iter().map(|(_, nanos)| nanos).collect();
+    assert_eq!(
+        order,
+        vec![-1_000_000_000, -250_000_000, 0, 1, 1_500_000_000]
+    );
+}
