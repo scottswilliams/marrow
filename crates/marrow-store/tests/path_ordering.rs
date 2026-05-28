@@ -109,3 +109,36 @@ fn a_shorter_string_key_sorts_before_one_that_extends_it() {
         ["a", "a\u{0}", "ab"]
     );
 }
+
+#[test]
+fn date_keys_order_chronologically() {
+    let day = |y, m, d| marrow_store::value::date_days(y, m, d).expect("valid date");
+    let mut encoded: Vec<(Vec<u8>, i32)> = [
+        day(2021, 6, 16),
+        day(1900, 1, 1), // pre-epoch (negative days)
+        day(1999, 12, 31),
+        day(2021, 6, 15),
+        day(1970, 1, 1), // the epoch itself
+    ]
+    .into_iter()
+    .map(|days| {
+        let path = [
+            PathSegment::Root("events".into()),
+            PathSegment::RecordKey(SavedKey::Date(days)),
+        ];
+        (encode_path(&path), days)
+    })
+    .collect();
+    encoded.sort_by(|a, b| a.0.cmp(&b.0));
+    let order: Vec<i32> = encoded.into_iter().map(|(_, days)| days).collect();
+    assert_eq!(
+        order,
+        vec![
+            day(1900, 1, 1),
+            day(1970, 1, 1),
+            day(1999, 12, 31),
+            day(2021, 6, 15),
+            day(2021, 6, 16),
+        ]
+    );
+}

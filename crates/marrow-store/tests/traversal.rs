@@ -80,6 +80,29 @@ fn child_keys_round_trip_string_records() {
 }
 
 #[test]
+fn child_keys_round_trip_date_records() {
+    let mut store = MemStore::new();
+    let day = |y, m, d| marrow_store::value::date_days(y, m, d).expect("valid date");
+    for (y, m, d) in [(2021, 6, 16), (1999, 12, 31), (2021, 6, 15)] {
+        let path = [
+            PathSegment::Root("events".into()),
+            PathSegment::RecordKey(SavedKey::Date(day(y, m, d))),
+            PathSegment::Field("note".into()),
+        ];
+        store.write(&encode_path(&path), b"x".to_vec());
+    }
+    let children = store.child_keys(&encode_path(&[PathSegment::Root("events".into())]));
+    assert_eq!(
+        children,
+        vec![
+            ChildSegment::Key(SavedKey::Date(day(1999, 12, 31))),
+            ChildSegment::Key(SavedKey::Date(day(2021, 6, 15))),
+            ChildSegment::Key(SavedKey::Date(day(2021, 6, 16))),
+        ]
+    );
+}
+
+#[test]
 fn roots_are_listed_in_order_without_duplicates() {
     let mut store = MemStore::new();
     store.write(&encode_path(&seq(1)), b"x".to_vec());

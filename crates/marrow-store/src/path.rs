@@ -15,6 +15,8 @@ pub enum SavedKey {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A calendar date as days since the Unix epoch (1970-01-01).
+    Date(i32),
 }
 
 /// One segment of a saved path.
@@ -45,10 +47,11 @@ const KIND_RECORD_KEY: u8 = 0x02;
 const KIND_NAMED: u8 = 0x03;
 const KIND_INDEX_KEY: u8 = 0x04;
 
-// Key-type tags, in Marrow's typed key order: booleans, then numbers, then
-// strings (docs/language/types.md).
+// Key-type tags, in Marrow's typed key order: booleans, numbers, then dates,
+// then strings (docs/language/types.md).
 const KEY_BOOL: u8 = 0x01;
 const KEY_INT: u8 = 0x02;
+const KEY_DATE: u8 = 0x03;
 const KEY_STR: u8 = 0x07;
 
 /// Encode a saved path to its ordered byte key.
@@ -97,6 +100,12 @@ fn encode_key(key: &SavedKey, out: &mut Vec<u8>) {
             // signed numeric order: i64::MIN encodes to all-zero, i64::MAX to
             // all-one.
             out.extend_from_slice(&((*value as u64) ^ (1u64 << 63)).to_be_bytes());
+        }
+        SavedKey::Date(value) => {
+            out.push(KEY_DATE);
+            // Days since the epoch, sign-flipped big-endian, so dates sort
+            // chronologically just like signed integers.
+            out.extend_from_slice(&((*value as u32) ^ (1u32 << 31)).to_be_bytes());
         }
         SavedKey::Str(value) => {
             out.push(KEY_STR);
@@ -174,6 +183,7 @@ fn key_len(bytes: &[u8]) -> Option<usize> {
     match *bytes.first()? {
         KEY_BOOL => Some(2),
         KEY_INT => Some(9),
+        KEY_DATE => Some(5),
         KEY_STR => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
         _ => None,
     }
@@ -187,6 +197,12 @@ fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
             let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
             Some(SavedKey::Int(
                 (u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64,
+            ))
+        }
+        KEY_DATE => {
+            let raw: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
+            Some(SavedKey::Date(
+                (u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32,
             ))
         }
         KEY_STR => {
