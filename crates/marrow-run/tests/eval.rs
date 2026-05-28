@@ -2,6 +2,7 @@
 //! locals, and conditionals over integer and boolean values.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
@@ -1816,7 +1817,7 @@ fn clock_now_reads_the_host_clock_capability() {
     let program = checked_program(CLOCK_SAMPLE);
     let store = RefCell::new(MemStore::new());
     // 1970-01-01T00:00:01Z, one second after the epoch.
-    let host = Host::with_clock(1_000_000_000);
+    let host = Host::new().with_clock(1_000_000_000);
     run_entry_with_host(&program, &store, &host, "test::record", &[Value::Int(1)]).expect("record");
     // The instant round-trips through the managed write and a typed read.
     let outcome =
@@ -1830,6 +1831,117 @@ fn clock_now_without_a_clock_capability_is_a_capability_error() {
     let store = RefCell::new(MemStore::new());
     // Plain `run_entry` supplies no host capabilities.
     let result = run_entry(&program, &store, "test::t", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
+        "{result:?}"
+    );
+}
+
+/// A program that reads environment variables through the three `std::env`
+/// builtins: presence, lookup with a default, and a required lookup.
+const ENV_SAMPLE: &str = "\
+fn has(name: string): bool
+    return std::env::exists(name)
+
+fn read(name: string, fallback: string): string
+    return std::env::get(name, fallback)
+
+fn must(name: string): string
+    return std::env::require(name)
+";
+
+/// A host whose environment is the test's fixed variables.
+fn env_host() -> Host {
+    Host::new().with_environment(HashMap::from([
+        ("HOME".to_string(), "/home/marrow".to_string()),
+        ("EMPTY".to_string(), String::new()),
+    ]))
+}
+
+#[test]
+fn env_reads_variables_from_the_host_capability() {
+    let program = checked_program(ENV_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let host = env_host();
+    let call = |entry: &str, args: &[Value]| {
+        run_entry_with_host(&program, &store, &host, entry, args)
+            .expect("env call")
+            .value
+    };
+    // `exists` reports presence, including a present-but-empty variable.
+    assert_eq!(
+        call("test::has", &[Value::Str("HOME".into())]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        call("test::has", &[Value::Str("EMPTY".into())]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        call("test::has", &[Value::Str("MISSING".into())]),
+        Some(Value::Bool(false))
+    );
+    // `require` returns a present variable's value.
+    assert_eq!(
+        call("test::must", &[Value::Str("HOME".into())]),
+        Some(Value::Str("/home/marrow".into()))
+    );
+}
+
+#[test]
+fn env_get_falls_back_to_the_default_when_absent() {
+    let program = checked_program(ENV_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let host = env_host();
+    let call = |name: &str, fallback: &str| {
+        run_entry_with_host(
+            &program,
+            &store,
+            &host,
+            "test::read",
+            &[Value::Str(name.into()), Value::Str(fallback.into())],
+        )
+        .expect("env get")
+        .value
+    };
+    // A present variable wins over the default; an empty one is still present.
+    assert_eq!(
+        call("HOME", "fallback"),
+        Some(Value::Str("/home/marrow".into()))
+    );
+    assert_eq!(call("EMPTY", "fallback"), Some(Value::Str(String::new())));
+    // An absent variable falls back to the default.
+    assert_eq!(
+        call("MISSING", "fallback"),
+        Some(Value::Str("fallback".into()))
+    );
+}
+
+#[test]
+fn env_require_missing_variable_is_an_absent_error() {
+    let program = checked_program(ENV_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let host = env_host();
+    let result = run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::must",
+        &[Value::Str("MISSING".into())],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_ABSENT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn env_without_an_environment_capability_is_a_capability_error() {
+    let program = checked_program(ENV_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    // Plain `run_entry` supplies no host capabilities, so the whole module is
+    // unavailable — even presence checks.
+    let result = run_entry(&program, &store, "test::has", &[Value::Str("HOME".into())]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
         "{result:?}"
@@ -2005,7 +2117,7 @@ fn the_reference_sample_runs_end_to_end() {
     // tag it, and print the fiction shelf via index traversal.
     let program = checked_program(&sample_source());
     let store = RefCell::new(MemStore::new());
-    let host = Host::with_clock(1_700_000_000_000_000_000); // 2023-11-14T22:13:20Z
+    let host = Host::new().with_clock(1_700_000_000_000_000_000); // 2023-11-14T22:13:20Z
     let outcome = run_entry_with_host(&program, &store, &host, "test::main", &[])
         .expect("the sample's main runs end-to-end");
     // `main` returns nothing and prints the one fiction book it added.
@@ -2020,7 +2132,7 @@ fn the_reference_sample_runs_on_native_storage() {
     let program = checked_program(&sample_source());
     let dir = tempfile::tempdir().expect("create a temp dir");
     let store = RefCell::new(RedbStore::open(&dir.path().join("sample.redb")).expect("open redb"));
-    let host = Host::with_clock(1_700_000_000_000_000_000);
+    let host = Host::new().with_clock(1_700_000_000_000_000_000);
     let outcome = run_entry_with_host(&program, &store, &host, "test::main", &[])
         .expect("the sample's main runs on native storage");
     assert_eq!(outcome.value, None);

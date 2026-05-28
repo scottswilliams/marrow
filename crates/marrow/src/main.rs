@@ -426,13 +426,16 @@ fn open_store_for_inspection(
 
 /// Run `entry` from a checked `program` over `store`, printing its output. The
 /// store is the ordered-tree backend the project selected; the run reads the
-/// real system clock for `std::clock::now()`.
+/// real system clock for `std::clock::now()` and the real environment for
+/// `std::env`.
 fn execute(
     program: &marrow_check::CheckedProgram,
     store: &RefCell<dyn marrow_store::backend::Backend>,
     entry: &str,
 ) -> ExitCode {
-    let host = marrow_run::Host::with_system_clock();
+    let host = marrow_run::Host::new()
+        .with_system_clock()
+        .with_system_environment();
     match marrow_run::run_entry_with_host(program, store, &host, entry, &[]) {
         Ok(outcome) => {
             print!("{}", outcome.output);
@@ -584,7 +587,9 @@ fn test_project_dir(dir: &str) -> ExitCode {
     let mut program = src_program;
     program.modules.extend(test_modules);
 
-    let host = marrow_run::Host::with_system_clock();
+    let host = marrow_run::Host::new()
+        .with_system_clock()
+        .with_system_environment();
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errored = 0usize;

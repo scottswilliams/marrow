@@ -8,11 +8,12 @@
 //! groups writes in a `transaction` (commit/rollback with read-your-writes), and
 //! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
 //! `std::assert`/`std::text`/`std::math` library helpers, and the
-//! `std::clock::now()` host capability. Whole-resource writes, `merge`, index
+//! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes, `merge`, index
 //! traversal, and structured errors build on this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -116,6 +117,9 @@ pub struct Host {
     /// capability is provided. Captured once, so every `std::clock::now()` in
     /// the run sees one consistent instant.
     clock: Option<i128>,
+    /// The run's environment variables, when an environment capability is
+    /// provided. A run without it cannot use `std::env`.
+    environment: Option<HashMap<String, String>>,
 }
 
 impl Host {
@@ -125,18 +129,34 @@ impl Host {
     }
 
     /// A host whose clock reads the real system time, captured now.
-    pub fn with_system_clock() -> Self {
+    pub fn with_system_clock(mut self) -> Self {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos() as i128)
             .unwrap_or(0);
-        Self { clock: Some(nanos) }
+        self.clock = Some(nanos);
+        self
     }
 
     /// A host whose clock returns a fixed instant (nanoseconds since the Unix
     /// epoch, UTC), for deterministic runs and tests.
-    pub fn with_clock(nanos: i128) -> Self {
-        Self { clock: Some(nanos) }
+    pub fn with_clock(mut self, nanos: i128) -> Self {
+        self.clock = Some(nanos);
+        self
+    }
+
+    /// A host whose environment is the process's real environment variables,
+    /// captured now.
+    pub fn with_system_environment(mut self) -> Self {
+        self.environment = Some(std::env::vars().collect());
+        self
+    }
+
+    /// A host whose environment is the given variables, for deterministic runs
+    /// and tests.
+    pub fn with_environment(mut self, variables: HashMap<String, String>) -> Self {
+        self.environment = Some(variables);
+        self
     }
 }
 
@@ -424,6 +444,13 @@ fn eval_call(
             && third == "now"
         {
             return eval_clock_now(args, span, env).map(Some);
+        }
+        // `std::env::*` reads the run's environment capability.
+        if let [first, second, op] = segments.as_slice()
+            && first == "std"
+            && second == "env"
+        {
+            return eval_env(op, args, span, env).map(Some);
         }
         // `std::assert::*` testing builtins raise `run.assertion` on failure.
         if let [first, second, op] = segments.as_slice()
@@ -1043,6 +1070,52 @@ fn eval_clock_now(
         span,
     })?;
     Ok(Value::Instant(nanos))
+}
+
+/// Evaluate a `std::env::*` builtin against the host's environment capability:
+/// `exists(name)`, `get(name, default)`, or `require(name)`. A run with no
+/// environment capability raises a typed capability error rather than reading
+/// the process environment implicitly; `require` on an absent variable raises a
+/// typed absence error.
+fn eval_env(
+    op: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    // Evaluate the string arguments before borrowing the environment, so their
+    // mutable use of `env` does not overlap the shared read of the capability.
+    let names: Vec<String> = args
+        .iter()
+        .map(|arg| eval_text(arg, env, span))
+        .collect::<Result<_, _>>()?;
+    let variables = env.host.environment.as_ref().ok_or_else(|| RuntimeError {
+        code: RUN_CAPABILITY,
+        message: format!("this run provides no environment capability for `std::env::{op}`"),
+        span,
+    })?;
+    match (op, names.as_slice()) {
+        ("exists", [name]) => Ok(Value::Bool(variables.contains_key(name))),
+        ("get", [name, default]) => Ok(Value::Str(
+            variables
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| default.clone()),
+        )),
+        ("require", [name]) => {
+            variables
+                .get(name)
+                .cloned()
+                .map(Value::Str)
+                .ok_or_else(|| RuntimeError {
+                    code: RUN_ABSENT,
+                    message: format!("required environment variable `{name}` is absent"),
+                    span,
+                })
+        }
+        ("exists" | "get" | "require", _) => Err(std_arity("env", op, span)),
+        _ => Err(unsupported(&format!("std::env::{op}"), span)),
+    }
 }
 
 /// Where control flow stands after a statement or block.
