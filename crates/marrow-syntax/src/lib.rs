@@ -84,6 +84,22 @@ pub enum Expression {
         segments: Vec<String>,
         span: SourceSpan,
     },
+    /// A saved-data root such as `^books`. Postfix key lookups and field
+    /// access build the rest of a saved path on top of this.
+    SavedRoot { name: String, span: SourceSpan },
+    /// A parenthesized application: a function call, key lookup, conversion, or
+    /// resource constructor. The checker resolves which one from the callee.
+    Call {
+        callee: Box<Expression>,
+        args: Vec<Argument>,
+        span: SourceSpan,
+    },
+    /// Dotted field access, such as `book.title` or `^books(id).title`.
+    Field {
+        base: Box<Expression>,
+        name: String,
+        span: SourceSpan,
+    },
     Unary {
         op: UnaryOp,
         operand: Box<Expression>,
@@ -96,8 +112,9 @@ pub enum Expression {
         span: SourceSpan,
     },
     /// Expression text the outline parser does not yet decompose, such as
-    /// calls, saved paths, interpolation, and resource literals. Future
-    /// syntax-tree slices replace `Unparsed` with concrete variants.
+    /// interpolation, resource literals with quoted segments, and ranges with
+    /// quoted field names. Future syntax-tree slices replace `Unparsed` with
+    /// concrete variants.
     Unparsed { text: String, span: SourceSpan },
 }
 
@@ -106,11 +123,29 @@ impl Expression {
         match self {
             Self::Literal { span, .. }
             | Self::Name { span, .. }
+            | Self::SavedRoot { span, .. }
+            | Self::Call { span, .. }
+            | Self::Field { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Unparsed { span, .. } => *span,
         }
     }
+}
+
+/// One argument in a call expression. `name` is set for named arguments
+/// (`title: draft`); `mode` is set for `out`/`inout` arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Argument {
+    pub mode: Option<ArgMode>,
+    pub name: Option<String>,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgMode {
+    Out,
+    InOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1809,10 +1844,10 @@ fn is_trivia(kind: TokenKind) -> bool {
 }
 
 /// Recursive-descent parser for a single Marrow expression over a token slice
-/// with file-absolute spans. It covers the primary, unary, and binary
-/// precedence levels from `docs/language/grammar.md`. Forms it does not yet
-/// handle (calls, saved paths, interpolation, resource literals) cause the
-/// whole value to be reported as `Expression::Unparsed`.
+/// with file-absolute spans. It covers the primary, postfix, unary, and binary
+/// precedence levels from `docs/language/grammar.md`, including calls and saved
+/// paths. Forms it does not yet handle (interpolation, quoted field segments)
+/// cause the whole value to be reported as `Expression::Unparsed`.
 struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -1848,7 +1883,11 @@ impl<'a> ExprParser<'a> {
     }
 
     fn peek(&self) -> Option<TokenKind> {
-        self.tokens.get(self.pos).map(|token| token.kind)
+        self.peek_at(0)
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<TokenKind> {
+        self.tokens.get(self.pos + offset).map(|token| token.kind)
     }
 
     fn advance(&mut self) -> Token {
@@ -1964,7 +2003,7 @@ impl<'a> ExprParser<'a> {
         let op = match self.peek() {
             Some(TokenKind::Minus) => UnaryOp::Neg,
             Some(TokenKind::Keyword(Keyword::Not)) => UnaryOp::Not,
-            _ => return self.primary_expr(),
+            _ => return self.postfix_expr(),
         };
         let op_token = self.advance();
         let operand = self.unary_expr()?;
@@ -1974,6 +2013,86 @@ impl<'a> ExprParser<'a> {
             operand: Box::new(operand),
             span,
         })
+    }
+
+    fn postfix_expr(&mut self) -> Option<Expression> {
+        let mut expr = self.primary_expr()?;
+        loop {
+            match self.peek() {
+                Some(TokenKind::LeftParen) => {
+                    self.advance();
+                    let args = self.arguments()?;
+                    if !matches!(self.peek(), Some(TokenKind::RightParen)) {
+                        return None;
+                    }
+                    let close = self.advance();
+                    let span = join_spans(expr.span(), close.span);
+                    expr = Expression::Call {
+                        callee: Box::new(expr),
+                        args,
+                        span,
+                    };
+                }
+                Some(TokenKind::Dot) => {
+                    self.advance();
+                    let segment = *self.tokens.get(self.pos)?;
+                    if segment.kind != TokenKind::Identifier {
+                        // Quoted field segments are not yet decomposed here.
+                        return None;
+                    }
+                    self.advance();
+                    let span = join_spans(expr.span(), segment.span);
+                    expr = Expression::Field {
+                        base: Box::new(expr),
+                        name: segment.text(self.source).to_string(),
+                        span,
+                    };
+                }
+                _ => break,
+            }
+        }
+        Some(expr)
+    }
+
+    fn arguments(&mut self) -> Option<Vec<Argument>> {
+        let mut args = Vec::new();
+        if matches!(self.peek(), Some(TokenKind::RightParen)) {
+            return Some(args);
+        }
+        loop {
+            args.push(self.argument()?);
+            if !matches!(self.peek(), Some(TokenKind::Comma)) {
+                break;
+            }
+            self.advance();
+            if matches!(self.peek(), Some(TokenKind::RightParen)) {
+                break;
+            }
+        }
+        Some(args)
+    }
+
+    fn argument(&mut self) -> Option<Argument> {
+        let mode = match self.peek() {
+            Some(TokenKind::Keyword(Keyword::Out)) => Some(ArgMode::Out),
+            Some(TokenKind::Keyword(Keyword::InOut)) => Some(ArgMode::InOut),
+            _ => None,
+        };
+        if mode.is_some() {
+            self.advance();
+        }
+        let name = if mode.is_none()
+            && matches!(self.peek(), Some(TokenKind::Identifier))
+            && matches!(self.peek_at(1), Some(TokenKind::Colon))
+        {
+            let identifier = self.advance();
+            self.advance();
+            Some(identifier.text(self.source).to_string())
+        } else {
+            None
+        };
+        let value = self.expression()?;
+        Some(Argument { mode, name, value })
     }
 
     fn primary_expr(&mut self) -> Option<Expression> {
@@ -2007,6 +2126,31 @@ impl<'a> ExprParser<'a> {
                 literal(LiteralKind::Bool)
             }
             TokenKind::Identifier => self.name_expr(),
+            // Conversion types and `Error` are only values when called, e.g.
+            // `int(value)` or `Error(code: ...)`. A bare type keyword is not an
+            // expression, so require a following `(`.
+            TokenKind::Keyword(keyword)
+                if is_callable_keyword(keyword)
+                    && matches!(self.peek_at(1), Some(TokenKind::LeftParen)) =>
+            {
+                self.advance();
+                Some(Expression::Name {
+                    segments: vec![token.text(self.source).to_string()],
+                    span: token.span,
+                })
+            }
+            TokenKind::Caret => {
+                self.advance();
+                let name = *self.tokens.get(self.pos)?;
+                if name.kind != TokenKind::Identifier {
+                    return None;
+                }
+                self.advance();
+                Some(Expression::SavedRoot {
+                    name: name.text(self.source).to_string(),
+                    span: join_spans(token.span, name.span),
+                })
+            }
             TokenKind::LeftParen => {
                 self.advance();
                 let inner = self.expression()?;
@@ -2040,6 +2184,24 @@ impl<'a> ExprParser<'a> {
             span: join_spans(first.span, end),
         })
     }
+}
+
+/// Type keywords and `Error` that can begin a value when immediately called as
+/// a conversion or resource constructor.
+fn is_callable_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Int
+            | Keyword::Decimal
+            | Keyword::Bool
+            | Keyword::String
+            | Keyword::Bytes
+            | Keyword::Date
+            | Keyword::Instant
+            | Keyword::Duration
+            | Keyword::ErrorCode
+            | Keyword::Error
+    )
 }
 
 fn binary_expr(op: BinaryOp, left: Expression, right: Expression) -> Expression {

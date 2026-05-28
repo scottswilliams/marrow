@@ -1,5 +1,5 @@
 use marrow_syntax::{
-    BinaryOp, Declaration, Expression, LiteralKind, ResourceMember, UnaryOp, parse_source,
+    ArgMode, BinaryOp, Declaration, Expression, LiteralKind, ResourceMember, UnaryOp, parse_source,
 };
 
 fn reference_sample() -> &'static str {
@@ -234,8 +234,9 @@ fn parses_const_values_into_expression_nodes() {
             Expectation::Name(&["std", "math", "PI"]),
         ),
         (
-            "const Call: int = nextId(books)\n",
-            Expectation::Unparsed("nextId(books)"),
+            // Interpolation is not decomposed by the expression parser yet.
+            "const Label: string = $\"book {id}\"\n",
+            Expectation::Unparsed("$\"book {id}\""),
         ),
     ];
 
@@ -320,6 +321,98 @@ fn parses_const_unary_and_grouping() {
             }
         ),
         "operand should be the inner add, got {operand:?}"
+    );
+}
+
+#[test]
+fn parses_calls_paths_and_field_access() {
+    // `^books(id).title` is SavedRoot -> Call -> Field.
+    let parsed = parse_source("const Title = ^books(id).title\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Field { base, name, .. } = &decl.value else {
+        panic!("expected field access, got {:?}", decl.value);
+    };
+    assert_eq!(name, "title");
+    let Expression::Call { callee, args, .. } = base.as_ref() else {
+        panic!("expected call under field, got {base:?}");
+    };
+    assert_eq!(args.len(), 1);
+    assert!(
+        matches!(callee.as_ref(), Expression::SavedRoot { name, .. } if name == "books"),
+        "expected saved root callee, got {callee:?}"
+    );
+    assert!(
+        matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["id"]),
+        "expected id argument, got {:?}",
+        args[0].value
+    );
+}
+
+#[test]
+fn parses_named_and_moded_call_arguments() {
+    let parsed = parse_source("const Made = save(book: draft, out result, inout total)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Call { args, .. } = &decl.value else {
+        panic!("expected call, got {:?}", decl.value);
+    };
+    assert_eq!(args.len(), 3);
+    assert_eq!(args[0].name.as_deref(), Some("book"));
+    assert_eq!(args[0].mode, None);
+    assert_eq!(args[1].mode, Some(ArgMode::Out));
+    assert_eq!(args[1].name, None);
+    assert_eq!(args[2].mode, Some(ArgMode::InOut));
+}
+
+#[test]
+fn parses_conversion_and_constructor_calls() {
+    // Conversion call on a type keyword.
+    let parsed = parse_source("const Count: int = int(raw)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Call { callee, .. } = &decl.value else {
+        panic!("expected conversion call, got {:?}", decl.value);
+    };
+    assert!(
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["int"]),
+        "expected int callee, got {callee:?}"
+    );
+
+    // Generated identity constructor `Book::Id(17)`.
+    let parsed = parse_source("const First = Book::Id(17)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Call { callee, args, .. } = &decl.value else {
+        panic!("expected constructor call, got {:?}", decl.value);
+    };
+    assert!(
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["Book", "Id"]),
+        "expected Book::Id callee, got {callee:?}"
+    );
+    assert_eq!(args.len(), 1);
+}
+
+#[test]
+fn bare_type_keyword_is_not_a_value() {
+    // `int` alone is a type, not an expression, so it does not parse as a value.
+    let parsed = parse_source("const Bad = int\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    assert!(
+        matches!(decl.value, Expression::Unparsed { .. }),
+        "expected bare `int` to be Unparsed, got {:?}",
+        decl.value
     );
 }
 
