@@ -33,6 +33,8 @@ pub const CHECK_UNKNOWN_TYPE: &str = "check.unknown_type";
 /// A `return` carries a value in a function with no return type, or omits one in a
 /// value-returning function.
 pub const CHECK_RETURN_VALUE: &str = "check.return_value";
+/// A value-returning function can reach the end of its body without returning.
+pub const CHECK_MISSING_RETURN: &str = "check.missing_return";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -283,6 +285,19 @@ pub fn check_project(
                         function.return_type.is_some(),
                         &mut report.diagnostics,
                     );
+                    if function.return_type.is_some() && !block_returns(&function.body) {
+                        report.diagnostics.push(CheckDiagnostic {
+                            code: CHECK_MISSING_RETURN.to_string(),
+                            severity: Severity::Error,
+                            file: file.path.clone(),
+                            message: format!(
+                                "function `{}` may reach its end without returning a value",
+                                function.name
+                            ),
+                            line: function.span.line,
+                            column: function.span.column,
+                        });
+                    }
                 }
                 marrow_syntax::Declaration::Const(constant) => {
                     if let Some(ty) = &constant.ty {
@@ -383,6 +398,45 @@ fn check_return_values(
             }
             _ => {}
         }
+    }
+}
+
+/// Whether `block` definitely returns (or otherwise diverges) on every path —
+/// a sound under-approximation of "every reachable path returns" (spec). It is
+/// conservative: a function ending in a call or a loop may diverge, so it is not
+/// flagged; only a clearly falling-through end is. Avoids false positives at the
+/// cost of missing some genuine cases (a later slice can tighten it).
+fn block_returns(block: &marrow_syntax::Block) -> bool {
+    block.statements.last().is_some_and(statement_returns)
+}
+
+fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
+    use marrow_syntax::{Expression, Statement};
+    match statement {
+        Statement::Return { .. } | Statement::Throw { .. } => true,
+        // A call may throw or loop forever, so a function ending in one is allowed.
+        Statement::Expr { value, .. } => matches!(value, Expression::Call { .. }),
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => else_block.as_ref().is_some_and(|else_block| {
+            block_returns(then_block)
+                && else_ifs.iter().all(|else_if| block_returns(&else_if.block))
+                && block_returns(else_block)
+        }),
+        Statement::Transaction { body, .. } | Statement::Lock { body, .. } => block_returns(body),
+        Statement::Try { body, catch, .. } => {
+            block_returns(body)
+                && catch
+                    .as_ref()
+                    .is_none_or(|clause| block_returns(&clause.block))
+        }
+        // A loop may not run or may run forever; conservatively treat a function
+        // ending in one as diverging rather than risk a false positive.
+        Statement::While { .. } | Statement::For { .. } => true,
+        _ => false,
     }
 }
 

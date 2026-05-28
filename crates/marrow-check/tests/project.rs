@@ -600,6 +600,51 @@ fn matching_returns_are_not_flagged() {
     );
 }
 
+#[test]
+fn reports_a_value_function_that_may_not_return() {
+    let root = temp_project("missing-return", |root| {
+        // `f` falls through the `if` (no else) without returning; `g` ends in an
+        // assignment.
+        write(
+            root,
+            "src/m.mw",
+            "module m\nfn f(c: bool): int\n    if c\n        return 1\n\nfn g(): int\n    var x = 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        with_code(&report, "check.missing_return").len(),
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn functions_that_return_on_all_paths_are_not_flagged() {
+    let root = temp_project("returns-all-paths", |root| {
+        // Exhaustive if/else; ends in return; void; ends in a call; ends in a loop.
+        write(
+            root,
+            "src/m.mw",
+            "module m\n\
+             fn a(c: bool): int\n    if c\n        return 1\n    else\n        return 2\n\n\
+             fn b(): int\n    return 7\n\n\
+             fn c()\n    var x = 1\n\n\
+             fn d(): int\n    helper()\n\n\
+             fn e(c: bool): int\n    while c\n        return 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.missing_return").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,
