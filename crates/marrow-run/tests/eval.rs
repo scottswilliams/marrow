@@ -204,6 +204,60 @@ fn decimal_round_trips_through_saved_data() {
 }
 
 #[test]
+fn evaluates_bytes_literals_and_equality() {
+    let program = checked_program(
+        "pub fn same(): bool\n    return b\"abc\" = b\"abc\"\n\n\
+         pub fn different(): bool\n    return b\"abc\" = b\"abd\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::same", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::different", &[]).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn compares_bytes_by_byte_order() {
+    let program = checked_program(
+        "pub fn f(): bool\n    return b\"a\" < b\"b\"\n\n\
+         pub fn g(): bool\n    return b\"ab\" > b\"a\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::g", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn bytes_round_trip_through_saved_data() {
+    let program = checked_program(
+        "resource Blob at ^blobs(id: int)\n\
+         \x20   data: bytes\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^blobs(1).data = b\"xy\"\n\
+         \n\
+         pub fn matches(): bool\n\
+         \x20   return ^blobs(1).data = b\"xy\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::matches", &[])
+            .unwrap()
+            .value,
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");
@@ -662,8 +716,8 @@ fn rejects_an_argument_count_mismatch() {
 
 #[test]
 fn reports_an_unsupported_construct() {
-    // A bytes value is not yet evaluable in this slice.
-    let f = function("fn f(): bytes\n    return b\"hi\"\n");
+    // A range is iterable in a `for` loop but is not a standalone value.
+    let f = function("fn f(): int\n    return 1..3\n");
     let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),

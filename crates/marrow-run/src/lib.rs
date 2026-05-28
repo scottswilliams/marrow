@@ -46,6 +46,9 @@ pub enum Value {
     Instant(i128),
     /// An exact base-10 decimal. Saves and loads as the `decimal` type.
     Decimal(Decimal),
+    /// Arbitrary bytes. Saves and loads as the `bytes` type; has no direct text
+    /// form (use `std::bytes::base64Encode`).
+    Bytes(Vec<u8>),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
@@ -1388,6 +1391,7 @@ fn saved_key_to_value(key: SavedKey) -> Option<Value> {
         SavedKey::Int(n) => Some(Value::Int(n)),
         SavedKey::Bool(b) => Some(Value::Bool(b)),
         SavedKey::Str(s) => Some(Value::Str(s)),
+        SavedKey::Bytes(b) => Some(Value::Bytes(b)),
         _ => None,
     }
 }
@@ -2047,6 +2051,7 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
             coefficient: d.coefficient(),
             scale: d.scale(),
         },
+        Value::Bytes(b) => SavedValue::Bytes(b),
         Value::Resource(_) => return None,
     })
 }
@@ -2246,6 +2251,7 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Bool(b) => Some(SavedKey::Bool(b)),
         Value::Str(s) => Some(SavedKey::Str(s)),
         Value::Instant(n) => Some(SavedKey::Instant(n)),
+        Value::Bytes(b) => Some(SavedKey::Bytes(b)),
         // Decimal keys are not supported (order-preserving decimal keys are deferred).
         Value::Decimal(_) | Value::Resource(_) => None,
     }
@@ -2262,6 +2268,7 @@ fn saved_value_to_value(value: SavedValue) -> Option<Value> {
         SavedValue::Decimal { coefficient, scale } => {
             Decimal::from_parts(coefficient, scale).map(Value::Decimal)
         }
+        SavedValue::Bytes(b) => Some(Value::Bytes(b)),
         _ => None,
     }
 }
@@ -2299,6 +2306,7 @@ fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => s,
         Value::Decimal(d) => d.to_text(),
+        Value::Bytes(_) => return Err(unsupported("rendering a bytes value", span)),
         Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
     })
@@ -2325,7 +2333,7 @@ fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value
                     span,
                 })
         }
-        LiteralKind::Bytes => Err(unsupported("this literal type", span)),
+        LiteralKind::Bytes => eval_bytes_literal(text, span),
     }
 }
 
@@ -2341,6 +2349,19 @@ fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeErr
         return Err(unsupported("string escape sequences", span));
     }
     Ok(Value::Str(inner.to_string()))
+}
+
+/// Decode a bytes literal `b"..."` to its raw bytes (the content's UTF-8). Like
+/// string literals, escape sequences are not yet decoded.
+fn eval_bytes_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let inner = text
+        .strip_prefix("b\"")
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| unsupported("this bytes literal", span))?;
+    if inner.contains('\\') {
+        return Err(unsupported("bytes escape sequences", span));
+    }
+    Ok(Value::Bytes(inner.as_bytes().to_vec()))
 }
 
 fn eval_unary(
@@ -2510,6 +2531,7 @@ fn compare_values(
         (Value::Int(a), Value::Int(b)) => a.cmp(&b),
         (Value::Str(a), Value::Str(b)) => a.cmp(&b),
         (Value::Decimal(a), Value::Decimal(b)) => a.cmp(&b),
+        (Value::Bytes(a), Value::Bytes(b)) => a.cmp(&b),
         _ => {
             return Err(type_error(
                 "cannot order values of different or unordered types",
@@ -2546,6 +2568,7 @@ fn values_equal(
         (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
         (Value::Str(a), Value::Str(b)) => Ok(a == b),
         (Value::Decimal(a), Value::Decimal(b)) => Ok(a == b),
+        (Value::Bytes(a), Value::Bytes(b)) => Ok(a == b),
         _ => Err(type_error("cannot compare values of different types", span)),
     }
 }
