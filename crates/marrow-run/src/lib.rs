@@ -75,7 +75,7 @@ pub fn evaluate_function(
     args: &[Value],
 ) -> Result<Option<Value>, RuntimeError> {
     let program = CheckedProgram::default();
-    let store = MemStore::new();
+    let store = RefCell::new(MemStore::new());
     let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
@@ -98,7 +98,7 @@ pub fn evaluate_function(
 /// Calls within the body resolve against the same `program`.
 pub fn run_entry(
     program: &CheckedProgram,
-    store: &MemStore,
+    store: &RefCell<MemStore>,
     entry: &str,
     args: &[Value],
 ) -> Result<RunOutput, RuntimeError> {
@@ -134,7 +134,7 @@ pub fn run_entry(
 /// and call evaluation.
 fn invoke(
     program: &CheckedProgram,
-    store: &MemStore,
+    store: &RefCell<MemStore>,
     output: Rc<RefCell<String>>,
     param_names: &[&str],
     body: &Block,
@@ -295,7 +295,7 @@ struct Binding {
 struct Env<'p> {
     scopes: Vec<Vec<(String, Binding)>>,
     program: &'p CheckedProgram,
-    store: &'p MemStore,
+    store: &'p RefCell<MemStore>,
     output: Rc<RefCell<String>>,
 }
 
@@ -306,7 +306,11 @@ enum AssignError {
 }
 
 impl<'p> Env<'p> {
-    fn new(program: &'p CheckedProgram, store: &'p MemStore, output: Rc<RefCell<String>>) -> Self {
+    fn new(
+        program: &'p CheckedProgram,
+        store: &'p RefCell<MemStore>,
+        output: Rc<RefCell<String>>,
+    ) -> Self {
         Self {
             scopes: Vec::new(),
             output,
@@ -645,20 +649,21 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     segments.push(PathSegment::Field(name.clone()));
     let field_type = resource_field_type(env.program, &root, name)
         .ok_or_else(|| unsupported("reading this field", expr.span()))?;
-    match env.store.read(&encode_path(&segments)) {
-        Some(bytes) => decode_value(bytes, field_type)
-            .and_then(saved_value_to_value)
-            .ok_or_else(|| RuntimeError {
-                code: RUN_TYPE,
-                message: format!("stored value for `{name}` did not decode to a runtime value"),
-                span: expr.span(),
-            }),
-        None => Err(RuntimeError {
+    let store = env.store.borrow();
+    let Some(bytes) = store.read(&encode_path(&segments)) else {
+        return Err(RuntimeError {
             code: RUN_ABSENT,
             message: format!("`{name}` is absent"),
             span: expr.span(),
-        }),
-    }
+        });
+    };
+    decode_value(bytes, field_type)
+        .and_then(saved_value_to_value)
+        .ok_or_else(|| RuntimeError {
+            code: RUN_TYPE,
+            message: format!("stored value for `{name}` did not decode to a runtime value"),
+            span: expr.span(),
+        })
 }
 
 /// Lower a record path `^root(key…)` to its saved root name and encoded segments

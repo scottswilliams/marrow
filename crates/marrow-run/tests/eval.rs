@@ -1,6 +1,8 @@
 //! Evaluate pure scalar functions: arithmetic, comparison, logical operators,
 //! locals, and conditionals over integer and boolean values.
 
+use std::cell::RefCell;
+
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
     RUN_ABSENT, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE,
@@ -82,7 +84,7 @@ fn run(
     entry: &str,
     args: &[Value],
 ) -> Result<Option<Value>, marrow_run::RuntimeError> {
-    let store = MemStore::new();
+    let store = RefCell::new(MemStore::new());
     run_entry(program, &store, entry, args).map(|outcome| outcome.value)
 }
 
@@ -92,7 +94,7 @@ fn run_full(
     entry: &str,
     args: &[Value],
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
-    let store = MemStore::new();
+    let store = RefCell::new(MemStore::new());
     run_entry(program, &store, entry, args)
 }
 
@@ -578,7 +580,7 @@ fn store_with_title(id: i64, title: &str) -> MemStore {
 #[test]
 fn reads_a_scalar_field_from_saved_data() {
     let program = checked_program(BOOK_READER);
-    let store = store_with_title(1, "Mort");
+    let store = RefCell::new(store_with_title(1, "Mort"));
     let outcome = run_entry(&program, &store, "test::title_of", &[Value::Int(1)]).expect("run");
     assert_eq!(outcome.value, Some(Value::Str("Mort".into())));
 }
@@ -586,7 +588,7 @@ fn reads_a_scalar_field_from_saved_data() {
 #[test]
 fn reading_an_absent_field_is_an_error() {
     let program = checked_program(BOOK_READER);
-    let store = MemStore::new(); // empty: the title is absent
+    let store = RefCell::new(MemStore::new()); // empty: the title is absent
     let result = run_entry(&program, &store, "test::title_of", &[Value::Int(1)]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_ABSENT),
@@ -597,7 +599,7 @@ fn reading_an_absent_field_is_an_error() {
 #[test]
 fn a_saved_read_interpolates_and_prints() {
     let program = checked_program(BOOK_READER);
-    let store = store_with_title(7, "Mort");
+    let store = RefCell::new(store_with_title(7, "Mort"));
     let outcome = run_entry(&program, &store, "test::show", &[Value::Int(7)]).expect("run");
     assert_eq!(outcome.output, "title: Mort\n");
 }
