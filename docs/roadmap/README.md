@@ -119,7 +119,13 @@ errors with `parse.syntax`, and exit with the documented CLI codes.
 
 ## 3. Full Syntax
 
-- Replace the outline parser with a full token stream and syntax tree.
+- Add a native token stream before replacing the outline parser. Tokens carry
+  half-open byte spans, comments and doc comments stay in the stream, layout
+  produces `NEWLINE`, `INDENT`, and `DEDENT`, and layout is suppressed inside
+  open delimiters.
+- Represent interpolation with string text and expression boundary tokens
+  rather than an opaque string token.
+- Then replace the outline parser with a full syntax tree.
 - Parse indentation blocks, statements, paths, calls, literals,
   interpolation, unary and binary operators, ranges, named arguments,
   resource literals, transactions, locks, try/catch/finally, and labeled

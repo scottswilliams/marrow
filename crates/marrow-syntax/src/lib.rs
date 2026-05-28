@@ -208,8 +208,676 @@ pub struct SourceSpan {
     pub column: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LexedSource {
+    pub tokens: Vec<Token>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl LexedSource {
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: SourceSpan,
+}
+
+impl Token {
+    pub fn text<'a>(&self, source: &'a str) -> &'a str {
+        &source[self.span.start_byte..self.span.end_byte]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
+    Identifier,
+    Integer,
+    Decimal,
+    String,
+    InterpolationStart,
+    InterpolationText,
+    InterpolationExprStart,
+    InterpolationExprEnd,
+    InterpolationEnd,
+    Bytes,
+    Keyword(Keyword),
+    Comment,
+    DocComment,
+    Indent,
+    Dedent,
+    Newline,
+    Eof,
+    LeftParen,
+    RightParen,
+    LeftBracket,
+    RightBracket,
+    Colon,
+    DoubleColon,
+    Comma,
+    Dot,
+    DotDot,
+    DotDotEqual,
+    Equal,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Underscore,
+    Caret,
+    At,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyword {
+    Module,
+    Use,
+    Pub,
+    Fn,
+    Resource,
+    At,
+    Index,
+    Unique,
+    Required,
+    Const,
+    Let,
+    Var,
+    If,
+    Else,
+    While,
+    For,
+    In,
+    Break,
+    Continue,
+    Return,
+    Delete,
+    Merge,
+    Transaction,
+    Lock,
+    Try,
+    Catch,
+    Finally,
+    Throw,
+    Out,
+    InOut,
+    True,
+    False,
+    Not,
+    And,
+    Or,
+    Int,
+    Decimal,
+    Bool,
+    String,
+    Bytes,
+    Date,
+    Instant,
+    Duration,
+    Sequence,
+    Unknown,
+    Error,
+    ErrorCode,
+}
+
+pub fn lex_source(source: &str) -> LexedSource {
+    Lexer::new(source).lex()
+}
+
 pub fn parse_source(source: &str) -> ParsedSource {
     Parser::new(source).parse()
+}
+
+struct Lexer<'a> {
+    source: &'a str,
+    lines: Vec<Line<'a>>,
+    tokens: Vec<Token>,
+    diagnostics: Vec<Diagnostic>,
+    indents: Vec<usize>,
+    open_delimiters: usize,
+}
+
+impl<'a> Lexer<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            lines: split_lines(source),
+            tokens: Vec::new(),
+            diagnostics: Vec::new(),
+            indents: vec![0],
+            open_delimiters: 0,
+        }
+    }
+
+    fn lex(mut self) -> LexedSource {
+        for line in self.lines.clone() {
+            self.reject_line_tabs(line);
+
+            if line.is_blank() {
+                continue;
+            }
+
+            if line.is_comment() || line.doc_comment().is_some() {
+                let is_doc_comment = line.doc_comment().is_some();
+                let starts_in_delimiters = self.open_delimiters > 0;
+                if !starts_in_delimiters {
+                    self.apply_comment_indent(line, is_doc_comment);
+                }
+
+                let kind = if is_doc_comment {
+                    TokenKind::DocComment
+                } else {
+                    TokenKind::Comment
+                };
+                self.push(kind, line.span_at_content());
+                if !starts_in_delimiters {
+                    self.push_newline(line);
+                }
+                continue;
+            }
+
+            let starts_in_delimiters = self.open_delimiters > 0;
+            if !starts_in_delimiters {
+                self.apply_indent(line);
+            }
+            self.lex_line(line);
+            if self.open_delimiters == 0 {
+                self.push_newline(line);
+            }
+        }
+
+        self.close_indents();
+        self.push(TokenKind::Eof, self.eof_span());
+        LexedSource {
+            tokens: self.tokens,
+            diagnostics: self.diagnostics,
+        }
+    }
+
+    fn apply_indent(&mut self, line: Line<'a>) {
+        let current = *self.indents.last().expect("root indent");
+        if line.indent > current {
+            self.indents.push(line.indent);
+            self.push(
+                TokenKind::Indent,
+                SourceSpan {
+                    start_byte: line.start_byte,
+                    end_byte: line.start_byte + line.indent,
+                    line: line.number,
+                    column: 1,
+                },
+            );
+            return;
+        }
+
+        if line.indent == current {
+            return;
+        }
+
+        while self.indents.len() > 1 && line.indent < *self.indents.last().expect("indent stack") {
+            self.indents.pop();
+            self.push(TokenKind::Dedent, self.empty_span(line, line.indent));
+        }
+
+        if line.indent != *self.indents.last().expect("indent stack") {
+            self.error_at(
+                self.empty_span(line, line.indent),
+                "indentation does not match an open block",
+            );
+        }
+    }
+
+    fn apply_comment_indent(&mut self, line: Line<'a>, is_doc_comment: bool) {
+        let current = *self.indents.last().expect("root indent");
+        if is_doc_comment || line.indent >= current {
+            self.apply_indent(line);
+        }
+    }
+
+    fn lex_line(&mut self, line: Line<'a>) {
+        self.lex_range(line, line.start_byte + line.indent, line.end_byte);
+    }
+
+    fn lex_range(&mut self, line: Line<'a>, start: usize, end: usize) {
+        let mut index = start;
+        while index < end {
+            let ch = self.source[index..line.end_byte]
+                .chars()
+                .next()
+                .expect("line byte index at char boundary");
+
+            if ch == ' ' || ch == '\t' {
+                index += ch.len_utf8();
+                continue;
+            }
+
+            if ch == ';' {
+                let kind = if self.source[index..line.end_byte].starts_with(";;") {
+                    TokenKind::DocComment
+                } else {
+                    TokenKind::Comment
+                };
+                self.push(kind, self.span(line, index, line.end_byte));
+                break;
+            }
+
+            if ch == '"' {
+                index = self.lex_string(line, index, 0, TokenKind::String);
+                continue;
+            }
+
+            if self.source[index..line.end_byte].starts_with("b\"") {
+                index = self.lex_string(line, index, 1, TokenKind::Bytes);
+                continue;
+            }
+
+            if self.source[index..line.end_byte].starts_with("$\"") {
+                index = self.lex_interpolation(line, index);
+                continue;
+            }
+
+            if ch.is_ascii_digit() {
+                index = self.lex_number(line, index);
+                continue;
+            }
+
+            if is_identifier_start_char(ch) {
+                if ch == '_' && !self.identifier_continues_after(index, line.end_byte) {
+                    let end = index + ch.len_utf8();
+                    self.push(TokenKind::Underscore, self.span(line, index, end));
+                    index = end;
+                    continue;
+                }
+                index = self.lex_word(line, index);
+                continue;
+            }
+
+            if let Some((kind, len)) = self.punctuation(index, line.end_byte) {
+                self.push_punctuation(kind, self.span(line, index, index + len));
+                index += len;
+                continue;
+            }
+
+            let end = index + ch.len_utf8();
+            self.error_at(
+                self.span(line, index, end),
+                format!("unexpected character `{ch}`"),
+            );
+            index = end;
+        }
+    }
+
+    fn lex_interpolation(&mut self, line: Line<'a>, start: usize) -> usize {
+        let start_end = start + 2;
+        self.push(
+            TokenKind::InterpolationStart,
+            self.span(line, start, start_end),
+        );
+
+        let mut index = start_end;
+        let mut text_start = index;
+        while index < line.end_byte {
+            let tail = &self.source[index..line.end_byte];
+            if tail.starts_with("{{") || tail.starts_with("}}") {
+                index += 2;
+                continue;
+            }
+
+            let ch = tail
+                .chars()
+                .next()
+                .expect("interpolation byte index at char boundary");
+
+            if ch == '\\' {
+                index += ch.len_utf8();
+                if let Some(escaped) = self.source[index..line.end_byte].chars().next() {
+                    index += escaped.len_utf8();
+                }
+                continue;
+            }
+
+            if ch == '"' {
+                self.push_interpolation_text(line, text_start, index);
+                let end = index + ch.len_utf8();
+                self.push(TokenKind::InterpolationEnd, self.span(line, index, end));
+                return end;
+            }
+
+            if ch == '{' {
+                self.push_interpolation_text(line, text_start, index);
+                let expr_start_end = index + ch.len_utf8();
+                self.push(
+                    TokenKind::InterpolationExprStart,
+                    self.span(line, index, expr_start_end),
+                );
+
+                let Some(expr_end) = self.find_interpolation_expr_end(line, expr_start_end) else {
+                    self.error_at(
+                        self.span(line, index, line.end_byte),
+                        "unterminated interpolation expression",
+                    );
+                    return line.end_byte;
+                };
+
+                self.lex_range(line, expr_start_end, expr_end);
+                self.push(
+                    TokenKind::InterpolationExprEnd,
+                    self.span(line, expr_end, expr_end + 1),
+                );
+                index = expr_end + 1;
+                text_start = index;
+                continue;
+            }
+
+            index += ch.len_utf8();
+        }
+
+        self.push_interpolation_text(line, text_start, line.end_byte);
+        self.error_at(
+            self.span(line, start, line.end_byte),
+            "unterminated interpolation string",
+        );
+        line.end_byte
+    }
+
+    fn push_interpolation_text(&mut self, line: Line<'a>, start: usize, end: usize) {
+        if start < end {
+            self.push(TokenKind::InterpolationText, self.span(line, start, end));
+        }
+    }
+
+    fn find_interpolation_expr_end(&self, line: Line<'a>, start: usize) -> Option<usize> {
+        let mut index = start;
+        let mut parens = 0usize;
+        let mut brackets = 0usize;
+        while index < line.end_byte {
+            let ch = self.source[index..line.end_byte].chars().next()?;
+            match ch {
+                '"' => {
+                    index = self.find_string_end(line, index, 0)?;
+                    continue;
+                }
+                '{' => return None,
+                '}' if parens == 0 && brackets == 0 => return Some(index),
+                '}' => return None,
+                '(' => parens += 1,
+                ')' => parens = parens.saturating_sub(1),
+                '[' => brackets += 1,
+                ']' => brackets = brackets.saturating_sub(1),
+                _ => {}
+            }
+            index += ch.len_utf8();
+        }
+        None
+    }
+
+    fn find_string_end(&self, line: Line<'a>, start: usize, quote_offset: usize) -> Option<usize> {
+        let mut index = start + quote_offset + 1;
+        while index < line.end_byte {
+            let ch = self.source[index..line.end_byte].chars().next()?;
+            index += ch.len_utf8();
+            if ch == '\\' {
+                if let Some(next) = self.source[index..line.end_byte].chars().next() {
+                    index += next.len_utf8();
+                }
+                continue;
+            }
+            if ch == '"' {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn lex_word(&mut self, line: Line<'a>, start: usize) -> usize {
+        let mut end = start;
+        for (offset, ch) in self.source[start..line.end_byte].char_indices() {
+            if !is_identifier_continue_char(ch) {
+                break;
+            }
+            end = start + offset + ch.len_utf8();
+        }
+        let text = &self.source[start..end];
+        let kind = keyword(text)
+            .map(TokenKind::Keyword)
+            .unwrap_or(TokenKind::Identifier);
+        self.push(kind, self.span(line, start, end));
+        end
+    }
+
+    fn lex_number(&mut self, line: Line<'a>, start: usize) -> usize {
+        let mut end = start;
+        for (offset, ch) in self.source[start..line.end_byte].char_indices() {
+            if !ch.is_ascii_digit() {
+                break;
+            }
+            end = start + offset + ch.len_utf8();
+        }
+
+        let mut kind = TokenKind::Integer;
+        if self.source[end..line.end_byte].starts_with('.')
+            && self
+                .source
+                .get(end + 1..line.end_byte)
+                .and_then(|tail| tail.chars().next())
+                .is_some_and(|ch| ch.is_ascii_digit())
+        {
+            kind = TokenKind::Decimal;
+            end += 1;
+            let mut decimal_end = end;
+            for (offset, ch) in self.source[end..line.end_byte].char_indices() {
+                if !ch.is_ascii_digit() {
+                    break;
+                }
+                decimal_end = end + offset + ch.len_utf8();
+            }
+            end = decimal_end;
+        }
+
+        self.push(kind, self.span(line, start, end));
+        end
+    }
+
+    fn push_punctuation(&mut self, kind: TokenKind, span: SourceSpan) {
+        match kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => {
+                self.open_delimiters += 1;
+            }
+            TokenKind::RightParen | TokenKind::RightBracket => {
+                self.open_delimiters = self.open_delimiters.saturating_sub(1);
+            }
+            _ => {}
+        }
+        self.push(kind, span);
+    }
+
+    fn lex_string(
+        &mut self,
+        line: Line<'a>,
+        start: usize,
+        quote_offset: usize,
+        kind: TokenKind,
+    ) -> usize {
+        let mut index = start + quote_offset + 1;
+        while index < line.end_byte {
+            let ch = self.source[index..line.end_byte]
+                .chars()
+                .next()
+                .expect("string byte index at char boundary");
+            index += ch.len_utf8();
+            if ch == '\\' {
+                if let Some(next) = self.source[index..line.end_byte].chars().next() {
+                    index += next.len_utf8();
+                }
+                continue;
+            }
+            if ch == '"' {
+                self.push(kind, self.span(line, start, index));
+                return index;
+            }
+        }
+
+        self.error_at(self.span(line, start, line.end_byte), "unterminated string");
+        self.push(kind, self.span(line, start, line.end_byte));
+        line.end_byte
+    }
+
+    fn punctuation(&self, index: usize, line_end: usize) -> Option<(TokenKind, usize)> {
+        let tail = &self.source[index..line_end];
+        for (text, kind) in [
+            ("::", TokenKind::DoubleColon),
+            ("..=", TokenKind::DotDotEqual),
+            ("..", TokenKind::DotDot),
+            ("!=", TokenKind::BangEqual),
+            ("<=", TokenKind::LessEqual),
+            (">=", TokenKind::GreaterEqual),
+        ] {
+            if tail.starts_with(text) {
+                return Some((kind, text.len()));
+            }
+        }
+
+        let ch = tail.chars().next()?;
+        let kind = match ch {
+            '(' => TokenKind::LeftParen,
+            ')' => TokenKind::RightParen,
+            '[' => TokenKind::LeftBracket,
+            ']' => TokenKind::RightBracket,
+            ':' => TokenKind::Colon,
+            ',' => TokenKind::Comma,
+            '.' => TokenKind::Dot,
+            '=' => TokenKind::Equal,
+            '<' => TokenKind::Less,
+            '>' => TokenKind::Greater,
+            '+' => TokenKind::Plus,
+            '-' => TokenKind::Minus,
+            '*' => TokenKind::Star,
+            '/' => TokenKind::Slash,
+            '%' => TokenKind::Percent,
+            '^' => TokenKind::Caret,
+            '@' => TokenKind::At,
+            _ => return None,
+        };
+        Some((kind, ch.len_utf8()))
+    }
+
+    fn identifier_continues_after(&self, index: usize, line_end: usize) -> bool {
+        self.source
+            .get(index + 1..line_end)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(is_identifier_continue_char)
+    }
+
+    fn push_newline(&mut self, line: Line<'a>) {
+        let Some(end_byte) = self.newline_end_byte(line.end_byte) else {
+            return;
+        };
+        self.push(
+            TokenKind::Newline,
+            SourceSpan {
+                start_byte: line.end_byte,
+                end_byte,
+                line: line.number,
+                column: (line.text.len() + 1) as u32,
+            },
+        );
+    }
+
+    fn newline_end_byte(&self, line_end: usize) -> Option<usize> {
+        let rest = self.source.get(line_end..)?;
+        if rest.starts_with("\r\n") {
+            Some(line_end + 2)
+        } else if rest.starts_with('\n') {
+            Some(line_end + 1)
+        } else {
+            None
+        }
+    }
+
+    fn close_indents(&mut self) {
+        while self.indents.len() > 1 {
+            self.indents.pop();
+            self.push(TokenKind::Dedent, self.eof_span());
+        }
+    }
+
+    fn reject_line_tabs(&mut self, line: Line<'a>) {
+        if let Some(tab) = line.text.find('\t') {
+            self.error_at(
+                SourceSpan {
+                    start_byte: line.start_byte + tab,
+                    end_byte: line.start_byte + tab + 1,
+                    line: line.number,
+                    column: (tab + 1) as u32,
+                },
+                "tabs are not allowed in Marrow source; use spaces",
+            );
+        }
+    }
+
+    fn push(&mut self, kind: TokenKind, span: SourceSpan) {
+        self.tokens.push(Token { kind, span });
+    }
+
+    fn span(&self, line: Line<'a>, start_byte: usize, end_byte: usize) -> SourceSpan {
+        SourceSpan {
+            start_byte,
+            end_byte,
+            line: line.number,
+            column: (start_byte - line.start_byte + 1) as u32,
+        }
+    }
+
+    fn empty_span(&self, line: Line<'a>, column_offset: usize) -> SourceSpan {
+        self.span(
+            line,
+            line.start_byte + column_offset,
+            line.start_byte + column_offset,
+        )
+    }
+
+    fn eof_span(&self) -> SourceSpan {
+        let line = self
+            .lines
+            .last()
+            .map(|line| {
+                if self.source.ends_with('\n') {
+                    line.number + 1
+                } else {
+                    line.number
+                }
+            })
+            .unwrap_or(1);
+        SourceSpan {
+            start_byte: self.source.len(),
+            end_byte: self.source.len(),
+            line,
+            column: 1,
+        }
+    }
+
+    fn error_at(&mut self, span: SourceSpan, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            code: PARSE_SYNTAX,
+            kind: "parse",
+            severity: Severity::Error,
+            message: message.into(),
+            help: None,
+            line: span.line,
+            column: span.column,
+            span,
+        });
+    }
 }
 
 struct Parser<'a> {
@@ -979,18 +1647,79 @@ fn parse_parenthesized_prefix(text: &str) -> Option<(&str, &str)> {
 fn read_identifier(text: &str) -> Option<(&str, &str)> {
     let mut chars = text.char_indices();
     let (_, first) = chars.next()?;
-    if !(first == '_' || first.is_ascii_alphabetic()) {
+    if !is_identifier_start_char(first) {
         return None;
     }
     let mut end = first.len_utf8();
     for (index, ch) in chars {
-        if ch == '_' || ch.is_ascii_alphanumeric() {
+        if is_identifier_continue_char(ch) {
             end = index + ch.len_utf8();
         } else {
             return Some((&text[..index], &text[index..]));
         }
     }
     Some((&text[..end], &text[end..]))
+}
+
+fn keyword(text: &str) -> Option<Keyword> {
+    Some(match text {
+        "module" => Keyword::Module,
+        "use" => Keyword::Use,
+        "pub" => Keyword::Pub,
+        "fn" => Keyword::Fn,
+        "resource" => Keyword::Resource,
+        "at" => Keyword::At,
+        "index" => Keyword::Index,
+        "unique" => Keyword::Unique,
+        "required" => Keyword::Required,
+        "const" => Keyword::Const,
+        "let" => Keyword::Let,
+        "var" => Keyword::Var,
+        "if" => Keyword::If,
+        "else" => Keyword::Else,
+        "while" => Keyword::While,
+        "for" => Keyword::For,
+        "in" => Keyword::In,
+        "break" => Keyword::Break,
+        "continue" => Keyword::Continue,
+        "return" => Keyword::Return,
+        "delete" => Keyword::Delete,
+        "merge" => Keyword::Merge,
+        "transaction" => Keyword::Transaction,
+        "lock" => Keyword::Lock,
+        "try" => Keyword::Try,
+        "catch" => Keyword::Catch,
+        "finally" => Keyword::Finally,
+        "throw" => Keyword::Throw,
+        "out" => Keyword::Out,
+        "inout" => Keyword::InOut,
+        "true" => Keyword::True,
+        "false" => Keyword::False,
+        "not" => Keyword::Not,
+        "and" => Keyword::And,
+        "or" => Keyword::Or,
+        "int" => Keyword::Int,
+        "decimal" => Keyword::Decimal,
+        "bool" => Keyword::Bool,
+        "string" => Keyword::String,
+        "bytes" => Keyword::Bytes,
+        "date" => Keyword::Date,
+        "instant" => Keyword::Instant,
+        "duration" => Keyword::Duration,
+        "sequence" => Keyword::Sequence,
+        "unknown" => Keyword::Unknown,
+        "Error" => Keyword::Error,
+        "ErrorCode" => Keyword::ErrorCode,
+        _ => return None,
+    })
+}
+
+fn is_identifier_start_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_identifier_continue_char(ch: char) -> bool {
+    is_identifier_start_char(ch) || ch.is_ascii_digit()
 }
 
 fn is_identifier(text: &str) -> bool {
