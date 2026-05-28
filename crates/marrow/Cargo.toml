@@ -16,6 +16,8 @@ path = "src/main.rs"
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-project = { path = "../marrow-project" }
 marrow-check = { path = "../marrow-check" }
+marrow-run = { path = "../marrow-run" }
+marrow-store = { path = "../marrow-store", features = ["native"] }
 serde_json = "1"
 
 [lints]

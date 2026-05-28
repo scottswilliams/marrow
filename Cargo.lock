@@ -136,6 +136,8 @@ version = "0.1.0"
 dependencies = [
  "marrow-check",
  "marrow-project",
+ "marrow-run",
+ "marrow-store",
  "marrow-syntax",
  "serde_json",
 ]

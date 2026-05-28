@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -9,6 +10,7 @@ Marrow
 Usage:
   marrow check [--format text|json|jsonl] <file.mw>
   marrow fmt [--check | --write] <file.mw>
+  marrow run <projectdir>
   marrow --version
   marrow --help
 
@@ -23,6 +25,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|arg| arg == "fmt") {
         return fmt(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "run") {
+        return run(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
@@ -218,6 +223,165 @@ fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
             "message": message,
             "source_span": null,
         })),
+    }
+}
+
+/// Run a project's entry function. Unlike `check`, `run` has no `--format`: its
+/// output is the program's own `print`/`write` stream, which has no JSON envelope;
+/// failures still report a dotted error code on stderr.
+fn run(args: &[String]) -> ExitCode {
+    let mut entry = None;
+    let mut dir = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--entry" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --entry");
+                    return ExitCode::from(2);
+                };
+                entry = Some(value.clone());
+            }
+            "--help" | "-h" => {
+                print!(
+                    "\
+Usage:
+  marrow run [--entry <module::function>] <projectdir>
+
+Check a Marrow project, then run an entry function over the store its
+`marrow.json` selects (an in-memory store when none is configured). The entry
+is `--entry` if given, else the project's `run.defaultEntry`. Output written
+with `print`/`write` goes to stdout.
+"
+                );
+                return ExitCode::SUCCESS;
+            }
+            value if value.starts_with('-') => {
+                eprintln!("unknown run option: {value}");
+                return ExitCode::from(2);
+            }
+            value => {
+                if dir.replace(value.to_string()).is_some() {
+                    eprintln!("marrow run accepts one project directory");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        index += 1;
+    }
+
+    let Some(dir) = dir else {
+        eprintln!("missing project directory");
+        return ExitCode::from(2);
+    };
+    run_project_dir(&dir, entry.as_deref())
+}
+
+/// Load and check `<dir>/marrow.json`'s project, then run its entry (the
+/// `--entry` override, else `run.defaultEntry`) over the configured store. A
+/// project must check cleanly before it runs.
+fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
+    let config_path = Path::new(dir).join("marrow.json");
+    let config_text = match std::fs::read_to_string(&config_path) {
+        Ok(text) => text,
+        Err(error) => {
+            report_io_error(
+                &config_path.display().to_string(),
+                &error,
+                CheckFormat::Text,
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let config = match marrow_project::parse_config(&config_text) {
+        Ok(config) => config,
+        Err(error) => {
+            report_simple_error(error.code, &error.message, CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
+    let (report, program) = match marrow_check::check_project(Path::new(dir), &config) {
+        Ok(result) => result,
+        Err(error) => {
+            report_simple_error(
+                error.code,
+                &format!("{}: {}", error.path.display(), error.message),
+                CheckFormat::Text,
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if report.has_errors() {
+        report_project(dir, &report, CheckFormat::Text);
+        return ExitCode::FAILURE;
+    }
+
+    let Some(entry) = entry_override.or(config.default_entry.as_deref()) else {
+        report_simple_error(
+            "run.no_entry",
+            "no entry to run; pass --entry <name> or set `run.defaultEntry` in marrow.json",
+            CheckFormat::Text,
+        );
+        return ExitCode::FAILURE;
+    };
+
+    match &config.store {
+        None
+        | Some(marrow_project::StoreConfig {
+            backend: marrow_project::StoreBackend::Memory,
+            ..
+        }) => {
+            let store = RefCell::new(marrow_store::mem::MemStore::new());
+            execute(&program, &store, entry)
+        }
+        Some(marrow_project::StoreConfig {
+            backend: marrow_project::StoreBackend::Native,
+            data_dir,
+        }) => {
+            let Some(data_dir) = data_dir.as_deref() else {
+                report_simple_error(
+                    marrow_project::CONFIG_INVALID,
+                    "native store requires `store.dataDir`",
+                    CheckFormat::Text,
+                );
+                return ExitCode::FAILURE;
+            };
+            let data_path = Path::new(dir).join(data_dir);
+            if let Err(error) = std::fs::create_dir_all(&data_path) {
+                report_io_error(&data_path.display().to_string(), &error, CheckFormat::Text);
+                return ExitCode::FAILURE;
+            }
+            let store = match marrow_store::redb::RedbStore::open(&data_path.join("marrow.redb")) {
+                Ok(store) => RefCell::new(store),
+                Err(error) => {
+                    report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                    return ExitCode::FAILURE;
+                }
+            };
+            execute(&program, &store, entry)
+        }
+    }
+}
+
+/// Run `entry` from a checked `program` over `store`, printing its output. The
+/// store is the ordered-tree backend the project selected; the run reads the
+/// real system clock for `std::clock::now()`.
+fn execute(
+    program: &marrow_check::CheckedProgram,
+    store: &RefCell<dyn marrow_store::backend::Backend>,
+    entry: &str,
+) -> ExitCode {
+    let host = marrow_run::Host::with_system_clock();
+    match marrow_run::run_entry_with_host(program, store, &host, entry, &[]) {
+        Ok(outcome) => {
+            print!("{}", outcome.output);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            report_simple_error(error.code, &error.message, CheckFormat::Text);
+            ExitCode::FAILURE
+        }
     }
 }
 
