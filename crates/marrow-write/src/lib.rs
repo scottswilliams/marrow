@@ -1,0 +1,198 @@
+//! Managed writes over the saved store.
+//!
+//! This layer composes the typed tree shape from `marrow-schema` with the
+//! ordered-bytes store from `marrow-store`. A managed write is planned in full —
+//! validated against the schema and lowered to encoded paths — before any change
+//! is visible, so a rejected write leaves the store untouched and a committed
+//! one is internally coherent.
+//!
+//! This first slice covers a whole-resource write of a resource's top-level
+//! fields; keyed layers, indexes, field writes, delete, and merge build on it.
+
+use marrow_schema::{ResourceSchema, SavedRootSchema};
+use marrow_store::mem::MemStore;
+use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::value::{SavedValue, ValueType, encode_value};
+
+/// A field's value in a write: a saved value, or explicitly absent (omitted).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldValue {
+    Saved(SavedValue),
+    Absent,
+}
+
+/// A resource value supplied to a write: its top-level fields, by name. Keyed
+/// layers are added in a later slice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceValue {
+    pub fields: Vec<(String, FieldValue)>,
+}
+
+/// A managed write that could not be planned. `code` is a stable `write.*`
+/// identifier, mirroring the dotted codes used by the checker and store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// A required field was absent in a whole-resource write.
+pub const WRITE_REQUIRED_ABSENT: &str = "write.required_absent";
+/// A field value's type does not match the resource schema.
+pub const WRITE_TYPE_MISMATCH: &str = "write.type_mismatch";
+/// The resource has no saved root, so it cannot be written to saved data.
+pub const WRITE_NO_SAVED_ROOT: &str = "write.no_saved_root";
+/// The supplied identity keys do not match the resource's saved root.
+pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
+
+/// One staged store operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlanStep {
+    Write { path: Vec<u8>, value: Vec<u8> },
+    Delete { path: Vec<u8> },
+}
+
+/// A staged, validated set of store operations. Apply it with
+/// [`WritePlan::commit`]; drop it to abandon the write with no effect.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WritePlan {
+    steps: Vec<PlanStep>,
+}
+
+impl WritePlan {
+    /// Apply the staged operations to `store`, in order.
+    pub fn commit(self, store: &mut MemStore) {
+        for step in self.steps {
+            match step {
+                PlanStep::Write { path, value } => store.write(&path, value),
+                PlanStep::Delete { path } => store.delete(&path),
+            }
+        }
+    }
+}
+
+/// Plan a whole-resource write: replace the resource at `identity` with `value`.
+/// Validates required fields and value types against `schema` before staging
+/// anything, then plans to clear the old subtree and write each present field.
+/// Returns a [`WritePlan`] to commit, or a [`WriteError`] if the value does not
+/// satisfy the schema.
+pub fn plan_resource_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    value: &ResourceValue,
+) -> Result<WritePlan, WriteError> {
+    let root = schema.saved_root.as_ref().ok_or_else(|| WriteError {
+        code: WRITE_NO_SAVED_ROOT,
+        message: format!("resource `{}` has no saved root", schema.name),
+    })?;
+    if identity.len() != root.identity_keys.len() {
+        return Err(WriteError {
+            code: WRITE_IDENTITY_MISMATCH,
+            message: format!(
+                "resource `{}` expects {} identity key(s), got {}",
+                schema.name,
+                root.identity_keys.len(),
+                identity.len()
+            ),
+        });
+    }
+
+    // Validate every field and collect the ones to write, before staging any
+    // step — a rejected write must leave no trace.
+    let mut to_write = Vec::new();
+    for field in &schema.fields {
+        match supplied_value(value, &field.name) {
+            Some(FieldValue::Saved(saved)) => {
+                check_type(&field.name, &field.ty.text, saved)?;
+                to_write.push((field.name.as_str(), saved));
+            }
+            Some(FieldValue::Absent) | None => {
+                if field.required {
+                    return Err(WriteError {
+                        code: WRITE_REQUIRED_ABSENT,
+                        message: format!("required field `{}` is absent", field.name),
+                    });
+                }
+            }
+        }
+    }
+
+    // Replace semantics: clear the old subtree, then write the present fields.
+    let mut steps = vec![PlanStep::Delete {
+        path: encode_path(&identity_path(root, identity)),
+    }];
+    for (name, saved) in to_write {
+        steps.push(PlanStep::Write {
+            path: encode_path(&field_path(root, identity, name)),
+            value: encode_value(saved),
+        });
+    }
+    Ok(WritePlan { steps })
+}
+
+/// The supplied value for `field` in `value`, if any.
+fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a FieldValue> {
+    value
+        .fields
+        .iter()
+        .find(|(name, _)| name == field)
+        .map(|(_, value)| value)
+}
+
+/// The encoded-path segments for `^root(identity)`.
+fn identity_path(root: &SavedRootSchema, identity: &[SavedKey]) -> Vec<PathSegment> {
+    let mut path = vec![PathSegment::Root(root.root.clone())];
+    path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    path
+}
+
+/// The encoded-path segments for `^root(identity).field`.
+fn field_path(root: &SavedRootSchema, identity: &[SavedKey], field: &str) -> Vec<PathSegment> {
+    let mut path = identity_path(root, identity);
+    path.push(PathSegment::Field(field.into()));
+    path
+}
+
+/// Check that `value` matches the field's declared scalar type name.
+fn check_type(field: &str, type_name: &str, value: &SavedValue) -> Result<(), WriteError> {
+    if value_type_for(type_name) == Some(value_type_of(value)) {
+        Ok(())
+    } else {
+        Err(WriteError {
+            code: WRITE_TYPE_MISMATCH,
+            message: format!("field `{field}` does not hold a `{type_name}`"),
+        })
+    }
+}
+
+/// The [`ValueType`] a scalar type name denotes, or `None` for identity and
+/// other non-scalar types (which this slice does not write as plain fields).
+fn value_type_for(type_name: &str) -> Option<ValueType> {
+    Some(match type_name {
+        "bool" => ValueType::Bool,
+        "int" => ValueType::Int,
+        "string" => ValueType::Str,
+        "bytes" => ValueType::Bytes,
+        "ErrorCode" => ValueType::ErrorCode,
+        "date" => ValueType::Date,
+        "instant" => ValueType::Instant,
+        "duration" => ValueType::Duration,
+        "decimal" => ValueType::Decimal,
+        _ => return None,
+    })
+}
+
+/// The [`ValueType`] of a saved value.
+fn value_type_of(value: &SavedValue) -> ValueType {
+    match value {
+        SavedValue::Bool(_) => ValueType::Bool,
+        SavedValue::Int(_) => ValueType::Int,
+        SavedValue::Str(_) => ValueType::Str,
+        SavedValue::Bytes(_) => ValueType::Bytes,
+        SavedValue::ErrorCode(_) => ValueType::ErrorCode,
+        SavedValue::Date(_) => ValueType::Date,
+        SavedValue::Duration(_) => ValueType::Duration,
+        SavedValue::Instant(_) => ValueType::Instant,
+        SavedValue::Decimal { .. } => ValueType::Decimal,
+    }
+}

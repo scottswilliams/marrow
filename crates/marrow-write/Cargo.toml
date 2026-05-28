@@ -1,0 +1,17 @@
+[package]
+name = "marrow-write"
+description = "Plans and applies managed writes to Marrow's saved store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-schema = { path = "../marrow-schema" }
+marrow-store = { path = "../marrow-store" }
+marrow-syntax = { path = "../marrow-syntax" }
+
+[lints]
+workspace = true
