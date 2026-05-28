@@ -9,8 +9,8 @@
 use std::cmp::Ordering;
 
 use marrow_syntax::{
-    BinaryOp, Block, Expression, ForBinding, FunctionDecl, LiteralKind, SourceSpan, Statement,
-    UnaryOp,
+    BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart, LiteralKind,
+    SourceSpan, Statement, UnaryOp,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -409,7 +409,42 @@ fn eval_expr(expr: &Expression, env: &mut Env) -> Result<Value, RuntimeError> {
             right,
             span,
         } => eval_binary(*op, left, right, *span, env),
+        Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
         other => Err(unsupported("this expression", other.span())),
+    }
+}
+
+/// Evaluate an interpolated string `$"...{expr}..."` to a string value: literal
+/// segments contribute their text (with `{{`/`}}` unescaped to single braces),
+/// and embedded expressions are rendered to text.
+fn eval_interpolation(
+    parts: &[InterpolationPart],
+    span: SourceSpan,
+    env: &mut Env,
+) -> Result<Value, RuntimeError> {
+    let mut result = String::new();
+    for part in parts {
+        match part {
+            InterpolationPart::Text { text, .. } => {
+                // Backslash escapes are not yet decoded (as for plain strings).
+                if text.contains('\\') {
+                    return Err(unsupported("string escape sequences", span));
+                }
+                result.push_str(&text.replace("{{", "{").replace("}}", "}"));
+            }
+            InterpolationPart::Expr(expr) => result.push_str(&render(eval_expr(expr, env)?)),
+        }
+    }
+    Ok(Value::Str(result))
+}
+
+/// Render a value as text for interpolation: integers in decimal, booleans as
+/// `true`/`false`, strings as themselves.
+fn render(value: Value) -> String {
+    match value {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => s,
     }
 }
 

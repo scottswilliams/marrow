@@ -345,3 +345,30 @@ fn concatenation_requires_strings() {
         "{result:?}"
     );
 }
+
+#[test]
+fn evaluates_string_interpolation() {
+    let f = function("fn f(n: int): string\n    return $\"n is {n}\"\n");
+    assert_eq!(
+        evaluate_function(&f, &[Value::Int(5)]),
+        Ok(Some(Value::Str("n is 5".into())))
+    );
+}
+
+#[test]
+fn interpolation_renders_several_values() {
+    let f = function("fn f(name: string, ok: bool): string\n    return $\"{name}={ok}\"\n");
+    assert_eq!(
+        evaluate_function(&f, &[Value::Str("ready".into()), Value::Bool(true)]),
+        Ok(Some(Value::Str("ready=true".into())))
+    );
+}
+
+#[test]
+fn interpolation_unescapes_literal_braces() {
+    let f = function("fn f(): string\n    return $\"a {{ b\"\n");
+    assert_eq!(
+        evaluate_function(&f, &[]),
+        Ok(Some(Value::Str("a { b".into())))
+    );
+}
