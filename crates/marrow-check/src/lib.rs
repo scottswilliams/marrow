@@ -121,7 +121,9 @@ pub fn check_project(
                         });
                     }
                 }
-                marrow_syntax::Declaration::Const(_) => {}
+                marrow_syntax::Declaration::Const(constant) => {
+                    rules::check_const_value(&file.path, &constant.value, &mut report.diagnostics);
+                }
             }
         }
 

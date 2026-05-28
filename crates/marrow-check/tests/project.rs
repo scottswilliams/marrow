@@ -510,3 +510,50 @@ fn invalid_merge_target_is_rejected() {
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
+
+#[test]
+fn constant_const_values_are_allowed() {
+    // Literals, arithmetic over literals, a reference to another constant, a
+    // unary operator, and a standard-library constant are all compile-time
+    // constant expressions.
+    let found = check_script(
+        "const-ok",
+        "const A = 1\nconst B = 2 + 3 * 4\nconst C = A\nconst N = -1\nconst P = std::math::PI\n",
+        "check.non_constant_const",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn const_value_calling_a_function_is_rejected() {
+    // A const cannot call a function or host module.
+    let found = check_script(
+        "const-call",
+        "const X = compute()\n",
+        "check.non_constant_const",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn const_value_reading_saved_data_is_rejected() {
+    // A const cannot read saved data.
+    let found = check_script(
+        "const-saved",
+        "const X = ^counter\n",
+        "check.non_constant_const",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn const_value_with_a_nested_saved_read_is_rejected() {
+    // The rule looks through operators: a saved-data read anywhere in the
+    // expression makes the whole value non-constant.
+    let found = check_script(
+        "const-nested-saved",
+        "const X = 1 + ^counter\n",
+        "check.non_constant_const",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}

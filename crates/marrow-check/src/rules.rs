@@ -1,12 +1,13 @@
-//! Structural statement rules over function bodies.
+//! Structural rules over the parsed tree.
 //!
-//! These checks read only the parsed statement tree: control flow that escapes
-//! a `finally` block, `catch` type annotations, and assignment targets. They do
-//! not need type or effect facts, so they run directly on each function body.
+//! These checks read only the parsed syntax tree: control flow that escapes a
+//! `finally` block, `catch` type annotations, assignment targets, and `const`
+//! values that are not constant expressions. They do not need type or effect
+//! facts, so they run directly on each declaration.
 
 use std::path::Path;
 
-use marrow_syntax::{Block, CatchClause, Expression, Severity, Statement};
+use marrow_syntax::{Block, CatchClause, Expression, InterpolationPart, Severity, Statement};
 
 use crate::CheckDiagnostic;
 
@@ -17,10 +18,26 @@ pub const CHECK_FINALLY_CONTROL_FLOW: &str = "check.finally_control_flow";
 pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
 /// An assignment or merge target is not a writable place.
 pub const CHECK_INVALID_ASSIGN_TARGET: &str = "check.invalid_assign_target";
+/// A `const` value is not a constant expression.
+pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 
 /// Apply every structural statement rule to one function body.
 pub fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
     walk_block(file, body, out);
+}
+
+/// A `const` value must be a compile-time constant expression: literals and
+/// other constants combined with operators, never a host call or saved-data
+/// read.
+pub fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<CheckDiagnostic>) {
+    if !is_constant_expr(value) {
+        out.push(diagnostic(
+            CHECK_NON_CONSTANT_CONST,
+            file,
+            value,
+            "a `const` value must be a constant expression, not a host call or saved-data read",
+        ));
+    }
 }
 
 /// Walk a block applying the catch and assign-target rules to each statement,
@@ -212,6 +229,25 @@ fn is_key_lookup_target(callee: &Expression) -> bool {
         Expression::Field { base, .. } => is_assignable(base),
         Expression::Call { callee, .. } => is_key_lookup_target(callee),
         _ => false,
+    }
+}
+
+/// A constant expression: a literal or a name (another constant) combined with
+/// field access, operators, or interpolation. A saved-data read or a call is
+/// never constant, so neither is any expression containing one. Text the parser
+/// has not yet decomposed is treated as constant to avoid false positives.
+fn is_constant_expr(expr: &Expression) -> bool {
+    match expr {
+        Expression::Literal { .. } | Expression::Name { .. } => true,
+        Expression::SavedRoot { .. } | Expression::Call { .. } => false,
+        Expression::Field { base, .. } => is_constant_expr(base),
+        Expression::Unary { operand, .. } => is_constant_expr(operand),
+        Expression::Binary { left, right, .. } => is_constant_expr(left) && is_constant_expr(right),
+        Expression::Interpolation { parts, .. } => parts.iter().all(|part| match part {
+            InterpolationPart::Text { .. } => true,
+            InterpolationPart::Expr(expr) => is_constant_expr(expr),
+        }),
+        Expression::Unparsed { .. } => true,
     }
 }
 
