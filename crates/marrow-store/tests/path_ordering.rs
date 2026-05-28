@@ -1,6 +1,6 @@
 //! Saved paths must sort in Marrow order, independent of backend collation.
 
-use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
 
 /// Encode each integer as a `^books(key)` record path and return the keys in
 /// encoded-byte order.
@@ -161,4 +161,52 @@ fn duration_keys_order_by_signed_length() {
         order,
         vec![-1_000_000_000, -250_000_000, 0, 1, 1_500_000_000]
     );
+}
+
+#[test]
+fn a_key_value_round_trips_through_encode_decode() {
+    // Each key variant survives encode then decode unchanged, and reports the
+    // full byte length consumed so a concatenation of keys can be walked.
+    for key in [
+        SavedKey::Bool(true),
+        SavedKey::Bool(false),
+        SavedKey::Int(0),
+        SavedKey::Int(-1),
+        SavedKey::Int(i64::MIN),
+        SavedKey::Int(i64::MAX),
+        SavedKey::Str("isbn:0\u{0}1".into()),
+        SavedKey::Bytes(vec![0x00, 0x01, 0xff]),
+        SavedKey::Date(-25567),
+        SavedKey::Duration(-1_000_000_000),
+        SavedKey::Instant(1_700_000_000_000_000_000),
+    ] {
+        let bytes = encode_key_value(&key);
+        assert_eq!(
+            decode_key_value(&bytes),
+            Some((key.clone(), bytes.len())),
+            "round-trip {key:?}"
+        );
+    }
+}
+
+#[test]
+fn concatenated_key_values_walk_one_at_a_time() {
+    // A composite identity is a run of key values; the reported length lets the
+    // next key start exactly where the previous one ended.
+    let first = SavedKey::Int(42);
+    let second = SavedKey::Str("fiction".into());
+    let mut bytes = encode_key_value(&first);
+    bytes.extend_from_slice(&encode_key_value(&second));
+
+    let (a, used) = decode_key_value(&bytes).expect("first key");
+    assert_eq!(a, first);
+    let (b, rest) = decode_key_value(&bytes[used..]).expect("second key");
+    assert_eq!(b, second);
+    assert_eq!(used + rest, bytes.len(), "no trailing bytes");
+}
+
+#[test]
+fn decode_key_value_rejects_an_unknown_type_tag() {
+    assert_eq!(decode_key_value(&[0xfe, 0x00]), None);
+    assert_eq!(decode_key_value(&[]), None);
 }

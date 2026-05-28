@@ -89,6 +89,23 @@ pub fn encode_path(segments: &[PathSegment]) -> Vec<u8> {
     bytes
 }
 
+/// Encode a single scalar key to its order-preserving bytes for a value
+/// position — for example the identity a unique index entry points to. The
+/// encoding is self-delimiting, so several keys may be concatenated and walked
+/// back one at a time with [`decode_key_value`].
+pub fn encode_key_value(key: &SavedKey) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    encode_key(key, &mut bytes);
+    bytes
+}
+
+/// Decode one scalar key from the front of `bytes`, returning the key and the
+/// number of bytes it consumed, or `None` if the front is not a well-formed
+/// key. The length lets a concatenation of encoded keys be walked in order.
+pub fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
+    Some((decode_key(bytes)?, key_len(bytes)?))
+}
+
 /// Append a name as UTF-8 bytes terminated by `0x00`. Names are Marrow
 /// identifiers or quoted data names, which do not contain `0x00`.
 fn encode_name(name: &str, out: &mut Vec<u8>) {
