@@ -282,3 +282,54 @@ fn distinct_declarations_are_not_flagged() {
         report.diagnostics
     );
 }
+
+fn unresolved_imports(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
+    report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "check.unresolved_import")
+        .collect()
+}
+
+#[test]
+fn standard_library_and_project_imports_resolve() {
+    let root = temp_project("resolved-imports", |root| {
+        // A project library module.
+        write(root, "src/shelf/books.mw", "module shelf::books\n");
+        // A script that imports a std module and the project module.
+        write(
+            root,
+            "src/app.mw",
+            "use std::clock\nuse shelf::books\nfn main()\n    return\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        unresolved_imports(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn reports_unresolved_import() {
+    let root = temp_project("unresolved-import", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "use unknown::mod\nfn main()\n    return\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let unresolved = unresolved_imports(&report);
+    assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        unresolved[0].message.contains("unknown::mod"),
+        "{}",
+        unresolved[0].message
+    );
+    assert_eq!(unresolved[0].line, 1, "{:#?}", unresolved[0]);
+}

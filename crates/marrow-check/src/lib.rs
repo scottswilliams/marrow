@@ -17,6 +17,9 @@ pub const CHECK_MODULE_PATH: &str = "check.module_path";
 pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
 /// A name is declared or imported more than once within a single file.
 pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
+/// A `use` names a module that is neither a project module nor a standard
+/// library module.
+pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 
@@ -56,9 +59,16 @@ pub fn check_project(
     let files = discover_modules(project_root, config)?;
     let mut report = CheckReport::default();
     // The first valid library file (in path order) to declare each module owns
-    // that name; later files declaring it are duplicates.
+    // that name; later files declaring it are duplicates. This is also the set
+    // of resolvable project module names for `use` resolution.
     let mut declared: HashMap<String, PathBuf> = HashMap::new();
+    // Parsed sources kept from pass 1 so pass 2 can resolve imports against the
+    // full project module set without re-reading files.
+    let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
+        Vec::new();
 
+    // Pass 1: parse each file and collect per-file findings plus the project's
+    // module set.
     for file in &files {
         let source = match std::fs::read_to_string(&file.path) {
             Ok(source) => source,
@@ -133,9 +143,48 @@ pub fn check_project(
                 )),
             }
         }
+
+        parsed_files.push((file, parsed));
+    }
+
+    // Pass 2: every `use` must name a project module or a standard-library
+    // module, now that the full project module set is known.
+    for (file, parsed) in &parsed_files {
+        for use_decl in &parsed.file.uses {
+            if !is_resolved_import(&use_decl.name, &declared) {
+                report.diagnostics.push(CheckDiagnostic {
+                    code: CHECK_UNRESOLVED_IMPORT.to_string(),
+                    severity: Severity::Error,
+                    file: file.path.clone(),
+                    message: format!("cannot resolve import `{}`", use_decl.name),
+                    line: use_decl.span.line,
+                    column: use_decl.span.column,
+                });
+            }
+        }
     }
 
     Ok(report)
+}
+
+/// The standard-library modules. Host modules resolve at check time even when a
+/// host would not provide them at run time.
+const STD_MODULES: &[&str] = &[
+    "clock", "io", "env", "text", "bytes", "math", "assert", "log",
+];
+
+/// Is `name` a standard-library module path? Accepts `std::<module>` and any
+/// deeper path under a valid `std` module.
+fn is_std_module(name: &str) -> bool {
+    name.strip_prefix("std::")
+        .and_then(|rest| rest.split("::").next())
+        .is_some_and(|module| STD_MODULES.contains(&module))
+}
+
+/// An import resolves when it names a project module or a standard-library
+/// module.
+fn is_resolved_import(name: &str, project_modules: &HashMap<String, PathBuf>) -> bool {
+    project_modules.contains_key(name) || is_std_module(name)
 }
 
 fn module_path_error(
