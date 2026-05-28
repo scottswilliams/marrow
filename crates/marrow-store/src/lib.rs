@@ -6,7 +6,9 @@
 //! schemas, or maintain indexes. Those belong to the checker and runtime above
 //! it.
 //!
-//! The first slice is the saved-path encoding ([`path`]), whose byte order is
-//! Marrow's own and independent of any backend's collation.
+//! The saved-path encoding ([`path`]) has byte order that is Marrow's own and
+//! independent of any backend's collation; the in-memory store ([`mem`]) serves
+//! values over those ordered paths.
 
+pub mod mem;
 pub mod path;
