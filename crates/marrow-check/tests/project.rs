@@ -1034,6 +1034,74 @@ fn correctly_typed_group_and_leaf_reads_are_not_flagged() {
 }
 
 #[test]
+fn rejects_a_var_initializer_of_the_wrong_type() {
+    // `x` is declared `int` but initialized with a string.
+    let found = check_script(
+        "init-var",
+        "fn f()\n    var x: int = \"hi\"\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_const_initializer_of_the_wrong_type() {
+    // `x` is declared `bool` but initialized with an int.
+    let found = check_script(
+        "init-const",
+        "fn f()\n    const x: bool = 1\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_an_assignment_to_a_local_of_the_wrong_type() {
+    // `x` is an int local; assigning a string is a mismatch.
+    let found = check_script(
+        "assign-local",
+        "fn f()\n    var x: int = 1\n    x = \"hi\"\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_saved_field_write_of_the_wrong_type() {
+    // `currentVersion` is `int`, so writing a string is a mismatch.
+    let found = check_module(
+        "assign-saved",
+        "module m\n\
+         resource Book at ^books(id: int)\n    currentVersion: int\n\n\
+         fn f()\n    ^books(1).currentVersion = \"hi\"\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn well_typed_assignments_and_initializers_are_not_flagged() {
+    // Each binding and assignment matches the declared/known type.
+    let found = check_script(
+        "assign-ok",
+        "fn f()\n    var x: int = 1\n    x = 2\n    const s: string = \"a\"\n",
+        "check.assignment_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_assignment_with_an_unknown_value_is_not_flagged() {
+    // `mystery()` does not resolve, so its type is unknown; only a known mismatch flags.
+    let found = check_script(
+        "assign-unknown",
+        "fn f()\n    var x: int = 1\n    x = mystery()\n",
+        "check.assignment_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn rejects_a_return_of_the_wrong_type() {
     // The function is declared to return `int`, but `true` is a bool.
     let found = check_script(

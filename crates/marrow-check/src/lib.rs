@@ -44,6 +44,9 @@ pub const CHECK_CONDITION_TYPE: &str = "check.condition_type";
 pub const CHECK_CALL_ARGUMENT: &str = "check.call_argument";
 /// A `return` value's type does not match the function's declared return type.
 pub const CHECK_RETURN_TYPE: &str = "check.return_type";
+/// A value's type does not match the binding or place it is stored into (a typed
+/// `const`/`var` initializer, or an assignment target).
+pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -520,23 +523,62 @@ fn check_statement_types(
     use marrow_syntax::Statement;
     match statement {
         Statement::Const {
-            name, ty, value, ..
+            name,
+            ty,
+            value,
+            span,
         } => {
             let value_type = infer_type(program, value, scope, file, diagnostics);
+            if let Some(ty) = ty {
+                check_assignment(
+                    file,
+                    *span,
+                    &MarrowType::resolve(ty, &[]),
+                    &value_type,
+                    diagnostics,
+                );
+            }
             bind(scope, name, binding_type(ty.as_ref(), value_type));
         }
         Statement::Var {
-            name, ty, value, ..
+            name,
+            ty,
+            value,
+            span,
+            ..
         } => {
             let value_type = match value {
                 Some(value) => infer_type(program, value, scope, file, diagnostics),
                 None => MarrowType::Unknown,
             };
+            // An annotated initializer must match the declared type.
+            if let (Some(ty), Some(_)) = (ty, value) {
+                check_assignment(
+                    file,
+                    *span,
+                    &MarrowType::resolve(ty, &[]),
+                    &value_type,
+                    diagnostics,
+                );
+            }
             bind(scope, name, binding_type(ty.as_ref(), value_type));
         }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
-            infer_type(program, target, scope, file, diagnostics);
-            infer_type(program, value, scope, file, diagnostics);
+        Statement::Assign {
+            target,
+            value,
+            span,
+        }
+        | Statement::Merge {
+            target,
+            value,
+            span,
+        } => {
+            // The target's type is known for a local variable or a saved field;
+            // for other places (a local resource field, a whole resource) it is
+            // unknown and the assignment is left alone.
+            let target_type = infer_type(program, target, scope, file, diagnostics);
+            let value_type = infer_type(program, value, scope, file, diagnostics);
+            check_assignment(file, *span, &target_type, &value_type, diagnostics);
         }
         Statement::Delete { path, .. } => {
             infer_type(program, path, scope, file, diagnostics);
@@ -708,6 +750,36 @@ fn check_return_type(
                 "function returns `{}`, but this value is `{}`",
                 primitive_name(expected),
                 primitive_name(actual),
+            ),
+            line: span.line,
+            column: span.column,
+        });
+    }
+}
+
+/// Flag a value whose type does not match the place it is stored into — a typed
+/// `const`/`var` initializer, or an assignment target (a local variable or a
+/// saved field). Fires only when both the place and the value are known,
+/// incompatible primitives, so an untyped place (a local resource field, a whole
+/// resource) or an unresolved value is left alone.
+fn check_assignment(
+    file: &Path,
+    span: SourceSpan,
+    place: &MarrowType,
+    value: &MarrowType,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if let (Some(place), Some(value)) = (as_primitive(place), as_primitive(value))
+        && place != value
+    {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_ASSIGNMENT_TYPE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "expected `{}`, but the value is `{}`",
+                primitive_name(place),
+                primitive_name(value),
             ),
             line: span.line,
             column: span.column,
