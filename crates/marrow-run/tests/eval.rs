@@ -528,6 +528,56 @@ fn temporal_values_order_and_equate() {
 }
 
 #[test]
+fn scalar_conversions_validate_a_dynamic_value() {
+    // A conversion builtin asserts a dynamically-typed value is the target type
+    // and returns it (the `unknown` → concrete bridge).
+    let program = checked_program(
+        "fn asInt(v: int): int\n    return int(v)\nfn asString(v: string): string\n    return string(v)\nfn asBool(v: bool): bool\n    return bool(v)\n",
+    );
+    assert_eq!(
+        run(&program, "test::asInt", &[Value::Int(42)]),
+        Ok(Some(Value::Int(42)))
+    );
+    assert_eq!(
+        run(&program, "test::asString", &[Value::Str("hi".into())]),
+        Ok(Some(Value::Str("hi".into())))
+    );
+    assert_eq!(
+        run(&program, "test::asBool", &[Value::Bool(true)]),
+        Ok(Some(Value::Bool(true)))
+    );
+}
+
+#[test]
+fn a_conversion_rejects_a_value_of_the_wrong_type() {
+    // `int(...)` validates; a string value is not an int.
+    let program = checked_program("fn f(v: int): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::f", &[Value::Str("x".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+}
+
+#[test]
+fn temporal_conversions_validate_their_values() {
+    // `date`/`instant`/`duration` validate canonical temporal values (here built
+    // via the std::clock parsers), returning them unchanged.
+    let program = checked_program(
+        "fn d(t: string): string\n    return std::clock::formatDate(date(std::clock::parseDate(t)))\nfn span(t: string): string\n    return std::clock::formatDuration(duration(std::clock::parseDuration(t)))\n",
+    );
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("2024-02-29".into())]),
+        Ok(Some(Value::Str("2024-02-29".into())))
+    );
+    assert_eq!(
+        run(&program, "test::span", &[Value::Str("PT90S".into())]),
+        Ok(Some(Value::Str("PT90S".into())))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

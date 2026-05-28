@@ -1079,6 +1079,40 @@ fn a_sequence_returning_std_call_is_not_flagged() {
 }
 
 #[test]
+fn a_conversion_call_return_type_feeds_operator_checks() {
+    // `int(raw)` returns `int`, so `+ true` is int-plus-bool.
+    let found = check_module(
+        "conv-return-op",
+        "module m\nfn f(raw: unknown)\n    var x = int(raw) + true\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_conversion_into_a_mismatched_annotated_place_is_flagged() {
+    // `int(raw)` is `int`, but the place is `string`.
+    let found = check_module(
+        "conv-assign-bad",
+        "module m\nfn f(raw: unknown)\n    const s: string = int(raw)\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_conversion_into_a_matching_annotated_place_is_not_flagged() {
+    // `int(raw)` is `int`, matching the declared `int` place — the documented
+    // `const n: int = int(raw)` pattern checks clean.
+    let found = check_module(
+        "conv-assign-ok",
+        "module m\nfn f(raw: unknown)\n    const n: int = int(raw)\n",
+        "check.assignment_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.

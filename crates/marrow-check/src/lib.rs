@@ -1237,7 +1237,9 @@ fn check_call(
     // are the runtime's responsibility — but a std helper's return type is known
     // and feeds the surrounding type checks.
     if is_builtin_call(segments) {
-        return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
+        return std_call_return_type(segments)
+            .or_else(|| conversion_return_type(segments))
+            .unwrap_or(MarrowType::Unknown);
     }
     let Some(function) = resolve_function(program, segments) else {
         return MarrowType::Unknown;
@@ -1341,11 +1343,48 @@ fn is_builtin_call(segments: &[String]) -> bool {
     match segments {
         [name] => matches!(
             name.as_str(),
-            "Error" | "print" | "write" | "exists" | "get" | "nextId" | "append"
+            "Error"
+                | "print"
+                | "write"
+                | "exists"
+                | "get"
+                | "nextId"
+                | "append"
+                | "int"
+                | "decimal"
+                | "string"
+                | "bool"
+                | "bytes"
+                | "date"
+                | "instant"
+                | "duration"
         ),
         [first, _, _] => first == "std",
         _ => false,
     }
+}
+
+/// The return type of a scalar conversion builtin (`int(x): int`, `string(x):
+/// string`, …), per docs/language/builtins.md. The conversion validates a
+/// dynamically-typed value and yields the named type. (`ErrorCode` has no runtime
+/// value representation yet and is omitted.)
+fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
+    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, String};
+    let [name] = segments else {
+        return None;
+    };
+    let primitive = match name.as_str() {
+        "int" => Int,
+        "decimal" => Decimal,
+        "string" => String,
+        "bool" => Bool,
+        "bytes" => Bytes,
+        "date" => Date,
+        "instant" => Instant,
+        "duration" => Duration,
+        _ => return None,
+    };
+    Some(MarrowType::Primitive(primitive))
 }
 
 /// The declared return type of a value-returning `std::module::op` helper, per

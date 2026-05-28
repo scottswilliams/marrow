@@ -735,6 +735,9 @@ fn eval_call(
                 "nextId" => return eval_next_id(args, span, env).map(Some),
                 "append" => return eval_append(args, span, env).map(Some),
                 "bytes" => return eval_bytes_conversion(args, span, env).map(Some),
+                "int" | "decimal" | "string" | "bool" | "date" | "instant" | "duration" => {
+                    return eval_conversion(name, args, span, env).map(Some);
+                }
                 _ => {}
             }
         }
@@ -1298,6 +1301,41 @@ fn eval_bytes_conversion(
     match eval_expr(&arg.value, env)? {
         Value::Str(text) => Ok(Value::Bytes(text.into_bytes())),
         _ => Err(type_error("`bytes` converts a string to bytes", span)),
+    }
+}
+
+/// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
+/// `instant`/`duration`): validate that a dynamically-typed value is the named
+/// type and return it unchanged, or raise a type error. This is the checked
+/// bridge from an `unknown` value to a concrete type (text parsing lives in
+/// `std::clock`/`std::text`, not here).
+fn eval_conversion(
+    name: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(type_error(&format!("`{name}` takes one argument"), span));
+    };
+    let value = eval_expr(&arg.value, env)?;
+    let matches_target = matches!(
+        (name, &value),
+        ("int", Value::Int(_))
+            | ("decimal", Value::Decimal(_))
+            | ("string", Value::Str(_))
+            | ("bool", Value::Bool(_))
+            | ("date", Value::Date(_))
+            | ("instant", Value::Instant(_))
+            | ("duration", Value::Duration(_))
+    );
+    if matches_target {
+        Ok(value)
+    } else {
+        Err(type_error(
+            &format!("`{name}` requires a {name} value"),
+            span,
+        ))
     }
 }
 
