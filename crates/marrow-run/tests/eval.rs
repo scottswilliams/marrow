@@ -943,6 +943,106 @@ fn an_io_error_raises_a_catchable_error() {
     assert_eq!(code, Some(Value::Str("io.read".into())));
 }
 
+/// A resource and helpers exercising `out`/`inout` write-back to saved places.
+const SAVED_MODE_SAMPLE: &str = "\
+resource Account at ^accts(id: int)
+    balance: int
+
+resource Book at ^books(id: int)
+    title: string
+
+fn addOne(inout n: int)
+    n = n + 1
+
+fn give(out n: int)
+    n = 7
+
+fn setTitle(inout book: Book)
+    book.title = \"renamed\"
+
+fn bad(inout n: int)
+    n = 99
+    throw Error(code: \"x\", message: \"boom\")
+
+pub fn seedAccount()
+    ^accts(1).balance = 41
+
+pub fn bump()
+    addOne(inout ^accts(1).balance)
+
+pub fn produce()
+    give(out ^accts(1).balance)
+
+pub fn balanceOf(): int
+    return ^accts(1).balance
+
+pub fn seedBook()
+    ^books(1).title = \"draft\"
+
+pub fn rename()
+    setTitle(inout ^books(1))
+
+pub fn titleOf(): string
+    return ^books(1).title
+
+pub fn tryBump()
+    try
+        bad(inout ^accts(1).balance)
+    catch err: Error
+        write(\"caught\")
+";
+
+#[test]
+fn inout_writes_back_to_a_saved_field() {
+    let program = checked_program(SAVED_MODE_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seedAccount", &[]).expect("seed");
+    run_entry(&program, &store, "test::bump", &[]).expect("bump");
+    let balance = run_entry(&program, &store, "test::balanceOf", &[])
+        .expect("read")
+        .value;
+    assert_eq!(balance, Some(Value::Int(42)));
+}
+
+#[test]
+fn out_creates_a_saved_field() {
+    let program = checked_program(SAVED_MODE_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    // `out` never reads the place, so the field need not exist beforehand.
+    run_entry(&program, &store, "test::produce", &[]).expect("produce");
+    let balance = run_entry(&program, &store, "test::balanceOf", &[])
+        .expect("read")
+        .value;
+    assert_eq!(balance, Some(Value::Int(7)));
+}
+
+#[test]
+fn inout_writes_back_to_a_whole_saved_resource() {
+    // The spec's `normalize(inout ^books(id))` shape.
+    let program = checked_program(SAVED_MODE_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seedBook", &[]).expect("seed");
+    run_entry(&program, &store, "test::rename", &[]).expect("rename");
+    let title = run_entry(&program, &store, "test::titleOf", &[])
+        .expect("read")
+        .value;
+    assert_eq!(title, Some(Value::Str("renamed".into())));
+}
+
+#[test]
+fn a_saved_write_back_is_skipped_when_the_callee_throws() {
+    let program = checked_program(SAVED_MODE_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seedAccount", &[]).expect("seed");
+    // The callee mutates the inout saved field then throws; the throw is caught,
+    // and the write-back is skipped, so the stored balance is unchanged.
+    run_entry(&program, &store, "test::tryBump", &[]).expect("caught");
+    let balance = run_entry(&program, &store, "test::balanceOf", &[])
+        .expect("read")
+        .value;
+    assert_eq!(balance, Some(Value::Int(41)));
+}
+
 #[test]
 fn finally_runs_after_a_fault_and_can_replace_it() {
     // The try body faults (not catchable); finally still runs and its throw

@@ -422,17 +422,18 @@ fn bind_arguments(
 }
 
 /// Like [`bind_arguments`], but also resolves each `out`/`inout` argument to the
-/// local place to write back to (param-order-aligned: `Some(name)` for a moded
-/// argument, `None` otherwise) and validates that argument and parameter modes
-/// agree. An `inout` place is read now to seed the parameter; an `out` parameter
-/// is seeded with a type-directed default it is expected to overwrite.
+/// [`Place`] to write back to (param-order-aligned: `Some` for a moded argument,
+/// `None` otherwise) and validates that argument and parameter modes agree. An
+/// `inout` place is read now to seed the parameter; an `out` parameter is seeded
+/// with a type-directed default it is expected to overwrite.
 fn bind_arguments_with_modes(
     params: &[CheckedParam],
     args: &[Argument],
     span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<(Vec<Value>, Vec<Option<String>>), RuntimeError> {
-    let mut slots: Vec<Option<(Value, Option<String>)>> = vec![None; params.len()];
+) -> Result<(Vec<Value>, Vec<Option<Place>>), RuntimeError> {
+    // `Place` is not `Clone`, so build the slots without the `vec![None; n]` clone.
+    let mut slots: Vec<Option<(Value, Option<Place>)>> = (0..params.len()).map(|_| None).collect();
     let mut next_positional = 0;
     let mut seen_named = false;
     for arg in args {
@@ -449,18 +450,15 @@ fn bind_arguments_with_modes(
         let entry = match arg.mode {
             None => (eval_expr(&arg.value, env)?, None),
             Some(ArgMode::InOut) => {
-                let place = resolve_local_place(&arg.value, span)?;
-                let current = env.lookup(&place).cloned().ok_or_else(|| RuntimeError {
-                    code: RUN_UNBOUND_NAME,
-                    message: format!("`{place}` is not bound"),
-                    span,
-                })?;
+                let place = resolve_place(&arg.value, span, env)?;
+                let current = place.read(span, env)?;
                 (current, Some(place))
             }
-            Some(ArgMode::Out) => (
-                zero_value(&param.ty),
-                Some(resolve_local_place(&arg.value, span)?),
-            ),
+            Some(ArgMode::Out) => {
+                // `out` does not read the place, so it need not exist yet.
+                let place = resolve_place(&arg.value, span, env)?;
+                (zero_value(&param.ty), Some(place))
+            }
         };
         place_argument(&mut slots, index, entry, params, span)?;
     }
@@ -553,18 +551,90 @@ fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
     )
 }
 
-/// Resolve an `out`/`inout` argument expression to the local variable it names.
-/// Only a bare local is supported for now; a saved path or a field defers.
-fn resolve_local_place(expr: &Expression, span: SourceSpan) -> Result<String, RuntimeError> {
-    if let Expression::Name { segments, .. } = expr
-        && let [name] = segments.as_slice()
-    {
-        Ok(name.clone())
-    } else {
-        Err(unsupported(
-            "an out/inout argument that is not a local variable",
+/// A resolved assignable place for an `out`/`inout` argument, captured before the
+/// call (its saved identity keys evaluated once) so it can be read for `inout` and
+/// written back without re-evaluating those keys.
+enum Place {
+    /// A bare local variable: `n` or `book`.
+    Local(String),
+    /// A saved scalar field: `^books(id).title`.
+    SavedField {
+        root: String,
+        identity: Vec<SavedKey>,
+        field: String,
+    },
+    /// A whole saved resource: `^books(id)`.
+    SavedResource {
+        root: String,
+        identity: Vec<SavedKey>,
+    },
+}
+
+/// Resolve an `out`/`inout` argument expression to its [`Place`], evaluating any
+/// saved identity keys now. Supports a bare local, a saved scalar field, and a
+/// whole saved resource; other shapes (local-resource fields, keyed group
+/// entries) defer.
+fn resolve_place(
+    expr: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Place, RuntimeError> {
+    match expr {
+        Expression::Name { segments, .. } if segments.len() == 1 => {
+            Ok(Place::Local(segments[0].clone()))
+        }
+        Expression::Field { base, name, .. } if is_saved_path(base) => {
+            let (root, identity) = lower_record_identity(base, env)?;
+            Ok(Place::SavedField {
+                root,
+                identity,
+                field: name.clone(),
+            })
+        }
+        Expression::Call { .. } if is_saved_path(expr) => {
+            let (root, identity) = lower_record_identity(expr, env)?;
+            Ok(Place::SavedResource { root, identity })
+        }
+        _ => Err(unsupported(
+            "an out/inout argument that is not an assignable place",
             span,
-        ))
+        )),
+    }
+}
+
+impl Place {
+    /// The current value at this place, to seed an `inout` parameter.
+    fn read(&self, span: SourceSpan, env: &Env<'_>) -> Result<Value, RuntimeError> {
+        match self {
+            Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
+                code: RUN_UNBOUND_NAME,
+                message: format!("`{name}` is not bound"),
+                span,
+            }),
+            Place::SavedField {
+                root,
+                identity,
+                field,
+            } => read_saved_field(root, identity, field, span, env),
+            Place::SavedResource { root, identity } => read_resource(root, identity, span, env),
+        }
+    }
+
+    /// Write `value` back to this place after the callee returns normally.
+    fn write(self, value: Value, span: SourceSpan, env: &mut Env<'_>) -> Result<(), RuntimeError> {
+        match self {
+            Place::Local(name) => env
+                .assign(&name, value)
+                .map_err(|error| assign_error(&name, error, span)),
+            Place::SavedField {
+                root,
+                identity,
+                field,
+            } => write_saved_field(&root, &identity, &field, value, span, env),
+            Place::SavedResource { root, identity } => {
+                write_resource(&root, &identity, value, span, env)
+            }
+        }
     }
 }
 
@@ -600,7 +670,8 @@ fn assign_error(name: &str, error: AssignError, span: SourceSpan) -> RuntimeErro
 
 /// Evaluate a call to a program function, returning its returned value (or
 /// `None` for a function that returns nothing). Arguments may be positional or
-/// named, and `out`/`inout` arguments write back to a local place after the call.
+/// named, and `out`/`inout` arguments write back to an assignable place (a local
+/// or a saved path) after the call.
 fn eval_call(
     callee: &Expression,
     args: &[Argument],
@@ -746,10 +817,10 @@ fn raise(error: Value, span: SourceSpan, env: &mut Env<'_>) -> RuntimeError {
 }
 
 /// Evaluate a program-function call that has `out`/`inout` arguments. Each moded
-/// argument resolves to a local place that is read (for `inout`) to seed the
-/// parameter and written back after the callee returns normally; the callee's
-/// throw or fault skips write-back. The argument's mode must match the
-/// parameter's. Only bare-local places are supported for now.
+/// argument resolves to an assignable [`Place`] (a local or a saved path) that is
+/// read (for `inout`) to seed the parameter and written back after the callee
+/// returns normally; the callee's throw or fault skips write-back. The argument's
+/// mode must match the parameter's.
 fn eval_call_with_modes(
     function: &CheckedFunction,
     args: &[Argument],
@@ -785,9 +856,8 @@ fn eval_call_with_modes(
     // Write each out/inout parameter's final value back to its place. On a throw
     // or fault `finals` is all `None`, so nothing is written.
     for (place, final_value) in places.into_iter().zip(finals) {
-        if let (Some(name), Some(value)) = (place, final_value) {
-            env.assign(&name, value)
-                .map_err(|error| assign_error(&name, error, span))?;
+        if let (Some(place), Some(value)) = (place, final_value) {
+            place.write(value, span, env)?;
         }
     }
     complete_call(completion, span, env)
@@ -2203,29 +2273,42 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     {
         return eval_group_field_read(record, layer, args, name, expr.span(), env);
     }
-    let (root, keys) = lower_record_identity(base, env)?;
-    let mut segments = vec![PathSegment::Root(root.clone())];
-    segments.extend(keys.into_iter().map(PathSegment::RecordKey));
-    segments.push(PathSegment::Field(name.clone()));
-    let field_type = resource_field_type(env.program, &root, name)
-        .ok_or_else(|| unsupported("reading this field", expr.span()))?;
+    let (root, identity) = lower_record_identity(base, env)?;
+    read_saved_field(&root, &identity, name, expr.span(), env)
+}
+
+/// Read a top-level saved scalar field from a pre-lowered identity, decoding it
+/// with the field's declared type. An unpopulated element is an absent-element
+/// error. Shared by [`eval_saved_field`] and `out`/`inout` place reads.
+fn read_saved_field(
+    root: &str,
+    identity: &[SavedKey],
+    field: &str,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let mut segments = vec![PathSegment::Root(root.to_string())];
+    segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    segments.push(PathSegment::Field(field.to_string()));
+    let field_type = resource_field_type(env.program, root, field)
+        .ok_or_else(|| unsupported("reading this field", span))?;
     let store = env.store.borrow();
     let Some(bytes) = store
         .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, expr.span()))?
+        .map_err(|error| store_error(error, span))?
     else {
         return Err(RuntimeError {
             code: RUN_ABSENT,
-            message: format!("`{name}` is absent"),
-            span: expr.span(),
+            message: format!("`{field}` is absent"),
+            span,
         });
     };
     decode_value(&bytes, field_type)
         .and_then(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
-            message: format!("stored value for `{name}` did not decode to a runtime value"),
-            span: expr.span(),
+            message: format!("stored value for `{field}` did not decode to a runtime value"),
+            span,
         })
 }
 
@@ -2380,10 +2463,23 @@ fn eval_resource_read(
                 .ok_or_else(|| unsupported("a key of this type", span))?,
         );
     }
+    read_resource(root, &identity, span, env)
+}
+
+/// Read a whole resource from a pre-lowered identity into a materialized
+/// [`Value::Resource`]: each present top-level field in schema order, decoded by
+/// its type; sparse fields omitted. Shared by [`eval_resource_read`] and
+/// `out`/`inout` place reads.
+fn read_resource(
+    root: &str,
+    identity: &[SavedKey],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Value, RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("reading this saved root", span))?;
-    let mut prefix = vec![PathSegment::Root(root.clone())];
-    prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
+    let mut prefix = vec![PathSegment::Root(root.to_string())];
+    prefix.extend(identity.iter().cloned().map(PathSegment::RecordKey));
 
     let store = env.store.borrow();
     let mut fields = Vec::new();
@@ -2436,13 +2532,28 @@ fn eval_saved_field_write(
         return eval_group_field_write(record, layer, args, field, value, span, env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
-    let resource = find_resource(env.program, &root)
+    let value = eval_expr(value, env)?;
+    write_saved_field(&root, &identity, field, value, span, env)
+}
+
+/// Apply a managed top-level field write from a pre-lowered identity and an
+/// already-evaluated value, driving [`marrow_write::plan_field_write`] and
+/// committing. Shared by [`eval_saved_field_write`] and `out`/`inout` write-back.
+fn write_saved_field(
+    root: &str,
+    identity: &[SavedKey],
+    field: &str,
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let saved = value_to_saved(eval_expr(value, env)?)
+    let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_field_write(resource, &identity, field, &saved, &*store).map_err(|error| {
+        plan_field_write(resource, identity, field, &saved, &*store).map_err(|error| {
             RuntimeError {
                 code: error.code,
                 message: error.message,
@@ -2533,18 +2644,33 @@ fn eval_resource_write(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let (root, identity) = lower_record_identity(target, env)?;
-    let Value::Resource(fields) = eval_expr(value, env)? else {
+    let value = eval_expr(value, env)?;
+    write_resource(&root, &identity, value, span, env)
+}
+
+/// Apply a whole-resource write from a pre-lowered identity and an
+/// already-evaluated [`Value::Resource`], driving
+/// [`marrow_write::plan_resource_write`] (replace semantics) and committing.
+/// Shared by [`eval_resource_write`] and `out`/`inout` write-back.
+fn write_resource(
+    root: &str,
+    identity: &[SavedKey],
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let Value::Resource(fields) = value else {
         return Err(unsupported(
             "assigning a non-resource value to a saved record",
             span,
         ));
     };
-    let resource = find_resource(env.program, &root)
+    let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing this saved root", span))?;
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_write(resource, &identity, &value, &*store).map_err(|error| RuntimeError {
+        plan_resource_write(resource, identity, &value, &*store).map_err(|error| RuntimeError {
             code: error.code,
             message: error.message,
             span,
