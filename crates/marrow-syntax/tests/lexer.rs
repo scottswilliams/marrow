@@ -302,7 +302,7 @@ fn comment_lines_inside_open_delimiters_do_not_emit_newlines() {
 
 #[test]
 fn reports_lexical_errors_with_parse_syntax_diagnostics() {
-    let source = "fn main()\n\treturn \"unterminated\n    #\n";
+    let source = "fn main()\n\treturn \"unterminated\n    ~\n";
     let lexed = lex_source(source);
 
     assert!(lexed.has_errors());
@@ -322,6 +322,65 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
     );
     assert_eq!(lexed.diagnostics[0].line, 2);
     assert_eq!(lexed.diagnostics[0].column, 1);
+}
+
+#[test]
+fn rejects_obsolete_operators_with_marrow_guidance() {
+    let cases: &[(&str, &str, &str, usize)] = &[
+        ("a == b", "`==`", "`=` for equality", 2),
+        ("a && b", "`&&`", "`and`", 2),
+        ("a || b", "`||`", "`or`", 2),
+        ("not_done = !ready", "`!`", "`not`", 1),
+        ("count # 1", "`#`", "Marrow uses `;` for comments", 1),
+    ];
+
+    for (source, expected_token, expected_help, expected_len) in cases {
+        let lexed = lex_source(source);
+        assert!(
+            lexed.has_errors(),
+            "expected {expected_token} to be rejected by the lexer, got {:#?}",
+            lexed.diagnostics
+        );
+        let diagnostic = lexed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains(expected_token))
+            .unwrap_or_else(|| panic!("expected diagnostic mentioning {expected_token}"));
+        assert_eq!(diagnostic.code, "parse.syntax");
+        assert_eq!(diagnostic.kind, "parse");
+        assert_eq!(
+            diagnostic.span.end_byte - diagnostic.span.start_byte,
+            *expected_len,
+            "diagnostic span for {expected_token} should cover the obsolete token"
+        );
+        let help = diagnostic
+            .help
+            .as_deref()
+            .unwrap_or_else(|| panic!("expected help text for {expected_token}"));
+        assert!(
+            help.contains(expected_help),
+            "expected help to suggest {expected_help}, got {help}"
+        );
+    }
+}
+
+#[test]
+fn keeps_valid_operators_after_obsolete_check() {
+    let source = "if a != b\n    write(\"ne\")\n";
+    let lexed = lex_source(source);
+
+    assert!(
+        !lexed.has_errors(),
+        "valid `!=` should still lex cleanly, got {:#?}",
+        lexed.diagnostics
+    );
+    assert!(
+        lexed
+            .tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::BangEqual),
+        "expected a BangEqual token"
+    );
 }
 
 #[test]

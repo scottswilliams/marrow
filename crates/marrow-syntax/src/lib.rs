@@ -502,6 +502,11 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            if let Some(end) = self.reject_obsolete_operator(line, index) {
+                index = end;
+                continue;
+            }
+
             if let Some((kind, len)) = self.punctuation(index, line.end_byte) {
                 self.push_punctuation(kind, self.span(line, index, index + len));
                 index += len;
@@ -515,6 +520,49 @@ impl<'a> Lexer<'a> {
             );
             index = end;
         }
+    }
+
+    fn reject_obsolete_operator(&mut self, line: Line<'a>, index: usize) -> Option<usize> {
+        let tail = &self.source[index..line.end_byte];
+        let (consumed, message, help) = if tail.starts_with("==") {
+            (2, "`==` is not used in Marrow", "Use `=` for equality.")
+        } else if tail.starts_with("&&") {
+            (
+                2,
+                "`&&` is not used in Marrow",
+                "Use `and` for boolean and.",
+            )
+        } else if tail.starts_with("||") {
+            (2, "`||` is not used in Marrow", "Use `or` for boolean or.")
+        } else if tail.starts_with('!') && !tail.starts_with("!=") {
+            (
+                1,
+                "`!` is not used in Marrow",
+                "Use `not` for boolean negation.",
+            )
+        } else if tail.starts_with('#') {
+            (
+                1,
+                "`#` is not used in Marrow source",
+                "Marrow uses `;` for comments.",
+            )
+        } else {
+            return None;
+        };
+
+        let end = index + consumed;
+        let span = self.span(line, index, end);
+        self.diagnostics.push(Diagnostic {
+            code: PARSE_SYNTAX,
+            kind: "parse",
+            severity: Severity::Error,
+            message: message.to_string(),
+            help: Some(help.to_string()),
+            line: span.line,
+            column: span.column,
+            span,
+        });
+        Some(end)
     }
 
     fn lex_interpolation(&mut self, line: Line<'a>, start: usize) -> usize {
