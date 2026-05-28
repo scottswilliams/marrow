@@ -84,3 +84,28 @@ fn deleting_an_absent_path_is_a_no_op() {
     store.delete(&book(1));
     assert_eq!(store.read(&book_field(2, "title")), Some(&b"Other"[..]));
 }
+
+#[test]
+fn dump_and_restore_reproduce_the_store() {
+    let mut store = MemStore::new();
+    store.write(&book(1), b"whole".to_vec());
+    store.write(&book_field(1, "title"), b"Dune".to_vec());
+    store.write(&book_field(1, "author"), b"Herbert".to_vec());
+    store.write(&book_field(2, "title"), b"Sand".to_vec());
+
+    // Dumping from the empty prefix yields every entry in Marrow order — the
+    // portable path/value stream.
+    let dump = store.scan(&[]);
+    assert_eq!(dump.len(), 4);
+
+    // Restoring re-writes the encoded pairs into a fresh store.
+    let mut restored = MemStore::new();
+    for (path, value) in &dump {
+        restored.write(path, value.clone());
+    }
+
+    // The restored store reproduces the dump, the roots, and presence exactly.
+    assert_eq!(restored.scan(&[]), dump);
+    assert_eq!(restored.roots(), store.roots());
+    assert_eq!(restored.presence(&book(1)), Presence::ValueAndChildren);
+}
