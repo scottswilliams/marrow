@@ -59,3 +59,7 @@ available, and the capability or limit involved. Machine-readable facts belong
 in `data`; clients do not parse `message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
 `store.limit`, and `store.corrupt_path`.
+
+The `marrow serve` data server reports a `protocol.*` code when a request is bad:
+`protocol.malformed` (not JSON, or no `op`) and `protocol.unknown_op`. A request
+that reaches the store carries the store's own `store.*` code through unchanged.

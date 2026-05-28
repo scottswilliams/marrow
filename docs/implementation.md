@@ -401,16 +401,20 @@ project-level (checked-fact) diagnostics to follow. It is distinct from
 The server is useful when several local tools need one long-lived owner for a
 persistent backend, live reads, or local-session inspection.
 
-The server protocol is newline-delimited JSON over local IPC by default. It
-stays small:
+The server protocol is newline-delimited JSON over a loopback TCP connection
+(`127.0.0.1`); the bound address is printed on startup. It stays small:
 
-- evaluate one checked request in a session;
 - read an exact saved path with `saved_get`;
 - list child keys with `saved_children`;
 - list saved roots with `saved_roots`;
 - walk a bounded saved subtree with `saved_walk`;
+- evaluate one checked request in a session;
 - register a session for read-only local inspection;
 - inspect registered local roots and local trees.
+
+The first release serves the saved-tree read operations over a read-only store
+(`saved_roots`, then `saved_children`, `saved_get`, and `saved_walk`). Checked
+evaluation and session inspection are planned extensions.
 
 The protocol does not expose arbitrary writes to managed roots. Data changes
 come from checked Marrow execution or explicit repair and migration commands.

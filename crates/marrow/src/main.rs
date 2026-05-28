@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use serde_json::json;
 
 mod lsp;
+mod serve;
 
 const HELP: &str = "\
 Marrow
@@ -19,6 +20,7 @@ Usage:
   marrow restore <projectdir> <archive>
   marrow data <roots|stats> <projectdir>
   marrow lsp
+  marrow serve [--port <port>] <projectdir>
   marrow --version
   marrow --help
 
@@ -51,6 +53,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|arg| arg == "lsp") {
         return lsp::run(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "serve") {
+        return serve::run(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
@@ -405,7 +410,7 @@ fn open_owned_store(
 /// Open the project's configured store read-only for inspection, or `Ok(None)` if
 /// it holds no saved data on disk yet (the in-memory default, or the native file
 /// does not exist). Never creates a store — inspection is read-only.
-fn open_store_for_inspection(
+pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Result<Option<Box<dyn marrow_store::backend::Backend>>, ExitCode> {
@@ -459,7 +464,7 @@ fn execute(
 /// Load `<dir>/marrow.json`. Reports and returns the exit code if it is missing or
 /// invalid. `load_checked_project` builds on this; backup and restore use it
 /// directly, since raw saved data needs no source checking.
-fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, ExitCode> {
+pub(crate) fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, ExitCode> {
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = std::fs::read_to_string(&config_path).map_err(|error| {
         report_io_error(
