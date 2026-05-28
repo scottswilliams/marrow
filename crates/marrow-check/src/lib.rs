@@ -1062,9 +1062,9 @@ fn local_field_type(
     Some(MarrowType::resolve(&field.ty, &[]))
 }
 
-/// The declared type of a group-layer field read `^root(key…).layer(key…).field`.
-/// `base` is the keyed layer entry `^root(key…).layer(key…)` (a call whose callee
-/// is the layer field). Mirrors the runtime's `resource_group_member_type`.
+/// The declared type of a group-layer field read `^root(key…).layer(key…)….field`
+/// at any nesting depth. `base` is the keyed layer entry (a call whose callee is
+/// the layer field). Mirrors the runtime's `resource_nested_member_type`.
 fn saved_group_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
@@ -1073,12 +1073,9 @@ fn saved_group_field_type(
     let marrow_syntax::Expression::Call { callee, .. } = base else {
         return None;
     };
-    let (root, layer) = saved_layer_field(callee.as_ref())?;
+    let (root, layers) = saved_layer_chain(callee.as_ref())?;
     let resource = find_resource_schema(program, root)?;
-    let layer = resource
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)?;
+    let layer = descend_layers(resource, &layers)?;
     let member = layer.members.iter().find_map(|member| match member {
         marrow_schema::LayerMember::Field(member) if member.name == field => Some(member),
         _ => None,
@@ -1086,24 +1083,24 @@ fn saved_group_field_type(
     Some(MarrowType::resolve(&member.ty, &[]))
 }
 
-/// The declared leaf type of a keyed-leaf read `^root(key…).layer(key…)`. `callee`
-/// is the layer field `^root(key…).layer`. Mirrors `resource_layer_leaf_type`.
+/// The declared leaf type of a keyed-leaf read `^root(key…).layer(key…)…` at any
+/// nesting depth. `callee` is the layer field `^root(key…)….layer`. Mirrors
+/// `resource_layer_leaf_type`.
 fn saved_leaf_type(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
-    let (root, layer) = saved_layer_field(callee)?;
+    let (root, layers) = saved_layer_chain(callee)?;
     let resource = find_resource_schema(program, root)?;
-    let layer = resource
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)?;
+    let layer = descend_layers(resource, &layers)?;
     Some(MarrowType::resolve(layer.leaf_type.as_ref()?, &[]))
 }
 
-/// Extract `(root, layer)` from a saved layer field `^root(key…).layer` — a
-/// `Field` whose base is a keyed record access `^root(key…)`.
-fn saved_layer_field(expr: &marrow_syntax::Expression) -> Option<(&str, &str)> {
+/// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
+/// nested one `^root(key…).layer(key…)….layer`, with the layer names ordered
+/// outermost first. Each `Field` peels one layer; its base is either the keyed
+/// record `^root(key…)` (a call on a saved root) or a deeper layer entry.
+fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str>)> {
     use marrow_syntax::Expression;
     let Expression::Field {
         base, name: layer, ..
@@ -1114,10 +1111,32 @@ fn saved_layer_field(expr: &marrow_syntax::Expression) -> Option<(&str, &str)> {
     let Expression::Call { callee, .. } = base.as_ref() else {
         return None;
     };
-    let Expression::SavedRoot { name: root, .. } = callee.as_ref() else {
-        return None;
-    };
-    Some((root, layer))
+    match callee.as_ref() {
+        Expression::SavedRoot { name: root, .. } => Some((root, vec![layer])),
+        Expression::Field { .. } => {
+            let (root, mut layers) = saved_layer_chain(callee)?;
+            layers.push(layer);
+            Some((root, layers))
+        }
+        _ => None,
+    }
+}
+
+/// Descend a non-empty chain of group layer names from a resource, following
+/// nested layer members, and return the innermost layer's schema.
+fn descend_layers<'a>(
+    resource: &'a marrow_schema::ResourceSchema,
+    layers: &[&str],
+) -> Option<&'a marrow_schema::LayerSchema> {
+    let (first, rest) = layers.split_first()?;
+    let mut current = resource.layers.iter().find(|layer| &layer.name == first)?;
+    for name in rest {
+        current = current.members.iter().find_map(|member| match member {
+            marrow_schema::LayerMember::Layer(layer) if &layer.name == name => Some(layer),
+            _ => None,
+        })?;
+    }
+    Some(current)
 }
 
 /// Look up a name's binding, innermost scope frame first; `None` when unbound.

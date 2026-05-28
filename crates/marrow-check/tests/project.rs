@@ -997,6 +997,38 @@ fn rejects_a_named_argument_of_the_wrong_type() {
 }
 
 #[test]
+fn a_nested_group_field_read_resolves_its_type() {
+    // A read through nested group layers resolves to the innermost field's type,
+    // so a typed return of it is not flagged as an untyped value.
+    let found = check_module(
+        "nested-read",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    \
+         versions(version: int)\n        required title: string\n        \
+         comments(pos: int)\n            required text: string\n\n\
+         fn f(): string\n    return ^books(1).versions(2).comments(3).text\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_nested_group_field_read_of_the_wrong_type_is_flagged() {
+    // The nested read resolves to `string`, so storing it into an `int` is a
+    // genuine type mismatch — proving the type is resolved, not left unknown.
+    let found = check_module(
+        "nested-read-mismatch",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    \
+         versions(version: int)\n        required title: string\n        \
+         comments(pos: int)\n            required text: string\n\n\
+         fn f()\n    const n: int = ^books(1).versions(2).comments(3).text\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn an_unresolved_argument_into_a_typed_parameter_is_flagged() {
     // Strict typing: `mystery` is unbound (unknown type), but `add`'s parameter is
     // `int`, so the argument is a `check.untyped_value` error — convert it first.
