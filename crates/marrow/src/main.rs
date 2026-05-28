@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -12,6 +13,8 @@ Usage:
   marrow fmt [--check | --write] <file.mw>
   marrow run <projectdir>
   marrow test <projectdir>
+  marrow backup <projectdir> <archive>
+  marrow restore <projectdir> <archive>
   marrow --version
   marrow --help
 
@@ -32,6 +35,12 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|arg| arg == "test") {
         return test(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "backup") {
+        return backup(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "restore") {
+        return restore(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
@@ -300,15 +309,35 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    match resolve_store_path(dir, &config) {
+        Err(code) => code,
+        Ok(None) => {
+            let store = RefCell::new(marrow_store::mem::MemStore::new());
+            execute(&program, &store, entry)
+        }
+        Ok(Some(path)) => match marrow_store::redb::RedbStore::open(&path) {
+            Ok(store) => execute(&program, &RefCell::new(store), entry),
+            Err(error) => {
+                report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+/// Resolve the project's configured store to its on-disk location: `Ok(None)` for
+/// the in-memory default, or `Ok(Some(path))` for the native redb file (creating
+/// its data directory). A bad store config is reported and its exit code returned.
+fn resolve_store_path(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Result<Option<PathBuf>, ExitCode> {
     match &config.store {
         None
         | Some(marrow_project::StoreConfig {
             backend: marrow_project::StoreBackend::Memory,
             ..
-        }) => {
-            let store = RefCell::new(marrow_store::mem::MemStore::new());
-            execute(&program, &store, entry)
-        }
+        }) => Ok(None),
         Some(marrow_project::StoreConfig {
             backend: marrow_project::StoreBackend::Native,
             data_dir,
@@ -319,22 +348,34 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
                     "native store requires `store.dataDir`",
                     CheckFormat::Text,
                 );
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             };
             let data_path = Path::new(dir).join(data_dir);
-            if let Err(error) = std::fs::create_dir_all(&data_path) {
+            std::fs::create_dir_all(&data_path).map_err(|error| {
                 report_io_error(&data_path.display().to_string(), &error, CheckFormat::Text);
-                return ExitCode::FAILURE;
-            }
-            let store = match marrow_store::redb::RedbStore::open(&data_path.join("marrow.redb")) {
-                Ok(store) => RefCell::new(store),
-                Err(error) => {
-                    report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
-                    return ExitCode::FAILURE;
-                }
-            };
-            execute(&program, &store, entry)
+                ExitCode::FAILURE
+            })?;
+            Ok(Some(data_path.join("marrow.redb")))
         }
+    }
+}
+
+/// Open the project's configured store for exclusive access (used by backup and
+/// restore, which own the store rather than sharing it with a run). Reports and
+/// returns the exit code on failure.
+fn open_owned_store(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Result<Box<dyn marrow_store::backend::Backend>, ExitCode> {
+    match resolve_store_path(dir, config)? {
+        None => Ok(Box::new(marrow_store::mem::MemStore::new())),
+        Some(path) => match marrow_store::redb::RedbStore::open(&path) {
+            Ok(store) => Ok(Box::new(store)),
+            Err(error) => {
+                report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                Err(ExitCode::FAILURE)
+            }
+        },
     }
 }
 
@@ -359,13 +400,10 @@ fn execute(
     }
 }
 
-/// Load `<dir>/marrow.json` and check the project. On any failure — a missing or
-/// invalid config, an unreadable source root, or check errors — the problem is
-/// reported and the exit code is returned in `Err`; on success the parsed config
-/// and checked program are returned. Shared by `run` and `test`.
-fn load_checked_project(
-    dir: &str,
-) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
+/// Load `<dir>/marrow.json`. Reports and returns the exit code if it is missing or
+/// invalid. `load_checked_project` builds on this; backup and restore use it
+/// directly, since raw saved data needs no source checking.
+fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, ExitCode> {
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = std::fs::read_to_string(&config_path).map_err(|error| {
         report_io_error(
@@ -375,10 +413,20 @@ fn load_checked_project(
         );
         ExitCode::FAILURE
     })?;
-    let config = marrow_project::parse_config(&config_text).map_err(|error| {
+    marrow_project::parse_config(&config_text).map_err(|error| {
         report_simple_error(error.code, &error.message, CheckFormat::Text);
         ExitCode::FAILURE
-    })?;
+    })
+}
+
+/// Load `<dir>/marrow.json` and check the project. On any failure — a missing or
+/// invalid config, an unreadable source root, or check errors — the problem is
+/// reported and the exit code is returned in `Err`; on success the parsed config
+/// and checked program are returned. Shared by `run` and `test`.
+fn load_checked_project(
+    dir: &str,
+) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
+    let config = load_config(dir)?;
     let (report, program) =
         marrow_check::check_project(Path::new(dir), &config).map_err(|error| {
             report_simple_error(
@@ -537,6 +585,129 @@ fn test_project_dir(dir: &str) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// Parse exactly two positional paths (a project directory and an archive) for
+/// `backup`/`restore`, handling `--help` and rejecting options or a wrong count.
+fn two_positionals(command: &str, args: &[String]) -> Result<(String, String), ExitCode> {
+    let mut positionals = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--help" | "-h" => {
+                print!("Usage:\n  marrow {command} <projectdir> <archive>\n");
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => {
+                eprintln!("unknown {command} option: {value}");
+                return Err(ExitCode::from(2));
+            }
+            value => positionals.push(value.to_string()),
+        }
+        index += 1;
+    }
+    match positionals.as_slice() {
+        [dir, archive] => Ok((dir.clone(), archive.clone())),
+        _ => {
+            eprintln!("marrow {command} takes a project directory and an archive path");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+/// The plural suffix for a record count: `""` for one, `"s"` otherwise.
+fn plural(count: u64) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+/// Back up a project's saved data to a portable archive:
+/// `marrow backup <projectdir> <archive>`.
+fn backup(args: &[String]) -> ExitCode {
+    let (dir, archive) = match two_positionals("backup", args) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let config = match load_config(&dir) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    let store = match open_owned_store(&dir, &config) {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    let file = match std::fs::File::create(&archive) {
+        Ok(file) => file,
+        Err(error) => {
+            report_io_error(&archive, &error, CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut writer = std::io::BufWriter::new(file);
+    let count = match marrow_store::archive::write_archive(&*store, &mut writer) {
+        Ok(count) => count,
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = writer.flush() {
+        report_io_error(&archive, &error, CheckFormat::Text);
+        return ExitCode::FAILURE;
+    }
+    println!("backed up {count} record{} to {archive}", plural(count));
+    ExitCode::SUCCESS
+}
+
+/// Restore a project's saved data from a portable archive into an empty store:
+/// `marrow restore <projectdir> <archive>`.
+fn restore(args: &[String]) -> ExitCode {
+    let (dir, archive) = match two_positionals("restore", args) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let config = match load_config(&dir) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    let mut store = match open_owned_store(&dir, &config) {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    // A normal restore writes into an empty target; replace/merge/repair are
+    // explicit maintenance actions, deferred for now.
+    match store.roots() {
+        Ok(roots) if !roots.is_empty() => {
+            report_simple_error(
+                "restore.not_empty",
+                "restore target already holds data; restore writes into an empty store",
+                CheckFormat::Text,
+            );
+            return ExitCode::FAILURE;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    }
+    let file = match std::fs::File::open(&archive) {
+        Ok(file) => file,
+        Err(error) => {
+            report_io_error(&archive, &error, CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut reader = std::io::BufReader::new(file);
+    match marrow_store::archive::read_archive(&mut reader, &mut *store) {
+        Ok(count) => {
+            println!("restored {count} record{} from {archive}", plural(count));
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            ExitCode::FAILURE
+        }
     }
 }
 

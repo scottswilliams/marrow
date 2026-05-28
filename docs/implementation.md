@@ -381,6 +381,14 @@ Inspection has two modes:
 `marrow data` is the raw saved-tree command group for inspection, dump, diff,
 load, integrity checks, and stats.
 
+`marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
+portable archive — the canonical ordered (path, value) stream behind a small
+manifest (format magic, version, and record count; source fingerprints arrive
+with typed restore), not an engine file. `marrow restore <projectdir> <archive>`
+replays one into an empty store in a single transaction; a non-empty target fails
+with `restore.not_empty`, since restoring over existing data is an explicit
+maintenance action.
+
 `marrow serve` is optional. Normal commands may open a project store directly.
 The server is useful when several local tools need one long-lived owner for a
 persistent backend, live reads, or local-session inspection.
