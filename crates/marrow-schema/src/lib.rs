@@ -202,7 +202,7 @@ fn check_saved_data(
     errors: &mut Vec<SchemaError>,
 ) {
     for key in &store.keys {
-        if is_unknown(&key.ty) {
+        if embeds_unknown(&key.ty) {
             errors.push(unknown_error("identity key", &key.name, decl_span));
         }
         if let Some(span) = top_level_member_span(members, &key.name) {
@@ -237,7 +237,7 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
             } else {
                 "keyed leaf"
             };
-            if is_unknown(&field.ty) {
+            if embeds_unknown(&field.ty) {
                 errors.push(unknown_error(what, &field.name, field.span));
             }
         }
@@ -261,15 +261,25 @@ fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<Sourc
     })
 }
 
-fn is_unknown(ty: &TypeRef) -> bool {
-    ty.text == "unknown"
+/// Does this saved type embed `unknown`? A type embeds `unknown` when it is
+/// `unknown` itself or a `sequence[...]` whose element type embeds it. Managed
+/// saved schemas reject `unknown` anywhere inside (docs/language/types.md).
+fn embeds_unknown(ty: &TypeRef) -> bool {
+    let mut text = ty.text.trim();
+    while let Some(inner) = text
+        .strip_prefix("sequence[")
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        text = inner.trim();
+    }
+    text == "unknown"
 }
 
 fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
     SchemaError {
         code: SCHEMA_UNKNOWN_IN_SAVED,
         message: format!(
-            "saved {what} `{name}` cannot be typed `unknown`; managed saved \
+            "saved {what} `{name}` cannot use `unknown`; managed saved \
              schemas use concrete types"
         ),
         span,

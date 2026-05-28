@@ -261,6 +261,34 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn saved_field_typed_sequence_of_unknown_is_an_error() {
+    // `unknown` is rejected anywhere inside a saved type, including as the
+    // element of a `sequence[...]`.
+    let source = "\
+resource Book at ^books(id: int)
+    tags: sequence[unknown]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("tags"));
+}
+
+#[test]
+fn saved_field_typed_sequence_of_concrete_type_is_allowed() {
+    // A sequence of a concrete type is an ordinary saved field; the check does
+    // not over-trigger on the `sequence[...]` wrapper.
+    let source = "\
+resource Book at ^books(id: int)
+    tags: sequence[string]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "sequence of a concrete type is fine: {errors:?}"
+    );
+}
+
+#[test]
 fn local_field_typed_unknown_is_allowed() {
     let source = "\
 resource Draft
