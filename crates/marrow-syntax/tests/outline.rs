@@ -220,6 +220,28 @@ fn parses_simple_statements_in_function_bodies() {
 }
 
 #[test]
+fn parses_a_type_keyword_as_a_path_segment() {
+    // `bytes` is a type keyword but must be valid mid-path, as in `std::bytes::length`.
+    let parsed = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   return std::bytes::length(data)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::Return { value: Some(Expression::Call { callee, .. }), .. }
+                if matches!(callee.as_ref(),
+                    Expression::Name { segments, .. } if segments == &["std", "bytes", "length"])
+        ),
+        "{:#?}",
+        main.body.statements[0]
+    );
+}
+
+#[test]
 fn parses_keyed_var_declaration() {
     let parsed = parse_source(
         "module app\n\

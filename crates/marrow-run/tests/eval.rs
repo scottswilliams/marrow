@@ -258,6 +258,32 @@ fn bytes_round_trip_through_saved_data() {
 }
 
 #[test]
+fn converts_string_to_bytes_and_measures_length() {
+    let program = checked_program(
+        "pub fn short(): int\n    return std::bytes::length(bytes(\"hi\"))\n\n\
+         pub fn utf8(): int\n    return std::bytes::length(bytes(\"café\"))\n",
+    );
+    assert_eq!(
+        run(&program, "test::short", &[]).unwrap(),
+        Some(Value::Int(2))
+    );
+    // `café` is 4 characters but 5 UTF-8 bytes; std::bytes::length counts bytes.
+    assert_eq!(
+        run(&program, "test::utf8", &[]).unwrap(),
+        Some(Value::Int(5))
+    );
+}
+
+#[test]
+fn bytes_conversion_equals_a_bytes_literal() {
+    let program = checked_program("pub fn f(): bool\n    return bytes(\"xy\") = b\"xy\"\n");
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

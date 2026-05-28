@@ -410,6 +410,7 @@ fn eval_call(
                 "get" => return eval_get(args, span, env).map(Some),
                 "nextId" => return eval_next_id(args, span, env).map(Some),
                 "append" => return eval_append(args, span, env).map(Some),
+                "bytes" => return eval_bytes_conversion(args, span, env).map(Some),
                 _ => {}
             }
         }
@@ -428,10 +429,10 @@ fn eval_call(
         {
             return eval_assert(op, args, span, env);
         }
-        // Pure `std::text::*` / `std::math::*` helpers.
+        // Pure `std::text::*` / `std::math::*` / `std::bytes::*` helpers.
         if let [first, second, op] = segments.as_slice()
             && first == "std"
-            && (second == "text" || second == "math")
+            && (second == "text" || second == "math" || second == "bytes")
         {
             return eval_std(second, op, args, span, env).map(Some);
         }
@@ -649,7 +650,40 @@ fn eval_std(
             let modulo = int_modulo(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
             Ok(Value::Int(modulo))
         }
+        ("bytes", "length") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            Ok(Value::Int(eval_bytes_arg(value, env, span)?.len() as i64))
+        }
         _ => Err(unsupported(&format!("std::{module}::{op}"), span)),
+    }
+}
+
+/// Convert a string argument to bytes (`bytes(text)`): the string's UTF-8 bytes.
+fn eval_bytes_conversion(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(type_error("`bytes` takes one argument", span));
+    };
+    match eval_expr(&arg.value, env)? {
+        Value::Str(text) => Ok(Value::Bytes(text.into_bytes())),
+        _ => Err(type_error("`bytes` converts a string to bytes", span)),
+    }
+}
+
+/// Evaluate `arg` to bytes, or a type error.
+fn eval_bytes_arg(
+    arg: &Argument,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Vec<u8>, RuntimeError> {
+    match eval_expr(&arg.value, env)? {
+        Value::Bytes(bytes) => Ok(bytes),
+        _ => Err(type_error("expected bytes", span)),
     }
 }
 
