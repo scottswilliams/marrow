@@ -1,4 +1,17 @@
-use marrow_syntax::{Declaration, format_block, format_expression, parse_source};
+use marrow_syntax::{
+    Declaration, format_block, format_declaration, format_expression, parse_source,
+};
+
+/// Parse a module and format the declaration at `index`.
+fn format_decl(source: &str, index: usize) -> String {
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "source should parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    format_declaration(source, &parsed.file.declarations[index])
+}
 
 /// Parse a single-function module and format its body block at indent level 1.
 fn format_function_body(source: &str) -> String {
@@ -154,6 +167,50 @@ fn formats_transaction_lock_and_try_blocks() {
          \x20   finally\n\
          \x20       cleanup()";
     assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn formats_const_declaration_with_docs() {
+    let source = "module app\n\
+         ;; The maximum number of loans.\n\
+         const MaxLoans: int = 5\n";
+    let expected = ";; The maximum number of loans.\n\
+         const MaxLoans: int = 5";
+    assert_eq!(format_decl(source, 0), expected);
+}
+
+#[test]
+fn formats_resource_declaration_with_members() {
+    let source = "module app\n\
+         resource Book at ^books(id: int)\n\
+         \x20   ;; Display title.\n\
+         \x20   @id(\"book.title\")\n\
+         \x20   required title: string\n\
+         \x20   tags(pos: int): string\n\
+         \x20   notes(noteId: string)\n\
+         \x20       text: string\n\
+         \x20   index byShelf(shelf, id) unique\n";
+    let expected = "resource Book at ^books(id: int)\n\
+         \x20   ;; Display title.\n\
+         \x20   @id(\"book.title\")\n\
+         \x20   required title: string\n\
+         \x20   tags(pos: int): string\n\
+         \x20   notes(noteId: string)\n\
+         \x20       text: string\n\
+         \x20   index byShelf(shelf, id) unique";
+    assert_eq!(format_decl(source, 0), expected);
+}
+
+#[test]
+fn formats_function_declaration_with_params() {
+    let source = "module app\n\
+         pub fn add(title: string, out result: int): int\n\
+         \x20   result = 1\n\
+         \x20   return result\n";
+    let expected = "pub fn add(title: string, out result: int): int\n\
+         \x20   result = 1\n\
+         \x20   return result";
+    assert_eq!(format_decl(source, 0), expected);
 }
 
 #[test]

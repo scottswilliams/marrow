@@ -7,8 +7,9 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    ArgMode, Argument, BinaryOp, Block, Expression, InterpolationPart, KeyParam, Statement,
-    TypeRef, UnaryOp,
+    ArgMode, Argument, BinaryOp, Block, ConstDecl, Declaration, Expression, FunctionDecl,
+    InterpolationPart, KeyParam, ParamDecl, ParamMode, ResourceDecl, ResourceMember, SavedRoot,
+    Statement, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -19,6 +20,145 @@ const PREC_UNARY: u8 = 9;
 
 /// One indentation level in canonical Marrow source.
 const INDENT: &str = "    ";
+
+/// Format a top-level declaration (const, resource, or function) as canonical
+/// Marrow source, including its documentation comments. The returned text has
+/// no trailing newline.
+pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
+    match declaration {
+        Declaration::Const(decl) => format_const(decl),
+        Declaration::Resource(decl) => format_resource(decl),
+        Declaration::Function(decl) => format_function(source, decl),
+    }
+}
+
+fn format_const(decl: &ConstDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str(&format!(
+        "const {}{} = {}",
+        decl.name,
+        format_type_annotation(&decl.ty),
+        format_expression(&decl.value)
+    ));
+    out
+}
+
+fn format_resource(decl: &ResourceDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str("resource ");
+    out.push_str(&decl.name);
+    if let Some(store) = &decl.store {
+        out.push_str(&format_saved_root(store));
+    }
+    for member in &decl.members {
+        out.push('\n');
+        out.push_str(&format_resource_member(member, 1));
+    }
+    out
+}
+
+fn format_saved_root(store: &SavedRoot) -> String {
+    format!(" at ^{}{}", store.root, format_key_params(&store.keys))
+}
+
+fn format_resource_member(member: &ResourceMember, level: usize) -> String {
+    let pad = INDENT.repeat(level);
+    match member {
+        ResourceMember::Field(field) => {
+            let mut out = format_member_meta(&field.docs, &field.stable_id, level);
+            let required = if field.required { "required " } else { "" };
+            // A resource field always declares a type, so render it directly.
+            out.push_str(&format!(
+                "{pad}{required}{}{}: {}",
+                field.name,
+                format_key_params(&field.keys),
+                field.ty.text,
+            ));
+            out
+        }
+        ResourceMember::Group(group) => {
+            let mut out = format_member_meta(&group.docs, &group.stable_id, level);
+            out.push_str(&format!(
+                "{pad}{}{}",
+                group.name,
+                format_key_params(&group.keys)
+            ));
+            for child in &group.members {
+                out.push('\n');
+                out.push_str(&format_resource_member(child, level + 1));
+            }
+            out
+        }
+        ResourceMember::Index(index) => {
+            let mut out = format_member_meta(&index.docs, &index.stable_id, level);
+            let unique = if index.unique { " unique" } else { "" };
+            out.push_str(&format!(
+                "{pad}index {}({}){unique}",
+                index.name,
+                index.args.join(", ")
+            ));
+            out
+        }
+    }
+}
+
+/// Render a member's documentation comments and `@id(...)` metadata as the
+/// lines preceding it, each indented to `level`.
+fn format_member_meta(docs: &[String], stable_id: &Option<String>, level: usize) -> String {
+    let pad = INDENT.repeat(level);
+    let mut out = format_docs(docs, level);
+    if let Some(stable_id) = stable_id {
+        out.push_str(&format!("{pad}@id(\"{stable_id}\")\n"));
+    }
+    out
+}
+
+fn format_function(source: &str, decl: &FunctionDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    let visibility = if decl.public { "pub " } else { "" };
+    let params = decl
+        .params
+        .iter()
+        .map(format_param)
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push_str(&format!(
+        "{visibility}fn {}({params}){}",
+        decl.name,
+        format_return_type(&decl.return_type)
+    ));
+    let body = format_block(source, &decl.body, 1);
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
+    }
+    out
+}
+
+fn format_param(param: &ParamDecl) -> String {
+    let mode = match param.mode {
+        Some(ParamMode::Out) => "out ",
+        Some(ParamMode::InOut) => "inout ",
+        None => "",
+    };
+    format!("{mode}{}: {}", param.name, param.ty.text)
+}
+
+fn format_return_type(return_type: &Option<TypeRef>) -> String {
+    match return_type {
+        Some(ty) => format!(": {}", ty.text),
+        None => String::new(),
+    }
+}
+
+/// Render documentation comments as `;; ...` lines at `level`, each ending in a
+/// newline so the declaration or member follows on its own line.
+fn format_docs(docs: &[String], level: usize) -> String {
+    let pad = INDENT.repeat(level);
+    docs.iter()
+        .map(|doc| format!("{pad};; {doc}\n"))
+        .collect::<String>()
+}
 
 /// Format a block's statements at the given indentation level, one statement
 /// per line, joined by newlines (no trailing newline). Nested blocks indent one
