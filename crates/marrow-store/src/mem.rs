@@ -24,6 +24,23 @@ pub enum Presence {
     ValueAndChildren,
 }
 
+/// An error from the store. The in-memory store can only fail by meeting a
+/// stored path it cannot decode; a persistent backend adds I/O and limit
+/// variants atop this contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    /// A stored key is not a well-formed sequence of path segments.
+    CorruptPath { path: Vec<u8> },
+}
+
+/// One page of a bounded scan: the entries found in Marrow order, and whether
+/// more remained past the limit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanPage {
+    pub entries: Vec<(Vec<u8>, Vec<u8>)>,
+    pub truncated: bool,
+}
+
 /// An in-memory map of encoded saved paths to encoded values.
 #[derive(Debug, Default)]
 pub struct MemStore {
@@ -65,9 +82,10 @@ impl MemStore {
     }
 
     /// The distinct immediate children directly below the encoded `path`, in
-    /// Marrow order. Descendants sharing an immediate child collapse to a single
-    /// entry.
-    pub fn child_keys(&self, path: &[u8]) -> Vec<ChildSegment> {
+    /// Marrow order (descendants sharing an immediate child collapse to one).
+    /// Returns [`StoreError::CorruptPath`] if a stored descendant key cannot be
+    /// decoded.
+    pub fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         let mut children = Vec::new();
         let mut last: Option<Vec<u8>> = None;
         for key in self.subtree_keys(path) {
@@ -75,42 +93,48 @@ impl MemStore {
                 continue; // the path's own entry, not a child
             }
             let rest = &key[path.len()..];
-            let Some(len) = segment_len(rest) else {
-                continue; // malformed encoding; skip defensively
-            };
+            let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
             let segment = &rest[..len];
             if last.as_deref() == Some(segment) {
                 continue; // same immediate child as the previous descendant
             }
             last = Some(segment.to_vec());
-            if let Some(child) = decode_child_segment(segment) {
-                children.push(child);
-            }
+            children.push(decode_child_segment(segment).ok_or_else(|| corrupt(key))?);
         }
-        children
+        Ok(children)
     }
 
-    /// Every (encoded path, value) pair in the subtree at the encoded `path`, in
-    /// Marrow order, including the value at `path` itself when present.
-    pub fn scan(&self, path: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.entries
+    /// Up to `limit` (encoded path, value) pairs in the subtree at the encoded
+    /// `path`, in Marrow order, including the value at `path` itself when
+    /// present. `truncated` is set when more remained past the limit.
+    pub fn scan(&self, path: &[u8], limit: usize) -> ScanPage {
+        let mut page = ScanPage::default();
+        for (key, value) in self
+            .entries
             .range(path.to_vec()..)
             .take_while(|(key, _)| key.starts_with(path))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect()
+        {
+            if page.entries.len() == limit {
+                page.truncated = true;
+                break;
+            }
+            page.entries.push((key.clone(), value.clone()));
+        }
+        page
     }
 
-    /// The distinct saved root names, in Marrow order.
-    pub fn roots(&self) -> Vec<String> {
+    /// The distinct saved root names, in Marrow order. Returns
+    /// [`StoreError::CorruptPath`] if a stored key does not begin with a valid
+    /// root segment.
+    pub fn roots(&self) -> Result<Vec<String>, StoreError> {
         let mut roots: Vec<String> = Vec::new();
         for key in self.entries.keys() {
-            if let Some(name) = root_name(key)
-                && roots.last() != Some(&name)
-            {
+            let name = root_name(key).ok_or_else(|| corrupt(key))?;
+            if roots.last() != Some(&name) {
                 roots.push(name);
             }
         }
-        roots
+        Ok(roots)
     }
 
     /// Does any stored key lie strictly below `prefix`? An encoded ancestor is a
@@ -129,4 +153,9 @@ impl MemStore {
             .map(|(key, _)| key)
             .take_while(move |key| key.starts_with(prefix))
     }
+}
+
+/// Build a [`StoreError::CorruptPath`] for a stored key that failed to decode.
+fn corrupt(key: &[u8]) -> StoreError {
+    StoreError::CorruptPath { path: key.to_vec() }
 }

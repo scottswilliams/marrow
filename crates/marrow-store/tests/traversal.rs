@@ -27,7 +27,9 @@ fn child_keys_lists_integer_records_in_numeric_order() {
     for n in [10, 2, 100, 1] {
         store.write(&encode_path(&field(&seq(n), "v")), b"x".to_vec());
     }
-    let children = store.child_keys(&encode_path(&[PathSegment::Root("seq".into())]));
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root("seq".into())]))
+        .expect("clean store");
     assert_eq!(
         children,
         vec![
@@ -46,7 +48,7 @@ fn child_keys_lists_field_names_lexicographically() {
     for name in ["title", "author", "shelf"] {
         store.write(&encode_path(&field(&book, name)), b"x".to_vec());
     }
-    let children = store.child_keys(&encode_path(&book));
+    let children = store.child_keys(&encode_path(&book)).expect("clean store");
     assert_eq!(
         children,
         vec![
@@ -68,7 +70,9 @@ fn child_keys_round_trip_string_records() {
         ];
         store.write(&encode_path(&path), b"x".to_vec());
     }
-    let children = store.child_keys(&encode_path(&[PathSegment::Root("notes".into())]));
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root("notes".into())]))
+        .expect("clean store");
     assert_eq!(
         children,
         vec![
@@ -91,7 +95,9 @@ fn child_keys_round_trip_date_records() {
         ];
         store.write(&encode_path(&path), b"x".to_vec());
     }
-    let children = store.child_keys(&encode_path(&[PathSegment::Root("events".into())]));
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root("events".into())]))
+        .expect("clean store");
     assert_eq!(
         children,
         vec![
@@ -113,7 +119,9 @@ fn child_keys_round_trip_duration_records() {
         ];
         store.write(&encode_path(&path), b"x".to_vec());
     }
-    let children = store.child_keys(&encode_path(&[PathSegment::Root("spans".into())]));
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root("spans".into())]))
+        .expect("clean store");
     assert_eq!(
         children,
         vec![
@@ -144,7 +152,9 @@ fn child_keys_round_trip_instant_records_in_order() {
         ];
         store.write(&encode_path(&path), b"x".to_vec());
     }
-    let children = store.child_keys(&encode_path(&[PathSegment::Root("log".into())]));
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root("log".into())]))
+        .expect("clean store");
     assert_eq!(
         children,
         vec![
@@ -167,7 +177,10 @@ fn roots_are_listed_in_order_without_duplicates() {
         ]),
         b"x".to_vec(),
     );
-    assert_eq!(store.roots(), vec!["books".to_string(), "seq".to_string()]);
+    assert_eq!(
+        store.roots().expect("clean store"),
+        vec!["books".to_string(), "seq".to_string()]
+    );
 }
 
 #[test]
@@ -178,11 +191,9 @@ fn scan_returns_only_the_subtree_in_order() {
     // A sibling record must not appear in the scan of seq(1).
     store.write(&encode_path(&seq(2)), b"other".to_vec());
 
-    let paths: Vec<Vec<u8>> = store
-        .scan(&encode_path(&seq(1)))
-        .into_iter()
-        .map(|(key, _)| key)
-        .collect();
+    let page = store.scan(&encode_path(&seq(1)), usize::MAX);
+    assert!(!page.truncated);
+    let paths: Vec<Vec<u8>> = page.entries.into_iter().map(|(key, _)| key).collect();
     assert_eq!(
         paths,
         vec![

@@ -95,17 +95,54 @@ fn dump_and_restore_reproduce_the_store() {
 
     // Dumping from the empty prefix yields every entry in Marrow order — the
     // portable path/value stream.
-    let dump = store.scan(&[]);
-    assert_eq!(dump.len(), 4);
+    let dump = store.scan(&[], usize::MAX);
+    assert_eq!(dump.entries.len(), 4);
 
     // Restoring re-writes the encoded pairs into a fresh store.
     let mut restored = MemStore::new();
-    for (path, value) in &dump {
+    for (path, value) in &dump.entries {
         restored.write(path, value.clone());
     }
 
     // The restored store reproduces the dump, the roots, and presence exactly.
-    assert_eq!(restored.scan(&[]), dump);
+    assert_eq!(restored.scan(&[], usize::MAX), dump);
     assert_eq!(restored.roots(), store.roots());
     assert_eq!(restored.presence(&book(1)), Presence::ValueAndChildren);
+}
+
+#[test]
+fn scan_is_bounded_by_the_limit() {
+    let mut store = MemStore::new();
+    for n in 1..=5 {
+        store.write(&book_field(n, "title"), b"x".to_vec());
+    }
+    // A limit below the total truncates.
+    let page = store.scan(&[], 3);
+    assert_eq!(page.entries.len(), 3);
+    assert!(page.truncated);
+    // A limit at or above the total does not.
+    let page = store.scan(&[], 5);
+    assert_eq!(page.entries.len(), 5);
+    assert!(!page.truncated);
+}
+
+#[test]
+fn a_corrupt_stored_path_is_a_typed_error() {
+    use marrow_store::mem::StoreError;
+
+    // A key that is not a valid segment sequence: 0xFF is not a kind tag.
+    let mut store = MemStore::new();
+    store.write(&[0xFF], b"x".to_vec());
+    assert!(matches!(store.roots(), Err(StoreError::CorruptPath { .. })));
+
+    // A valid root with a malformed child segment below it.
+    let mut store = MemStore::new();
+    let root = encode_path(&[PathSegment::Root("x".into())]);
+    let mut corrupt = root.clone();
+    corrupt.push(0xFF);
+    store.write(&corrupt, b"x".to_vec());
+    assert!(matches!(
+        store.child_keys(&root),
+        Err(StoreError::CorruptPath { .. })
+    ));
 }
