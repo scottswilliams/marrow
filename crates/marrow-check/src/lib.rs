@@ -628,11 +628,16 @@ fn check_statement_types(
             body,
             ..
         } => {
-            infer_type(program, iterable, scope, file, diagnostics);
-            // The loop binding(s) are in scope for the body. Their element type is
-            // not inferred yet, so they shadow any outer name as unknown.
+            let iterable_type = infer_type(program, iterable, scope, file, diagnostics);
+            // The loop binding(s) are in scope for the body. Iterating a sequence
+            // binds its single binding to the element type; other iterables (ranges,
+            // index keys) and the key/value form stay unknown for now.
+            let first_type = match (&binding.second, &iterable_type) {
+                (None, MarrowType::Sequence(element)) => (**element).clone(),
+                _ => MarrowType::Unknown,
+            };
             let mut frame = HashMap::new();
-            frame.insert(binding.first.clone(), MarrowType::Unknown);
+            frame.insert(binding.first.clone(), first_type);
             if let Some(second) = &binding.second {
                 frame.insert(second.clone(), MarrowType::Unknown);
             }

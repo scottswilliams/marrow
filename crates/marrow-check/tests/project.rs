@@ -1048,6 +1048,18 @@ fn a_whole_resource_read_into_a_local_types_its_fields() {
 }
 
 #[test]
+fn a_for_binding_over_a_sequence_types_the_element() {
+    // `std::text::split` yields `sequence[string]`, so `part` is `string` and
+    // `part + 1` is string-plus-int.
+    let found = check_module(
+        "for-elem",
+        "module m\nfn f(s: string)\n    for part in std::text::split(s, \",\")\n        var x = part + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn a_std_call_return_type_feeds_operator_checks() {
     // `std::text::length` returns `int`, so `+ true` is int-plus-bool.
     let found = check_module(
