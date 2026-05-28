@@ -394,29 +394,82 @@ fn parses_labeled_loops() {
 }
 
 #[test]
-fn try_block_is_unparsed_but_does_not_swallow_siblings() {
-    // `try` is still Unparsed, yet the following `return` parses on its own.
+fn parses_try_catch_finally() {
     let parsed = parse_source(
         "module app\n\
          fn run()\n\
          \x20   try\n\
          \x20       risky()\n\
+         \x20   catch err: Error\n\
+         \x20       print(err.message)\n\
+         \x20   finally\n\
+         \x20       cleanup()\n\
          \x20   return\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 2, "{statements:#?}");
-    assert!(
-        matches!(&statements[0], Statement::Unparsed { .. }),
-        "stmt 0 should be the unparsed try: {:?}",
-        statements[0]
-    );
+    let Statement::Try {
+        body,
+        catch,
+        finally,
+        ..
+    } = &statements[0]
+    else {
+        panic!("expected try statement, got {:?}", statements[0]);
+    };
+    assert_eq!(body.statements.len(), 1);
+    let catch = catch.as_ref().expect("catch clause");
+    assert_eq!(catch.name, "err");
+    assert_eq!(catch.ty.as_ref().map(|ty| ty.text.as_str()), Some("Error"));
+    assert_eq!(catch.block.statements.len(), 1);
+    let finally = finally.as_ref().expect("finally block");
+    assert_eq!(finally.statements.len(), 1);
     assert!(
         matches!(&statements[1], Statement::Return { value: None, .. }),
-        "stmt 1 should be the return: {:?}",
+        "sibling return should still parse: {:?}",
         statements[1]
     );
+}
+
+#[test]
+fn parses_try_with_only_finally() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   finally\n\
+         \x20       cleanup()\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::Try { catch, finally, .. } = &run.body.statements[0] else {
+        panic!("expected try, got {:?}", run.body.statements[0]);
+    };
+    assert!(catch.is_none(), "expected no catch clause");
+    assert!(finally.is_some(), "expected finally block");
+}
+
+#[test]
+fn parses_try_catch_without_type_annotation() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   catch err\n\
+         \x20       print(err.message)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::Try { catch, .. } = &run.body.statements[0] else {
+        panic!("expected try, got {:?}", run.body.statements[0]);
+    };
+    let catch = catch.as_ref().expect("catch clause");
+    assert_eq!(catch.name, "err");
+    assert_eq!(catch.ty, None);
 }
 
 #[test]

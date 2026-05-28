@@ -345,9 +345,14 @@ pub enum Statement {
         body: Block,
         span: SourceSpan,
     },
-    /// Compound statements (`try`) and statement lines the parser cannot yet
-    /// structure. Future syntax-tree slices replace `Unparsed` with concrete
-    /// variants.
+    Try {
+        body: Block,
+        catch: Option<CatchClause>,
+        finally: Option<Block>,
+        span: SourceSpan,
+    },
+    /// A statement line the parser cannot yet structure (for example a quoted
+    /// field assignment target). Future syntax-tree slices shrink this set.
     Unparsed {
         span: SourceSpan,
     },
@@ -357,6 +362,15 @@ pub enum Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElseIf {
     pub condition: Expression,
+    pub block: Block,
+}
+
+/// The `catch name: Error` clause of a `try` statement. `ty` is the optional
+/// type annotation on the bound error value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatchClause {
+    pub name: String,
+    pub ty: Option<TypeRef>,
     pub block: Block,
 }
 
@@ -386,6 +400,7 @@ impl Statement {
             | Self::For { span, .. }
             | Self::Transaction { span, .. }
             | Self::Lock { span, .. }
+            | Self::Try { span, .. }
             | Self::Unparsed { span } => *span,
         }
     }
@@ -2530,6 +2545,7 @@ impl<'a> StmtParser<'a> {
             TokenKind::Keyword(Keyword::For) => return self.for_stmt(None, None),
             TokenKind::Keyword(Keyword::Transaction) => return self.transaction_stmt(),
             TokenKind::Keyword(Keyword::Lock) => return self.lock_stmt(),
+            TokenKind::Keyword(Keyword::Try) => return self.try_stmt(),
             TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
                 return self.unparsed_compound();
             }
@@ -2604,6 +2620,52 @@ impl<'a> StmtParser<'a> {
                 span: join_spans(start, body.span),
             },
         }
+    }
+
+    /// Parse `try ... [catch ...] [finally ...]`. The grammar requires at least
+    /// one of catch/finally, and the spec forbids `return`/`break`/`continue`
+    /// inside `finally`; both are semantic rules left to the checker, which has
+    /// the loop/label scope needed to apply the `finally` rule correctly.
+    fn try_stmt(&mut self) -> Statement {
+        let start = self.advance().span; // `try`
+        self.consume_header_line();
+        let body = self.block_body();
+        let mut end = body.span;
+
+        let catch = if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Catch))) {
+            let clause = self.catch_clause();
+            end = clause.block.span;
+            Some(clause)
+        } else {
+            None
+        };
+
+        let finally = if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Finally))) {
+            self.advance(); // `finally`
+            self.consume_header_line();
+            let block = self.block_body();
+            end = block.span;
+            Some(block)
+        } else {
+            None
+        };
+
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            span: join_spans(start, end),
+        }
+    }
+
+    fn catch_clause(&mut self) -> CatchClause {
+        self.advance(); // `catch`
+        let newline = self.find_line_end();
+        let header = &self.tokens[self.pos..newline];
+        let (name, ty) = parse_catch_header(self.source, header);
+        self.pos = (newline + 1).min(self.tokens.len());
+        let block = self.block_body();
+        CatchClause { name, ty, block }
     }
 
     fn if_stmt(&mut self) -> Statement {
@@ -2968,6 +3030,25 @@ fn parse_for_header(source: &str, header: &[Token]) -> Option<(ForBinding, Expre
     let binding = parse_for_binding(source, &header[..in_index])?;
     let iterable = expr_of(source, &header[in_index + 1..])?;
     Some((binding, iterable))
+}
+
+/// Parse a `catch` header `name` or `name: Type` into the bound name and an
+/// optional type annotation. A malformed header yields an empty name.
+fn parse_catch_header(source: &str, header: &[Token]) -> (String, Option<TypeRef>) {
+    let Some(name_token) = header.first() else {
+        return (String::new(), None);
+    };
+    if name_token.kind != TokenKind::Identifier {
+        return (String::new(), None);
+    }
+    let name = name_token.text(source).to_string();
+    let ty = match header.get(1) {
+        Some(colon) if colon.kind == TokenKind::Colon && header.len() > 2 => {
+            Some(type_ref_from_tokens(source, &header[2..]))
+        }
+        _ => None,
+    };
+    (name, ty)
 }
 
 fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
