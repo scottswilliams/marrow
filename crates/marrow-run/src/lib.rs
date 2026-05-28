@@ -3,15 +3,16 @@
 //! The evaluator runs functions over scalar values — integers, booleans, and
 //! strings: literals, locals (`let`/`var`), arithmetic, comparison, logical, and
 //! `_` concatenation operators, conditionals, `while`/`for` loops, string
-//! interpolation, calls between functions, scalar reads of saved data
-//! (`^books(id).title`), and `print`/`write` output. Saved writes, transactions,
-//! and structured errors build on this spine.
+//! interpolation, calls between functions, scalar reads and managed field writes
+//! of saved data (`^books(id).title`), and `print`/`write` output. Transactions,
+//! whole-resource writes, and structured errors build on this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
 use marrow_check::{CheckedFunction, CheckedProgram};
+use marrow_schema::ResourceSchema;
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
@@ -19,6 +20,7 @@ use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, SourceSpan, Statement, UnaryOp,
 };
+use marrow_write::plan_field_write;
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
 /// trees, identities, and error values arrive with the features that produce
@@ -410,20 +412,26 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             value,
             span,
         } => {
-            let name = local_target(target, *span)?;
-            let value = eval_expr(value, env)?;
-            env.assign(name, value).map_err(|error| match error {
-                AssignError::Immutable => RuntimeError {
-                    code: RUN_TYPE,
-                    message: format!("cannot assign to immutable `{name}`"),
-                    span: *span,
-                },
-                AssignError::Unbound => RuntimeError {
-                    code: RUN_UNBOUND_NAME,
-                    message: format!("`{name}` is not bound"),
-                    span: *span,
-                },
-            })?;
+            // A dotted field off a saved record is a managed field write; a bare
+            // name is a local reassignment.
+            if let Expression::Field { base, name, .. } = target {
+                eval_saved_field_write(base, name, value, *span, env)?;
+            } else {
+                let name = local_target(target, *span)?;
+                let evaluated = eval_expr(value, env)?;
+                env.assign(name, evaluated).map_err(|error| match error {
+                    AssignError::Immutable => RuntimeError {
+                        code: RUN_TYPE,
+                        message: format!("cannot assign to immutable `{name}`"),
+                        span: *span,
+                    },
+                    AssignError::Unbound => RuntimeError {
+                        code: RUN_UNBOUND_NAME,
+                        message: format!("`{name}` is not bound"),
+                        span: *span,
+                    },
+                })?;
+            }
             Ok(Flow::Normal)
         }
         Statement::Return { value, .. } => {
@@ -645,7 +653,9 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     let Expression::Field { base, name, .. } = expr else {
         return Err(unsupported("this read", expr.span()));
     };
-    let (root, mut segments) = lower_record_path(base, env)?;
+    let (root, keys) = lower_record_identity(base, env)?;
+    let mut segments = vec![PathSegment::Root(root.clone())];
+    segments.extend(keys.into_iter().map(PathSegment::RecordKey));
     segments.push(PathSegment::Field(name.clone()));
     let field_type = resource_field_type(env.program, &root, name)
         .ok_or_else(|| unsupported("reading this field", expr.span()))?;
@@ -666,12 +676,67 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
         })
 }
 
-/// Lower a record path `^root(key…)` to its saved root name and encoded segments
-/// (`Root` + a `RecordKey` per identity key). The keys are evaluated in `env`.
-fn lower_record_path(
+/// Apply a managed field write `^root(key…).field = value`. Lowers the identity,
+/// evaluates the value, and drives [`marrow_write::plan_field_write`] — which
+/// validates the field and value and keeps generated indexes coherent — then
+/// commits the plan to the store. A planning failure surfaces with its `write.*`
+/// code.
+fn eval_saved_field_write(
+    base: &Expression,
+    field: &str,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let (root, identity) = lower_record_identity(base, env)?;
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("writing to this saved root", span))?;
+    let saved = value_to_saved(eval_expr(value, env)?);
+    let plan = {
+        let store = env.store.borrow();
+        plan_field_write(resource, &identity, field, &saved, &store).map_err(|error| {
+            RuntimeError {
+                code: error.code,
+                message: error.message,
+                span,
+            }
+        })?
+    };
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(())
+}
+
+/// The resource schema attached to a saved root, by root name.
+fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p ResourceSchema> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .find(|resource| {
+            resource
+                .saved_root
+                .as_ref()
+                .is_some_and(|saved| saved.root == root)
+        })
+}
+
+/// Convert a runtime value to the saved value a managed write stores. Total over
+/// the scalar values this slice supports; the write planner checks the value
+/// against the field's declared type.
+fn value_to_saved(value: Value) -> SavedValue {
+    match value {
+        Value::Int(n) => SavedValue::Int(n),
+        Value::Bool(b) => SavedValue::Bool(b),
+        Value::Str(s) => SavedValue::Str(s),
+    }
+}
+
+/// Lower a record path `^root(key…)` to its saved root name and identity key
+/// values, evaluating each key argument in `env`.
+fn lower_record_identity(
     expr: &Expression,
     env: &mut Env<'_>,
-) -> Result<(String, Vec<PathSegment>), RuntimeError> {
+) -> Result<(String, Vec<SavedKey>), RuntimeError> {
     let Expression::Call { callee, args, span } = expr else {
         return Err(unsupported("this saved path", expr.span()));
     };
@@ -687,13 +752,14 @@ fn lower_record_path(
             *span,
         ));
     }
-    let mut segments = vec![PathSegment::Root(name.clone())];
+    let mut keys = Vec::with_capacity(args.len());
     for arg in args {
-        let key = value_to_key(eval_expr(&arg.value, env)?)
-            .ok_or_else(|| unsupported("a key of this type", *span))?;
-        segments.push(PathSegment::RecordKey(key));
+        keys.push(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("a key of this type", *span))?,
+        );
     }
-    Ok((name.clone(), segments))
+    Ok((name.clone(), keys))
 }
 
 /// The declared scalar type of a saved root's top-level field, found by matching

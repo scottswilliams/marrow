@@ -603,3 +603,45 @@ fn a_saved_read_interpolates_and_prints() {
     let outcome = run_entry(&program, &store, "test::show", &[Value::Int(7)]).expect("run");
     assert_eq!(outcome.output, "title: Mort\n");
 }
+
+/// A program that writes and reads a `Book` title.
+const BOOK_WRITER: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+
+fn set_title(id: int, t: string)
+    ^books(id).title = t
+
+fn title_of(id: int): string
+    return ^books(id).title
+";
+
+#[test]
+fn a_field_write_updates_saved_data() {
+    let program = checked_program(BOOK_WRITER);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::set_title",
+        &[Value::Int(1), Value::Str("Mort".into())],
+    )
+    .expect("write");
+    // Read it back through the runtime against the same store.
+    let outcome = run_entry(&program, &store, "test::title_of", &[Value::Int(1)]).expect("read");
+    assert_eq!(outcome.value, Some(Value::Str("Mort".into())));
+}
+
+#[test]
+fn a_mistyped_field_write_is_rejected() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn bad(id: int)\n    ^books(id).title = 5\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::bad", &[Value::Int(1)]);
+    // The managed-write layer rejects an int written to a string field.
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.type_mismatch"),
+        "{result:?}"
+    );
+}
