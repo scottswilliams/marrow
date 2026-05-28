@@ -1060,6 +1060,34 @@ fn a_for_binding_over_a_sequence_types_the_element() {
 }
 
 #[test]
+fn exists_and_append_builtin_return_types_feed_checks() {
+    // `exists` returns `bool` and `append` returns `int`; using them in mismatched
+    // operators is caught.
+    let found = check_module(
+        "builtin-returns",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n    tags(pos: int): string\n\n\
+         fn f()\n    var a = exists(^books(1)) + 1\n    var b = append(^books(1).tags, \"t\") and true\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn get_builtin_returns_the_default_type() {
+    // `get(path, default)` returns the leaf-or-default type; with a string default
+    // it is `string`, so `+ 1` is string-plus-int.
+    let found = check_module(
+        "get-return",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    var x = get(^books(1).title, \"none\") + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn a_std_call_return_type_feeds_operator_checks() {
     // `std::text::length` returns `int`, so `+ true` is int-plus-bool.
     let found = check_module(

@@ -1282,6 +1282,7 @@ fn check_call(
     if is_builtin_call(segments) {
         return std_call_return_type(segments)
             .or_else(|| conversion_return_type(segments))
+            .or_else(|| builtin_return_type(segments, arg_types))
             .unwrap_or(MarrowType::Unknown);
     }
     let Some(function) = resolve_function(program, segments) else {
@@ -1404,6 +1405,22 @@ fn is_builtin_call(segments: &[String]) -> bool {
         ),
         [first, _, _] => first == "std",
         _ => false,
+    }
+}
+
+/// The return type of a single-name data builtin: `exists(path): bool`,
+/// `append(layer, value): int`, and `get(path, default)`, which yields the saved
+/// leaf-or-default type (taken from the default argument). `nextId` returns a
+/// resource identity, deferred until identities participate in checks.
+fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<MarrowType> {
+    let [name] = segments else {
+        return None;
+    };
+    match name.as_str() {
+        "exists" => Some(MarrowType::Primitive(PrimitiveType::Bool)),
+        "append" => Some(MarrowType::Primitive(PrimitiveType::Int)),
+        "get" => arg_types.get(1).cloned(),
+        _ => None,
     }
 }
 
