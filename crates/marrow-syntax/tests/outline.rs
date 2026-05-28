@@ -174,6 +174,135 @@ fn parses_saved_writes_and_var_without_value() {
 }
 
 #[test]
+fn parses_if_else_if_else_chain() {
+    let parsed = parse_source(
+        "module app\n\
+         fn classify(n: int)\n\
+         \x20   if n < 0\n\
+         \x20       print(\"neg\")\n\
+         \x20   else if n = 0\n\
+         \x20       print(\"zero\")\n\
+         \x20   else\n\
+         \x20       print(\"pos\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let classify = parsed.file.function("classify").expect("classify function");
+    assert_eq!(classify.body.statements.len(), 1);
+    let Statement::If {
+        condition,
+        then_block,
+        else_ifs,
+        else_block,
+        ..
+    } = &classify.body.statements[0]
+    else {
+        panic!(
+            "expected if statement, got {:?}",
+            classify.body.statements[0]
+        );
+    };
+    assert!(
+        matches!(
+            condition,
+            Expression::Binary {
+                op: BinaryOp::Less,
+                ..
+            }
+        ),
+        "condition: {condition:?}"
+    );
+    assert_eq!(then_block.statements.len(), 1);
+    assert_eq!(else_ifs.len(), 1);
+    assert!(
+        matches!(
+            &else_ifs[0].condition,
+            Expression::Binary {
+                op: BinaryOp::Equal,
+                ..
+            }
+        ),
+        "else-if condition: {:?}",
+        else_ifs[0].condition
+    );
+    assert!(else_block.is_some(), "expected else block");
+    assert_eq!(else_block.as_ref().unwrap().statements.len(), 1);
+}
+
+#[test]
+fn parses_transaction_and_lock_blocks() {
+    let parsed = parse_source(
+        "module app\n\
+         fn commit(id: Book::Id)\n\
+         \x20   lock ^books(id)\n\
+         \x20       transaction\n\
+         \x20           ^books(id).title = title\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let commit = parsed.file.function("commit").expect("commit function");
+    assert_eq!(commit.body.statements.len(), 1);
+    let Statement::Lock { path, body, .. } = &commit.body.statements[0] else {
+        panic!(
+            "expected lock statement, got {:?}",
+            commit.body.statements[0]
+        );
+    };
+    assert!(
+        matches!(path, Expression::Call { .. }),
+        "lock path should be ^books(id): {path:?}"
+    );
+    assert_eq!(body.statements.len(), 1);
+    let Statement::Transaction { body: txn_body, .. } = &body.statements[0] else {
+        panic!(
+            "expected transaction inside lock, got {:?}",
+            body.statements[0]
+        );
+    };
+    assert_eq!(txn_body.statements.len(), 1);
+    assert!(
+        matches!(&txn_body.statements[0], Statement::Assign { .. }),
+        "transaction body should hold the assignment: {:?}",
+        txn_body.statements[0]
+    );
+}
+
+#[test]
+fn parses_nested_if_inside_then_block() {
+    let parsed = parse_source(
+        "module app\n\
+         fn check(a: bool, b: bool)\n\
+         \x20   if a\n\
+         \x20       if b\n\
+         \x20           print(\"both\")\n\
+         \x20   return\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let check = parsed.file.function("check").expect("check function");
+    assert_eq!(
+        check.body.statements.len(),
+        2,
+        "{:#?}",
+        check.body.statements
+    );
+    let Statement::If { then_block, .. } = &check.body.statements[0] else {
+        panic!("expected outer if, got {:?}", check.body.statements[0]);
+    };
+    assert_eq!(then_block.statements.len(), 1);
+    assert!(
+        matches!(&then_block.statements[0], Statement::If { .. }),
+        "inner statement should be an if: {:?}",
+        then_block.statements[0]
+    );
+    assert!(
+        matches!(
+            &check.body.statements[1],
+            Statement::Return { value: None, .. }
+        ),
+        "trailing return: {:?}",
+        check.body.statements[1]
+    );
+}
+
+#[test]
 fn compound_statements_are_unparsed_but_do_not_swallow_siblings() {
     // The `for` block is kept as Unparsed, yet the following `return` still
     // parses as its own statement.

@@ -316,12 +316,35 @@ pub enum Statement {
         value: Expression,
         span: SourceSpan,
     },
-    /// Compound statements (`if`, `while`, `for`, `transaction`, `lock`, `try`)
-    /// and statement lines the parser cannot yet structure. Future syntax-tree
-    /// slices replace `Unparsed` with concrete variants.
+    If {
+        condition: Expression,
+        then_block: Block,
+        else_ifs: Vec<ElseIf>,
+        else_block: Option<Block>,
+        span: SourceSpan,
+    },
+    Transaction {
+        body: Block,
+        span: SourceSpan,
+    },
+    Lock {
+        path: Expression,
+        body: Block,
+        span: SourceSpan,
+    },
+    /// Compound statements (`while`, `for`, `try`) and statement lines the
+    /// parser cannot yet structure. Future syntax-tree slices replace
+    /// `Unparsed` with concrete variants.
     Unparsed {
         span: SourceSpan,
     },
+}
+
+/// One `else if` clause of an `if` statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElseIf {
+    pub condition: Expression,
+    pub block: Block,
 }
 
 impl Statement {
@@ -337,6 +360,9 @@ impl Statement {
             | Self::Continue { span, .. }
             | Self::Throw { span, .. }
             | Self::Expr { span, .. }
+            | Self::If { span, .. }
+            | Self::Transaction { span, .. }
+            | Self::Lock { span, .. }
             | Self::Unparsed { span } => *span,
         }
     }
@@ -2463,10 +2489,14 @@ impl<'a> StmtParser<'a> {
     }
 
     fn statement(&mut self) -> Statement {
-        if let TokenKind::Keyword(keyword) = self.tokens[self.pos].kind
-            && is_compound_statement_keyword(keyword)
-        {
-            return self.unparsed_compound();
+        match self.tokens[self.pos].kind {
+            TokenKind::Keyword(Keyword::If) => return self.if_stmt(),
+            TokenKind::Keyword(Keyword::Transaction) => return self.transaction_stmt(),
+            TokenKind::Keyword(Keyword::Lock) => return self.lock_stmt(),
+            TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
+                return self.unparsed_compound();
+            }
+            _ => {}
         }
 
         let newline = self.find_line_end();
@@ -2477,6 +2507,124 @@ impl<'a> StmtParser<'a> {
             });
         self.pos = (newline + 1).min(self.tokens.len());
         statement
+    }
+
+    fn if_stmt(&mut self) -> Statement {
+        let start = self.advance().span; // `if`
+        let condition = self.header_expression();
+        let then_block = self.block_body();
+        let mut end = then_block.span;
+        let mut else_ifs = Vec::new();
+        let mut else_block = None;
+
+        while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Else))) {
+            self.advance(); // `else`
+            if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::If))) {
+                self.advance(); // `if`
+                let condition = self.header_expression();
+                let block = self.block_body();
+                end = block.span;
+                else_ifs.push(ElseIf { condition, block });
+            } else {
+                self.consume_header_line();
+                let block = self.block_body();
+                end = block.span;
+                else_block = Some(block);
+                break;
+            }
+        }
+
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            span: join_spans(start, end),
+        }
+    }
+
+    fn transaction_stmt(&mut self) -> Statement {
+        let start = self.advance().span; // `transaction`
+        self.consume_header_line();
+        let body = self.block_body();
+        Statement::Transaction {
+            span: join_spans(start, body.span),
+            body,
+        }
+    }
+
+    fn lock_stmt(&mut self) -> Statement {
+        let start = self.advance().span; // `lock`
+        let path = self.header_expression();
+        let body = self.block_body();
+        Statement::Lock {
+            span: join_spans(start, body.span),
+            path,
+            body,
+        }
+    }
+
+    /// Parse the expression that ends the current header line, consuming up to
+    /// and including its `NEWLINE`.
+    fn header_expression(&mut self) -> Expression {
+        let newline = self.find_line_end();
+        let line = &self.tokens[self.pos..newline];
+        let expr =
+            expr_of(self.source, line).unwrap_or_else(|| unparsed_expression(self.source, line));
+        self.pos = (newline + 1).min(self.tokens.len());
+        expr
+    }
+
+    /// Consume the rest of a header line up to and including its `NEWLINE`.
+    /// Used for headers with no expression (`transaction`, `else`), so any
+    /// stray tokens before the newline do not leak into the block body.
+    fn consume_header_line(&mut self) {
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Newline => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Indent | TokenKind::Dedent => break,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Parse an indented block that follows a compound-statement header. If no
+    /// `INDENT` is present (a malformed empty body), returns an empty block.
+    fn block_body(&mut self) -> Block {
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.parse_nested_block()
+        } else {
+            let span = self
+                .tokens
+                .get(self.pos)
+                .map(|token| token.span)
+                .unwrap_or_default();
+            Block {
+                statements: Vec::new(),
+                span,
+            }
+        }
+    }
+
+    /// Parse `INDENT statement* DEDENT`, tolerating a missing trailing `DEDENT`
+    /// at the end of the body token slice.
+    fn parse_nested_block(&mut self) -> Block {
+        let start = self.advance().span; // `INDENT`
+        let statements = self.statements();
+        let end = if matches!(self.peek(), Some(TokenKind::Dedent)) {
+            self.advance().span
+        } else {
+            statements.last().map_or(start, Statement::span)
+        };
+        Block {
+            statements,
+            span: join_spans(start, end),
+        }
     }
 
     /// Index of the `NEWLINE` (or layout token) that ends the current line.
@@ -2726,6 +2874,18 @@ fn line_span(tokens: &[Token]) -> SourceSpan {
     match (tokens.first(), tokens.last()) {
         (Some(first), Some(last)) => join_spans(first.span, last.span),
         _ => SourceSpan::default(),
+    }
+}
+
+fn unparsed_expression(source: &str, tokens: &[Token]) -> Expression {
+    let span = line_span(tokens);
+    Expression::Unparsed {
+        text: source
+            .get(span.start_byte..span.end_byte)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        span,
     }
 }
 
