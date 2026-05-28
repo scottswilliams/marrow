@@ -7,6 +7,7 @@ Marrow
 
 Usage:
   marrow check [--format text|json|jsonl] <file.mw>
+  marrow fmt [--check | --write] <file.mw>
   marrow --version
   marrow --help
 
@@ -18,6 +19,9 @@ fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg| arg == "check") {
         return check(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "fmt") {
+        return fmt(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
@@ -98,6 +102,94 @@ Parse a Marrow source file and report syntax diagnostics.
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn fmt(args: &[String]) -> ExitCode {
+    let mut mode = FmtMode::Print;
+    let mut file = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--check" => mode = FmtMode::Check,
+            "--write" => mode = FmtMode::Write,
+            "--help" | "-h" => {
+                print!(
+                    "\
+Usage:
+  marrow fmt [--check | --write] <file.mw>
+
+Format a Marrow source file. With no flag, print the formatted source to
+stdout. --check exits non-zero if the file is not already formatted. --write
+rewrites the file in place.
+"
+                );
+                return ExitCode::SUCCESS;
+            }
+            value if value.starts_with('-') => {
+                eprintln!("unknown fmt option: {value}");
+                return ExitCode::from(2);
+            }
+            value => {
+                if file.replace(value.to_string()).is_some() {
+                    eprintln!("marrow fmt accepts one source file");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        index += 1;
+    }
+
+    let Some(file) = file else {
+        eprintln!("missing source file");
+        return ExitCode::from(2);
+    };
+    let source = match std::fs::read_to_string(&file) {
+        Ok(source) => source,
+        Err(error) => {
+            report_io_error(&file, &error, CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Do not reformat source that does not parse; report its diagnostics and
+    // leave the file untouched.
+    let parsed = marrow_syntax::parse_source(&source);
+    if parsed.has_errors() {
+        report_check(&file, &parsed, CheckFormat::Text);
+        return ExitCode::FAILURE;
+    }
+
+    let formatted = marrow_syntax::format_source(&source);
+    match mode {
+        FmtMode::Print => {
+            print!("{formatted}");
+            ExitCode::SUCCESS
+        }
+        FmtMode::Check => {
+            if source == formatted {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("{file}: not formatted");
+                ExitCode::FAILURE
+            }
+        }
+        FmtMode::Write => {
+            if source != formatted
+                && let Err(error) = std::fs::write(&file, &formatted)
+            {
+                report_io_error(&file, &error, CheckFormat::Text);
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FmtMode {
+    Print,
+    Check,
+    Write,
 }
 
 #[derive(Clone, Copy)]
