@@ -388,6 +388,26 @@ fn std_math_decimal_helpers() {
 }
 
 #[test]
+fn formats_and_parses_instants() {
+    // An instant round-trips through its canonical UTC text.
+    let program = checked_program(
+        "pub fn f(): string\n    return std::clock::formatInstant(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"))\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("2026-05-28T12:00:00Z".into()))
+    );
+}
+
+#[test]
+fn parse_instant_rejects_invalid_text() {
+    let program = checked_program(
+        "pub fn f(): instant\n    return std::clock::parseInstant(\"not a time\")\n",
+    );
+    assert!(run(&program, "test::f", &[]).is_err());
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

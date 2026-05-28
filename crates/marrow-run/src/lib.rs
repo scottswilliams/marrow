@@ -22,7 +22,7 @@ use marrow_store::Decimal;
 use marrow_store::backend::Backend;
 use marrow_store::mem::{MemStore, Presence, StoreError};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_store::value::{SavedValue, ValueType, decode_value};
+use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
 use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, SourceSpan, Statement, UnaryOp,
@@ -432,10 +432,11 @@ fn eval_call(
         {
             return eval_assert(op, args, span, env);
         }
-        // Pure `std::text::*` / `std::math::*` / `std::bytes::*` helpers.
+        // Pure `std::text/math/bytes/clock` helpers. (`std::clock::now` is a host
+        // capability, matched above; the rest of `std::clock` is pure.)
         if let [first, second, op] = segments.as_slice()
             && first == "std"
-            && (second == "text" || second == "math" || second == "bytes")
+            && (second == "text" || second == "math" || second == "bytes" || second == "clock")
         {
             return eval_std(second, op, args, span, env).map(Some);
         }
@@ -703,6 +704,27 @@ fn eval_std(
                 .map(Value::Bytes)
                 .ok_or_else(|| type_error("base64Decode: invalid base64 text", span))
         }
+        // An instant has no direct text form; format and parse go through its
+        // canonical UTC representation (reusing the store's value codec).
+        ("clock", "formatInstant") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let nanos = eval_instant_arg(value, env, span)?;
+            let text = String::from_utf8(encode_value(&SavedValue::Instant(nanos)))
+                .expect("a canonical instant encodes as UTF-8 text");
+            Ok(Value::Str(text))
+        }
+        ("clock", "parseInstant") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let text = eval_text(value, env, span)?;
+            match decode_value(text.as_bytes(), ValueType::Instant) {
+                Some(SavedValue::Instant(nanos)) => Ok(Value::Instant(nanos)),
+                _ => Err(type_error("parseInstant: invalid instant text", span)),
+            }
+        }
         _ => Err(unsupported(&format!("std::{module}::{op}"), span)),
     }
 }
@@ -829,6 +851,18 @@ fn eval_decimal_arg(
     match eval_expr(&arg.value, env)? {
         Value::Decimal(decimal) => Ok(decimal),
         _ => Err(type_error("expected a decimal", span)),
+    }
+}
+
+/// Evaluate `arg` to an instant (UTC nanoseconds), or a type error.
+fn eval_instant_arg(
+    arg: &Argument,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<i128, RuntimeError> {
+    match eval_expr(&arg.value, env)? {
+        Value::Instant(nanos) => Ok(nanos),
+        _ => Err(type_error("expected an instant", span)),
     }
 }
 
