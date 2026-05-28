@@ -6,13 +6,212 @@
 //! The syntax tree does not record parentheses, so the formatter re-inserts
 //! the minimum needed to preserve operator precedence and associativity.
 
-use crate::{ArgMode, Argument, BinaryOp, Expression, InterpolationPart, UnaryOp};
+use crate::{
+    ArgMode, Argument, BinaryOp, Block, Expression, InterpolationPart, KeyParam, Statement,
+    TypeRef, UnaryOp,
+};
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
 /// parentheses are required. Atoms (literals, names, calls, fields, …) bind
 /// tightest; `or` binds loosest.
 const PREC_ATOM: u8 = 10;
 const PREC_UNARY: u8 = 9;
+
+/// One indentation level in canonical Marrow source.
+const INDENT: &str = "    ";
+
+/// Format a block's statements at the given indentation level, one statement
+/// per line, joined by newlines (no trailing newline). Nested blocks indent one
+/// level deeper. `source` is needed to render `Statement::Unparsed`, which keeps
+/// only a span.
+pub fn format_block(source: &str, block: &Block, level: usize) -> String {
+    block
+        .statements
+        .iter()
+        .map(|statement| format_statement(source, statement, level))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Format one statement (and any nested blocks) at `level`. The returned text
+/// has no trailing newline.
+pub fn format_statement(source: &str, statement: &Statement, level: usize) -> String {
+    let pad = INDENT.repeat(level);
+    match statement {
+        Statement::Let {
+            name, ty, value, ..
+        } => format!(
+            "{pad}let {name}{} = {}",
+            format_type_annotation(ty),
+            format_expression(value)
+        ),
+        Statement::Var {
+            name,
+            keys,
+            ty,
+            value,
+            ..
+        } => {
+            let value = match value {
+                Some(value) => format!(" = {}", format_expression(value)),
+                None => String::new(),
+            };
+            format!(
+                "{pad}var {name}{}{}{value}",
+                format_key_params(keys),
+                format_type_annotation(ty),
+            )
+        }
+        Statement::Assign { target, value, .. } => format!(
+            "{pad}{} = {}",
+            format_expression(target),
+            format_expression(value)
+        ),
+        Statement::Delete { path, .. } => format!("{pad}delete {}", format_expression(path)),
+        Statement::Merge { target, value, .. } => format!(
+            "{pad}merge {} = {}",
+            format_expression(target),
+            format_expression(value)
+        ),
+        Statement::Return { value, .. } => match value {
+            Some(value) => format!("{pad}return {}", format_expression(value)),
+            None => format!("{pad}return"),
+        },
+        Statement::Break { label, .. } => format!("{pad}break{}", format_label_suffix(label)),
+        Statement::Continue { label, .. } => format!("{pad}continue{}", format_label_suffix(label)),
+        Statement::Throw { value, .. } => format!("{pad}throw {}", format_expression(value)),
+        Statement::Expr { value, .. } => format!("{pad}{}", format_expression(value)),
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            let mut out = format!(
+                "{pad}if {}\n{}",
+                format_expression(condition),
+                format_block(source, then_block, level + 1)
+            );
+            for else_if in else_ifs {
+                out.push_str(&format!(
+                    "\n{pad}else if {}\n{}",
+                    format_expression(&else_if.condition),
+                    format_block(source, &else_if.block, level + 1)
+                ));
+            }
+            if let Some(else_block) = else_block {
+                out.push_str(&format!(
+                    "\n{pad}else\n{}",
+                    format_block(source, else_block, level + 1)
+                ));
+            }
+            out
+        }
+        Statement::While {
+            label,
+            condition,
+            body,
+            ..
+        } => format!(
+            "{pad}{}while {}\n{}",
+            format_label_prefix(label),
+            format_expression(condition),
+            format_block(source, body, level + 1)
+        ),
+        Statement::For {
+            label,
+            binding,
+            iterable,
+            body,
+            ..
+        } => {
+            let binding = match &binding.second {
+                Some(second) => format!("{}, {second}", binding.first),
+                None => binding.first.clone(),
+            };
+            format!(
+                "{pad}{}for {binding} in {}\n{}",
+                format_label_prefix(label),
+                format_expression(iterable),
+                format_block(source, body, level + 1)
+            )
+        }
+        Statement::Transaction { body, .. } => {
+            format!(
+                "{pad}transaction\n{}",
+                format_block(source, body, level + 1)
+            )
+        }
+        Statement::Lock { path, body, .. } => format!(
+            "{pad}lock {}\n{}",
+            format_expression(path),
+            format_block(source, body, level + 1)
+        ),
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            let mut out = format!("{pad}try\n{}", format_block(source, body, level + 1));
+            if let Some(catch) = catch {
+                out.push_str(&format!(
+                    "\n{pad}catch {}{}\n{}",
+                    catch.name,
+                    format_type_annotation(&catch.ty),
+                    format_block(source, &catch.block, level + 1)
+                ));
+            }
+            if let Some(finally) = finally {
+                out.push_str(&format!(
+                    "\n{pad}finally\n{}",
+                    format_block(source, finally, level + 1)
+                ));
+            }
+            out
+        }
+        Statement::Unparsed { span } => {
+            let text = source
+                .get(span.start_byte..span.end_byte)
+                .unwrap_or_default();
+            format!("{pad}{}", text.trim())
+        }
+    }
+}
+
+fn format_type_annotation(ty: &Option<TypeRef>) -> String {
+    match ty {
+        Some(ty) => format!(": {}", ty.text),
+        None => String::new(),
+    }
+}
+
+fn format_key_params(keys: &[KeyParam]) -> String {
+    if keys.is_empty() {
+        return String::new();
+    }
+    let keys = keys
+        .iter()
+        .map(|key| format!("{}: {}", key.name, key.ty.text))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({keys})")
+}
+
+fn format_label_prefix(label: &Option<String>) -> String {
+    match label {
+        Some(label) => format!("{label}: "),
+        None => String::new(),
+    }
+}
+
+fn format_label_suffix(label: &Option<String>) -> String {
+    match label {
+        Some(label) => format!(" {label}"),
+        None => String::new(),
+    }
+}
 
 /// Format a single expression as canonical Marrow source.
 pub fn format_expression(expression: &Expression) -> String {

@@ -1,4 +1,18 @@
-use marrow_syntax::{Declaration, format_expression, parse_source};
+use marrow_syntax::{Declaration, format_block, format_expression, parse_source};
+
+/// Parse a single-function module and format its body block at indent level 1.
+fn format_function_body(source: &str) -> String {
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "source should parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    let Declaration::Function(function) = &parsed.file.declarations[0] else {
+        panic!("expected a function declaration");
+    };
+    format_block(source, &function.body, 1)
+}
 
 /// Parse `source` as a const value and return its expression formatted back to
 /// canonical source.
@@ -70,6 +84,76 @@ fn reinserts_minimal_parentheses_for_precedence() {
     for (input, expected) in cases {
         assert_eq!(format_const_value(input), expected, "input {input:?}");
     }
+}
+
+#[test]
+fn formats_statement_blocks_with_indentation() {
+    let source = "module app\n\
+         fn run(n: int)\n\
+         \x20   let total: int = 0\n\
+         \x20   var seen(id: int): bool\n\
+         \x20   if n < 0\n\
+         \x20       print(\"neg\")\n\
+         \x20   else if n = 0\n\
+         \x20       print(\"zero\")\n\
+         \x20   else\n\
+         \x20       total = total + n\n\
+         \x20   for id in keys(^books)\n\
+         \x20       delete ^books(id)\n\
+         \x20   return total\n";
+    let expected = "\
+         \x20   let total: int = 0\n\
+         \x20   var seen(id: int): bool\n\
+         \x20   if n < 0\n\
+         \x20       print(\"neg\")\n\
+         \x20   else if n = 0\n\
+         \x20       print(\"zero\")\n\
+         \x20   else\n\
+         \x20       total = total + n\n\
+         \x20   for id in keys(^books)\n\
+         \x20       delete ^books(id)\n\
+         \x20   return total";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn formats_labeled_loops_and_break_label() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   outer: for id in keys(^books)\n\
+         \x20       inner: while ready\n\
+         \x20           break outer\n";
+    let expected = "\
+         \x20   outer: for id in keys(^books)\n\
+         \x20       inner: while ready\n\
+         \x20           break outer";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn formats_transaction_lock_and_try_blocks() {
+    let source = "module app\n\
+         fn commit(id: Book::Id)\n\
+         \x20   lock ^books(id)\n\
+         \x20       transaction\n\
+         \x20           ^books(id).title = title\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   catch err: Error\n\
+         \x20       print(err.message)\n\
+         \x20   finally\n\
+         \x20       cleanup()\n";
+    let expected = "\
+         \x20   lock ^books(id)\n\
+         \x20       transaction\n\
+         \x20           ^books(id).title = title\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   catch err: Error\n\
+         \x20       print(err.message)\n\
+         \x20   finally\n\
+         \x20       cleanup()";
+    assert_eq!(format_function_body(source), expected);
 }
 
 #[test]
