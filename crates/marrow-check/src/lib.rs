@@ -35,6 +35,8 @@ pub const CHECK_UNKNOWN_TYPE: &str = "check.unknown_type";
 pub const CHECK_RETURN_VALUE: &str = "check.return_value";
 /// A value-returning function can reach the end of its body without returning.
 pub const CHECK_MISSING_RETURN: &str = "check.missing_return";
+/// An operator is applied to operands whose types it does not accept.
+pub const CHECK_OPERATOR_TYPE: &str = "check.operator_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -285,6 +287,7 @@ pub fn check_project(
                         function.return_type.is_some(),
                         &mut report.diagnostics,
                     );
+                    check_operator_types(&file.path, function, &mut report.diagnostics);
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
                             code: CHECK_MISSING_RETURN.to_string(),
@@ -437,6 +440,432 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
         // ending in one as diverging rather than risk a false positive.
         Statement::While { .. } | Statement::For { .. } => true,
         _ => false,
+    }
+}
+
+/// Flag operators applied to operand types they do not accept. Walks a function
+/// body tracking the type of each in-scope binding (parameters and `const`/`var`
+/// locals) and inferring the type of each expression. An operator is flagged
+/// only when both operands resolve to known, incompatible primitive types, so an
+/// unresolved operand — a call result, a saved-data read, a cross-module value —
+/// is never a false positive. The rules mirror `docs/language/syntax.md`:
+/// matching numeric operands for `+ - * /`, `int` for `%`, `string` for `_`,
+/// ordered same-typed operands for comparisons, and `bool` for `and`/`or`/`not`.
+fn check_operator_types(
+    file: &Path,
+    function: &marrow_syntax::FunctionDecl,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    // The base scope frame is the parameter list. Operator typing only inspects
+    // primitives, so resource and identity names need not resolve here.
+    let params = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), MarrowType::resolve(&param.ty, &[])))
+        .collect();
+    let mut scope: Vec<HashMap<String, MarrowType>> = vec![params];
+    check_block_operators(file, &function.body, &mut scope, diagnostics);
+}
+
+/// Check every expression in a block for operator-type errors, with a scope
+/// frame for the `const`/`var` bindings the block introduces.
+fn check_block_operators(
+    file: &Path,
+    block: &marrow_syntax::Block,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    scope.push(HashMap::new());
+    for statement in &block.statements {
+        check_statement_operators(file, statement, scope, diagnostics);
+    }
+    scope.pop();
+}
+
+/// Check one statement: type-check the expressions it contains, recurse into any
+/// nested blocks, and record the type of any binding it introduces.
+fn check_statement_operators(
+    file: &Path,
+    statement: &marrow_syntax::Statement,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::Const {
+            name, ty, value, ..
+        } => {
+            let value_type = infer_type(value, scope, file, diagnostics);
+            bind(scope, name, binding_type(ty.as_ref(), value_type));
+        }
+        Statement::Var {
+            name, ty, value, ..
+        } => {
+            let value_type = match value {
+                Some(value) => infer_type(value, scope, file, diagnostics),
+                None => MarrowType::Unknown,
+            };
+            bind(scope, name, binding_type(ty.as_ref(), value_type));
+        }
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            infer_type(target, scope, file, diagnostics);
+            infer_type(value, scope, file, diagnostics);
+        }
+        Statement::Delete { path, .. } => {
+            infer_type(path, scope, file, diagnostics);
+        }
+        Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                infer_type(value, scope, file, diagnostics);
+            }
+        }
+        Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
+            infer_type(value, scope, file, diagnostics);
+        }
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            infer_type(condition, scope, file, diagnostics);
+            check_block_operators(file, then_block, scope, diagnostics);
+            for else_if in else_ifs {
+                infer_type(&else_if.condition, scope, file, diagnostics);
+                check_block_operators(file, &else_if.block, scope, diagnostics);
+            }
+            if let Some(block) = else_block {
+                check_block_operators(file, block, scope, diagnostics);
+            }
+        }
+        Statement::While {
+            condition, body, ..
+        } => {
+            infer_type(condition, scope, file, diagnostics);
+            check_block_operators(file, body, scope, diagnostics);
+        }
+        Statement::For {
+            binding,
+            iterable,
+            body,
+            ..
+        } => {
+            infer_type(iterable, scope, file, diagnostics);
+            // The loop binding(s) are in scope for the body. Their element type is
+            // not inferred yet, so they shadow any outer name as unknown.
+            let mut frame = HashMap::new();
+            frame.insert(binding.first.clone(), MarrowType::Unknown);
+            if let Some(second) = &binding.second {
+                frame.insert(second.clone(), MarrowType::Unknown);
+            }
+            scope.push(frame);
+            check_block_operators(file, body, scope, diagnostics);
+            scope.pop();
+        }
+        Statement::Transaction { body, .. } => {
+            check_block_operators(file, body, scope, diagnostics);
+        }
+        Statement::Lock { path, body, .. } => {
+            infer_type(path, scope, file, diagnostics);
+            check_block_operators(file, body, scope, diagnostics);
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            check_block_operators(file, body, scope, diagnostics);
+            if let Some(clause) = catch {
+                // The catch clause binds an Error value for the duration of its block.
+                let mut frame = HashMap::new();
+                frame.insert(
+                    clause.name.clone(),
+                    MarrowType::Primitive(PrimitiveType::Error),
+                );
+                scope.push(frame);
+                check_block_operators(file, &clause.block, scope, diagnostics);
+                scope.pop();
+            }
+            if let Some(finally) = finally {
+                check_block_operators(file, finally, scope, diagnostics);
+            }
+        }
+        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
+    }
+}
+
+/// The declared type of a binding: its annotation when written, otherwise the
+/// inferred type of its initializer.
+fn binding_type(annotation: Option<&marrow_syntax::TypeRef>, value_type: MarrowType) -> MarrowType {
+    match annotation {
+        Some(ty) => MarrowType::resolve(ty, &[]),
+        None => value_type,
+    }
+}
+
+/// Record `name`'s type in the innermost scope frame.
+fn bind(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
+    if let Some(frame) = scope.last_mut() {
+        frame.insert(name.to_string(), ty);
+    }
+}
+
+/// Infer an expression's type, recording a `check.operator_type` diagnostic for
+/// any operator whose operands are known to be incompatible. Returns
+/// [`MarrowType::Unknown`] whenever the type cannot be determined with certainty,
+/// so a containing operator never fires on an uncertain operand.
+fn infer_type(
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::Literal { kind, .. } => literal_type(*kind),
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let marrow_syntax::InterpolationPart::Expr(expr) = part {
+                    infer_type(expr, scope, file, diagnostics);
+                }
+            }
+            MarrowType::Primitive(PrimitiveType::String)
+        }
+        Expression::Name { segments, .. } if segments.len() == 1 => lookup(scope, &segments[0]),
+        Expression::Unary { op, operand, span } => {
+            let operand = infer_type(operand, scope, file, diagnostics);
+            check_unary(*op, &operand, *span, file, diagnostics)
+        }
+        Expression::Binary {
+            op,
+            left,
+            right,
+            span,
+        } => {
+            let left = infer_type(left, scope, file, diagnostics);
+            let right = infer_type(right, scope, file, diagnostics);
+            check_binary(*op, &left, &right, *span, file, diagnostics)
+        }
+        Expression::Call { args, .. } => {
+            for arg in args {
+                infer_type(&arg.value, scope, file, diagnostics);
+            }
+            MarrowType::Unknown
+        }
+        Expression::Field { base, .. } => {
+            infer_type(base, scope, file, diagnostics);
+            MarrowType::Unknown
+        }
+        // A multi-segment name, saved root, or undecomposed text has no known
+        // primitive type for this slice.
+        Expression::Name { .. } | Expression::SavedRoot { .. } | Expression::Unparsed { .. } => {
+            MarrowType::Unknown
+        }
+    }
+}
+
+/// Look up a name's type, innermost scope frame first; unknown when unbound.
+fn lookup(scope: &[HashMap<String, MarrowType>], name: &str) -> MarrowType {
+    scope
+        .iter()
+        .rev()
+        .find_map(|frame| frame.get(name))
+        .cloned()
+        .unwrap_or(MarrowType::Unknown)
+}
+
+/// The type of a literal by its lexical kind.
+fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
+    use marrow_syntax::LiteralKind;
+    MarrowType::Primitive(match kind {
+        LiteralKind::Integer => PrimitiveType::Int,
+        LiteralKind::Decimal => PrimitiveType::Decimal,
+        LiteralKind::String => PrimitiveType::String,
+        LiteralKind::Bytes => PrimitiveType::Bytes,
+        LiteralKind::Bool => PrimitiveType::Bool,
+    })
+}
+
+/// Validate a unary operator against its operand type, returning the result type,
+/// or [`MarrowType::Unknown`] when the operand is not a known primitive or the
+/// operator is misused (which records a diagnostic).
+fn check_unary(
+    op: marrow_syntax::UnaryOp,
+    operand: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    use marrow_syntax::UnaryOp;
+    let Some(operand) = as_primitive(operand) else {
+        return MarrowType::Unknown;
+    };
+    let valid = match op {
+        UnaryOp::Neg => is_numeric(operand),
+        UnaryOp::Not => operand == PrimitiveType::Bool,
+    };
+    if !valid {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!(
+                "operator `{}` cannot be applied to `{}`",
+                unary_symbol(op),
+                primitive_name(operand),
+            ),
+        ));
+        return MarrowType::Unknown;
+    }
+    MarrowType::Primitive(operand)
+}
+
+/// Validate a binary operator against its operand types, returning the result
+/// type, or [`MarrowType::Unknown`] when either operand is not a known primitive
+/// or the operator is misused (which records a diagnostic).
+fn check_binary(
+    op: marrow_syntax::BinaryOp,
+    left: &MarrowType,
+    right: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    use marrow_syntax::BinaryOp;
+    let (Some(left), Some(right)) = (as_primitive(left), as_primitive(right)) else {
+        return MarrowType::Unknown;
+    };
+    // Each arm is (operator accepts these operands, result type when it does).
+    let (valid, result) = match op {
+        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply => (
+            is_numeric(left) && left == right,
+            MarrowType::Primitive(left),
+        ),
+        BinaryOp::Divide => (
+            is_numeric(left) && left == right,
+            MarrowType::Primitive(PrimitiveType::Decimal),
+        ),
+        BinaryOp::Remainder => (
+            left == PrimitiveType::Int && right == PrimitiveType::Int,
+            MarrowType::Primitive(PrimitiveType::Int),
+        ),
+        BinaryOp::Concat => (
+            left == PrimitiveType::String && right == PrimitiveType::String,
+            MarrowType::Primitive(PrimitiveType::String),
+        ),
+        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => (
+            is_ordered(left) && left == right,
+            MarrowType::Primitive(PrimitiveType::Bool),
+        ),
+        BinaryOp::Equal | BinaryOp::NotEqual => {
+            (left == right, MarrowType::Primitive(PrimitiveType::Bool))
+        }
+        BinaryOp::And | BinaryOp::Or => (
+            left == PrimitiveType::Bool && right == PrimitiveType::Bool,
+            MarrowType::Primitive(PrimitiveType::Bool),
+        ),
+        // A range is not a value an operator consumes; accept int endpoints.
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => (
+            left == PrimitiveType::Int && right == PrimitiveType::Int,
+            MarrowType::Unknown,
+        ),
+    };
+    if !valid {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!(
+                "operator `{}` cannot be applied to `{}` and `{}`",
+                binary_symbol(op),
+                primitive_name(left),
+                primitive_name(right),
+            ),
+        ));
+        return MarrowType::Unknown;
+    }
+    result
+}
+
+/// The primitive a type denotes, or `None` for any non-primitive (resource,
+/// identity, sequence, or unknown) type that no operator reasons about.
+fn as_primitive(ty: &MarrowType) -> Option<PrimitiveType> {
+    match ty {
+        MarrowType::Primitive(primitive) => Some(*primitive),
+        _ => None,
+    }
+}
+
+fn is_numeric(primitive: PrimitiveType) -> bool {
+    matches!(primitive, PrimitiveType::Int | PrimitiveType::Decimal)
+}
+
+fn is_ordered(primitive: PrimitiveType) -> bool {
+    matches!(
+        primitive,
+        PrimitiveType::Int
+            | PrimitiveType::Decimal
+            | PrimitiveType::String
+            | PrimitiveType::Bytes
+            | PrimitiveType::Date
+            | PrimitiveType::Instant
+            | PrimitiveType::Duration
+    )
+}
+
+fn operator_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+    CheckDiagnostic {
+        code: CHECK_OPERATOR_TYPE.to_string(),
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message,
+        line: span.line,
+        column: span.column,
+    }
+}
+
+fn primitive_name(primitive: PrimitiveType) -> &'static str {
+    match primitive {
+        PrimitiveType::Int => "int",
+        PrimitiveType::Decimal => "decimal",
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::String => "string",
+        PrimitiveType::Bytes => "bytes",
+        PrimitiveType::Date => "date",
+        PrimitiveType::Instant => "instant",
+        PrimitiveType::Duration => "duration",
+        PrimitiveType::ErrorCode => "ErrorCode",
+        PrimitiveType::Error => "Error",
+    }
+}
+
+fn unary_symbol(op: marrow_syntax::UnaryOp) -> &'static str {
+    use marrow_syntax::UnaryOp;
+    match op {
+        UnaryOp::Neg => "-",
+        UnaryOp::Not => "not",
+    }
+}
+
+fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
+    use marrow_syntax::BinaryOp;
+    match op {
+        BinaryOp::Multiply => "*",
+        BinaryOp::Divide => "/",
+        BinaryOp::Remainder => "%",
+        BinaryOp::Add => "+",
+        BinaryOp::Subtract => "-",
+        BinaryOp::Concat => "_",
+        BinaryOp::RangeExclusive => "..",
+        BinaryOp::RangeInclusive => "..=",
+        BinaryOp::Less => "<",
+        BinaryOp::LessEqual => "<=",
+        BinaryOp::Greater => ">",
+        BinaryOp::GreaterEqual => ">=",
+        BinaryOp::Equal => "=",
+        BinaryOp::NotEqual => "!=",
+        BinaryOp::And => "and",
+        BinaryOp::Or => "or",
     }
 }
 

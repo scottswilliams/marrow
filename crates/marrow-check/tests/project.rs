@@ -645,6 +645,128 @@ fn functions_that_return_on_all_paths_are_not_flagged() {
     );
 }
 
+#[test]
+fn rejects_arithmetic_on_mismatched_operand_types() {
+    // `+` needs matching numeric operands; `1 + true` adds an int and a bool.
+    let found = check_script(
+        "op-arith",
+        "fn f()\n    var x = 1 + true\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_concatenation_of_non_strings() {
+    // `_` concatenates strings; `1 _ 2` joins two ints.
+    let found = check_script(
+        "op-concat",
+        "fn f()\n    var x = 1 _ 2\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_logical_operator_on_a_non_bool() {
+    // `and` needs bool operands; `true and 1` mixes in an int.
+    let found = check_script(
+        "op-logical",
+        "fn f()\n    var x = true and 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_comparison_of_different_types() {
+    // Ordering compares same-typed values; `1 < "a"` mixes int and string.
+    let found = check_script(
+        "op-compare",
+        "fn f()\n    var x = 1 < \"a\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_unary_operator_on_the_wrong_type() {
+    // `not` needs a bool operand; `not 1` negates an int.
+    let found = check_script(
+        "op-unary",
+        "fn f()\n    var x = not 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn infers_parameter_types_for_operator_checks() {
+    // `b` is declared `bool`, so `b + 1` adds a bool to an int.
+    let found = check_script(
+        "op-param",
+        "fn f(b: bool): int\n    return b + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn well_typed_operators_are_not_flagged() {
+    // Every operator here has correctly typed operands.
+    let found = check_script(
+        "op-ok",
+        "fn ok(a: int, b: int, s: string, t: string, p: bool, q: bool): bool\n\
+         \x20   const sum = a + b\n\
+         \x20   const quot = a / b\n\
+         \x20   const cat = s _ t\n\
+         \x20   const cmp = a < b\n\
+         \x20   const ne = a != b\n\
+         \x20   const both = p and q\n\
+         \x20   const neg = -a\n\
+         \x20   const inv = not p\n\
+         \x20   return both\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn operators_on_unknown_operands_are_not_flagged() {
+    // `mystery` is not a known binding, so its type is unknown; the checker only
+    // flags when both operand types are known to be incompatible.
+    let found = check_script(
+        "op-unknown",
+        "fn f()\n    var x = mystery + 1\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_mixing_int_and_decimal_arithmetic() {
+    // Numeric operands must match exactly; there is no implicit int-to-decimal
+    // promotion, so `1.0 + 1` is an error.
+    let found = check_script(
+        "op-promote",
+        "fn f()\n    var x = 1.0 + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_nested_operator_error_is_reported_once() {
+    // `1 + true` is the error; the outer `+ 2` sees an unknown left operand (the
+    // flagged subexpression) and does not fire a second diagnostic.
+    let found = check_script(
+        "op-nested",
+        "fn f()\n    var x = 1 + true + 2\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,
