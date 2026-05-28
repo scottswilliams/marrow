@@ -33,6 +33,7 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
     nested_transactions_are_savepoints(&mut make());
+    a_transaction_sees_its_writes_in_traversal(&mut make());
 }
 
 /// The encoded path `^root`.
@@ -307,4 +308,34 @@ fn nested_transactions_are_savepoints(store: &mut dyn Backend) {
     );
     store.commit().unwrap();
     assert_eq!(store.read(&book(1)).unwrap(), Some(b"outer".to_vec()));
+}
+
+fn a_transaction_sees_its_writes_in_traversal(store: &mut dyn Backend) {
+    store.begin().unwrap();
+    store
+        .write(&book_field(1, "title"), b"staged".to_vec())
+        .unwrap();
+    // Presence, child keys, and scans inside the transaction reflect the staged
+    // write, not just point reads.
+    assert_eq!(
+        store.presence(&book(1)).unwrap(),
+        Presence::ChildrenOnly,
+        "presence sees the staged child"
+    );
+    assert_eq!(
+        store.child_keys(&book(1)).unwrap(),
+        vec![ChildSegment::Name("title".into())],
+        "child_keys sees the staged field"
+    );
+    assert_eq!(
+        store.scan(&book(1), usize::MAX).unwrap().entries.len(),
+        1,
+        "scan sees the staged entry"
+    );
+    store.rollback().unwrap();
+    assert_eq!(
+        store.presence(&book(1)).unwrap(),
+        Presence::Absent,
+        "rollback reverts traversal too"
+    );
 }
