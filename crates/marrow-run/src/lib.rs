@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram};
-use marrow_schema::ResourceSchema;
+use marrow_schema::{LayerMember, ResourceSchema};
 use marrow_store::mem::{MemStore, Presence};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
@@ -1111,13 +1111,24 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
 
 /// Read a scalar field off a saved record, e.g. `^books(id).title`. Lowers the
 /// path to encoded segments, reads the store, and decodes the bytes with the
-/// field's declared type from the resource schema. Only `^root(key…).field` over
-/// a scalar field is supported in this slice; other shapes are unsupported, and
-/// an unpopulated element is an absent-element error.
+/// field's declared type from the resource schema. A group-entry target
+/// `^root(key…).layer(key…).field` is dispatched to [`eval_group_field_read`].
+/// An unpopulated element is an absent-element error.
 fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
     let Expression::Field { base, name, .. } = expr else {
         return Err(unsupported("this read", expr.span()));
     };
+    // `^root(id…).layer(key…).field` reads a field inside a keyed GROUP entry:
+    // the base is a layer call whose callee is itself a `.layer` access.
+    if let Expression::Call { callee, args, .. } = base.as_ref()
+        && let Expression::Field {
+            base: record,
+            name: layer,
+            ..
+        } = callee.as_ref()
+    {
+        return eval_group_field_read(record, layer, args, name, expr.span(), env);
+    }
     let (root, keys) = lower_record_identity(base, env)?;
     let mut segments = vec![PathSegment::Root(root.clone())];
     segments.extend(keys.into_iter().map(PathSegment::RecordKey));
@@ -1138,6 +1149,43 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
             code: RUN_TYPE,
             message: format!("stored value for `{name}` did not decode to a runtime value"),
             span: expr.span(),
+        })
+}
+
+/// Read a field inside a keyed GROUP entry, e.g. `^books(id).versions(v).title`.
+/// Lowers the record identity and layer keys, reads the store, and decodes with
+/// the group member's declared type; an absent entry is an absent-element error.
+fn eval_group_field_read(
+    record: &Expression,
+    layer: &str,
+    keys: &[Argument],
+    field: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let (root, identity) = lower_record_identity(record, env)?;
+    let layer_keys = lower_layer_keys(keys, span, env)?;
+    let member_type = resource_group_member_type(env.program, &root, layer, field)
+        .ok_or_else(|| unsupported("reading this group field", span))?;
+    let mut segments = vec![PathSegment::Root(root)];
+    segments.extend(identity.into_iter().map(PathSegment::RecordKey));
+    segments.push(PathSegment::ChildLayer(layer.to_string()));
+    segments.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
+    segments.push(PathSegment::Field(field.to_string()));
+    let store = env.store.borrow();
+    let Some(bytes) = store.read(&encode_path(&segments)) else {
+        return Err(RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`{field}` entry is absent"),
+            span,
+        });
+    };
+    decode_value(bytes, member_type)
+        .and_then(saved_value_to_value)
+        .ok_or_else(|| RuntimeError {
+            code: RUN_TYPE,
+            message: format!("stored value for `{field}` did not decode to a runtime value"),
+            span,
         })
 }
 
@@ -1691,6 +1739,26 @@ fn resource_layer_leaf_type(
         .iter()
         .find(|declared| declared.name == layer)?;
     value_type_for(&layer.leaf_type.as_ref()?.text)
+}
+
+/// The declared type of a scalar member field inside a saved root's GROUP layer
+/// (e.g. the `string` of `versions(version: int).title`).
+fn resource_group_member_type(
+    program: &CheckedProgram,
+    root: &str,
+    layer: &str,
+    field: &str,
+) -> Option<ValueType> {
+    let resource = find_resource(program, root)?;
+    let layer = resource
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)?;
+    let member = layer.members.iter().find_map(|member| match member {
+        LayerMember::Field(member) if member.name == field => Some(member),
+        _ => None,
+    })?;
+    value_type_for(&member.ty.text)
 }
 
 /// The [`ValueType`] a scalar type name denotes, or `None` for a non-scalar type.

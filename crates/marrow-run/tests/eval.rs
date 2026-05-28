@@ -1420,3 +1420,55 @@ fn a_layer_merge_copies_tags_between_records() {
     assert_eq!(tag_of(1), Some(Value::Str("favorite".into())));
     assert_eq!(tag_of(2), Some(Value::Str("gift".into())));
 }
+
+const BOOK_VERSIONS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+
+    versions(version: int)
+        required title: string
+
+fn set_version_title(id: int, v: int, t: string)
+    ^books(id).versions(v).title = t
+
+fn version_title(id: int, v: int): string
+    return ^books(id).versions(v).title
+";
+
+#[test]
+fn reads_a_field_from_a_group_entry() {
+    let program = checked_program(BOOK_VERSIONS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::set_version_title",
+        &[Value::Int(1), Value::Int(2), Value::Str("Mort".into())],
+    )
+    .expect("write");
+    let value = run_entry(
+        &program,
+        &store,
+        "test::version_title",
+        &[Value::Int(1), Value::Int(2)],
+    )
+    .expect("read")
+    .value;
+    assert_eq!(value, Some(Value::Str("Mort".into())));
+}
+
+#[test]
+fn reading_an_absent_group_field_is_an_error() {
+    let program = checked_program(BOOK_VERSIONS);
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(
+        &program,
+        &store,
+        "test::version_title",
+        &[Value::Int(1), Value::Int(2)],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_ABSENT),
+        "{result:?}"
+    );
+}
