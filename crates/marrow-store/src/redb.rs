@@ -149,6 +149,60 @@ impl RedbStore {
         })
     }
 
+    /// Open an existing store for read-only inspection. Unlike [`open`](Self::open)
+    /// it never creates the file — a missing path is an error — and it only
+    /// verifies the recorded [`FORMAT_VERSION`] rather than stamping it. redb has
+    /// no read-only database handle, so the returned store is technically writable;
+    /// an inspecting caller must use only the reading [`Backend`] methods.
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        let db = Database::open(path).map_err(|error| match error {
+            redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
+                data_dir: path.to_path_buf(),
+            },
+            other => StoreError::Io {
+                op: "open",
+                message: other.to_string(),
+            },
+        })?;
+        {
+            // Verify (never stamp) the format version through a read transaction. A
+            // file with no meta table is not a Marrow store, not a fresh one.
+            let read = db.begin_read().map_err(io("open"))?;
+            let meta = match read.open_table(META) {
+                Ok(meta) => meta,
+                Err(redb::TableError::TableDoesNotExist(_)) => {
+                    return Err(StoreError::Corruption {
+                        message: "store is missing its format version".into(),
+                    });
+                }
+                Err(other) => return Err(io("open")(other)),
+            };
+            let recorded = meta
+                .get("format_version")
+                .map_err(io("open"))?
+                .map(|guard| guard.value());
+            match recorded {
+                Some(found) if found != FORMAT_VERSION => {
+                    return Err(StoreError::FormatVersion {
+                        found,
+                        supported: FORMAT_VERSION,
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    return Err(StoreError::Corruption {
+                        message: "store is missing its format version".into(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            db,
+            txn: None,
+            journals: Vec::new(),
+        })
+    }
+
     /// Record `entry` in the innermost open journal, so a later `rollback` can
     /// undo the change it describes.
     fn record(&mut self, entry: Undo) {

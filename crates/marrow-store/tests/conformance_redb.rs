@@ -46,6 +46,28 @@ fn redb_rejects_a_second_writer() {
     }
 }
 
+#[test]
+fn open_read_only_reads_an_existing_store_without_creating_one() {
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let path = dir.path().join("store.redb");
+
+    // Read-only opening a path that does not exist is an error and creates nothing.
+    assert!(RedbStore::open_read_only(&path).is_err());
+    assert!(!path.exists(), "read-only open must not create the store");
+
+    // Create and populate the store, then reopen it read-only and read it back.
+    {
+        let mut store = RedbStore::open(&path).expect("create");
+        store.write(b"k", b"v".to_vec()).expect("write");
+    }
+    let store = RedbStore::open_read_only(&path).expect("open read-only");
+    assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
+    // A read-only open neither corrupts the store nor keeps it locked: it reopens
+    // read-write afterward.
+    drop(store);
+    RedbStore::open(&path).expect("reopen read-write after a read-only open");
+}
+
 /// The encoded path `^books(id).title`.
 fn book_title(id: i64) -> Vec<u8> {
     encode_path(&[
