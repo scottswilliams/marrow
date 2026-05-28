@@ -4,12 +4,15 @@
 //! `BTreeMap`, so iteration is already in Marrow order (the natural order of
 //! encoded path bytes — see [`crate::path`]). It is the reference store for
 //! tests and short runs; a persistent backend implements the same behavior.
+//!
+//! The store operates on already-encoded paths and value bytes: it is the
+//! ordered-bytes backend layer, below the schema. Callers encode logical paths
+//! with [`crate::path::encode_path`] before calling it, and values with
+//! [`crate::value::encode_value`]. The store itself never parses schemas.
 
 use std::collections::BTreeMap;
 
-use crate::path::{
-    ChildSegment, PathSegment, decode_child_segment, encode_path, root_name, segment_len,
-};
+use crate::path::{ChildSegment, decode_child_segment, root_name, segment_len};
 
 /// What a saved path holds: a value, children, both, or neither. Mirrors the
 /// four presence states the backend contract reports.
@@ -32,22 +35,21 @@ impl MemStore {
         Self::default()
     }
 
-    /// Write `value` at `path`, replacing any value already there.
-    pub fn write(&mut self, path: &[PathSegment], value: Vec<u8>) {
-        self.entries.insert(encode_path(path), value);
+    /// Write `value` at the encoded `path`, replacing any value already there.
+    pub fn write(&mut self, path: &[u8], value: Vec<u8>) {
+        self.entries.insert(path.to_vec(), value);
     }
 
-    /// The exact value at `path`, or `None` when no value is stored there.
-    /// Absence is never a stored sentinel; an unpopulated path simply has no
-    /// entry.
-    pub fn read(&self, path: &[PathSegment]) -> Option<&[u8]> {
-        self.entries.get(&encode_path(path)).map(Vec::as_slice)
+    /// The exact value at the encoded `path`, or `None` when no value is stored
+    /// there. Absence is never a stored sentinel; an unpopulated path simply has
+    /// no entry.
+    pub fn read(&self, path: &[u8]) -> Option<&[u8]> {
+        self.entries.get(path).map(Vec::as_slice)
     }
 
-    /// Whether `path` holds a value, children, both, or neither.
-    pub fn presence(&self, path: &[PathSegment]) -> Presence {
-        let key = encode_path(path);
-        match (self.entries.contains_key(&key), self.has_descendants(&key)) {
+    /// Whether the encoded `path` holds a value, children, both, or neither.
+    pub fn presence(&self, path: &[u8]) -> Presence {
+        match (self.entries.contains_key(path), self.has_descendants(path)) {
             (false, false) => Presence::Absent,
             (true, false) => Presence::ValueOnly,
             (false, true) => Presence::ChildrenOnly,
@@ -55,29 +57,24 @@ impl MemStore {
         }
     }
 
-    /// Remove the value at `path` and every value below it. Deleting an absent
-    /// path is a no-op.
-    pub fn delete(&mut self, path: &[PathSegment]) {
-        let prefix = encode_path(path);
+    /// Remove the value at the encoded `path` and every value below it. Deleting
+    /// an absent path is a no-op.
+    pub fn delete(&mut self, path: &[u8]) {
         self.entries
-            .retain(|key, _| *key != prefix && !key.starts_with(&prefix));
+            .retain(|key, _| key.as_slice() != path && !key.starts_with(path));
     }
 
-    /// The distinct immediate children directly below `path`, in Marrow order.
-    /// Descendants sharing an immediate child collapse to a single entry.
-    pub fn child_keys(&self, path: &[PathSegment]) -> Vec<ChildSegment> {
-        let prefix = encode_path(path);
+    /// The distinct immediate children directly below the encoded `path`, in
+    /// Marrow order. Descendants sharing an immediate child collapse to a single
+    /// entry.
+    pub fn child_keys(&self, path: &[u8]) -> Vec<ChildSegment> {
         let mut children = Vec::new();
         let mut last: Option<Vec<u8>> = None;
-        for (key, _) in self
-            .entries
-            .range(prefix.clone()..)
-            .take_while(|(key, _)| key.starts_with(&prefix))
-        {
-            if key.len() <= prefix.len() {
+        for key in self.subtree_keys(path) {
+            if key.len() <= path.len() {
                 continue; // the path's own entry, not a child
             }
-            let rest = &key[prefix.len()..];
+            let rest = &key[path.len()..];
             let Some(len) = segment_len(rest) else {
                 continue; // malformed encoding; skip defensively
             };
@@ -93,13 +90,12 @@ impl MemStore {
         children
     }
 
-    /// Every (encoded path, value) pair in the subtree at `path`, in Marrow
-    /// order, including the value at `path` itself when present.
-    pub fn scan(&self, path: &[PathSegment]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let prefix = encode_path(path);
+    /// Every (encoded path, value) pair in the subtree at the encoded `path`, in
+    /// Marrow order, including the value at `path` itself when present.
+    pub fn scan(&self, path: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.entries
-            .range(prefix.clone()..)
-            .take_while(|(key, _)| key.starts_with(&prefix))
+            .range(path.to_vec()..)
+            .take_while(|(key, _)| key.starts_with(path))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()
     }
@@ -121,9 +117,16 @@ impl MemStore {
     /// byte-prefix of its descendants, and segment terminators keep unrelated
     /// paths from sharing the prefix, so a longer prefixed key is a descendant.
     fn has_descendants(&self, prefix: &[u8]) -> bool {
+        self.subtree_keys(prefix)
+            .any(|key| key.len() > prefix.len())
+    }
+
+    /// The stored keys in the subtree at `prefix` (the prefix entry and every
+    /// descendant), in Marrow order.
+    fn subtree_keys<'a>(&'a self, prefix: &'a [u8]) -> impl Iterator<Item = &'a Vec<u8>> {
         self.entries
             .range(prefix.to_vec()..)
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .any(|(key, _)| key.len() > prefix.len())
+            .map(|(key, _)| key)
+            .take_while(move |key| key.starts_with(prefix))
     }
 }

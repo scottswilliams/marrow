@@ -2,21 +2,23 @@
 //! and subtree delete. These are the first store-conformance laws.
 
 use marrow_store::mem::{MemStore, Presence};
-use marrow_store::path::{PathSegment, SavedKey};
+use marrow_store::path::{PathSegment, SavedKey, encode_path};
 
-/// The path `^books(id)`.
-fn book(id: i64) -> Vec<PathSegment> {
-    vec![
+/// The encoded path `^books(id)`.
+fn book(id: i64) -> Vec<u8> {
+    encode_path(&[
         PathSegment::Root("books".into()),
         PathSegment::RecordKey(SavedKey::Int(id)),
-    ]
+    ])
 }
 
-/// The path `^books(id).<field>`.
-fn book_field(id: i64, field: &str) -> Vec<PathSegment> {
-    let mut path = book(id);
-    path.push(PathSegment::Field(field.into()));
-    path
+/// The encoded path `^books(id).<field>`.
+fn book_field(id: i64, field: &str) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::Field(field.into()),
+    ])
 }
 
 #[test]
