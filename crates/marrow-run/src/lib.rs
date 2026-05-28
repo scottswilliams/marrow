@@ -26,7 +26,8 @@ use marrow_syntax::{
 };
 use marrow_write::{
     FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_field_write,
-    plan_layer_leaf_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
+    plan_layer_leaf_write, plan_layer_merge, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -747,7 +748,15 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             value,
             span,
         } => {
-            eval_resource_merge(target, value, *span, env)?;
+            // A `.layer` off a saved record is a keyed-layer merge; a `^root(key…)`
+            // target is a whole-resource merge.
+            if let Expression::Field { base, name, .. } = target
+                && is_saved_path(base)
+            {
+                eval_layer_merge(base, name, value, *span, env)?;
+            } else {
+                eval_resource_merge(target, value, *span, env)?;
+            }
             Ok(Flow::Normal)
         }
         Statement::Return { value, .. } => {
@@ -1358,6 +1367,55 @@ fn eval_resource_merge(
             message: error.message,
             span,
         })?
+    };
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(())
+}
+
+/// Apply a keyed-layer merge `merge ^root(to).layer = ^root(from).layer`: copy
+/// the source layer's entries over the target layer (an overlay, leaving target
+/// entries the source does not cover in place). Both sides must name the same
+/// layer of the same saved root. Drives [`marrow_write::plan_layer_merge`], which
+/// reads the source subtree, then commits.
+fn eval_layer_merge(
+    target_record: &Expression,
+    layer: &str,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    // The source is a saved layer path `^root(from).layer` naming the same root
+    // and layer as the target.
+    let Expression::Field {
+        base: source_record,
+        name: source_layer,
+        ..
+    } = value
+    else {
+        return Err(unsupported("merging this value into a layer", span));
+    };
+    if source_layer.as_str() != layer {
+        return Err(unsupported(
+            "merging between differently named layers",
+            span,
+        ));
+    }
+    let (to_root, to_identity) = lower_record_identity(target_record, env)?;
+    let (from_root, from_identity) = lower_record_identity(source_record, env)?;
+    if from_root != to_root {
+        return Err(unsupported("merging a layer across saved roots", span));
+    }
+    let resource = find_resource(env.program, &to_root)
+        .ok_or_else(|| unsupported("merging into this saved root", span))?;
+    let plan = {
+        let store = env.store.borrow();
+        plan_layer_merge(resource, &from_identity, &to_identity, layer, &store).map_err(
+            |error| RuntimeError {
+                code: error.code,
+                message: error.message,
+                span,
+            },
+        )?
     };
     plan.commit(&mut env.store.borrow_mut());
     Ok(())

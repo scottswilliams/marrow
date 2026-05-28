@@ -1377,3 +1377,46 @@ fn the_reference_sample_runs_end_to_end() {
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.output, "1: Small Gods\n");
 }
+
+#[test]
+fn a_layer_merge_copies_tags_between_records() {
+    // The sample's `copyTags`: build a source layer with `append`, copy it onto
+    // another record with `merge`, and read the copies back as keyed-leaf entries.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, tag: string): int\n    return append(^books(id).tags, tag)\n\nfn copy_tags(from: int, to: int)\n    merge ^books(to).tags = ^books(from).tags\n\nfn tag_of(id: int, pos: int): string\n    return ^books(id).tags(pos)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add_tag",
+        &[Value::Int(1), Value::Str("favorite".into())],
+    )
+    .expect("tag 1");
+    run_entry(
+        &program,
+        &store,
+        "test::add_tag",
+        &[Value::Int(1), Value::Str("gift".into())],
+    )
+    .expect("tag 2");
+    run_entry(
+        &program,
+        &store,
+        "test::copy_tags",
+        &[Value::Int(1), Value::Int(2)],
+    )
+    .expect("copy tags");
+    let tag_of = |pos: i64| {
+        run_entry(
+            &program,
+            &store,
+            "test::tag_of",
+            &[Value::Int(2), Value::Int(pos)],
+        )
+        .expect("read tag")
+        .value
+    };
+    assert_eq!(tag_of(1), Some(Value::Str("favorite".into())));
+    assert_eq!(tag_of(2), Some(Value::Str("gift".into())));
+}

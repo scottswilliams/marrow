@@ -7,11 +7,11 @@ use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
-    WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
-    WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_write,
-    plan_layer_field_write, plan_layer_leaf_write, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    FieldValue, ResourceValue, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT,
+    WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH,
+    WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos,
+    plan_field_write, plan_layer_field_write, plan_layer_leaf_write, plan_layer_merge,
+    plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -1700,6 +1700,105 @@ fn a_group_entry_field_write_to_a_resource_without_a_saved_root_is_rejected() {
     );
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
+        "{result:?}"
+    );
+}
+
+/// Plan and commit a keyed-layer merge of `^books(from).tags` into
+/// `^books(to).tags`.
+fn merge_tags(store: &mut MemStore, schema: &ResourceSchema, from: i64, to: i64) {
+    plan_layer_merge(
+        schema,
+        &[SavedKey::Int(from)],
+        &[SavedKey::Int(to)],
+        "tags",
+        store,
+    )
+    .expect("valid layer merge")
+    .commit(store);
+}
+
+#[test]
+fn a_layer_merge_copies_entries_to_the_target_record() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 1, 1, "favorite");
+    write_tag(&mut store, &book, 1, 2, "gift");
+    merge_tags(&mut store, &book, 1, 2);
+    assert_eq!(
+        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ValueType::Str),
+        Some(SavedValue::Str("favorite".into()))
+    );
+    assert_eq!(
+        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ValueType::Str),
+        Some(SavedValue::Str("gift".into()))
+    );
+}
+
+#[test]
+fn a_layer_merge_overlays_and_keeps_uncovered_target_entries() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    // Source has pos 1; target has pos 1 (overwritten) and pos 2 (kept).
+    write_tag(&mut store, &book, 1, 1, "from-source");
+    write_tag(&mut store, &book, 2, 1, "old");
+    write_tag(&mut store, &book, 2, 2, "kept");
+    merge_tags(&mut store, &book, 1, 2);
+    assert_eq!(
+        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ValueType::Str),
+        Some(SavedValue::Str("from-source".into())),
+        "an overlapping key is overwritten by the source"
+    );
+    assert_eq!(
+        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ValueType::Str),
+        Some(SavedValue::Str("kept".into())),
+        "a target entry the source does not cover is kept"
+    );
+}
+
+#[test]
+fn a_layer_merge_from_an_empty_source_is_a_no_op() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 2, 1, "kept"); // record 1 has no tags
+    merge_tags(&mut store, &book, 1, 2);
+    assert_eq!(
+        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ValueType::Str),
+        Some(SavedValue::Str("kept".into())),
+        "merging an empty source changes nothing"
+    );
+}
+
+#[test]
+fn a_layer_merge_of_an_unknown_layer_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    let store = MemStore::new();
+    let result = plan_layer_merge(
+        &book,
+        &[SavedKey::Int(1)],
+        &[SavedKey::Int(2)],
+        "chapters",
+        &store,
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_layer_merge_with_a_mismatched_target_identity_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    let store = MemStore::new();
+    let result = plan_layer_merge(
+        &book,
+        &[SavedKey::Int(1)],
+        &[SavedKey::Int(2), SavedKey::Int(3)],
+        "tags",
+        &store,
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_IDENTITY_MISMATCH),
         "{result:?}"
     );
 }

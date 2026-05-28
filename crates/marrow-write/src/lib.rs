@@ -463,6 +463,62 @@ pub fn plan_layer_field_write(
     })
 }
 
+/// Plan a keyed-layer merge: copy every entry of the source layer
+/// `^root(from).layer` over the target layer `^root(to).layer`, leaving target
+/// entries the source does not supply in place (an overlay, not a replace —
+/// docs/language `resources-and-storage.md`). Both records belong to the same
+/// resource and layer; the source subtree is read from `store` before any target
+/// change. Generated indexes do not span keyed child layers, so there is no index
+/// maintenance. Returns a [`WriteError`] if the resource has no saved root, an
+/// identity arity is wrong, or the layer is unknown.
+pub fn plan_layer_merge(
+    schema: &ResourceSchema,
+    from: &[SavedKey],
+    to: &[SavedKey],
+    layer: &str,
+    store: &MemStore,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, from)?;
+    if to.len() != root.identity_keys.len() {
+        return Err(WriteError {
+            code: WRITE_IDENTITY_MISMATCH,
+            message: format!(
+                "resource `{}` expects {} identity key(s), got {}",
+                schema.name,
+                root.identity_keys.len(),
+                to.len()
+            ),
+        });
+    }
+    if !schema.layers.iter().any(|declared| declared.name == layer) {
+        return Err(WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
+        });
+    }
+    let mut source = identity_path(root, from);
+    source.push(PathSegment::ChildLayer(layer.into()));
+    let source = encode_path(&source);
+    let mut target = identity_path(root, to);
+    target.push(PathSegment::ChildLayer(layer.into()));
+    let target = encode_path(&target);
+
+    // Overlay: copy each source entry to the matching target path — the suffix
+    // after the layer prefix (keys and any nested fields) is identical — and
+    // leave target entries the source does not cover untouched.
+    let page = store.scan(&source, usize::MAX);
+    let mut steps = Vec::with_capacity(page.entries.len());
+    for (path, value) in page.entries {
+        let mut target_path = target.clone();
+        target_path.extend_from_slice(&path[source.len()..]);
+        steps.push(PlanStep::Write {
+            path: target_path,
+            value,
+        });
+    }
+    Ok(WritePlan { steps })
+}
+
 /// Resolve a resource's saved root and check the supplied identity has the
 /// expected number of keys.
 fn resolve_saved_root<'a>(
