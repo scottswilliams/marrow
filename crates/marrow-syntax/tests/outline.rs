@@ -76,6 +76,85 @@ fn parses_documented_reference_sample() {
 }
 
 #[test]
+fn parses_all_documented_module_files() {
+    // Every fenced `mw` block that opens with `module` is a complete library
+    // file and must parse without diagnostics. Signature-only and fragment
+    // examples (bare statements, body-less functions) are illustrative and not
+    // included here; the lexer fixture covers all blocks.
+    let blocks = documented_module_blocks();
+    assert!(
+        blocks.len() >= 5,
+        "expected several documented module files, found {}",
+        blocks.len()
+    );
+    for block in blocks {
+        let parsed = parse_source(&block.source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{}#{} should parse cleanly, got:\n{:#?}\n--- source ---\n{}",
+            block.path,
+            block.index,
+            parsed.diagnostics,
+            block.source
+        );
+    }
+}
+
+struct MwBlock {
+    path: String,
+    index: usize,
+    source: String,
+}
+
+fn documented_module_blocks() -> Vec<MwBlock> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("language");
+    let mut blocks = Vec::new();
+    let mut entries = std::fs::read_dir(&dir)
+        .expect("read docs/language")
+        .map(|entry| entry.expect("language doc entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+
+    for path in entries {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read language doc");
+        let mut in_block = false;
+        let mut index = 0usize;
+        let mut source = String::new();
+        for line in text.lines() {
+            if line.trim() == "```mw" {
+                in_block = true;
+                index += 1;
+                source.clear();
+                continue;
+            }
+            if line.trim() == "```" && in_block {
+                if source.trim_start().starts_with("module ") {
+                    blocks.push(MwBlock {
+                        path: path.file_name().unwrap().to_string_lossy().into_owned(),
+                        index,
+                        source: source.clone(),
+                    });
+                }
+                in_block = false;
+                continue;
+            }
+            if in_block {
+                source.push_str(line);
+                source.push('\n');
+            }
+        }
+    }
+    blocks
+}
+
+#[test]
 fn parses_simple_statements_in_function_bodies() {
     let parsed = parse_source(
         "module app\n\
