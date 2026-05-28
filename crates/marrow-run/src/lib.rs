@@ -656,8 +656,111 @@ fn eval_std(
             };
             Ok(Value::Int(eval_bytes_arg(value, env, span)?.len() as i64))
         }
+        ("bytes", "base64Encode") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            Ok(Value::Str(base64_encode(&eval_bytes_arg(
+                value, env, span,
+            )?)))
+        }
+        ("bytes", "base64Decode") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let text = eval_text(value, env, span)?;
+            base64_decode(&text)
+                .map(Value::Bytes)
+                .ok_or_else(|| type_error("base64Decode: invalid base64 text", span))
+        }
         _ => Err(unsupported(&format!("std::{module}::{op}"), span)),
     }
+}
+
+/// The standard RFC 4648 base64 alphabet (with `+`/`/` and `=` padding).
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Encode bytes as standard, padded base64.
+fn base64_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let bits = (u32::from(chunk[0]) << 16)
+            | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
+            | u32::from(chunk.get(2).copied().unwrap_or(0));
+        out.push(BASE64_ALPHABET[(bits >> 18 & 63) as usize] as char);
+        out.push(BASE64_ALPHABET[(bits >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            BASE64_ALPHABET[(bits >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            BASE64_ALPHABET[(bits & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Decode standard, padded base64, or `None` for malformed text (bad length,
+/// invalid characters, or `=` padding anywhere but the final group).
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let group_count = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks(4).enumerate() {
+        let is_last = index + 1 == group_count;
+        let pad_third = chunk[2] == b'=';
+        let pad_fourth = chunk[3] == b'=';
+        // `=` is allowed only in the final group, and a padded third byte forces a
+        // padded fourth (`x=` alone is invalid).
+        if (pad_third || pad_fourth) && !is_last {
+            return None;
+        }
+        if pad_third && !pad_fourth {
+            return None;
+        }
+        let third = if pad_third {
+            0
+        } else {
+            base64_value(chunk[2])?
+        };
+        let fourth = if pad_fourth {
+            0
+        } else {
+            base64_value(chunk[3])?
+        };
+        let bits = (base64_value(chunk[0])? << 18)
+            | (base64_value(chunk[1])? << 12)
+            | (third << 6)
+            | fourth;
+        out.push((bits >> 16) as u8);
+        if !pad_third {
+            out.push((bits >> 8) as u8);
+        }
+        if !pad_fourth {
+            out.push(bits as u8);
+        }
+    }
+    Some(out)
+}
+
+/// The 6-bit value of a base64 character, or `None` if it is not one.
+fn base64_value(byte: u8) -> Option<u32> {
+    let value = match byte {
+        b'A'..=b'Z' => byte - b'A',
+        b'a'..=b'z' => byte - b'a' + 26,
+        b'0'..=b'9' => byte - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => return None,
+    };
+    Some(u32::from(value))
 }
 
 /// Convert a string argument to bytes (`bytes(text)`): the string's UTF-8 bytes.

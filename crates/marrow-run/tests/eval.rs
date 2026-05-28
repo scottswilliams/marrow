@@ -284,6 +284,60 @@ fn bytes_conversion_equals_a_bytes_literal() {
 }
 
 #[test]
+fn base64_encodes_with_padding() {
+    let program = checked_program(
+        "pub fn a(): string\n    return std::bytes::base64Encode(b\"hello\")\n\n\
+         pub fn b(): string\n    return std::bytes::base64Encode(b\"a\")\n\n\
+         pub fn c(): string\n    return std::bytes::base64Encode(b\"ab\")\n\n\
+         pub fn d(): string\n    return std::bytes::base64Encode(b\"abc\")\n",
+    );
+    assert_eq!(
+        run(&program, "test::a", &[]).unwrap(),
+        Some(Value::Str("aGVsbG8=".into()))
+    );
+    assert_eq!(
+        run(&program, "test::b", &[]).unwrap(),
+        Some(Value::Str("YQ==".into()))
+    );
+    assert_eq!(
+        run(&program, "test::c", &[]).unwrap(),
+        Some(Value::Str("YWI=".into()))
+    );
+    // An exact 3-byte group needs no padding.
+    assert_eq!(
+        run(&program, "test::d", &[]).unwrap(),
+        Some(Value::Str("YWJj".into()))
+    );
+}
+
+#[test]
+fn base64_decodes_and_round_trips() {
+    let program = checked_program(
+        "pub fn known(): bool\n    return std::bytes::base64Decode(\"aGVsbG8=\") = b\"hello\"\n\n\
+         pub fn round(): bool\n    return std::bytes::base64Decode(std::bytes::base64Encode(b\"hi there\")) = b\"hi there\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::known", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::round", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn base64_decode_rejects_invalid_text() {
+    // Invalid characters, and `=` padding outside the final group.
+    let program = checked_program(
+        "pub fn bad_chars(): bytes\n    return std::bytes::base64Decode(\"!!!!\")\n\n\
+         pub fn early_pad(): bytes\n    return std::bytes::base64Decode(\"AAA=AAAA\")\n",
+    );
+    assert!(run(&program, "test::bad_chars", &[]).is_err());
+    assert!(run(&program, "test::early_pad", &[]).is_err());
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");
