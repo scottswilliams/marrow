@@ -29,8 +29,8 @@ use marrow_syntax::{
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_field_write,
-    plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_resource_delete,
+    FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_group_write,
+    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write, plan_resource_delete,
     plan_resource_merge, plan_resource_write,
 };
 
@@ -2409,16 +2409,13 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     let Expression::Field { base, name, .. } = expr else {
         return Err(unsupported("this read", expr.span()));
     };
-    // `^root(id…).layer(key…).field` reads a field inside a keyed GROUP entry:
-    // the base is a layer call whose callee is itself a `.layer` access.
-    if let Expression::Call { callee, args, .. } = base.as_ref()
-        && let Expression::Field {
-            base: record,
-            name: layer,
-            ..
-        } = callee.as_ref()
+    // `^root(id…).layer(key…)….field` reads a field inside a keyed GROUP entry, at
+    // any nesting depth: the base is a layer call whose callee is itself a `.layer`
+    // access. A plain `^root(id…).field` base is a top-level field read.
+    if let Expression::Call { callee, .. } = base.as_ref()
+        && matches!(callee.as_ref(), Expression::Field { .. })
     {
-        return eval_group_field_read(record, layer, args, name, expr.span(), env);
+        return eval_group_field_read(base, name, expr.span(), env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
     read_saved_field(&root, &identity, name, expr.span(), env)
@@ -2459,25 +2456,27 @@ fn read_saved_field(
         })
 }
 
-/// Read a field inside a keyed GROUP entry, e.g. `^books(id).versions(v).title`.
-/// Lowers the record identity and layer keys, reads the store, and decodes with
-/// the group member's declared type; an absent entry is an absent-element error.
+/// Read a field inside a keyed GROUP entry at any nesting depth, e.g.
+/// `^books(id).versions(v).comments(c).text`. `base` is the group-entry path; it
+/// is lowered to the record identity and the chain of layer levels, the store is
+/// read, and the value is decoded with the innermost member's declared type; an
+/// absent entry is an absent-element error.
 fn eval_group_field_read(
-    record: &Expression,
-    layer: &str,
-    keys: &[Argument],
+    base: &Expression,
     field: &str,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let (root, identity) = lower_record_identity(record, env)?;
-    let layer_keys = lower_layer_keys(keys, span, env)?;
-    let member_type = resource_group_member_type(env.program, &root, layer, field)
+    let (root, identity, chain) = lower_layer_path(base, env)?;
+    let layer_names: Vec<&str> = chain.iter().map(|(name, _)| name.as_str()).collect();
+    let member_type = resource_nested_member_type(env.program, &root, &layer_names, field)
         .ok_or_else(|| unsupported("reading this group field", span))?;
     let mut segments = vec![PathSegment::Root(root)];
     segments.extend(identity.into_iter().map(PathSegment::RecordKey));
-    segments.push(PathSegment::ChildLayer(layer.to_string()));
-    segments.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
+    for (name, keys) in chain {
+        segments.push(PathSegment::ChildLayer(name));
+        segments.extend(keys.into_iter().map(PathSegment::IndexKey));
+    }
     segments.push(PathSegment::Field(field.to_string()));
     let store = env.store.borrow();
     let Some(bytes) = store
@@ -2666,17 +2665,13 @@ fn eval_saved_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    // `^root(id…).layer(key…).field = v` writes a field inside a keyed GROUP
-    // entry: the base is a layer call whose callee is itself a `.layer` access
-    // off the record. A plain `^root(id…).field` base is a top-level field write.
-    if let Expression::Call { callee, args, .. } = base
-        && let Expression::Field {
-            base: record,
-            name: layer,
-            ..
-        } = callee.as_ref()
+    // `^root(id…).layer(key…)….field = v` writes a field inside a keyed GROUP
+    // entry, at any nesting depth: the base is a layer call whose callee is itself
+    // a `.layer` access. A plain `^root(id…).field` base is a top-level field write.
+    if let Expression::Call { callee, .. } = base
+        && matches!(callee.as_ref(), Expression::Field { .. })
     {
-        return eval_group_field_write(record, layer, args, field, value, span, env);
+        return eval_group_field_write(base, field, value, span, env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
     let value = eval_expr(value, env)?;
@@ -2714,31 +2709,35 @@ fn write_saved_field(
 }
 
 /// Apply a managed group-entry field write
-/// `^root(key…).layer(key…).field = value`: a single-field update inside a keyed
-/// GROUP entry (e.g. `^books(id).versions(v).title`), leaving the entry's other
-/// members in place. Lowers the record identity and layer keys, then drives
-/// [`marrow_write::plan_layer_field_write`] and commits. Generated indexes do not
+/// `^root(key…).layer(key…)….field = value`: a single-field update inside a keyed
+/// GROUP entry at any nesting depth (e.g. `^books(id).versions(v).comments(c).text`),
+/// leaving the entry's other members in place. `base` is the group-entry path; it
+/// is lowered to the record identity and the chain of layer levels, then drives
+/// [`marrow_write::plan_nested_field_write`] and commits. Generated indexes do not
 /// span keyed child layers, so there is no index interaction.
 fn eval_group_field_write(
-    record: &Expression,
-    layer: &str,
-    keys: &[Argument],
+    base: &Expression,
     field: &str,
     value: &Expression,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity) = lower_record_identity(record, env)?;
+    let (root, identity, chain) = lower_layer_path(base, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let layer_keys = lower_layer_keys(keys, span, env)?;
     let saved = value_to_saved(eval_expr(value, env)?)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
-    let plan = plan_layer_field_write(resource, &identity, layer, &layer_keys, field, &saved)
-        .map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
+    let layers: Vec<(&str, &[SavedKey])> = chain
+        .iter()
+        .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+        .collect();
+    let plan =
+        plan_nested_field_write(resource, &identity, &layers, field, &saved).map_err(|error| {
+            RuntimeError {
+                code: error.code,
+                message: error.message,
+                span,
+            }
         })?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
@@ -3118,6 +3117,27 @@ fn lower_record_identity(
     Ok((name.clone(), keys))
 }
 
+/// A lowered keyed group-entry path: the saved root name, the record identity
+/// keys, and the chain of `(layer, key…)` levels from outermost to innermost.
+type LayerPath = (String, Vec<SavedKey>, Vec<(String, Vec<SavedKey>)>);
+
+/// Lower a (possibly nested) keyed group-entry path to its saved root, record
+/// identity, and the chain of `(layer, key…)` levels from outermost to innermost.
+/// `^root(id…)` lowers to an empty chain; each `….layer(key…)` wrapper appends one
+/// level, so `^books(id).versions(v).comments(c)` yields two chain entries.
+fn lower_layer_path(expr: &Expression, env: &mut Env<'_>) -> Result<LayerPath, RuntimeError> {
+    if let Expression::Call { callee, args, span } = expr
+        && let Expression::Field { base, name, .. } = callee.as_ref()
+    {
+        let (root, identity, mut chain) = lower_layer_path(base, env)?;
+        let keys = lower_layer_keys(args, *span, env)?;
+        chain.push((name.clone(), keys));
+        return Ok((root, identity, chain));
+    }
+    let (root, identity) = lower_record_identity(expr, env)?;
+    Ok((root, identity, Vec::new()))
+}
+
 /// Evaluate keyed-lookup arguments to saved keys, rejecting named/out arguments.
 /// Shared by keyed-leaf reads and group-entry field writes.
 fn lower_layer_keys(
@@ -3212,20 +3232,26 @@ fn resource_layer_leaf_type(
     value_type_for(&layer.leaf_type.as_ref()?.text)
 }
 
-/// The declared type of a scalar member field inside a saved root's GROUP layer
-/// (e.g. the `string` of `versions(version: int).title`).
-fn resource_group_member_type(
+/// The declared type of a scalar member field inside a saved root's GROUP layer,
+/// at any nesting depth (e.g. the `string` of
+/// `versions(version: int).comments(pos: int).text`). `layers` names the group
+/// layers from outermost to innermost; descending follows nested layer members.
+fn resource_nested_member_type(
     program: &CheckedProgram,
     root: &str,
-    layer: &str,
+    layers: &[&str],
     field: &str,
 ) -> Option<ValueType> {
     let resource = find_resource(program, root)?;
-    let layer = resource
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)?;
-    let member = layer.members.iter().find_map(|member| match member {
+    let (first, rest) = layers.split_first()?;
+    let mut current = resource.layers.iter().find(|layer| &layer.name == first)?;
+    for name in rest {
+        current = current.members.iter().find_map(|member| match member {
+            LayerMember::Layer(layer) if &layer.name == name => Some(layer),
+            _ => None,
+        })?;
+    }
+    let member = current.members.iter().find_map(|member| match member {
         LayerMember::Field(member) if member.name == field => Some(member),
         _ => None,
     })?;

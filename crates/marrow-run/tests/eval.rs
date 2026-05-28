@@ -693,6 +693,35 @@ fn a_whole_group_entry_write_creates_the_entry() {
 }
 
 #[test]
+fn a_nested_group_field_round_trips() {
+    // `versions(version)` entries hold a nested `comments(pos)` group; writing and
+    // reading `^books(1).versions(2).comments(3).text` exercises a saved-tree path
+    // deeper than one keyed layer.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20comments(pos: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20required text: string\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20^books(1).versions(2).comments(3).text = \"deep\"\n\
+         \n\
+         pub fn comment(): string\n\
+         \x20\x20\x20\x20return ^books(1).versions(2).comments(3).text\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::comment", &[])
+            .unwrap()
+            .value,
+        Some(Value::Str("deep".into()))
+    );
+}
+
+#[test]
 fn a_whole_group_entry_can_be_read_and_copied() {
     // `^books(1).versions(2) = ^books(1).versions(1)` reads the whole entry as a
     // value (RHS) and writes it to another key (LHS).
