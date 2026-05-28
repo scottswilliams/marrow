@@ -1191,3 +1191,94 @@ fn clock_now_without_a_clock_capability_is_a_capability_error() {
         "{result:?}"
     );
 }
+
+/// The encoded path of a group-entry field `^books(id).layer(key).field`, for
+/// asserting group writes directly (the runtime has no group-entry read yet).
+fn group_field_path(id: i64, layer: &str, key: SavedKey, field: &str) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer(layer.into()),
+        PathSegment::IndexKey(key),
+        PathSegment::Field(field.into()),
+    ])
+}
+
+#[test]
+fn a_group_entry_field_write_lands_in_saved_data() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add_note",
+        &[
+            Value::Int(5),
+            Value::Str("n1".into()),
+            Value::Str("hello".into()),
+        ],
+    )
+    .expect("group-entry write");
+    let bytes = store
+        .borrow()
+        .read(&group_field_path(
+            5,
+            "notes",
+            SavedKey::Str("n1".into()),
+            "text",
+        ))
+        .map(<[u8]>::to_vec);
+    assert_eq!(
+        bytes
+            .as_deref()
+            .and_then(|b| decode_value(b, ValueType::Str)),
+        Some(SavedValue::Str("hello".into()))
+    );
+}
+
+#[test]
+fn group_entry_field_writes_compose_in_a_transaction() {
+    // The sample's `add` shape: a whole-record write plus group-entry history
+    // writes, all inside one transaction.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n        required shelf: string\n\nfn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("fiction".into()),
+        ],
+    )
+    .expect("transactional group writes");
+    // The top-level field reads back through the runtime.
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Mort".into()))
+    );
+    // The group-entry members committed alongside it.
+    let version_member = |field: &str| {
+        store
+            .borrow()
+            .read(&group_field_path(1, "versions", SavedKey::Int(1), field))
+            .map(<[u8]>::to_vec)
+            .as_deref()
+            .and_then(|b| decode_value(b, ValueType::Str))
+    };
+    assert_eq!(
+        version_member("title"),
+        Some(SavedValue::Str("Mort".into()))
+    );
+    assert_eq!(
+        version_member("shelf"),
+        Some(SavedValue::Str("fiction".into()))
+    );
+}

@@ -25,8 +25,8 @@ use marrow_syntax::{
     LiteralKind, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_field_write,
+    plan_layer_leaf_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -1086,24 +1086,12 @@ fn eval_saved_leaf_read(
     else {
         return Err(unsupported("this read", span));
     };
-    if keys
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported(
-            "a keyed lookup with named or out arguments",
-            span,
-        ));
-    }
     let (root, identity) = lower_record_identity(base, env)?;
+    let layer_keys = lower_layer_keys(keys, span, env)?;
     let mut segments = vec![PathSegment::Root(root.clone())];
     segments.extend(identity.into_iter().map(PathSegment::RecordKey));
     segments.push(PathSegment::ChildLayer(layer.clone()));
-    for arg in keys {
-        let key = value_to_key(eval_expr(&arg.value, env)?)
-            .ok_or_else(|| unsupported("a key of this type", span))?;
-        segments.push(PathSegment::IndexKey(key));
-    }
+    segments.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
     let leaf_type = resource_layer_leaf_type(env.program, &root, layer)
         .ok_or_else(|| unsupported("reading this layer", span))?;
     let store = env.store.borrow();
@@ -1182,7 +1170,8 @@ fn eval_resource_read(
 /// evaluates the value, and drives [`marrow_write::plan_field_write`] — which
 /// validates the field and value and keeps generated indexes coherent — then
 /// commits the plan to the store. A planning failure surfaces with its `write.*`
-/// code.
+/// code. A group-entry target `^root(key…).layer(key…).field = value` is
+/// dispatched to [`eval_group_field_write`].
 fn eval_saved_field_write(
     base: &Expression,
     field: &str,
@@ -1190,6 +1179,18 @@ fn eval_saved_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
+    // `^root(id…).layer(key…).field = v` writes a field inside a keyed GROUP
+    // entry: the base is a layer call whose callee is itself a `.layer` access
+    // off the record. A plain `^root(id…).field` base is a top-level field write.
+    if let Expression::Call { callee, args, .. } = base
+        && let Expression::Field {
+            base: record,
+            name: layer,
+            ..
+        } = callee.as_ref()
+    {
+        return eval_group_field_write(record, layer, args, field, value, span, env);
+    }
     let (root, identity) = lower_record_identity(base, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
@@ -1205,6 +1206,37 @@ fn eval_saved_field_write(
             }
         })?
     };
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(())
+}
+
+/// Apply a managed group-entry field write
+/// `^root(key…).layer(key…).field = value`: a single-field update inside a keyed
+/// GROUP entry (e.g. `^books(id).versions(v).title`), leaving the entry's other
+/// members in place. Lowers the record identity and layer keys, then drives
+/// [`marrow_write::plan_layer_field_write`] and commits. Generated indexes do not
+/// span keyed child layers, so there is no index interaction.
+fn eval_group_field_write(
+    record: &Expression,
+    layer: &str,
+    keys: &[Argument],
+    field: &str,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let (root, identity) = lower_record_identity(record, env)?;
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("writing to this saved root", span))?;
+    let layer_keys = lower_layer_keys(keys, span, env)?;
+    let saved = value_to_saved(eval_expr(value, env)?)
+        .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
+    let plan = plan_layer_field_write(resource, &identity, layer, &layer_keys, field, &saved)
+        .map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        })?;
     plan.commit(&mut env.store.borrow_mut());
     Ok(())
 }
@@ -1445,6 +1477,32 @@ fn lower_record_identity(
         );
     }
     Ok((name.clone(), keys))
+}
+
+/// Evaluate keyed-lookup arguments to saved keys, rejecting named/out arguments.
+/// Shared by keyed-leaf reads and group-entry field writes.
+fn lower_layer_keys(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<SavedKey>, RuntimeError> {
+    if args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported(
+            "a keyed lookup with named or out arguments",
+            span,
+        ));
+    }
+    let mut keys = Vec::with_capacity(args.len());
+    for arg in args {
+        keys.push(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("a key of this type", span))?,
+        );
+    }
+    Ok(keys)
 }
 
 /// Lower any saved path expression — `^root`, `^root(key…)`, or a `.field` off

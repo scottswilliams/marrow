@@ -7,10 +7,11 @@ use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_LEAF_LAYER,
-    WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD,
-    WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    FieldValue, ResourceValue, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
+    WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
+    WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_write,
+    plan_layer_field_write, plan_layer_leaf_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -78,8 +79,9 @@ resource Item at ^items(tenant: string, id: int)
     index bySku(sku) unique
 ";
 
-/// `Book` with a keyed-leaf layer (`tags`) and a group layer (`notes`), to
-/// exercise keyed-leaf writes and the leaf-vs-group distinction.
+/// `Book` with a keyed-leaf layer (`tags`) and two group layers — `notes`
+/// (single-member) and `versions` (multi-member) — to exercise keyed-leaf
+/// writes, group-entry field writes, and the leaf-vs-group distinction.
 const BOOK_LAYERS: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -87,6 +89,10 @@ resource Book at ^books(id: int)
 
     notes(noteId: string)
         text: string
+
+    versions(version: int)
+        required title: string
+        required shelf: string
 ";
 
 /// A LOCAL `Book` (no saved root) with a keyed-leaf layer, to exercise the
@@ -166,6 +172,42 @@ fn field_path(id: i64, field: &str) -> Vec<u8> {
     encode_path(&[
         PathSegment::Root("books".into()),
         PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::Field(field.into()),
+    ])
+}
+
+/// Plan and commit a group-entry field write of `^books(id).notes(noteId).text`.
+fn write_note(store: &mut MemStore, schema: &ResourceSchema, id: i64, note: &str, text: &str) {
+    plan_layer_field_write(
+        schema,
+        &[SavedKey::Int(id)],
+        "notes",
+        &[SavedKey::Str(note.into())],
+        "text",
+        &SavedValue::Str(text.into()),
+    )
+    .expect("valid group-entry field write")
+    .commit(store);
+}
+
+/// The encoded path `^books(id).notes(noteId).text` of a group-entry field.
+fn note_text_entry(id: i64, note: &str) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer("notes".into()),
+        PathSegment::IndexKey(SavedKey::Str(note.into())),
+        PathSegment::Field("text".into()),
+    ])
+}
+
+/// The encoded path `^books(id).versions(version).field` of a group-entry field.
+fn version_field(id: i64, version: i64, field: &str) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer("versions".into()),
+        PathSegment::IndexKey(SavedKey::Int(version)),
         PathSegment::Field(field.into()),
     ])
 }
@@ -1469,6 +1511,195 @@ fn next_layer_pos_for_an_unknown_layer_is_rejected() {
     let result = next_layer_pos(&book, &[SavedKey::Int(5)], "chapters", &store);
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_lowers_a_value_into_the_store() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_note(&mut store, &book, 5, "n1", "first thought");
+    assert_eq!(
+        decode_value(
+            store.read(&note_text_entry(5, "n1")).expect("note text"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("first thought".into()))
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_touches_only_that_member() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    // `versions` is a multi-member group; writing one member must not clear its
+    // siblings in the same entry.
+    plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "versions",
+        &[SavedKey::Int(1)],
+        "title",
+        &SavedValue::Str("Mort".into()),
+    )
+    .expect("title write")
+    .commit(&mut store);
+    plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "versions",
+        &[SavedKey::Int(1)],
+        "shelf",
+        &SavedValue::Str("fiction".into()),
+    )
+    .expect("shelf write")
+    .commit(&mut store);
+
+    assert_eq!(
+        decode_value(
+            store.read(&version_field(5, 1, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into())),
+        "the first member is kept"
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&version_field(5, 1, "shelf")).expect("shelf"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("fiction".into())),
+        "the second member lands alongside it"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_replaces_only_that_entry() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_note(&mut store, &book, 5, "n1", "a");
+    write_note(&mut store, &book, 5, "n2", "b");
+    write_note(&mut store, &book, 5, "n1", "c");
+    assert_eq!(
+        decode_value(
+            store.read(&note_text_entry(5, "n1")).expect("note n1"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("c".into())),
+        "the entry is replaced in place"
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&note_text_entry(5, "n2")).expect("note n2"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("b".into())),
+        "a sibling entry is untouched"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_to_an_unknown_member_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    let result = plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "notes",
+        &[SavedKey::Str("n1".into())],
+        "bogus",
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_FIELD),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_to_a_leaf_layer_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    // `tags` is a keyed leaf, not a group, so it has no member fields to write.
+    let result = plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "tags",
+        &[SavedKey::Int(1)],
+        "text",
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NOT_A_GROUP_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_to_an_unknown_layer_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    let result = plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "chapters",
+        &[SavedKey::Str("c1".into())],
+        "text",
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_with_the_wrong_key_arity_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    // `notes` takes one key; supplying two is rejected.
+    let result = plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "notes",
+        &[SavedKey::Str("n1".into()), SavedKey::Str("n2".into())],
+        "text",
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_LAYER_KEY_ARITY),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_with_a_mismatched_value_type_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    // `notes.text` holds strings; an int does not satisfy the member type.
+    let result = plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "notes",
+        &[SavedKey::Str("n1".into())],
+        "text",
+        &SavedValue::Int(7),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_TYPE_MISMATCH),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_group_entry_field_write_to_a_resource_without_a_saved_root_is_rejected() {
+    let book = schema(LOCAL_BOOK_LAYERS);
+    let result = plan_layer_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "notes",
+        &[SavedKey::Str("n1".into())],
+        "text",
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
         "{result:?}"
     );
 }

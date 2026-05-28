@@ -8,9 +8,10 @@
 //!
 //! It covers whole-resource writes, single-field writes, deletes, and merges
 //! over a resource's top-level fields, keeping generated indexes (unique and
-//! non-unique) coherent. Keyed layers build on this.
+//! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
+//! fields — build on this.
 
-use marrow_schema::{ResourceSchema, SavedRootSchema};
+use marrow_schema::{LayerMember, ResourceSchema, SavedRootSchema};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{
     ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
@@ -59,6 +60,9 @@ pub const WRITE_UNKNOWN_LAYER: &str = "write.unknown_layer";
 /// A keyed-leaf write targets a group layer, which holds nested members rather
 /// than a single leaf value.
 pub const WRITE_NOT_A_LEAF_LAYER: &str = "write.not_a_leaf_layer";
+/// A group-entry field write targets a leaf layer, which holds a single value
+/// rather than nested members.
+pub const WRITE_NOT_A_GROUP_LAYER: &str = "write.not_a_group_layer";
 /// A keyed-layer write supplies the wrong number of layer keys.
 pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 
@@ -395,6 +399,70 @@ pub fn plan_layer_leaf_write(
     })
 }
 
+/// Plan a group-entry field write: set `field` of the keyed group entry at
+/// `^root(identity).layer(key…)` to `value`. `layer` must be a declared GROUP
+/// layer (e.g. `versions(version: int)` or `notes(noteId: string)`), `key` must
+/// match the layer's key arity, `field` must be a scalar member of that group,
+/// and `value` must match the member's type. A group-entry field holds a single
+/// value at one path, and generated indexes do not span keyed child layers
+/// (docs/language `resources-and-storage.md`), so this is a plain replace-in-
+/// place write with no index maintenance; it leaves the entry's other members in
+/// place. Returns a [`WriteError`] if the layer is unknown, is a leaf rather than
+/// a group, the key arity is wrong, the field is not a scalar member, or the
+/// value is mistyped.
+pub fn plan_layer_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    field: &str,
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = schema
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
+        })?;
+    if declared.leaf_type.is_some() {
+        return Err(WriteError {
+            code: WRITE_NOT_A_GROUP_LAYER,
+            message: format!("keyed layer `{layer}` is a leaf, not a group"),
+        });
+    }
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    let member = declared
+        .members
+        .iter()
+        .find_map(|member| match member {
+            LayerMember::Field(member) if member.name == field => Some(member),
+            _ => None,
+        })
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("group layer `{layer}` has no field `{field}`"),
+        })?;
+    check_type(field, &member.ty.text, value)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&layer_field_path(root, identity, layer, key, field)),
+            value: encode_value(value),
+        }],
+    })
+}
+
 /// Resolve a resource's saved root and check the supplied identity has the
 /// expected number of keys.
 fn resolve_saved_root<'a>(
@@ -513,6 +581,20 @@ fn layer_leaf_path(
     let mut path = identity_path(root, identity);
     path.push(PathSegment::ChildLayer(layer.into()));
     path.extend(key.iter().cloned().map(PathSegment::IndexKey));
+    path
+}
+
+/// The encoded-path segments for a group-entry field,
+/// `^root(identity).layer(key…).field`.
+fn layer_field_path(
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    field: &str,
+) -> Vec<PathSegment> {
+    let mut path = layer_leaf_path(root, identity, layer, key);
+    path.push(PathSegment::Field(field.into()));
     path
 }
 
