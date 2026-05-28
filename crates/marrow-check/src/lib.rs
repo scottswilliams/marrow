@@ -839,9 +839,12 @@ fn infer_type(
                 .collect();
             let call_type = check_call(program, callee, args, &arg_types, *span, file, diagnostics);
             // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
-            // a function call; it types to the layer's declared leaf type.
+            // a function call; it types to the layer's declared leaf type. A whole
+            // record read `^root(key…)` types to its resource.
             if matches!(call_type, MarrowType::Unknown) {
-                saved_leaf_type(program, callee).unwrap_or(MarrowType::Unknown)
+                saved_leaf_type(program, callee)
+                    .or_else(|| saved_resource_type(program, callee))
+                    .unwrap_or(MarrowType::Unknown)
             } else {
                 call_type
             }
@@ -905,6 +908,21 @@ fn find_resource_schema<'p>(
                 .as_ref()
                 .is_some_and(|saved| saved.root == root)
         })
+}
+
+/// The resource type of a whole-record read `^root(key…)`: the call's callee is
+/// the saved root, and the value is the owning resource (mirrors the runtime's
+/// whole-resource read producing a `Value::Resource`). Lets field access off a
+/// saved read stored in a local be typed.
+fn saved_resource_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = callee else {
+        return None;
+    };
+    let resource = find_resource_schema(program, root)?;
+    Some(MarrowType::Resource(resource.name.clone()))
 }
 
 /// Resolve a type annotation against the project's resource names, so a resource

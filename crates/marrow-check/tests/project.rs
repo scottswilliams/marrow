@@ -1034,6 +1034,20 @@ fn passing_a_resource_to_a_mismatched_resource_parameter_is_not_flagged() {
 }
 
 #[test]
+fn a_whole_resource_read_into_a_local_types_its_fields() {
+    // `^books(1)` reads the whole record as a `Book`; `b.title` then resolves to
+    // `string` from the schema, so `+ 1` is string-plus-int.
+    let found = check_module(
+        "whole-read-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    var b = ^books(1)\n    var x = b.title + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn a_std_call_return_type_feeds_operator_checks() {
     // `std::text::length` returns `int`, so `+ true` is int-plus-bool.
     let found = check_module(
