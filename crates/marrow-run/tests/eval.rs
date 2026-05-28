@@ -770,6 +770,66 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
 }
 
 #[test]
+fn an_out_parameter_writes_back_to_a_local() {
+    // The spec's parseInt shape: the callee fills an `out` parameter, and the
+    // caller's local sees the written value.
+    let program = checked_program(
+        "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 0\n    give(out n)\n    return n\n",
+    );
+    assert_eq!(run(&program, "test::main", &[]), Ok(Some(Value::Int(42))));
+}
+
+#[test]
+fn an_out_parameter_ignores_the_caller_value_and_overwrites_it() {
+    // `out` does not read the caller's value; whatever the callee assigns wins.
+    let program = checked_program(
+        "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 99\n    give(out n)\n    return n\n",
+    );
+    assert_eq!(run(&program, "test::main", &[]), Ok(Some(Value::Int(42))));
+}
+
+#[test]
+fn an_inout_parameter_reads_then_writes_a_local() {
+    // `inout` seeds the parameter from the caller's value, then writes back.
+    let program = checked_program(
+        "fn bump(inout n: int)\n    n = n + 1\npub fn main(): int\n    var n: int = 41\n    bump(inout n)\n    return n\n",
+    );
+    assert_eq!(run(&program, "test::main", &[]), Ok(Some(Value::Int(42))));
+}
+
+#[test]
+fn an_inout_parameter_mutates_a_local_resource() {
+    // The spec's `normalize(inout book)` shape: mutating a field of a local
+    // resource passed `inout` is visible to the caller.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    title: string\n\nfn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
+    );
+    assert_eq!(
+        run(&program, "test::main", &[]),
+        Ok(Some(Value::Str("Small Gods".into())))
+    );
+}
+
+#[test]
+fn write_back_is_skipped_when_the_callee_throws() {
+    // A callee that mutates an `inout` parameter then throws must not write back:
+    // the caller's local keeps its pre-call value.
+    let program = checked_program(
+        "fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"x\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        write(\"caught\")\n    return n\n",
+    );
+    assert_eq!(run(&program, "test::main", &[]), Ok(Some(Value::Int(1))));
+}
+
+#[test]
+fn an_argument_mode_must_match_the_parameter_mode() {
+    // Passing `out` to a plain (by-value) parameter is a type error.
+    let program = checked_program(
+        "fn plain(n: int): int\n    return n\npub fn main(): int\n    var n: int = 1\n    return plain(out n)\n",
+    );
+    assert_eq!(run(&program, "test::main", &[]).unwrap_err().code, RUN_TYPE);
+}
+
+#[test]
 fn finally_runs_after_a_fault_and_can_replace_it() {
     // The try body faults (not catchable); finally still runs and its throw
     // replaces the fault, proving finally ran.
