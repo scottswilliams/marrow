@@ -7,7 +7,8 @@ use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, plan_resource_write,
+    FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, next_id,
+    plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -160,4 +161,26 @@ fn a_whole_resource_write_replaces_the_previous_value() {
         Some(SavedValue::Str("final".into()))
     );
     assert_eq!(store.read(&path("shelf")), None, "replaced away");
+}
+
+#[test]
+fn next_id_allocates_after_the_highest_record() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    // An empty root allocates 1.
+    assert_eq!(next_id("books", &store), Ok(1));
+
+    // Write records 5 and 1 (out of order); the next id is one past the highest.
+    for id in [5, 1] {
+        plan_resource_write(
+            &book,
+            &[SavedKey::Int(id)],
+            &ResourceValue {
+                fields: vec![("title".into(), saved("t"))],
+            },
+        )
+        .expect("write")
+        .commit(&mut store);
+    }
+    assert_eq!(next_id("books", &store), Ok(6));
 }

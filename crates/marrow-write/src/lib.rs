@@ -11,7 +11,7 @@
 
 use marrow_schema::{ResourceSchema, SavedRootSchema};
 use marrow_store::mem::MemStore;
-use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, encode_value};
 
 /// A field's value in a write: a saved value, or explicitly absent (omitted).
@@ -44,6 +44,8 @@ pub const WRITE_TYPE_MISMATCH: &str = "write.type_mismatch";
 pub const WRITE_NO_SAVED_ROOT: &str = "write.no_saved_root";
 /// The supplied identity keys do not match the resource's saved root.
 pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
+/// The store reported an error (e.g. a corrupt stored path) during a write.
+pub const WRITE_STORE: &str = "write.store";
 
 /// One staged store operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +130,28 @@ pub fn plan_resource_write(
         });
     }
     Ok(WritePlan { steps })
+}
+
+/// The next identity for a single-`int` keyed saved root: one greater than the
+/// highest existing integer record key, or `1` when the root is empty. This is
+/// the default `nextId` policy (docs/implementation.md). Non-integer immediate
+/// children — such as index names — are ignored.
+pub fn next_id(root: &str, store: &MemStore) -> Result<i64, WriteError> {
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root(root.into())]))
+        .map_err(|_| WriteError {
+            code: WRITE_STORE,
+            message: format!("could not read records under `^{root}`"),
+        })?;
+    let highest = children
+        .iter()
+        .filter_map(|child| match child {
+            ChildSegment::Key(SavedKey::Int(value)) => Some(*value),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    Ok(highest + 1)
 }
 
 /// The supplied value for `field` in `value`, if any.
