@@ -85,9 +85,10 @@ std::io::readBytes(path: string): bytes
 std::io::writeBytes(path: string, data: bytes)
 ```
 
-IO errors raise typed `Error` values. Host policy decides which paths are
-available to a command or embedding. Marrow does not make filesystem sandboxing
-part of the language.
+IO errors raise typed `Error` values. `writeText` and `writeBytes` replace the
+whole file and are not atomic. Host policy decides which paths are available to a
+command or embedding. Marrow does not make filesystem sandboxing part of the
+language.
 
 ## `std::env`
 

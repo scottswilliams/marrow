@@ -124,6 +124,9 @@ pub struct Host {
     /// formatted lines here; the command or embedding decides where they go
     /// (e.g. standard error). A run without it cannot use `std::log`.
     log: Option<Rc<RefCell<String>>>,
+    /// Whether the run may touch the real filesystem through `std::io`. Marrow
+    /// does not sandbox paths; the host either grants filesystem access or not.
+    filesystem: bool,
 }
 
 impl Host {
@@ -168,6 +171,12 @@ impl Host {
     /// test can inspect it.
     pub fn with_log_sink(mut self, sink: Rc<RefCell<String>>) -> Self {
         self.log = Some(sink);
+        self
+    }
+
+    /// A host that grants `std::io` access to the real filesystem.
+    pub fn with_filesystem(mut self) -> Self {
+        self.filesystem = true;
         self
     }
 }
@@ -658,6 +667,13 @@ fn eval_call(
         {
             return eval_log(op, args, span, env);
         }
+        // `std::io::*` reads and writes files through the filesystem capability.
+        if let [first, second, op] = segments.as_slice()
+            && first == "std"
+            && second == "io"
+        {
+            return eval_io(op, args, span, env);
+        }
         // `std::assert::*` testing builtins raise `run.assertion` on failure.
         if let [first, second, op] = segments.as_slice()
             && first == "std"
@@ -715,12 +731,18 @@ fn complete_call(
 ) -> Result<Option<Value>, RuntimeError> {
     match completion {
         Completion::Returned(value) => Ok(value),
-        Completion::Threw(error) => {
-            let sentinel = uncaught_throw(&error, span);
-            env.pending_throw = Some(error);
-            Err(sentinel)
-        }
+        Completion::Threw(error) => Err(raise(error, span, env)),
     }
+}
+
+/// Raise `error` as a catchable throw from this activation: stash it on the env
+/// (it rides the `Err` channel, since calls and builtins are expressions) and
+/// return the matching fault sentinel. A surrounding `try`/`catch` binds it; with
+/// none, this activation's [`invoke`] re-surfaces it to its caller.
+fn raise(error: Value, span: SourceSpan, env: &mut Env<'_>) -> RuntimeError {
+    let sentinel = uncaught_throw(&error, span);
+    env.pending_throw = Some(error);
+    sentinel
 }
 
 /// Evaluate a program-function call that has `out`/`inout` arguments. Each moded
@@ -1431,6 +1453,67 @@ fn eval_log(
     };
     sink.borrow_mut().push_str(&line);
     Ok(None)
+}
+
+/// Evaluate a `std::io::*` file builtin against the host's filesystem capability:
+/// `readText`/`writeText`/`readBytes`/`writeBytes`. A run with no filesystem
+/// capability raises a typed capability fault; an IO failure (a missing file,
+/// permissions) raises a catchable `Error` value the program can `catch`.
+fn eval_io(
+    op: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    // Evaluate the arguments before checking the capability, as the other host
+    // modules do.
+    let values: Vec<Value> = args
+        .iter()
+        .map(|arg| eval_expr(&arg.value, env))
+        .collect::<Result<_, _>>()?;
+    if !env.host.filesystem {
+        return Err(RuntimeError {
+            code: RUN_CAPABILITY,
+            message: format!("this run provides no filesystem capability for `std::io::{op}`"),
+            span,
+        });
+    }
+    match (op, values.as_slice()) {
+        ("readText", [Value::Str(path)]) => match std::fs::read_to_string(path) {
+            Ok(text) => Ok(Some(Value::Str(text))),
+            Err(error) => Err(raise(io_error("io.read", op, path, &error), span, env)),
+        },
+        ("writeText", [Value::Str(path), Value::Str(text)]) => match std::fs::write(path, text) {
+            Ok(()) => Ok(None),
+            Err(error) => Err(raise(io_error("io.write", op, path, &error), span, env)),
+        },
+        ("readBytes", [Value::Str(path)]) => match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(Value::Bytes(bytes))),
+            Err(error) => Err(raise(io_error("io.read", op, path, &error), span, env)),
+        },
+        ("writeBytes", [Value::Str(path), Value::Bytes(data)]) => {
+            match std::fs::write(path, data) {
+                Ok(()) => Ok(None),
+                Err(error) => Err(raise(io_error("io.write", op, path, &error), span, env)),
+            }
+        }
+        ("readText" | "writeText" | "readBytes" | "writeBytes", _) => Err(type_error(
+            &format!("`std::io::{op}` got the wrong arguments"),
+            span,
+        )),
+        _ => Err(unsupported(&format!("std::io::{op}"), span)),
+    }
+}
+
+/// Build a catchable `Error` value (code + message) for a failed `std::io` call.
+fn io_error(code: &str, op: &str, path: &str, error: &std::io::Error) -> Value {
+    Value::Resource(vec![
+        ("code".to_string(), Value::Str(code.to_string())),
+        (
+            "message".to_string(),
+            Value::Str(format!("std::io::{op} failed for `{path}`: {error}")),
+        ),
+    ])
 }
 
 /// The string value of an `Error` resource's named field (`code`/`message`), or

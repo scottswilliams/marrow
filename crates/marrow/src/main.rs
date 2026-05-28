@@ -427,7 +427,8 @@ fn open_store_for_inspection(
 /// Run `entry` from a checked `program` over `store`, printing its output. The
 /// store is the ordered-tree backend the project selected; the run reads the
 /// real system clock for `std::clock::now()`, the real environment for
-/// `std::env`, and writes `std::log` output to standard error.
+/// `std::env`, the real filesystem for `std::io`, and writes `std::log` output to
+/// standard error.
 fn execute(
     program: &marrow_check::CheckedProgram,
     store: &RefCell<dyn marrow_store::backend::Backend>,
@@ -437,7 +438,8 @@ fn execute(
     let host = marrow_run::Host::new()
         .with_system_clock()
         .with_system_environment()
-        .with_log_sink(std::rc::Rc::clone(&log));
+        .with_log_sink(std::rc::Rc::clone(&log))
+        .with_filesystem();
     let result = marrow_run::run_entry_with_host(program, store, &host, entry, &[]);
     // Flush any log output (collected even on a failing run) to standard error,
     // keeping it off the program's own stdout stream.
@@ -598,7 +600,8 @@ fn test_project_dir(dir: &str) -> ExitCode {
     let host = marrow_run::Host::new()
         .with_system_clock()
         .with_system_environment()
-        .with_log_sink(std::rc::Rc::new(RefCell::new(String::new())));
+        .with_log_sink(std::rc::Rc::new(RefCell::new(String::new())))
+        .with_filesystem();
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errored = 0usize;

@@ -829,6 +829,120 @@ fn an_argument_mode_must_match_the_parameter_mode() {
     assert_eq!(run(&program, "test::main", &[]).unwrap_err().code, RUN_TYPE);
 }
 
+/// A program exercising the four `std::io` file builtins.
+const IO_SAMPLE: &str = "\
+fn saveText(path: string, text: string)
+    std::io::writeText(path, text)
+
+fn loadText(path: string): string
+    return std::io::readText(path)
+
+fn saveBytes(path: string, data: bytes)
+    std::io::writeBytes(path, data)
+
+fn loadBytes(path: string): bytes
+    return std::io::readBytes(path)
+
+fn loadOrCode(path: string): string
+    try
+        return std::io::readText(path)
+    catch err: Error
+        return err.code
+";
+
+#[test]
+fn io_round_trips_text_through_a_file() {
+    let program = checked_program(IO_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_filesystem();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("note.txt").to_string_lossy().into_owned();
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::saveText",
+        &[Value::Str(path.clone()), Value::Str("hello".into())],
+    )
+    .expect("write");
+    let loaded = run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::loadText",
+        &[Value::Str(path)],
+    )
+    .expect("read")
+    .value;
+    assert_eq!(loaded, Some(Value::Str("hello".into())));
+}
+
+#[test]
+fn io_round_trips_bytes_through_a_file() {
+    let program = checked_program(IO_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_filesystem();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("blob.bin").to_string_lossy().into_owned();
+    let data = Value::Bytes(vec![0, 1, 2, 255, 128]);
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::saveBytes",
+        &[Value::Str(path.clone()), data.clone()],
+    )
+    .expect("write");
+    let loaded = run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::loadBytes",
+        &[Value::Str(path)],
+    )
+    .expect("read")
+    .value;
+    assert_eq!(loaded, Some(data));
+}
+
+#[test]
+fn io_without_a_filesystem_capability_is_a_capability_error() {
+    let program = checked_program(IO_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    // Plain `run_entry` provides no host capabilities.
+    let result = run_entry(
+        &program,
+        &store,
+        "test::loadText",
+        &[Value::Str("x".into())],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_io_error_raises_a_catchable_error() {
+    // Reading a missing file (with the capability present) raises a typed Error
+    // the program can `catch`, not a runtime fault.
+    let program = checked_program(IO_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_filesystem();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let missing = dir.path().join("absent.txt").to_string_lossy().into_owned();
+    let code = run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::loadOrCode",
+        &[Value::Str(missing)],
+    )
+    .expect("caught")
+    .value;
+    assert_eq!(code, Some(Value::Str("io.read".into())));
+}
+
 #[test]
 fn finally_runs_after_a_fault_and_can_replace_it() {
     // The try body faults (not catchable); finally still runs and its throw
