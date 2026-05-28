@@ -1,4 +1,6 @@
-use marrow_syntax::{Declaration, Expression, LiteralKind, ResourceMember, parse_source};
+use marrow_syntax::{
+    BinaryOp, Declaration, Expression, LiteralKind, ResourceMember, UnaryOp, parse_source,
+};
 
 fn reference_sample() -> &'static str {
     r#"module shelf::sample
@@ -225,11 +227,15 @@ fn parses_const_values_into_expression_nodes() {
         ),
         (
             "const Default = SomeName\n",
-            Expectation::Identifier("SomeName"),
+            Expectation::Name(&["SomeName"]),
         ),
         (
-            "const Computed: int = a + b\n",
-            Expectation::Unparsed("a + b"),
+            "const Pi2: decimal = std::math::PI\n",
+            Expectation::Name(&["std", "math", "PI"]),
+        ),
+        (
+            "const Call: int = nextId(books)\n",
+            Expectation::Unparsed("nextId(books)"),
         ),
     ];
 
@@ -251,8 +257,8 @@ fn parses_const_values_into_expression_nodes() {
                 assert_eq!(*kind, *expected_kind, "{source:?}");
                 assert_eq!(text, expected_text, "{source:?}");
             }
-            (Expectation::Identifier(expected_name), Expression::Identifier { name, .. }) => {
-                assert_eq!(name, expected_name, "{source:?}");
+            (Expectation::Name(expected_segments), Expression::Name { segments, .. }) => {
+                assert_eq!(segments.as_slice(), *expected_segments, "{source:?}");
             }
             (Expectation::Unparsed(expected_text), Expression::Unparsed { text, .. }) => {
                 assert_eq!(text, expected_text, "{source:?}");
@@ -260,6 +266,89 @@ fn parses_const_values_into_expression_nodes() {
             (expected, actual) => panic!("expected {expected:?} for {source:?}, got {actual:?}"),
         }
     }
+}
+
+#[test]
+fn parses_const_operator_expressions_with_precedence() {
+    // 60 * 60 + 1 parses as (60 * 60) + 1.
+    let parsed = parse_source("const Total: int = 60 * 60 + 1\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Binary {
+        op, left, right, ..
+    } = &decl.value
+    else {
+        panic!("expected binary expression, got {:?}", decl.value);
+    };
+    assert_eq!(*op, BinaryOp::Add);
+    assert!(
+        matches!(
+            left.as_ref(),
+            Expression::Binary {
+                op: BinaryOp::Multiply,
+                ..
+            }
+        ),
+        "left should be the multiply, got {left:?}"
+    );
+    assert!(
+        matches!(right.as_ref(), Expression::Literal { text, .. } if text == "1"),
+        "right should be literal 1, got {right:?}"
+    );
+}
+
+#[test]
+fn parses_const_unary_and_grouping() {
+    let parsed = parse_source("const Adjusted: int = -(1 + 2)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Unary { op, operand, .. } = &decl.value else {
+        panic!("expected unary expression, got {:?}", decl.value);
+    };
+    assert_eq!(*op, UnaryOp::Neg);
+    // Parentheses are unwrapped: the operand is the inner add expression.
+    assert!(
+        matches!(
+            operand.as_ref(),
+            Expression::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ),
+        "operand should be the inner add, got {operand:?}"
+    );
+}
+
+#[test]
+fn const_chained_equality_is_not_associative() {
+    // Grammar: equality is non-associative, so `a = b = c` is not a valid
+    // expression. The parser consumes `a = b` then leaves `= c`, so the value
+    // falls back to Unparsed rather than silently nesting.
+    let parsed = parse_source("const Bad: bool = a = b = c\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    assert!(
+        matches!(decl.value, Expression::Unparsed { .. }),
+        "expected chained equality to be Unparsed, got {:?}",
+        decl.value
+    );
+}
+
+#[test]
+fn const_binary_expression_span_covers_whole_expression() {
+    let source = "const Total: int = 60 * 60\n";
+    let parsed = parse_source(source);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let span = decl.value.span();
+    assert_eq!(&source[span.start_byte..span.end_byte], "60 * 60");
 }
 
 #[test]
@@ -278,7 +367,7 @@ fn const_expression_span_points_into_source() {
 #[derive(Debug)]
 enum Expectation<'a> {
     Literal(LiteralKind, &'a str),
-    Identifier(&'a str),
+    Name(&'a [&'a str]),
     Unparsed(&'a str),
 }
 

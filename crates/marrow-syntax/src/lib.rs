@@ -78,23 +78,36 @@ pub enum Expression {
         text: String,
         span: SourceSpan,
     },
-    Identifier {
-        name: String,
+    /// A name path of one or more `::`-separated identifiers, such as `x` or
+    /// `std::math::PI`.
+    Name {
+        segments: Vec<String>,
         span: SourceSpan,
     },
-    /// Expression text the outline parser does not yet decompose. Future
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expression>,
+        span: SourceSpan,
+    },
+    Binary {
+        op: BinaryOp,
+        left: Box<Expression>,
+        right: Box<Expression>,
+        span: SourceSpan,
+    },
+    /// Expression text the outline parser does not yet decompose, such as
+    /// calls, saved paths, interpolation, and resource literals. Future
     /// syntax-tree slices replace `Unparsed` with concrete variants.
-    Unparsed {
-        text: String,
-        span: SourceSpan,
-    },
+    Unparsed { text: String, span: SourceSpan },
 }
 
 impl Expression {
     pub fn span(&self) -> SourceSpan {
         match self {
             Self::Literal { span, .. }
-            | Self::Identifier { span, .. }
+            | Self::Name { span, .. }
+            | Self::Unary { span, .. }
+            | Self::Binary { span, .. }
             | Self::Unparsed { span, .. } => *span,
         }
     }
@@ -107,6 +120,32 @@ pub enum LiteralKind {
     String,
     Bytes,
     Bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Multiply,
+    Divide,
+    Remainder,
+    Add,
+    Subtract,
+    Concat,
+    RangeExclusive,
+    RangeInclusive,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Equal,
+    NotEqual,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,9 +412,9 @@ pub fn lex_source(source: &str) -> LexedSource {
 }
 
 pub fn parse_source(source: &str) -> ParsedSource {
-    let lex_diagnostics = lex_source(source).diagnostics;
-    let mut parsed = Parser::new(source).parse();
-    let mut combined = lex_diagnostics;
+    let lexed = lex_source(source);
+    let mut parsed = Parser::new(source, &lexed.tokens).parse();
+    let mut combined = lexed.diagnostics;
     combined.append(&mut parsed.diagnostics);
     combined.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
     parsed.diagnostics = combined;
@@ -973,6 +1012,8 @@ impl<'a> Lexer<'a> {
 }
 
 struct Parser<'a> {
+    source: &'a str,
+    tokens: &'a [Token],
     lines: Vec<Line<'a>>,
     index: usize,
     diagnostics: Vec<Diagnostic>,
@@ -989,8 +1030,10 @@ struct Line<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token]) -> Self {
         Self {
+            source,
+            tokens,
             lines: split_lines(source),
             index: 0,
             diagnostics: Vec::new(),
@@ -1129,7 +1172,7 @@ impl<'a> Parser<'a> {
             self.error(line, "expected const type annotation");
         }
 
-        let value = parse_simple_expression(line, value_text, value_offset_in_content);
+        let value = self.parse_value_expression(line, value_text, value_offset_in_content);
 
         ConstDecl {
             docs,
@@ -1138,6 +1181,28 @@ impl<'a> Parser<'a> {
             value,
             span: line.span(),
         }
+    }
+
+    /// Parse an expression that occupies a single-line value position, such as
+    /// a `const` value. Tokens come from the file-wide lex, so spans stay
+    /// absolute. Anything the expression grammar does not yet cover becomes
+    /// `Expression::Unparsed`.
+    fn parse_value_expression(
+        &self,
+        line: Line<'a>,
+        value_text: &str,
+        value_offset_in_content: usize,
+    ) -> Expression {
+        let start_byte = line.start_byte + line.indent + value_offset_in_content;
+        let end_byte = start_byte + value_text.len();
+        let fallback_span = SourceSpan {
+            start_byte,
+            end_byte,
+            line: line.number,
+            column: (line.indent + value_offset_in_content + 1) as u32,
+        };
+        let tokens = tokens_in_range(self.tokens, start_byte, end_byte);
+        ExprParser::new(self.source, tokens).parse_value(fallback_span, value_text)
     }
 
     fn parse_resource(&mut self, line: Line<'a>, docs: Vec<String>) -> ResourceDecl {
@@ -1720,88 +1785,279 @@ fn parse_name_type(text: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn parse_simple_expression(
-    line: Line<'_>,
-    value: &str,
-    value_offset_in_content: usize,
-) -> Expression {
-    let absolute_start = line.start_byte + line.indent + value_offset_in_content;
-    let column_base = (line.indent + value_offset_in_content + 1) as u32;
-    let make_span = |local_start: usize, local_end: usize| SourceSpan {
-        start_byte: absolute_start + local_start,
-        end_byte: absolute_start + local_end,
-        line: line.number,
-        column: column_base + local_start as u32,
-    };
+/// Return the tokens whose spans fall entirely within `[start_byte, end_byte)`.
+/// Tokens are sorted by start byte, and within a single-line value their end
+/// bytes are monotonic, so the matching tokens form one contiguous window.
+/// (Nested interpolation tokens are not monotonic, but the value positions that
+/// use this helper today do not contain them.)
+fn tokens_in_range(tokens: &[Token], start_byte: usize, end_byte: usize) -> &[Token] {
+    let first = tokens.partition_point(|token| token.span.start_byte < start_byte);
+    let last = first + tokens[first..].partition_point(|token| token.span.end_byte <= end_byte);
+    &tokens[first..last]
+}
 
-    if value.is_empty() {
-        return Expression::Unparsed {
-            text: String::new(),
-            span: make_span(0, 0),
-        };
+fn is_trivia(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Newline
+            | TokenKind::Eof
+            | TokenKind::Comment
+            | TokenKind::DocComment
+            | TokenKind::Indent
+            | TokenKind::Dedent
+    )
+}
+
+/// Recursive-descent parser for a single Marrow expression over a token slice
+/// with file-absolute spans. It covers the primary, unary, and binary
+/// precedence levels from `docs/language/grammar.md`. Forms it does not yet
+/// handle (calls, saved paths, interpolation, resource literals) cause the
+/// whole value to be reported as `Expression::Unparsed`.
+struct ExprParser<'a> {
+    source: &'a str,
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl<'a> ExprParser<'a> {
+    fn new(source: &'a str, tokens: &[Token]) -> Self {
+        let tokens = tokens
+            .iter()
+            .copied()
+            .filter(|token| !is_trivia(token.kind))
+            .collect();
+        Self {
+            source,
+            tokens,
+            pos: 0,
+        }
     }
 
-    let lexed = lex_source(value);
-    let significant = lexed
-        .tokens
-        .iter()
-        .filter(|token| {
-            !matches!(
-                token.kind,
-                TokenKind::Newline
-                    | TokenKind::Eof
-                    | TokenKind::Comment
-                    | TokenKind::DocComment
-                    | TokenKind::Indent
-                    | TokenKind::Dedent
-            )
+    fn parse_value(mut self, fallback_span: SourceSpan, fallback_text: &str) -> Expression {
+        let unparsed = || Expression::Unparsed {
+            text: fallback_text.trim().to_string(),
+            span: fallback_span,
+        };
+        if self.tokens.is_empty() {
+            return unparsed();
+        }
+        match self.expression() {
+            Some(expr) if self.pos == self.tokens.len() => expr,
+            _ => unparsed(),
+        }
+    }
+
+    fn peek(&self) -> Option<TokenKind> {
+        self.tokens.get(self.pos).map(|token| token.kind)
+    }
+
+    fn advance(&mut self) -> Token {
+        let token = self.tokens[self.pos];
+        self.pos += 1;
+        token
+    }
+
+    fn expression(&mut self) -> Option<Expression> {
+        self.or_expr()
+    }
+
+    fn or_expr(&mut self) -> Option<Expression> {
+        let mut left = self.and_expr()?;
+        while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Or))) {
+            self.advance();
+            let right = self.and_expr()?;
+            left = binary_expr(BinaryOp::Or, left, right);
+        }
+        Some(left)
+    }
+
+    fn and_expr(&mut self) -> Option<Expression> {
+        let mut left = self.equality_expr()?;
+        while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::And))) {
+            self.advance();
+            let right = self.equality_expr()?;
+            left = binary_expr(BinaryOp::And, left, right);
+        }
+        Some(left)
+    }
+
+    fn equality_expr(&mut self) -> Option<Expression> {
+        let left = self.comparison_expr()?;
+        let op = match self.peek() {
+            Some(TokenKind::Equal) => BinaryOp::Equal,
+            Some(TokenKind::BangEqual) => BinaryOp::NotEqual,
+            _ => return Some(left),
+        };
+        self.advance();
+        let right = self.comparison_expr()?;
+        Some(binary_expr(op, left, right))
+    }
+
+    fn comparison_expr(&mut self) -> Option<Expression> {
+        let left = self.range_expr()?;
+        let op = match self.peek() {
+            Some(TokenKind::Less) => BinaryOp::Less,
+            Some(TokenKind::LessEqual) => BinaryOp::LessEqual,
+            Some(TokenKind::Greater) => BinaryOp::Greater,
+            Some(TokenKind::GreaterEqual) => BinaryOp::GreaterEqual,
+            _ => return Some(left),
+        };
+        self.advance();
+        let right = self.range_expr()?;
+        Some(binary_expr(op, left, right))
+    }
+
+    fn range_expr(&mut self) -> Option<Expression> {
+        let left = self.concat_expr()?;
+        let op = match self.peek() {
+            Some(TokenKind::DotDot) => BinaryOp::RangeExclusive,
+            Some(TokenKind::DotDotEqual) => BinaryOp::RangeInclusive,
+            _ => return Some(left),
+        };
+        self.advance();
+        let right = self.concat_expr()?;
+        Some(binary_expr(op, left, right))
+    }
+
+    fn concat_expr(&mut self) -> Option<Expression> {
+        let mut left = self.additive_expr()?;
+        while matches!(self.peek(), Some(TokenKind::Underscore)) {
+            self.advance();
+            let right = self.additive_expr()?;
+            left = binary_expr(BinaryOp::Concat, left, right);
+        }
+        Some(left)
+    }
+
+    fn additive_expr(&mut self) -> Option<Expression> {
+        let mut left = self.multiplicative_expr()?;
+        loop {
+            let op = match self.peek() {
+                Some(TokenKind::Plus) => BinaryOp::Add,
+                Some(TokenKind::Minus) => BinaryOp::Subtract,
+                _ => break,
+            };
+            self.advance();
+            let right = self.multiplicative_expr()?;
+            left = binary_expr(op, left, right);
+        }
+        Some(left)
+    }
+
+    fn multiplicative_expr(&mut self) -> Option<Expression> {
+        let mut left = self.unary_expr()?;
+        loop {
+            let op = match self.peek() {
+                Some(TokenKind::Star) => BinaryOp::Multiply,
+                Some(TokenKind::Slash) => BinaryOp::Divide,
+                Some(TokenKind::Percent) => BinaryOp::Remainder,
+                _ => break,
+            };
+            self.advance();
+            let right = self.unary_expr()?;
+            left = binary_expr(op, left, right);
+        }
+        Some(left)
+    }
+
+    fn unary_expr(&mut self) -> Option<Expression> {
+        let op = match self.peek() {
+            Some(TokenKind::Minus) => UnaryOp::Neg,
+            Some(TokenKind::Keyword(Keyword::Not)) => UnaryOp::Not,
+            _ => return self.primary_expr(),
+        };
+        let op_token = self.advance();
+        let operand = self.unary_expr()?;
+        let span = join_spans(op_token.span, operand.span());
+        Some(Expression::Unary {
+            op,
+            operand: Box::new(operand),
+            span,
         })
-        .collect::<Vec<_>>();
-
-    if significant.len() == 1 {
-        let token = significant[0];
-        let local_start = token.span.start_byte;
-        let local_end = token.span.end_byte;
-        let text = value[local_start..local_end].to_string();
-        let span = make_span(local_start, local_end);
-
-        return match token.kind {
-            TokenKind::Integer => Expression::Literal {
-                kind: LiteralKind::Integer,
-                text,
-                span,
-            },
-            TokenKind::Decimal => Expression::Literal {
-                kind: LiteralKind::Decimal,
-                text,
-                span,
-            },
-            TokenKind::String => Expression::Literal {
-                kind: LiteralKind::String,
-                text,
-                span,
-            },
-            TokenKind::Bytes => Expression::Literal {
-                kind: LiteralKind::Bytes,
-                text,
-                span,
-            },
-            TokenKind::Keyword(Keyword::True | Keyword::False) => Expression::Literal {
-                kind: LiteralKind::Bool,
-                text,
-                span,
-            },
-            TokenKind::Identifier => Expression::Identifier { name: text, span },
-            _ => Expression::Unparsed {
-                text: value.to_string(),
-                span: make_span(0, value.len()),
-            },
-        };
     }
 
-    Expression::Unparsed {
-        text: value.to_string(),
-        span: make_span(0, value.len()),
+    fn primary_expr(&mut self) -> Option<Expression> {
+        let token = *self.tokens.get(self.pos)?;
+        let literal = |kind| {
+            Some(Expression::Literal {
+                kind,
+                text: token.text(self.source).to_string(),
+                span: token.span,
+            })
+        };
+        match token.kind {
+            TokenKind::Integer => {
+                self.advance();
+                literal(LiteralKind::Integer)
+            }
+            TokenKind::Decimal => {
+                self.advance();
+                literal(LiteralKind::Decimal)
+            }
+            TokenKind::String => {
+                self.advance();
+                literal(LiteralKind::String)
+            }
+            TokenKind::Bytes => {
+                self.advance();
+                literal(LiteralKind::Bytes)
+            }
+            TokenKind::Keyword(Keyword::True | Keyword::False) => {
+                self.advance();
+                literal(LiteralKind::Bool)
+            }
+            TokenKind::Identifier => self.name_expr(),
+            TokenKind::LeftParen => {
+                self.advance();
+                let inner = self.expression()?;
+                if matches!(self.peek(), Some(TokenKind::RightParen)) {
+                    self.advance();
+                    Some(inner)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn name_expr(&mut self) -> Option<Expression> {
+        let first = self.advance();
+        let mut segments = vec![first.text(self.source).to_string()];
+        let mut end = first.span;
+        while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
+            self.advance();
+            let segment = *self.tokens.get(self.pos)?;
+            if segment.kind != TokenKind::Identifier {
+                return None;
+            }
+            self.advance();
+            segments.push(segment.text(self.source).to_string());
+            end = segment.span;
+        }
+        Some(Expression::Name {
+            segments,
+            span: join_spans(first.span, end),
+        })
+    }
+}
+
+fn binary_expr(op: BinaryOp, left: Expression, right: Expression) -> Expression {
+    let span = join_spans(left.span(), right.span());
+    Expression::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+        span,
+    }
+}
+
+fn join_spans(start: SourceSpan, end: SourceSpan) -> SourceSpan {
+    SourceSpan {
+        start_byte: start.start_byte,
+        end_byte: end.end_byte,
+        line: start.line,
+        column: start.column,
     }
 }
 
