@@ -1,0 +1,15 @@
+[package]
+name = "marrow-run"
+description = "Evaluates checked Marrow functions against local values and saved data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-syntax = { path = "../marrow-syntax" }
+
+[lints]
+workspace = true

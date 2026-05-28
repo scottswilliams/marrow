@@ -36,6 +36,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-run"
+version = "0.1.0"
+dependencies = [
+ "marrow-syntax",
+]
+
+[[package]]
 name = "marrow-schema"
 version = "0.1.0"
 dependencies = [
