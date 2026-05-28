@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::json;
@@ -63,9 +64,10 @@ fn check(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow check [--format text|json|jsonl] <file.mw>
+  marrow check [--format text|json|jsonl] <file.mw | projectdir>
 
-Parse a Marrow source file and report syntax diagnostics.
+Parse a Marrow source file, or check a whole project directory (one that
+contains marrow.json), and report diagnostics.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -76,7 +78,7 @@ Parse a Marrow source file and report syntax diagnostics.
             }
             value => {
                 if file.replace(value.to_string()).is_some() {
-                    eprintln!("marrow check accepts one source file");
+                    eprintln!("marrow check accepts one source file or project directory");
                     return ExitCode::from(2);
                 }
             }
@@ -85,9 +87,12 @@ Parse a Marrow source file and report syntax diagnostics.
     }
 
     let Some(file) = file else {
-        eprintln!("missing source file");
+        eprintln!("missing source file or project directory");
         return ExitCode::from(2);
     };
+    if Path::new(&file).is_dir() {
+        return check_project_dir(&file, format);
+    }
     let source = match std::fs::read_to_string(&file) {
         Ok(source) => source,
         Err(error) => {
@@ -101,6 +106,118 @@ Parse a Marrow source file and report syntax diagnostics.
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Check a whole project: load `<dir>/marrow.json`, then run the project
+/// checker over its source roots.
+fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
+    let config_path = Path::new(dir).join("marrow.json");
+    let config_text = match std::fs::read_to_string(&config_path) {
+        Ok(text) => text,
+        Err(error) => {
+            report_io_error(&config_path.display().to_string(), &error, format);
+            return ExitCode::FAILURE;
+        }
+    };
+    let config = match marrow_project::parse_config(&config_text) {
+        Ok(config) => config,
+        Err(error) => {
+            report_simple_error(error.code, &error.message, format);
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = match marrow_check::check_project(Path::new(dir), &config) {
+        Ok(report) => report,
+        Err(error) => {
+            report_simple_error(
+                error.code,
+                &format!("{}: {}", error.path.display(), error.message),
+                format,
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    report_project(dir, &report, format);
+    if report.has_errors() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn report_project(target: &str, report: &marrow_check::CheckReport, format: CheckFormat) {
+    let status = if report.has_errors() { "failed" } else { "ok" };
+    match format {
+        CheckFormat::Text => {
+            if report.diagnostics.is_empty() {
+                println!("ok: {target} checked");
+            } else {
+                for diagnostic in &report.diagnostics {
+                    eprintln!(
+                        "{}:{}:{}: {}: {}: {}",
+                        diagnostic.file.display(),
+                        diagnostic.line,
+                        diagnostic.column,
+                        diagnostic.severity.as_str(),
+                        diagnostic.code,
+                        diagnostic.message
+                    );
+                }
+            }
+        }
+        CheckFormat::Json => {
+            let diagnostics = report
+                .diagnostics
+                .iter()
+                .map(check_diagnostic_record)
+                .collect::<Vec<_>>();
+            write_json(json!({
+                "project": target,
+                "status": status,
+                "diagnostics": diagnostics,
+            }));
+        }
+        CheckFormat::Jsonl => {
+            for diagnostic in &report.diagnostics {
+                write_json(check_diagnostic_record(diagnostic));
+            }
+            write_json(json!({
+                "kind": "summary",
+                "project": target,
+                "status": status,
+                "diagnostics": report.diagnostics.len(),
+            }));
+        }
+    }
+}
+
+/// Render a project diagnostic as JSON. Project diagnostics carry only a code,
+/// severity, message, and file position; unlike single-file parse diagnostics
+/// they have no `kind`/`help` or byte offsets, since module-path and
+/// duplicate-module problems are reported at a declaration site.
+fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
+    json!({
+        "code": diagnostic.code,
+        "severity": diagnostic.severity.as_str(),
+        "message": diagnostic.message,
+        "source_span": {
+            "file": diagnostic.file.display().to_string(),
+            "line": diagnostic.line,
+            "column": diagnostic.column,
+        },
+    })
+}
+
+fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
+    match format {
+        CheckFormat::Text => eprintln!("{code}: {message}"),
+        CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
+            "code": code,
+            "message": message,
+            "source_span": null,
+        })),
     }
 }
 
