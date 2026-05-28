@@ -382,17 +382,36 @@ comes through `unknown` and must be checked before typed use.
 ## Saved Encoding
 
 Types do not make the saved database a hidden object store. Saved values are
-bytes with compiler/runtime validation at Marrow boundaries:
+bytes with compiler/runtime validation at Marrow boundaries. Each scalar has one
+canonical saved form, so backup, diff, equality, and restore do not depend on
+the backend:
 
-- `bool` saves as canonical `0` or `1`,
-- `int` saves as canonical decimal text,
-- `decimal` saves as canonical decimal text,
-- `string` saves UTF-8 bytes,
-- `bytes` saves arbitrary bytes,
-- `date`, `instant`, and `duration` save in canonical Marrow forms,
-- `ErrorCode` saves as stable UTF-8 text,
+- `bool` saves as `0` or `1`.
+- `int` saves as canonical decimal text: an optional `-` then digits with no
+  leading zeros. Zero is `0`; there is no `+` and no `-0`.
+- `decimal` saves as canonical decimal text: an optional `-`, an integer part
+  with no leading zeros (a magnitude below one is written as `0`), an optional
+  `.` with fractional digits and no trailing zeros, and no exponent. Zero is
+  `0`. The form is value-canonical, so trailing-zero scale is not preserved:
+  `1.0` and `1.00` both save as `1`.
+- `string` saves UTF-8 bytes.
+- `bytes` saves arbitrary bytes.
+- `date` saves as `YYYY-MM-DD`: a zero-padded ISO 8601 calendar date with no
+  time zone, for years 0001 through 9999.
+- `instant` saves as `YYYY-MM-DDTHH:MM:SSZ` in UTC: RFC 3339 with a literal `Z`,
+  never a numeric offset. Fractional seconds appear only when non-zero, to at
+  most nanosecond precision, with no trailing-zero groups.
+- `duration` saves as a signed `PT<seconds>S` span: an optional `-` then seconds
+  with no leading zeros and an optional trailing-zero-trimmed fraction to at
+  most nanosecond precision. Zero is `PT0S`. A duration is an elapsed span, so
+  it never uses calendar components.
+- `ErrorCode` saves as stable UTF-8 text.
 - generated resource identities save as canonical encodings of their declared
   key values.
+
+The `decimal` envelope is a signed coefficient of up to 34 significant digits,
+with up to 34 of them after the decimal point. Values outside the envelope, and
+arithmetic that cannot fit, raise typed numeric errors.
 
 Saved keys are also bytes, ordered by Marrow's key ordering rules. Typed key
 layers validate and canonicalize keys before traversal.
@@ -400,6 +419,8 @@ layers validate and canonicalize keys before traversal.
 Within a declared typed layer, key order is typed and locale-independent:
 booleans sort false then true, numbers by numeric value, dates and instants
 chronologically, durations by signed length, strings by UTF-8 byte order, and
-bytes by byte order. Raw inspection uses the stable encoded segment order.
+bytes by byte order. Keys encode to order-preserving bytes, so this order holds
+on any backend regardless of its locale or collation. Raw inspection uses the
+stable encoded segment order.
 
 Absence is represented by no value at a path, not by a stored null marker.
