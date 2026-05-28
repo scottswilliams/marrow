@@ -166,6 +166,7 @@ dependencies = [
  "marrow-store",
  "marrow-syntax",
  "marrow-write",
+ "tempfile",
 ]
 
 [[package]]

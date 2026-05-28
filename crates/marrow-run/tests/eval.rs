@@ -12,6 +12,7 @@ use marrow_run::{
 use marrow_schema::compile_resource;
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::redb::RedbStore;
 use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
 
@@ -1376,6 +1377,20 @@ fn the_reference_sample_runs_end_to_end() {
     let outcome = run_entry_with_host(&program, &store, &host, "test::main", &[])
         .expect("the sample's main runs end-to-end");
     // `main` returns nothing and prints the one fiction book it added.
+    assert_eq!(outcome.value, None);
+    assert_eq!(outcome.output, "1: Small Gods\n");
+}
+
+#[test]
+fn the_reference_sample_runs_on_native_storage() {
+    // Step 9's done-criterion: the same sample runs unchanged on the native redb
+    // backend, with output identical to the in-memory run.
+    let program = checked_program(&sample_source());
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let store = RefCell::new(RedbStore::open(&dir.path().join("sample.redb")).expect("open redb"));
+    let host = Host::with_clock(1_700_000_000_000_000_000);
+    let outcome = run_entry_with_host(&program, &store, &host, "test::main", &[])
+        .expect("the sample's main runs on native storage");
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.output, "1: Small Gods\n");
 }
