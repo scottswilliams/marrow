@@ -5,7 +5,7 @@
 //! module/path resolution problems. Type, effect, and schema facts build on
 //! top of this in later work.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
@@ -28,6 +28,8 @@ pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
+/// A type annotation names a type the checker does not recognize.
+pub const CHECK_UNKNOWN_TYPE: &str = "check.unknown_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -240,7 +242,78 @@ pub fn check_project(
         }
     }
 
+    // Pass 3: flag type annotations on functions and constants that name an
+    // unknown type. Resource member types are validated by schema compilation.
+    let project_resources: HashSet<String> = parsed_files
+        .iter()
+        .flat_map(|(_, parsed)| parsed.file.declarations.iter())
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
+            _ => None,
+        })
+        .collect();
+    for (file, parsed) in &parsed_files {
+        for declaration in &parsed.file.declarations {
+            match declaration {
+                marrow_syntax::Declaration::Function(function) => {
+                    for param in &function.params {
+                        check_type_annotation(
+                            &param.ty,
+                            function.span,
+                            &file.path,
+                            &project_resources,
+                            &mut report.diagnostics,
+                        );
+                    }
+                    if let Some(return_type) = &function.return_type {
+                        check_type_annotation(
+                            return_type,
+                            function.span,
+                            &file.path,
+                            &project_resources,
+                            &mut report.diagnostics,
+                        );
+                    }
+                }
+                marrow_syntax::Declaration::Const(constant) => {
+                    if let Some(ty) = &constant.ty {
+                        check_type_annotation(
+                            ty,
+                            constant.span,
+                            &file.path,
+                            &project_resources,
+                            &mut report.diagnostics,
+                        );
+                    }
+                }
+                marrow_syntax::Declaration::Resource(_) => {}
+            }
+        }
+    }
+
     Ok((report, program))
+}
+
+/// Record a `check.unknown_type` diagnostic when `ty` names a type the checker
+/// does not recognize. Located at `span` (the declaration), since a type
+/// annotation carries no span of its own.
+fn check_type_annotation(
+    ty: &marrow_syntax::TypeRef,
+    span: SourceSpan,
+    file: &Path,
+    resources: &HashSet<String>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !MarrowType::names_known_type(&ty.text, resources) {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_UNKNOWN_TYPE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!("unknown type `{}`", ty.text.trim()),
+            line: span.line,
+            column: span.column,
+        });
+    }
 }
 
 /// Discover, read, parse, and check a project's test files (the `tests`

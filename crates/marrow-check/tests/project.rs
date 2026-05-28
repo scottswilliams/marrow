@@ -497,6 +497,55 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
     assert_eq!(test_modules[0].name, "tests::app_test");
 }
 
+#[test]
+fn reports_unknown_types_in_signatures_and_consts() {
+    let root = temp_project("unknown-type", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nconst X: Nope = 1\nfn f(a: Booook): Alsobad\n    return 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let found = with_code(&report, "check.unknown_type");
+    assert_eq!(found.len(), 3, "{:#?}", report.diagnostics);
+    assert!(
+        found.iter().any(|d| d.message.contains("Booook")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("Alsobad")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("Nope")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn known_types_are_not_flagged_as_unknown() {
+    let root = temp_project("known-types", |root| {
+        // Primitive, sequence, identity, the module's own resource, `unknown`, and
+        // a qualified cross-module reference are all accepted.
+        write(
+            root,
+            "src/m.mw",
+            "module m\nresource Book at ^books(id: int)\n    required title: string\n\nfn f(a: int, b: sequence[string], c: Book::Id, d: Book, e: unknown, g: shelf::Thing): bool\n    return true\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,

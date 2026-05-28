@@ -9,6 +9,7 @@
 //! module. The artifact never affects diagnostics; it is a structured view of the
 //! same parse the checker already produced.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
@@ -129,6 +130,25 @@ impl MarrowType {
             return Self::Resource(text.to_string());
         }
         Self::Unknown
+    }
+
+    /// Whether `text` names a type the checker recognizes: a primitive, `unknown`,
+    /// a `sequence[...]` of a known type, a qualified or identity type (anything
+    /// containing `::`, validated more precisely later), or a resource declared
+    /// anywhere in `resources` (project-wide). Used to flag unknown type
+    /// annotations without false-flagging cross-module references.
+    pub(crate) fn names_known_type(text: &str, resources: &HashSet<String>) -> bool {
+        let text = text.trim();
+        if let Some(element) = text
+            .strip_prefix("sequence[")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            return Self::names_known_type(element.trim(), resources);
+        }
+        text.contains("::")
+            || text == "unknown"
+            || PrimitiveType::from_keyword(text).is_some()
+            || resources.contains(text)
     }
 }
 
