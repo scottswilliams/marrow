@@ -42,7 +42,10 @@ pub struct ScanPage {
 }
 
 /// An in-memory map of encoded saved paths to encoded values.
-#[derive(Debug, Default)]
+///
+/// `Clone` snapshots the whole map; the runtime uses that to roll a transaction
+/// back to its pre-image on an escaping error.
+#[derive(Debug, Default, Clone)]
 pub struct MemStore {
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
 }

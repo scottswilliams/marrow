@@ -777,3 +777,49 @@ fn delete_removes_a_record() {
         "the record is gone after delete"
     );
 }
+
+#[test]
+fn a_transaction_commits_on_normal_exit() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int)\n    transaction\n        ^books(id).title = \"kept\"\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[Value::Int(1)]).expect("commit");
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Str("kept".into()))
+    );
+}
+
+#[test]
+fn a_transaction_rolls_back_on_an_escaping_error() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        let x = 1 / 0\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::risky", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_DIVIDE_BY_ZERO),
+        "{result:?}"
+    );
+    // The write staged before the error was rolled back.
+    assert_eq!(
+        run_entry(&program, &store, "test::has_book", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Bool(false)),
+        "the staged write rolled back with the transaction"
+    );
+}
+
+#[test]
+fn reads_inside_a_transaction_see_earlier_writes() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome = run_entry(&program, &store, "test::rww", &[Value::Int(1)]).expect("run");
+    assert_eq!(outcome.value, Some(Value::Str("fresh".into())));
+}

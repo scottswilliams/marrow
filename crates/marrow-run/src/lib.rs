@@ -558,6 +558,22 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             body,
             span,
         } => eval_for(label, binding, iterable, body, *span, env),
+        Statement::Transaction { body, .. } => {
+            // Snapshot the store, then run the block. Any non-error exit
+            // (fall-through, `return`, `break`, `continue`) commits — the staged
+            // writes simply stay. An escaping error rolls the store back to the
+            // snapshot. Local variables and output already produced are not
+            // rewound. A nested transaction snapshots independently, so it is a
+            // savepoint within the outer one.
+            let snapshot = env.store.borrow().clone();
+            match eval_block(body, env) {
+                Ok(flow) => Ok(flow),
+                Err(error) => {
+                    *env.store.borrow_mut() = snapshot;
+                    Err(error)
+                }
+            }
+        }
         other => Err(unsupported("this statement", other.span())),
     }
 }
