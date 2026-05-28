@@ -220,6 +220,51 @@ fn parses_simple_statements_in_function_bodies() {
 }
 
 #[test]
+fn parses_keyed_var_declaration() {
+    let parsed = parse_source(
+        "module app\n\
+         fn tally()\n\
+         \x20   var counts(name: string): int\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let tally = parsed.file.function("tally").expect("tally function");
+    let Statement::Var {
+        name,
+        keys,
+        ty,
+        value,
+        ..
+    } = &tally.body.statements[0]
+    else {
+        panic!("expected var, got {:?}", tally.body.statements[0]);
+    };
+    assert_eq!(name, "counts");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].name, "name");
+    assert_eq!(keys[0].ty.text, "string");
+    assert_eq!(ty.as_ref().map(|t| t.text.as_str()), Some("int"));
+    assert_eq!(*value, None);
+}
+
+#[test]
+fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
+    let parsed = parse_source(
+        "module app\n\
+         fn grid()\n\
+         \x20   var cells(x: int, y: int,): bool\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let grid = parsed.file.function("grid").expect("grid function");
+    let Statement::Var { keys, ty, .. } = &grid.body.statements[0] else {
+        panic!("expected var, got {:?}", grid.body.statements[0]);
+    };
+    assert_eq!(keys.len(), 2, "{keys:#?}");
+    assert_eq!(keys[0].name, "x");
+    assert_eq!(keys[1].name, "y");
+    assert_eq!(ty.as_ref().map(|t| t.text.as_str()), Some("bool"));
+}
+
+#[test]
 fn parses_saved_writes_and_var_without_value() {
     let parsed = parse_source(
         "module app\n\

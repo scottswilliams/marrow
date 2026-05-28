@@ -282,6 +282,7 @@ pub enum Statement {
     },
     Var {
         name: String,
+        keys: Vec<KeyParam>,
         ty: Option<TypeRef>,
         value: Option<Expression>,
         span: SourceSpan,
@@ -2908,9 +2909,16 @@ fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statem
     let name = name_token.text(source).to_string();
     let mut index = 2;
 
-    // Keyed `var` declarations are not structured yet.
-    if is_var && line.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
-        return None;
+    // A keyed `var` declares a local keyed tree: `var counts(name: string): int`.
+    // `let` has no key parameters.
+    let mut keys = Vec::new();
+    if line.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
+        if !is_var {
+            return None;
+        }
+        let (parsed_keys, after) = parse_var_keys(source, line, index)?;
+        keys = parsed_keys;
+        index = after;
     }
 
     let mut ty = None;
@@ -2933,6 +2941,7 @@ fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statem
             Some(if is_var {
                 Statement::Var {
                     name,
+                    keys,
                     ty,
                     value: Some(value),
                     span,
@@ -2946,15 +2955,90 @@ fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statem
                 }
             })
         }
-        // `var name: type` without an initializer is allowed; `let` is not.
+        // `var name[(keys)][: type]` without an initializer is allowed; `let` is not.
         None if is_var => Some(Statement::Var {
             name,
+            keys,
             ty,
             value: None,
             span: join_spans(keyword.span, line[line.len() - 1].span),
         }),
         _ => None,
     }
+}
+
+/// Parse `(name: type, ...)` key parameters of a keyed `var`, starting at the
+/// `(` token at `open_index`. Returns the parsed keys and the line index just
+/// past the closing `)`.
+fn parse_var_keys(
+    source: &str,
+    line: &[Token],
+    open_index: usize,
+) -> Option<(Vec<KeyParam>, usize)> {
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, token) in line[open_index..].iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen => depth += 1,
+            TokenKind::RightParen => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open_index + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let keys = parse_key_param_list(source, &line[open_index + 1..close])?;
+    Some((keys, close + 1))
+}
+
+/// Parse a comma-separated list of `name: type` key declarations. Requires at
+/// least one declaration.
+fn parse_key_param_list(source: &str, inner: &[Token]) -> Option<Vec<KeyParam>> {
+    if inner.is_empty() {
+        return None;
+    }
+    let mut keys = Vec::new();
+    for part in split_top_level_commas(inner) {
+        let name = part.first()?;
+        if name.kind != TokenKind::Identifier
+            || part.get(1).map(|token| token.kind) != Some(TokenKind::Colon)
+            || part.len() < 3
+        {
+            return None;
+        }
+        keys.push(KeyParam {
+            name: name.text(source).to_string(),
+            ty: type_ref_from_tokens(source, &part[2..]),
+        });
+    }
+    Some(keys)
+}
+
+/// Split tokens on top-level commas (depth 0), dropping a trailing empty group
+/// from a trailing comma.
+fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::Comma if depth == 0 => {
+                parts.push(&tokens[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < tokens.len() {
+        parts.push(&tokens[start..]);
+    }
+    parts
 }
 
 fn parse_return(source: &str, line: &[Token]) -> Option<Statement> {
