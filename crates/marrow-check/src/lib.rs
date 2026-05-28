@@ -9,12 +9,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
-use marrow_syntax::{Severity, parse_source};
+use marrow_syntax::{Severity, SourceSpan, parse_source};
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
 /// Two library files declare the same module name.
 pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
+/// A name is declared or imported more than once within a single file.
+pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 
@@ -85,6 +87,8 @@ pub fn check_project(
             });
         }
 
+        check_duplicate_declarations(&file.path, &parsed.file, &mut report.diagnostics);
+
         // A library file (one that declares a `module`) must declare the name
         // its path implies. A module-less file is a script or entrypoint and is
         // not bound to a path.
@@ -146,5 +150,55 @@ fn module_path_error(
         message,
         line: module.span.line,
         column: module.span.column,
+    }
+}
+
+/// Top-level declaration names (const, resource, function) and imported short
+/// module names share one namespace within a file. Flag any name introduced
+/// more than once, reporting the later occurrence and referencing the first.
+fn check_duplicate_declarations(
+    file: &Path,
+    source: &marrow_syntax::SourceFile,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Declaration;
+
+    // Every name this file introduces, in source order. A `use shelf::books`
+    // introduces the short name `books`.
+    let mut introduced: Vec<(&str, SourceSpan, &'static str)> = Vec::new();
+    for use_decl in &source.uses {
+        let short = use_decl.name.rsplit("::").next().unwrap_or(&use_decl.name);
+        introduced.push((short, use_decl.span, "import"));
+    }
+    for declaration in &source.declarations {
+        let (name, span) = match declaration {
+            Declaration::Const(decl) => (decl.name.as_str(), decl.span),
+            Declaration::Resource(decl) => (decl.name.as_str(), decl.span),
+            Declaration::Function(decl) => (decl.name.as_str(), decl.span),
+        };
+        introduced.push((name, span, "declaration"));
+    }
+    introduced.sort_by_key(|(_, span, _)| (span.line, span.start_byte));
+
+    let mut first_seen: HashMap<&str, SourceSpan> = HashMap::new();
+    for (name, span, _kind) in &introduced {
+        // The parser leaves a failed declaration with an empty name; do not
+        // treat those as colliding with each other.
+        if name.is_empty() {
+            continue;
+        }
+        match first_seen.get(name) {
+            Some(first) => diagnostics.push(CheckDiagnostic {
+                code: CHECK_DUPLICATE_DECLARATION.to_string(),
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("`{name}` is already declared on line {}", first.line),
+                line: span.line,
+                column: span.column,
+            }),
+            None => {
+                first_seen.insert(name, *span);
+            }
+        }
     }
 }

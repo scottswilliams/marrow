@@ -147,3 +147,138 @@ fn a_script_file_is_not_bound_to_its_path() {
     fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
+
+fn duplicate_declarations(
+    report: &marrow_check::CheckReport,
+) -> Vec<&marrow_check::CheckDiagnostic> {
+    report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "check.duplicate_declaration")
+        .collect()
+}
+
+#[test]
+fn reports_duplicate_function_declaration() {
+    let root = temp_project("dup-fn", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nfn run()\n    return\nfn run()\n    return\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        duplicates[0].message.contains("run"),
+        "{}",
+        duplicates[0].message
+    );
+    // The later occurrence is reported.
+    assert_eq!(duplicates[0].line, 4, "{:#?}", duplicates[0]);
+}
+
+#[test]
+fn reports_duplicate_const_declaration() {
+    let root = temp_project("dup-const", |root| {
+        write(root, "src/m.mw", "module m\nconst A = 1\nconst A = 2\n");
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        duplicates[0].message.contains('A'),
+        "{}",
+        duplicates[0].message
+    );
+}
+
+#[test]
+fn reports_duplicate_resource_declaration() {
+    let root = temp_project("dup-resource", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nresource Book\n    title: string\nresource Book\n    title: string\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        duplicates[0].message.contains("Book"),
+        "{}",
+        duplicates[0].message
+    );
+}
+
+#[test]
+fn reports_const_resource_name_collision() {
+    let root = temp_project("const-resource", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nconst Book = 1\nresource Book\n    title: string\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        duplicates[0].message.contains("Book"),
+        "{}",
+        duplicates[0].message
+    );
+}
+
+#[test]
+fn reports_import_short_name_collision_with_declaration() {
+    let root = temp_project("use-collision", |root| {
+        // `use shelf::books` contributes the short name `books`, which collides
+        // with the declared function of the same name.
+        write(
+            root,
+            "src/m.mw",
+            "module m\nuse shelf::books\nfn books()\n    return\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        duplicates[0].message.contains("books"),
+        "{}",
+        duplicates[0].message
+    );
+    // The function declaration is the later occurrence.
+    assert_eq!(duplicates[0].line, 3, "{:#?}", duplicates[0]);
+}
+
+#[test]
+fn distinct_declarations_are_not_flagged() {
+    let root = temp_project("distinct-decls", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nuse shelf::books\nconst A = 1\nresource Book\n    title: string\nfn run()\n    return\n",
+        );
+    });
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
