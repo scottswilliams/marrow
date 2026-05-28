@@ -1239,12 +1239,58 @@ fn well_typed_assignments_and_initializers_are_not_flagged() {
 }
 
 #[test]
-fn an_assignment_with_an_unknown_value_is_not_flagged() {
-    // `mystery()` does not resolve, so its type is unknown; only a known mismatch flags.
+fn an_unknown_value_into_a_typed_place_is_flagged() {
+    // Strict typing: `mystery()` does not resolve, so storing it into the concrete
+    // `int` place is a `check.untyped_value` error — convert or define it. (It is
+    // not a `check.assignment_type` mismatch.)
     let found = check_script(
         "assign-unknown",
         "fn f()\n    var x: int = 1\n    x = mystery()\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    // The same assignment is not reported as a primitive mismatch.
+    let mismatch = check_script(
+        "assign-unknown",
+        "fn f()\n    var x: int = 1\n    x = mystery()\n",
         "check.assignment_type",
+    );
+    assert!(mismatch.is_empty(), "{mismatch:#?}");
+}
+
+#[test]
+fn a_typed_initializer_with_an_unresolved_value_is_flagged() {
+    // A typed `const` initializer whose value has no known type is flagged.
+    let found = check_script(
+        "init-unknown",
+        "fn f()\n    const n: int = mystery()\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_unknown_value_into_an_identity_place_is_not_flagged() {
+    // The place is an identity, not a primitive, so strict untyped-value checking
+    // does not apply — this guards the `const id: Book::Id = nextId(^books)` shape.
+    let found = check_module(
+        "untyped-identity",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    const id: Book::Id = nextId(^books)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_value_into_an_unknown_place_is_not_flagged() {
+    // `unknown` is the explicit dynamic opt-out: storing an unresolved value into
+    // an `unknown`-typed place is allowed.
+    let found = check_script(
+        "untyped-into-unknown",
+        "fn f()\n    var raw: unknown = mystery()\n",
+        "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
 }

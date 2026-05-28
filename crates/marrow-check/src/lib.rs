@@ -47,6 +47,11 @@ pub const CHECK_RETURN_TYPE: &str = "check.return_type";
 /// A value's type does not match the binding or place it is stored into (a typed
 /// `const`/`var` initializer, or an assignment target).
 pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
+/// A value whose type cannot be resolved is stored into a concrete typed place.
+/// Under strict typing, dynamic data must be converted before typed use; this is
+/// the first position where an unresolved (`unknown`) value becomes an error
+/// rather than being skipped.
+pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -766,11 +771,12 @@ fn check_return_type(
     }
 }
 
-/// Flag a value whose type does not match the place it is stored into — a typed
-/// `const`/`var` initializer, or an assignment target (a local variable or a
-/// saved field). Fires only when both the place and the value are known,
-/// incompatible primitives, so an untyped place (a local resource field, a whole
-/// resource) or an unresolved value is left alone.
+/// Flag a value stored into a concrete (primitive) place when its type is wrong
+/// or cannot be resolved. A known-incompatible primitive is a
+/// `check.assignment_type` mismatch; an `Unknown` value is a `check.untyped_value`
+/// error (strict typing: dynamic data must be converted before typed use). An
+/// untyped place (a local resource field, a whole resource, `unknown`) is left
+/// alone, as is a known non-primitive value (deferred to a later strict slice).
 fn check_assignment(
     file: &Path,
     span: SourceSpan,
@@ -778,10 +784,11 @@ fn check_assignment(
     value: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if let (Some(place), Some(value)) = (as_primitive(place), as_primitive(value))
-        && place != value
-    {
-        diagnostics.push(CheckDiagnostic {
+    let Some(place) = as_primitive(place) else {
+        return;
+    };
+    match as_primitive(value) {
+        Some(value) if value != place => diagnostics.push(CheckDiagnostic {
             code: CHECK_ASSIGNMENT_TYPE.to_string(),
             severity: Severity::Error,
             file: file.to_path_buf(),
@@ -792,7 +799,20 @@ fn check_assignment(
             ),
             line: span.line,
             column: span.column,
-        });
+        }),
+        // A value the checker could not resolve, stored into a concrete place.
+        None if matches!(value, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_UNTYPED_VALUE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "the value stored into `{}` has no known type; convert it before typed use",
+                primitive_name(place),
+            ),
+            line: span.line,
+            column: span.column,
+        }),
+        _ => {}
     }
 }
 
