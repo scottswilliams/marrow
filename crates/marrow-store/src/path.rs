@@ -97,3 +97,79 @@ fn encode_key(key: &SavedKey, out: &mut Vec<u8>) {
         }
     }
 }
+
+/// An immediate child of a path: either a key value (a record or index key) or a
+/// member name. The store cannot tell a field, child layer, or index name apart
+/// from bytes alone — the schema does that — so all three decode to [`Name`].
+///
+/// [`Name`]: ChildSegment::Name
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildSegment {
+    Key(SavedKey),
+    Name(String),
+}
+
+/// The byte length of the path segment at the front of `bytes`, or `None` if it
+/// is not a well-formed segment. Lets callers walk an encoded path one segment
+/// at a time without fully decoding it.
+pub(crate) fn segment_len(bytes: &[u8]) -> Option<usize> {
+    match *bytes.first()? {
+        KIND_ROOT | KIND_NAMED => name_segment_len(bytes),
+        KIND_RECORD_KEY | KIND_INDEX_KEY => Some(1 + key_len(bytes.get(1..)?)?),
+        _ => None,
+    }
+}
+
+/// The root name of an encoded path, or `None` if it does not begin with a root
+/// segment. Root names are plain identifiers, so this decode is lossless.
+pub(crate) fn root_name(bytes: &[u8]) -> Option<String> {
+    if *bytes.first()? != KIND_ROOT {
+        return None;
+    }
+    decode_name(bytes)
+}
+
+/// Decode one segment as an immediate child: a key for record/index segments, a
+/// name for a named member. A root segment is never a child, so returns `None`.
+pub(crate) fn decode_child_segment(bytes: &[u8]) -> Option<ChildSegment> {
+    match *bytes.first()? {
+        KIND_NAMED => Some(ChildSegment::Name(decode_name(bytes)?)),
+        KIND_RECORD_KEY | KIND_INDEX_KEY => Some(ChildSegment::Key(decode_key(bytes.get(1..)?)?)),
+        _ => None,
+    }
+}
+
+/// The length of a tag-and-name segment: tag, name bytes, `0x00` terminator.
+fn name_segment_len(bytes: &[u8]) -> Option<usize> {
+    let terminator = bytes.iter().skip(1).position(|&b| b == 0)?;
+    Some(1 + terminator + 1)
+}
+
+/// Decode the name from a tag-and-name segment (skipping the kind tag).
+fn decode_name(bytes: &[u8]) -> Option<String> {
+    let terminator = bytes.iter().skip(1).position(|&b| b == 0)?;
+    String::from_utf8(bytes[1..1 + terminator].to_vec()).ok()
+}
+
+/// The byte length of a key encoding: its type tag plus the typed bytes.
+fn key_len(bytes: &[u8]) -> Option<usize> {
+    match *bytes.first()? {
+        KEY_BOOL => Some(2),
+        KEY_INT => Some(9),
+        _ => None,
+    }
+}
+
+/// Decode a key encoding (type tag + typed bytes) back to a [`SavedKey`].
+fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
+    match *bytes.first()? {
+        KEY_BOOL => Some(SavedKey::Bool(*bytes.get(1)? != 0)),
+        KEY_INT => {
+            let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
+            Some(SavedKey::Int(
+                (u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64,
+            ))
+        }
+        _ => None,
+    }
+}

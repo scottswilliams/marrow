@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::path::{PathSegment, encode_path};
+use crate::path::{
+    ChildSegment, PathSegment, decode_child_segment, encode_path, root_name, segment_len,
+};
 
 /// What a saved path holds: a value, children, both, or neither. Mirrors the
 /// four presence states the backend contract reports.
@@ -59,6 +61,60 @@ impl MemStore {
         let prefix = encode_path(path);
         self.entries
             .retain(|key, _| *key != prefix && !key.starts_with(&prefix));
+    }
+
+    /// The distinct immediate children directly below `path`, in Marrow order.
+    /// Descendants sharing an immediate child collapse to a single entry.
+    pub fn child_keys(&self, path: &[PathSegment]) -> Vec<ChildSegment> {
+        let prefix = encode_path(path);
+        let mut children = Vec::new();
+        let mut last: Option<Vec<u8>> = None;
+        for (key, _) in self
+            .entries
+            .range(prefix.clone()..)
+            .take_while(|(key, _)| key.starts_with(&prefix))
+        {
+            if key.len() <= prefix.len() {
+                continue; // the path's own entry, not a child
+            }
+            let rest = &key[prefix.len()..];
+            let Some(len) = segment_len(rest) else {
+                continue; // malformed encoding; skip defensively
+            };
+            let segment = &rest[..len];
+            if last.as_deref() == Some(segment) {
+                continue; // same immediate child as the previous descendant
+            }
+            last = Some(segment.to_vec());
+            if let Some(child) = decode_child_segment(segment) {
+                children.push(child);
+            }
+        }
+        children
+    }
+
+    /// Every (encoded path, value) pair in the subtree at `path`, in Marrow
+    /// order, including the value at `path` itself when present.
+    pub fn scan(&self, path: &[PathSegment]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let prefix = encode_path(path);
+        self.entries
+            .range(prefix.clone()..)
+            .take_while(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    /// The distinct saved root names, in Marrow order.
+    pub fn roots(&self) -> Vec<String> {
+        let mut roots: Vec<String> = Vec::new();
+        for key in self.entries.keys() {
+            if let Some(name) = root_name(key)
+                && roots.last() != Some(&name)
+            {
+                roots.push(name);
+            }
+        }
+        roots
     }
 
     /// Does any stored key lie strictly below `prefix`? An encoded ancestor is a
