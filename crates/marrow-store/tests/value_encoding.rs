@@ -95,3 +95,41 @@ fn impossible_and_non_canonical_dates_are_rejected() {
     assert_eq!(decode_value(b"2021/05/28", ValueType::Date), None); // wrong separator
     assert_eq!(decode_value(b"20210528", ValueType::Date), None);
 }
+
+#[test]
+fn durations_round_trip_through_canonical_text() {
+    for (nanos, text) in [
+        (0i128, "PT0S"),
+        (1_500_000_000, "PT1.5S"),
+        (-250_000_000, "-PT0.25S"),
+        (90_061_000_000_000, "PT90061S"),
+        (1, "PT0.000000001S"), // one nanosecond
+        (-1, "-PT0.000000001S"),
+        (-1_000_000_000, "-PT1S"),
+    ] {
+        let value = SavedValue::Duration(nanos);
+        let bytes = encode_value(&value);
+        assert_eq!(bytes, text.as_bytes(), "canonical form for {nanos} ns");
+        assert_eq!(decode_value(&bytes, ValueType::Duration), Some(value));
+    }
+}
+
+#[test]
+fn non_canonical_durations_are_rejected() {
+    for bad in [
+        "-PT0S",    // negative zero
+        "PT00S",    // leading zero
+        "PT0.0S",   // trailing-zero fraction
+        "PT1.250S", // trailing-zero fraction
+        "PT.5S",    // missing seconds
+        "PT1.5",    // missing S
+        "P1S",      // missing T
+        "PT1.5s",   // lowercase unit
+    ] {
+        assert_eq!(
+            decode_value(bad.as_bytes(), ValueType::Duration),
+            None,
+            "{bad}"
+        );
+    }
+}

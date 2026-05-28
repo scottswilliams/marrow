@@ -17,6 +17,8 @@ pub enum SavedValue {
     ErrorCode(String),
     /// A calendar date, held as days since the Unix epoch (1970-01-01).
     Date(i32),
+    /// An elapsed span, held as a signed count of nanoseconds.
+    Duration(i128),
 }
 
 /// The type to decode saved bytes as. A typed read knows this from the schema.
@@ -28,11 +30,12 @@ pub enum ValueType {
     Bytes,
     ErrorCode,
     Date,
+    Duration,
 }
 
 /// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
 /// decimal text, strings and error codes as UTF-8, bytes verbatim, dates as
-/// `YYYY-MM-DD` (docs/language/types.md).
+/// `YYYY-MM-DD`, durations as `PT<seconds>S` (docs/language/types.md).
 pub fn encode_value(value: &SavedValue) -> Vec<u8> {
     match value {
         SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
@@ -40,6 +43,7 @@ pub fn encode_value(value: &SavedValue) -> Vec<u8> {
         SavedValue::Str(text) | SavedValue::ErrorCode(text) => text.as_bytes().to_vec(),
         SavedValue::Bytes(bytes) => bytes.clone(),
         SavedValue::Date(days) => format_date(*days).into_bytes(),
+        SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
     }
 }
 
@@ -61,6 +65,7 @@ pub fn decode_value(bytes: &[u8], ty: ValueType) -> Option<SavedValue> {
             String::from_utf8(bytes.to_vec()).ok()?,
         )),
         ValueType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
+        ValueType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
     }
 }
 
@@ -143,4 +148,69 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     }) as u32; // [1, 12]
     let year = year + i64::from(month <= 2);
     (year as i32, month, day)
+}
+
+const NANOS_PER_SEC: i128 = 1_000_000_000;
+
+/// Format a signed nanosecond span as the canonical `PT<seconds>S`: an optional
+/// `-`, whole seconds with no leading zeros, and a trailing-zero-trimmed
+/// fraction only when non-zero. Zero is `PT0S`.
+fn format_duration(nanos: i128) -> String {
+    let sign = if nanos < 0 { "-" } else { "" };
+    let magnitude = nanos.unsigned_abs();
+    let seconds = magnitude / NANOS_PER_SEC as u128;
+    let fraction = (magnitude % NANOS_PER_SEC as u128) as u32;
+    let mut out = format!("{sign}PT{seconds}");
+    if fraction > 0 {
+        out.push('.');
+        out.push_str(format!("{fraction:09}").trim_end_matches('0'));
+    }
+    out.push('S');
+    out
+}
+
+/// Parse the canonical `PT<seconds>S` form to a signed nanosecond span,
+/// rejecting any non-canonical spelling (leading zeros, a trailing-zero or empty
+/// fraction, `-PT0S`, a missing `PT`/`S`, or out-of-range magnitude).
+fn parse_duration(bytes: &[u8]) -> Option<i128> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let body = rest.strip_prefix("PT")?.strip_suffix('S')?;
+    let (seconds_text, fraction_text) = match body.split_once('.') {
+        Some((seconds, fraction)) => (seconds, Some(fraction)),
+        None => (body, None),
+    };
+
+    if seconds_text.is_empty() || !seconds_text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if seconds_text.len() > 1 && seconds_text.starts_with('0') {
+        return None; // leading zero
+    }
+    let seconds: i128 = seconds_text.parse().ok()?;
+
+    let fraction_nanos: i128 = match fraction_text {
+        None => 0,
+        Some(fraction) => {
+            if fraction.is_empty()
+                || fraction.len() > 9
+                || fraction.ends_with('0')
+                || !fraction.bytes().all(|b| b.is_ascii_digit())
+            {
+                return None; // empty, too long, trailing zero, or non-digit
+            }
+            format!("{fraction:0<9}").parse().ok()?
+        }
+    };
+
+    let magnitude = seconds
+        .checked_mul(NANOS_PER_SEC)?
+        .checked_add(fraction_nanos)?;
+    if negative && magnitude == 0 {
+        return None; // `-PT0S` is not canonical
+    }
+    Some(if negative { -magnitude } else { magnitude })
 }
