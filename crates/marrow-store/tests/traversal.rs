@@ -125,6 +125,37 @@ fn child_keys_round_trip_duration_records() {
 }
 
 #[test]
+fn child_keys_round_trip_instant_records_in_order() {
+    use marrow_store::value::{SavedValue, ValueType, decode_value};
+    let at = |text: &str| match decode_value(text.as_bytes(), ValueType::Instant) {
+        Some(SavedValue::Instant(nanos)) => nanos,
+        other => panic!("expected an instant, got {other:?}"),
+    };
+    let mut store = MemStore::new();
+    for text in [
+        "2026-05-28T12:00:00Z",
+        "1969-12-31T23:59:59Z", // pre-epoch sorts first
+        "1970-01-01T00:00:00Z",
+    ] {
+        let path = [
+            PathSegment::Root("log".into()),
+            PathSegment::RecordKey(SavedKey::Instant(at(text))),
+            PathSegment::Field("note".into()),
+        ];
+        store.write(&encode_path(&path), b"x".to_vec());
+    }
+    let children = store.child_keys(&encode_path(&[PathSegment::Root("log".into())]));
+    assert_eq!(
+        children,
+        vec![
+            ChildSegment::Key(SavedKey::Instant(at("1969-12-31T23:59:59Z"))),
+            ChildSegment::Key(SavedKey::Instant(at("1970-01-01T00:00:00Z"))),
+            ChildSegment::Key(SavedKey::Instant(at("2026-05-28T12:00:00Z"))),
+        ]
+    );
+}
+
+#[test]
 fn roots_are_listed_in_order_without_duplicates() {
     let mut store = MemStore::new();
     store.write(&encode_path(&seq(1)), b"x".to_vec());
