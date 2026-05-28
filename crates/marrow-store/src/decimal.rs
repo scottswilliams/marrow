@@ -3,8 +3,8 @@
 //! A [`Decimal`] is `coefficient * 10^(-scale)`, kept value-canonical (no
 //! trailing-zero scale, so each value has one representation) within a
 //! 34-significant-digit / 34-fractional-place envelope. This module provides
-//! parsing, canonical formatting, exact add/sub/mul, and value comparison.
-//! Division (with half-even rounding) is added separately.
+//! parsing, canonical formatting, exact add/sub/mul, half-to-even division, and
+//! value comparison.
 //!
 //! The same canonical form backs [`SavedValue::Decimal`](crate::value::SavedValue),
 //! so a decimal round-trips through storage unchanged.
