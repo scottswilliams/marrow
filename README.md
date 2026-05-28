@@ -47,4 +47,4 @@ The first implementation target is deliberately small:
 
 ## License
 
-MIT OR Apache-2.0
+Apache-2.0
