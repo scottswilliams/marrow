@@ -992,3 +992,73 @@ fn prints_titles_in_index_key_order() {
     .expect("run");
     assert_eq!(outcome.output, "Mort\nSourcery\n");
 }
+
+/// A program that reads, copies, and reads back whole `Book` resources.
+const BOOK_COPY: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+fn read(id: int): Book
+    return ^books(id)
+
+fn copy(from: int, to: int)
+    ^books(to) = ^books(from)
+
+fn title_of(id: int): string
+    return ^books(id).title
+
+fn shelf_of(id: int): string
+    return ^books(id).shelf
+";
+
+/// Write `^books(id).field = value` directly into the store.
+fn seed_field(store: &RefCell<MemStore>, id: i64, field: &str, value: &str) {
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(id)),
+            PathSegment::Field(field.into()),
+        ]),
+        encode_value(&SavedValue::Str(value.into())),
+    );
+}
+
+#[test]
+fn reads_a_whole_resource() {
+    let program = checked_program(BOOK_COPY);
+    let store = RefCell::new(MemStore::new());
+    seed_field(&store, 1, "title", "Mort");
+    seed_field(&store, 1, "shelf", "fiction");
+    let outcome = run_entry(&program, &store, "test::read", &[Value::Int(1)]).expect("read");
+    // Present fields, in schema order.
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![
+            ("title".into(), Value::Str("Mort".into())),
+            ("shelf".into(), Value::Str("fiction".into())),
+        ]))
+    );
+}
+
+#[test]
+fn copies_a_whole_resource() {
+    let program = checked_program(BOOK_COPY);
+    let store = RefCell::new(MemStore::new());
+    seed_field(&store, 1, "title", "Mort");
+    seed_field(&store, 1, "shelf", "fiction");
+    run_entry(
+        &program,
+        &store,
+        "test::copy",
+        &[Value::Int(1), Value::Int(2)],
+    )
+    .expect("copy");
+    let read = |entry: &str| {
+        run_entry(&program, &store, entry, &[Value::Int(2)])
+            .expect("run")
+            .value
+    };
+    assert_eq!(read("test::title_of"), Some(Value::Str("Mort".into())));
+    assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
+}

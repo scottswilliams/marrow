@@ -24,7 +24,8 @@ use marrow_syntax::{
     LiteralKind, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write, plan_resource_delete,
+    FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write,
+    plan_resource_delete, plan_resource_write,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -35,6 +36,10 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A materialized resource tree: its present top-level fields, in schema
+    /// order. Produced by a whole-resource read and consumed by a whole-resource
+    /// write or `merge`.
+    Resource(Vec<(String, Value)>),
 }
 
 /// The result of running an entry function: its returned value (if any) and
@@ -219,6 +224,10 @@ fn eval_call(
     if let Expression::Field { .. } = callee {
         return eval_saved_leaf_read(callee, args, span, env).map(Some);
     }
+    // A call whose callee is a saved root is a whole-resource read, `^books(id)`.
+    if let Expression::SavedRoot { .. } = callee {
+        return eval_resource_read(callee, args, span, env).map(Some);
+    }
     let Expression::Name { segments, .. } = callee else {
         return Err(unsupported("calling this expression", span));
     };
@@ -282,7 +291,7 @@ fn eval_output(
             span,
         });
     };
-    let text = render(eval_expr(&arg.value, env)?);
+    let text = render(eval_expr(&arg.value, env)?, span)?;
     let mut output = env.output.borrow_mut();
     output.push_str(&text);
     if name == "print" {
@@ -377,7 +386,8 @@ fn eval_append(
     let (root, identity) = lower_record_identity(base, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("appending under this saved root", span))?;
-    let saved = value_to_saved(eval_expr(&value.value, env)?);
+    let saved = value_to_saved(eval_expr(&value.value, env)?)
+        .ok_or_else(|| unsupported("appending a resource value", span))?;
     let pos = {
         let store = env.store.borrow();
         next_layer_pos(resource, &identity, layer, &store).map_err(|error| RuntimeError {
@@ -536,10 +546,13 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             value,
             span,
         } => {
-            // A dotted field off a saved record is a managed field write; a bare
-            // name is a local reassignment.
+            // A dotted field off a saved record is a managed field write; a
+            // `^root(key…)` target is a whole-resource write; a bare name is a
+            // local reassignment.
             if let Expression::Field { base, name, .. } = target {
                 eval_saved_field_write(base, name, value, *span, env)?;
+            } else if let Expression::Call { .. } = target {
+                eval_resource_write(target, value, *span, env)?;
             } else {
                 let name = local_target(target, *span)?;
                 let evaluated = eval_expr(value, env)?;
@@ -988,6 +1001,61 @@ fn eval_saved_leaf_read(
         })
 }
 
+/// Read a whole resource `^root(key…)` into a materialized [`Value::Resource`]:
+/// each present top-level field, in schema order, decoded by its declared type.
+/// Absent (sparse) fields are simply omitted.
+fn eval_resource_read(
+    callee: &Expression,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let Expression::SavedRoot { name: root, .. } = callee else {
+        return Err(unsupported("this read", span));
+    };
+    if args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported(
+            "a keyed lookup with named or out arguments",
+            span,
+        ));
+    }
+    let mut identity = Vec::with_capacity(args.len());
+    for arg in args {
+        identity.push(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("a key of this type", span))?,
+        );
+    }
+    let resource = find_resource(env.program, root)
+        .ok_or_else(|| unsupported("reading this saved root", span))?;
+    let mut prefix = vec![PathSegment::Root(root.clone())];
+    prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
+
+    let store = env.store.borrow();
+    let mut fields = Vec::new();
+    for field in &resource.fields {
+        let mut segments = prefix.clone();
+        segments.push(PathSegment::Field(field.name.clone()));
+        let Some(bytes) = store.read(&encode_path(&segments)) else {
+            continue;
+        };
+        let value_type = value_type_for(&field.ty.text)
+            .ok_or_else(|| unsupported("reading this field type", span))?;
+        let value = decode_value(bytes, value_type)
+            .and_then(saved_value_to_value)
+            .ok_or_else(|| RuntimeError {
+                code: RUN_TYPE,
+                message: format!("stored value for `{}` did not decode", field.name),
+                span,
+            })?;
+        fields.push((field.name.clone(), value));
+    }
+    Ok(Value::Resource(fields))
+}
+
 /// Apply a managed field write `^root(key…).field = value`. Lowers the identity,
 /// evaluates the value, and drives [`marrow_write::plan_field_write`] — which
 /// validates the field and value and keeps generated indexes coherent — then
@@ -1003,7 +1071,8 @@ fn eval_saved_field_write(
     let (root, identity) = lower_record_identity(base, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let saved = value_to_saved(eval_expr(value, env)?);
+    let saved = value_to_saved(eval_expr(value, env)?)
+        .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
         let store = env.store.borrow();
         plan_field_write(resource, &identity, field, &saved, &store).map_err(|error| {
@@ -1012,6 +1081,46 @@ fn eval_saved_field_write(
                 message: error.message,
                 span,
             }
+        })?
+    };
+    plan.commit(&mut env.store.borrow_mut());
+    Ok(())
+}
+
+/// Apply a whole-resource write `^root(key…) = value`, where `value` is a
+/// materialized [`Value::Resource`]. Lowers its present fields to a
+/// `ResourceValue` and drives [`marrow_write::plan_resource_write`] (replace
+/// semantics, keeping generated indexes coherent), then commits.
+fn eval_resource_write(
+    target: &Expression,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let (root, identity) = lower_record_identity(target, env)?;
+    let Value::Resource(fields) = eval_expr(value, env)? else {
+        return Err(unsupported(
+            "assigning a non-resource value to a saved record",
+            span,
+        ));
+    };
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("writing this saved root", span))?;
+    let mut resource_fields = Vec::with_capacity(fields.len());
+    for (name, field_value) in fields {
+        let saved = value_to_saved(field_value)
+            .ok_or_else(|| unsupported("a nested resource field", span))?;
+        resource_fields.push((name, FieldValue::Saved(saved)));
+    }
+    let value = ResourceValue {
+        fields: resource_fields,
+    };
+    let plan = {
+        let store = env.store.borrow();
+        plan_resource_write(resource, &identity, &value, &store).map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
         })?
     };
     plan.commit(&mut env.store.borrow_mut());
@@ -1055,12 +1164,13 @@ fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p Reso
 /// Convert a runtime value to the saved value a managed write stores. Total over
 /// the scalar values this slice supports; the write planner checks the value
 /// against the field's declared type.
-fn value_to_saved(value: Value) -> SavedValue {
-    match value {
+fn value_to_saved(value: Value) -> Option<SavedValue> {
+    Some(match value {
         Value::Int(n) => SavedValue::Int(n),
         Value::Bool(b) => SavedValue::Bool(b),
         Value::Str(s) => SavedValue::Str(s),
-    }
+        Value::Resource(_) => return None,
+    })
 }
 
 /// Lower a record path `^root(key…)` to its saved root name and identity key
@@ -1181,11 +1291,12 @@ fn value_type_for(type_name: &str) -> Option<ValueType> {
 /// Convert a record-key value to a [`SavedKey`], or `None` for a type that is not
 /// a key (only int/bool/string are runtime values this slice can key on).
 fn value_to_key(value: Value) -> Option<SavedKey> {
-    Some(match value {
-        Value::Int(n) => SavedKey::Int(n),
-        Value::Bool(b) => SavedKey::Bool(b),
-        Value::Str(s) => SavedKey::Str(s),
-    })
+    match value {
+        Value::Int(n) => Some(SavedKey::Int(n)),
+        Value::Bool(b) => Some(SavedKey::Bool(b)),
+        Value::Str(s) => Some(SavedKey::Str(s)),
+        Value::Resource(_) => None,
+    }
 }
 
 /// Convert a decoded saved value to a runtime value, or `None` for a scalar type
@@ -1217,20 +1328,21 @@ fn eval_interpolation(
                 }
                 result.push_str(&text.replace("{{", "{").replace("}}", "}"));
             }
-            InterpolationPart::Expr(expr) => result.push_str(&render(eval_expr(expr, env)?)),
+            InterpolationPart::Expr(expr) => result.push_str(&render(eval_expr(expr, env)?, span)?),
         }
     }
     Ok(Value::Str(result))
 }
 
-/// Render a value as text for interpolation: integers in decimal, booleans as
-/// `true`/`false`, strings as themselves.
-fn render(value: Value) -> String {
-    match value {
+/// Render a scalar value as text: integers in decimal, booleans as
+/// `true`/`false`, strings as themselves. A resource value has no text form.
+fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
+    Ok(match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => s,
-    }
+        Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
+    })
 }
 
 fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
