@@ -369,10 +369,10 @@ fn eval_call(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    // A call whose callee is a saved field is a keyed-leaf read, e.g.
-    // `^books(id).tags(pos)`, not a function call.
+    // A call whose callee is a saved layer field is a keyed-layer read — a leaf
+    // value `^books(id).tags(pos)` or a whole group entry `^books(id).versions(v)`.
     if let Expression::Field { .. } = callee {
-        return eval_saved_leaf_read(callee, args, span, env).map(Some);
+        return eval_saved_layer_read(callee, args, span, env).map(Some);
     }
     // A call whose callee is a saved root is a whole-resource read, `^books(id)`.
     if let Expression::SavedRoot { .. } = callee {
@@ -1531,11 +1531,11 @@ fn eval_group_field_read(
         })
 }
 
-/// Read a keyed-leaf entry off a saved record, e.g. `^books(id).tags(pos)`. The
-/// `callee` is the layer field `^books(id).tags` and `keys` are the layer key
-/// arguments. Lowers the path, reads the store, and decodes with the layer's
-/// leaf type; an absent entry is an absent-element error.
-fn eval_saved_leaf_read(
+/// Read a keyed-layer entry off a saved record. A leaf layer
+/// (`^books(id).tags(pos)`) reads its single value; a group layer
+/// (`^books(id).versions(v)`) materializes the whole entry. The `callee` is the
+/// layer field `^books(id).<layer>` and `keys` are the layer key arguments.
+fn eval_saved_layer_read(
     callee: &Expression,
     keys: &[Argument],
     span: SourceSpan,
@@ -1549,15 +1549,18 @@ fn eval_saved_leaf_read(
     };
     let (root, identity) = lower_record_identity(base, env)?;
     let layer_keys = lower_layer_keys(keys, span, env)?;
-    let mut segments = vec![PathSegment::Root(root.clone())];
-    segments.extend(identity.into_iter().map(PathSegment::RecordKey));
-    segments.push(PathSegment::ChildLayer(layer.clone()));
-    segments.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
-    let leaf_type = resource_layer_leaf_type(env.program, &root, layer)
-        .ok_or_else(|| unsupported("reading this layer", span))?;
+    let mut entry = vec![PathSegment::Root(root.clone())];
+    entry.extend(identity.into_iter().map(PathSegment::RecordKey));
+    entry.push(PathSegment::ChildLayer(layer.clone()));
+    entry.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
+
+    // A leaf layer reads one value; a group layer materializes its entry.
+    let Some(leaf_type) = resource_layer_leaf_type(env.program, &root, layer) else {
+        return read_group_entry(&root, layer, &entry, span, env);
+    };
     let store = env.store.borrow();
     let Some(bytes) = store
-        .read(&encode_path(&segments))
+        .read(&encode_path(&entry))
         .map_err(|error| store_error(error, span))?
     else {
         return Err(RuntimeError {
@@ -1573,6 +1576,42 @@ fn eval_saved_leaf_read(
             message: format!("stored value in `{layer}` did not decode to a runtime value"),
             span,
         })
+}
+
+/// Materialize a keyed GROUP entry `^root(key…).layer(key…)` (its path already
+/// lowered into `entry`) as a [`Value::Resource`]: each present member field, in
+/// declaration order, decoded by its type; sparse members are omitted. Mirrors a
+/// whole-resource read scoped to one group entry.
+fn read_group_entry(
+    root: &str,
+    layer: &str,
+    entry: &[PathSegment],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let members = resource_group_members(env.program, root, layer)
+        .ok_or_else(|| unsupported("reading this layer", span))?;
+    let store = env.store.borrow();
+    let mut fields = Vec::new();
+    for (name, value_type) in members {
+        let mut segments = entry.to_vec();
+        segments.push(PathSegment::Field(name.clone()));
+        let Some(bytes) = store
+            .read(&encode_path(&segments))
+            .map_err(|error| store_error(error, span))?
+        else {
+            continue;
+        };
+        let value = decode_value(&bytes, value_type)
+            .and_then(saved_value_to_value)
+            .ok_or_else(|| RuntimeError {
+                code: RUN_TYPE,
+                message: format!("stored value for `{name}` did not decode to a runtime value"),
+                span,
+            })?;
+        fields.push((name, value));
+    }
+    Ok(Value::Resource(fields))
 }
 
 /// Read a whole resource `^root(key…)` into a materialized [`Value::Resource`]:
@@ -2148,6 +2187,32 @@ fn resource_group_member_type(
         _ => None,
     })?;
     value_type_for(&member.ty.text)
+}
+
+/// The scalar Field members of a saved root's GROUP layer, as `(name, value type)`
+/// in declaration order, for materializing a whole group entry. `None` if the
+/// layer is unknown.
+fn resource_group_members(
+    program: &CheckedProgram,
+    root: &str,
+    layer: &str,
+) -> Option<Vec<(String, ValueType)>> {
+    let resource = find_resource(program, root)?;
+    let layer = resource
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)?;
+    let members = layer
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            LayerMember::Field(field) => {
+                Some((field.name.clone(), value_type_for(&field.ty.text)?))
+            }
+            _ => None,
+        })
+        .collect();
+    Some(members)
 }
 
 /// The [`ValueType`] a scalar type name denotes, or `None` for a non-scalar type.

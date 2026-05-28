@@ -232,6 +232,36 @@ fn a_whole_group_entry_write_creates_the_entry() {
 }
 
 #[test]
+fn a_whole_group_entry_can_be_read_and_copied() {
+    // `^books(1).versions(2) = ^books(1).versions(1)` reads the whole entry as a
+    // value (RHS) and writes it to another key (LHS).
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var b: Book\n\
+         \x20\x20\x20\x20b.title = \"v1\"\n\
+         \x20\x20\x20\x20^books(1).versions(1) = b\n\
+         \x20\x20\x20\x20^books(1).versions(2) = ^books(1).versions(1)\n\
+         \n\
+         pub fn copied_title(): string\n\
+         \x20\x20\x20\x20return ^books(1).versions(2).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::copied_title", &[])
+            .unwrap()
+            .value,
+        Some(Value::Str("v1".into()))
+    );
+}
+
+#[test]
 fn std_text_builtins_operate_on_strings() {
     // `length` counts Unicode scalar values, not bytes ("café" is 4 scalars).
     let program = checked_program("pub fn f(): int\n    return std::text::length(\"café\")\n");
