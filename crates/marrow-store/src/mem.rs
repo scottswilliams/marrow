@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::backend::Backend;
 use crate::path::{ChildSegment, decode_child_segment, root_name, segment_len};
 
 /// What a saved path holds: a value, children, both, or neither. Mirrors the
@@ -25,12 +26,23 @@ pub enum Presence {
 }
 
 /// An error from the store. The in-memory store can only fail by meeting a
-/// stored path it cannot decode; a persistent backend adds I/O and limit
-/// variants atop this contract.
+/// stored path it cannot decode; a persistent backend can also fail with the I/O,
+/// locking, format, corruption, and limit variants. Variants carry only owned
+/// data (never a backend-specific error) so the contract stays comparable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// A stored key is not a well-formed sequence of path segments.
     CorruptPath { path: Vec<u8> },
+    /// An I/O operation on a persistent backend failed.
+    Io { op: &'static str, message: String },
+    /// The data directory is already held by another writer.
+    Locked { data_dir: std::path::PathBuf },
+    /// The store's recorded format version is not the one this build supports.
+    FormatVersion { found: u32, supported: u32 },
+    /// The persistent store is corrupt and could not be opened or read.
+    Corruption { message: String },
+    /// A key or value exceeded a backend limit.
+    LimitExceeded { limit: &'static str },
 }
 
 /// One page of a bounded scan: the entries found in Marrow order, and whether
@@ -41,13 +53,14 @@ pub struct ScanPage {
     pub truncated: bool,
 }
 
-/// An in-memory map of encoded saved paths to encoded values.
-///
-/// `Clone` snapshots the whole map; the runtime uses that to roll a transaction
-/// back to its pre-image on an escaping error.
+/// An in-memory map of encoded saved paths to encoded values. Transactions are a
+/// stack of whole-map savepoints (see the [`Backend`] `begin`/`commit`/`rollback`
+/// implementation): `begin` pushes a clone of the map, `commit` drops it keeping
+/// the live map, and `rollback` restores it.
 #[derive(Debug, Default, Clone)]
 pub struct MemStore {
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
+    savepoints: Vec<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl MemStore {
@@ -155,6 +168,59 @@ impl MemStore {
             .range(prefix.to_vec()..)
             .map(|(key, _)| key)
             .take_while(move |key| key.starts_with(prefix))
+    }
+}
+
+/// The in-memory store serves the [`Backend`] contract by forwarding to its
+/// inherent methods (reads return owned copies), and models transactions as a
+/// stack of whole-map savepoints. The inherent methods stay available for direct
+/// callers; the trait is how a generic consumer reaches any backend.
+impl Backend for MemStore {
+    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(MemStore::read(self, path).map(<[u8]>::to_vec))
+    }
+
+    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        MemStore::write(self, path, value);
+        Ok(())
+    }
+
+    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+        MemStore::delete(self, path);
+        Ok(())
+    }
+
+    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
+        Ok(MemStore::presence(self, path))
+    }
+
+    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        MemStore::child_keys(self, path)
+    }
+
+    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Ok(MemStore::scan(self, path, limit))
+    }
+
+    fn roots(&self) -> Result<Vec<String>, StoreError> {
+        MemStore::roots(self)
+    }
+
+    fn begin(&mut self) -> Result<(), StoreError> {
+        self.savepoints.push(self.entries.clone());
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), StoreError> {
+        self.savepoints.pop();
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), StoreError> {
+        if let Some(snapshot) = self.savepoints.pop() {
+            self.entries = snapshot;
+        }
+        Ok(())
     }
 }
 
