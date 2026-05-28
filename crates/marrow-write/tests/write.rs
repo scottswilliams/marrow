@@ -8,7 +8,7 @@ use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
     FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, next_id,
-    plan_resource_write,
+    plan_resource_delete, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -287,5 +287,32 @@ fn re_writing_an_indexed_field_moves_the_index_entry() {
         store.read(&by_shelf_entry("history", 42)),
         Some(&b"1"[..]),
         "new entry present"
+    );
+}
+
+#[test]
+fn deleting_a_resource_removes_its_fields_and_index_entries() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+
+    let plan = plan_resource_delete(&book, &[SavedKey::Int(42)], &store).expect("delete");
+    plan.commit(&mut store);
+
+    assert_eq!(store.read(&field_path(42, "title")), None, "field removed");
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        None,
+        "index entry removed"
     );
 }

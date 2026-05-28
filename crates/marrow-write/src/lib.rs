@@ -87,21 +87,7 @@ pub fn plan_resource_write(
     value: &ResourceValue,
     store: &MemStore,
 ) -> Result<WritePlan, WriteError> {
-    let root = schema.saved_root.as_ref().ok_or_else(|| WriteError {
-        code: WRITE_NO_SAVED_ROOT,
-        message: format!("resource `{}` has no saved root", schema.name),
-    })?;
-    if identity.len() != root.identity_keys.len() {
-        return Err(WriteError {
-            code: WRITE_IDENTITY_MISMATCH,
-            message: format!(
-                "resource `{}` expects {} identity key(s), got {}",
-                schema.name,
-                root.identity_keys.len(),
-                identity.len()
-            ),
-        });
-    }
+    let root = resolve_saved_root(schema, identity)?;
 
     // Validate every field and collect the ones to write, before staging any
     // step — a rejected write must leave no trace.
@@ -155,6 +141,56 @@ pub fn plan_resource_write(
         }
     }
     Ok(WritePlan { steps })
+}
+
+/// Plan a whole-resource delete: remove the resource at `identity` and tear down
+/// its generated non-unique index entries (found by reading `store`). Returns a
+/// [`WriteError`] only when the resource has no saved root or the identity arity
+/// is wrong; deleting an absent resource is a successful no-op plan.
+pub fn plan_resource_delete(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    store: &MemStore,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let mut steps = vec![PlanStep::Delete {
+        path: encode_path(&identity_path(root, identity)),
+    }];
+    for index in &schema.indexes {
+        if index.unique {
+            continue;
+        }
+        if let Some(keys) = stored_index_keys(&index.args, root, identity, schema, store) {
+            steps.push(PlanStep::Delete {
+                path: encode_path(&index_path(root, &index.name, &keys)),
+            });
+        }
+    }
+    Ok(WritePlan { steps })
+}
+
+/// Resolve a resource's saved root and check the supplied identity has the
+/// expected number of keys.
+fn resolve_saved_root<'a>(
+    schema: &'a ResourceSchema,
+    identity: &[SavedKey],
+) -> Result<&'a SavedRootSchema, WriteError> {
+    let root = schema.saved_root.as_ref().ok_or_else(|| WriteError {
+        code: WRITE_NO_SAVED_ROOT,
+        message: format!("resource `{}` has no saved root", schema.name),
+    })?;
+    if identity.len() != root.identity_keys.len() {
+        return Err(WriteError {
+            code: WRITE_IDENTITY_MISMATCH,
+            message: format!(
+                "resource `{}` expects {} identity key(s), got {}",
+                schema.name,
+                root.identity_keys.len(),
+                identity.len()
+            ),
+        });
+    }
+    Ok(root)
 }
 
 /// The next identity for a single-`int` keyed saved root: one greater than the
