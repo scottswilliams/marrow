@@ -1338,19 +1338,10 @@ fn a_call_supplying_a_parameter_twice_is_rejected() {
     );
 }
 
-#[test]
-fn a_positional_argument_after_a_named_one_is_rejected() {
-    // Named arguments must come last; a trailing positional must not silently
-    // back-fill an earlier parameter (`sub(b: 1, 2)` would otherwise bind a=2).
-    let program = checked_program(
-        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(b: 1, 2)\n",
-    );
-    let result = run(&program, "test::go", &[]);
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_TYPE),
-        "{result:?}"
-    );
-}
+// Note: positional-after-named (`sub(b: 1, 2)`) is now rejected by the PARSER
+// (parse.syntax), so it cannot reach the runtime via a parsed program; the
+// `bind_arguments` guard remains as defensive depth. The parser owns this rule
+// and tests it in marrow-syntax.
 
 /// Extract the single `mw` code block from the reference sample document, so the
 /// integration test runs the exact source the docs publish.
