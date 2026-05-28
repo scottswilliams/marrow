@@ -17,7 +17,7 @@ use std::rc::Rc;
 use marrow_check::{CheckedFunction, CheckedProgram};
 use marrow_schema::ResourceSchema;
 use marrow_store::mem::{MemStore, Presence};
-use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
@@ -71,6 +71,8 @@ pub const RUN_UNKNOWN_FUNCTION: &str = "run.unknown_function";
 pub const RUN_NO_VALUE: &str = "run.no_value";
 /// A direct read of a saved element that is absent (unpopulated).
 pub const RUN_ABSENT: &str = "run.absent_element";
+/// The store reported an error (e.g. a corrupt stored path) during a read.
+pub const RUN_STORE: &str = "run.store";
 /// A construct this slice of the runtime does not yet evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 
@@ -688,7 +690,29 @@ fn eval_for(
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     if binding.second.is_some() {
-        return Err(unsupported("a two-name loop binding over a range", span));
+        return Err(unsupported("a two-name loop binding", span));
+    }
+    // A non-range iterable (e.g. `keys(^books.byShelf("x"))`) materializes to a
+    // sequence of values, which the loop binds one at a time.
+    if !matches!(
+        iterable,
+        Expression::Binary {
+            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+            ..
+        }
+    ) {
+        for value in eval_collection(iterable, env)? {
+            env.push_scope();
+            env.bind(binding.first.clone(), value, false);
+            let flow = eval_block(body, env);
+            env.pop_scope();
+            match classify(flow?, label) {
+                LoopStep::Iterate => {}
+                LoopStep::Stop => break,
+                LoopStep::Propagate(flow) => return Ok(flow),
+            }
+        }
+        return Ok(Flow::Normal);
     }
     let (start, end, inclusive) = range_bounds(iterable, env)?;
     let mut current = start;
@@ -736,6 +760,99 @@ fn range_bounds(
             ..
         } => Ok((eval_int(left, env)?, eval_int(right, env)?, true)),
         other => Err(unsupported("iterating this value", other.span())),
+    }
+}
+
+/// Materialize a non-range `for` iterable to a sequence of values. Only
+/// `keys(saved_path)` is supported: it yields the immediate child keys under the
+/// path — e.g. `keys(^books.byShelf("fiction"))` yields the book ids on that
+/// shelf, for index traversal.
+fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
+    let Expression::Call { callee, args, span } = iterable else {
+        return Err(unsupported("iterating this value", iterable.span()));
+    };
+    let is_keys = matches!(
+        callee.as_ref(),
+        Expression::Name { segments, .. } if segments.len() == 1 && segments[0] == "keys"
+    );
+    if !is_keys {
+        return Err(unsupported("iterating this value", *span));
+    }
+    let [path] = args.as_slice() else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`keys` takes one argument".into(),
+            span: *span,
+        });
+    };
+    // The path is an index lookup `^root.index(key…)`: lower it to the index
+    // prefix, whose immediate children are the matching record keys.
+    let Expression::Call {
+        callee: index_callee,
+        args: index_args,
+        ..
+    } = &path.value
+    else {
+        return Err(unsupported("keys of this path", *span));
+    };
+    let Expression::Field {
+        base, name: index, ..
+    } = index_callee.as_ref()
+    else {
+        return Err(unsupported("keys of this path", *span));
+    };
+    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return Err(unsupported("keys of this path", *span));
+    };
+    if index_args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported(
+            "an index lookup with named or out arguments",
+            *span,
+        ));
+    }
+    let mut segments = vec![
+        PathSegment::Root(root.clone()),
+        PathSegment::Index(index.clone()),
+    ];
+    for arg in index_args {
+        segments.push(PathSegment::IndexKey(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("an index key of this type", *span))?,
+        ));
+    }
+    let children = {
+        let store = env.store.borrow();
+        store
+            .child_keys(&encode_path(&segments))
+            .map_err(|_| RuntimeError {
+                code: RUN_STORE,
+                message: "could not read the keys at this path".into(),
+                span: *span,
+            })?
+    };
+    let mut values = Vec::with_capacity(children.len());
+    for child in children {
+        if let ChildSegment::Key(key) = child {
+            values.push(
+                saved_key_to_value(key)
+                    .ok_or_else(|| unsupported("iterating keys of this type", *span))?,
+            );
+        }
+    }
+    Ok(values)
+}
+
+/// Convert a child key to a runtime value, or `None` for a key type the runtime
+/// does not yet represent.
+fn saved_key_to_value(key: SavedKey) -> Option<Value> {
+    match key {
+        SavedKey::Int(n) => Some(Value::Int(n)),
+        SavedKey::Bool(b) => Some(Value::Bool(b)),
+        SavedKey::Str(s) => Some(Value::Str(s)),
+        _ => None,
     }
 }
 

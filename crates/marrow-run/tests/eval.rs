@@ -902,3 +902,93 @@ fn appends_then_reads_back_keyed_leaf_entries() {
         "{missing:?}"
     );
 }
+
+/// A program that indexes books by shelf and traverses the index with `keys`.
+const BOOK_SHELF: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+    index byShelf(shelf, id)
+
+fn add(id: int, t: string, s: string)
+    ^books(id).title = t
+    ^books(id).shelf = s
+
+fn count_on(shelf: string): int
+    var c = 0
+    for id in keys(^books.byShelf(shelf))
+        c = c + 1
+    return c
+
+fn titles_on(shelf: string)
+    for id in keys(^books.byShelf(shelf))
+        print(^books(id).title)
+";
+
+#[test]
+fn iterates_index_keys() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str, shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str(shelf.into()),
+            ],
+        )
+        .expect("add");
+    };
+    add(1, "Mort", "fiction");
+    add(2, "Sourcery", "fiction");
+    add(3, "Guards", "history");
+
+    let count = |shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::count_on",
+            &[Value::Str(shelf.into())],
+        )
+        .expect("count")
+        .value
+    };
+    assert_eq!(count("fiction"), Some(Value::Int(2)));
+    assert_eq!(count("history"), Some(Value::Int(1)));
+    assert_eq!(count("romance"), Some(Value::Int(0)));
+}
+
+#[test]
+fn prints_titles_in_index_key_order() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str, shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str(shelf.into()),
+            ],
+        )
+        .expect("add");
+    };
+    add(2, "Sourcery", "fiction");
+    add(1, "Mort", "fiction");
+
+    // The index yields ids in key order (1 then 2), regardless of insert order.
+    let outcome = run_entry(
+        &program,
+        &store,
+        "test::titles_on",
+        &[Value::Str("fiction".into())],
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "Mort\nSourcery\n");
+}
