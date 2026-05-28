@@ -11,7 +11,13 @@ use std::path::{Path, PathBuf};
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
+pub mod program;
 mod rules;
+
+pub use program::{
+    CheckedConst, CheckedModule, CheckedParam, CheckedProgram, FunctionSignature, MarrowType,
+    PrimitiveType,
+};
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
@@ -57,9 +63,10 @@ impl CheckReport {
 pub fn check_project(
     project_root: &Path,
     config: &ProjectConfig,
-) -> Result<CheckReport, DiscoverError> {
+) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
     let files = discover_modules(project_root, config)?;
     let mut report = CheckReport::default();
+    let mut program = CheckedProgram::default();
     // The first valid library file (in path order) to declare each module owns
     // that name; later files declaring it are duplicates. This is also the set
     // of resolvable project module names for `use` resolution.
@@ -101,15 +108,33 @@ pub fn check_project(
 
         check_duplicate_declarations(&file.path, &parsed.file, &mut report.diagnostics);
 
+        // Collect the resolved declarations for the checked-program artifact as
+        // the same pass that reports their diagnostics walks them. Resource
+        // names are resolved first so a module's function and constant types can
+        // refer to its own resources.
+        let module_resources: Vec<String> = parsed
+            .file
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut resources = Vec::new();
+        let mut functions = Vec::new();
+        let mut constants = Vec::new();
+
         // Structural statement rules apply to every function body; resources are
         // compiled to schemas so structural schema problems surface here too.
         for declaration in &parsed.file.declarations {
             match declaration {
                 marrow_syntax::Declaration::Function(function) => {
                     rules::check_function_body(&file.path, &function.body, &mut report.diagnostics);
+                    functions.push(function_signature(function, &module_resources));
                 }
                 marrow_syntax::Declaration::Resource(resource) => {
-                    let (_schema, errors) = marrow_schema::compile_resource(resource);
+                    let (schema, errors) = marrow_schema::compile_resource(resource);
                     for error in errors {
                         report.diagnostics.push(CheckDiagnostic {
                             code: error.code.to_string(),
@@ -120,9 +145,18 @@ pub fn check_project(
                             column: error.span.column,
                         });
                     }
+                    resources.push(schema);
                 }
                 marrow_syntax::Declaration::Const(constant) => {
                     rules::check_const_value(&file.path, &constant.value, &mut report.diagnostics);
+                    constants.push(CheckedConst {
+                        name: constant.name.clone(),
+                        ty: constant
+                            .ty
+                            .as_ref()
+                            .map(|ty| MarrowType::resolve(ty, &module_resources)),
+                        span: constant.span,
+                    });
                 }
             }
         }
@@ -148,6 +182,25 @@ pub fn check_project(
                         });
                     } else {
                         declared.insert(expected.clone(), file.path.clone());
+                        // The artifact takes a clean, path-matched, first-seen
+                        // library module. Skip any file that carries a parse
+                        // error this slice.
+                        if !parsed.has_errors() {
+                            program.modules.push(CheckedModule {
+                                name: module.name.clone(),
+                                source_file: file.path.clone(),
+                                span: module.span,
+                                imports: parsed
+                                    .file
+                                    .uses
+                                    .iter()
+                                    .map(|use_decl| use_decl.name.clone())
+                                    .collect(),
+                                constants,
+                                functions,
+                                resources,
+                            });
+                        }
                     }
                 }
                 Some(expected) => report.diagnostics.push(module_path_error(
@@ -192,7 +245,115 @@ pub fn check_project(
         }
     }
 
-    Ok(report)
+    Ok((report, program))
+}
+
+/// Resolve a function declaration's signature for the checked-program artifact.
+/// Parameter and return types resolve against the module's own resource names.
+fn function_signature(
+    function: &marrow_syntax::FunctionDecl,
+    module_resources: &[String],
+) -> FunctionSignature {
+    FunctionSignature {
+        name: function.name.clone(),
+        public: function.public,
+        params: function
+            .params
+            .iter()
+            .map(|param| CheckedParam {
+                name: param.name.clone(),
+                mode: param.mode,
+                ty: MarrowType::resolve(&param.ty, module_resources),
+            })
+            .collect(),
+        return_type: function
+            .return_type
+            .as_ref()
+            .map(|ty| MarrowType::resolve(ty, module_resources)),
+        span: function.span,
+        touches_saved_data: block_touches_saved_data(&function.body),
+    }
+}
+
+/// Does a block read or write any saved root (`^...`)? Walks every statement and
+/// nested expression, recursing through nested blocks.
+fn block_touches_saved_data(block: &marrow_syntax::Block) -> bool {
+    block.statements.iter().any(statement_touches_saved_data)
+}
+
+fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::Let { value, .. } | Statement::Throw { value, .. } => {
+            expr_touches_saved_data(value)
+        }
+        Statement::Var { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            expr_touches_saved_data(target) || expr_touches_saved_data(value)
+        }
+        Statement::Delete { path, .. } => expr_touches_saved_data(path),
+        Statement::Return { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
+        Statement::Expr { value, .. } => expr_touches_saved_data(value),
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            expr_touches_saved_data(condition)
+                || block_touches_saved_data(then_block)
+                || else_ifs.iter().any(|else_if| {
+                    expr_touches_saved_data(&else_if.condition)
+                        || block_touches_saved_data(&else_if.block)
+                })
+                || else_block.as_ref().is_some_and(block_touches_saved_data)
+        }
+        Statement::While {
+            condition, body, ..
+        } => expr_touches_saved_data(condition) || block_touches_saved_data(body),
+        Statement::For { iterable, body, .. } => {
+            expr_touches_saved_data(iterable) || block_touches_saved_data(body)
+        }
+        Statement::Transaction { body, .. } => block_touches_saved_data(body),
+        Statement::Lock { path, body, .. } => {
+            expr_touches_saved_data(path) || block_touches_saved_data(body)
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            block_touches_saved_data(body)
+                || catch
+                    .as_ref()
+                    .is_some_and(|catch| block_touches_saved_data(&catch.block))
+                || finally.as_ref().is_some_and(block_touches_saved_data)
+        }
+        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => false,
+    }
+}
+
+fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::{Expression, InterpolationPart};
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::Unparsed { .. } => false,
+        Expression::Call { callee, args, .. } => {
+            expr_touches_saved_data(callee)
+                || args.iter().any(|arg| expr_touches_saved_data(&arg.value))
+        }
+        Expression::Field { base, .. } => expr_touches_saved_data(base),
+        Expression::Unary { operand, .. } => expr_touches_saved_data(operand),
+        Expression::Binary { left, right, .. } => {
+            expr_touches_saved_data(left) || expr_touches_saved_data(right)
+        }
+        Expression::Interpolation { parts, .. } => parts.iter().any(|part| match part {
+            InterpolationPart::Text { .. } => false,
+            InterpolationPart::Expr(expr) => expr_touches_saved_data(expr),
+        }),
+    }
 }
 
 /// The standard-library modules. Host modules resolve at check time even when a

@@ -40,7 +40,7 @@ fn surfaces_resource_schema_errors() {
              \x20       index bad(noteId)\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(
         report
@@ -59,7 +59,7 @@ fn clean_project_has_no_diagnostics() {
         // A module-less file is a script and is not bound to its path.
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -69,7 +69,7 @@ fn reports_module_path_mismatch() {
     let root = temp_project("mismatch", |root| {
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let diagnostic = report
@@ -95,7 +95,7 @@ fn surfaces_parse_diagnostics_with_file_path() {
         // A tab is a lexical error in Marrow source.
         write(root, "src/bad.mw", "module bad\n\tconst X: int = 1\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let diagnostic = report
@@ -114,7 +114,7 @@ fn a_dotted_stem_file_cannot_be_a_module() {
         // be scripts.
         write(root, "src/config.v2.mw", "module config\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let diagnostic = report
@@ -137,7 +137,7 @@ fn reports_duplicate_module_across_source_roots() {
     });
     let config = parse_config(r#"{ "sourceRoots": ["src", "lib"] }"#).expect("config");
 
-    let report = check_project(&root, &config).expect("check");
+    let (report, _program) = check_project(&root, &config).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let duplicates: Vec<_> = report
@@ -159,7 +159,7 @@ fn distinct_modules_are_not_flagged_as_duplicates() {
         write(root, "src/a.mw", "module a\n");
         write(root, "src/b.mw", "module b\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -170,7 +170,7 @@ fn a_script_file_is_not_bound_to_its_path() {
         // No module declaration: a script, even at a nested path.
         write(root, "src/tools/migrate.mw", "fn run()\n    return\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -194,7 +194,7 @@ fn reports_duplicate_function_declaration() {
             "module m\nfn run()\n    return\nfn run()\n    return\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
@@ -213,7 +213,7 @@ fn reports_duplicate_const_declaration() {
     let root = temp_project("dup-const", |root| {
         write(root, "src/m.mw", "module m\nconst A = 1\nconst A = 2\n");
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
@@ -234,7 +234,7 @@ fn reports_duplicate_resource_declaration() {
             "module m\nresource Book\n    title: string\nresource Book\n    title: string\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
@@ -255,7 +255,7 @@ fn reports_const_resource_name_collision() {
             "module m\nconst Book = 1\nresource Book\n    title: string\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
@@ -278,7 +278,7 @@ fn reports_import_short_name_collision_with_declaration() {
             "module m\nuse shelf::books\nfn books()\n    return\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
@@ -301,7 +301,7 @@ fn distinct_declarations_are_not_flagged() {
             "module m\nuse shelf::books\nconst A = 1\nresource Book\n    title: string\nfn run()\n    return\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(
         duplicate_declarations(&report).is_empty(),
@@ -330,7 +330,7 @@ fn standard_library_and_project_imports_resolve() {
             "use std::clock\nuse shelf::books\nfn main()\n    return\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(
         unresolved_imports(&report).is_empty(),
@@ -348,7 +348,7 @@ fn reports_unresolved_import() {
             "use unknown::mod\nfn main()\n    return\n",
         );
     });
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
 
     let unresolved = unresolved_imports(&report);
@@ -375,7 +375,7 @@ fn with_code<'a>(
 /// Check a single script `src` and return its diagnostics with `code`.
 fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
     let root = temp_project(name, |root| write(root, "src/app.mw", src));
-    let report = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     with_code(&report, code).into_iter().cloned().collect()
 }

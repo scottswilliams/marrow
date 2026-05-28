@@ -127,8 +127,8 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let report = match marrow_check::check_project(Path::new(dir), &config) {
-        Ok(report) => report,
+    let (report, _program) = match marrow_check::check_project(Path::new(dir), &config) {
+        Ok(result) => result,
         Err(error) => {
             report_simple_error(
                 error.code,
