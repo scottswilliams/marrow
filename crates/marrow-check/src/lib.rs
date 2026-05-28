@@ -1339,20 +1339,39 @@ fn check_call(
             None => function.params.get(index),
         };
         if let Some(param) = param
-            && let (Some(argument), Some(parameter)) =
-                (as_primitive(arg_type), as_primitive(&param.ty))
-            && argument != parameter
+            && let Some(parameter) = as_primitive(&param.ty)
         {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!(
-                    "argument to `{}` expects `{}`, but found `{}`",
-                    segments.join("::"),
-                    primitive_name(parameter),
-                    primitive_name(argument),
-                ),
-            ));
+            match as_primitive(arg_type) {
+                Some(argument) if argument != parameter => {
+                    diagnostics.push(call_diagnostic(
+                        file,
+                        span,
+                        format!(
+                            "argument to `{}` expects `{}`, but found `{}`",
+                            segments.join("::"),
+                            primitive_name(parameter),
+                            primitive_name(argument),
+                        ),
+                    ));
+                }
+                // Strict typing: an argument with no known type for a concrete
+                // parameter must be converted first.
+                None if matches!(arg_type, MarrowType::Unknown) => {
+                    diagnostics.push(CheckDiagnostic {
+                        code: CHECK_UNTYPED_VALUE.to_string(),
+                        severity: Severity::Error,
+                        file: file.to_path_buf(),
+                        message: format!(
+                            "argument to `{}` has no known type, but `{}` is expected; convert it first",
+                            segments.join("::"),
+                            primitive_name(parameter),
+                        ),
+                        line: span.line,
+                        column: span.column,
+                    });
+                }
+                _ => {}
+            }
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)

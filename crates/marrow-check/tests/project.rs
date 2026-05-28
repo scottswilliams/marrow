@@ -926,16 +926,26 @@ fn rejects_a_named_argument_of_the_wrong_type() {
 }
 
 #[test]
-fn an_argument_of_unknown_type_is_not_flagged() {
-    // `mystery` is unbound, so its type is unknown; only a known mismatch flags.
+fn an_unresolved_argument_into_a_typed_parameter_is_flagged() {
+    // Strict typing: `mystery` is unbound (unknown type), but `add`'s parameter is
+    // `int`, so the argument is a `check.untyped_value` error — convert it first.
+    // It is not a `check.call_argument` mismatch.
     let found = check_module(
+        "call-argtype-unknown",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(mystery, 2)\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let mismatch = check_module(
         "call-argtype-unknown",
         "module m\n\
          fn add(a: int, b: int): int\n    return a\n\n\
          fn caller()\n    var x = add(mystery, 2)\n",
         "check.call_argument",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert!(mismatch.is_empty(), "{mismatch:#?}");
 }
 
 #[test]
