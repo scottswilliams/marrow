@@ -78,6 +78,9 @@ pub fn check_project(
     // The first resource (in file then source order) to claim each saved root
     // owns it; a later resource on the same root is a duplicate owner.
     let mut root_owners: HashMap<String, PathBuf> = HashMap::new();
+    // The first resource to declare each stable ID owns it; the same ID in a
+    // later resource is a project-wide duplicate.
+    let mut stable_id_owners: HashMap<String, PathBuf> = HashMap::new();
     // Parsed sources kept from pass 1 so pass 2 can resolve imports against the
     // full project module set without re-reading files.
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
@@ -171,6 +174,33 @@ pub fn check_project(
                                 root_owners.insert(saved.root.clone(), file.path.clone());
                             }
                         }
+                    }
+                    // Stable IDs are unique across the whole project. Within-
+                    // resource duplicates are already reported by
+                    // compile_resource; this catches an ID reused in another
+                    // resource, on the later one.
+                    let mut seen_here: Vec<String> = Vec::new();
+                    for (id, span) in marrow_schema::stable_ids(resource) {
+                        if seen_here.contains(&id) {
+                            continue;
+                        }
+                        match stable_id_owners.get(&id) {
+                            Some(first) => report.diagnostics.push(CheckDiagnostic {
+                                code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID.to_string(),
+                                severity: Severity::Error,
+                                file: file.path.clone(),
+                                message: format!(
+                                    "stable id `{id}` is already declared in `{}`",
+                                    first.display()
+                                ),
+                                line: span.line,
+                                column: span.column,
+                            }),
+                            None => {
+                                stable_id_owners.insert(id.clone(), file.path.clone());
+                            }
+                        }
+                        seen_here.push(id);
                     }
                     resources.push(schema);
                 }

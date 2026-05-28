@@ -198,7 +198,7 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
     }
 
     check_index_args(decl, &mut errors);
-    check_stable_ids(&decl.members, &mut errors);
+    check_stable_ids(decl, &mut errors);
 
     (schema, errors)
 }
@@ -344,16 +344,32 @@ fn resolves_through_members(segments: &[&str], members: &[ResourceMember]) -> bo
 ///
 /// This covers the within-resource subset only; cross-resource uniqueness is
 /// deferred to a later project-wide pass.
-fn check_stable_ids(members: &[ResourceMember], errors: &mut Vec<SchemaError>) {
-    let mut seen: Vec<&str> = Vec::new();
-    collect_stable_ids(members, &mut seen, errors);
+fn check_stable_ids(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
+    let mut seen: Vec<String> = Vec::new();
+    for (id, span) in stable_ids(decl) {
+        if seen.contains(&id) {
+            errors.push(SchemaError {
+                code: SCHEMA_DUPLICATE_STABLE_ID,
+                message: format!("duplicate stable id `{id}`"),
+                span,
+            });
+        } else {
+            seen.push(id);
+        }
+    }
 }
 
-fn collect_stable_ids<'a>(
-    members: &'a [ResourceMember],
-    seen: &mut Vec<&'a str>,
-    errors: &mut Vec<SchemaError>,
-) {
+/// Every stable ID declared in a resource, paired with the span of the element
+/// that carries it, in declaration order (descending into a group before the
+/// next sibling). Drives within-resource uniqueness here and project-wide
+/// uniqueness in the checker. Repeats are kept so callers can report them.
+pub fn stable_ids(decl: &ResourceDecl) -> Vec<(String, SourceSpan)> {
+    let mut ids = Vec::new();
+    collect_stable_ids(&decl.members, &mut ids);
+    ids
+}
+
+fn collect_stable_ids(members: &[ResourceMember], ids: &mut Vec<(String, SourceSpan)>) {
     for member in members {
         let (stable_id, span) = match member {
             ResourceMember::Field(field) => (&field.stable_id, field.span),
@@ -361,18 +377,10 @@ fn collect_stable_ids<'a>(
             ResourceMember::Index(index) => (&index.stable_id, index.span),
         };
         if let Some(id) = stable_id {
-            if seen.contains(&id.as_str()) {
-                errors.push(SchemaError {
-                    code: SCHEMA_DUPLICATE_STABLE_ID,
-                    message: format!("duplicate stable id `{id}`"),
-                    span,
-                });
-            } else {
-                seen.push(id);
-            }
+            ids.push((id.clone(), span));
         }
         if let ResourceMember::Group(group) = member {
-            collect_stable_ids(&group.members, seen, errors);
+            collect_stable_ids(&group.members, ids);
         }
     }
 }

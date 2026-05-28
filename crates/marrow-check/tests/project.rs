@@ -75,6 +75,31 @@ fn reports_two_resources_owning_one_saved_root() {
 }
 
 #[test]
+fn reports_stable_id_reused_across_resources() {
+    let root = temp_project("dup-stable-id", |root| {
+        // A stable id must be unique across the whole project, not only within
+        // one resource.
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             resource Book at ^books(id: int)\n\
+             \x20   @id(\"shared\")\n\
+             \x20   required title: string\n\
+             resource Shelf at ^shelves(id: int)\n\
+             \x20   @id(\"shared\")\n\
+             \x20   required name: string\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let dups = with_code(&report, "schema.duplicate_stable_id");
+    assert_eq!(dups.len(), 1, "{:#?}", report.diagnostics);
+    assert!(dups[0].message.contains("shared"), "{}", dups[0].message);
+}
+
+#[test]
 fn clean_project_has_no_diagnostics() {
     let root = temp_project("clean", |root| {
         write(root, "src/shelf/books.mw", "module shelf::books\n");
