@@ -408,3 +408,30 @@ fn clean_book_has_no_new_errors() {
     let (_, errors) = compile_resource(&resource(BOOK));
     assert!(errors.is_empty(), "Book is clean: {errors:?}");
 }
+
+#[test]
+fn one_shape_compiles_as_both_local_and_saved() {
+    // Step 5's promise: a resource's field and layer shape is checked through
+    // one schema whether it is a saved root or a local value. Only `saved_root`
+    // differs between the two compilations.
+    let saved = compile_ok(
+        "\
+resource Book at ^books(id: int)
+    required title: string
+    tags(pos: int): string
+",
+    );
+    let local = compile_ok(
+        "\
+resource Book
+    required title: string
+    tags(pos: int): string
+",
+    );
+    assert!(saved.saved_root.is_some(), "saved Book has a root");
+    assert!(local.saved_root.is_none(), "local Book has no root");
+    // The stored shape is identical regardless of where the resource lives.
+    assert_eq!(saved.fields, local.fields);
+    assert_eq!(saved.layers, local.layers);
+    assert_eq!(saved.indexes, local.indexes);
+}
