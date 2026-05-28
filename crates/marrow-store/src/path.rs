@@ -14,6 +14,7 @@
 pub enum SavedKey {
     Int(i64),
     Bool(bool),
+    Str(String),
 }
 
 /// One segment of a saved path.
@@ -44,9 +45,11 @@ const KIND_RECORD_KEY: u8 = 0x02;
 const KIND_NAMED: u8 = 0x03;
 const KIND_INDEX_KEY: u8 = 0x04;
 
-// Key-type tags, in Marrow's typed key order (booleans before numbers, ...).
+// Key-type tags, in Marrow's typed key order: booleans, then numbers, then
+// strings (docs/language/types.md).
 const KEY_BOOL: u8 = 0x01;
 const KEY_INT: u8 = 0x02;
+const KEY_STR: u8 = 0x07;
 
 /// Encode a saved path to its ordered byte key.
 pub fn encode_path(segments: &[PathSegment]) -> Vec<u8> {
@@ -94,6 +97,21 @@ fn encode_key(key: &SavedKey, out: &mut Vec<u8>) {
             // signed numeric order: i64::MIN encodes to all-zero, i64::MAX to
             // all-one.
             out.extend_from_slice(&((*value as u64) ^ (1u64 << 63)).to_be_bytes());
+        }
+        SavedKey::Str(value) => {
+            out.push(KEY_STR);
+            // UTF-8 bytes sort in Marrow string order. Escape `0x00` as
+            // `0x00 0x01` and terminate with `0x00 0x00`, so the key is
+            // self-delimiting within a longer path and a shorter string still
+            // sorts before a longer one that extends it.
+            for &byte in value.as_bytes() {
+                out.push(byte);
+                if byte == 0x00 {
+                    out.push(0x01);
+                }
+            }
+            out.push(0x00);
+            out.push(0x00);
         }
     }
 }
@@ -156,6 +174,7 @@ fn key_len(bytes: &[u8]) -> Option<usize> {
     match *bytes.first()? {
         KEY_BOOL => Some(2),
         KEY_INT => Some(9),
+        KEY_STR => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
         _ => None,
     }
 }
@@ -170,6 +189,35 @@ fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
                 (u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64,
             ))
         }
+        KEY_STR => {
+            let (decoded, _) = read_escaped_str(bytes.get(1..)?)?;
+            Some(SavedKey::Str(String::from_utf8(decoded).ok()?))
+        }
         _ => None,
+    }
+}
+
+/// Read an escaped string key body (the bytes after the `KEY_STR` tag):
+/// unescape `0x00 0x01` back to `0x00` and stop at the `0x00 0x00` terminator.
+/// Returns the decoded bytes and the number of body bytes consumed, including
+/// the terminator.
+fn read_escaped_str(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let mut decoded = Vec::new();
+    let mut index = 0;
+    loop {
+        match *bytes.get(index)? {
+            0x00 => match *bytes.get(index + 1)? {
+                0x00 => return Some((decoded, index + 2)),
+                0x01 => {
+                    decoded.push(0x00);
+                    index += 2;
+                }
+                _ => return None,
+            },
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
     }
 }

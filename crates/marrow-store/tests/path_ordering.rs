@@ -74,3 +74,38 @@ fn a_field_name_never_collides_with_a_record_key() {
     assert_ne!(key, field);
     assert!(key < field, "a record key sorts before a named member");
 }
+
+/// Encode each string as a `^notes(key)` record path and return the keys in
+/// encoded-byte order.
+fn sorted_str_keys(keys: &[&str]) -> Vec<String> {
+    let mut encoded: Vec<(Vec<u8>, String)> = keys
+        .iter()
+        .map(|&key| {
+            let path = [
+                PathSegment::Root("notes".into()),
+                PathSegment::RecordKey(SavedKey::Str(key.into())),
+            ];
+            (encode_path(&path), key.to_string())
+        })
+        .collect();
+    encoded.sort_by(|a, b| a.0.cmp(&b.0));
+    encoded.into_iter().map(|(_, key)| key).collect()
+}
+
+#[test]
+fn string_keys_order_by_utf8_bytes() {
+    assert_eq!(
+        sorted_str_keys(&["title", "author", "b", "authors"]),
+        ["author", "authors", "b", "title"]
+    );
+}
+
+#[test]
+fn a_shorter_string_key_sorts_before_one_that_extends_it() {
+    // The 0x00 0x00 terminator makes "a" sort before "a\0" and "ab", and the
+    // 0x00 0x01 escape keeps an embedded null from ending the key early.
+    assert_eq!(
+        sorted_str_keys(&["ab", "a", "a\u{0}"]),
+        ["a", "a\u{0}", "ab"]
+    );
+}

@@ -57,6 +57,28 @@ fn child_keys_lists_field_names_lexicographically() {
 }
 
 #[test]
+fn child_keys_round_trip_string_records() {
+    let mut store = MemStore::new();
+    for name in ["b", "a", "c"] {
+        let path = vec![
+            PathSegment::Root("notes".into()),
+            PathSegment::RecordKey(SavedKey::Str(name.into())),
+            PathSegment::Field("text".into()),
+        ];
+        store.write(&path, b"x".to_vec());
+    }
+    let children = store.child_keys(&[PathSegment::Root("notes".into())]);
+    assert_eq!(
+        children,
+        vec![
+            ChildSegment::Key(SavedKey::Str("a".into())),
+            ChildSegment::Key(SavedKey::Str("b".into())),
+            ChildSegment::Key(SavedKey::Str("c".into())),
+        ]
+    );
+}
+
+#[test]
 fn roots_are_listed_in_order_without_duplicates() {
     let mut store = MemStore::new();
     store.write(&seq(1), b"x".to_vec());
