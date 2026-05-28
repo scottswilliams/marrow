@@ -129,6 +129,87 @@ impl Decimal {
         let coefficient = self.coefficient.checked_mul(other.coefficient)?;
         Decimal::from_parts(coefficient, self.scale + other.scale)
     }
+
+    /// Quotient rounded half-to-even to at most 34 significant digits
+    /// (decimal128). `None` if the divisor is zero or the result falls outside the
+    /// envelope; a caller that needs to tell those apart checks [`Decimal::is_zero`]
+    /// on the divisor first.
+    pub fn checked_div(self, divisor: Decimal) -> Option<Decimal> {
+        if divisor.coefficient == 0 {
+            return None;
+        }
+        if self.coefficient == 0 {
+            return Some(Decimal::ZERO);
+        }
+        let negative = (self.coefficient < 0) != (divisor.coefficient < 0);
+        let dividend = self.coefficient.unsigned_abs();
+        let by = divisor.coefficient.unsigned_abs();
+
+        // Produce the quotient's significant digits (most significant first) by
+        // long division — the remainder stays below `by`, so nothing overflows —
+        // together with the power of ten of the leading digit.
+        let precision = MAX_DIGITS as usize;
+        let mut digits: Vec<u8> = Vec::new();
+        let mut leading_power: i32;
+        let integer = dividend / by; // <= dividend, so at most 34 digits
+        let mut rem = dividend % by;
+        if integer > 0 {
+            let text = integer.to_string();
+            leading_power = text.len() as i32 - 1;
+            digits.extend(text.bytes().map(|b| b - b'0'));
+        } else {
+            // The value is below 1: walk past leading fractional zeros (at most 34,
+            // since `dividend >= 1` and `by <= 10^34`) to the first nonzero digit.
+            leading_power = -1;
+            loop {
+                rem *= 10;
+                let digit = (rem / by) as u8;
+                rem %= by;
+                if digit != 0 {
+                    digits.push(digit);
+                    break;
+                }
+                leading_power -= 1;
+            }
+        }
+        // Generate one digit past the precision so the last can be rounded.
+        while digits.len() <= precision && rem != 0 {
+            rem *= 10;
+            digits.push((rem / by) as u8);
+            rem %= by;
+        }
+        let inexact = rem != 0;
+
+        if digits.len() > precision {
+            let dropped = digits.pop().expect("a digit past the precision");
+            let round_up =
+                dropped > 5 || (dropped == 5 && (inexact || digits[precision - 1] % 2 == 1));
+            if round_up {
+                round_up_last(&mut digits, &mut leading_power);
+            }
+        }
+        // Trailing zeros carry no precision; drop them for a canonical coefficient.
+        while digits.len() > 1 && *digits.last().expect("non-empty digits") == 0 {
+            digits.pop();
+        }
+
+        let mut coefficient: i128 = 0;
+        for &digit in &digits {
+            coefficient = coefficient * 10 + i128::from(digit); // <= 34 digits, fits
+        }
+        if negative {
+            coefficient = -coefficient;
+        }
+        // value = coefficient * 10^(power), shifted by the operands' scales.
+        let power =
+            leading_power - (digits.len() as i32 - 1) + divisor.scale as i32 - self.scale as i32;
+        if power >= 0 {
+            let scaled = coefficient.checked_mul(10i128.checked_pow(power as u32)?)?;
+            Decimal::from_parts(scaled, 0)
+        } else {
+            Decimal::from_parts(coefficient, power.unsigned_abs())
+        }
+    }
 }
 
 impl Ord for Decimal {
@@ -188,6 +269,23 @@ fn split(magnitude: u128, scale: u32) -> (u128, u128) {
 /// `coefficient * 10^power`, or `None` on overflow.
 fn scaled_coefficient(coefficient: i128, power: u32) -> Option<i128> {
     coefficient.checked_mul(10i128.checked_pow(power)?)
+}
+
+/// Add one to the least significant digit, propagating the carry. A carry out of
+/// the most significant digit prepends a `1`, raising `leading_power`, and drops
+/// the now-extra last digit to keep the digit count.
+fn round_up_last(digits: &mut Vec<u8>, leading_power: &mut i32) {
+    for digit in digits.iter_mut().rev() {
+        if *digit == 9 {
+            *digit = 0;
+        } else {
+            *digit += 1;
+            return;
+        }
+    }
+    digits.insert(0, 1);
+    *leading_power += 1;
+    digits.pop();
 }
 
 /// Strip a trailing-zero scale to reach canonical form; zero normalizes to scale 0.
@@ -305,5 +403,88 @@ mod tests {
         assert!(dec("0").is_zero());
         assert!(dec("1").checked_sub(dec("1")).unwrap().is_zero());
         assert!(!dec("0.0001").is_zero());
+    }
+
+    #[test]
+    fn divides_exactly() {
+        for (a, b, q) in [
+            ("1", "2", "0.5"),
+            ("1", "4", "0.25"),
+            ("1", "8", "0.125"),
+            ("6", "2", "3"),
+            ("7", "2", "3.5"),
+            ("9", "4", "2.25"),
+            ("1", "5", "0.2"),
+            ("3", "3", "1"),
+            ("123.45", "1", "123.45"),
+            ("1.5", "0.5", "3"),
+            ("0.1", "0.1", "1"),
+        ] {
+            assert_eq!(dec(a).checked_div(dec(b)).unwrap(), dec(q), "{a} / {b}");
+        }
+        assert_eq!(Decimal::ZERO.checked_div(dec("5")).unwrap(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn division_by_zero_is_none() {
+        assert!(dec("1").checked_div(Decimal::ZERO).is_none());
+        assert!(Decimal::ZERO.checked_div(Decimal::ZERO).is_none());
+    }
+
+    #[test]
+    fn repeating_division_rounds_half_even_to_34_digits() {
+        // 1/3 truncates (the 35th digit, 3, is below the halfway point); 2/3 rounds
+        // up (the 35th digit, 6, is above it).
+        assert_eq!(
+            dec("1").checked_div(dec("3")).unwrap().to_text(),
+            format!("0.{}", "3".repeat(34))
+        );
+        assert_eq!(
+            dec("2").checked_div(dec("3")).unwrap().to_text(),
+            format!("0.{}7", "6".repeat(33))
+        );
+    }
+
+    #[test]
+    fn half_even_ties_round_to_even() {
+        // (10^34 - 1) / 2 = 4999...9.5 exactly; the last kept digit is odd, so the
+        // tie rounds up to the even 5000...0.
+        assert_eq!(
+            dec(&"9".repeat(34))
+                .checked_div(dec("2"))
+                .unwrap()
+                .to_text(),
+            format!("5{}", "0".repeat(33))
+        );
+        // (8*10^33 + 1) / 2 = 4000...0.5 exactly; the last kept digit is even, so the
+        // tie stays at 4000...0.
+        assert_eq!(
+            dec(&format!("8{}1", "0".repeat(32)))
+                .checked_div(dec("2"))
+                .unwrap()
+                .to_text(),
+            format!("4{}", "0".repeat(33))
+        );
+    }
+
+    #[test]
+    fn division_carries_sign() {
+        let third = format!("0.{}", "3".repeat(34));
+        assert_eq!(
+            dec("-1").checked_div(dec("3")).unwrap().to_text(),
+            format!("-{third}")
+        );
+        assert_eq!(
+            dec("1").checked_div(dec("-3")).unwrap().to_text(),
+            format!("-{third}")
+        );
+        assert_eq!(dec("-1").checked_div(dec("-3")).unwrap().to_text(), third);
+    }
+
+    #[test]
+    fn division_outside_the_envelope_is_none() {
+        // 10^34 / 10^-34 = 10^68, far beyond 34 significant digits.
+        let tiny = dec(&format!("0.{}1", "0".repeat(33)));
+        assert!(dec(&"9".repeat(34)).checked_div(tiny).is_none());
     }
 }
