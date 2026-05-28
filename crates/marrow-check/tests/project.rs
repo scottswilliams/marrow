@@ -899,6 +899,58 @@ fn rejects_a_wrong_argument_count_in_a_qualified_cross_module_call() {
     );
 }
 
+#[test]
+fn rejects_a_positional_argument_of_the_wrong_type() {
+    // `add` expects two ints; `true` is a bool.
+    let found = check_module(
+        "call-argtype",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(true, 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_named_argument_of_the_wrong_type() {
+    // The named `a: true` passes a bool where `a` is an int.
+    let found = check_module(
+        "call-named-argtype",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(a: true, b: 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_argument_of_unknown_type_is_not_flagged() {
+    // `mystery` is unbound, so its type is unknown; only a known mismatch flags.
+    let found = check_module(
+        "call-argtype-unknown",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(mystery, 2)\n",
+        "check.call_argument",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_call_return_type_feeds_further_type_checks() {
+    // `makeInt()` is typed `int`, so `makeInt() + true` is an int-plus-bool error.
+    let found = check_module(
+        "call-return-type",
+        "module m\n\
+         fn makeInt(): int\n    return 1\n\n\
+         fn caller()\n    var x = makeInt() + true\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,

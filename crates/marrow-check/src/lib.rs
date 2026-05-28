@@ -292,13 +292,7 @@ pub fn check_project(
                         function.return_type.is_some(),
                         &mut report.diagnostics,
                     );
-                    check_function_types(&file.path, function, &mut report.diagnostics);
-                    check_call_signatures(
-                        &program,
-                        &file.path,
-                        &function.body,
-                        &mut report.diagnostics,
-                    );
+                    check_function_types(&program, &file.path, function, &mut report.diagnostics);
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
                             code: CHECK_MISSING_RETURN.to_string(),
@@ -455,15 +449,17 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
 }
 
 /// Type-check a function body: flag operators applied to operands they do not
-/// accept and `if`/`while` conditions that are not `bool`. Walks the body
-/// tracking the type of each in-scope binding (parameters and `const`/`var`
-/// locals) and inferring the type of each expression. A check fires only when a
-/// type is known to be wrong, so an unresolved value — a call result, a
-/// saved-data read, a cross-module value — is never a false positive. The
-/// operator rules mirror `docs/language/syntax.md`: matching numeric operands for
-/// `+ - * /`, `int` for `%`, `string` for `_`, ordered same-typed operands for
-/// comparisons, and `bool` for `and`/`or`/`not`.
+/// accept, `if`/`while` conditions that are not `bool`, and calls whose arguments
+/// do not match the function they resolve to. Walks the body tracking the type of
+/// each in-scope binding (parameters and `const`/`var` locals) and inferring the
+/// type of each expression. A check fires only when a type or signature is known
+/// to be wrong, so an unresolved value — a saved-data read, a cross-module value,
+/// an unresolved call — is never a false positive. The operator rules mirror
+/// `docs/language/syntax.md`: matching numeric operands for `+ - * /`, `int` for
+/// `%`, `string` for `_`, ordered same-typed operands for comparisons, and `bool`
+/// for `and`/`or`/`not`.
 fn check_function_types(
+    program: &CheckedProgram,
     file: &Path,
     function: &marrow_syntax::FunctionDecl,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -476,12 +472,13 @@ fn check_function_types(
         .map(|param| (param.name.clone(), MarrowType::resolve(&param.ty, &[])))
         .collect();
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![params];
-    check_block_types(file, &function.body, &mut scope, diagnostics);
+    check_block_types(program, file, &function.body, &mut scope, diagnostics);
 }
 
 /// Type-check every statement in a block, with a scope frame for the
 /// `const`/`var` bindings the block introduces.
 fn check_block_types(
+    program: &CheckedProgram,
     file: &Path,
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
@@ -489,7 +486,7 @@ fn check_block_types(
 ) {
     scope.push(HashMap::new());
     for statement in &block.statements {
-        check_statement_types(file, statement, scope, diagnostics);
+        check_statement_types(program, file, statement, scope, diagnostics);
     }
     scope.pop();
 }
@@ -497,6 +494,7 @@ fn check_block_types(
 /// Check one statement: type-check the expressions it contains, recurse into any
 /// nested blocks, and record the type of any binding it introduces.
 fn check_statement_types(
+    program: &CheckedProgram,
     file: &Path,
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
@@ -507,32 +505,32 @@ fn check_statement_types(
         Statement::Const {
             name, ty, value, ..
         } => {
-            let value_type = infer_type(value, scope, file, diagnostics);
+            let value_type = infer_type(program, value, scope, file, diagnostics);
             bind(scope, name, binding_type(ty.as_ref(), value_type));
         }
         Statement::Var {
             name, ty, value, ..
         } => {
             let value_type = match value {
-                Some(value) => infer_type(value, scope, file, diagnostics),
+                Some(value) => infer_type(program, value, scope, file, diagnostics),
                 None => MarrowType::Unknown,
             };
             bind(scope, name, binding_type(ty.as_ref(), value_type));
         }
         Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
-            infer_type(target, scope, file, diagnostics);
-            infer_type(value, scope, file, diagnostics);
+            infer_type(program, target, scope, file, diagnostics);
+            infer_type(program, value, scope, file, diagnostics);
         }
         Statement::Delete { path, .. } => {
-            infer_type(path, scope, file, diagnostics);
+            infer_type(program, path, scope, file, diagnostics);
         }
         Statement::Return { value, .. } => {
             if let Some(value) = value {
-                infer_type(value, scope, file, diagnostics);
+                infer_type(program, value, scope, file, diagnostics);
             }
         }
         Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
-            infer_type(value, scope, file, diagnostics);
+            infer_type(program, value, scope, file, diagnostics);
         }
         Statement::If {
             condition,
@@ -541,21 +539,21 @@ fn check_statement_types(
             else_block,
             ..
         } => {
-            check_condition(file, condition, scope, diagnostics);
-            check_block_types(file, then_block, scope, diagnostics);
+            check_condition(program, file, condition, scope, diagnostics);
+            check_block_types(program, file, then_block, scope, diagnostics);
             for else_if in else_ifs {
-                check_condition(file, &else_if.condition, scope, diagnostics);
-                check_block_types(file, &else_if.block, scope, diagnostics);
+                check_condition(program, file, &else_if.condition, scope, diagnostics);
+                check_block_types(program, file, &else_if.block, scope, diagnostics);
             }
             if let Some(block) = else_block {
-                check_block_types(file, block, scope, diagnostics);
+                check_block_types(program, file, block, scope, diagnostics);
             }
         }
         Statement::While {
             condition, body, ..
         } => {
-            check_condition(file, condition, scope, diagnostics);
-            check_block_types(file, body, scope, diagnostics);
+            check_condition(program, file, condition, scope, diagnostics);
+            check_block_types(program, file, body, scope, diagnostics);
         }
         Statement::For {
             binding,
@@ -563,7 +561,7 @@ fn check_statement_types(
             body,
             ..
         } => {
-            infer_type(iterable, scope, file, diagnostics);
+            infer_type(program, iterable, scope, file, diagnostics);
             // The loop binding(s) are in scope for the body. Their element type is
             // not inferred yet, so they shadow any outer name as unknown.
             let mut frame = HashMap::new();
@@ -572,15 +570,15 @@ fn check_statement_types(
                 frame.insert(second.clone(), MarrowType::Unknown);
             }
             scope.push(frame);
-            check_block_types(file, body, scope, diagnostics);
+            check_block_types(program, file, body, scope, diagnostics);
             scope.pop();
         }
         Statement::Transaction { body, .. } => {
-            check_block_types(file, body, scope, diagnostics);
+            check_block_types(program, file, body, scope, diagnostics);
         }
         Statement::Lock { path, body, .. } => {
-            infer_type(path, scope, file, diagnostics);
-            check_block_types(file, body, scope, diagnostics);
+            infer_type(program, path, scope, file, diagnostics);
+            check_block_types(program, file, body, scope, diagnostics);
         }
         Statement::Try {
             body,
@@ -588,7 +586,7 @@ fn check_statement_types(
             finally,
             ..
         } => {
-            check_block_types(file, body, scope, diagnostics);
+            check_block_types(program, file, body, scope, diagnostics);
             if let Some(clause) = catch {
                 // The catch clause binds an Error value for the duration of its block.
                 let mut frame = HashMap::new();
@@ -597,11 +595,11 @@ fn check_statement_types(
                     MarrowType::Primitive(PrimitiveType::Error),
                 );
                 scope.push(frame);
-                check_block_types(file, &clause.block, scope, diagnostics);
+                check_block_types(program, file, &clause.block, scope, diagnostics);
                 scope.pop();
             }
             if let Some(finally) = finally {
-                check_block_types(file, finally, scope, diagnostics);
+                check_block_types(program, file, finally, scope, diagnostics);
             }
         }
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
@@ -630,12 +628,13 @@ fn bind(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
 /// unknown type — an unresolved call such as `exists(...)`, a saved-data read — is
 /// left alone, so the check never fires on an uncertain condition.
 fn check_condition(
+    program: &CheckedProgram,
     file: &Path,
     condition: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let condition_type = infer_type(condition, scope, file, diagnostics);
+    let condition_type = infer_type(program, condition, scope, file, diagnostics);
     if let Some(primitive) = as_primitive(&condition_type)
         && primitive != PrimitiveType::Bool
     {
@@ -659,6 +658,7 @@ fn check_condition(
 /// [`MarrowType::Unknown`] whenever the type cannot be determined with certainty,
 /// so a containing operator never fires on an uncertain operand.
 fn infer_type(
+    program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
     file: &Path,
@@ -670,14 +670,14 @@ fn infer_type(
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
-                    infer_type(expr, scope, file, diagnostics);
+                    infer_type(program, expr, scope, file, diagnostics);
                 }
             }
             MarrowType::Primitive(PrimitiveType::String)
         }
         Expression::Name { segments, .. } if segments.len() == 1 => lookup(scope, &segments[0]),
         Expression::Unary { op, operand, span } => {
-            let operand = infer_type(operand, scope, file, diagnostics);
+            let operand = infer_type(program, operand, scope, file, diagnostics);
             check_unary(*op, &operand, *span, file, diagnostics)
         }
         Expression::Binary {
@@ -686,18 +686,23 @@ fn infer_type(
             right,
             span,
         } => {
-            let left = infer_type(left, scope, file, diagnostics);
-            let right = infer_type(right, scope, file, diagnostics);
+            let left = infer_type(program, left, scope, file, diagnostics);
+            let right = infer_type(program, right, scope, file, diagnostics);
             check_binary(*op, &left, &right, *span, file, diagnostics)
         }
-        Expression::Call { args, .. } => {
-            for arg in args {
-                infer_type(&arg.value, scope, file, diagnostics);
-            }
-            MarrowType::Unknown
+        Expression::Call { callee, args, span } => {
+            // Visit the callee subtree (it may hold nested calls, e.g. the
+            // `^books(id)` inside `^books(id).tags(pos)`) and infer each argument
+            // once. `check_call` validates the call and yields its return type.
+            infer_type(program, callee, scope, file, diagnostics);
+            let arg_types: Vec<MarrowType> = args
+                .iter()
+                .map(|arg| infer_type(program, &arg.value, scope, file, diagnostics))
+                .collect();
+            check_call(program, callee, args, &arg_types, *span, file, diagnostics)
         }
         Expression::Field { base, .. } => {
-            infer_type(base, scope, file, diagnostics);
+            infer_type(program, base, scope, file, diagnostics);
             MarrowType::Unknown
         }
         // A multi-segment name, saved root, or undecomposed text has no known
@@ -911,185 +916,98 @@ fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
     }
 }
 
-/// Check every call in a function body for argument-count and named-argument
-/// mismatches against the resolved user-function signature.
-fn check_call_signatures(
-    program: &CheckedProgram,
-    file: &Path,
-    block: &marrow_syntax::Block,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    for statement in &block.statements {
-        statement_calls(program, file, statement, diagnostics);
-    }
-}
-
-/// Visit the expressions a statement holds and recurse into its nested blocks.
-fn statement_calls(
-    program: &CheckedProgram,
-    file: &Path,
-    statement: &marrow_syntax::Statement,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    use marrow_syntax::Statement;
-    match statement {
-        Statement::Const { value, .. }
-        | Statement::Throw { value, .. }
-        | Statement::Expr { value, .. } => expression_calls(program, file, value, diagnostics),
-        Statement::Var { value, .. } | Statement::Return { value, .. } => {
-            if let Some(value) = value {
-                expression_calls(program, file, value, diagnostics);
-            }
-        }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
-            expression_calls(program, file, target, diagnostics);
-            expression_calls(program, file, value, diagnostics);
-        }
-        Statement::Delete { path, .. } => expression_calls(program, file, path, diagnostics),
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            expression_calls(program, file, condition, diagnostics);
-            check_call_signatures(program, file, then_block, diagnostics);
-            for else_if in else_ifs {
-                expression_calls(program, file, &else_if.condition, diagnostics);
-                check_call_signatures(program, file, &else_if.block, diagnostics);
-            }
-            if let Some(block) = else_block {
-                check_call_signatures(program, file, block, diagnostics);
-            }
-        }
-        Statement::While {
-            condition, body, ..
-        } => {
-            expression_calls(program, file, condition, diagnostics);
-            check_call_signatures(program, file, body, diagnostics);
-        }
-        Statement::For { iterable, body, .. } => {
-            expression_calls(program, file, iterable, diagnostics);
-            check_call_signatures(program, file, body, diagnostics);
-        }
-        Statement::Transaction { body, .. } => {
-            check_call_signatures(program, file, body, diagnostics)
-        }
-        Statement::Lock { path, body, .. } => {
-            expression_calls(program, file, path, diagnostics);
-            check_call_signatures(program, file, body, diagnostics);
-        }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            check_call_signatures(program, file, body, diagnostics);
-            if let Some(clause) = catch {
-                check_call_signatures(program, file, &clause.block, diagnostics);
-            }
-            if let Some(finally) = finally {
-                check_call_signatures(program, file, finally, diagnostics);
-            }
-        }
-        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
-    }
-}
-
-/// Recurse through an expression, checking each call it contains (including calls
-/// nested in arguments, operands, a field base, or interpolation parts).
-fn expression_calls(
-    program: &CheckedProgram,
-    file: &Path,
-    expr: &marrow_syntax::Expression,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    use marrow_syntax::{Expression, InterpolationPart};
-    match expr {
-        Expression::Call { callee, args, span } => {
-            expression_calls(program, file, callee, diagnostics);
-            for arg in args {
-                expression_calls(program, file, &arg.value, diagnostics);
-            }
-            check_call(program, file, callee, args, *span, diagnostics);
-        }
-        Expression::Binary { left, right, .. } => {
-            expression_calls(program, file, left, diagnostics);
-            expression_calls(program, file, right, diagnostics);
-        }
-        Expression::Unary { operand, .. } => expression_calls(program, file, operand, diagnostics),
-        Expression::Field { base, .. } => expression_calls(program, file, base, diagnostics),
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    expression_calls(program, file, expr, diagnostics);
-                }
-            }
-        }
-        Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::SavedRoot { .. }
-        | Expression::Unparsed { .. } => {}
-    }
-}
-
-/// Validate one call's arguments against the user function it resolves to. Only a
-/// plain name call that resolves to a declared function is checked; a builtin, std
+/// Validate a call against the user function it resolves to and return that
+/// function's declared return type (or [`MarrowType::Unknown`]). Only a plain
+/// name call that resolves to a declared function is checked; a builtin, std
 /// helper, `Error` constructor, out/inout call, key-lookup (non-name callee), or
 /// unresolved name is left alone — mirroring the runtime's dispatch order — so the
 /// check never fires on a non-function or a call this slice cannot resolve.
+///
+/// It flags the argument count (every parameter is required), a named argument
+/// that names no parameter, and an argument whose type does not match its
+/// parameter (only when both are known, incompatible primitives, like operators).
 fn check_call(
     program: &CheckedProgram,
-    file: &Path,
     callee: &marrow_syntax::Expression,
     args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
     span: SourceSpan,
+    file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> MarrowType {
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
-        return;
+        return MarrowType::Unknown;
     };
     if args.iter().any(|arg| arg.mode.is_some()) || is_builtin_call(segments) {
-        return;
+        return MarrowType::Unknown;
     }
     let Some(function) = resolve_function(program, segments) else {
-        return;
+        return MarrowType::Unknown;
     };
     // Every parameter is required (no defaults), so the argument count must match.
     if args.len() != function.params.len() {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_CALL_ARGUMENT.to_string(),
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
                 "function `{}` expects {} argument(s), but {} were given",
                 segments.join("::"),
                 function.params.len(),
                 args.len(),
             ),
-            line: span.line,
-            column: span.column,
-        });
+        ));
     }
-    // Every named argument must name a parameter.
-    for arg in args {
-        if let Some(name) = &arg.name
-            && !function.params.iter().any(|param| &param.name == name)
+    // Match each argument to its parameter — positional by position, named by name
+    // (the parser guarantees positional arguments precede named ones) — flagging a
+    // named argument that names no parameter and an argument whose known primitive
+    // type differs from the parameter's.
+    for (index, (arg, arg_type)) in args.iter().zip(arg_types).enumerate() {
+        let param = match &arg.name {
+            Some(name) => {
+                let param = function.params.iter().find(|param| &param.name == name);
+                if param.is_none() {
+                    diagnostics.push(call_diagnostic(
+                        file,
+                        span,
+                        format!(
+                            "function `{}` has no parameter `{name}`",
+                            segments.join("::")
+                        ),
+                    ));
+                }
+                param
+            }
+            None => function.params.get(index),
+        };
+        if let Some(param) = param
+            && let (Some(argument), Some(parameter)) =
+                (as_primitive(arg_type), as_primitive(&param.ty))
+            && argument != parameter
         {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_CALL_ARGUMENT.to_string(),
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
-                    "function `{}` has no parameter `{name}`",
-                    segments.join("::")
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!(
+                    "argument to `{}` expects `{}`, but found `{}`",
+                    segments.join("::"),
+                    primitive_name(parameter),
+                    primitive_name(argument),
                 ),
-                line: span.line,
-                column: span.column,
-            });
+            ));
         }
+    }
+    function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+/// A `check.call_argument` diagnostic located at a call's span.
+fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+    CheckDiagnostic {
+        code: CHECK_CALL_ARGUMENT.to_string(),
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message,
+        line: span.line,
+        column: span.column,
     }
 }
 
