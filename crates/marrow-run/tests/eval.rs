@@ -1472,3 +1472,64 @@ fn reading_an_absent_group_field_is_an_error() {
         "{result:?}"
     );
 }
+
+#[test]
+fn the_sample_update_functions_run() {
+    // Drive the reference sample's mutating API beyond `main`: add a book, add a
+    // note (group write guarded by `exists`), and move it between shelves (a
+    // field write that also moves its generated index entry).
+    let program = checked_program(&sample_source());
+    let store = RefCell::new(MemStore::new());
+    let when = Value::Instant(1_700_000_000_000_000_000);
+    let id = run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[
+            Value::Str("Small Gods".into()),
+            Value::Str("Terry Pratchett".into()),
+            Value::Str("fiction".into()),
+            when.clone(),
+        ],
+    )
+    .expect("add")
+    .value;
+    assert_eq!(id, Some(Value::Int(1)));
+    // addNote: true for an existing book, false for a missing one.
+    let add_note = |book: i64| {
+        run_entry(
+            &program,
+            &store,
+            "test::addNote",
+            &[
+                Value::Int(book),
+                Value::Str("n1".into()),
+                Value::Str("first".into()),
+            ],
+        )
+        .expect("addNote")
+        .value
+    };
+    assert_eq!(add_note(1), Some(Value::Bool(true)));
+    assert_eq!(add_note(2), Some(Value::Bool(false)));
+    // moveToShelf updates the shelf and moves its generated index entry.
+    run_entry(
+        &program,
+        &store,
+        "test::moveToShelf",
+        &[Value::Int(1), Value::Str("history".into()), when],
+    )
+    .expect("moveToShelf");
+    let shelf = |name: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::printShelf",
+            &[Value::Str(name.into())],
+        )
+        .expect("printShelf")
+        .output
+    };
+    assert_eq!(shelf("history"), "1: Small Gods\n", "moved to history");
+    assert_eq!(shelf("fiction"), "", "and left fiction");
+}
