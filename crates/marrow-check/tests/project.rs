@@ -991,13 +991,43 @@ fn a_correctly_typed_saved_field_read_is_not_flagged() {
 }
 
 #[test]
-fn a_group_field_read_is_not_yet_typed() {
-    // A group-layer field read stays unknown (deferred), so it is never mistyped.
+fn a_group_field_read_feeds_type_checks() {
+    // `^books(1).versions(2).title` is `string` from the group schema, but `f`
+    // returns `int`.
     let found = check_module(
         "saved-group-field",
         "module m\n\
          resource Book at ^books(id: int)\n    versions(v: int)\n        title: string\n\n\
          fn f(): int\n    return ^books(1).versions(2).title\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_keyed_leaf_read_feeds_type_checks() {
+    // `^books(1).tags(2)` is `string` (the layer's leaf type), but `f` returns `int`.
+    let found = check_module(
+        "saved-leaf",
+        "module m\n\
+         resource Book at ^books(id: int)\n    tags(pos: int): string\n\n\
+         fn f(): int\n    return ^books(1).tags(2)\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn correctly_typed_group_and_leaf_reads_are_not_flagged() {
+    // The group field and the keyed leaf both match their declared `string` use.
+    let found = check_module(
+        "saved-layer-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20   tags(pos: int): string\n\
+         \x20   versions(v: int)\n        title: string\n\n\
+         fn title(): string\n    return ^books(1).versions(2).title\n\n\
+         fn tag(): string\n    return ^books(1).tags(2)\n",
         "check.return_type",
     );
     assert!(found.is_empty(), "{found:#?}");

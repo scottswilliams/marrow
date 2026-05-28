@@ -761,13 +761,22 @@ fn infer_type(
                 .iter()
                 .map(|arg| infer_type(program, &arg.value, scope, file, diagnostics))
                 .collect();
-            check_call(program, callee, args, &arg_types, *span, file, diagnostics)
+            let call_type = check_call(program, callee, args, &arg_types, *span, file, diagnostics);
+            // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
+            // a function call; it types to the layer's declared leaf type.
+            if matches!(call_type, MarrowType::Unknown) {
+                saved_leaf_type(program, callee).unwrap_or(MarrowType::Unknown)
+            } else {
+                call_type
+            }
         }
         Expression::Field { base, name, .. } => {
             infer_type(program, base, scope, file, diagnostics);
-            // A top-level saved field read `^root(key…).field` resolves to the
-            // field's declared type; other field shapes are not typed yet.
-            saved_field_type(program, base, name).unwrap_or(MarrowType::Unknown)
+            // A saved field read resolves to its declared type: a top-level field
+            // `^root(key…).field` or a group-layer field `^root(key…).layer(key…).field`.
+            saved_field_type(program, base, name)
+                .or_else(|| saved_group_field_type(program, base, name))
+                .unwrap_or(MarrowType::Unknown)
         }
         // A multi-segment name, saved root, or undecomposed text has no known
         // primitive type for this slice.
@@ -817,6 +826,64 @@ fn find_resource_schema<'p>(
                 .as_ref()
                 .is_some_and(|saved| saved.root == root)
         })
+}
+
+/// The declared type of a group-layer field read `^root(key…).layer(key…).field`.
+/// `base` is the keyed layer entry `^root(key…).layer(key…)` (a call whose callee
+/// is the layer field). Mirrors the runtime's `resource_group_member_type`.
+fn saved_group_field_type(
+    program: &CheckedProgram,
+    base: &marrow_syntax::Expression,
+    field: &str,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Call { callee, .. } = base else {
+        return None;
+    };
+    let (root, layer) = saved_layer_field(callee.as_ref())?;
+    let resource = find_resource_schema(program, root)?;
+    let layer = resource
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)?;
+    let member = layer.members.iter().find_map(|member| match member {
+        marrow_schema::LayerMember::Field(member) if member.name == field => Some(member),
+        _ => None,
+    })?;
+    Some(MarrowType::resolve(&member.ty, &[]))
+}
+
+/// The declared leaf type of a keyed-leaf read `^root(key…).layer(key…)`. `callee`
+/// is the layer field `^root(key…).layer`. Mirrors `resource_layer_leaf_type`.
+fn saved_leaf_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let (root, layer) = saved_layer_field(callee)?;
+    let resource = find_resource_schema(program, root)?;
+    let layer = resource
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)?;
+    Some(MarrowType::resolve(layer.leaf_type.as_ref()?, &[]))
+}
+
+/// Extract `(root, layer)` from a saved layer field `^root(key…).layer` — a
+/// `Field` whose base is a keyed record access `^root(key…)`.
+fn saved_layer_field(expr: &marrow_syntax::Expression) -> Option<(&str, &str)> {
+    use marrow_syntax::Expression;
+    let Expression::Field {
+        base, name: layer, ..
+    } = expr
+    else {
+        return None;
+    };
+    let Expression::Call { callee, .. } = base.as_ref() else {
+        return None;
+    };
+    let Expression::SavedRoot { name: root, .. } = callee.as_ref() else {
+        return None;
+    };
+    Some((root, layer))
 }
 
 /// Look up a name's type, innermost scope frame first; unknown when unbound.
