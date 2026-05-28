@@ -952,6 +952,58 @@ fn a_call_return_type_feeds_further_type_checks() {
 }
 
 #[test]
+fn a_saved_field_read_feeds_the_return_type_check() {
+    // `^books(1).title` is `string` from the schema, but `f` returns `int`.
+    let found = check_module(
+        "saved-field-return",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f(): int\n    return ^books(1).title\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_saved_field_read_feeds_operator_checks() {
+    // `currentVersion` is `int` from the schema, so `+ true` is int-plus-bool.
+    let found = check_module(
+        "saved-field-op",
+        "module m\n\
+         resource Book at ^books(id: int)\n    currentVersion: int\n\n\
+         fn f()\n    var x = ^books(1).currentVersion + true\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_correctly_typed_saved_field_read_is_not_flagged() {
+    // `^books(1).title` is `string`, matching `f`'s declared `string` return.
+    let found = check_module(
+        "saved-field-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f(): string\n    return ^books(1).title\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_group_field_read_is_not_yet_typed() {
+    // A group-layer field read stays unknown (deferred), so it is never mistyped.
+    let found = check_module(
+        "saved-group-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    versions(v: int)\n        title: string\n\n\
+         fn f(): int\n    return ^books(1).versions(2).title\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn rejects_a_return_of_the_wrong_type() {
     // The function is declared to return `int`, but `true` is a bool.
     let found = check_script(

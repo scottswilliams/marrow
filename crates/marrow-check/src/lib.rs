@@ -763,9 +763,11 @@ fn infer_type(
                 .collect();
             check_call(program, callee, args, &arg_types, *span, file, diagnostics)
         }
-        Expression::Field { base, .. } => {
+        Expression::Field { base, name, .. } => {
             infer_type(program, base, scope, file, diagnostics);
-            MarrowType::Unknown
+            // A top-level saved field read `^root(key…).field` resolves to the
+            // field's declared type; other field shapes are not typed yet.
+            saved_field_type(program, base, name).unwrap_or(MarrowType::Unknown)
         }
         // A multi-segment name, saved root, or undecomposed text has no known
         // primitive type for this slice.
@@ -773,6 +775,48 @@ fn infer_type(
             MarrowType::Unknown
         }
     }
+}
+
+/// The declared type of a top-level saved field read `^root(key…).field`: `base`
+/// must be a keyed record access `^root(key…)` (a call whose callee is the saved
+/// root). Group-layer fields and keyed-leaf reads are not resolved yet, so they
+/// stay unknown. Mirrors the runtime's `resource_field_type`.
+fn saved_field_type(
+    program: &CheckedProgram,
+    base: &marrow_syntax::Expression,
+    field: &str,
+) -> Option<MarrowType> {
+    use marrow_syntax::Expression;
+    let Expression::Call { callee, .. } = base else {
+        return None;
+    };
+    let Expression::SavedRoot { name: root, .. } = callee.as_ref() else {
+        return None;
+    };
+    let resource = find_resource_schema(program, root)?;
+    let field = resource
+        .fields
+        .iter()
+        .find(|declared| declared.name == field)?;
+    Some(MarrowType::resolve(&field.ty, &[]))
+}
+
+/// The schema of the resource that owns saved root `^root`, if any. Mirrors the
+/// runtime's `find_resource`.
+fn find_resource_schema<'p>(
+    program: &'p CheckedProgram,
+    root: &str,
+) -> Option<&'p marrow_schema::ResourceSchema> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .find(|resource| {
+            resource
+                .saved_root
+                .as_ref()
+                .is_some_and(|saved| saved.root == root)
+        })
 }
 
 /// Look up a name's type, innermost scope frame first; unknown when unbound.
