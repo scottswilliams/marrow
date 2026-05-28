@@ -340,6 +340,10 @@ var loanCount = 0          ; int
 Public function parameters, return types, resource fields, keyed layers, and
 saved roots are annotated.
 
+A simple name used as a value must resolve to a binding in scope: a parameter, a
+local `const` or `var`, a loop or catch binding, or a module constant.
+Referencing a name that is not defined is a type error.
+
 ## Conversions
 
 Marrow does not perform implicit conversions between scalar types. Convert at
