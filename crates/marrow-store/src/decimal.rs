@@ -210,6 +210,25 @@ impl Decimal {
             Decimal::from_parts(coefficient, power.unsigned_abs())
         }
     }
+
+    /// The absolute value. Always representable (magnitude has the same digits).
+    pub fn abs(self) -> Decimal {
+        Decimal {
+            coefficient: self.coefficient.abs(),
+            scale: self.scale,
+        }
+    }
+
+    /// The greatest integer less than or equal to this value (floor), as an
+    /// `i128`. The caller narrows to the language's `int` and reports overflow.
+    pub fn floor(self) -> i128 {
+        if self.scale == 0 {
+            return self.coefficient;
+        }
+        // Euclidean division floors toward negative infinity for a positive
+        // divisor: (-27).div_euclid(10) == -3, i.e. floor(-2.7).
+        self.coefficient.div_euclid(10i128.pow(self.scale))
+    }
 }
 
 impl Ord for Decimal {
@@ -486,5 +505,28 @@ mod tests {
         // 10^34 / 10^-34 = 10^68, far beyond 34 significant digits.
         let tiny = dec(&format!("0.{}1", "0".repeat(33)));
         assert!(dec(&"9".repeat(34)).checked_div(tiny).is_none());
+    }
+
+    #[test]
+    fn absolute_value() {
+        assert_eq!(dec("-2.5").abs(), dec("2.5"));
+        assert_eq!(dec("2.5").abs(), dec("2.5"));
+        assert_eq!(Decimal::ZERO.abs(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn floor_rounds_toward_negative_infinity() {
+        for (value, floored) in [
+            ("2.7", 2),
+            ("2.0", 2),
+            ("0.4", 0),
+            ("0", 0),
+            ("-0.4", -1),
+            ("-2.7", -3),
+            ("-5", -5),
+            ("5", 5),
+        ] {
+            assert_eq!(dec(value).floor(), floored, "floor({value})");
+        }
     }
 }

@@ -369,6 +369,25 @@ fn iterates_a_sequence_counting_its_elements() {
 }
 
 #[test]
+fn std_math_decimal_helpers() {
+    // absDecimal yields a decimal; floor rounds toward negative infinity to an int.
+    let program = checked_program(
+        "pub fn a(): string\n    return $\"{std::math::absDecimal(-2.5)}\"\n\n\
+         pub fn up(): int\n    return std::math::floor(2.7)\n\n\
+         pub fn down(): int\n    return std::math::floor(-2.7)\n",
+    );
+    assert_eq!(
+        run(&program, "test::a", &[]).unwrap(),
+        Some(Value::Str("2.5".into()))
+    );
+    assert_eq!(run(&program, "test::up", &[]).unwrap(), Some(Value::Int(2)));
+    assert_eq!(
+        run(&program, "test::down", &[]).unwrap(),
+        Some(Value::Int(-3))
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

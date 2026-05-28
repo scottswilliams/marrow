@@ -665,6 +665,21 @@ fn eval_std(
             let modulo = int_modulo(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
             Ok(Value::Int(modulo))
         }
+        ("math", "absDecimal") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            Ok(Value::Decimal(eval_decimal_arg(value, env, span)?.abs()))
+        }
+        ("math", "floor") => {
+            let [value] = args else {
+                return Err(std_arity(module, op, span));
+            };
+            let floored = eval_decimal_arg(value, env, span)?.floor();
+            i64::try_from(floored)
+                .map(Value::Int)
+                .map_err(|_| overflow(span))
+        }
         ("bytes", "length") => {
             let [value] = args else {
                 return Err(std_arity(module, op, span));
@@ -802,6 +817,18 @@ fn eval_bytes_arg(
     match eval_expr(&arg.value, env)? {
         Value::Bytes(bytes) => Ok(bytes),
         _ => Err(type_error("expected bytes", span)),
+    }
+}
+
+/// Evaluate `arg` to a decimal, or a type error.
+fn eval_decimal_arg(
+    arg: &Argument,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Decimal, RuntimeError> {
+    match eval_expr(&arg.value, env)? {
+        Value::Decimal(decimal) => Ok(decimal),
+        _ => Err(type_error("expected a decimal", span)),
     }
 }
 
