@@ -767,6 +767,61 @@ fn a_nested_operator_error_is_reported_once() {
     assert_eq!(found.len(), 1, "{found:#?}");
 }
 
+#[test]
+fn rejects_a_non_bool_if_condition() {
+    // `if 1` tests an int where a bool is required.
+    let found = check_script(
+        "cond-if",
+        "fn f()\n    if 1\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_non_bool_while_condition() {
+    // `while "go"` tests a string where a bool is required.
+    let found = check_script(
+        "cond-while",
+        "fn f()\n    while \"go\"\n        break\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_non_bool_else_if_condition() {
+    // The `else if 2` clause tests an int condition.
+    let found = check_script(
+        "cond-elseif",
+        "fn f(c: bool)\n    if c\n        return\n    else if 2\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn bool_conditions_are_not_flagged() {
+    // A bool binding and a comparison both yield bool conditions.
+    let found = check_script(
+        "cond-ok",
+        "fn f(a: int, b: int, c: bool)\n    if a < b\n        return\n    while c\n        break\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_condition_is_not_flagged() {
+    // `mystery` is unbound, so its type is unknown; only a known non-bool is flagged.
+    let found = check_script(
+        "cond-unknown",
+        "fn f()\n    if mystery\n        return\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,

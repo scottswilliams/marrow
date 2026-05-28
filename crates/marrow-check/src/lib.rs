@@ -37,6 +37,8 @@ pub const CHECK_RETURN_VALUE: &str = "check.return_value";
 pub const CHECK_MISSING_RETURN: &str = "check.missing_return";
 /// An operator is applied to operands whose types it does not accept.
 pub const CHECK_OPERATOR_TYPE: &str = "check.operator_type";
+/// A condition (`if`/`while`) is not a `bool`.
+pub const CHECK_CONDITION_TYPE: &str = "check.condition_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -287,7 +289,7 @@ pub fn check_project(
                         function.return_type.is_some(),
                         &mut report.diagnostics,
                     );
-                    check_operator_types(&file.path, function, &mut report.diagnostics);
+                    check_function_types(&file.path, function, &mut report.diagnostics);
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
                             code: CHECK_MISSING_RETURN.to_string(),
@@ -443,20 +445,21 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
     }
 }
 
-/// Flag operators applied to operand types they do not accept. Walks a function
-/// body tracking the type of each in-scope binding (parameters and `const`/`var`
-/// locals) and inferring the type of each expression. An operator is flagged
-/// only when both operands resolve to known, incompatible primitive types, so an
-/// unresolved operand — a call result, a saved-data read, a cross-module value —
-/// is never a false positive. The rules mirror `docs/language/syntax.md`:
-/// matching numeric operands for `+ - * /`, `int` for `%`, `string` for `_`,
-/// ordered same-typed operands for comparisons, and `bool` for `and`/`or`/`not`.
-fn check_operator_types(
+/// Type-check a function body: flag operators applied to operands they do not
+/// accept and `if`/`while` conditions that are not `bool`. Walks the body
+/// tracking the type of each in-scope binding (parameters and `const`/`var`
+/// locals) and inferring the type of each expression. A check fires only when a
+/// type is known to be wrong, so an unresolved value — a call result, a
+/// saved-data read, a cross-module value — is never a false positive. The
+/// operator rules mirror `docs/language/syntax.md`: matching numeric operands for
+/// `+ - * /`, `int` for `%`, `string` for `_`, ordered same-typed operands for
+/// comparisons, and `bool` for `and`/`or`/`not`.
+fn check_function_types(
     file: &Path,
     function: &marrow_syntax::FunctionDecl,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // The base scope frame is the parameter list. Operator typing only inspects
+    // The base scope frame is the parameter list. Type checking only inspects
     // primitives, so resource and identity names need not resolve here.
     let params = function
         .params
@@ -464,12 +467,12 @@ fn check_operator_types(
         .map(|param| (param.name.clone(), MarrowType::resolve(&param.ty, &[])))
         .collect();
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![params];
-    check_block_operators(file, &function.body, &mut scope, diagnostics);
+    check_block_types(file, &function.body, &mut scope, diagnostics);
 }
 
-/// Check every expression in a block for operator-type errors, with a scope
-/// frame for the `const`/`var` bindings the block introduces.
-fn check_block_operators(
+/// Type-check every statement in a block, with a scope frame for the
+/// `const`/`var` bindings the block introduces.
+fn check_block_types(
     file: &Path,
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
@@ -477,14 +480,14 @@ fn check_block_operators(
 ) {
     scope.push(HashMap::new());
     for statement in &block.statements {
-        check_statement_operators(file, statement, scope, diagnostics);
+        check_statement_types(file, statement, scope, diagnostics);
     }
     scope.pop();
 }
 
 /// Check one statement: type-check the expressions it contains, recurse into any
 /// nested blocks, and record the type of any binding it introduces.
-fn check_statement_operators(
+fn check_statement_types(
     file: &Path,
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
@@ -529,21 +532,21 @@ fn check_statement_operators(
             else_block,
             ..
         } => {
-            infer_type(condition, scope, file, diagnostics);
-            check_block_operators(file, then_block, scope, diagnostics);
+            check_condition(file, condition, scope, diagnostics);
+            check_block_types(file, then_block, scope, diagnostics);
             for else_if in else_ifs {
-                infer_type(&else_if.condition, scope, file, diagnostics);
-                check_block_operators(file, &else_if.block, scope, diagnostics);
+                check_condition(file, &else_if.condition, scope, diagnostics);
+                check_block_types(file, &else_if.block, scope, diagnostics);
             }
             if let Some(block) = else_block {
-                check_block_operators(file, block, scope, diagnostics);
+                check_block_types(file, block, scope, diagnostics);
             }
         }
         Statement::While {
             condition, body, ..
         } => {
-            infer_type(condition, scope, file, diagnostics);
-            check_block_operators(file, body, scope, diagnostics);
+            check_condition(file, condition, scope, diagnostics);
+            check_block_types(file, body, scope, diagnostics);
         }
         Statement::For {
             binding,
@@ -560,15 +563,15 @@ fn check_statement_operators(
                 frame.insert(second.clone(), MarrowType::Unknown);
             }
             scope.push(frame);
-            check_block_operators(file, body, scope, diagnostics);
+            check_block_types(file, body, scope, diagnostics);
             scope.pop();
         }
         Statement::Transaction { body, .. } => {
-            check_block_operators(file, body, scope, diagnostics);
+            check_block_types(file, body, scope, diagnostics);
         }
         Statement::Lock { path, body, .. } => {
             infer_type(path, scope, file, diagnostics);
-            check_block_operators(file, body, scope, diagnostics);
+            check_block_types(file, body, scope, diagnostics);
         }
         Statement::Try {
             body,
@@ -576,7 +579,7 @@ fn check_statement_operators(
             finally,
             ..
         } => {
-            check_block_operators(file, body, scope, diagnostics);
+            check_block_types(file, body, scope, diagnostics);
             if let Some(clause) = catch {
                 // The catch clause binds an Error value for the duration of its block.
                 let mut frame = HashMap::new();
@@ -585,11 +588,11 @@ fn check_statement_operators(
                     MarrowType::Primitive(PrimitiveType::Error),
                 );
                 scope.push(frame);
-                check_block_operators(file, &clause.block, scope, diagnostics);
+                check_block_types(file, &clause.block, scope, diagnostics);
                 scope.pop();
             }
             if let Some(finally) = finally {
-                check_block_operators(file, finally, scope, diagnostics);
+                check_block_types(file, finally, scope, diagnostics);
             }
         }
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
@@ -609,6 +612,36 @@ fn binding_type(annotation: Option<&marrow_syntax::TypeRef>, value_type: MarrowT
 fn bind(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
     if let Some(frame) = scope.last_mut() {
         frame.insert(name.to_string(), ty);
+    }
+}
+
+/// Type-check an `if`/`while` condition. Inferring it also operator-checks it;
+/// then a condition whose type is a known primitive other than `bool` is flagged
+/// (`docs/language/control-flow-and-effects.md`: "Conditions must be `bool`"). An
+/// unknown type — an unresolved call such as `exists(...)`, a saved-data read — is
+/// left alone, so the check never fires on an uncertain condition.
+fn check_condition(
+    file: &Path,
+    condition: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let condition_type = infer_type(condition, scope, file, diagnostics);
+    if let Some(primitive) = as_primitive(&condition_type)
+        && primitive != PrimitiveType::Bool
+    {
+        let span = condition.span();
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_CONDITION_TYPE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "condition must be `bool`, found `{}`",
+                primitive_name(primitive)
+            ),
+            line: span.line,
+            column: span.column,
+        });
     }
 }
 
