@@ -6,9 +6,10 @@
 //! functions. It reads saved data (fields and keyed-leaf entries) and writes it
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
 //! groups writes in a `transaction` (commit/rollback with read-your-writes), and
-//! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins and the
-//! `std::clock::now()` host capability. Whole-resource writes, `merge`, index
-//! traversal, and structured errors build on this spine.
+//! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
+//! `std::assert::*` testing builtins, and the `std::clock::now()` host capability.
+//! Whole-resource writes, `merge`, index traversal, and structured errors build on
+//! this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -89,6 +90,9 @@ pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 /// A host capability a builtin needs (e.g. the clock for `std::clock::now`) was
 /// not provided to this run.
 pub const RUN_CAPABILITY: &str = "run.capability";
+/// A `std::assert::*` testing assertion did not hold. `marrow test` reports these
+/// as located test failures.
+pub const RUN_ASSERT: &str = "run.assertion";
 
 /// The host capabilities a run may use. Pure runs need none; host modules such
 /// as `std::clock` require the matching capability, and a call made without it
@@ -379,6 +383,13 @@ fn eval_call(
         {
             return eval_clock_now(args, span, env).map(Some);
         }
+        // `std::assert::*` testing builtins raise `run.assertion` on failure.
+        if let [first, second, op] = segments.as_slice()
+            && first == "std"
+            && second == "assert"
+        {
+            return eval_assert(op, args, span, env);
+        }
     }
     let ctx = Context {
         program: env.program,
@@ -451,6 +462,89 @@ fn eval_exists(
         .map_err(|error| store_error(error, span))?;
     let present = !matches!(presence, Presence::Absent);
     Ok(Value::Bool(present))
+}
+
+/// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,
+/// `fail`). A failed assertion raises a `run.assertion` error carrying the call
+/// span, which `marrow test` reports as a located failure. `absent` reports a
+/// populated path as a failed assertion rather than silently treating it as
+/// absent. None of these produce a value.
+fn eval_assert(
+    op: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    match op {
+        "isTrue" | "isFalse" => {
+            let [arg] = args else {
+                return Err(RuntimeError {
+                    code: RUN_TYPE,
+                    message: format!("`std::assert::{op}` takes one boolean"),
+                    span,
+                });
+            };
+            let Value::Bool(actual) = eval_expr(&arg.value, env)? else {
+                return Err(RuntimeError {
+                    code: RUN_TYPE,
+                    message: format!("`std::assert::{op}` takes a boolean"),
+                    span,
+                });
+            };
+            if actual != (op == "isTrue") {
+                return Err(RuntimeError {
+                    code: RUN_ASSERT,
+                    message: format!("assertion failed: {op}({actual})"),
+                    span,
+                });
+            }
+            Ok(None)
+        }
+        "absent" => {
+            let [arg] = args else {
+                return Err(RuntimeError {
+                    code: RUN_TYPE,
+                    message: "`std::assert::absent` takes one path".into(),
+                    span,
+                });
+            };
+            let segments = lower_saved_path(&arg.value, env)?;
+            let store = env.store.borrow();
+            let presence = store
+                .presence(&encode_path(&segments))
+                .map_err(|error| store_error(error, span))?;
+            if !matches!(presence, Presence::Absent) {
+                return Err(RuntimeError {
+                    code: RUN_ASSERT,
+                    message: "assertion failed: expected the path to be absent".into(),
+                    span,
+                });
+            }
+            Ok(None)
+        }
+        "fail" => {
+            let [arg] = args else {
+                return Err(RuntimeError {
+                    code: RUN_TYPE,
+                    message: "`std::assert::fail` takes one message".into(),
+                    span,
+                });
+            };
+            let Value::Str(message) = eval_expr(&arg.value, env)? else {
+                return Err(RuntimeError {
+                    code: RUN_TYPE,
+                    message: "`std::assert::fail` takes a string message".into(),
+                    span,
+                });
+            };
+            Err(RuntimeError {
+                code: RUN_ASSERT,
+                message,
+                span,
+            })
+        }
+        other => Err(unsupported(&format!("std::assert::{other}"), span)),
+    }
 }
 
 /// Evaluate `get(path, default)`: the value at a sparse saved path, or `default`

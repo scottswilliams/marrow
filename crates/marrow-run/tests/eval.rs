@@ -5,9 +5,9 @@ use std::cell::RefCell;
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
-    Host, RUN_ABSENT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE,
-    RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput,
-    Value, evaluate_function, run_entry, run_entry_with_host,
+    Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
+    RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED,
+    RunOutput, Value, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::compile_resource;
 use marrow_store::mem::MemStore;
@@ -127,6 +127,78 @@ fn evaluates_conditionals() {
         evaluate_function(&max, &[Value::Int(3), Value::Int(7)]),
         Ok(Some(Value::Int(7)))
     );
+}
+
+#[test]
+fn std_assert_is_true_passes_and_fails() {
+    let program = checked_program("pub fn ok()\n    std::assert::isTrue(1 = 1)\n");
+    assert_eq!(run(&program, "test::ok", &[]), Ok(None));
+
+    let program = checked_program("pub fn bad()\n    std::assert::isTrue(1 = 2)\n");
+    assert_eq!(
+        run(&program, "test::bad", &[]).unwrap_err().code,
+        RUN_ASSERT
+    );
+}
+
+#[test]
+fn std_assert_is_false_passes_and_fails() {
+    let program = checked_program("pub fn ok()\n    std::assert::isFalse(1 = 2)\n");
+    assert_eq!(run(&program, "test::ok", &[]), Ok(None));
+
+    let program = checked_program("pub fn bad()\n    std::assert::isFalse(1 = 1)\n");
+    assert_eq!(
+        run(&program, "test::bad", &[]).unwrap_err().code,
+        RUN_ASSERT
+    );
+}
+
+#[test]
+fn std_assert_fail_raises_with_its_message() {
+    let program = checked_program("pub fn bad()\n    std::assert::fail(\"boom\")\n");
+    let error = run(&program, "test::bad", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_ASSERT);
+    assert!(error.message.contains("boom"), "{}", error.message);
+}
+
+#[test]
+fn std_assert_absent_passes_when_nothing_is_saved() {
+    let program = checked_program("pub fn ok()\n    std::assert::absent(^books(1))\n");
+    assert_eq!(run(&program, "test::ok", &[]), Ok(None));
+}
+
+#[test]
+fn std_assert_absent_fails_when_a_value_is_present() {
+    let program = checked_program("pub fn bad()\n    std::assert::absent(^books(1))\n");
+    let store = RefCell::new(MemStore::new());
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+        ]),
+        encode_value(&SavedValue::Int(1)),
+    );
+    let error = run_entry(&program, &store, "test::bad", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_ASSERT);
+}
+
+#[test]
+fn std_assert_rejects_misused_arguments() {
+    // A non-boolean condition and a non-string message are type errors, distinct
+    // from a failed assertion.
+    let program = checked_program("pub fn bad()\n    std::assert::isTrue(1)\n");
+    assert_eq!(run(&program, "test::bad", &[]).unwrap_err().code, RUN_TYPE);
+
+    let program = checked_program("pub fn bad()\n    std::assert::fail(42)\n");
+    assert_eq!(run(&program, "test::bad", &[]).unwrap_err().code, RUN_TYPE);
+}
+
+#[test]
+fn a_passing_assert_lets_execution_continue() {
+    // A passing assertion produces no value and falls through to later statements.
+    let program =
+        checked_program("pub fn ok(): int\n    std::assert::isTrue(1 = 1)\n    return 7\n");
+    assert_eq!(run(&program, "test::ok", &[]), Ok(Some(Value::Int(7))));
 }
 
 #[test]
