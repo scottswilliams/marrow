@@ -17,6 +17,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-check"
+version = "0.1.0"
+dependencies = [
+ "marrow-project",
+ "marrow-syntax",
+]
+
+[[package]]
 name = "marrow-project"
 version = "0.1.0"
 dependencies = [

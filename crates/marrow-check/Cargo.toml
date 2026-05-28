@@ -1,0 +1,16 @@
+[package]
+name = "marrow-check"
+description = "Resolves and checks a Marrow project's source."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-syntax = { path = "../marrow-syntax" }
+marrow-project = { path = "../marrow-project" }
+
+[lints]
+workspace = true
