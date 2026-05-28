@@ -11,7 +11,7 @@
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
-use marrow_schema::{LayerMember, ResourceSchema, SavedRootSchema};
+use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema};
 use marrow_store::backend::Backend;
 use marrow_store::mem::StoreError;
 use marrow_store::path::{
@@ -441,32 +441,24 @@ pub fn plan_layer_field_write(
     field: &str,
     value: &SavedValue,
 ) -> Result<WritePlan, WriteError> {
+    plan_nested_field_write(schema, identity, &[(layer, key)], field, value)
+}
+
+/// Plan a field write into a (possibly nested) keyed group entry, descending the
+/// `layers` chain of `(layer, key…)` levels from the resource. Each level must
+/// name a group layer with matching key arity; the field is a scalar member of
+/// the innermost layer. Like the single-level case, groups carry no generated
+/// indexes (`schema.index_in_group`), so this is a plain replace-in-place write.
+pub fn plan_nested_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+    field: &str,
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
-    let declared = schema
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)
-        .ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_LAYER,
-            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
-        })?;
-    if declared.leaf_type.is_some() {
-        return Err(WriteError {
-            code: WRITE_NOT_A_GROUP_LAYER,
-            message: format!("keyed layer `{layer}` is a leaf, not a group"),
-        });
-    }
-    if key.len() != declared.key_params.len() {
-        return Err(WriteError {
-            code: WRITE_LAYER_KEY_ARITY,
-            message: format!(
-                "keyed layer `{layer}` expects {} key(s), got {}",
-                declared.key_params.len(),
-                key.len()
-            ),
-        });
-    }
-    let member = declared
+    let innermost = descend_group_layers(schema, layers)?;
+    let member = innermost
         .members
         .iter()
         .find_map(|member| match member {
@@ -475,12 +467,14 @@ pub fn plan_layer_field_write(
         })
         .ok_or_else(|| WriteError {
             code: WRITE_UNKNOWN_FIELD,
-            message: format!("group layer `{layer}` has no field `{field}`"),
+            message: format!("group layer `{}` has no field `{field}`", innermost.name),
         })?;
     check_type(field, &member.ty.text, value)?;
+    let mut path = nested_layer_path(root, identity, layers);
+    path.push(PathSegment::Field(field.into()));
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
-            path: encode_path(&layer_field_path(root, identity, layer, key, field)),
+            path: encode_path(&path),
             value: encode_value(value),
         }],
     })
@@ -733,10 +727,81 @@ fn layer_leaf_path(
     layer: &str,
     key: &[SavedKey],
 ) -> Vec<PathSegment> {
+    nested_layer_path(root, identity, &[(layer, key)])
+}
+
+/// The encoded-path segments for a (possibly nested) keyed group entry,
+/// `^root(identity).layer0(key0…).layer1(key1…)…`, appending a `ChildLayer` and
+/// its `IndexKey`s for each level of the chain.
+fn nested_layer_path(
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+) -> Vec<PathSegment> {
     let mut path = identity_path(root, identity);
-    path.push(PathSegment::ChildLayer(layer.into()));
-    path.extend(key.iter().cloned().map(PathSegment::IndexKey));
+    for (layer, key) in layers {
+        path.push(PathSegment::ChildLayer((*layer).into()));
+        path.extend(key.iter().cloned().map(PathSegment::IndexKey));
+    }
     path
+}
+
+/// Descend a non-empty chain of keyed group layers, validating that each level
+/// names a group (not a leaf) with the right key arity, and return the innermost
+/// layer's schema. Level 0 is a direct layer of the resource; each deeper level
+/// is a nested layer of the one before it.
+fn descend_group_layers<'a>(
+    schema: &'a ResourceSchema,
+    layers: &[(&str, &[SavedKey])],
+) -> Result<&'a LayerSchema, WriteError> {
+    let mut current: Option<&LayerSchema> = None;
+    for (name, key) in layers {
+        let declared = match current {
+            None => schema
+                .layers
+                .iter()
+                .find(|layer| &layer.name == name)
+                .ok_or_else(|| WriteError {
+                    code: WRITE_UNKNOWN_LAYER,
+                    message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
+                })?,
+            Some(parent) => parent
+                .members
+                .iter()
+                .find_map(|member| match member {
+                    LayerMember::Layer(layer) if &layer.name == name => Some(layer),
+                    _ => None,
+                })
+                .ok_or_else(|| WriteError {
+                    code: WRITE_UNKNOWN_LAYER,
+                    message: format!("keyed layer `{}` has no nested layer `{name}`", parent.name),
+                })?,
+        };
+        if declared.leaf_type.is_some() {
+            return Err(WriteError {
+                code: WRITE_NOT_A_GROUP_LAYER,
+                message: format!("keyed layer `{name}` is a leaf, not a group"),
+            });
+        }
+        if key.len() != declared.key_params.len() {
+            return Err(WriteError {
+                code: WRITE_LAYER_KEY_ARITY,
+                message: format!(
+                    "keyed layer `{name}` expects {} key(s), got {}",
+                    declared.key_params.len(),
+                    key.len()
+                ),
+            });
+        }
+        current = Some(declared);
+    }
+    current.ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_LAYER,
+        message: format!(
+            "resource `{}` field write needs at least one keyed layer",
+            schema.name
+        ),
+    })
 }
 
 /// The encoded-path segments for a group-entry field,

@@ -11,7 +11,8 @@ use marrow_write::{
     WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH,
     WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos,
     plan_field_write, plan_layer_field_write, plan_layer_group_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_resource_delete, plan_resource_merge, plan_resource_write,
+    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -1793,6 +1794,122 @@ fn a_group_entry_field_write_to_a_resource_without_a_saved_root_is_rejected() {
     );
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
+        "{result:?}"
+    );
+}
+
+/// A `versions(version)` group whose entries hold a nested `comments(pos)` group
+/// (a saved tree deeper than one keyed layer) and a nested `snippets(pos)` LEAF
+/// (so a descent cannot continue through it).
+const NESTED_GROUPS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    versions(version: int)
+        required title: string
+        comments(pos: int)
+            required text: string
+        snippets(pos: int): string
+";
+
+/// The encoded path `^books(id).versions(version).comments(pos).text`.
+fn nested_comment_text(id: i64, version: i64, pos: i64) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer("versions".into()),
+        PathSegment::IndexKey(SavedKey::Int(version)),
+        PathSegment::ChildLayer("comments".into()),
+        PathSegment::IndexKey(SavedKey::Int(pos)),
+        PathSegment::Field("text".into()),
+    ])
+}
+
+#[test]
+fn a_nested_group_field_write_descends_the_layer_chain() {
+    let book = schema(NESTED_GROUPS);
+    let mut store = MemStore::new();
+    plan_nested_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        &[
+            ("versions", &[SavedKey::Int(1)][..]),
+            ("comments", &[SavedKey::Int(2)][..]),
+        ],
+        "text",
+        &SavedValue::Str("nice".into()),
+    )
+    .expect("nested field write")
+    .commit(&mut store)
+    .expect("commit succeeds");
+    assert_eq!(
+        decode_value(
+            store
+                .read(&nested_comment_text(5, 1, 2))
+                .expect("nested text"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("nice".into())),
+    );
+}
+
+#[test]
+fn a_nested_group_field_write_validates_each_levels_key_arity() {
+    let book = schema(NESTED_GROUPS);
+    // `comments` takes one key; supplying two at the inner level is rejected even
+    // though the outer `versions` level is well formed.
+    let result = plan_nested_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        &[
+            ("versions", &[SavedKey::Int(1)][..]),
+            ("comments", &[SavedKey::Int(2), SavedKey::Int(3)][..]),
+        ],
+        "text",
+        &SavedValue::Str("nice".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_LAYER_KEY_ARITY),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_nested_group_field_write_cannot_descend_through_a_nested_leaf() {
+    let book = schema(NESTED_GROUPS);
+    // `snippets` is a nested LEAF inside `versions`, not a group, so the chain
+    // cannot continue into it to write a field.
+    let result = plan_nested_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        &[
+            ("versions", &[SavedKey::Int(1)][..]),
+            ("snippets", &[SavedKey::Int(2)][..]),
+        ],
+        "text",
+        &SavedValue::Str("nice".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NOT_A_GROUP_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_nested_group_field_write_through_an_unknown_inner_layer_is_rejected() {
+    let book = schema(NESTED_GROUPS);
+    // `versions` has no nested layer `chapters`.
+    let result = plan_nested_field_write(
+        &book,
+        &[SavedKey::Int(5)],
+        &[
+            ("versions", &[SavedKey::Int(1)][..]),
+            ("chapters", &[SavedKey::Int(2)][..]),
+        ],
+        "text",
+        &SavedValue::Str("nice".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
         "{result:?}"
     );
 }
