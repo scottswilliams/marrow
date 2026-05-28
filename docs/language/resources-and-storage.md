@@ -402,9 +402,12 @@ book.shelf = "favorites"
 ^books(id) = book
 ```
 
-A whole-resource read materializes the saved tree below that identity into a
-local value. It is useful for small records and construction. For large keyed
-layers or history, read the fields or child layers you need.
+A whole-resource read materializes the resource's fields — its top-level scalars
+and any unkeyed nested groups — into a local value. It does not pull in keyed
+child layers such as history, sequences, or keyed trees; those are read and
+written through their saved paths (for example `^books(id).versions(v)`), or
+traversed with `keys`, `values`, and `entries`. A whole read is useful for small
+records and construction; read or traverse the child layers you need directly.
 
 Whole-resource assignment replaces the saved resource for that identity.
 Fields and child entries absent from the assigned value are removed. Use
