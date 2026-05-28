@@ -822,6 +822,83 @@ fn an_unknown_condition_is_not_flagged() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
+#[test]
+fn rejects_a_call_with_the_wrong_argument_count() {
+    // `add` takes two parameters; `add(1)` and `add(1, 2, 3)` are both arity errors.
+    let found = check_module(
+        "call-arity",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(1)\n    var y = add(1, 2, 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_named_argument_that_is_not_a_parameter() {
+    // `add` has no parameter `c`.
+    let found = check_module(
+        "call-named",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(a: 1, c: 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn correct_calls_are_not_flagged() {
+    // Positional and named calls that match the signature are accepted.
+    let found = check_module(
+        "call-ok",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(1, 2)\n    var y = add(a: 5, b: 6)\n",
+        "check.call_argument",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn builtin_and_unresolved_calls_are_not_flagged() {
+    // `print` is a builtin (dispatched before user functions) and `mystery` does
+    // not resolve to a declared function; neither is checked for arity.
+    let found = check_module(
+        "call-skip",
+        "module m\n\
+         fn caller()\n    print(1, 2, 3)\n    var x = mystery(1, 2)\n",
+        "check.call_argument",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_a_wrong_argument_count_in_a_qualified_cross_module_call() {
+    // `a::helper` takes one parameter; the qualified call in module `b` passes two.
+    let root = temp_project("call-qualified", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\npub fn helper(x: int)\n    return\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\nfn caller()\n    a::helper(1, 2)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        with_code(&report, "check.call_argument").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,
@@ -836,6 +913,17 @@ fn with_code<'a>(
 /// Check a single script `src` and return its diagnostics with `code`.
 fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
     let root = temp_project(name, |root| write(root, "src/app.mw", src));
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    with_code(&report, code).into_iter().cloned().collect()
+}
+
+/// Check a single library module `src` (declaring `module m`, placed at the
+/// matching path `src/m.mw`) and return its diagnostics with `code`. Unlike
+/// [`check_script`], the file declares a module, so its functions are part of the
+/// checked program and resolve as call targets.
+fn check_module(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
+    let root = temp_project(name, |root| write(root, "src/m.mw", src));
     let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     with_code(&report, code).into_iter().cloned().collect()

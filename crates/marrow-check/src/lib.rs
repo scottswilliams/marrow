@@ -39,6 +39,9 @@ pub const CHECK_MISSING_RETURN: &str = "check.missing_return";
 pub const CHECK_OPERATOR_TYPE: &str = "check.operator_type";
 /// A condition (`if`/`while`) is not a `bool`.
 pub const CHECK_CONDITION_TYPE: &str = "check.condition_type";
+/// A call passes the wrong number of arguments, or names a parameter that does
+/// not exist, for the function it resolves to.
+pub const CHECK_CALL_ARGUMENT: &str = "check.call_argument";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -290,6 +293,12 @@ pub fn check_project(
                         &mut report.diagnostics,
                     );
                     check_function_types(&file.path, function, &mut report.diagnostics);
+                    check_call_signatures(
+                        &program,
+                        &file.path,
+                        &function.body,
+                        &mut report.diagnostics,
+                    );
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
                             code: CHECK_MISSING_RETURN.to_string(),
@@ -899,6 +908,227 @@ fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
         BinaryOp::NotEqual => "!=",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
+    }
+}
+
+/// Check every call in a function body for argument-count and named-argument
+/// mismatches against the resolved user-function signature.
+fn check_call_signatures(
+    program: &CheckedProgram,
+    file: &Path,
+    block: &marrow_syntax::Block,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for statement in &block.statements {
+        statement_calls(program, file, statement, diagnostics);
+    }
+}
+
+/// Visit the expressions a statement holds and recurse into its nested blocks.
+fn statement_calls(
+    program: &CheckedProgram,
+    file: &Path,
+    statement: &marrow_syntax::Statement,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::Const { value, .. }
+        | Statement::Throw { value, .. }
+        | Statement::Expr { value, .. } => expression_calls(program, file, value, diagnostics),
+        Statement::Var { value, .. } | Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                expression_calls(program, file, value, diagnostics);
+            }
+        }
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            expression_calls(program, file, target, diagnostics);
+            expression_calls(program, file, value, diagnostics);
+        }
+        Statement::Delete { path, .. } => expression_calls(program, file, path, diagnostics),
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            expression_calls(program, file, condition, diagnostics);
+            check_call_signatures(program, file, then_block, diagnostics);
+            for else_if in else_ifs {
+                expression_calls(program, file, &else_if.condition, diagnostics);
+                check_call_signatures(program, file, &else_if.block, diagnostics);
+            }
+            if let Some(block) = else_block {
+                check_call_signatures(program, file, block, diagnostics);
+            }
+        }
+        Statement::While {
+            condition, body, ..
+        } => {
+            expression_calls(program, file, condition, diagnostics);
+            check_call_signatures(program, file, body, diagnostics);
+        }
+        Statement::For { iterable, body, .. } => {
+            expression_calls(program, file, iterable, diagnostics);
+            check_call_signatures(program, file, body, diagnostics);
+        }
+        Statement::Transaction { body, .. } => {
+            check_call_signatures(program, file, body, diagnostics)
+        }
+        Statement::Lock { path, body, .. } => {
+            expression_calls(program, file, path, diagnostics);
+            check_call_signatures(program, file, body, diagnostics);
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            check_call_signatures(program, file, body, diagnostics);
+            if let Some(clause) = catch {
+                check_call_signatures(program, file, &clause.block, diagnostics);
+            }
+            if let Some(finally) = finally {
+                check_call_signatures(program, file, finally, diagnostics);
+            }
+        }
+        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
+    }
+}
+
+/// Recurse through an expression, checking each call it contains (including calls
+/// nested in arguments, operands, a field base, or interpolation parts).
+fn expression_calls(
+    program: &CheckedProgram,
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::{Expression, InterpolationPart};
+    match expr {
+        Expression::Call { callee, args, span } => {
+            expression_calls(program, file, callee, diagnostics);
+            for arg in args {
+                expression_calls(program, file, &arg.value, diagnostics);
+            }
+            check_call(program, file, callee, args, *span, diagnostics);
+        }
+        Expression::Binary { left, right, .. } => {
+            expression_calls(program, file, left, diagnostics);
+            expression_calls(program, file, right, diagnostics);
+        }
+        Expression::Unary { operand, .. } => expression_calls(program, file, operand, diagnostics),
+        Expression::Field { base, .. } => expression_calls(program, file, base, diagnostics),
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    expression_calls(program, file, expr, diagnostics);
+                }
+            }
+        }
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Unparsed { .. } => {}
+    }
+}
+
+/// Validate one call's arguments against the user function it resolves to. Only a
+/// plain name call that resolves to a declared function is checked; a builtin, std
+/// helper, `Error` constructor, out/inout call, key-lookup (non-name callee), or
+/// unresolved name is left alone — mirroring the runtime's dispatch order — so the
+/// check never fires on a non-function or a call this slice cannot resolve.
+fn check_call(
+    program: &CheckedProgram,
+    file: &Path,
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return;
+    };
+    if args.iter().any(|arg| arg.mode.is_some()) || is_builtin_call(segments) {
+        return;
+    }
+    let Some(function) = resolve_function(program, segments) else {
+        return;
+    };
+    // Every parameter is required (no defaults), so the argument count must match.
+    if args.len() != function.params.len() {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_CALL_ARGUMENT.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "function `{}` expects {} argument(s), but {} were given",
+                segments.join("::"),
+                function.params.len(),
+                args.len(),
+            ),
+            line: span.line,
+            column: span.column,
+        });
+    }
+    // Every named argument must name a parameter.
+    for arg in args {
+        if let Some(name) = &arg.name
+            && !function.params.iter().any(|param| &param.name == name)
+        {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_CALL_ARGUMENT.to_string(),
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "function `{}` has no parameter `{name}`",
+                    segments.join("::")
+                ),
+                line: span.line,
+                column: span.column,
+            });
+        }
+    }
+}
+
+/// Resolve a call name to a declared function, mirroring the runtime: a bare name
+/// matches the first function of that name in any module; a qualified `mod::fn`
+/// name matches a function in exactly that module.
+fn resolve_function<'p>(
+    program: &'p CheckedProgram,
+    segments: &[String],
+) -> Option<&'p CheckedFunction> {
+    let (name, module) = segments.split_last()?;
+    if module.is_empty() {
+        program
+            .modules
+            .iter()
+            .flat_map(|module| &module.functions)
+            .find(|function| &function.name == name)
+    } else {
+        let module_name = module.join("::");
+        program
+            .modules
+            .iter()
+            .find(|module| module.name == module_name)?
+            .functions
+            .iter()
+            .find(|function| &function.name == name)
+    }
+}
+
+/// Whether a name callee is a builtin, std helper, or the `Error` constructor —
+/// each dispatched before user functions at runtime, so never a program function.
+fn is_builtin_call(segments: &[String]) -> bool {
+    match segments {
+        [name] => matches!(
+            name.as_str(),
+            "Error" | "print" | "write" | "exists" | "get" | "nextId" | "append"
+        ),
+        [first, _, _] => first == "std",
+        _ => false,
     }
 }
 
