@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
@@ -1944,6 +1945,72 @@ fn env_without_an_environment_capability_is_a_capability_error() {
     let result = run_entry(&program, &store, "test::has", &[Value::Str("HOME".into())]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
+        "{result:?}"
+    );
+}
+
+/// A program that logs at each level, including an `Error` value.
+const LOG_SAMPLE: &str = "\
+fn note(m: string)
+    std::log::info(m)
+
+fn careful(m: string)
+    std::log::warn(m)
+
+fn boom()
+    std::log::error(Error(code: \"E_BOOM\", message: \"kaboom\"))
+";
+
+#[test]
+fn log_writes_each_level_to_the_host_sink() {
+    let program = checked_program(LOG_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    let sink = Rc::new(RefCell::new(String::new()));
+    let host = Host::new().with_log_sink(Rc::clone(&sink));
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::note",
+        &[Value::Str("hello".into())],
+    )
+    .expect("info");
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::careful",
+        &[Value::Str("watch out".into())],
+    )
+    .expect("warn");
+    run_entry_with_host(&program, &store, &host, "test::boom", &[]).expect("error");
+    assert_eq!(
+        sink.borrow().as_str(),
+        "INFO hello\nWARN watch out\nERROR [E_BOOM] kaboom\n"
+    );
+}
+
+#[test]
+fn log_without_a_log_capability_is_a_capability_error() {
+    let program = checked_program(LOG_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    // Plain `run_entry` supplies no host capabilities.
+    let result = run_entry(&program, &store, "test::note", &[Value::Str("hi".into())]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn log_error_requires_an_error_value() {
+    let program = checked_program("fn t()\n    std::log::error(\"not an error\")\n");
+    let store = RefCell::new(MemStore::new());
+    let sink = Rc::new(RefCell::new(String::new()));
+    let host = Host::new().with_log_sink(Rc::clone(&sink));
+    let result = run_entry_with_host(&program, &store, &host, "test::t", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
     );
 }

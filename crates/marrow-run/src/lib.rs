@@ -120,6 +120,10 @@ pub struct Host {
     /// The run's environment variables, when an environment capability is
     /// provided. A run without it cannot use `std::env`.
     environment: Option<HashMap<String, String>>,
+    /// The run's log sink, when a log capability is provided. `std::log` appends
+    /// formatted lines here; the command or embedding decides where they go
+    /// (e.g. standard error). A run without it cannot use `std::log`.
+    log: Option<Rc<RefCell<String>>>,
 }
 
 impl Host {
@@ -156,6 +160,14 @@ impl Host {
     /// and tests.
     pub fn with_environment(mut self, variables: HashMap<String, String>) -> Self {
         self.environment = Some(variables);
+        self
+    }
+
+    /// A host that collects `std::log` output into `sink`. The caller owns the
+    /// sink (a shared buffer), so a command can flush it to standard error and a
+    /// test can inspect it.
+    pub fn with_log_sink(mut self, sink: Rc<RefCell<String>>) -> Self {
+        self.log = Some(sink);
         self
     }
 }
@@ -285,15 +297,8 @@ fn invoke(
 /// well-formed Error (string `code`/`message`); a malformed one renders blank,
 /// which the constructor and the throw guard make unreachable in practice.
 fn uncaught_throw(value: Value, span: SourceSpan) -> RuntimeError {
-    let field = |name: &str| match &value {
-        Value::Resource(fields) => fields.iter().find_map(|(field, value)| match value {
-            Value::Str(text) if field == name => Some(text.clone()),
-            _ => None,
-        }),
-        _ => None,
-    };
-    let code = field("code").unwrap_or_default();
-    let message = field("message").unwrap_or_default();
+    let code = error_field(&value, "code").unwrap_or_default();
+    let message = error_field(&value, "message").unwrap_or_default();
     RuntimeError {
         code: RUN_UNCAUGHT_THROW,
         message: format!("uncaught error [{code}]: {message}"),
@@ -451,6 +456,13 @@ fn eval_call(
             && second == "env"
         {
             return eval_env(op, args, span, env).map(Some);
+        }
+        // `std::log::*` writes to the run's log capability and yields nothing.
+        if let [first, second, op] = segments.as_slice()
+            && first == "std"
+            && second == "log"
+        {
+            return eval_log(op, args, span, env);
         }
         // `std::assert::*` testing builtins raise `run.assertion` on failure.
         if let [first, second, op] = segments.as_slice()
@@ -1115,6 +1127,57 @@ fn eval_env(
         }
         ("exists" | "get" | "require", _) => Err(std_arity("env", op, span)),
         _ => Err(unsupported(&format!("std::env::{op}"), span)),
+    }
+}
+
+/// Evaluate a `std::log::*` builtin against the host's log capability:
+/// `info(message)`, `warn(message)`, or `error(err)`. Each appends one formatted
+/// line to the sink and yields nothing. A run with no log capability raises a
+/// typed capability error.
+fn eval_log(
+    op: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    // Evaluate the arguments before borrowing the sink, so their mutable use of
+    // `env` does not overlap the shared read of the capability.
+    let values: Vec<Value> = args
+        .iter()
+        .map(|arg| eval_expr(&arg.value, env))
+        .collect::<Result<_, _>>()?;
+    let sink = env.host.log.as_ref().ok_or_else(|| RuntimeError {
+        code: RUN_CAPABILITY,
+        message: format!("this run provides no log capability for `std::log::{op}`"),
+        span,
+    })?;
+    let line = match (op, values.as_slice()) {
+        ("info", [Value::Str(message)]) => format!("INFO {message}\n"),
+        ("warn", [Value::Str(message)]) => format!("WARN {message}\n"),
+        ("info" | "warn", [_]) => return Err(type_error("expected a string message", span)),
+        ("error", [value]) => {
+            let code = error_field(value, "code")
+                .ok_or_else(|| type_error("`std::log::error` expects an Error", span))?;
+            let message = error_field(value, "message").unwrap_or_default();
+            format!("ERROR [{code}] {message}\n")
+        }
+        ("info" | "warn" | "error", _) => return Err(std_arity("log", op, span)),
+        _ => return Err(unsupported(&format!("std::log::{op}"), span)),
+    };
+    sink.borrow_mut().push_str(&line);
+    Ok(None)
+}
+
+/// The string value of an `Error` resource's named field (`code`/`message`), or
+/// `None` if the value is not an Error-shaped resource carrying that string
+/// field. Shared by uncaught-throw reporting and `std::log::error`.
+fn error_field(value: &Value, name: &str) -> Option<String> {
+    match value {
+        Value::Resource(fields) => fields.iter().find_map(|(field, value)| match value {
+            Value::Str(text) if field == name => Some(text.clone()),
+            _ => None,
+        }),
+        _ => None,
     }
 }
 
