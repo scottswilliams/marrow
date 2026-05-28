@@ -54,6 +54,13 @@ pub const WRITE_UNKNOWN_FIELD: &str = "write.unknown_field";
 /// A unique index already maps the supplied key(s) to a different resource, so
 /// committing this write would violate the uniqueness constraint.
 pub const WRITE_UNIQUE_CONFLICT: &str = "write.unique_conflict";
+/// A keyed-layer write names a layer the resource does not declare.
+pub const WRITE_UNKNOWN_LAYER: &str = "write.unknown_layer";
+/// A keyed-leaf write targets a group layer, which holds nested members rather
+/// than a single leaf value.
+pub const WRITE_NOT_A_LEAF_LAYER: &str = "write.not_a_leaf_layer";
+/// A keyed-layer write supplies the wrong number of layer keys.
+pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 
 /// One staged store operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,6 +348,53 @@ pub fn plan_resource_merge(
     Ok(WritePlan { steps })
 }
 
+/// Plan a keyed-leaf write: set the entry at `^root(identity).layer(key)` to
+/// `value`. `layer` must be a declared keyed LEAF (e.g. `tags(pos: int):
+/// string`), `key` must match the layer's key arity, and `value` must match the
+/// leaf type. A keyed leaf holds a single value at one path, so this is a plain
+/// replace-in-place write with no index maintenance — generated indexes do not
+/// span keyed child layers (docs/language `resources-and-storage.md`). Returns a
+/// [`WriteError`] if the layer is unknown, is a group rather than a leaf, the key
+/// arity is wrong, or the value is mistyped.
+pub fn plan_layer_leaf_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = schema
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
+        })?;
+    let leaf_type = declared.leaf_type.as_ref().ok_or_else(|| WriteError {
+        code: WRITE_NOT_A_LEAF_LAYER,
+        message: format!("keyed layer `{layer}` is a group, not a leaf"),
+    })?;
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    check_type(layer, &leaf_type.text, value)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&layer_leaf_path(root, identity, layer, key)),
+            value: encode_value(value),
+        }],
+    })
+}
+
 /// Resolve a resource's saved root and check the supplied identity has the
 /// expected number of keys.
 fn resolve_saved_root<'a>(
@@ -407,6 +461,20 @@ fn identity_path(root: &SavedRootSchema, identity: &[SavedKey]) -> Vec<PathSegme
 fn field_path(root: &SavedRootSchema, identity: &[SavedKey], field: &str) -> Vec<PathSegment> {
     let mut path = identity_path(root, identity);
     path.push(PathSegment::Field(field.into()));
+    path
+}
+
+/// The encoded-path segments for a keyed-leaf entry,
+/// `^root(identity).layer(key…)`.
+fn layer_leaf_path(
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+) -> Vec<PathSegment> {
+    let mut path = identity_path(root, identity);
+    path.push(PathSegment::ChildLayer(layer.into()));
+    path.extend(key.iter().cloned().map(PathSegment::IndexKey));
     path
 }
 

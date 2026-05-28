@@ -7,9 +7,10 @@ use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
-    WRITE_UNKNOWN_FIELD, next_id, plan_field_write, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    FieldValue, ResourceValue, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_LEAF_LAYER,
+    WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD,
+    WRITE_UNKNOWN_LAYER, next_id, plan_field_write, plan_layer_leaf_write, plan_resource_delete,
+    plan_resource_merge, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -77,6 +78,25 @@ resource Item at ^items(tenant: string, id: int)
     index bySku(sku) unique
 ";
 
+/// `Book` with a keyed-leaf layer (`tags`) and a group layer (`notes`), to
+/// exercise keyed-leaf writes and the leaf-vs-group distinction.
+const BOOK_LAYERS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    tags(pos: int): string
+
+    notes(noteId: string)
+        text: string
+";
+
+/// A LOCAL `Book` (no saved root) with a keyed-leaf layer, to exercise the
+/// no-saved-root rejection through the layer planner.
+const LOCAL_BOOK_LAYERS: &str = "\
+resource Book
+    required title: string
+    tags(pos: int): string
+";
+
 fn saved(text: &str) -> FieldValue {
     FieldValue::Saved(SavedValue::Str(text.into()))
 }
@@ -116,6 +136,29 @@ fn merge(
     plan_resource_merge(schema, identity, &value, store)
         .expect("valid merge")
         .commit(store);
+}
+
+/// Plan and commit a keyed-leaf write of `^books(id).tags(pos)`.
+fn write_tag(store: &mut MemStore, schema: &ResourceSchema, id: i64, pos: i64, value: &str) {
+    plan_layer_leaf_write(
+        schema,
+        &[SavedKey::Int(id)],
+        "tags",
+        &[SavedKey::Int(pos)],
+        &SavedValue::Str(value.into()),
+    )
+    .expect("valid keyed-leaf write")
+    .commit(store);
+}
+
+/// The encoded path `^books(id).tags(pos)` of a keyed-leaf entry.
+fn tag_entry(id: i64, pos: i64) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer("tags".into()),
+        PathSegment::IndexKey(SavedKey::Int(pos)),
+    ])
 }
 
 /// The encoded path `^books(id).field`.
@@ -1231,5 +1274,150 @@ fn merging_an_indexed_field_into_a_record_without_it_creates_the_entry() {
         store.read(&by_shelf_entry("fiction", 42)),
         Some(&b"1"[..]),
         "entry created when the merge first populates the indexed field"
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_lowers_a_value_into_the_store() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 5, 1, "favorite");
+    assert_eq!(
+        decode_value(
+            store.read(&tag_entry(5, 1)).expect("tag entry"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("favorite".into()))
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_with_a_mismatched_value_type_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    // `tags` holds strings; an int does not satisfy the leaf type.
+    let result = plan_layer_leaf_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "tags",
+        &[SavedKey::Int(1)],
+        &SavedValue::Int(7),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_TYPE_MISMATCH),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_to_an_unknown_layer_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    let result = plan_layer_leaf_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "chapters",
+        &[SavedKey::Int(1)],
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn writing_a_group_layer_through_the_leaf_planner_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    // `notes` is a group (nested members), not a keyed leaf.
+    let result = plan_layer_leaf_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "notes",
+        &[SavedKey::Str("n1".into())],
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NOT_A_LEAF_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_with_the_wrong_key_arity_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    // `tags` takes one key; supplying two is rejected.
+    let result = plan_layer_leaf_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "tags",
+        &[SavedKey::Int(1), SavedKey::Int(2)],
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_LAYER_KEY_ARITY),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_replaces_only_that_entry() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 5, 1, "a");
+    write_tag(&mut store, &book, 5, 2, "b");
+    write_tag(&mut store, &book, 5, 1, "c");
+
+    assert_eq!(
+        decode_value(store.read(&tag_entry(5, 1)).expect("tag 1"), ValueType::Str),
+        Some(SavedValue::Str("c".into())),
+        "the keyed entry is replaced in place"
+    );
+    assert_eq!(
+        decode_value(store.read(&tag_entry(5, 2)).expect("tag 2"), ValueType::Str),
+        Some(SavedValue::Str("b".into())),
+        "a sibling entry is untouched"
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_leaves_top_level_fields_untouched() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(5)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+        },
+    );
+    write_tag(&mut store, &book, 5, 1, "favorite");
+
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(5, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into())),
+        "the top-level field is left in place"
+    );
+    assert!(
+        store.read(&tag_entry(5, 1)).is_some(),
+        "the tag entry is present"
+    );
+}
+
+#[test]
+fn a_keyed_leaf_write_to_a_resource_without_a_saved_root_is_rejected() {
+    let book = schema(LOCAL_BOOK_LAYERS);
+    let result = plan_layer_leaf_write(
+        &book,
+        &[SavedKey::Int(5)],
+        "tags",
+        &[SavedKey::Int(1)],
+        &SavedValue::Str("x".into()),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
+        "{result:?}"
     );
 }
