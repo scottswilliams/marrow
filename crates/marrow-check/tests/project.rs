@@ -991,6 +991,49 @@ fn a_correctly_typed_saved_field_read_is_not_flagged() {
 }
 
 #[test]
+fn a_local_resource_field_read_feeds_operator_checks() {
+    // `book.title` is `string` from Book's schema, so `+ 1` is string-plus-int.
+    let found = check_module(
+        "local-field-op",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    var book: Book\n    var x = book.title + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_correctly_typed_local_resource_field_is_not_flagged() {
+    // `book.title` is `string`, matching `f`'s declared `string` return.
+    let found = check_module(
+        "local-field-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f(): string\n    var book: Book\n    return book.title\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn passing_a_resource_to_a_mismatched_resource_parameter_is_not_flagged() {
+    // Resources are not primitives, so a resource-typed argument is never flagged
+    // against a different resource-typed parameter — resource-name resolution must
+    // not turn this sound omission into a false positive.
+    let found = check_module(
+        "resource-arg",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Shelf at ^shelves(id: int)\n    name: string\n\n\
+         fn useShelf(s: Shelf): bool\n    return true\n\n\
+         fn f()\n    var book: Book\n    var ok = useShelf(book)\n",
+        "check.call_argument",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.

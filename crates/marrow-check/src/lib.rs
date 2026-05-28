@@ -469,12 +469,12 @@ fn check_function_types(
     function: &marrow_syntax::FunctionDecl,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // The base scope frame is the parameter list. Type checking only inspects
-    // primitives, so resource and identity names need not resolve here.
+    // The base scope frame is the parameter list, resolved against the project's
+    // resources so a resource-typed parameter feeds field-type inference.
     let params = function
         .params
         .iter()
-        .map(|param| (param.name.clone(), MarrowType::resolve(&param.ty, &[])))
+        .map(|param| (param.name.clone(), resolve_type(&param.ty, program)))
         .collect();
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![params];
     // The declared return type (unknown for a void function), used to check each
@@ -482,7 +482,7 @@ fn check_function_types(
     let return_type = function
         .return_type
         .as_ref()
-        .map_or(MarrowType::Unknown, |ty| MarrowType::resolve(ty, &[]));
+        .map_or(MarrowType::Unknown, |ty| resolve_type(ty, program));
     check_block_types(
         program,
         file,
@@ -533,12 +533,12 @@ fn check_statement_types(
                 check_assignment(
                     file,
                     *span,
-                    &MarrowType::resolve(ty, &[]),
+                    &resolve_type(ty, program),
                     &value_type,
                     diagnostics,
                 );
             }
-            bind(scope, name, binding_type(ty.as_ref(), value_type));
+            bind(scope, name, binding_type(ty.as_ref(), value_type, program));
         }
         Statement::Var {
             name,
@@ -556,12 +556,12 @@ fn check_statement_types(
                 check_assignment(
                     file,
                     *span,
-                    &MarrowType::resolve(ty, &[]),
+                    &resolve_type(ty, program),
                     &value_type,
                     diagnostics,
                 );
             }
-            bind(scope, name, binding_type(ty.as_ref(), value_type));
+            bind(scope, name, binding_type(ty.as_ref(), value_type, program));
         }
         Statement::Assign {
             target,
@@ -682,9 +682,13 @@ fn check_statement_types(
 
 /// The declared type of a binding: its annotation when written, otherwise the
 /// inferred type of its initializer.
-fn binding_type(annotation: Option<&marrow_syntax::TypeRef>, value_type: MarrowType) -> MarrowType {
+fn binding_type(
+    annotation: Option<&marrow_syntax::TypeRef>,
+    value_type: MarrowType,
+    program: &CheckedProgram,
+) -> MarrowType {
     match annotation {
-        Some(ty) => MarrowType::resolve(ty, &[]),
+        Some(ty) => resolve_type(ty, program),
         None => value_type,
     }
 }
@@ -843,11 +847,14 @@ fn infer_type(
             }
         }
         Expression::Field { base, name, .. } => {
-            infer_type(program, base, scope, file, diagnostics);
+            let base_type = infer_type(program, base, scope, file, diagnostics);
             // A saved field read resolves to its declared type: a top-level field
             // `^root(key…).field` or a group-layer field `^root(key…).layer(key…).field`.
+            // A field off a resource-typed local (`book.title`) resolves through the
+            // resource's schema.
             saved_field_type(program, base, name)
                 .or_else(|| saved_group_field_type(program, base, name))
+                .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
         }
         // A multi-segment name, saved root, or undecomposed text has no known
@@ -898,6 +905,46 @@ fn find_resource_schema<'p>(
                 .as_ref()
                 .is_some_and(|saved| saved.root == root)
         })
+}
+
+/// Resolve a type annotation against the project's resource names, so a resource
+/// type like `Book` resolves to `MarrowType::Resource("Book")` rather than
+/// `Unknown` — which lets field reads off a resource-typed local be typed.
+fn resolve_type(ty: &marrow_syntax::TypeRef, program: &CheckedProgram) -> MarrowType {
+    let names: Vec<String> = program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module
+                .resources
+                .iter()
+                .map(|resource| resource.name.clone())
+        })
+        .collect();
+    MarrowType::resolve(ty, &names)
+}
+
+/// The declared type of a field read off a resource-typed value, e.g. `book.title`
+/// where `book: Book`. `base_type` must be a known resource type; the field is
+/// looked up in that resource's schema. Mirrors the runtime's local field read.
+fn local_field_type(
+    program: &CheckedProgram,
+    base_type: &MarrowType,
+    field: &str,
+) -> Option<MarrowType> {
+    let MarrowType::Resource(name) = base_type else {
+        return None;
+    };
+    let resource = program
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .find(|resource| &resource.name == name)?;
+    let field = resource
+        .fields
+        .iter()
+        .find(|declared| declared.name == field)?;
+    Some(MarrowType::resolve(&field.ty, &[]))
 }
 
 /// The declared type of a group-layer field read `^root(key…).layer(key…).field`.
