@@ -323,6 +323,19 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
+    While {
+        label: Option<String>,
+        condition: Expression,
+        body: Block,
+        span: SourceSpan,
+    },
+    For {
+        label: Option<String>,
+        binding: ForBinding,
+        iterable: Expression,
+        body: Block,
+        span: SourceSpan,
+    },
     Transaction {
         body: Block,
         span: SourceSpan,
@@ -332,9 +345,9 @@ pub enum Statement {
         body: Block,
         span: SourceSpan,
     },
-    /// Compound statements (`while`, `for`, `try`) and statement lines the
-    /// parser cannot yet structure. Future syntax-tree slices replace
-    /// `Unparsed` with concrete variants.
+    /// Compound statements (`try`) and statement lines the parser cannot yet
+    /// structure. Future syntax-tree slices replace `Unparsed` with concrete
+    /// variants.
     Unparsed {
         span: SourceSpan,
     },
@@ -345,6 +358,14 @@ pub enum Statement {
 pub struct ElseIf {
     pub condition: Expression,
     pub block: Block,
+}
+
+/// The loop variable(s) of a `for` statement: `for first in ...` or
+/// `for first, second in ...`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForBinding {
+    pub first: String,
+    pub second: Option<String>,
 }
 
 impl Statement {
@@ -361,6 +382,8 @@ impl Statement {
             | Self::Throw { span, .. }
             | Self::Expr { span, .. }
             | Self::If { span, .. }
+            | Self::While { span, .. }
+            | Self::For { span, .. }
             | Self::Transaction { span, .. }
             | Self::Lock { span, .. }
             | Self::Unparsed { span } => *span,
@@ -2489,8 +2512,22 @@ impl<'a> StmtParser<'a> {
     }
 
     fn statement(&mut self) -> Statement {
+        // A loop label (`outer:`) precedes a `while` or `for`. `try_loop_label`
+        // only consumes the label when one of those keywords follows, so the
+        // `_` arm is necessarily `while`.
+        if let Some((label, label_span)) = self.try_loop_label() {
+            return match self.peek() {
+                Some(TokenKind::Keyword(Keyword::For)) => {
+                    self.for_stmt(Some(label), Some(label_span))
+                }
+                _ => self.while_stmt(Some(label), Some(label_span)),
+            };
+        }
+
         match self.tokens[self.pos].kind {
             TokenKind::Keyword(Keyword::If) => return self.if_stmt(),
+            TokenKind::Keyword(Keyword::While) => return self.while_stmt(None, None),
+            TokenKind::Keyword(Keyword::For) => return self.for_stmt(None, None),
             TokenKind::Keyword(Keyword::Transaction) => return self.transaction_stmt(),
             TokenKind::Keyword(Keyword::Lock) => return self.lock_stmt(),
             TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
@@ -2507,6 +2544,66 @@ impl<'a> StmtParser<'a> {
             });
         self.pos = (newline + 1).min(self.tokens.len());
         statement
+    }
+
+    /// If the upcoming tokens are `identifier ":" ("while" | "for")`, consume
+    /// the label and colon and return the label name and its span.
+    fn try_loop_label(&mut self) -> Option<(String, SourceSpan)> {
+        let name = self.tokens.get(self.pos)?;
+        if name.kind != TokenKind::Identifier
+            || self.peek_at(1) != Some(TokenKind::Colon)
+            || !matches!(
+                self.peek_at(2),
+                Some(TokenKind::Keyword(Keyword::While | Keyword::For))
+            )
+        {
+            return None;
+        }
+        let label = name.text(self.source).to_string();
+        let span = name.span;
+        self.advance(); // identifier
+        self.advance(); // `:`
+        Some((label, span))
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<TokenKind> {
+        self.tokens.get(self.pos + offset).map(|token| token.kind)
+    }
+
+    fn while_stmt(&mut self, label: Option<String>, label_span: Option<SourceSpan>) -> Statement {
+        let keyword = self.advance(); // `while`
+        let start = label_span.unwrap_or(keyword.span);
+        let condition = self.header_expression();
+        let body = self.block_body();
+        Statement::While {
+            label,
+            condition,
+            span: join_spans(start, body.span),
+            body,
+        }
+    }
+
+    fn for_stmt(&mut self, label: Option<String>, label_span: Option<SourceSpan>) -> Statement {
+        let keyword = self.advance(); // `for`
+        let start = label_span.unwrap_or(keyword.span);
+        let newline = self.find_line_end();
+        let header = &self.tokens[self.pos..newline];
+        let parsed = parse_for_header(self.source, header);
+        self.pos = (newline + 1).min(self.tokens.len());
+        let body = self.block_body();
+
+        match parsed {
+            Some((binding, iterable)) => Statement::For {
+                label,
+                binding,
+                iterable,
+                span: join_spans(start, body.span),
+                body,
+            },
+            None => Statement::Unparsed {
+                span: join_spans(start, body.span),
+            },
+        }
     }
 
     fn if_stmt(&mut self) -> Statement {
@@ -2846,16 +2943,48 @@ fn parse_assign_or_expr(source: &str, line: &[Token]) -> Option<Statement> {
 /// Index of the first top-level `=` (assignment separator), skipping `=` nested
 /// inside parentheses or brackets where it means equality.
 fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
+    find_top_level(tokens, TokenKind::Equal)
+}
+
+/// Index of the first occurrence of `kind` at parenthesis/bracket depth 0.
+fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {
             TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
-            TokenKind::Equal if depth == 0 => return Some(index),
+            other if other == kind && depth == 0 => return Some(index),
             _ => {}
         }
     }
     None
+}
+
+/// Parse a `for` header `binding in iterable` into the loop binding and the
+/// iterable expression. Returns `None` if the `in` keyword or binding is
+/// malformed.
+fn parse_for_header(source: &str, header: &[Token]) -> Option<(ForBinding, Expression)> {
+    let in_index = find_top_level(header, TokenKind::Keyword(Keyword::In))?;
+    let binding = parse_for_binding(source, &header[..in_index])?;
+    let iterable = expr_of(source, &header[in_index + 1..])?;
+    Some((binding, iterable))
+}
+
+fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
+    let ident = |token: &Token| {
+        (token.kind == TokenKind::Identifier).then(|| token.text(source).to_string())
+    };
+    match tokens {
+        [first] => Some(ForBinding {
+            first: ident(first)?,
+            second: None,
+        }),
+        [first, comma, second] if comma.kind == TokenKind::Comma => Some(ForBinding {
+            first: ident(first)?,
+            second: Some(ident(second)?),
+        }),
+        _ => None,
+    }
 }
 
 fn expr_of(source: &str, tokens: &[Token]) -> Option<Expression> {

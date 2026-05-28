@@ -303,14 +303,104 @@ fn parses_nested_if_inside_then_block() {
 }
 
 #[test]
-fn compound_statements_are_unparsed_but_do_not_swallow_siblings() {
-    // The `for` block is kept as Unparsed, yet the following `return` still
-    // parses as its own statement.
+fn parses_while_and_for_loops() {
     let parsed = parse_source(
         "module app\n\
          fn run()\n\
+         \x20   while n < 10\n\
+         \x20       n = n + 1\n\
          \x20   for id in keys(^books)\n\
          \x20       print(id)\n\
+         \x20   for shelf, id in entries(^books.byShelf)\n\
+         \x20       print(id)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let statements = &run.body.statements;
+    assert_eq!(statements.len(), 3, "{statements:#?}");
+
+    let Statement::While {
+        label: None,
+        condition,
+        body,
+        ..
+    } = &statements[0]
+    else {
+        panic!("expected while, got {:?}", statements[0]);
+    };
+    assert!(matches!(
+        condition,
+        Expression::Binary {
+            op: BinaryOp::Less,
+            ..
+        }
+    ));
+    assert_eq!(body.statements.len(), 1);
+
+    let Statement::For {
+        label: None,
+        binding,
+        iterable,
+        ..
+    } = &statements[1]
+    else {
+        panic!("expected for, got {:?}", statements[1]);
+    };
+    assert_eq!(binding.first, "id");
+    assert_eq!(binding.second, None);
+    assert!(matches!(iterable, Expression::Call { .. }));
+
+    let Statement::For { binding, .. } = &statements[2] else {
+        panic!("expected paired for, got {:?}", statements[2]);
+    };
+    assert_eq!(binding.first, "shelf");
+    assert_eq!(binding.second.as_deref(), Some("id"));
+}
+
+#[test]
+fn parses_labeled_loops() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   outer: for id in keys(^books)\n\
+         \x20       inner: while ready\n\
+         \x20           break outer\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::For {
+        label: Some(outer),
+        body,
+        ..
+    } = &run.body.statements[0]
+    else {
+        panic!("expected labeled for, got {:?}", run.body.statements[0]);
+    };
+    assert_eq!(outer, "outer");
+    let Statement::While {
+        label: Some(inner),
+        body: while_body,
+        ..
+    } = &body.statements[0]
+    else {
+        panic!("expected labeled while, got {:?}", body.statements[0]);
+    };
+    assert_eq!(inner, "inner");
+    assert!(
+        matches!(&while_body.statements[0], Statement::Break { label: Some(target), .. } if target == "outer"),
+        "expected `break outer`, got {:?}",
+        while_body.statements[0]
+    );
+}
+
+#[test]
+fn try_block_is_unparsed_but_does_not_swallow_siblings() {
+    // `try` is still Unparsed, yet the following `return` parses on its own.
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       risky()\n\
          \x20   return\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -319,7 +409,7 @@ fn compound_statements_are_unparsed_but_do_not_swallow_siblings() {
     assert_eq!(statements.len(), 2, "{statements:#?}");
     assert!(
         matches!(&statements[0], Statement::Unparsed { .. }),
-        "stmt 0 should be the unparsed for-loop: {:?}",
+        "stmt 0 should be the unparsed try: {:?}",
         statements[0]
     );
     assert!(
@@ -350,10 +440,13 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
         "stmt 0: {:?}",
         statements[0]
     );
+    let Statement::For { body, .. } = &statements[1] else {
+        panic!("stmt 1 should be the for-loop: {:?}", statements[1]);
+    };
     assert!(
-        matches!(&statements[1], Statement::Unparsed { .. }),
-        "stmt 1 should be the unparsed for-loop: {:?}",
-        statements[1]
+        matches!(&body.statements[0], Statement::If { .. }),
+        "for body should hold the nested if: {:?}",
+        body.statements[0]
     );
 }
 
