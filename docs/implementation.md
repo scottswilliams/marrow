@@ -391,6 +391,12 @@ replays one into an empty store in a single transaction; a non-empty target fail
 with `restore.not_empty`, since restoring over existing data is an explicit
 maintenance action.
 
+`marrow lsp` is the editor language server: JSON-RPC over stdio with
+`Content-Length` framing. It tracks open documents with full text sync and
+publishes diagnostics; today those are parse diagnostics, with hover and
+project-level (checked-fact) diagnostics to follow. It is distinct from
+`marrow serve` below — a different protocol for a different purpose.
+
 `marrow serve` is optional. Normal commands may open a project store directly.
 The server is useful when several local tools need one long-lived owner for a
 persistent backend, live reads, or local-session inspection.

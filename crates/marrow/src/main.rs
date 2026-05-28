@@ -5,6 +5,8 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
+mod lsp;
+
 const HELP: &str = "\
 Marrow
 
@@ -16,6 +18,7 @@ Usage:
   marrow backup <projectdir> <archive>
   marrow restore <projectdir> <archive>
   marrow data <roots|stats> <projectdir>
+  marrow lsp
   marrow --version
   marrow --help
 
@@ -45,6 +48,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|arg| arg == "data") {
         return data(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "lsp") {
+        return lsp::run(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
