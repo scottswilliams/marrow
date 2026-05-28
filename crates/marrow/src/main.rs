@@ -15,6 +15,7 @@ Usage:
   marrow test <projectdir>
   marrow backup <projectdir> <archive>
   marrow restore <projectdir> <archive>
+  marrow data <roots|stats> <projectdir>
   marrow --version
   marrow --help
 
@@ -41,6 +42,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|arg| arg == "restore") {
         return restore(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "data") {
+        return data(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
@@ -325,10 +329,10 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
     }
 }
 
-/// Resolve the project's configured store to its on-disk location: `Ok(None)` for
-/// the in-memory default, or `Ok(Some(path))` for the native redb file (creating
-/// its data directory). A bad store config is reported and its exit code returned.
-fn resolve_store_path(
+/// The project store's redb file path (native backend), or `Ok(None)` for the
+/// in-memory default. Pure — no filesystem side effects; reports and returns the
+/// exit code only when a native store omits its `dataDir`.
+fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Result<Option<PathBuf>, ExitCode> {
@@ -350,14 +354,27 @@ fn resolve_store_path(
                 );
                 return Err(ExitCode::FAILURE);
             };
-            let data_path = Path::new(dir).join(data_dir);
-            std::fs::create_dir_all(&data_path).map_err(|error| {
-                report_io_error(&data_path.display().to_string(), &error, CheckFormat::Text);
-                ExitCode::FAILURE
-            })?;
-            Ok(Some(data_path.join("marrow.redb")))
+            Ok(Some(Path::new(dir).join(data_dir).join("marrow.redb")))
         }
     }
+}
+
+/// Like [`native_store_path`], but creates the data directory so the store can be
+/// opened for writing. `Ok(None)` is the in-memory default.
+fn resolve_store_path(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Result<Option<PathBuf>, ExitCode> {
+    let Some(path) = native_store_path(dir, config)? else {
+        return Ok(None);
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            report_io_error(&parent.display().to_string(), &error, CheckFormat::Text);
+            ExitCode::FAILURE
+        })?;
+    }
+    Ok(Some(path))
 }
 
 /// Open the project's configured store for exclusive access (used by backup and
@@ -376,6 +393,28 @@ fn open_owned_store(
                 Err(ExitCode::FAILURE)
             }
         },
+    }
+}
+
+/// Open the project's configured store read-only for inspection, or `Ok(None)` if
+/// it holds no saved data on disk yet (the in-memory default, or the native file
+/// does not exist). Never creates a store — inspection is read-only.
+fn open_store_for_inspection(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Result<Option<Box<dyn marrow_store::backend::Backend>>, ExitCode> {
+    let Some(path) = native_store_path(dir, config)? else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    match marrow_store::redb::RedbStore::open_read_only(&path) {
+        Ok(store) => Ok(Some(Box::new(store))),
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            Err(ExitCode::FAILURE)
+        }
     }
 }
 
@@ -709,6 +748,143 @@ fn restore(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Parse exactly one positional path for a command, handling `--help` and
+/// rejecting options or a wrong count.
+fn one_positional(command: &str, args: &[String]) -> Result<String, ExitCode> {
+    let mut dir = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--help" | "-h" => {
+                print!("Usage:\n  marrow {command} <projectdir>\n");
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => {
+                eprintln!("unknown {command} option: {value}");
+                return Err(ExitCode::from(2));
+            }
+            value => {
+                if dir.replace(value.to_string()).is_some() {
+                    eprintln!("marrow {command} accepts one project directory");
+                    return Err(ExitCode::from(2));
+                }
+            }
+        }
+        index += 1;
+    }
+    dir.ok_or_else(|| {
+        eprintln!("missing project directory");
+        ExitCode::from(2)
+    })
+}
+
+/// Inspect a project's saved data, read-only:
+/// `marrow data <roots|stats> <projectdir>`.
+fn data(args: &[String]) -> ExitCode {
+    let Some((subcommand, rest)) = args.split_first() else {
+        eprintln!("missing data subcommand; expected `roots` or `stats`");
+        eprintln!("run `marrow data --help` for usage");
+        return ExitCode::from(2);
+    };
+    match subcommand.as_str() {
+        "--help" | "-h" => {
+            print!(
+                "\
+Usage:
+  marrow data roots <projectdir>   list the saved roots
+  marrow data stats <projectdir>   count saved roots and records
+
+Read-only inspection of a project's saved data; it never creates or modifies the
+store.
+"
+            );
+            ExitCode::SUCCESS
+        }
+        "roots" => data_roots(rest),
+        "stats" => data_stats(rest),
+        other => {
+            eprintln!("unknown data subcommand: {other}");
+            eprintln!("expected `roots` or `stats`");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `marrow data roots`: list the project's saved roots, one `^root` per line.
+fn data_roots(args: &[String]) -> ExitCode {
+    let dir = match one_positional("data roots", args) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    let config = match load_config(&dir) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    let store = match open_store_for_inspection(&dir, &config) {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    let roots = match &store {
+        Some(store) => match store.roots() {
+            Ok(roots) => roots,
+            Err(error) => {
+                report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Vec::new(),
+    };
+    if roots.is_empty() {
+        println!("(no saved data)");
+    } else {
+        for root in roots {
+            println!("^{root}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `marrow data stats`: report how many saved roots and records the store holds.
+fn data_stats(args: &[String]) -> ExitCode {
+    let dir = match one_positional("data stats", args) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    let config = match load_config(&dir) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    let store = match open_store_for_inspection(&dir, &config) {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    let (roots, records) = match &store {
+        Some(store) => {
+            let roots = match store.roots() {
+                Ok(roots) => roots.len(),
+                Err(error) => {
+                    report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                    return ExitCode::FAILURE;
+                }
+            };
+            // A full scan to count is fine for a local store; a bounded count
+            // primitive on the backend would replace this if stores grow large.
+            let records = match store.scan(&[], usize::MAX) {
+                Ok(page) => page.entries.len(),
+                Err(error) => {
+                    report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                    return ExitCode::FAILURE;
+                }
+            };
+            (roots, records)
+        }
+        None => (0, 0),
+    };
+    println!("roots: {roots}");
+    println!("records: {records}");
+    ExitCode::SUCCESS
 }
 
 fn fmt(args: &[String]) -> ExitCode {

@@ -379,7 +379,9 @@ Inspection has two modes:
 - raw tree inspection when only saved data is available.
 
 `marrow data` is the raw saved-tree command group for inspection, dump, diff,
-load, integrity checks, and stats.
+load, integrity checks, and stats. Today it provides `marrow data roots` (list
+the saved roots) and `marrow data stats` (count saved roots and records);
+inspection is read-only and never creates the store.
 
 `marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
 portable archive — the canonical ordered (path, value) stream behind a small
