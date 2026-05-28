@@ -1,20 +1,11 @@
 [package]
-name = "marrow"
-description = "The Marrow command-line interface."
+name = "marrow-syntax"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-
-[[bin]]
-name = "marrow"
-path = "src/main.rs"
-
-[dependencies]
-marrow-syntax = { path = "../marrow-syntax" }
-serde_json = "1"
 
 [lints]
 workspace = true
