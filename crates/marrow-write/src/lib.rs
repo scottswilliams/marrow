@@ -11,7 +11,9 @@
 
 use marrow_schema::{ResourceSchema, SavedRootSchema};
 use marrow_store::mem::MemStore;
-use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+use marrow_store::path::{
+    ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
+};
 use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
 
 /// A field's value in a write: a saved value, or explicitly absent (omitted).
@@ -48,6 +50,9 @@ pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
 pub const WRITE_STORE: &str = "write.store";
 /// A field write names a field the resource does not declare.
 pub const WRITE_UNKNOWN_FIELD: &str = "write.unknown_field";
+/// A unique index already maps the supplied key(s) to a different resource, so
+/// committing this write would violate the uniqueness constraint.
+pub const WRITE_UNIQUE_CONFLICT: &str = "write.unique_conflict";
 
 /// One staged store operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +63,10 @@ enum PlanStep {
 
 /// A staged, validated set of store operations. Apply it with
 /// [`WritePlan::commit`]; drop it to abandon the write with no effect.
+///
+/// A plan is validated against the store as read at plan time — including unique
+/// conflict checks — so a backend with concurrent writers must serialize
+/// plan-then-commit externally. The in-memory store is single-writer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WritePlan {
     steps: Vec<PlanStep>,
@@ -76,13 +85,13 @@ impl WritePlan {
 }
 
 /// Plan a whole-resource write: replace the resource at `identity` with `value`.
-/// Validates required fields and value types against `schema` before staging
-/// anything, then plans to clear the old subtree, write each present field, and
-/// keep generated non-unique index entries coherent (delete the entries for the
-/// currently-stored values, write entries for the new values). `store` is read,
-/// not written; apply the returned [`WritePlan`] with [`WritePlan::commit`].
-/// Returns a [`WriteError`] if the value does not satisfy the schema.
-/// (Unique-index conflict detection is a later slice.)
+/// Validates required fields and value types against `schema`, and rejects a
+/// unique-index conflict, before staging anything; then plans to clear the old
+/// subtree, write each present field, and keep generated index entries coherent
+/// (delete the entries for the currently-stored values, write entries for the
+/// new values). `store` is read, not written; apply the returned [`WritePlan`]
+/// with [`WritePlan::commit`]. Returns a [`WriteError`] if the value does not
+/// satisfy the schema or a unique key is already held by another resource.
 pub fn plan_resource_write(
     schema: &ResourceSchema,
     identity: &[SavedKey],
@@ -111,6 +120,15 @@ pub fn plan_resource_write(
         }
     }
 
+    // Reject a unique-index conflict before staging anything: a populated unique
+    // key already held by a different identity blocks the write.
+    for index in &schema.indexes {
+        if index.unique {
+            let new_keys = index_keys(&index.args, root, identity, value);
+            check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
+        }
+    }
+
     // Replace semantics: clear the old subtree, then write the present fields.
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&identity_path(root, identity)),
@@ -122,14 +140,11 @@ pub fn plan_resource_write(
         });
     }
 
-    // Keep generated non-unique index entries coherent: delete the entry for the
+    // Keep generated index entries coherent: delete the entry for the
     // currently-stored values, then write the entry for the new values. An entry
-    // exists only when every indexed value is populated. (Unique indexes with
-    // conflict detection are a later slice.)
+    // exists only when every indexed value is populated. A unique entry stores
+    // the owning identity; a non-unique entry stores a presence marker.
     for index in &schema.indexes {
-        if index.unique {
-            continue;
-        }
         if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store) {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
@@ -138,7 +153,7 @@ pub fn plan_resource_write(
         if let Some(new_keys) = index_keys(&index.args, root, identity, value) {
             steps.push(PlanStep::Write {
                 path: encode_path(&index_path(root, &index.name, &new_keys)),
-                value: INDEX_MARKER.to_vec(),
+                value: index_entry_value(index.unique, identity),
             });
         }
     }
@@ -146,7 +161,7 @@ pub fn plan_resource_write(
 }
 
 /// Plan a whole-resource delete: remove the resource at `identity` and tear down
-/// its generated non-unique index entries (found by reading `store`). Returns a
+/// its generated index entries (found by reading `store`). Returns a
 /// [`WriteError`] only when the resource has no saved root or the identity arity
 /// is wrong; deleting an absent resource is a successful no-op plan.
 pub fn plan_resource_delete(
@@ -159,9 +174,6 @@ pub fn plan_resource_delete(
         path: encode_path(&identity_path(root, identity)),
     }];
     for index in &schema.indexes {
-        if index.unique {
-            continue;
-        }
         if let Some(keys) = stored_index_keys(&index.args, root, identity, schema, store) {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &keys)),
@@ -173,12 +185,13 @@ pub fn plan_resource_delete(
 
 /// Plan a managed field write: set `field` of the resource at `identity` to
 /// `value`, leaving the resource's other fields in place. Validates that the
-/// field is declared and that `value` matches its type, then stages the single
-/// field write and keeps any non-unique index the field participates in coherent
-/// (remove the entry for the currently-stored value, add the entry for the new
-/// value — docs/language `resources-and-storage.md`). `store` is read, not
-/// written; apply the returned [`WritePlan`] with [`WritePlan::commit`]. Returns
-/// a [`WriteError`] if the field is unknown or the value is mistyped.
+/// field is declared and that `value` matches its type, rejects a unique-index
+/// conflict, then stages the single field write and keeps any index the field
+/// participates in coherent (remove the entry for the currently-stored value,
+/// add the entry for the new value — docs/language `resources-and-storage.md`).
+/// `store` is read, not written; apply the returned [`WritePlan`] with
+/// [`WritePlan::commit`]. Returns a [`WriteError`] if the field is unknown, the
+/// value is mistyped, or a unique key is already held by another resource.
 ///
 /// This is a current-only update; it never clears the resource's other fields.
 /// Whether a field write may create a new (and possibly required-incomplete)
@@ -201,16 +214,26 @@ pub fn plan_field_write(
         })?;
     check_type(field, &declared.ty.text, value)?;
 
+    // Reject a unique-index conflict on the written field before staging.
+    for index in &schema.indexes {
+        if index.unique && index.args.iter().any(|arg| arg == field) {
+            let new_keys =
+                field_write_index_keys(&index.args, root, identity, field, value, schema, store);
+            check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
+        }
+    }
+
     let mut steps = vec![PlanStep::Write {
         path: encode_path(&field_path(root, identity, field)),
         value: encode_value(value),
     }];
 
-    // Keep any non-unique index the field feeds coherent: remove the entry for
-    // the currently-stored values, then add the entry for the values after this
-    // write. Other index arguments keep their stored values.
+    // Keep any index the field feeds coherent: remove the entry for the
+    // currently-stored values, then add the entry for the values after this
+    // write. Other index arguments keep their stored values. A unique entry
+    // stores the owning identity; a non-unique entry stores a presence marker.
     for index in &schema.indexes {
-        if index.unique || !index.args.iter().any(|arg| arg == field) {
+        if !index.args.iter().any(|arg| arg == field) {
             continue;
         }
         if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store) {
@@ -223,7 +246,7 @@ pub fn plan_field_write(
         {
             steps.push(PlanStep::Write {
                 path: encode_path(&index_path(root, &index.name, &new_keys)),
-                value: INDEX_MARKER.to_vec(),
+                value: index_entry_value(index.unique, identity),
             });
         }
     }
@@ -395,6 +418,74 @@ fn index_path(root: &SavedRootSchema, index: &str, keys: &[SavedKey]) -> Vec<Pat
     ];
     path.extend(keys.iter().cloned().map(PathSegment::IndexKey));
     path
+}
+
+/// The stored value of an index entry: a unique entry stores the owning identity
+/// (so a lookup yields the record and a re-write can tell itself from a clash); a
+/// non-unique entry stores only a presence marker.
+fn index_entry_value(unique: bool, identity: &[SavedKey]) -> Vec<u8> {
+    if unique {
+        encode_identity(identity)
+    } else {
+        INDEX_MARKER.to_vec()
+    }
+}
+
+/// Encode a resource identity as the value of a unique index entry: its keys in
+/// identity order, self-delimiting so the run decodes back exactly.
+fn encode_identity(identity: &[SavedKey]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for key in identity {
+        bytes.extend_from_slice(&encode_key_value(key));
+    }
+    bytes
+}
+
+/// Decode a unique index entry's value back to the identity it points to, given
+/// the saved root's identity arity. Returns `None` unless the bytes are exactly
+/// that many well-formed keys with nothing left over.
+fn decode_identity(bytes: &[u8], root: &SavedRootSchema) -> Option<Vec<SavedKey>> {
+    let mut keys = Vec::with_capacity(root.identity_keys.len());
+    let mut rest = bytes;
+    for _ in 0..root.identity_keys.len() {
+        let (key, used) = decode_key_value(rest)?;
+        keys.push(key);
+        rest = rest.get(used..)?;
+    }
+    rest.is_empty().then_some(keys)
+}
+
+/// Reject a write when a unique index would map `new_keys` to a resource other
+/// than `identity`. `new_keys` is `None` when the entry would not exist (an
+/// indexed value is absent), which never conflicts. An entry held by `identity`
+/// itself is not a conflict (a re-write of its own record); an unreadable entry
+/// is a store error, since a real clash cannot be ruled out.
+fn check_unique_conflict(
+    index: &str,
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    new_keys: Option<&[SavedKey]>,
+    store: &MemStore,
+) -> Result<(), WriteError> {
+    let Some(new_keys) = new_keys else {
+        return Ok(());
+    };
+    let Some(bytes) = store.read(&encode_path(&index_path(root, index, new_keys))) else {
+        return Ok(());
+    };
+    match decode_identity(bytes, root) {
+        Some(holder) if holder == identity => Ok(()),
+        Some(_) => Err(WriteError {
+            code: WRITE_UNIQUE_CONFLICT,
+            message: format!(
+                "unique index `{index}` already holds those key(s) for another resource"
+            ),
+        }),
+        None => Err(WriteError {
+            code: WRITE_STORE,
+            message: format!("unique index `{index}` has an unreadable entry"),
+        }),
+    }
 }
 
 /// The key form of a saved value, or `None` for a value with no order-preserving
