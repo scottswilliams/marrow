@@ -1035,6 +1035,14 @@ impl<'a> Parser<'a> {
                 let function = self.parse_function(line, std::mem::take(&mut docs));
                 file.declarations.push(Declaration::Function(function));
                 saw_top_level_item = true;
+            } else if content.starts_with("type ") {
+                self.error(
+                    line,
+                    "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
+                );
+                docs.clear();
+                saw_top_level_item = true;
+                self.index += 1;
             } else {
                 self.error(
                     line,
@@ -1459,6 +1467,9 @@ fn parse_function_header(content: &str) -> Result<FunctionHead, &'static str> {
         return Err("expected function name");
     };
     let after_name = after_name.trim_start();
+    if after_name.starts_with('<') {
+        return Err("user-defined generics are not used in Marrow");
+    }
     let (params_text, after_params) =
         parse_parenthesized_prefix(after_name).ok_or("expected function parameter list")?;
     let params = parse_params(params_text)?;
@@ -1635,6 +1646,9 @@ fn parse_params(text: &str) -> Result<Vec<ParamDecl>, &'static str> {
         };
         if !is_identifier(name) {
             return Err("expected parameter name");
+        }
+        if ty.contains('=') {
+            return Err("parameter defaults are not used in Marrow");
         }
         if !is_type_text(ty) {
             return Err("expected parameter type annotation");

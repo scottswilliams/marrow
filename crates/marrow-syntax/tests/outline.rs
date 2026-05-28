@@ -201,6 +201,54 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
 }
 
 #[test]
+fn rejects_parameter_defaults() {
+    let parsed = parse_source("module app\nfn f(x: int = 5)\n    return\n");
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("parameter defaults"))
+        .expect("expected parameter-defaults diagnostic");
+    assert_eq!(diagnostic.code, "parse.syntax");
+    assert_eq!(diagnostic.kind, "parse");
+    assert_eq!(diagnostic.line, 2);
+    assert!(
+        !diagnostic.message.contains("expected"),
+        "diagnostic should not fall back to a generic message, got {:?}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn rejects_user_defined_generics_on_functions() {
+    let parsed = parse_source("module app\nfn f<T>(x: T)\n    return\n");
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("user-defined generics"))
+        .expect("expected user-defined-generics diagnostic");
+    assert_eq!(diagnostic.code, "parse.syntax");
+    assert_eq!(diagnostic.line, 2);
+}
+
+#[test]
+fn rejects_top_level_type_aliases() {
+    let parsed = parse_source("module app\ntype Title = string\n");
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("type aliases"))
+        .expect("expected type-aliases diagnostic");
+    assert_eq!(diagnostic.code, "parse.syntax");
+    assert_eq!(diagnostic.line, 2);
+}
+
+#[test]
 fn merges_lexer_and_parser_diagnostics_in_source_order() {
     let parsed = parse_source(concat!(
         "module ;-bad-name\n",
@@ -407,7 +455,6 @@ fn rejects_malformed_type_annotations() {
         "module app\nconst Max: = 1\n",
         "module app\nfn main(value:)\n    return\n",
         "module app\nresource Book at ^books(id:)\n    title: string\n",
-        "module app\nfn main(value: int = 1)\n    return\n",
         "module app\nresource Book\n    title: sequence[]\n",
     ] {
         let parsed = parse_source(source);
