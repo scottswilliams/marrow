@@ -1,7 +1,7 @@
 //! Saved values round-trip through their canonical byte form, and non-canonical
 //! bytes are rejected.
 
-use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ValueType, date_days, decode_value, encode_value};
 
 fn round_trips(value: SavedValue, ty: ValueType) {
     let bytes = encode_value(&value);
@@ -57,4 +57,41 @@ fn invalid_utf8_is_rejected_for_text_but_kept_for_bytes() {
         decode_value(&[0xFF], ValueType::Bytes),
         Some(SavedValue::Bytes(vec![0xFF]))
     );
+}
+
+#[test]
+fn dates_round_trip_through_canonical_text() {
+    for (year, month, day, text) in [
+        (1970, 1, 1, "1970-01-01"),
+        (2026, 5, 28, "2026-05-28"),
+        (2000, 2, 29, "2000-02-29"), // a leap day
+        (1, 1, 1, "0001-01-01"),
+        (9999, 12, 31, "9999-12-31"),
+        (1969, 12, 31, "1969-12-31"), // pre-epoch
+    ] {
+        let value = SavedValue::Date(date_days(year, month, day).expect("valid date"));
+        let bytes = encode_value(&value);
+        assert_eq!(bytes, text.as_bytes(), "canonical form for {text}");
+        assert_eq!(decode_value(&bytes, ValueType::Date), Some(value));
+    }
+}
+
+#[test]
+fn the_epoch_is_day_zero() {
+    assert_eq!(date_days(1970, 1, 1), Some(0));
+}
+
+#[test]
+fn impossible_and_non_canonical_dates_are_rejected() {
+    // Impossible calendar dates.
+    assert_eq!(date_days(2021, 2, 29), None); // 2021 is not a leap year
+    assert_eq!(date_days(2021, 13, 1), None);
+    assert_eq!(date_days(2021, 0, 1), None);
+    assert_eq!(date_days(0, 1, 1), None); // year below 0001
+    // Non-canonical text forms.
+    assert_eq!(decode_value(b"2021-02-29", ValueType::Date), None);
+    assert_eq!(decode_value(b"2021-2-3", ValueType::Date), None); // unpadded
+    assert_eq!(decode_value(b"2021-13-01", ValueType::Date), None);
+    assert_eq!(decode_value(b"2021/05/28", ValueType::Date), None); // wrong separator
+    assert_eq!(decode_value(b"20210528", ValueType::Date), None);
 }
