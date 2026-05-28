@@ -1095,6 +1095,79 @@ fn parses_named_and_moded_call_arguments() {
 }
 
 #[test]
+fn positional_argument_after_named_is_rejected() {
+    // Grammar contract (grammar.md): "After the first named argument, remaining
+    // arguments must be named." A plain positional argument after a named one is
+    // a parse error that points at the offending argument.
+    let source = "const Made = sub(b: 1, 2)\n";
+    let parsed = parse_source(source);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message
+                .contains("positional argument cannot follow a named argument")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a positional-after-named diagnostic: {:#?}",
+                parsed.diagnostics
+            )
+        });
+    assert_eq!(diagnostic.code, "parse.syntax");
+    assert_eq!(diagnostic.kind, "parse");
+    // The diagnostic points at the offending positional argument, not the call.
+    assert_eq!(
+        &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+        "2"
+    );
+}
+
+#[test]
+fn positional_then_named_arguments_are_accepted() {
+    // Positional arguments may precede named ones; only the reverse is rejected.
+    let parsed = parse_source("const Made = sub(1, b: 2)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn all_named_arguments_are_accepted() {
+    let parsed = parse_source("const Made = sub(a: 1, b: 2)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn positional_after_named_is_rejected_inside_function_bodies() {
+    // A call statement in a function body reaches the parser through a different
+    // path than a `const` value, so it confirms the rule is checked over the
+    // whole tree, not just top-level values.
+    let parsed = parse_source("fn run()\n    log(level: 1, 2)\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| {
+            d.message
+                .contains("positional argument cannot follow a named argument")
+        }),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn positional_after_named_is_rejected_in_nested_calls() {
+    // The walk descends into argument values, so an offending inner call is
+    // reported even when the surrounding call is well-formed.
+    let parsed = parse_source("const Made = outer(inner(b: 1, 2))\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| {
+            d.message
+                .contains("positional argument cannot follow a named argument")
+        }),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn parses_conversion_and_constructor_calls() {
     // Conversion call on a type keyword.
     let parsed = parse_source("const Count: int = int(raw)\n");

@@ -1340,6 +1340,7 @@ impl<'a> Parser<'a> {
         }
 
         self.report_keyword_field_names();
+        report_positional_after_named(&file, &mut self.diagnostics);
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
@@ -3202,6 +3203,143 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
             second: Some(ident(second)?),
         }),
         _ => None,
+    }
+}
+
+/// Report positional arguments that follow a named argument. The grammar
+/// contract (grammar.md, modules-functions.md) is that "after the first named
+/// argument, remaining arguments must be named", because a positional argument
+/// after a named one would silently back-fill an earlier parameter. The
+/// argument list is parsed before its ordering matters, so the rule is checked
+/// here over the built tree, where every call's arguments and spans are known.
+fn report_positional_after_named(file: &SourceFile, diagnostics: &mut Vec<Diagnostic>) {
+    for declaration in &file.declarations {
+        match declaration {
+            Declaration::Const(decl) => walk_expr_arguments(&decl.value, diagnostics),
+            Declaration::Function(decl) => walk_block_arguments(&decl.body, diagnostics),
+            // Resource members are typed declarations, not expressions.
+            Declaration::Resource(_) => {}
+        }
+    }
+}
+
+fn walk_block_arguments(block: &Block, diagnostics: &mut Vec<Diagnostic>) {
+    for statement in &block.statements {
+        walk_statement_arguments(statement, diagnostics);
+    }
+}
+
+fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnostic>) {
+    match statement {
+        Statement::Let { value, .. }
+        | Statement::Expr { value, .. }
+        | Statement::Throw { value, .. } => walk_expr_arguments(value, diagnostics),
+        Statement::Var { value, .. } | Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                walk_expr_arguments(value, diagnostics);
+            }
+        }
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            walk_expr_arguments(target, diagnostics);
+            walk_expr_arguments(value, diagnostics);
+        }
+        Statement::Delete { path, .. } => walk_expr_arguments(path, diagnostics),
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            walk_expr_arguments(condition, diagnostics);
+            walk_block_arguments(then_block, diagnostics);
+            for else_if in else_ifs {
+                walk_expr_arguments(&else_if.condition, diagnostics);
+                walk_block_arguments(&else_if.block, diagnostics);
+            }
+            if let Some(else_block) = else_block {
+                walk_block_arguments(else_block, diagnostics);
+            }
+        }
+        Statement::While {
+            condition, body, ..
+        } => {
+            walk_expr_arguments(condition, diagnostics);
+            walk_block_arguments(body, diagnostics);
+        }
+        Statement::For { iterable, body, .. } => {
+            walk_expr_arguments(iterable, diagnostics);
+            walk_block_arguments(body, diagnostics);
+        }
+        Statement::Transaction { body, .. } => walk_block_arguments(body, diagnostics),
+        Statement::Lock { path, body, .. } => {
+            walk_expr_arguments(path, diagnostics);
+            walk_block_arguments(body, diagnostics);
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            walk_block_arguments(body, diagnostics);
+            if let Some(catch) = catch {
+                walk_block_arguments(&catch.block, diagnostics);
+            }
+            if let Some(finally) = finally {
+                walk_block_arguments(finally, diagnostics);
+            }
+        }
+        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
+    }
+}
+
+fn walk_expr_arguments(expression: &Expression, diagnostics: &mut Vec<Diagnostic>) {
+    match expression {
+        Expression::Call { callee, args, .. } => {
+            walk_expr_arguments(callee, diagnostics);
+            let mut seen_named = false;
+            for arg in args {
+                // A plain positional argument (no name, no `out`/`inout` mode)
+                // after a named one breaks the grammar contract; point at it.
+                // Mode arguments are not plain positionals and keep their own
+                // rules (see `parses_named_and_moded_call_arguments`).
+                if seen_named && arg.name.is_none() && arg.mode.is_none() {
+                    let span = arg.value.span();
+                    diagnostics.push(Diagnostic {
+                        code: PARSE_SYNTAX,
+                        kind: "parse",
+                        severity: Severity::Error,
+                        message: "a positional argument cannot follow a named argument".to_string(),
+                        help: Some(
+                            "name this argument or move it before the named arguments".to_string(),
+                        ),
+                        span,
+                        line: span.line,
+                        column: span.column,
+                    });
+                }
+                seen_named |= arg.name.is_some();
+                walk_expr_arguments(&arg.value, diagnostics);
+            }
+        }
+        Expression::Field { base, .. } => walk_expr_arguments(base, diagnostics),
+        Expression::Unary { operand, .. } => walk_expr_arguments(operand, diagnostics),
+        Expression::Binary { left, right, .. } => {
+            walk_expr_arguments(left, diagnostics);
+            walk_expr_arguments(right, diagnostics);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    walk_expr_arguments(expr, diagnostics);
+                }
+            }
+        }
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Unparsed { .. } => {}
     }
 }
 
