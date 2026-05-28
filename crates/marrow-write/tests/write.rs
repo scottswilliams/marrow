@@ -9,8 +9,8 @@ use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
     FieldValue, ResourceValue, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_LEAF_LAYER,
     WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD,
-    WRITE_UNKNOWN_LAYER, next_id, plan_field_write, plan_layer_leaf_write, plan_resource_delete,
-    plan_resource_merge, plan_resource_write,
+    WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_write, plan_layer_leaf_write,
+    plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -1418,6 +1418,57 @@ fn a_keyed_leaf_write_to_a_resource_without_a_saved_root_is_rejected() {
     );
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn next_layer_pos_starts_at_one_when_empty() {
+    let book = schema(BOOK_LAYERS);
+    let store = MemStore::new();
+    assert_eq!(
+        next_layer_pos(&book, &[SavedKey::Int(5)], "tags", &store),
+        Ok(1)
+    );
+}
+
+#[test]
+fn next_layer_pos_is_one_past_the_highest_and_does_not_fill_holes() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 5, 1, "a");
+    write_tag(&mut store, &book, 5, 3, "c"); // leaves a hole at 2
+    assert_eq!(
+        next_layer_pos(&book, &[SavedKey::Int(5)], "tags", &store),
+        Ok(4),
+        "after the highest, not filling the hole"
+    );
+}
+
+#[test]
+fn next_layer_pos_is_per_record() {
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 5, 1, "a");
+    write_tag(&mut store, &book, 5, 2, "b");
+    // A different record's layer starts fresh; record 5's continues past its own.
+    assert_eq!(
+        next_layer_pos(&book, &[SavedKey::Int(9)], "tags", &store),
+        Ok(1)
+    );
+    assert_eq!(
+        next_layer_pos(&book, &[SavedKey::Int(5)], "tags", &store),
+        Ok(3)
+    );
+}
+
+#[test]
+fn next_layer_pos_for_an_unknown_layer_is_rejected() {
+    let book = schema(BOOK_LAYERS);
+    let store = MemStore::new();
+    let result = next_layer_pos(&book, &[SavedKey::Int(5)], "chapters", &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
         "{result:?}"
     );
 }

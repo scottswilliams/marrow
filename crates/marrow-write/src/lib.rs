@@ -441,6 +441,44 @@ pub fn next_id(root: &str, store: &MemStore) -> Result<i64, WriteError> {
     Ok(highest + 1)
 }
 
+/// The next 1-based position for an `append` to a keyed layer: one greater than
+/// the highest populated positive integer key under `^root(identity).layer`, or
+/// `1` when the layer is empty. Appending writes after the highest key and never
+/// fills holes (docs/language `resources-and-storage.md`); non-integer and
+/// non-positive keys are ignored. This is the append policy for sequence-shaped
+/// (integer-keyed) layers, the analogue of [`next_id`] for a root.
+pub fn next_layer_pos(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    store: &MemStore,
+) -> Result<i64, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    if !schema.layers.iter().any(|declared| declared.name == layer) {
+        return Err(WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
+        });
+    }
+    let mut prefix = identity_path(root, identity);
+    prefix.push(PathSegment::ChildLayer(layer.into()));
+    let children = store
+        .child_keys(&encode_path(&prefix))
+        .map_err(|_| WriteError {
+            code: WRITE_STORE,
+            message: format!("could not read entries under keyed layer `{layer}`"),
+        })?;
+    let highest = children
+        .iter()
+        .filter_map(|child| match child {
+            ChildSegment::Key(SavedKey::Int(pos)) if *pos >= 1 => Some(*pos),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    Ok(highest + 1)
+}
+
 /// The supplied value for `field` in `value`, if any.
 fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a FieldValue> {
     value
