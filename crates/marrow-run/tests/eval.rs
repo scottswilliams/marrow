@@ -203,6 +203,35 @@ fn a_passing_assert_lets_execution_continue() {
 }
 
 #[test]
+fn a_whole_group_entry_write_creates_the_entry() {
+    // `^books(1).versions(2) = b` writes the whole group entry from a resource
+    // value; the runtime matches its fields against the group's members by name.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var b: Book\n\
+         \x20\x20\x20\x20b.title = \"v2\"\n\
+         \x20\x20\x20\x20^books(1).versions(2) = b\n\
+         \n\
+         pub fn version_title(): string\n\
+         \x20\x20\x20\x20return ^books(1).versions(2).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::version_title", &[])
+            .unwrap()
+            .value,
+        Some(Value::Str("v2".into()))
+    );
+}
+
+#[test]
 fn std_text_builtins_operate_on_strings() {
     // `length` counts Unicode scalar values, not bytes ("café" is 4 scalars).
     let program = checked_program("pub fn f(): int\n    return std::text::length(\"café\")\n");

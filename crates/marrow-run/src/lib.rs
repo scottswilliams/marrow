@@ -28,8 +28,8 @@ use marrow_syntax::{
 };
 use marrow_write::{
     FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_field_write,
-    plan_layer_leaf_write, plan_layer_merge, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_resource_delete,
+    plan_resource_merge, plan_resource_write,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -993,8 +993,17 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 } else {
                     eval_local_field_set(base, name, value, *span, env)?;
                 }
-            } else if let Expression::Call { .. } = target {
-                eval_resource_write(target, value, *span, env)?;
+            } else if let Expression::Call { callee, args, .. } = target {
+                // `^root(key…).layer(key…) = v` (callee is a saved layer field) is a
+                // whole-group-entry write; `^root(key…) = v` (callee is the saved
+                // root) is a whole-resource write.
+                if let Expression::Field { base, name, .. } = callee.as_ref()
+                    && is_saved_path(base)
+                {
+                    eval_group_entry_write(base, name, args, value, *span, env)?;
+                } else {
+                    eval_resource_write(target, value, *span, env)?;
+                }
             } else {
                 let name = local_target(target, *span)?;
                 let evaluated = eval_expr(value, env)?;
@@ -1696,6 +1705,41 @@ fn eval_group_field_write(
             message: error.message,
             span,
         })?;
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Apply a whole keyed-group-entry write `^root(key…).layer(key…) = value`, where
+/// `value` is a materialized [`Value::Resource`]. Lowers its fields to a
+/// `ResourceValue` and drives [`marrow_write::plan_layer_group_write`] (replace
+/// semantics for the one entry), then commits. Groups carry no generated indexes.
+fn eval_group_entry_write(
+    record: &Expression,
+    layer: &str,
+    keys: &[Argument],
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let (root, identity) = lower_record_identity(record, env)?;
+    let Value::Resource(fields) = eval_expr(value, env)? else {
+        return Err(unsupported(
+            "assigning a non-resource value to a group entry",
+            span,
+        ));
+    };
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("writing to this saved root", span))?;
+    let layer_keys = lower_layer_keys(keys, span, env)?;
+    let value = resource_value_of(fields, span)?;
+    let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value).map_err(
+        |error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        },
+    )?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
