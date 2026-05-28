@@ -1357,12 +1357,33 @@ fn correct_returns_are_not_flagged() {
 }
 
 #[test]
-fn a_return_of_unknown_type_is_not_flagged() {
-    // `mystery()` does not resolve, so its type is unknown; only a known mismatch flags.
+fn a_return_of_an_unresolved_value_into_a_typed_return_is_flagged() {
+    // Strict typing: `mystery()` has no known type, but `f` returns `int`, so the
+    // return is a `check.untyped_value` error (not a `check.return_type` mismatch).
     let found = check_script(
         "ret-unknown",
         "fn f(): int\n    return mystery()\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let mismatch = check_script(
+        "ret-unknown",
+        "fn f(): int\n    return mystery()\n",
         "check.return_type",
+    );
+    assert!(mismatch.is_empty(), "{mismatch:#?}");
+}
+
+#[test]
+fn a_return_of_an_unresolved_value_into_an_identity_return_is_not_flagged() {
+    // A non-primitive return type (an identity) is excluded from strict
+    // untyped-value checking — guards the sample's `return nextId(...)`-style code.
+    let found = check_module(
+        "ret-identity",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f(): Book::Id\n    return nextId(^books)\n",
+        "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
 }

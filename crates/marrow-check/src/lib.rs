@@ -753,10 +753,11 @@ fn check_return_type(
     value_type: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if let (Some(expected), Some(actual)) = (as_primitive(return_type), as_primitive(value_type))
-        && expected != actual
-    {
-        diagnostics.push(CheckDiagnostic {
+    let Some(expected) = as_primitive(return_type) else {
+        return;
+    };
+    match as_primitive(value_type) {
+        Some(actual) if actual != expected => diagnostics.push(CheckDiagnostic {
             code: CHECK_RETURN_TYPE.to_string(),
             severity: Severity::Error,
             file: file.to_path_buf(),
@@ -767,7 +768,21 @@ fn check_return_type(
             ),
             line: span.line,
             column: span.column,
-        });
+        }),
+        // Strict typing: a value with no known type returned where a concrete type
+        // is declared must be converted first.
+        None if matches!(value_type, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_UNTYPED_VALUE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "this `return` value has no known type, but the function returns `{}`; convert it first",
+                primitive_name(expected),
+            ),
+            line: span.line,
+            column: span.column,
+        }),
+        _ => {}
     }
 }
 
