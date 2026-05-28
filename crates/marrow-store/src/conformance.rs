@@ -15,8 +15,9 @@ use crate::backend::Backend;
 use crate::mem::{Presence, StoreError};
 use crate::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 
-/// Run every conformance law against fresh stores produced by `make`.
-pub fn run_all<B: Backend>(make: impl Fn() -> B) {
+/// Run every conformance law against fresh stores produced by `make`. `make` is
+/// `FnMut` so a backend factory can vary state per store (e.g. a redb file name).
+pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     values_round_trip(&mut make());
     presence_reports_four_states(&mut make());
     delete_removes_the_subtree(&mut make());
@@ -27,7 +28,7 @@ pub fn run_all<B: Backend>(make: impl Fn() -> B) {
     roots_are_ordered_and_deduped(&mut make());
     scan_returns_only_the_subtree_in_order(&mut make());
     scan_is_bounded_by_the_limit(&mut make());
-    dump_and_restore_reproduce_the_store(&make);
+    dump_and_restore_reproduce_the_store(&mut make);
     a_corrupt_path_is_a_typed_error(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
@@ -225,7 +226,7 @@ fn scan_is_bounded_by_the_limit(store: &mut dyn Backend) {
     assert!(!page.truncated, "a limit at the total does not");
 }
 
-fn dump_and_restore_reproduce_the_store<B: Backend>(make: &impl Fn() -> B) {
+fn dump_and_restore_reproduce_the_store<B: Backend>(make: &mut impl FnMut() -> B) {
     let mut source = make();
     source.write(&book(1), b"whole".to_vec()).unwrap();
     source

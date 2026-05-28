@@ -8,5 +8,16 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+redb = { version = "4", optional = true }
+
+[features]
+# The native persistent backend (redb). Off by default so the in-memory store
+# and encoding stay dependency-light; the CLI enables it.
+native = ["dep:redb"]
+
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

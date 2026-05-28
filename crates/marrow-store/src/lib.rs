@@ -15,4 +15,6 @@ pub mod backend;
 pub mod conformance;
 pub mod mem;
 pub mod path;
+#[cfg(feature = "native")]
+pub mod redb;
 pub mod value;
