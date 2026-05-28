@@ -149,8 +149,8 @@ fn rejects_an_argument_count_mismatch() {
 
 #[test]
 fn reports_an_unsupported_construct() {
-    // A string value is not yet evaluable in this slice.
-    let f = function("fn f(): string\n    return \"hi\"\n");
+    // A decimal value is not yet evaluable in this slice.
+    let f = function("fn f(): decimal\n    return 1.5\n");
     let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
@@ -285,6 +285,63 @@ fn break_outside_a_loop_is_an_error() {
     let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_NO_ENCLOSING_LOOP),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn returns_a_string_literal() {
+    let f = function("fn f(): string\n    return \"hello\"\n");
+    assert_eq!(
+        evaluate_function(&f, &[]),
+        Ok(Some(Value::Str("hello".into())))
+    );
+}
+
+#[test]
+fn concatenates_strings() {
+    // Marrow spells string concatenation `_`.
+    let greet = function("fn greet(name: string): string\n    return \"Hello, \" _ name\n");
+    assert_eq!(
+        evaluate_function(&greet, &[Value::Str("World".into())]),
+        Ok(Some(Value::Str("Hello, World".into())))
+    );
+}
+
+#[test]
+fn compares_strings_for_equality_and_order() {
+    let eq = function("fn eq(a: string, b: string): bool\n    return a = b\n");
+    assert_eq!(
+        evaluate_function(&eq, &[Value::Str("x".into()), Value::Str("x".into())]),
+        Ok(Some(Value::Bool(true)))
+    );
+    let lt = function("fn lt(a: string, b: string): bool\n    return a < b\n");
+    assert_eq!(
+        evaluate_function(
+            &lt,
+            &[Value::Str("apple".into()), Value::Str("banana".into())]
+        ),
+        Ok(Some(Value::Bool(true)))
+    );
+}
+
+#[test]
+fn string_escapes_are_not_yet_decoded() {
+    // The source string contains a backslash escape; decoding is a later slice.
+    let f = function("fn f(): string\n    return \"a\\nb\"\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn concatenation_requires_strings() {
+    let f = function("fn f(): string\n    return \"x\" _ 5\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
     );
 }

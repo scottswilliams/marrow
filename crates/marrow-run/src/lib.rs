@@ -1,22 +1,26 @@
 //! The Marrow runtime: evaluate checked `.mw` functions.
 //!
-//! This first slice evaluates a pure function body over scalar values: integer
-//! and boolean literals, locals (`let`/`var`), arithmetic, comparison, and
-//! logical operators, and conditionals. Saved data, loops, string values,
-//! structured errors, and calls between functions build on this spine.
+//! The evaluator runs a pure function body over scalar values — integers,
+//! booleans, and strings: literals, locals (`let`/`var`), arithmetic,
+//! comparison, logical, and concatenation (`++`) operators, conditionals, and
+//! `while`/`for` loops. Saved data, structured errors, output, and calls
+//! between functions build on this spine.
+
+use std::cmp::Ordering;
 
 use marrow_syntax::{
     BinaryOp, Block, Expression, ForBinding, FunctionDecl, LiteralKind, SourceSpan, Statement,
     UnaryOp,
 };
 
-/// A runtime value. This slice models the scalar shapes a pure function needs;
-/// saved trees, identities, and error values arrive with the features that
-/// produce them.
+/// A runtime value. This models the scalar shapes a pure function needs; saved
+/// trees, identities, and error values arrive with the features that produce
+/// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Int(i64),
     Bool(bool),
+    Str(String),
 }
 
 /// A runtime fault: a stable `run.*` code, a human-readable message, and the
@@ -420,10 +424,23 @@ fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value
                 span,
             }),
         LiteralKind::Bool => Ok(Value::Bool(text == "true")),
-        LiteralKind::String | LiteralKind::Decimal | LiteralKind::Bytes => {
-            Err(unsupported("this literal type", span))
-        }
+        LiteralKind::String => eval_string_literal(text, span),
+        LiteralKind::Decimal | LiteralKind::Bytes => Err(unsupported("this literal type", span)),
     }
+}
+
+/// Decode a string literal's value. The literal `text` is the raw source,
+/// including the surrounding quotes; escape sequences are not yet decoded, so a
+/// literal containing a backslash is reported as unsupported rather than guessed.
+fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let inner = text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| unsupported("this string literal", span))?;
+    if inner.contains('\\') {
+        return Err(unsupported("string escape sequences", span));
+    }
+    Ok(Value::Str(inner.to_string()))
 }
 
 fn eval_unary(
@@ -460,13 +477,14 @@ fn eval_binary(
         BinaryOp::Multiply => int_op(left, right, env, span, i64::checked_mul),
         BinaryOp::Divide => int_div(left, right, env, span, i64::checked_div),
         BinaryOp::Remainder => int_div(left, right, env, span, i64::checked_rem),
-        BinaryOp::Less => int_cmp(left, right, env, |a, b| a < b),
-        BinaryOp::LessEqual => int_cmp(left, right, env, |a, b| a <= b),
-        BinaryOp::Greater => int_cmp(left, right, env, |a, b| a > b),
-        BinaryOp::GreaterEqual => int_cmp(left, right, env, |a, b| a >= b),
+        BinaryOp::Less => compare_values(left, right, env, span, |o| o == Ordering::Less),
+        BinaryOp::LessEqual => compare_values(left, right, env, span, |o| o != Ordering::Greater),
+        BinaryOp::Greater => compare_values(left, right, env, span, |o| o == Ordering::Greater),
+        BinaryOp::GreaterEqual => compare_values(left, right, env, span, |o| o != Ordering::Less),
         BinaryOp::Equal => Ok(Value::Bool(values_equal(left, right, env, span)?)),
         BinaryOp::NotEqual => Ok(Value::Bool(!values_equal(left, right, env, span)?)),
-        BinaryOp::Concat | BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
+        BinaryOp::Concat => concat(left, right, env, span),
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
             Err(unsupported("this operator", span))
         }
     }
@@ -506,15 +524,39 @@ fn int_div(
     op(a, b).map(Value::Int).ok_or_else(|| overflow(span))
 }
 
-fn int_cmp(
+/// Compare two values of the same orderable type — integers or strings — and
+/// test the resulting ordering. Booleans and mismatched types are not orderable.
+fn compare_values(
     left: &Expression,
     right: &Expression,
     env: &mut Env,
-    op: fn(i64, i64) -> bool,
+    span: SourceSpan,
+    want: fn(Ordering) -> bool,
 ) -> Result<Value, RuntimeError> {
-    let a = eval_int(left, env)?;
-    let b = eval_int(right, env)?;
-    Ok(Value::Bool(op(a, b)))
+    let ordering = match (eval_expr(left, env)?, eval_expr(right, env)?) {
+        (Value::Int(a), Value::Int(b)) => a.cmp(&b),
+        (Value::Str(a), Value::Str(b)) => a.cmp(&b),
+        _ => {
+            return Err(type_error(
+                "cannot order values of different or unordered types",
+                span,
+            ));
+        }
+    };
+    Ok(Value::Bool(want(ordering)))
+}
+
+/// Concatenate two strings with `++`.
+fn concat(
+    left: &Expression,
+    right: &Expression,
+    env: &mut Env,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
+        _ => Err(type_error("`++` concatenates two strings", span)),
+    }
 }
 
 /// Whether two values are equal. They must share a scalar type; comparing across
@@ -528,6 +570,7 @@ fn values_equal(
     match (eval_expr(left, env)?, eval_expr(right, env)?) {
         (Value::Int(a), Value::Int(b)) => Ok(a == b),
         (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
+        (Value::Str(a), Value::Str(b)) => Ok(a == b),
         _ => Err(type_error("cannot compare values of different types", span)),
     }
 }
