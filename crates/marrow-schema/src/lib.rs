@@ -116,6 +116,15 @@ pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
 /// live in the saved path, so a stored member of the same name is ambiguous.
 pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
 
+/// An index argument does not resolve to an identity key, a top-level field, or
+/// a nested field reached through unkeyed groups. Index arguments do not walk
+/// keyed child layers (resources-and-storage.md:197-199).
+pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
+
+/// Two resource elements declare the same stable ID. Stable IDs must be unique
+/// (resources-and-storage.md:159-161).
+pub const SCHEMA_DUPLICATE_STABLE_ID: &str = "schema.duplicate_stable_id";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -131,12 +140,14 @@ impl std::error::Error for SchemaError {}
 /// Compile a parsed resource declaration into a [`ResourceSchema`].
 ///
 /// Always returns a best-effort schema together with any errors, so callers can
-/// keep checking. This slice maps structure and the saved-data rules that the
+/// keep checking. This slice maps structure and the single-resource rules the
 /// schema alone can decide: `unknown` is rejected in managed saved fields and
-/// keys, and an identity key may not share a name with a top-level member.
+/// keys, an identity key may not share a name with a top-level member, index
+/// arguments must resolve within the resource, and stable IDs are unique within
+/// the resource.
 ///
-// TODO(step 5+): full type validation, index-argument resolution, one-owner-
-// per-root, and stable-ID uniqueness.
+// TODO(step 5+): full type validation, one-owner-per-root, and project-wide
+// (cross-resource) stable-ID uniqueness.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
 
@@ -185,6 +196,9 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
     if let Some(store) = &decl.store {
         check_saved_data(store, &decl.members, decl.span, &mut errors);
     }
+
+    check_index_args(decl, &mut errors);
+    check_stable_ids(&decl.members, &mut errors);
 
     (schema, errors)
 }
@@ -250,15 +264,117 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
     }
 }
 
-/// The span of a top-level field or group named `name`, if one exists. Indexes
-/// share the namespace but are not stored members, so a key may reuse an index
-/// name without ambiguity.
+/// The span of a top-level member named `name`, if one exists. Identity keys,
+/// fields, layers, and index names share the resource namespace
+/// (resources-and-storage.md:240-242), so an identity key may not reuse any of
+/// them.
 fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<SourceSpan> {
     members.iter().find_map(|member| match member {
         ResourceMember::Field(field) if field.name == name => Some(field.span),
         ResourceMember::Group(group) if group.name == name => Some(group.span),
+        ResourceMember::Index(index) if index.name == name => Some(index.span),
         _ => None,
     })
+}
+
+/// Resolve each top-level index argument against the resource. Arguments may
+/// name an identity key, a top-level unkeyed field, or a nested scalar field
+/// reached through unkeyed groups; they do not walk keyed child layers
+/// (resources-and-storage.md:197-199). Each unresolved argument is reported at
+/// its index's span, in index then argument order.
+fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
+    let keys = decl
+        .store
+        .as_ref()
+        .map(|store| &store.keys[..])
+        .unwrap_or(&[]);
+    for member in &decl.members {
+        let ResourceMember::Index(index) = member else {
+            continue;
+        };
+        for arg in &index.args {
+            if !index_arg_resolves(arg, keys, &decl.members) {
+                errors.push(SchemaError {
+                    code: SCHEMA_UNKNOWN_INDEX_ARG,
+                    message: format!(
+                        "index `{}` argument `{arg}` does not name an identity \
+                         key, a field, or a nested field through unkeyed groups",
+                        index.name
+                    ),
+                    span: index.span,
+                });
+            }
+        }
+    }
+}
+
+/// Does `arg` resolve to an indexable value in this resource? A single segment
+/// may name an identity key or a top-level unkeyed scalar field. A dotted path
+/// walks unkeyed groups (each non-final segment an unkeyed group, the final
+/// segment a scalar unkeyed field); identity keys are single-segment only.
+fn index_arg_resolves(arg: &str, keys: &[KeyParam], members: &[ResourceMember]) -> bool {
+    let segments: Vec<&str> = arg.split('.').collect();
+    if segments.len() == 1 && keys.iter().any(|key| key.name == segments[0]) {
+        return true;
+    }
+    resolves_through_members(&segments, members)
+}
+
+/// Resolve a non-empty field path against `members`. The final segment must be
+/// an unkeyed scalar field; every earlier segment must be an unkeyed group
+/// whose members resolve the rest. Keyed fields and groups are keyed layers
+/// that index arguments do not walk.
+fn resolves_through_members(segments: &[&str], members: &[ResourceMember]) -> bool {
+    let (name, rest) = segments.split_first().expect("non-empty field path");
+    members.iter().any(|member| match member {
+        ResourceMember::Field(field) if rest.is_empty() => {
+            field.name == *name && field.keys.is_empty()
+        }
+        ResourceMember::Group(group) if !rest.is_empty() && group.keys.is_empty() => {
+            group.name == *name && resolves_through_members(rest, &group.members)
+        }
+        _ => false,
+    })
+}
+
+/// Report stable IDs that repeat within this resource. Stable IDs must be
+/// unique (resources-and-storage.md:159-161); the later element is the error.
+/// Elements are visited in source order, descending into each group before the
+/// next sibling, so the first occurrence wins deterministically.
+///
+/// This covers the within-resource subset only; cross-resource uniqueness is
+/// deferred to a later project-wide pass.
+fn check_stable_ids(members: &[ResourceMember], errors: &mut Vec<SchemaError>) {
+    let mut seen: Vec<&str> = Vec::new();
+    collect_stable_ids(members, &mut seen, errors);
+}
+
+fn collect_stable_ids<'a>(
+    members: &'a [ResourceMember],
+    seen: &mut Vec<&'a str>,
+    errors: &mut Vec<SchemaError>,
+) {
+    for member in members {
+        let (stable_id, span) = match member {
+            ResourceMember::Field(field) => (&field.stable_id, field.span),
+            ResourceMember::Group(group) => (&group.stable_id, group.span),
+            ResourceMember::Index(index) => (&index.stable_id, index.span),
+        };
+        if let Some(id) = stable_id {
+            if seen.contains(&id.as_str()) {
+                errors.push(SchemaError {
+                    code: SCHEMA_DUPLICATE_STABLE_ID,
+                    message: format!("duplicate stable id `{id}`"),
+                    span,
+                });
+            } else {
+                seen.push(id);
+            }
+        }
+        if let ResourceMember::Group(group) = member {
+            collect_stable_ids(&group.members, seen, errors);
+        }
+    }
 }
 
 /// Does this saved type embed `unknown`? A type embeds `unknown` when it is

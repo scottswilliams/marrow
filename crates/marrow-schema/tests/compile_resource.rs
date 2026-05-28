@@ -6,8 +6,9 @@
 //! the structural errors this slice reports.
 
 use marrow_schema::{
-    LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_IN_GROUP,
-    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED, compile_resource,
+    LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
+    SCHEMA_INDEX_IN_GROUP, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED,
+    SCHEMA_UNKNOWN_INDEX_ARG, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -324,6 +325,82 @@ resource Book at ^books(notes: int)
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
     assert!(errors[0].message.contains("notes"));
+}
+
+#[test]
+fn identity_key_name_colliding_with_index_is_an_error() {
+    // Identity keys, fields, layers, and index names share the resource
+    // namespace (resources-and-storage.md:240-242, :125-126), so a key may not
+    // reuse an index name.
+    let source = "\
+resource Book at ^books(id: int)
+    required title: string
+    index id(title, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
+    assert!(errors[0].message.contains("id"));
+}
+
+#[test]
+fn index_arg_naming_no_member_is_an_error() {
+    // Index arguments must resolve to an identity key, field, or nested field
+    // (resources-and-storage.md:197-199). `shelf` names nothing here.
+    let source = "\
+resource Book at ^books(id: int)
+    required title: string
+    index byShelf(shelf, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
+    assert!(errors[0].message.contains("shelf"));
+}
+
+#[test]
+fn index_arg_naming_field_and_key_is_allowed() {
+    // A top-level field and an identity key both resolve as index arguments.
+    let source = "\
+resource Book at ^books(id: int)
+    required title: string
+    index byTitle(title, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "field and identity-key args resolve: {errors:?}"
+    );
+}
+
+#[test]
+fn index_arg_naming_keyed_leaf_is_an_error() {
+    // Index arguments do not walk keyed child layers
+    // (resources-and-storage.md:197-199); `tags` is a keyed leaf.
+    let source = "\
+resource Book at ^books(id: int)
+    tags(pos: int): string
+    index byTag(tags, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
+    assert!(errors[0].message.contains("tags"));
+}
+
+#[test]
+fn duplicate_stable_id_within_resource_is_an_error() {
+    // Stable IDs must be unique (resources-and-storage.md:159-161); within one
+    // resource the later element is the error.
+    let source = "\
+resource Book at ^books(id: int)
+    @id(\"book.x\")
+    required title: string
+    @id(\"book.x\")
+    required author: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_STABLE_ID]);
+    assert!(errors[0].message.contains("book.x"));
+    // The error points at the second element, not the first.
+    assert_eq!(errors[0].span.line, 5);
 }
 
 #[test]
