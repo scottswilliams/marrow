@@ -563,6 +563,8 @@ fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
 enum Place {
     /// A bare local variable: `n` or `book`.
     Local(String),
+    /// A field of a local resource variable: `book.title`.
+    LocalField { base: String, field: String },
     /// A saved scalar field: `^books(id).title`.
     SavedField {
         root: String,
@@ -577,8 +579,8 @@ enum Place {
 }
 
 /// Resolve an `out`/`inout` argument expression to its [`Place`], evaluating any
-/// saved identity keys now. Supports a bare local, a saved scalar field, and a
-/// whole saved resource; other shapes (local-resource fields, keyed group
+/// saved identity keys now. Supports a bare local, a field of a local resource, a
+/// saved scalar field, and a whole saved resource; other shapes (keyed group
 /// entries) defer.
 fn resolve_place(
     expr: &Expression,
@@ -594,6 +596,18 @@ fn resolve_place(
             Ok(Place::SavedField {
                 root,
                 identity,
+                field: name.clone(),
+            })
+        }
+        // `book.title` — a field of a local resource variable (the base is a bare
+        // local name, not a saved path).
+        Expression::Field { base, name, .. } if matches!(base.as_ref(), Expression::Name { segments, .. } if segments.len() == 1) =>
+        {
+            let Expression::Name { segments, .. } = base.as_ref() else {
+                unreachable!("guarded by the match arm")
+            };
+            Ok(Place::LocalField {
+                base: segments[0].clone(),
                 field: name.clone(),
             })
         }
@@ -617,6 +631,7 @@ impl Place {
                 message: format!("`{name}` is not bound"),
                 span,
             }),
+            Place::LocalField { base, field } => read_local_field(base, field, span, env),
             Place::SavedField {
                 root,
                 identity,
@@ -632,6 +647,7 @@ impl Place {
             Place::Local(name) => env
                 .assign(&name, value)
                 .map_err(|error| assign_error(&name, error, span)),
+            Place::LocalField { base, field } => write_local_field(&base, &field, value, span, env),
             Place::SavedField {
                 root,
                 identity,
@@ -2966,26 +2982,50 @@ fn eval_local_field_set(
         return Err(unsupported("setting a field of this value", span));
     };
     let new_value = eval_expr(value, env)?;
-    let Some(Value::Resource(mut fields)) = env.lookup(name).cloned() else {
+    write_local_field(name, field, new_value, span, env)
+}
+
+/// Read a field of the local resource bound to `base`, from a pre-resolved base
+/// name. Shared by `out`/`inout` place reads.
+fn read_local_field(
+    base: &str,
+    field: &str,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let Some(Value::Resource(fields)) = env.lookup(base) else {
+        return Err(unsupported("a field of a non-resource local", span));
+    };
+    fields
+        .iter()
+        .find(|(name, _)| name == field)
+        .map(|(_, value)| value.clone())
+        .ok_or_else(|| RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`{field}` is absent"),
+            span,
+        })
+}
+
+/// Update (or insert) `field` of the local resource bound to `base` with an
+/// already-evaluated value, rebinding the variable. Shared by
+/// [`eval_local_field_set`] and `out`/`inout` write-back.
+fn write_local_field(
+    base: &str,
+    field: &str,
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let Some(Value::Resource(mut fields)) = env.lookup(base).cloned() else {
         return Err(unsupported("setting a field of a non-resource local", span));
     };
     match fields.iter().position(|(existing, _)| existing == field) {
-        Some(index) => fields[index].1 = new_value,
-        None => fields.push((field.to_string(), new_value)),
+        Some(index) => fields[index].1 = value,
+        None => fields.push((field.to_string(), value)),
     }
-    env.assign(name, Value::Resource(fields))
-        .map_err(|error| match error {
-            AssignError::Immutable => RuntimeError {
-                code: RUN_TYPE,
-                message: format!("cannot assign to immutable `{name}`"),
-                span,
-            },
-            AssignError::Unbound => RuntimeError {
-                code: RUN_UNBOUND_NAME,
-                message: format!("`{name}` is not bound"),
-                span,
-            },
-        })
+    env.assign(base, Value::Resource(fields))
+        .map_err(|error| assign_error(base, error, span))
 }
 
 /// Convert a runtime value to the saved value a managed write stores. Total over

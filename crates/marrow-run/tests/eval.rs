@@ -929,6 +929,31 @@ fn an_inout_parameter_mutates_a_local_resource() {
 }
 
 #[test]
+fn an_inout_parameter_writes_back_to_a_local_resource_field() {
+    // A field of a local resource, `book.title`, is an assignable place; passing it
+    // `inout` reads it to seed the parameter and writes the result back.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    title: string\n\nfn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
+    );
+    assert_eq!(
+        run(&program, "test::main", &[]),
+        Ok(Some(Value::Str("UPPER".into())))
+    );
+}
+
+#[test]
+fn an_out_parameter_writes_back_to_a_local_resource_field() {
+    // `out` on a local resource field fills it without reading it first.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    title: string\n\nfn fill(out s: string)\n    s = \"FILLED\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    fill(out book.title)\n    return book.title\n",
+    );
+    assert_eq!(
+        run(&program, "test::main", &[]),
+        Ok(Some(Value::Str("FILLED".into())))
+    );
+}
+
+#[test]
 fn write_back_is_skipped_when_the_callee_throws() {
     // A callee that mutates an `inout` parameter then throws must not write back:
     // the caller's local keeps its pre-call value.
