@@ -10,8 +10,8 @@ use marrow_write::{
     FieldValue, ResourceValue, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT,
     WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH,
     WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos,
-    plan_field_write, plan_layer_field_write, plan_layer_leaf_write, plan_layer_merge,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    plan_field_write, plan_layer_field_write, plan_layer_group_write, plan_layer_leaf_write,
+    plan_layer_merge, plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -215,6 +215,90 @@ fn version_field(id: i64, version: i64, field: &str) -> Vec<u8> {
         PathSegment::IndexKey(SavedKey::Int(version)),
         PathSegment::Field(field.into()),
     ])
+}
+
+/// A resource with a `versions(version)` GROUP layer (a required and a sparse
+/// field) and a `tags(pos)` LEAF layer.
+const VERSIONED: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    versions(version: int)
+        required title: string
+        note: string
+    tags(pos: int): string
+";
+
+#[test]
+fn a_whole_group_entry_write_replaces_the_entry() {
+    let book = schema(VERSIONED);
+    let mut store = MemStore::new();
+    // Write a version entry with both fields, then overwrite it with only the
+    // required one; the entry is replaced, so the old note is gone.
+    plan_layer_group_write(
+        &book,
+        &[SavedKey::Int(1)],
+        "versions",
+        &[SavedKey::Int(2)],
+        &ResourceValue {
+            fields: vec![
+                ("title".into(), saved("v2")),
+                ("note".into(), saved("first")),
+            ],
+        },
+    )
+    .expect("valid group write")
+    .commit(&mut store)
+    .expect("commit");
+    plan_layer_group_write(
+        &book,
+        &[SavedKey::Int(1)],
+        "versions",
+        &[SavedKey::Int(2)],
+        &ResourceValue {
+            fields: vec![("title".into(), saved("v2-edited"))],
+        },
+    )
+    .expect("valid group write")
+    .commit(&mut store)
+    .expect("commit");
+
+    assert_eq!(
+        decode_value(
+            store.read(&version_field(1, 2, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("v2-edited".into()))
+    );
+    // The replace dropped the previously-written note.
+    assert_eq!(store.read(&version_field(1, 2, "note")), None);
+}
+
+#[test]
+fn a_whole_group_entry_write_requires_required_fields() {
+    let book = schema(VERSIONED);
+    let result = plan_layer_group_write(
+        &book,
+        &[SavedKey::Int(1)],
+        "versions",
+        &[SavedKey::Int(2)],
+        &ResourceValue {
+            fields: vec![("note".into(), saved("x"))],
+        },
+    );
+    assert_eq!(result.unwrap_err().code, WRITE_REQUIRED_ABSENT);
+}
+
+#[test]
+fn a_whole_group_entry_write_rejects_a_leaf_layer() {
+    let book = schema(VERSIONED);
+    let result = plan_layer_group_write(
+        &book,
+        &[SavedKey::Int(1)],
+        "tags",
+        &[SavedKey::Int(0)],
+        &ResourceValue { fields: vec![] },
+    );
+    assert_eq!(result.unwrap_err().code, WRITE_NOT_A_GROUP_LAYER);
 }
 
 #[test]

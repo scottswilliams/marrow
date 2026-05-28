@@ -486,6 +486,82 @@ pub fn plan_layer_field_write(
     })
 }
 
+/// Plan a whole keyed-group-entry write: replace the entry
+/// `^root(identity).layer(key…)` with the supplied field `value`s — like a
+/// whole-resource write scoped to one group entry (required group fields must be
+/// present and typed). Groups carry no generated indexes, so there is no index
+/// maintenance. Errors when the resource has no saved root, the identity or key
+/// arity is wrong, the layer is unknown or a leaf, or a required field is absent or
+/// mistyped.
+pub fn plan_layer_group_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    value: &ResourceValue,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = schema
+        .layers
+        .iter()
+        .find(|declared| declared.name == layer)
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
+        })?;
+    if declared.leaf_type.is_some() {
+        return Err(WriteError {
+            code: WRITE_NOT_A_GROUP_LAYER,
+            message: format!("keyed layer `{layer}` is a leaf, not a group"),
+        });
+    }
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+
+    // Validate every group field and collect the ones to write before staging any
+    // step — a rejected write must leave no trace.
+    let mut to_write = Vec::new();
+    for member in &declared.members {
+        let LayerMember::Field(field) = member else {
+            continue;
+        };
+        match supplied_value(value, &field.name) {
+            Some(FieldValue::Saved(saved)) => {
+                check_type(&field.name, &field.ty.text, saved)?;
+                to_write.push((field.name.as_str(), saved));
+            }
+            Some(FieldValue::Absent) | None => {
+                if field.required {
+                    return Err(WriteError {
+                        code: WRITE_REQUIRED_ABSENT,
+                        message: format!("required field `{}` is absent", field.name),
+                    });
+                }
+            }
+        }
+    }
+
+    // Replace semantics: clear the old entry subtree, then write the present fields.
+    let mut steps = vec![PlanStep::Delete {
+        path: encode_path(&layer_leaf_path(root, identity, layer, key)),
+    }];
+    for (name, saved) in to_write {
+        steps.push(PlanStep::Write {
+            path: encode_path(&layer_field_path(root, identity, layer, key, name)),
+            value: encode_value(saved),
+        });
+    }
+    Ok(WritePlan { steps })
+}
+
 /// Plan a keyed-layer merge: copy every entry of the source layer
 /// `^root(from).layer` over the target layer `^root(to).layer`, leaving target
 /// entries the source does not supply in place (an overlay, not a replace —
