@@ -194,7 +194,10 @@ pub fn evaluate_function(
         store: &store,
         host: &host,
     };
-    invoke(ctx, output, &names, &function.body, function.span, args)
+    match invoke(ctx, output, &names, &function.body, function.span, args)? {
+        Completion::Returned(value) => Ok(value),
+        Completion::Threw(error) => Err(uncaught_throw(&error, function.span)),
+    }
 }
 
 /// Run the function named by `entry` — `"module::function"`, or a bare name
@@ -237,23 +240,35 @@ pub fn run_entry_with_host(
         store,
         host,
     };
-    let value = invoke(
+    let value = match invoke(
         ctx,
         Rc::clone(&output),
         &names,
         &function.body,
         function.span,
         args,
-    )?;
+    )? {
+        Completion::Returned(value) => value,
+        Completion::Threw(error) => return Err(uncaught_throw(&error, function.span)),
+    };
     Ok(RunOutput {
         value,
         output: output.borrow().clone(),
     })
 }
 
+/// How a function activation finished: with an optional returned value, or via
+/// an uncaught throw carrying its `Error` value. A throw crosses the call
+/// boundary as a catchable error (so a caller's `catch` can bind it), not as a
+/// runtime fault.
+enum Completion {
+    Returned(Option<Value>),
+    Threw(Value),
+}
+
 /// Bind `args` to `param_names`, evaluate `body` in a fresh activation, and
-/// surface its returned value. Shared by [`evaluate_function`], [`run_entry`],
-/// and call evaluation.
+/// surface how it finished. Shared by [`evaluate_function`], [`run_entry`], and
+/// call evaluation.
 fn invoke(
     ctx: Context<'_>,
     output: Rc<RefCell<String>>,
@@ -261,7 +276,7 @@ fn invoke(
     body: &Block,
     span: SourceSpan,
     args: &[Value],
-) -> Result<Option<Value>, RuntimeError> {
+) -> Result<Completion, RuntimeError> {
     if args.len() != param_names.len() {
         return Err(RuntimeError {
             code: RUN_TYPE,
@@ -278,13 +293,22 @@ fn invoke(
     for (name, arg) in param_names.iter().zip(args) {
         env.bind((*name).to_string(), arg.clone(), false);
     }
-    let flow = eval_block(body, &mut env)?;
+    let outcome = eval_block(body, &mut env);
+    // A throw raised in a function this body called is stashed on the env; it
+    // surfaces here as this activation's own throw rather than a fault.
+    let propagated = env.pending_throw.take();
     env.pop_scope();
-    match flow {
-        Flow::Return(value) => Ok(value),
-        Flow::Normal => Ok(None),
-        Flow::Throw(value) => Err(uncaught_throw(value, span)),
-        Flow::Break(_) | Flow::Continue(_) => Err(RuntimeError {
+    match outcome {
+        Ok(Flow::Return(value)) => Ok(Completion::Returned(value)),
+        Ok(Flow::Normal) => Ok(Completion::Returned(None)),
+        Ok(Flow::Throw(value)) => Ok(Completion::Threw(value)),
+        // An `Err` with a pending throw is a throw propagating out of a call;
+        // surface it as this activation's throw. Any other `Err` is a real fault.
+        Err(error) => match propagated {
+            Some(thrown) => Ok(Completion::Threw(thrown)),
+            None => Err(error),
+        },
+        Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => Err(RuntimeError {
             code: RUN_NO_ENCLOSING_LOOP,
             message: "`break` or `continue` outside a loop".into(),
             span,
@@ -296,9 +320,9 @@ fn invoke(
 /// surfacing the error's own `code` and `message` in the fault message. Assumes a
 /// well-formed Error (string `code`/`message`); a malformed one renders blank,
 /// which the constructor and the throw guard make unreachable in practice.
-fn uncaught_throw(value: Value, span: SourceSpan) -> RuntimeError {
-    let code = error_field(&value, "code").unwrap_or_default();
-    let message = error_field(&value, "message").unwrap_or_default();
+fn uncaught_throw(value: &Value, span: SourceSpan) -> RuntimeError {
+    let code = error_field(value, "code").unwrap_or_default();
+    let message = error_field(value, "message").unwrap_or_default();
     RuntimeError {
         code: RUN_UNCAUGHT_THROW,
         message: format!("uncaught error [{code}]: {message}"),
@@ -496,14 +520,25 @@ fn eval_call(
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    invoke(
+    match invoke(
         ctx,
         Rc::clone(&env.output),
         &names,
         &function.body,
         function.span,
         &values,
-    )
+    )? {
+        Completion::Returned(value) => Ok(value),
+        Completion::Threw(error) => {
+            // The callee threw. Re-raise it as this activation's pending throw so
+            // a `try`/`catch` here can bind it; the error rides the `Err` channel
+            // (calls are expressions) and is consumed by the nearest `try` or, if
+            // none, by this activation's `invoke`.
+            let sentinel = uncaught_throw(&error, span);
+            env.pending_throw = Some(error);
+            Err(sentinel)
+        }
+    }
 }
 
 /// Evaluate a `print`/`write` output builtin: render the single argument to text
@@ -1222,6 +1257,14 @@ struct Env<'p> {
     store: &'p RefCell<dyn Backend>,
     host: &'p Host,
     output: Rc<RefCell<String>>,
+    /// An `Error` thrown by a called function, stashed here so it rides the `Err`
+    /// channel (calls are expressions) and a `catch` in this activation can bind
+    /// it. Set at the call site, consumed by the nearest `try` or, if none, by
+    /// this activation's [`invoke`] when it surfaces the throw to its own caller.
+    /// INVARIANT: non-`None` only while an `Err` is actively unwinding a throw —
+    /// every `try`/activation boundary that turns the result back into `Ok` clears
+    /// it, so a stale throw can never be mistaken for a later fault.
+    pending_throw: Option<Value>,
 }
 
 /// Why an assignment did not land.
@@ -1238,6 +1281,7 @@ impl<'p> Env<'p> {
             program: ctx.program,
             store: ctx.store,
             host: ctx.host,
+            pending_throw: None,
         }
     }
 
@@ -1494,27 +1538,55 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             ..
         } => {
             let outcome = eval_block(body, env);
-            // `catch` handles only an explicit throw; runtime faults and any other
-            // control flow (return/break/continue) pass through unchanged.
-            let handled = match (outcome, catch) {
-                (Ok(Flow::Throw(error)), Some(clause)) => {
+            // A throw to handle is raised either directly here (`Ok(Flow::Throw)`)
+            // or by a called function (an `Err` with the Error stashed on the env).
+            // `catch` handles only thrown Errors; a runtime fault (an `Err` with no
+            // pending throw) and other control flow pass through unchanged.
+            let thrown = match &outcome {
+                Ok(Flow::Throw(value)) => Some(value.clone()),
+                Err(_) => env.pending_throw.take(),
+                _ => None,
+            };
+            let handled = match (thrown, catch) {
+                (Some(error), Some(clause)) => {
                     env.push_scope();
                     env.bind(clause.name.clone(), error, false);
                     let caught = eval_block(&clause.block, env);
                     env.pop_scope();
                     caught
                 }
-                (outcome, _) => outcome,
+                // No `catch`: the throw keeps unwinding. A throw propagated from a
+                // call (an `Err`) must keep its Error stashed for an outer handler.
+                // (A present `finally` immediately reclaims this via its own take;
+                // the stash is what carries the throw when there is no `finally`.)
+                (Some(error), None) => {
+                    if outcome.is_err() {
+                        env.pending_throw = Some(error);
+                    }
+                    outcome
+                }
+                (None, _) => outcome,
             };
             // `finally` always runs. A throwing or faulting finally replaces the
             // pending outcome; a normal one is cleanup and the outcome proceeds.
             // (The checker forbids return/break/continue in `finally`.)
             match finally {
-                Some(block) => match eval_block(block, env) {
-                    Ok(Flow::Throw(error)) => Ok(Flow::Throw(error)),
-                    Err(error) => Err(error),
-                    Ok(_) => handled,
-                },
+                Some(block) => {
+                    // Take any throw `handled` left pending so it cannot leak past
+                    // `finally`. A clean `finally` restores it (the outcome
+                    // proceeds); a `finally` that throws or faults replaces the
+                    // outcome, so the stashed throw is dropped and `finally`'s own
+                    // pending throw (set by a call it made) stands.
+                    let pending = env.pending_throw.take();
+                    match eval_block(block, env) {
+                        Ok(Flow::Throw(error)) => Ok(Flow::Throw(error)),
+                        Err(error) => Err(error),
+                        Ok(_) => {
+                            env.pending_throw = pending;
+                            handled
+                        }
+                    }
+                }
                 None => handled,
             }
         }

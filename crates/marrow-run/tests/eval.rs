@@ -674,6 +674,102 @@ fn a_runtime_fault_in_try_is_not_caught() {
 }
 
 #[test]
+fn a_throw_from_a_callee_is_caught_by_the_caller() {
+    // The spec's `try { loan(...) } catch err` example: an Error thrown inside a
+    // called function unwinds through the call and is caught by the caller.
+    let program = checked_program(
+        "fn boom()\n    throw Error(code: \"x.y\", message: \"deep\")\npub fn safe(): string\n    try\n        boom()\n    catch err: Error\n        return err.message\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::safe", &[]),
+        Ok(Some(Value::Str("deep".into())))
+    );
+}
+
+#[test]
+fn a_throw_propagates_through_intermediate_calls() {
+    // a -> b -> c; c throws, a catches. The Error crosses two call boundaries.
+    let program = checked_program(
+        "fn c()\n    throw Error(code: \"deep.fail\", message: \"from c\")\nfn b()\n    c()\npub fn a(): string\n    try\n        b()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::a", &[]),
+        Ok(Some(Value::Str("deep.fail".into())))
+    );
+}
+
+#[test]
+fn a_callee_throw_rolls_back_the_enclosing_transaction() {
+    // A transaction writes, then a called function throws. The throw escapes the
+    // transaction, so it rolls back and the write never lands.
+    let program = checked_program(
+        "resource Account at ^accts(id: int)\n    balance: int\n\nfn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return get(^accts(1).balance, -1)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::run_it", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNCAUGHT_THROW),
+        "{result:?}"
+    );
+    let after = run_entry(&program, &store, "test::read", &[])
+        .expect("read")
+        .value;
+    assert_eq!(after, Some(Value::Int(-1)));
+}
+
+#[test]
+fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
+    // After a caller catches a callee's throw, the pending throw is cleared, so a
+    // later genuine fault (divide-by-zero) is NOT mistaken for a catchable throw.
+    let program = checked_program(
+        "fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        return 1 / 0\n    catch boom: Error\n        return 99\n    return 0\n",
+    );
+    assert_eq!(
+        run(&program, "test::check", &[]).unwrap_err().code,
+        RUN_DIVIDE_BY_ZERO
+    );
+}
+
+#[test]
+fn a_throwing_finally_does_not_leak_a_pending_throw() {
+    // A `finally` throwing over a call-propagated throw must not leave that throw
+    // stashed: after an outer `catch` swallows the finally throw, a later fault
+    // still faults rather than being caught with the stale error.
+    let program = checked_program(
+        "fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        return 1 / 0\n    catch boom: Error\n        return 99\n    return 0\n",
+    );
+    assert_eq!(
+        run(&program, "test::leak", &[]).unwrap_err().code,
+        RUN_DIVIDE_BY_ZERO
+    );
+}
+
+#[test]
+fn a_throw_from_a_call_in_finally_propagates() {
+    // A `finally` whose own called function throws: that throw replaces the
+    // outcome and is caught by an outer handler.
+    let program = checked_program(
+        "fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::run_it", &[]),
+        Ok(Some(Value::Str("deep".into())))
+    );
+}
+
+#[test]
+fn a_clean_finally_preserves_a_propagated_call_throw() {
+    // A clean `finally` (no throw of its own) over a call-propagated throw must
+    // restore the pending throw so an outer `catch` still sees it.
+    let program = checked_program(
+        "fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+    );
+    let outcome = run_full(&program, "test::run_it", &[]).expect("caught");
+    assert_eq!(outcome.value, Some(Value::Str("deep".into())));
+    assert_eq!(outcome.output, "cleanup");
+}
+
+#[test]
 fn finally_runs_after_a_fault_and_can_replace_it() {
     // The try body faults (not catchable); finally still runs and its throw
     // replaces the fault, proving finally ran.
