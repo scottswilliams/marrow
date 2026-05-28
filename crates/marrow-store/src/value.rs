@@ -19,6 +19,8 @@ pub enum SavedValue {
     Date(i32),
     /// An elapsed span, held as a signed count of nanoseconds.
     Duration(i128),
+    /// A UTC instant, held as a signed count of nanoseconds since the epoch.
+    Instant(i128),
 }
 
 /// The type to decode saved bytes as. A typed read knows this from the schema.
@@ -31,11 +33,13 @@ pub enum ValueType {
     ErrorCode,
     Date,
     Duration,
+    Instant,
 }
 
 /// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
 /// decimal text, strings and error codes as UTF-8, bytes verbatim, dates as
-/// `YYYY-MM-DD`, durations as `PT<seconds>S` (docs/language/types.md).
+/// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`
+/// (docs/language/types.md).
 pub fn encode_value(value: &SavedValue) -> Vec<u8> {
     match value {
         SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
@@ -44,6 +48,7 @@ pub fn encode_value(value: &SavedValue) -> Vec<u8> {
         SavedValue::Bytes(bytes) => bytes.clone(),
         SavedValue::Date(days) => format_date(*days).into_bytes(),
         SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
+        SavedValue::Instant(nanos) => format_instant(*nanos).into_bytes(),
     }
 }
 
@@ -66,6 +71,7 @@ pub fn decode_value(bytes: &[u8], ty: ValueType) -> Option<SavedValue> {
         )),
         ValueType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
         ValueType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
+        ValueType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
     }
 }
 
@@ -151,6 +157,7 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 }
 
 const NANOS_PER_SEC: i128 = 1_000_000_000;
+const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
 
 /// Format a signed nanosecond span as the canonical `PT<seconds>S`: an optional
 /// `-`, whole seconds with no leading zeros, and a trailing-zero-trimmed
@@ -213,4 +220,74 @@ fn parse_duration(bytes: &[u8]) -> Option<i128> {
         return None; // `-PT0S` is not canonical
     }
     Some(if negative { -magnitude } else { magnitude })
+}
+
+/// Format nanoseconds-since-epoch (UTC) as the canonical
+/// `YYYY-MM-DDTHH:MM:SSZ`, including a trailing-zero-trimmed fraction only when
+/// the sub-second part is non-zero.
+fn format_instant(nanos: i128) -> String {
+    let days = nanos.div_euclid(NANOS_PER_DAY);
+    let time_of_day = nanos.rem_euclid(NANOS_PER_DAY); // [0, NANOS_PER_DAY)
+    let (year, month, day) = civil_from_days(days as i64);
+    let total_seconds = (time_of_day / NANOS_PER_SEC) as u32; // [0, 86399]
+    let fraction = (time_of_day % NANOS_PER_SEC) as u32;
+    let (hours, minutes, seconds) = (
+        total_seconds / 3600,
+        (total_seconds % 3600) / 60,
+        total_seconds % 60,
+    );
+    let mut out = format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}");
+    if fraction > 0 {
+        out.push('.');
+        out.push_str(format!("{fraction:09}").trim_end_matches('0'));
+    }
+    out.push('Z');
+    out
+}
+
+/// Parse the canonical `YYYY-MM-DDTHH:MM:SSZ` (UTC) form to nanoseconds since the
+/// epoch. The shape is fixed-width through the seconds field, with an optional
+/// `.fraction` before the `Z`; anything non-canonical is rejected.
+fn parse_instant(bytes: &[u8]) -> Option<i128> {
+    if bytes.len() < 20 || bytes[10] != b'T' || *bytes.last()? != b'Z' {
+        return None;
+    }
+    let days = i128::from(parse_date(&bytes[0..10])?);
+    let time = &bytes[11..bytes.len() - 1]; // between `T` and `Z`
+    if time.len() < 8 || time[2] != b':' || time[5] != b':' {
+        return None;
+    }
+    let field = |slice: &[u8]| -> Option<u32> {
+        if slice.iter().all(u8::is_ascii_digit) {
+            std::str::from_utf8(slice).ok()?.parse().ok()
+        } else {
+            None
+        }
+    };
+    let hours = field(&time[0..2])?;
+    let minutes = field(&time[3..5])?;
+    let seconds = field(&time[6..8])?;
+    if hours > 23 || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    let fraction_nanos: i128 = if time.len() == 8 {
+        0
+    } else {
+        if time[8] != b'.' {
+            return None;
+        }
+        let fraction = &time[9..];
+        if fraction.is_empty()
+            || fraction.len() > 9
+            || fraction.last() == Some(&b'0')
+            || !fraction.iter().all(u8::is_ascii_digit)
+        {
+            return None;
+        }
+        format!("{:0<9}", std::str::from_utf8(fraction).ok()?)
+            .parse()
+            .ok()?
+    };
+    let seconds_of_day = i128::from(hours * 3600 + minutes * 60 + seconds);
+    Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)
 }

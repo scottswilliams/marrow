@@ -133,3 +133,52 @@ fn non_canonical_durations_are_rejected() {
         );
     }
 }
+
+#[test]
+fn instants_round_trip_through_canonical_text() {
+    for text in [
+        "1970-01-01T00:00:00Z",
+        "2026-05-28T12:30:45Z",
+        "2026-05-28T12:30:45.5Z",
+        "2026-05-28T12:30:45.000000001Z", // one nanosecond
+        "1969-12-31T23:59:59Z",           // pre-epoch
+        "0001-01-01T00:00:00Z",
+        "9999-12-31T23:59:59.999999999Z",
+    ] {
+        let value = decode_value(text.as_bytes(), ValueType::Instant).expect("valid instant");
+        assert_eq!(encode_value(&value), text.as_bytes(), "re-encode {text}");
+    }
+}
+
+#[test]
+fn the_epoch_instant_is_zero_nanos() {
+    assert_eq!(
+        decode_value(b"1970-01-01T00:00:00Z", ValueType::Instant),
+        Some(SavedValue::Instant(0))
+    );
+    assert_eq!(
+        encode_value(&SavedValue::Instant(0)),
+        b"1970-01-01T00:00:00Z"
+    );
+}
+
+#[test]
+fn non_canonical_instants_are_rejected() {
+    for bad in [
+        "2026-05-28t12:30:45Z",      // lowercase T
+        "2026-05-28T12:30:45z",      // lowercase Z
+        "2026-05-28T12:30:45",       // missing Z
+        "2026-05-28T12:30:45+00:00", // numeric offset, not Z
+        "2026-05-28T12:30:60Z",      // seconds out of range
+        "2026-05-28T24:00:00Z",      // hour out of range
+        "2026-05-28T12:30:45.0Z",    // trailing-zero fraction
+        "2026-05-28T12:30:45.Z",     // empty fraction
+        "2026-02-29T00:00:00Z",      // impossible date
+    ] {
+        assert_eq!(
+            decode_value(bad.as_bytes(), ValueType::Instant),
+            None,
+            "{bad}"
+        );
+    }
+}
