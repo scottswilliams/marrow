@@ -1,16 +1,17 @@
 //! The Marrow runtime: evaluate checked `.mw` functions.
 //!
-//! The evaluator runs a pure function body over scalar values — integers,
-//! booleans, and strings: literals, locals (`let`/`var`), arithmetic,
-//! comparison, logical, and concatenation (`++`) operators, conditionals, and
-//! `while`/`for` loops. Saved data, structured errors, output, and calls
-//! between functions build on this spine.
+//! The evaluator runs functions over scalar values — integers, booleans, and
+//! strings: literals, locals (`let`/`var`), arithmetic, comparison, logical, and
+//! `_` concatenation operators, conditionals, `while`/`for` loops, string
+//! interpolation, and calls between functions of a checked program. Saved data,
+//! output, and structured errors build on this spine.
 
 use std::cmp::Ordering;
 
+use marrow_check::{CheckedFunction, CheckedProgram};
 use marrow_syntax::{
-    BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart, LiteralKind,
-    SourceSpan, Statement, UnaryOp,
+    Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
+    LiteralKind, SourceSpan, Statement, UnaryOp,
 };
 
 /// A runtime value. This models the scalar shapes a pure function needs; saved
@@ -43,33 +44,78 @@ pub const RUN_OVERFLOW: &str = "run.overflow";
 pub const RUN_DIVIDE_BY_ZERO: &str = "run.divide_by_zero";
 /// A `break` or `continue` reached the top of a function with no loop to target.
 pub const RUN_NO_ENCLOSING_LOOP: &str = "run.no_enclosing_loop";
+/// A call named a function the program does not declare.
+pub const RUN_UNKNOWN_FUNCTION: &str = "run.unknown_function";
+/// A call to a function that returns no value was used where a value is needed.
+pub const RUN_NO_VALUE: &str = "run.no_value";
 /// A construct this slice of the runtime does not yet evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 
-/// Evaluate `function` with positional `args`, returning its returned value, or
-/// `None` if it returns without one. Parameters bind to `args` by position.
+/// Evaluate a standalone function with positional `args`, returning its returned
+/// value or `None`. Calls to other functions are not resolved (there is no
+/// surrounding program); use [`run_entry`] to run a function that calls others.
 pub fn evaluate_function(
     function: &FunctionDecl,
     args: &[Value],
 ) -> Result<Option<Value>, RuntimeError> {
-    if args.len() != function.params.len() {
+    let program = CheckedProgram::default();
+    let names: Vec<&str> = function
+        .params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    invoke(&program, &names, &function.body, function.span, args)
+}
+
+/// Run the function named by `entry` — `"module::function"`, or a bare name
+/// searched across modules — from a checked `program` with positional `args`.
+/// Calls within the body resolve against the same `program`.
+pub fn run_entry(
+    program: &CheckedProgram,
+    entry: &str,
+    args: &[Value],
+) -> Result<Option<Value>, RuntimeError> {
+    let segments: Vec<String> = entry.split("::").map(str::to_string).collect();
+    let function = resolve_function(program, &segments).ok_or_else(|| RuntimeError {
+        code: RUN_UNKNOWN_FUNCTION,
+        message: format!("the program has no function `{entry}`"),
+        span: SourceSpan::default(),
+    })?;
+    let names: Vec<&str> = function
+        .params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    invoke(program, &names, &function.body, function.span, args)
+}
+
+/// Bind `args` to `param_names`, evaluate `body` in a fresh activation, and
+/// surface its returned value. Shared by [`evaluate_function`], [`run_entry`],
+/// and call evaluation.
+fn invoke(
+    program: &CheckedProgram,
+    param_names: &[&str],
+    body: &Block,
+    span: SourceSpan,
+    args: &[Value],
+) -> Result<Option<Value>, RuntimeError> {
+    if args.len() != param_names.len() {
         return Err(RuntimeError {
             code: RUN_TYPE,
             message: format!(
-                "function `{}` expects {} argument(s), got {}",
-                function.name,
-                function.params.len(),
+                "expected {} argument(s), got {}",
+                param_names.len(),
                 args.len()
             ),
-            span: function.span,
+            span,
         });
     }
-    let mut env = Env::new();
+    let mut env = Env::new(program);
     env.push_scope();
-    for (param, arg) in function.params.iter().zip(args) {
-        env.bind(param.name.clone(), arg.clone(), false);
+    for (name, arg) in param_names.iter().zip(args) {
+        env.bind((*name).to_string(), arg.clone(), false);
     }
-    let flow = eval_block(&function.body, &mut env)?;
+    let flow = eval_block(body, &mut env)?;
     env.pop_scope();
     match flow {
         Flow::Return(value) => Ok(value),
@@ -77,9 +123,71 @@ pub fn evaluate_function(
         Flow::Break(_) | Flow::Continue(_) => Err(RuntimeError {
             code: RUN_NO_ENCLOSING_LOOP,
             message: "`break` or `continue` outside a loop".into(),
-            span: function.span,
+            span,
         }),
     }
+}
+
+/// Resolve a function name to its declaration. A qualified name's last segment
+/// is the function and the rest its module; a bare name is searched across all
+/// modules. Returns `None` when no function matches.
+fn resolve_function<'p>(
+    program: &'p CheckedProgram,
+    segments: &[String],
+) -> Option<&'p CheckedFunction> {
+    let (name, module) = segments.split_last()?;
+    if module.is_empty() {
+        program
+            .modules
+            .iter()
+            .flat_map(|module| &module.functions)
+            .find(|function| &function.name == name)
+    } else {
+        let module_name = module.join("::");
+        program
+            .modules
+            .iter()
+            .find(|module| module.name == module_name)?
+            .functions
+            .iter()
+            .find(|function| &function.name == name)
+    }
+}
+
+/// Evaluate a call to a program function, returning its returned value (or
+/// `None` for a function that returns nothing). Only positional arguments to a
+/// named function are supported in this slice.
+fn eval_call(
+    callee: &Expression,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    let Expression::Name { segments, .. } = callee else {
+        return Err(unsupported("calling this expression", span));
+    };
+    if args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported("named or out/inout arguments", span));
+    }
+    let program = env.program;
+    let function = resolve_function(program, segments).ok_or_else(|| RuntimeError {
+        code: RUN_UNKNOWN_FUNCTION,
+        message: format!("the program has no function `{}`", segments.join("::")),
+        span,
+    })?;
+    let mut values = Vec::with_capacity(args.len());
+    for arg in args {
+        values.push(eval_expr(&arg.value, env)?);
+    }
+    let names: Vec<&str> = function
+        .params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    invoke(program, &names, &function.body, function.span, &values)
 }
 
 /// Where control flow stands after a statement or block.
@@ -100,10 +208,12 @@ struct Binding {
     mutable: bool,
 }
 
-/// A lexical environment: a stack of scopes, each a list of bindings. A resource
-/// has few locals, so lookups are linear and innermost-first.
-struct Env {
+/// A lexical environment: a stack of scopes, each a list of bindings, plus the
+/// checked program used to resolve calls. A resource has few locals, so lookups
+/// are linear and innermost-first.
+struct Env<'p> {
     scopes: Vec<Vec<(String, Binding)>>,
+    program: &'p CheckedProgram,
 }
 
 /// Why an assignment did not land.
@@ -112,9 +222,12 @@ enum AssignError {
     Immutable,
 }
 
-impl Env {
-    fn new() -> Self {
-        Self { scopes: Vec::new() }
+impl<'p> Env<'p> {
+    fn new(program: &'p CheckedProgram) -> Self {
+        Self {
+            scopes: Vec::new(),
+            program,
+        }
     }
 
     fn push_scope(&mut self) {
@@ -161,7 +274,7 @@ impl Env {
 /// Evaluate a block in its own scope, stopping at the first `return`. The scope
 /// is popped on every exit, including when a statement raises an error, so the
 /// environment is left balanced for reuse.
-fn eval_block(block: &Block, env: &mut Env) -> Result<Flow, RuntimeError> {
+fn eval_block(block: &Block, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
     env.push_scope();
     let result = eval_statements(&block.statements, env);
     env.pop_scope();
@@ -169,7 +282,7 @@ fn eval_block(block: &Block, env: &mut Env) -> Result<Flow, RuntimeError> {
 }
 
 /// Evaluate statements in order until one returns or the block ends.
-fn eval_statements(statements: &[Statement], env: &mut Env) -> Result<Flow, RuntimeError> {
+fn eval_statements(statements: &[Statement], env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
     for statement in statements {
         let flow = eval_statement(statement, env)?;
         if !matches!(flow, Flow::Normal) {
@@ -179,7 +292,7 @@ fn eval_statements(statements: &[Statement], env: &mut Env) -> Result<Flow, Runt
     Ok(Flow::Normal)
 }
 
-fn eval_statement(statement: &Statement, env: &mut Env) -> Result<Flow, RuntimeError> {
+fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
     match statement {
         Statement::Let { name, value, .. } => {
             let value = eval_expr(value, env)?;
@@ -232,7 +345,13 @@ fn eval_statement(statement: &Statement, env: &mut Env) -> Result<Flow, RuntimeE
             Ok(Flow::Return(value))
         }
         Statement::Expr { value, .. } => {
-            eval_expr(value, env)?;
+            // A call statement may invoke a function that returns nothing; only a
+            // call in value position requires a return value.
+            if let Expression::Call { callee, args, span } = value {
+                eval_call(callee, args, *span, env)?;
+            } else {
+                eval_expr(value, env)?;
+            }
             Ok(Flow::Normal)
         }
         Statement::If {
@@ -309,7 +428,7 @@ fn eval_while(
     label: &Option<String>,
     condition: &Expression,
     body: &Block,
-    env: &mut Env,
+    env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     while eval_bool(condition, env)? {
         match classify(eval_block(body, env)?, label) {
@@ -327,7 +446,7 @@ fn eval_for(
     iterable: &Expression,
     body: &Block,
     span: SourceSpan,
-    env: &mut Env,
+    env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     if binding.second.is_some() {
         return Err(unsupported("a two-name loop binding over a range", span));
@@ -360,7 +479,10 @@ fn eval_for(
 
 /// The `(start, end, inclusive)` bounds of a range iterable. Only integer ranges
 /// (`a..b`, `a..=b`) are iterable in this slice; other iterables are unsupported.
-fn range_bounds(iterable: &Expression, env: &mut Env) -> Result<(i64, i64, bool), RuntimeError> {
+fn range_bounds(
+    iterable: &Expression,
+    env: &mut Env<'_>,
+) -> Result<(i64, i64, bool), RuntimeError> {
     match iterable {
         Expression::Binary {
             op: BinaryOp::RangeExclusive,
@@ -387,7 +509,7 @@ fn local_target(target: &Expression, span: SourceSpan) -> Result<&str, RuntimeEr
     }
 }
 
-fn eval_expr(expr: &Expression, env: &mut Env) -> Result<Value, RuntimeError> {
+fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
     match expr {
         Expression::Literal { kind, text, span } => eval_literal(*kind, text, *span),
         Expression::Name { segments, span } => {
@@ -409,6 +531,15 @@ fn eval_expr(expr: &Expression, env: &mut Env) -> Result<Value, RuntimeError> {
             right,
             span,
         } => eval_binary(*op, left, right, *span, env),
+        Expression::Call { callee, args, span } => match eval_call(callee, args, *span, env)? {
+            Some(value) => Ok(value),
+            None => Err(RuntimeError {
+                code: RUN_NO_VALUE,
+                message: "a call to a function that returns no value cannot be used as a value"
+                    .into(),
+                span: *span,
+            }),
+        },
         Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
         other => Err(unsupported("this expression", other.span())),
     }
@@ -420,7 +551,7 @@ fn eval_expr(expr: &Expression, env: &mut Env) -> Result<Value, RuntimeError> {
 fn eval_interpolation(
     parts: &[InterpolationPart],
     span: SourceSpan,
-    env: &mut Env,
+    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let mut result = String::new();
     for part in parts {
@@ -482,7 +613,7 @@ fn eval_unary(
     op: UnaryOp,
     operand: &Expression,
     span: SourceSpan,
-    env: &mut Env,
+    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match (op, eval_expr(operand, env)?) {
         (UnaryOp::Neg, Value::Int(n)) => n
@@ -500,7 +631,7 @@ fn eval_binary(
     left: &Expression,
     right: &Expression,
     span: SourceSpan,
-    env: &mut Env,
+    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match op {
         // Logical operators short-circuit: the right side is evaluated only when
@@ -529,7 +660,7 @@ fn eval_binary(
 fn int_op(
     left: &Expression,
     right: &Expression,
-    env: &mut Env,
+    env: &mut Env<'_>,
     span: SourceSpan,
     op: fn(i64, i64) -> Option<i64>,
 ) -> Result<Value, RuntimeError> {
@@ -543,7 +674,7 @@ fn int_op(
 fn int_div(
     left: &Expression,
     right: &Expression,
-    env: &mut Env,
+    env: &mut Env<'_>,
     span: SourceSpan,
     op: fn(i64, i64) -> Option<i64>,
 ) -> Result<Value, RuntimeError> {
@@ -564,7 +695,7 @@ fn int_div(
 fn compare_values(
     left: &Expression,
     right: &Expression,
-    env: &mut Env,
+    env: &mut Env<'_>,
     span: SourceSpan,
     want: fn(Ordering) -> bool,
 ) -> Result<Value, RuntimeError> {
@@ -585,7 +716,7 @@ fn compare_values(
 fn concat(
     left: &Expression,
     right: &Expression,
-    env: &mut Env,
+    env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
     match (eval_expr(left, env)?, eval_expr(right, env)?) {
@@ -599,7 +730,7 @@ fn concat(
 fn values_equal(
     left: &Expression,
     right: &Expression,
-    env: &mut Env,
+    env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<bool, RuntimeError> {
     match (eval_expr(left, env)?, eval_expr(right, env)?) {
@@ -610,14 +741,14 @@ fn values_equal(
     }
 }
 
-fn eval_int(expr: &Expression, env: &mut Env) -> Result<i64, RuntimeError> {
+fn eval_int(expr: &Expression, env: &mut Env<'_>) -> Result<i64, RuntimeError> {
     match eval_expr(expr, env)? {
         Value::Int(n) => Ok(n),
         _ => Err(type_error("expected an integer", expr.span())),
     }
 }
 
-fn eval_bool(expr: &Expression, env: &mut Env) -> Result<bool, RuntimeError> {
+fn eval_bool(expr: &Expression, env: &mut Env<'_>) -> Result<bool, RuntimeError> {
     match eval_expr(expr, env)? {
         Value::Bool(b) => Ok(b),
         _ => Err(type_error("expected a boolean", expr.span())),

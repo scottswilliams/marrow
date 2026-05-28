@@ -39,6 +39,7 @@ dependencies = [
 name = "marrow-run"
 version = "0.1.0"
 dependencies = [
+ "marrow-check",
  "marrow-syntax",
 ]
 

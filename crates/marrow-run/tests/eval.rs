@@ -1,9 +1,10 @@
 //! Evaluate pure scalar functions: arithmetic, comparison, logical operators,
 //! locals, and conditionals over integer and boolean values.
 
+use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
-    RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME,
-    RUN_UNSUPPORTED, Value, evaluate_function,
+    RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE,
+    RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, Value, evaluate_function, run_entry,
 };
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
 
@@ -20,6 +21,50 @@ fn function(source: &str) -> FunctionDecl {
             _ => None,
         })
         .expect("a function declaration")
+}
+
+/// Wrap every function in `source` into a one-module checked program named
+/// `test`, so `run_entry(&program, "test::name", ...)` resolves calls between
+/// them. Parameter types are left `Unknown` — the runtime binds by name.
+fn checked_program(source: &str) -> CheckedProgram {
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
+    let functions = parsed
+        .file
+        .declarations
+        .into_iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Function(function) => Some(CheckedFunction {
+                name: function.name.clone(),
+                public: function.public,
+                params: function
+                    .params
+                    .iter()
+                    .map(|param| CheckedParam {
+                        name: param.name.clone(),
+                        mode: param.mode,
+                        ty: MarrowType::Unknown,
+                    })
+                    .collect(),
+                return_type: None,
+                span: function.span,
+                touches_saved_data: false,
+                body: function.body,
+            }),
+            _ => None,
+        })
+        .collect();
+    CheckedProgram {
+        modules: vec![CheckedModule {
+            name: "test".into(),
+            source_file: std::path::PathBuf::new(),
+            span: Default::default(),
+            imports: Vec::new(),
+            constants: Vec::new(),
+            functions,
+            resources: Vec::new(),
+        }],
+    }
 }
 
 #[test]
@@ -370,5 +415,76 @@ fn interpolation_unescapes_literal_braces() {
     assert_eq!(
         evaluate_function(&f, &[]),
         Ok(Some(Value::Str("a { b".into())))
+    );
+}
+
+#[test]
+fn run_entry_evaluates_a_function_by_qualified_name() {
+    let program = checked_program("fn add(a: int, b: int): int\n    return a + b\n");
+    assert_eq!(
+        run_entry(&program, "test::add", &[Value::Int(2), Value::Int(3)]),
+        Ok(Some(Value::Int(5)))
+    );
+}
+
+#[test]
+fn a_function_can_call_another() {
+    let program = checked_program(
+        "fn double(n: int): int\n    return n + n\n\nfn quad(n: int): int\n    return double(n) + double(n)\n",
+    );
+    assert_eq!(
+        run_entry(&program, "test::quad", &[Value::Int(3)]),
+        Ok(Some(Value::Int(12)))
+    );
+}
+
+#[test]
+fn functions_recurse() {
+    let program = checked_program(
+        "fn fact(n: int): int\n    if n <= 1\n        return 1\n    return n * fact(n - 1)\n",
+    );
+    assert_eq!(
+        run_entry(&program, "test::fact", &[Value::Int(5)]),
+        Ok(Some(Value::Int(120)))
+    );
+}
+
+#[test]
+fn a_void_call_runs_as_a_statement() {
+    let program = checked_program(
+        "fn note(n: int)\n    let doubled = n + n\n\nfn caller(): int\n    note(3)\n    return 2\n",
+    );
+    assert_eq!(
+        run_entry(&program, "test::caller", &[]),
+        Ok(Some(Value::Int(2)))
+    );
+}
+
+#[test]
+fn using_a_void_call_as_a_value_is_rejected() {
+    let program = checked_program(
+        "fn note(n: int)\n    let doubled = n + n\n\nfn caller(): int\n    return note(3)\n",
+    );
+    let result = run_entry(&program, "test::caller", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_NO_VALUE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_unknown_function_is_rejected() {
+    let program = checked_program("fn f(): int\n    return 1\n");
+    // Unknown entry point...
+    assert!(matches!(
+        run_entry(&program, "test::missing", &[]),
+        Err(ref error) if error.code == RUN_UNKNOWN_FUNCTION
+    ));
+    // ...and an unknown function called from within a body.
+    let calls_missing = checked_program("fn f(): int\n    return g(1)\n");
+    let result = run_entry(&calls_missing, "test::f", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNKNOWN_FUNCTION),
+        "{result:?}"
     );
 }

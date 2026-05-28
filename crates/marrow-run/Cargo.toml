@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+marrow-check = { path = "../marrow-check" }
 marrow-syntax = { path = "../marrow-syntax" }
 
 [lints]
