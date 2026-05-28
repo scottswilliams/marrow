@@ -8,7 +8,8 @@ use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
     FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
-    WRITE_UNKNOWN_FIELD, next_id, plan_field_write, plan_resource_delete, plan_resource_write,
+    WRITE_UNKNOWN_FIELD, next_id, plan_field_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -102,6 +103,18 @@ fn write_field(
 ) {
     plan_field_write(schema, identity, field, &value, store)
         .expect("valid field write")
+        .commit(store);
+}
+
+/// Plan and commit a merge against the current store state.
+fn merge(
+    store: &mut MemStore,
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    value: ResourceValue,
+) {
+    plan_resource_merge(schema, identity, &value, store)
+        .expect("valid merge")
         .commit(store);
 }
 
@@ -904,4 +917,319 @@ fn a_composite_identity_unique_entry_round_trips_and_detects_conflict() {
         ],
     };
     plan_resource_write(&item, &acme5, &same, &store).expect("self re-write is not a conflict");
+}
+
+#[test]
+fn a_merge_overwrites_supplied_fields_and_leaves_the_rest() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    // Merge supplies only `shelf`; `title` is left as stored.
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("shelf".into(), saved("history"))],
+        },
+    );
+
+    let read = |field| {
+        decode_value(
+            store.read(&field_path(1, field)).expect(field),
+            ValueType::Str,
+        )
+    };
+    assert_eq!(
+        read("shelf"),
+        Some(SavedValue::Str("history".into())),
+        "overwritten"
+    );
+    assert_eq!(
+        read("title"),
+        Some(SavedValue::Str("Mort".into())),
+        "untouched"
+    );
+}
+
+#[test]
+fn a_merge_into_an_empty_identity_writes_supplied_fields() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+        },
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(1, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into()))
+    );
+    assert_eq!(
+        store.read(&field_path(1, "shelf")),
+        None,
+        "sparse field stays absent"
+    );
+}
+
+#[test]
+fn an_explicit_absent_in_a_merge_leaves_the_target_field() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    // An explicit Absent means "not contributed", same as omission: leave it.
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("shelf".into(), FieldValue::Absent)],
+        },
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(1, "shelf")).expect("shelf"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("fiction".into())),
+        "merge does not clear a field"
+    );
+}
+
+#[test]
+fn a_merge_with_a_mismatched_type_is_rejected() {
+    let book = schema(BOOK);
+    let value = ResourceValue {
+        fields: vec![("title".into(), FieldValue::Saved(SavedValue::Int(5)))],
+    };
+    let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, &MemStore::new());
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_TYPE_MISMATCH),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_merge_omitting_a_required_field_already_stored_succeeds() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    // `title` (required) is not supplied, but it is already stored.
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("shelf".into(), saved("history"))],
+        },
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(1, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into()))
+    );
+}
+
+#[test]
+fn a_merge_omitting_a_required_field_not_yet_stored_is_rejected() {
+    let book = schema(BOOK);
+    // Empty store: `title` (required) is neither supplied nor stored.
+    let value = ResourceValue {
+        fields: vec![("shelf".into(), saved("fiction"))],
+    };
+    let store = MemStore::new();
+    let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn merging_an_indexed_field_moves_the_index_entry() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![("shelf".into(), saved("history"))],
+        },
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        None,
+        "old entry gone"
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("history", 42)),
+        Some(&b"1"[..]),
+        "new entry present"
+    );
+}
+
+#[test]
+fn merging_a_non_indexed_field_preserves_the_index_entry() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    // The merge touches `title`, not the indexed `shelf`: the entry — whose key
+    // rests on the untouched `shelf` — must survive, not be torn down.
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("Mort the Second"))],
+        },
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        Some(&b"1"[..]),
+        "untouched index entry preserved"
+    );
+}
+
+#[test]
+fn a_merge_onto_a_unique_key_held_by_another_is_rejected() {
+    let book = schema(BOOK_UNIQUE);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        book_with_isbn("A", "X"),
+    );
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(2)],
+        book_with_isbn("B", "Y"),
+    );
+
+    // Record 2 merging onto record 1's isbn is rejected.
+    let value = ResourceValue {
+        fields: vec![("isbn".into(), saved("X"))],
+    };
+    let result = plan_resource_merge(&book, &[SavedKey::Int(2)], &value, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNIQUE_CONFLICT),
+        "{result:?}"
+    );
+    assert_owns(&store, &by_isbn_entry("Y"), 2);
+}
+
+#[test]
+fn merging_a_unique_field_moves_the_entry() {
+    let book = schema(BOOK_UNIQUE);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        book_with_isbn("A", "X"),
+    );
+    // Merge a new isbn over the same record: the unique entry moves.
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("isbn".into(), saved("Z"))],
+        },
+    );
+    assert_eq!(
+        store.read(&by_isbn_entry("X")),
+        None,
+        "old unique key released"
+    );
+    assert_owns(&store, &by_isbn_entry("Z"), 1);
+}
+
+#[test]
+fn merging_an_indexed_field_into_a_record_without_it_creates_the_entry() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    // Seed without the indexed `shelf`, so no byShelf entry exists yet.
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+        },
+    );
+    merge(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![("shelf".into(), saved("fiction"))],
+        },
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        Some(&b"1"[..]),
+        "entry created when the merge first populates the indexed field"
+    );
 }

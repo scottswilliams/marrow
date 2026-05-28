@@ -6,8 +6,9 @@
 //! is visible, so a rejected write leaves the store untouched and a committed
 //! one is internally coherent.
 //!
-//! This first slice covers a whole-resource write of a resource's top-level
-//! fields; keyed layers, indexes, field writes, delete, and merge build on it.
+//! It covers whole-resource writes, single-field writes, deletes, and merges
+//! over a resource's top-level fields, keeping generated indexes (unique and
+//! non-unique) coherent. Keyed layers build on this.
 
 use marrow_schema::{ResourceSchema, SavedRootSchema};
 use marrow_store::mem::MemStore;
@@ -253,6 +254,93 @@ pub fn plan_field_write(
     Ok(WritePlan { steps })
 }
 
+/// Plan a managed merge: copy the supplied fields of `value` over the resource
+/// already stored at `identity`, leaving stored fields the merge does not supply
+/// untouched (a partial update, not a replace — docs/language
+/// `resources-and-storage.md`). An omitted or [`FieldValue::Absent`] field is
+/// left as stored; clearing a field is `delete`, not `merge`. Validates supplied
+/// field types and that every required field is populated AFTER the merge
+/// (supplied here or already stored), and rejects a unique conflict, before
+/// staging. Generated index entries are kept coherent against the EFFECTIVE
+/// (merged-over-stored) resource: an entry whose key is unchanged is left in
+/// place, one whose key changes is moved. `store` is read, not written.
+pub fn plan_resource_merge(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    value: &ResourceValue,
+    store: &MemStore,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+
+    // Validate the supplied fields and collect the ones to write. A required
+    // field the merge does not supply must already be stored — the resulting
+    // resource must still satisfy required fields.
+    let mut to_write = Vec::new();
+    for field in &schema.fields {
+        match supplied_value(value, &field.name) {
+            Some(FieldValue::Saved(saved)) => {
+                check_type(&field.name, &field.ty.text, saved)?;
+                to_write.push((field.name.as_str(), saved));
+            }
+            Some(FieldValue::Absent) | None => {
+                if field.required
+                    && store
+                        .read(&encode_path(&field_path(root, identity, &field.name)))
+                        .is_none()
+                {
+                    return Err(WriteError {
+                        code: WRITE_REQUIRED_ABSENT,
+                        message: format!(
+                            "required field `{}` is absent and not already stored",
+                            field.name
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    // Reject a unique-index conflict on the effective resource before staging.
+    for index in &schema.indexes {
+        if index.unique {
+            let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store);
+            check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
+        }
+    }
+
+    // Stage the field overwrites — no subtree clear, so untouched fields remain.
+    let mut steps = Vec::new();
+    for (name, saved) in to_write {
+        steps.push(PlanStep::Write {
+            path: encode_path(&field_path(root, identity, name)),
+            value: encode_value(saved),
+        });
+    }
+
+    // Reconcile each index against the effective resource: an unchanged key is
+    // left alone (so an entry resting on an untouched field survives), a changed
+    // key moves.
+    for index in &schema.indexes {
+        let old_keys = stored_index_keys(&index.args, root, identity, schema, store);
+        let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store);
+        if old_keys == new_keys {
+            continue;
+        }
+        if let Some(old_keys) = &old_keys {
+            steps.push(PlanStep::Delete {
+                path: encode_path(&index_path(root, &index.name, old_keys)),
+            });
+        }
+        if let Some(new_keys) = &new_keys {
+            steps.push(PlanStep::Write {
+                path: encode_path(&index_path(root, &index.name, new_keys)),
+                value: index_entry_value(index.unique, identity),
+            });
+        }
+    }
+    Ok(WritePlan { steps })
+}
+
 /// Resolve a resource's saved root and check the supplied identity has the
 /// expected number of keys.
 fn resolve_saved_root<'a>(
@@ -406,6 +494,27 @@ fn field_write_index_keys(
             } else {
                 stored_arg_key(arg, root, identity, schema, store)
             }
+        })
+        .collect()
+}
+
+/// Resolve an index's argument names to the key values of the EFFECTIVE resource
+/// after a merge: a field argument the merge supplies takes that value; any
+/// other argument (an identity key, or a field the merge leaves untouched) keeps
+/// its stored value. Returns `None` if any argument is absent or has no key
+/// encoding, so no entry is written.
+fn effective_index_keys(
+    args: &[String],
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    value: &ResourceValue,
+    schema: &ResourceSchema,
+    store: &MemStore,
+) -> Option<Vec<SavedKey>> {
+    args.iter()
+        .map(|arg| match supplied_value(value, arg) {
+            Some(FieldValue::Saved(saved)) => saved_value_to_key(saved),
+            _ => stored_arg_key(arg, root, identity, schema, store),
         })
         .collect()
 }
