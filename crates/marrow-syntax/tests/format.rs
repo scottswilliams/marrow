@@ -1,6 +1,48 @@
 use marrow_syntax::{
-    Declaration, format_block, format_declaration, format_expression, parse_source,
+    Declaration, format_block, format_declaration, format_expression, format_source, parse_source,
 };
+
+/// Read every `module`-starting `.mw` block from `docs/language` (the complete
+/// library files used as parser fixtures).
+fn documented_module_files() -> Vec<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("language");
+    let mut files = Vec::new();
+    let mut entries = std::fs::read_dir(&dir)
+        .expect("read docs/language")
+        .map(|entry| entry.expect("entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read doc");
+        let (mut in_block, mut src) = (false, String::new());
+        for line in text.lines() {
+            if line.trim() == "```mw" {
+                in_block = true;
+                src.clear();
+                continue;
+            }
+            if line.trim() == "```" && in_block {
+                if src.trim_start().starts_with("module ") {
+                    files.push(src.clone());
+                }
+                in_block = false;
+                continue;
+            }
+            if in_block {
+                src.push_str(line);
+                src.push('\n');
+            }
+        }
+    }
+    files
+}
 
 /// Parse a module and format the declaration at `index`.
 fn format_decl(source: &str, index: usize) -> String {
@@ -211,6 +253,53 @@ fn formats_function_declaration_with_params() {
          \x20   result = 1\n\
          \x20   return result";
     assert_eq!(format_decl(source, 0), expected);
+}
+
+#[test]
+fn formats_whole_file_with_blank_line_policy() {
+    let source = "module shelf::books\n\
+         use std::clock\n\
+         use shelf::books\n\
+         const MaxLoans: int = 5\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         pub fn add(title: string): int\n\
+         \x20   return 1\n";
+    // Module, the use block, and each declaration are separated by one blank line.
+    let expected = "module shelf::books\n\
+         \n\
+         use std::clock\n\
+         use shelf::books\n\
+         \n\
+         const MaxLoans: int = 5\n\
+         \n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \n\
+         pub fn add(title: string): int\n\
+         \x20   return 1\n";
+    assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn format_source_is_idempotent_and_reparses_cleanly() {
+    let files = documented_module_files();
+    assert!(files.len() >= 5, "expected several module files");
+    for source in files {
+        let once = format_source(&source);
+        let twice = format_source(&once);
+        assert_eq!(
+            once, twice,
+            "format_source is not a fixed point for:\n{source}"
+        );
+        // The formatted output must itself be valid Marrow.
+        let reparsed = parse_source(&once);
+        assert!(
+            reparsed.diagnostics.is_empty(),
+            "formatted output should re-parse cleanly:\n{once}\n{:#?}",
+            reparsed.diagnostics
+        );
+    }
 }
 
 #[test]

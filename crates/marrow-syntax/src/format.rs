@@ -21,6 +21,43 @@ const PREC_UNARY: u8 = 9;
 /// One indentation level in canonical Marrow source.
 const INDENT: &str = "    ";
 
+/// Format a whole `.mw` source file as canonical Marrow. The module
+/// declaration, the `use` block, and each top-level declaration are separated
+/// by a single blank line; the result ends with a newline.
+///
+/// Formatting normalizes layout (indentation, blank lines, doc-comment
+/// spacing), so the output is not byte-identical to arbitrary input but is a
+/// stable fixed point: `format_source(format_source(s)) == format_source(s)`.
+/// Inline body comments are not in the syntax tree and are not preserved yet.
+pub fn format_source(source: &str) -> String {
+    let parsed = crate::parse_source(source);
+    let file = &parsed.file;
+    let mut sections: Vec<String> = Vec::new();
+
+    if let Some(module) = &file.module {
+        sections.push(format!("module {}", module.name));
+    }
+    if !file.uses.is_empty() {
+        sections.push(
+            file.uses
+                .iter()
+                .map(|use_decl| format!("use {}", use_decl.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    for declaration in &file.declarations {
+        sections.push(format_declaration(source, declaration));
+    }
+
+    if sections.is_empty() {
+        return String::new();
+    }
+    let mut out = sections.join("\n\n");
+    out.push('\n');
+    out
+}
+
 /// Format a top-level declaration (const, resource, or function) as canonical
 /// Marrow source, including its documentation comments. The returned text has
 /// no trailing newline.

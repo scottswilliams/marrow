@@ -1,7 +1,9 @@
 use std::fmt;
 
 mod format;
-pub use format::{format_block, format_declaration, format_expression, format_statement};
+pub use format::{
+    format_block, format_declaration, format_expression, format_source, format_statement,
+};
 
 pub const PARSE_SYNTAX: &str = "parse.syntax";
 
