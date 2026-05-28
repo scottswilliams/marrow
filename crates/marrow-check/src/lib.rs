@@ -15,7 +15,7 @@ pub mod program;
 mod rules;
 
 pub use program::{
-    CheckedConst, CheckedModule, CheckedParam, CheckedProgram, FunctionSignature, MarrowType,
+    CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
     PrimitiveType,
 };
 
@@ -141,7 +141,7 @@ pub fn check_project(
             match declaration {
                 marrow_syntax::Declaration::Function(function) => {
                     rules::check_function_body(&file.path, &function.body, &mut report.diagnostics);
-                    functions.push(function_signature(function, &module_resources));
+                    functions.push(checked_function(function, &module_resources));
                 }
                 marrow_syntax::Declaration::Resource(resource) => {
                     let (schema, errors) = marrow_schema::compile_resource(resource);
@@ -305,13 +305,14 @@ pub fn check_project(
     Ok((report, program))
 }
 
-/// Resolve a function declaration's signature for the checked-program artifact.
-/// Parameter and return types resolve against the module's own resource names.
-fn function_signature(
+/// Resolve a function declaration for the checked-program artifact: its
+/// signature (parameter and return types resolve against the module's own
+/// resource names) plus its body, which the runtime evaluates.
+fn checked_function(
     function: &marrow_syntax::FunctionDecl,
     module_resources: &[String],
-) -> FunctionSignature {
-    FunctionSignature {
+) -> CheckedFunction {
+    CheckedFunction {
         name: function.name.clone(),
         public: function.public,
         params: function
@@ -329,6 +330,7 @@ fn function_signature(
             .map(|ty| MarrowType::resolve(ty, module_resources)),
         span: function.span,
         touches_saved_data: block_touches_saved_data(&function.body),
+        body: function.body.clone(),
     }
 }
 

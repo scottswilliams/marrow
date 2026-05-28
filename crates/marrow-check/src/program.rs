@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use marrow_syntax::{ParamMode, SourceSpan, TypeRef};
+use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
 
 /// The resolved shape of a checked project: every clean library module, in the
 /// order their files were discovered.
@@ -30,7 +30,7 @@ pub struct CheckedModule {
     /// Resolved `use` target names, in source order.
     pub imports: Vec<String>,
     pub constants: Vec<CheckedConst>,
-    pub functions: Vec<FunctionSignature>,
+    pub functions: Vec<CheckedFunction>,
     pub resources: Vec<marrow_schema::ResourceSchema>,
 }
 
@@ -43,10 +43,11 @@ pub struct CheckedConst {
     pub span: SourceSpan,
 }
 
-/// A function's resolved signature: its name, visibility, parameters, return
-/// type, and whether its body touches saved data.
+/// A checked function: its resolved signature — name, visibility, parameters,
+/// return type, whether its body touches saved data — and the body itself, which
+/// the runtime evaluates.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionSignature {
+pub struct CheckedFunction {
     pub name: String,
     pub public: bool,
     pub params: Vec<CheckedParam>,
@@ -54,6 +55,8 @@ pub struct FunctionSignature {
     pub span: SourceSpan,
     /// True when the body reads or writes any saved root (`^...`).
     pub touches_saved_data: bool,
+    /// The function body, as parsed, for the runtime to evaluate.
+    pub body: Block,
 }
 
 /// One resolved function parameter.

@@ -65,6 +65,8 @@ fn builds_a_module_for_a_clean_library_file() {
     assert!(add.return_type.is_some(), "{add:#?}");
     // `add`'s body reads the `^books` saved root.
     assert!(add.touches_saved_data, "{add:#?}");
+    // The body is carried into the artifact for the runtime to evaluate.
+    assert!(!add.body.statements.is_empty(), "{add:#?}");
 }
 
 #[test]
