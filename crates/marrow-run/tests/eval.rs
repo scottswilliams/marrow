@@ -1282,3 +1282,98 @@ fn group_entry_field_writes_compose_in_a_transaction() {
         Some(SavedValue::Str("fiction".into()))
     );
 }
+
+#[test]
+fn a_call_binds_named_arguments_by_name() {
+    // Named arguments may appear in any order; they bind by name, not position.
+    // `sub(b: 10, a: 3)` is `3 - 10`, not `10 - 3`.
+    let program = checked_program(
+        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(b: 10, a: 3)\n",
+    );
+    assert_eq!(run(&program, "test::go", &[]), Ok(Some(Value::Int(-7))));
+}
+
+#[test]
+fn a_call_mixes_positional_then_named_arguments() {
+    let program = checked_program(
+        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(10, b: 3)\n",
+    );
+    assert_eq!(run(&program, "test::go", &[]), Ok(Some(Value::Int(7))));
+}
+
+#[test]
+fn a_call_with_an_unknown_parameter_name_is_rejected() {
+    let program = checked_program(
+        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(a: 1, c: 2)\n",
+    );
+    let result = run(&program, "test::go", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_call_missing_an_argument_is_rejected() {
+    let program = checked_program(
+        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(a: 1)\n",
+    );
+    let result = run(&program, "test::go", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_call_supplying_a_parameter_twice_is_rejected() {
+    // Positional `1` fills `a`; the named `a: 2` then collides.
+    let program = checked_program(
+        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(1, a: 2)\n",
+    );
+    let result = run(&program, "test::go", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_positional_argument_after_a_named_one_is_rejected() {
+    // Named arguments must come last; a trailing positional must not silently
+    // back-fill an earlier parameter (`sub(b: 1, 2)` would otherwise bind a=2).
+    let program = checked_program(
+        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(b: 1, 2)\n",
+    );
+    let result = run(&program, "test::go", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+/// Extract the single `mw` code block from the reference sample document, so the
+/// integration test runs the exact source the docs publish.
+fn sample_source() -> String {
+    let doc = include_str!("../../../docs/language/sample.md");
+    doc.split("```mw")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("the sample document has an mw code block")
+        .to_string()
+}
+
+#[test]
+fn the_reference_sample_runs_end_to_end() {
+    // The canonical sample (docs/language/sample.md) must run on the in-memory
+    // store: add a book in a transaction (whole-resource + history group writes),
+    // tag it, and print the fiction shelf via index traversal.
+    let program = checked_program(&sample_source());
+    let store = RefCell::new(MemStore::new());
+    let host = Host::with_clock(1_700_000_000_000_000_000); // 2023-11-14T22:13:20Z
+    let outcome = run_entry_with_host(&program, &store, &host, "test::main", &[])
+        .expect("the sample's main runs end-to-end");
+    // `main` returns nothing and prints the one fiction book it added.
+    assert_eq!(outcome.value, None);
+    assert_eq!(outcome.output, "1: Small Gods\n");
+}

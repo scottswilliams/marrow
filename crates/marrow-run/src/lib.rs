@@ -15,7 +15,7 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::{CheckedFunction, CheckedProgram};
+use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram};
 use marrow_schema::ResourceSchema;
 use marrow_store::mem::{MemStore, Presence};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
@@ -267,9 +267,71 @@ fn resolve_function<'p>(
     }
 }
 
+/// Bind a call's positional and named arguments to a function's parameters,
+/// returning the argument values in parameter order. Positional arguments fill
+/// parameters left to right and must precede any named argument; a named
+/// argument binds the parameter of that name. Each parameter must be supplied
+/// exactly once. (`out`/`inout` modes are rejected before this point.)
+fn bind_arguments(
+    params: &[CheckedParam],
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut slots: Vec<Option<Value>> = vec![None; params.len()];
+    let mut next_positional = 0;
+    let mut seen_named = false;
+    for arg in args {
+        let index = match &arg.name {
+            None => {
+                // A positional argument after a named one would silently
+                // back-fill an earlier parameter; named arguments come last.
+                if seen_named {
+                    return Err(type_error(
+                        "a positional argument cannot follow a named argument",
+                        span,
+                    ));
+                }
+                let index = next_positional;
+                next_positional += 1;
+                index
+            }
+            Some(name) => {
+                seen_named = true;
+                params
+                    .iter()
+                    .position(|param| &param.name == name)
+                    .ok_or_else(|| type_error(&format!("call has no parameter `{name}`"), span))?
+            }
+        };
+        let slot = slots
+            .get_mut(index)
+            .ok_or_else(|| type_error("call has more arguments than parameters", span))?;
+        if slot.is_some() {
+            return Err(type_error(
+                &format!(
+                    "parameter `{}` is supplied more than once",
+                    params[index].name
+                ),
+                span,
+            ));
+        }
+        *slot = Some(eval_expr(&arg.value, env)?);
+    }
+    let mut values = Vec::with_capacity(params.len());
+    for (slot, param) in slots.into_iter().zip(params) {
+        values.push(
+            slot.ok_or_else(|| {
+                type_error(&format!("missing argument for `{}`", param.name), span)
+            })?,
+        );
+    }
+    Ok(values)
+}
+
 /// Evaluate a call to a program function, returning its returned value (or
-/// `None` for a function that returns nothing). Only positional arguments to a
-/// named function are supported in this slice.
+/// `None` for a function that returns nothing). Arguments may be positional or
+/// named; `out`/`inout` argument modes are not yet supported.
 fn eval_call(
     callee: &Expression,
     args: &[Argument],
@@ -288,30 +350,33 @@ fn eval_call(
     let Expression::Name { segments, .. } = callee else {
         return Err(unsupported("calling this expression", span));
     };
-    if args
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported("named or out/inout arguments", span));
+    // `out`/`inout` argument modes are deferred for every call.
+    if args.iter().any(|arg| arg.mode.is_some()) {
+        return Err(unsupported("out/inout arguments", span));
     }
-    // Builtins are call-shaped but are not program functions.
-    if let [name] = segments.as_slice() {
-        match name.as_str() {
-            "print" | "write" => return eval_output(name, args, span, env),
-            "exists" => return eval_exists(args, span, env).map(Some),
-            "get" => return eval_get(args, span, env).map(Some),
-            "nextId" => return eval_next_id(args, span, env).map(Some),
-            "append" => return eval_append(args, span, env).map(Some),
-            _ => {}
+    // Builtins and the host capability take positional arguments only; a call
+    // carrying named arguments is a program-function call, handled last.
+    let has_named = args.iter().any(|arg| arg.name.is_some());
+    if !has_named {
+        // Builtins are call-shaped but are not program functions.
+        if let [name] = segments.as_slice() {
+            match name.as_str() {
+                "print" | "write" => return eval_output(name, args, span, env),
+                "exists" => return eval_exists(args, span, env).map(Some),
+                "get" => return eval_get(args, span, env).map(Some),
+                "nextId" => return eval_next_id(args, span, env).map(Some),
+                "append" => return eval_append(args, span, env).map(Some),
+                _ => {}
+            }
         }
-    }
-    // `std::clock::now()` is a host-capability builtin, not a program function.
-    if let [first, second, third] = segments.as_slice()
-        && first == "std"
-        && second == "clock"
-        && third == "now"
-    {
-        return eval_clock_now(args, span, env).map(Some);
+        // `std::clock::now()` is a host-capability builtin, not a program function.
+        if let [first, second, third] = segments.as_slice()
+            && first == "std"
+            && second == "clock"
+            && third == "now"
+        {
+            return eval_clock_now(args, span, env).map(Some);
+        }
     }
     let ctx = Context {
         program: env.program,
@@ -323,10 +388,7 @@ fn eval_call(
         message: format!("the program has no function `{}`", segments.join("::")),
         span,
     })?;
-    let mut values = Vec::with_capacity(args.len());
-    for arg in args {
-        values.push(eval_expr(&arg.value, env)?);
-    }
+    let values = bind_arguments(&function.params, args, span, env)?;
     let names: Vec<&str> = function
         .params
         .iter()
