@@ -14,6 +14,7 @@
 pub mod archive;
 pub mod backend;
 pub mod conformance;
+pub mod decimal;
 pub mod mem;
 pub mod path;
 #[cfg(feature = "native")]
@@ -24,3 +25,6 @@ pub mod value;
 /// [`Backend`](backend::Backend) contract, not specific to the in-memory store
 /// it is defined alongside.
 pub use mem::StoreError;
+
+/// Exact base-10 decimal arithmetic, re-exported at the crate root.
+pub use decimal::Decimal;
