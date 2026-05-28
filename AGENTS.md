@@ -2,45 +2,148 @@
 
 This repository is Marrow.
 
-Marrow is a lightweight, typed `.mw` language with built-in saved data. A
-resource is a typed tree; the same shape can be local or saved, and `^` marks
-saved data.
+Marrow is a lightweight, typed `.mw` language with built-in saved data. Data is
+scalars or trees. A resource is a typed tree; the same shape can be local or
+saved, and `^` marks saved data. Marrow is its own language and database model,
+not a layer on another system.
 
 `docs/language/` is the canonical source for Marrow language behavior. Parser,
 checker, runtime, CLI, LSP, examples, tests, and other docs converge on that
 directory. When implementation and documentation disagree, treat the
 disagreement as implementation work, not as a competing design.
 
-## Product Rules
+Implementation and tooling references live in concise `docs/` pages such as
+the backend, server, and roadmap references. Keep them simple, current, and
+organized like a real language/database reference. The code itself should be
+self-documenting where possible.
 
-- Build `.mw` as its own language and database model.
-- Do not add alternate language modes to the default product.
-- Do not bundle database-specific adapters in the first release.
-- Keep native storage as the normal local project store.
-- Keep saved data inspectable through Marrow tools.
-- Prefer deleting stale scaffolding over preserving confusing transitional
-  layers.
+Marrow is unreleased. Do not preserve stale names, old design formats,
+obsolete examples, or transition shims for their own sake. When the design
+changes, clean the repository as if the new design had been here from the
+beginning: simple, direct, and inspectable.
+
+Avoid agentic slop and documentation sediment at all costs, including in code.
+
+## Working Rules
+
+- Read `docs/language/` before changing `.mw` syntax, typing, resources,
+  builtins, saved data behavior, or user-facing terminology.
+- Keep documentation in the voice of a real language reference: precise,
+  current, and useful to everyday developers.
+- Prefer deleting stale files over moving them around. If useful content
+  survives, fold it into the smallest durable reference page.
+- Avoid unrelated reverts. The worktree may contain user or agent changes;
+  understand them and work with them.
+- Keep edits scoped and verify what changed. Do not claim completion without
+  fresh command output.
 
 ## Engineering Rules
 
-- Keep edits small, direct, and reviewable.
-- Match the reference docs before inventing new behavior.
-- Add tests near behavior as soon as implementation exists.
-- Use simple Rust and narrow abstractions.
-- Do not introduce `unsafe` Rust.
-- Do not keep durable agent notes, transcripts, bulky logs, or speculative
-  design drafts in the repository.
+1. Think before coding. State assumptions, surface tradeoffs, push back when a
+   simpler approach exists, and ask when guessing would risk the work.
+2. Simplicity first. Write the minimum code that solves the problem. Avoid
+   speculative features, single-use abstractions, and unrequested
+   configurability.
+3. Surgical changes. Touch only what the request requires. Match existing
+   style. Every changed line should trace directly to the user's request.
+4. Goal-driven execution. Turn tasks into verifiable goals. For behavior
+   changes, write or identify the failing check first, then make it pass.
+
+## Worktrees
+
+Use an isolated worktree for multi-file changes, Rust changes, or cleanup
+batches. The local harness is `$HOME/agents-work/marrow`; tracked work
+normally lives under `$HOME/agents-work/marrow/worktrees/main`, with
+short-lived lane worktrees under `$HOME/agents-work/marrow/worktrees`.
+
+Keep harness files, throwaway worktrees, cargo targets, trial artifacts,
+patches, reviews, logs, and leases outside the repository. The tracked repo
+contains source, tests, and durable reference docs only.
+
+## Verification
+
+Use focused checks before broad ones:
+
+1. no-compile checks: `git diff --check`, stale-term scans, link scans,
+   markdown checks, and formatting of touched docs;
+2. focused Rust checks: the smallest package, library, or test target that
+   proves the change;
+3. workspace checks: `cargo build --workspace` and `cargo test --workspace`
+   for broad rename, runtime, or release-surface changes.
+
+Do not run broad Cargo gates in parallel against the same target directory. In
+a lane, set `CARGO_TARGET_DIR` to an external harness path:
+
+```sh
+export CARGO_TARGET_DIR="$HOME/agents-work/marrow/cache/cargo-targets/<lane>"
+```
+
+Use `cache/cargo-targets/integration` for broad integration gates, one at a
+time.
+
+## Review And Integration
+
+Agents do not merge feature branches directly into `main` without review. Use
+short-lived branches, small commits, focused verification, and a read-only
+high-reasoning review before integration.
+
+Review prompt:
+
+```text
+Review this branch against main. Findings first. Focus on correctness,
+simplicity, minimality, and whether every changed line belongs. Treat
+docs/language/ as the source of truth for language behavior.
+```
+
+Integrate only from `$HOME/agents-work/marrow/worktrees/main`. Prefer
+`git cherry-pick -x <reviewed-sha>` over merging a whole branch. If a conflict
+is not an obvious mechanical rename/import conflict, abort and send the branch
+back to the lane.
+
+Before pushing `main`, run the verification ladder through the workspace
+checks using `cache/cargo-targets/integration`, then ask for a final read-only
+review of the assembled diff:
+
+```text
+Review the integration diff before main is pushed. Findings first. Focus on
+correctness, simplicity, minimality, and whether the cherry-picked commits
+belong together.
+```
 
 ## Repository Shape
 
 - `docs/language/` is the language reference.
 - `docs/implementation.md` is the implementation and backend reference.
 - `docs/roadmap/` tracks implementation order.
-- Future source, tests, examples, and editor integrations should be added only
-  when they match the reference docs.
+- Other durable language, database, implementation, backend, tooling, and
+  roadmap docs belong under `docs/`, not scattered elsewhere.
+- Public examples and demos exist only when they match `docs/language/` and
+  the implementation. Otherwise remove them and keep coverage in tests or
+  fixtures.
 
-## Verification
+## Coding Expectations
 
-Documentation-only work uses `git diff --check` and stale-link/name scans.
-Implementation work starts with focused tests and grows to workspace checks as
-the codebase grows.
+- Prefer simple Rust and narrow abstractions.
+- Keep code concise and self-documenting. Prioritize readability and
+  maintainability.
+- Follow the 80/20 rule: avoid large changes without proportionate impact.
+- Add tests near the behavior being changed.
+- Keep storage behavior behind the backend contract.
+- Keep saved data inspectable through Marrow tools.
+- Keep the repository Apache-2.0 only.
+- Keep native `.mw` as the only default language surface.
+- Do not add legacy language modes or code paths, transition layers, or
+  alternate default product surfaces.
+- Do not bundle external database adapters in the first release.
+- Do not introduce `unsafe` Rust.
+- Look for opportunities to dogfood with `.mw` where it makes sense.
+
+Before committing substantial code changes, spawn a high-reasoning read-only
+review of the staged and unstaged changes:
+
+```text
+Review the staged and unstaged changes. Findings first with file and line
+references. Focus on minimal, simple, self-documenting code, and whether every
+changed line belongs. Would a senior programming language developer sign off on
+this code? Is this the best, simplest solution?
+```
