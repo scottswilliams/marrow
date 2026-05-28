@@ -3,10 +3,11 @@
 //! [`CheckedProgram`] is the first slice of the resolved program model (roadmap
 //! step 5). [`check_project`](crate::check_project) builds it best-effort: it
 //! includes a [`CheckedModule`] only for a library file that declared a module,
-//! matched its path, is not a duplicate, and parsed without errors. Scripts and
-//! error-bearing files contribute no module this slice. The artifact never
-//! affects diagnostics; it is a structured view of the same parse the checker
-//! already produced.
+//! matched its path, is not a duplicate, and parsed without errors.
+//! [`check_tests`](crate::check_tests) adds a module per clean test file, named
+//! from its path (test files are scripts). Error-bearing files contribute no
+//! module. The artifact never affects diagnostics; it is a structured view of the
+//! same parse the checker already produced.
 
 use std::path::PathBuf;
 

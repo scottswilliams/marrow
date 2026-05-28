@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
+use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
 pub mod program;
@@ -89,132 +89,70 @@ pub fn check_project(
     // Pass 1: parse each file and collect per-file findings plus the project's
     // module set.
     for file in &files {
-        let source = match std::fs::read_to_string(&file.path) {
-            Ok(source) => source,
-            Err(error) => {
-                report.diagnostics.push(CheckDiagnostic {
-                    code: IO_READ.to_string(),
-                    severity: Severity::Error,
-                    file: file.path.clone(),
-                    message: format!("failed to read source: {error}"),
-                    line: 0,
-                    column: 0,
-                });
-                continue;
-            }
+        let Some(CheckedFile {
+            parsed,
+            resources,
+            functions,
+            constants,
+        }) = check_file(&file.path, &mut report.diagnostics)
+        else {
+            continue;
         };
 
-        let parsed = parse_source(&source);
-        for diagnostic in &parsed.diagnostics {
-            report.diagnostics.push(CheckDiagnostic {
-                code: diagnostic.code.to_string(),
-                severity: diagnostic.severity,
-                file: file.path.clone(),
-                message: diagnostic.message.clone(),
-                line: diagnostic.line,
-                column: diagnostic.column,
-            });
-        }
-
-        check_duplicate_declarations(&file.path, &parsed.file, &mut report.diagnostics);
-
-        // Collect the resolved declarations for the checked-program artifact as
-        // the same pass that reports their diagnostics walks them. Resource
-        // names are resolved first so a module's function and constant types can
-        // refer to its own resources.
-        let module_resources: Vec<String> = parsed
-            .file
-            .declarations
-            .iter()
-            .filter_map(|declaration| match declaration {
-                marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
-                _ => None,
-            })
-            .collect();
-        let mut resources = Vec::new();
-        let mut functions = Vec::new();
-        let mut constants = Vec::new();
-
-        // Structural statement rules apply to every function body; resources are
-        // compiled to schemas so structural schema problems surface here too.
+        // Saved roots and stable IDs are owned project-wide. Walk the file's
+        // resource declarations beside their compiled schemas (same order) to
+        // enforce one owner per root and one declaration per stable id.
+        let mut schemas = resources.iter();
         for declaration in &parsed.file.declarations {
-            match declaration {
-                marrow_syntax::Declaration::Function(function) => {
-                    rules::check_function_body(&file.path, &function.body, &mut report.diagnostics);
-                    functions.push(checked_function(function, &module_resources));
-                }
-                marrow_syntax::Declaration::Resource(resource) => {
-                    let (schema, errors) = marrow_schema::compile_resource(resource);
-                    for error in errors {
-                        report.diagnostics.push(CheckDiagnostic {
-                            code: error.code.to_string(),
-                            severity: Severity::Error,
-                            file: file.path.clone(),
-                            message: error.message,
-                            line: error.span.line,
-                            column: error.span.column,
-                        });
+            let marrow_syntax::Declaration::Resource(resource) = declaration else {
+                continue;
+            };
+            let schema = schemas
+                .next()
+                .expect("one compiled schema per resource declaration");
+            if let Some(saved) = &schema.saved_root {
+                match root_owners.get(&saved.root) {
+                    Some(first) => report.diagnostics.push(CheckDiagnostic {
+                        code: SCHEMA_DUPLICATE_ROOT_OWNER.to_string(),
+                        severity: Severity::Error,
+                        file: file.path.clone(),
+                        message: format!(
+                            "saved root `^{}` is already owned by a resource in `{}`",
+                            saved.root,
+                            first.display()
+                        ),
+                        line: resource.span.line,
+                        column: resource.span.column,
+                    }),
+                    None => {
+                        root_owners.insert(saved.root.clone(), file.path.clone());
                     }
-                    // A saved root has one managed owner across the project.
-                    if let Some(saved) = &schema.saved_root {
-                        match root_owners.get(&saved.root) {
-                            Some(first) => report.diagnostics.push(CheckDiagnostic {
-                                code: SCHEMA_DUPLICATE_ROOT_OWNER.to_string(),
-                                severity: Severity::Error,
-                                file: file.path.clone(),
-                                message: format!(
-                                    "saved root `^{}` is already owned by a resource in `{}`",
-                                    saved.root,
-                                    first.display()
-                                ),
-                                line: resource.span.line,
-                                column: resource.span.column,
-                            }),
-                            None => {
-                                root_owners.insert(saved.root.clone(), file.path.clone());
-                            }
-                        }
-                    }
-                    // Stable IDs are unique across the whole project. Within-
-                    // resource duplicates are already reported by
-                    // compile_resource; this catches an ID reused in another
-                    // resource, on the later one.
-                    let mut seen_here: Vec<String> = Vec::new();
-                    for (id, span) in marrow_schema::stable_ids(resource) {
-                        if seen_here.contains(&id) {
-                            continue;
-                        }
-                        match stable_id_owners.get(&id) {
-                            Some(first) => report.diagnostics.push(CheckDiagnostic {
-                                code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID.to_string(),
-                                severity: Severity::Error,
-                                file: file.path.clone(),
-                                message: format!(
-                                    "stable id `{id}` is already declared in `{}`",
-                                    first.display()
-                                ),
-                                line: span.line,
-                                column: span.column,
-                            }),
-                            None => {
-                                stable_id_owners.insert(id.clone(), file.path.clone());
-                            }
-                        }
-                        seen_here.push(id);
-                    }
-                    resources.push(schema);
                 }
-                marrow_syntax::Declaration::Const(constant) => {
-                    rules::check_const_value(&file.path, &constant.value, &mut report.diagnostics);
-                    constants.push(CheckedConst {
-                        name: constant.name.clone(),
-                        ty: constant
-                            .ty
-                            .as_ref()
-                            .map(|ty| MarrowType::resolve(ty, &module_resources)),
-                        span: constant.span,
-                    });
+            }
+            // Within-resource stable-id duplicates are reported by
+            // compile_resource; this catches an id reused in another resource.
+            let mut seen_here: Vec<String> = Vec::new();
+            for (id, span) in marrow_schema::stable_ids(resource) {
+                if seen_here.contains(&id) {
+                    continue;
                 }
+                match stable_id_owners.get(&id) {
+                    Some(first) => report.diagnostics.push(CheckDiagnostic {
+                        code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID.to_string(),
+                        severity: Severity::Error,
+                        file: file.path.clone(),
+                        message: format!(
+                            "stable id `{id}` is already declared in `{}`",
+                            first.display()
+                        ),
+                        line: span.line,
+                        column: span.column,
+                    }),
+                    None => {
+                        stable_id_owners.insert(id.clone(), file.path.clone());
+                    }
+                }
+                seen_here.push(id);
             }
         }
 
@@ -303,6 +241,188 @@ pub fn check_project(
     }
 
     Ok((report, program))
+}
+
+/// Discover, read, parse, and check a project's test files (the `tests`
+/// patterns), producing one checked module per clean test file plus any
+/// diagnostics. Test files are scripts outside the source roots, so each is
+/// checked module-less and named from its project-relative path
+/// (`tests/books_test.mw` → `tests::books_test`). Imports resolve against the
+/// already-checked `project` modules, the test modules, and the standard library.
+/// Saved-root ownership is not re-checked here: test scripts exercise the
+/// project's resources, they do not own saved roots.
+pub fn check_tests(
+    project_root: &Path,
+    config: &ProjectConfig,
+    project: &CheckedProgram,
+) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
+    let files = discover_test_modules(project_root, config)?;
+    let mut report = CheckReport::default();
+    let mut modules = Vec::new();
+    let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
+        Vec::new();
+
+    for file in &files {
+        let Some(CheckedFile {
+            parsed,
+            resources,
+            functions,
+            constants,
+        }) = check_file(&file.path, &mut report.diagnostics)
+        else {
+            continue;
+        };
+
+        // A test file is a script: it is named from its path, never from a
+        // declared `module`, so it can never shadow or duplicate a project
+        // module. Skip a file carrying a parse error.
+        if !parsed.has_errors() {
+            modules.push(CheckedModule {
+                name: file.module_name.clone().unwrap_or_default(),
+                source_file: file.path.clone(),
+                span: SourceSpan::default(),
+                imports: parsed
+                    .file
+                    .uses
+                    .iter()
+                    .map(|use_decl| use_decl.name.clone())
+                    .collect(),
+                constants,
+                functions,
+                resources,
+            });
+        }
+        parsed_files.push((file, parsed));
+    }
+
+    // Imports in a test file resolve against the project's modules, the other
+    // test modules, and the standard library.
+    let mut resolvable: HashMap<String, PathBuf> = project
+        .modules
+        .iter()
+        .map(|module| (module.name.clone(), module.source_file.clone()))
+        .collect();
+    for module in &modules {
+        resolvable.insert(module.name.clone(), module.source_file.clone());
+    }
+    for (file, parsed) in &parsed_files {
+        for use_decl in &parsed.file.uses {
+            if !is_resolved_import(&use_decl.name, &resolvable) {
+                report.diagnostics.push(CheckDiagnostic {
+                    code: CHECK_UNRESOLVED_IMPORT.to_string(),
+                    severity: Severity::Error,
+                    file: file.path.clone(),
+                    message: format!("cannot resolve import `{}`", use_decl.name),
+                    line: use_decl.span.line,
+                    column: use_decl.span.column,
+                });
+            }
+        }
+    }
+
+    Ok((report, modules))
+}
+
+/// The per-file result of [`check_file`]: the parsed source and the declaration
+/// lists collected for a [`CheckedModule`].
+struct CheckedFile {
+    parsed: marrow_syntax::ParsedSource,
+    resources: Vec<marrow_schema::ResourceSchema>,
+    functions: Vec<CheckedFunction>,
+    constants: Vec<CheckedConst>,
+}
+
+/// Read, parse, and structurally check one source file: record its parse,
+/// duplicate-name, function-body, const-value, and resource-schema diagnostics,
+/// and collect the declaration lists for a checked module. Returns `None` if the
+/// file cannot be read (an `io.read` diagnostic is recorded). Cross-file checks —
+/// module-path matching, saved-root ownership, stable-id uniqueness, and import
+/// resolution — belong to the caller, since they span files and differ between
+/// library modules and test scripts.
+fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Option<CheckedFile> {
+    let source = match std::fs::read_to_string(file_path) {
+        Ok(source) => source,
+        Err(error) => {
+            diagnostics.push(CheckDiagnostic {
+                code: IO_READ.to_string(),
+                severity: Severity::Error,
+                file: file_path.to_path_buf(),
+                message: format!("failed to read source: {error}"),
+                line: 0,
+                column: 0,
+            });
+            return None;
+        }
+    };
+
+    let parsed = parse_source(&source);
+    for diagnostic in &parsed.diagnostics {
+        diagnostics.push(CheckDiagnostic {
+            code: diagnostic.code.to_string(),
+            severity: diagnostic.severity,
+            file: file_path.to_path_buf(),
+            message: diagnostic.message.clone(),
+            line: diagnostic.line,
+            column: diagnostic.column,
+        });
+    }
+
+    check_duplicate_declarations(file_path, &parsed.file, diagnostics);
+
+    // Resource names resolve first so a module's function and constant types can
+    // refer to its own resources.
+    let module_resources: Vec<String> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut resources = Vec::new();
+    let mut functions = Vec::new();
+    let mut constants = Vec::new();
+    for declaration in &parsed.file.declarations {
+        match declaration {
+            marrow_syntax::Declaration::Function(function) => {
+                rules::check_function_body(file_path, &function.body, diagnostics);
+                functions.push(checked_function(function, &module_resources));
+            }
+            marrow_syntax::Declaration::Resource(resource) => {
+                let (schema, errors) = marrow_schema::compile_resource(resource);
+                for error in errors {
+                    diagnostics.push(CheckDiagnostic {
+                        code: error.code.to_string(),
+                        severity: Severity::Error,
+                        file: file_path.to_path_buf(),
+                        message: error.message,
+                        line: error.span.line,
+                        column: error.span.column,
+                    });
+                }
+                resources.push(schema);
+            }
+            marrow_syntax::Declaration::Const(constant) => {
+                rules::check_const_value(file_path, &constant.value, diagnostics);
+                constants.push(CheckedConst {
+                    name: constant.name.clone(),
+                    ty: constant
+                        .ty
+                        .as_ref()
+                        .map(|ty| MarrowType::resolve(ty, &module_resources)),
+                    span: constant.span,
+                });
+            }
+        }
+    }
+
+    Some(CheckedFile {
+        parsed,
+        resources,
+        functions,
+        constants,
+    })
 }
 
 /// Resolve a function declaration for the checked-program artifact: its

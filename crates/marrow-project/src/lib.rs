@@ -201,6 +201,48 @@ pub fn discover_modules(
     Ok(files)
 }
 
+/// Discover the `.mw` test files a project's `tests` patterns select, pairing each
+/// with the module name its project-root-relative path implies. Test files live
+/// outside the source roots — they are scripts, not library modules — so their
+/// names are relative to the project root (`tests/books_test.mw` →
+/// `tests::books_test`).
+///
+/// Each pattern is the directory-walk subset of a glob: a trailing `/**/*.mw`,
+/// `/**`, or `/*.mw` is stripped to a base directory that is walked recursively
+/// for `.mw` files; a bare directory is walked; a bare `.mw` file is taken
+/// directly. A pattern that matches nothing is skipped (no tests), not an error.
+/// Results are sorted by path with duplicates removed.
+pub fn discover_test_modules(
+    project_root: &Path,
+    config: &ProjectConfig,
+) -> Result<Vec<ModuleFile>, DiscoverError> {
+    let mut files = Vec::new();
+    for pattern in &config.tests {
+        let target = project_root.join(test_pattern_base(pattern));
+        if target.is_file() {
+            files.push(module_file(project_root, target));
+        } else if target.is_dir() {
+            collect_mw_files(project_root, &target, &mut files)?;
+        }
+        // A pattern that resolves to nothing on disk contributes no tests.
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
+    Ok(files)
+}
+
+/// The base path of a `tests` pattern: the directory or file to walk, with a
+/// trailing glob tail removed. `tests/**/*.mw` → `tests`, `tests` → `tests`,
+/// `tests/smoke.mw` → `tests/smoke.mw`.
+fn test_pattern_base(pattern: &str) -> &str {
+    for suffix in ["/**/*.mw", "/**", "/*.mw"] {
+        if let Some(base) = pattern.strip_suffix(suffix) {
+            return base;
+        }
+    }
+    pattern
+}
+
 fn collect_mw_files(
     source_root: &Path,
     dir: &Path,
@@ -228,19 +270,25 @@ fn collect_mw_files(
             collect_mw_files(source_root, &path, out)?;
         } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("mw")
         {
-            let relative_path = path
-                .strip_prefix(source_root)
-                .unwrap_or(&path)
-                .to_path_buf();
-            let module_name = expected_module_name(&relative_path);
-            out.push(ModuleFile {
-                path,
-                relative_path,
-                module_name,
-            });
+            out.push(module_file(source_root, path));
         }
     }
     Ok(())
+}
+
+/// Build a [`ModuleFile`] for `path`, deriving its path relative to `source_root`
+/// and the module name that relative path implies.
+fn module_file(source_root: &Path, path: PathBuf) -> ModuleFile {
+    let relative_path = path
+        .strip_prefix(source_root)
+        .unwrap_or(&path)
+        .to_path_buf();
+    let module_name = expected_module_name(&relative_path);
+    ModuleFile {
+        path,
+        relative_path,
+        module_name,
+    }
 }
 
 /// The on-disk JSON shape. `deny_unknown_fields` rejects typos and stray keys,

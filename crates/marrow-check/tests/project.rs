@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use marrow_check::check_project;
+use marrow_check::{check_project, check_tests};
 use marrow_project::parse_config;
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -406,6 +406,95 @@ fn reports_unresolved_import() {
         unresolved[0].message
     );
     assert_eq!(unresolved[0].line, 1, "{:#?}", unresolved[0]);
+}
+
+#[test]
+fn checks_test_files_into_named_modules() {
+    let root = temp_project("check-tests-ok", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn add(): int\n    return 1\n",
+        );
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn add_returns_one()\n    std::assert::isTrue(app::add() = 1)\n",
+        );
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
+    let (test_report, test_modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
+    assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
+    assert_eq!(test_modules.len(), 1, "{test_modules:#?}");
+    // A module-less test file is named from its project-relative path.
+    assert_eq!(test_modules[0].name, "tests::app_test");
+    assert!(
+        test_modules[0]
+            .functions
+            .iter()
+            .any(|f| f.name == "add_returns_one" && f.public && f.params.is_empty()),
+        "{:#?}",
+        test_modules[0].functions
+    );
+}
+
+#[test]
+fn reports_a_parse_error_in_a_test_file() {
+    let root = temp_project("check-tests-bad", |root| {
+        write(root, "src/app.mw", "module app\n");
+        // A tab is a lexical error.
+        write(
+            root,
+            "tests/bad_test.mw",
+            "pub fn t()\n\tstd::assert::fail(\"x\")\n",
+        );
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
+    let (test_report, _modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        test_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "parse.syntax"),
+        "{:#?}",
+        test_report.diagnostics
+    );
+}
+
+#[test]
+fn a_test_file_is_named_from_its_path_not_a_declared_module() {
+    let root = temp_project("test-name-path", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn add(): int\n    return 1\n",
+        );
+        // Even though this test file declares `module app`, it must be named from
+        // its path so it cannot shadow the project's `app` module.
+        write(
+            root,
+            "tests/app_test.mw",
+            "module app\n\npub fn calls_app()\n    std::assert::isTrue(app::add() = 1)\n",
+        );
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
+    let (test_report, test_modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
+    assert_eq!(test_modules.len(), 1, "{test_modules:#?}");
+    assert_eq!(test_modules[0].name, "tests::app_test");
 }
 
 fn with_code<'a>(

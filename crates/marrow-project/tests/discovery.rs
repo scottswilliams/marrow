@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use marrow_project::{discover_modules, parse_config};
+use marrow_project::{discover_modules, discover_test_modules, parse_config};
 
 /// Create a unique temporary project directory and run `build` to populate it.
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -94,4 +94,59 @@ fn errors_when_a_source_root_is_missing() {
     let error = discover_modules(&root, &config).expect_err("missing source root should error");
     fs::remove_dir_all(&root).ok();
     assert_eq!(error.code, "project.source_root");
+}
+
+#[test]
+fn discovers_test_files_from_a_glob_pattern() {
+    let root = temp_project("test-glob", |root| {
+        write(root, "src/app.mw", "module app\n");
+        write(root, "tests/books_test.mw", "pub fn ok()\n    return\n");
+        write(root, "tests/deep/more_test.mw", "pub fn ok()\n    return\n");
+        write(root, "tests/notes.txt", "ignore me");
+    });
+    let config =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+
+    let modules = discover_test_modules(&root, &config).expect("discover tests");
+    let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
+
+    fs::remove_dir_all(&root).ok();
+
+    // Only `.mw` files under the pattern's directory, with project-relative names.
+    assert_eq!(modules.len(), 2, "{modules:#?}");
+    assert!(names.contains(&Some("tests::books_test".to_string())));
+    assert!(names.contains(&Some("tests::deep::more_test".to_string())));
+}
+
+#[test]
+fn test_patterns_accept_a_bare_directory_or_file() {
+    let root = temp_project("test-bare", |root| {
+        write(root, "checks/a_test.mw", "pub fn ok()\n    return\n");
+        write(root, "smoke.mw", "pub fn ok()\n    return\n");
+    });
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["checks", "smoke.mw"] }"#)
+        .expect("config");
+
+    let modules = discover_test_modules(&root, &config).expect("discover tests");
+    let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
+
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(modules.len(), 2, "{modules:#?}");
+    assert!(names.contains(&Some("checks::a_test".to_string())));
+    assert!(names.contains(&Some("smoke".to_string())));
+}
+
+#[test]
+fn a_missing_test_directory_yields_no_tests() {
+    // A `tests` pattern that matches nothing is not an error — there are simply no
+    // tests to run.
+    let root = temp_project("test-missing", |root| {
+        write(root, "src/app.mw", "module app\n");
+    });
+    let config =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+
+    let modules = discover_test_modules(&root, &config).expect("discover tests");
+    fs::remove_dir_all(&root).ok();
+    assert!(modules.is_empty(), "{modules:#?}");
 }
