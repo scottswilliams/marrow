@@ -333,7 +333,7 @@ Function parameters are read-only unless declared `out` or `inout`.
 Local variables can infer obvious types:
 
 ```mw
-const title = "Small Gods"   ; string
+const title = "Small Gods" ; string
 var loanCount = 0          ; int
 ```
 
