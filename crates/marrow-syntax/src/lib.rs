@@ -67,8 +67,46 @@ pub struct ConstDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub ty: Option<TypeRef>,
-    pub value: String,
+    pub value: Expression,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expression {
+    Literal {
+        kind: LiteralKind,
+        text: String,
+        span: SourceSpan,
+    },
+    Identifier {
+        name: String,
+        span: SourceSpan,
+    },
+    /// Expression text the outline parser does not yet decompose. Future
+    /// syntax-tree slices replace `Unparsed` with concrete variants.
+    Unparsed {
+        text: String,
+        span: SourceSpan,
+    },
+}
+
+impl Expression {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Literal { span, .. }
+            | Self::Identifier { span, .. }
+            | Self::Unparsed { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralKind {
+    Integer,
+    Decimal,
+    String,
+    Bytes,
+    Bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1061,18 +1099,28 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_const(&mut self, line: Line<'a>, docs: Vec<String>) -> ConstDecl {
-        let rest = line.content["const ".len()..].trim();
-        let (head, value) = match split_once_trimmed(rest, '=') {
-            Some((head, value)) if !value.is_empty() => (head, value),
-            Some((head, _)) => {
-                self.error(line, "const declarations require a value after `=`");
-                (head, "")
+        let prefix_len = "const ".len();
+        let after_prefix = &line.content[prefix_len..];
+        let equal_offset = after_prefix.find('=');
+
+        let (head, value_text, value_offset_in_content) = match equal_offset {
+            Some(offset) => {
+                let head = after_prefix[..offset].trim();
+                let after_equal_offset = prefix_len + offset + 1;
+                let after_equal = &line.content[after_equal_offset..];
+                let leading = after_equal.len() - after_equal.trim_start().len();
+                let value = after_equal.trim();
+                if value.is_empty() {
+                    self.error(line, "const declarations require a value after `=`");
+                }
+                (head, value, after_equal_offset + leading)
             }
             None => {
                 self.error(line, "const declarations require `=` and a value");
-                (rest, "")
+                (after_prefix.trim(), "", line.content.len())
             }
         };
+
         let (name, ty) = parse_name_type(head);
         if !is_identifier(name) {
             self.error(line, "expected const name before type annotation");
@@ -1080,11 +1128,14 @@ impl<'a> Parser<'a> {
         if ty.is_some_and(|ty| !is_type_text(ty)) {
             self.error(line, "expected const type annotation");
         }
+
+        let value = parse_simple_expression(line, value_text, value_offset_in_content);
+
         ConstDecl {
             docs,
             name: name.to_string(),
             ty: ty.filter(|ty| is_type_text(ty)).map(type_ref),
-            value: value.to_string(),
+            value,
             span: line.span(),
         }
     }
@@ -1666,6 +1717,91 @@ fn parse_name_type(text: &str) -> (&str, Option<&str>) {
     match split_once_trimmed(text, ':') {
         Some((name, ty)) => (name, Some(ty)),
         None => (text.trim(), None),
+    }
+}
+
+fn parse_simple_expression(
+    line: Line<'_>,
+    value: &str,
+    value_offset_in_content: usize,
+) -> Expression {
+    let absolute_start = line.start_byte + line.indent + value_offset_in_content;
+    let column_base = (line.indent + value_offset_in_content + 1) as u32;
+    let make_span = |local_start: usize, local_end: usize| SourceSpan {
+        start_byte: absolute_start + local_start,
+        end_byte: absolute_start + local_end,
+        line: line.number,
+        column: column_base + local_start as u32,
+    };
+
+    if value.is_empty() {
+        return Expression::Unparsed {
+            text: String::new(),
+            span: make_span(0, 0),
+        };
+    }
+
+    let lexed = lex_source(value);
+    let significant = lexed
+        .tokens
+        .iter()
+        .filter(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Newline
+                    | TokenKind::Eof
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+                    | TokenKind::Indent
+                    | TokenKind::Dedent
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if significant.len() == 1 {
+        let token = significant[0];
+        let local_start = token.span.start_byte;
+        let local_end = token.span.end_byte;
+        let text = value[local_start..local_end].to_string();
+        let span = make_span(local_start, local_end);
+
+        return match token.kind {
+            TokenKind::Integer => Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                span,
+            },
+            TokenKind::Decimal => Expression::Literal {
+                kind: LiteralKind::Decimal,
+                text,
+                span,
+            },
+            TokenKind::String => Expression::Literal {
+                kind: LiteralKind::String,
+                text,
+                span,
+            },
+            TokenKind::Bytes => Expression::Literal {
+                kind: LiteralKind::Bytes,
+                text,
+                span,
+            },
+            TokenKind::Keyword(Keyword::True | Keyword::False) => Expression::Literal {
+                kind: LiteralKind::Bool,
+                text,
+                span,
+            },
+            TokenKind::Identifier => Expression::Identifier { name: text, span },
+            _ => Expression::Unparsed {
+                text: value.to_string(),
+                span: make_span(0, value.len()),
+            },
+        };
+    }
+
+    Expression::Unparsed {
+        text: value.to_string(),
+        span: make_span(0, value.len()),
     }
 }
 

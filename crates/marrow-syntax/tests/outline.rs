@@ -1,4 +1,4 @@
-use marrow_syntax::{Declaration, ResourceMember, parse_source};
+use marrow_syntax::{Declaration, Expression, LiteralKind, ResourceMember, parse_source};
 
 fn reference_sample() -> &'static str {
     r#"module shelf::sample
@@ -198,6 +198,88 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
         "{:#?}",
         obsolete.help
     );
+}
+
+#[test]
+fn parses_const_values_into_expression_nodes() {
+    let cases: &[(&str, Expectation<'_>)] = &[
+        (
+            "const Max: int = 5\n",
+            Expectation::Literal(LiteralKind::Integer, "5"),
+        ),
+        (
+            "const Pi: decimal = 3.14\n",
+            Expectation::Literal(LiteralKind::Decimal, "3.14"),
+        ),
+        (
+            "const Greeting: string = \"hi\"\n",
+            Expectation::Literal(LiteralKind::String, "\"hi\""),
+        ),
+        (
+            "const Marker: bytes = b\"mw\"\n",
+            Expectation::Literal(LiteralKind::Bytes, "b\"mw\""),
+        ),
+        (
+            "const Active: bool = true\n",
+            Expectation::Literal(LiteralKind::Bool, "true"),
+        ),
+        (
+            "const Default = SomeName\n",
+            Expectation::Identifier("SomeName"),
+        ),
+        (
+            "const Computed: int = a + b\n",
+            Expectation::Unparsed("a + b"),
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "expected {source:?} to parse cleanly: {:#?}",
+            parsed.diagnostics
+        );
+        let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+            panic!("expected const declaration in {source:?}");
+        };
+        match (expected, &decl.value) {
+            (
+                Expectation::Literal(expected_kind, expected_text),
+                Expression::Literal { kind, text, .. },
+            ) => {
+                assert_eq!(*kind, *expected_kind, "{source:?}");
+                assert_eq!(text, expected_text, "{source:?}");
+            }
+            (Expectation::Identifier(expected_name), Expression::Identifier { name, .. }) => {
+                assert_eq!(name, expected_name, "{source:?}");
+            }
+            (Expectation::Unparsed(expected_text), Expression::Unparsed { text, .. }) => {
+                assert_eq!(text, expected_text, "{source:?}");
+            }
+            (expected, actual) => panic!("expected {expected:?} for {source:?}, got {actual:?}"),
+        }
+    }
+}
+
+#[test]
+fn const_expression_span_points_into_source() {
+    let source = "const Max: int = 5\n";
+    let parsed = parse_source(source);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let span = decl.value.span();
+    assert_eq!(&source[span.start_byte..span.end_byte], "5");
+    assert_eq!(span.line, 1);
+    assert_eq!(span.column, 18);
+}
+
+#[derive(Debug)]
+enum Expectation<'a> {
+    Literal(LiteralKind, &'a str),
+    Identifier(&'a str),
+    Unparsed(&'a str),
 }
 
 #[test]
