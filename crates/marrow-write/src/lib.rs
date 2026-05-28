@@ -46,6 +46,8 @@ pub const WRITE_NO_SAVED_ROOT: &str = "write.no_saved_root";
 pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
 /// The store reported an error (e.g. a corrupt stored path) during a write.
 pub const WRITE_STORE: &str = "write.store";
+/// A field write names a field the resource does not declare.
+pub const WRITE_UNKNOWN_FIELD: &str = "write.unknown_field";
 
 /// One staged store operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +171,65 @@ pub fn plan_resource_delete(
     Ok(WritePlan { steps })
 }
 
+/// Plan a managed field write: set `field` of the resource at `identity` to
+/// `value`, leaving the resource's other fields in place. Validates that the
+/// field is declared and that `value` matches its type, then stages the single
+/// field write and keeps any non-unique index the field participates in coherent
+/// (remove the entry for the currently-stored value, add the entry for the new
+/// value — docs/language `resources-and-storage.md`). `store` is read, not
+/// written; apply the returned [`WritePlan`] with [`WritePlan::commit`]. Returns
+/// a [`WriteError`] if the field is unknown or the value is mistyped.
+///
+/// This is a current-only update; it never clears the resource's other fields.
+/// Whether a field write may create a new (and possibly required-incomplete)
+/// resource is a transaction-contextual rule the runtime enforces, not here.
+pub fn plan_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    value: &SavedValue,
+    store: &MemStore,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = schema
+        .fields
+        .iter()
+        .find(|declared| declared.name == field)
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("resource `{}` has no field `{field}`", schema.name),
+        })?;
+    check_type(field, &declared.ty.text, value)?;
+
+    let mut steps = vec![PlanStep::Write {
+        path: encode_path(&field_path(root, identity, field)),
+        value: encode_value(value),
+    }];
+
+    // Keep any non-unique index the field feeds coherent: remove the entry for
+    // the currently-stored values, then add the entry for the values after this
+    // write. Other index arguments keep their stored values.
+    for index in &schema.indexes {
+        if index.unique || !index.args.iter().any(|arg| arg == field) {
+            continue;
+        }
+        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store) {
+            steps.push(PlanStep::Delete {
+                path: encode_path(&index_path(root, &index.name, &old_keys)),
+            });
+        }
+        if let Some(new_keys) =
+            field_write_index_keys(&index.args, root, identity, field, value, schema, store)
+        {
+            steps.push(PlanStep::Write {
+                path: encode_path(&index_path(root, &index.name, &new_keys)),
+                value: INDEX_MARKER.to_vec(),
+            });
+        }
+    }
+    Ok(WritePlan { steps })
+}
+
 /// Resolve a resource's saved root and check the supplied identity has the
 /// expected number of keys.
 fn resolve_saved_root<'a>(
@@ -266,9 +327,29 @@ fn index_keys(
     Some(keys)
 }
 
+/// Resolve a single index argument to the key value currently STORED for this
+/// identity: an identity-key argument takes the identity; a field argument reads
+/// and decodes the stored field. Returns `None` if the field is absent, has no
+/// key encoding, or does not decode.
+fn stored_arg_key(
+    arg: &str,
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    schema: &ResourceSchema,
+    store: &MemStore,
+) -> Option<SavedKey> {
+    if let Some(position) = root.identity_keys.iter().position(|key| key.name == arg) {
+        Some(identity[position].clone())
+    } else {
+        let field = schema.fields.iter().find(|field| field.name == arg)?;
+        let value_type = value_type_for(&field.ty.text)?;
+        let bytes = store.read(&encode_path(&field_path(root, identity, arg)))?;
+        saved_value_to_key(&decode_value(bytes, value_type)?)
+    }
+}
+
 /// Resolve an index's argument names to the key values currently STORED for this
-/// identity, for index teardown: identity-key args take the identity; field args
-/// read and decode the stored field. Returns `None` if any field is absent or
+/// identity, for index teardown. Returns `None` if any argument is absent or
 /// undecodable, so nothing is torn down for it.
 fn stored_index_keys(
     args: &[String],
@@ -277,18 +358,33 @@ fn stored_index_keys(
     schema: &ResourceSchema,
     store: &MemStore,
 ) -> Option<Vec<SavedKey>> {
-    let mut keys = Vec::with_capacity(args.len());
-    for arg in args {
-        if let Some(position) = root.identity_keys.iter().position(|key| &key.name == arg) {
-            keys.push(identity[position].clone());
-        } else {
-            let field = schema.fields.iter().find(|field| &field.name == arg)?;
-            let value_type = value_type_for(&field.ty.text)?;
-            let bytes = store.read(&encode_path(&field_path(root, identity, arg)))?;
-            keys.push(saved_value_to_key(&decode_value(bytes, value_type)?)?);
-        }
-    }
-    Some(keys)
+    args.iter()
+        .map(|arg| stored_arg_key(arg, root, identity, schema, store))
+        .collect()
+}
+
+/// Resolve an index's argument names to the key values AFTER a field write: the
+/// written `field` takes its new `value`; every other argument keeps its stored
+/// value (`stored_arg_key`). Returns `None` if any argument is absent or has no
+/// key encoding, so no entry is written.
+fn field_write_index_keys(
+    args: &[String],
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    field: &str,
+    value: &SavedValue,
+    schema: &ResourceSchema,
+    store: &MemStore,
+) -> Option<Vec<SavedKey>> {
+    args.iter()
+        .map(|arg| {
+            if arg == field {
+                saved_value_to_key(value)
+            } else {
+                stored_arg_key(arg, root, identity, schema, store)
+            }
+        })
+        .collect()
 }
 
 /// The encoded-path segments for an index entry, `^root.index(keys...)`.

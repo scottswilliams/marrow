@@ -7,8 +7,8 @@ use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, next_id,
-    plan_resource_delete, plan_resource_write,
+    FieldValue, ResourceValue, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNKNOWN_FIELD,
+    next_id, plan_field_write, plan_resource_delete, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -45,6 +45,17 @@ resource Book at ^books(id: int)
     index byShelf(shelf, id)
 ";
 
+/// `Book` with a non-unique index spanning two plain fields plus identity, so a
+/// field write must rebuild a composite key from another field's stored value.
+const BOOK_TWO_INDEX_FIELDS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+    category: string
+
+    index byShelfCategory(shelf, category, id)
+";
+
 fn saved(text: &str) -> FieldValue {
     FieldValue::Saved(SavedValue::Str(text.into()))
 }
@@ -58,6 +69,19 @@ fn write(
 ) {
     plan_resource_write(schema, identity, &value, store)
         .expect("valid write")
+        .commit(store);
+}
+
+/// Plan and commit a single-field write against the current store state.
+fn write_field(
+    store: &mut MemStore,
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    value: SavedValue,
+) {
+    plan_field_write(schema, identity, field, &value, store)
+        .expect("valid field write")
         .commit(store);
 }
 
@@ -208,6 +232,17 @@ fn by_shelf_entry(shelf: &str, id: i64) -> Vec<u8> {
     ])
 }
 
+/// The encoded path `^books.byShelfCategory(shelf, category, id)`.
+fn by_shelf_category_entry(shelf: &str, category: &str, id: i64) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::Index("byShelfCategory".into()),
+        PathSegment::IndexKey(SavedKey::Str(shelf.into())),
+        PathSegment::IndexKey(SavedKey::Str(category.into())),
+        PathSegment::IndexKey(SavedKey::Int(id)),
+    ])
+}
+
 #[test]
 fn a_write_emits_non_unique_index_entries() {
     let book = schema(BOOK_INDEXED);
@@ -314,5 +349,217 @@ fn deleting_a_resource_removes_its_fields_and_index_entries() {
         store.read(&by_shelf_entry("fiction", 42)),
         None,
         "index entry removed"
+    );
+}
+
+#[test]
+fn a_field_write_updates_one_field_and_leaves_the_rest() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(3)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("draft")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    write_field(
+        &mut store,
+        &book,
+        &[SavedKey::Int(3)],
+        "title",
+        SavedValue::Str("final".into()),
+    );
+
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(3, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("final".into()))
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(3, "shelf")).expect("shelf"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("fiction".into())),
+        "the untouched field is left in place"
+    );
+}
+
+#[test]
+fn a_field_write_to_an_unknown_field_is_rejected() {
+    let book = schema(BOOK);
+    let result = plan_field_write(
+        &book,
+        &[SavedKey::Int(3)],
+        "publisher",
+        &SavedValue::Str("x".into()),
+        &MemStore::new(),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_FIELD),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_field_write_with_a_mismatched_type_is_rejected() {
+    let book = schema(BOOK);
+    // `title` is a string; an int does not satisfy it.
+    let result = plan_field_write(
+        &book,
+        &[SavedKey::Int(3)],
+        "title",
+        &SavedValue::Int(5),
+        &MemStore::new(),
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_TYPE_MISMATCH),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_field_write_moves_the_index_entry_of_an_indexed_field() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    write_field(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        "shelf",
+        SavedValue::Str("history".into()),
+    );
+
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        None,
+        "old entry gone"
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("history", 42)),
+        Some(&b"1"[..]),
+        "new entry present"
+    );
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(42, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into())),
+        "the untouched field is left in place"
+    );
+}
+
+#[test]
+fn a_field_write_that_populates_an_indexed_field_adds_its_entry() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    // Seed without the indexed `shelf`, so no byShelf entry exists yet.
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+        },
+    );
+    write_field(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        "shelf",
+        SavedValue::Str("fiction".into()),
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        Some(&b"1"[..]),
+        "entry added when the field becomes populated"
+    );
+}
+
+#[test]
+fn a_field_write_rebuilds_a_composite_index_key_from_stored_args() {
+    let book = schema(BOOK_TWO_INDEX_FIELDS);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+                ("category".into(), saved("fantasy")),
+            ],
+        },
+    );
+    // Writing only `shelf` rebuilds the composite key, reading the untouched
+    // `category` from the store for the new entry.
+    write_field(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        "shelf",
+        SavedValue::Str("history".into()),
+    );
+
+    assert_eq!(
+        store.read(&by_shelf_category_entry("fiction", "fantasy", 42)),
+        None,
+        "old composite entry gone"
+    );
+    assert_eq!(
+        store.read(&by_shelf_category_entry("history", "fantasy", 42)),
+        Some(&b"1"[..]),
+        "new composite entry keeps the untouched category"
+    );
+}
+
+#[test]
+fn a_field_write_with_an_unchanged_value_keeps_the_index_entry() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    // Re-writing the same value deletes then re-writes the same entry path, so
+    // the entry survives.
+    write_field(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        "shelf",
+        SavedValue::Str("fiction".into()),
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        Some(&b"1"[..]),
+        "unchanged-value field write keeps the entry"
     );
 }
