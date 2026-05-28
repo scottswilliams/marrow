@@ -94,10 +94,14 @@ pub enum Expression {
         args: Vec<Argument>,
         span: SourceSpan,
     },
-    /// Dotted field access, such as `book.title` or `^books(id).title`.
+    /// Dotted field access, such as `book.title` or `^books(id)."old-title"`.
+    /// `name` is the field name without surrounding quotes; `quoted` records
+    /// whether it was written as a quoted segment (allowed for data names that
+    /// are not identifiers).
     Field {
         base: Box<Expression>,
         name: String,
+        quoted: bool,
         span: SourceSpan,
     },
     Unary {
@@ -2225,15 +2229,29 @@ impl<'a> ExprParser<'a> {
                 Some(TokenKind::Dot) => {
                     self.advance();
                     let segment = *self.tokens.get(self.pos)?;
-                    if segment.kind != TokenKind::Identifier {
-                        // Quoted field segments are not yet decomposed here.
-                        return None;
-                    }
+                    let (name, quoted) = match segment.kind {
+                        TokenKind::Identifier => (segment.text(self.source).to_string(), false),
+                        // A quoted segment names data with a non-identifier name,
+                        // e.g. `^books(id)."old-title"`. Store the raw inner text
+                        // (escapes unresolved, like other string literals). An
+                        // unterminated string (already a lexer error) has no
+                        // closing quote, so strip defensively rather than panic.
+                        TokenKind::String => {
+                            let text = segment.text(self.source);
+                            let inner = text
+                                .strip_prefix('"')
+                                .and_then(|rest| rest.strip_suffix('"'))
+                                .unwrap_or("");
+                            (inner.to_string(), true)
+                        }
+                        _ => return None,
+                    };
                     self.advance();
                     let span = join_spans(expr.span(), segment.span);
                     expr = Expression::Field {
                         base: Box::new(expr),
-                        name: segment.text(self.source).to_string(),
+                        name,
+                        quoted,
                         span,
                     };
                 }

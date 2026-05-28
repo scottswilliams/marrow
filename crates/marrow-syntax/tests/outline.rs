@@ -769,9 +769,9 @@ fn parses_const_values_into_expression_nodes() {
             Expectation::Name(&["std", "math", "PI"]),
         ),
         (
-            // Quoted field segments are not decomposed by the parser yet.
-            "const Old = ^books(id).\"old-title\"\n",
-            Expectation::Unparsed("^books(id).\"old-title\""),
+            // A stray `@` is not a valid expression start.
+            "const Bad = @nope\n",
+            Expectation::Unparsed("@nope"),
         ),
     ];
 
@@ -940,6 +940,54 @@ fn parses_calls_paths_and_field_access() {
         matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["id"]),
         "expected id argument, got {:?}",
         args[0].value
+    );
+}
+
+#[test]
+fn parses_quoted_field_segments() {
+    let parsed = parse_source("const Old = ^books(id).\"old-title\"\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Expression::Field {
+        name, quoted, base, ..
+    } = &decl.value
+    else {
+        panic!("expected field access, got {:?}", decl.value);
+    };
+    assert_eq!(name, "old-title");
+    assert!(*quoted, "segment should be marked quoted");
+    assert!(
+        matches!(base.as_ref(), Expression::Call { .. }),
+        "base should be ^books(id): {base:?}"
+    );
+
+    // A plain identifier field is not quoted.
+    let parsed = parse_source("const Title = book.title\n");
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    assert!(
+        matches!(&decl.value, Expression::Field { name, quoted: false, .. } if name == "title"),
+        "plain field should be unquoted: {:?}",
+        decl.value
+    );
+}
+
+#[test]
+fn unterminated_quoted_field_segment_does_not_panic() {
+    // The trailing `"` is an unterminated string (a lexer error). Parsing must
+    // surface the diagnostic without panicking on the empty quoted segment.
+    let parsed = parse_source("const Bad = a.\"\n");
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unterminated string")),
+        "expected an unterminated-string diagnostic: {:#?}",
+        parsed.diagnostics
     );
 }
 
