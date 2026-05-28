@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use marrow_check::{CheckedFunction, CheckedProgram};
 use marrow_schema::ResourceSchema;
-use marrow_store::mem::MemStore;
+use marrow_store::mem::{MemStore, Presence};
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{
@@ -216,9 +216,14 @@ fn eval_call(
     {
         return Err(unsupported("named or out/inout arguments", span));
     }
-    // `print` and `write` are output builtins, not program functions.
-    if segments.len() == 1 && matches!(segments[0].as_str(), "print" | "write") {
-        return eval_output(&segments[0], args, span, env);
+    // Builtins are call-shaped but are not program functions.
+    if let [name] = segments.as_slice() {
+        match name.as_str() {
+            "print" | "write" => return eval_output(name, args, span, env),
+            "exists" => return eval_exists(args, span, env).map(Some),
+            "get" => return eval_get(args, span, env).map(Some),
+            _ => {}
+        }
     }
     let program = env.program;
     let store = env.store;
@@ -270,6 +275,42 @@ fn eval_output(
         output.push('\n');
     }
     Ok(None)
+}
+
+/// Evaluate `exists(path)`: whether a saved value or child exists at the path.
+fn eval_exists(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`exists` takes one argument".into(),
+            span,
+        });
+    };
+    let segments = lower_saved_path(&arg.value, env)?;
+    let store = env.store.borrow();
+    let present = !matches!(store.presence(&encode_path(&segments)), Presence::Absent);
+    Ok(Value::Bool(present))
+}
+
+/// Evaluate `get(path, default)`: the value at a sparse saved path, or `default`
+/// when it is absent. Schema/type errors are not hidden — only absence falls
+/// back to the default.
+fn eval_get(args: &[Argument], span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
+    let [path, default] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`get` takes a path and a default".into(),
+            span,
+        });
+    };
+    match eval_saved_field(&path.value, env) {
+        Err(error) if error.code == RUN_ABSENT => eval_expr(&default.value, env),
+        other => other,
+    }
 }
 
 /// Where control flow stands after a statement or block.
@@ -760,6 +801,42 @@ fn lower_record_identity(
         );
     }
     Ok((name.clone(), keys))
+}
+
+/// Lower any saved path expression — `^root`, `^root(key…)`, or a `.field` off
+/// one — to its encoded segments. Used by `exists`, which needs only the path,
+/// not the resource schema.
+fn lower_saved_path(
+    expr: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Vec<PathSegment>, RuntimeError> {
+    match expr {
+        Expression::SavedRoot { name, .. } => Ok(vec![PathSegment::Root(name.clone())]),
+        Expression::Call { callee, args, span } => {
+            if args
+                .iter()
+                .any(|arg| arg.mode.is_some() || arg.name.is_some())
+            {
+                return Err(unsupported(
+                    "a keyed lookup with named or out arguments",
+                    *span,
+                ));
+            }
+            let mut segments = lower_saved_path(callee, env)?;
+            for arg in args {
+                let key = value_to_key(eval_expr(&arg.value, env)?)
+                    .ok_or_else(|| unsupported("a key of this type", *span))?;
+                segments.push(PathSegment::RecordKey(key));
+            }
+            Ok(segments)
+        }
+        Expression::Field { base, name, .. } => {
+            let mut segments = lower_saved_path(base, env)?;
+            segments.push(PathSegment::Field(name.clone()));
+            Ok(segments)
+        }
+        other => Err(unsupported("this saved path", other.span())),
+    }
 }
 
 /// The declared scalar type of a saved root's top-level field, found by matching

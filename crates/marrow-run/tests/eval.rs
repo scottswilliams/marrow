@@ -645,3 +645,74 @@ fn a_mistyped_field_write_is_rejected() {
         "{result:?}"
     );
 }
+
+/// A program that queries saved `Book` data with `exists` and `get`.
+const BOOK_QUERY: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    subtitle: string
+
+fn has_book(id: int): bool
+    return exists(^books(id))
+
+fn has_title(id: int): bool
+    return exists(^books(id).title)
+
+fn subtitle_or(id: int, fallback: string): string
+    return get(^books(id).subtitle, fallback)
+";
+
+#[test]
+fn exists_reports_record_and_field_presence() {
+    let program = checked_program(BOOK_QUERY);
+    let store = RefCell::new(store_with_title(1, "Mort"));
+    let value = |entry, id| {
+        run_entry(&program, &store, entry, &[Value::Int(id)])
+            .expect("run")
+            .value
+    };
+    // Record 1 exists (it has the title child); record 2 does not.
+    assert_eq!(value("test::has_book", 1), Some(Value::Bool(true)));
+    assert_eq!(value("test::has_book", 2), Some(Value::Bool(false)));
+    // Its title field is present; its sparse subtitle is not.
+    assert_eq!(value("test::has_title", 1), Some(Value::Bool(true)));
+}
+
+#[test]
+fn get_returns_the_default_for_an_absent_field() {
+    let program = checked_program(BOOK_QUERY);
+    let store = RefCell::new(store_with_title(1, "Mort")); // subtitle is absent
+    let value = run_entry(
+        &program,
+        &store,
+        "test::subtitle_or",
+        &[Value::Int(1), Value::Str("(none)".into())],
+    )
+    .expect("run")
+    .value;
+    assert_eq!(value, Some(Value::Str("(none)".into())));
+}
+
+#[test]
+fn get_returns_the_value_when_present() {
+    let program = checked_program(BOOK_QUERY);
+    let store = RefCell::new(store_with_title(1, "Mort"));
+    // Populate the sparse subtitle directly.
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::Field("subtitle".into()),
+        ]),
+        encode_value(&SavedValue::Str("A Discworld Novel".into())),
+    );
+    let value = run_entry(
+        &program,
+        &store,
+        "test::subtitle_or",
+        &[Value::Int(1), Value::Str("(none)".into())],
+    )
+    .expect("run")
+    .value;
+    assert_eq!(value, Some(Value::Str("A Discworld Novel".into())));
+}
