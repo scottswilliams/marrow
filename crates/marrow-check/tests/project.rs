@@ -333,3 +333,153 @@ fn reports_unresolved_import() {
     );
     assert_eq!(unresolved[0].line, 1, "{:#?}", unresolved[0]);
 }
+
+fn with_code<'a>(
+    report: &'a marrow_check::CheckReport,
+    code: &str,
+) -> Vec<&'a marrow_check::CheckDiagnostic> {
+    report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == code)
+        .collect()
+}
+
+/// Check a single script `src` and return its diagnostics with `code`.
+fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
+    let root = temp_project(name, |root| write(root, "src/app.mw", src));
+    let report = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    with_code(&report, code).into_iter().cloned().collect()
+}
+
+#[test]
+fn finally_return_is_rejected() {
+    let found = check_script(
+        "fin-return",
+        "fn f()\n    try\n        x = 1\n    finally\n        return\n",
+        "check.finally_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].line, 5, "{:#?}", found[0]);
+}
+
+#[test]
+fn finally_break_inside_nested_loop_is_allowed() {
+    let found = check_script(
+        "fin-break-loop",
+        "fn f()\n    try\n        x = 1\n    finally\n        while c\n            break\n",
+        "check.finally_control_flow",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn finally_unlabeled_break_that_escapes_is_rejected() {
+    let found = check_script(
+        "fin-break-escape",
+        "fn f()\n    try\n        x = 1\n    finally\n        break\n",
+        "check.finally_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn finally_labeled_break_to_outer_loop_is_rejected() {
+    // The label names a loop outside the finally block, so the break escapes it.
+    let found = check_script(
+        "fin-break-label",
+        "fn f()\n    outer: while a\n        try\n            x = 1\n        finally\n            break outer\n",
+        "check.finally_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn finally_labeled_break_to_inner_loop_is_allowed() {
+    // The label names a loop nested within the finally block.
+    let found = check_script(
+        "fin-break-inner-label",
+        "fn f()\n    try\n        x = 1\n    finally\n        inner: while c\n            break inner\n",
+        "check.finally_control_flow",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn catch_with_non_error_type_is_rejected() {
+    let found = check_script(
+        "catch-bad-type",
+        "fn f()\n    try\n        x = 1\n    catch e: string\n        return\n",
+        "check.catch_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn catch_with_error_type_and_bare_catch_are_allowed() {
+    let typed = check_script(
+        "catch-error-type",
+        "fn f()\n    try\n        x = 1\n    catch e: Error\n        return\n",
+        "check.catch_type",
+    );
+    assert!(typed.is_empty(), "{typed:#?}");
+
+    let bare = check_script(
+        "catch-bare",
+        "fn f()\n    try\n        x = 1\n    catch e\n        return\n",
+        "check.catch_type",
+    );
+    assert!(bare.is_empty(), "{bare:#?}");
+}
+
+#[test]
+fn call_shaped_assignment_target_is_rejected() {
+    // `f(x) = y`: a call on a bare name is not a writable place.
+    let found = check_script(
+        "assign-call",
+        "fn f()\n    f(x) = y\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn literal_assignment_target_is_rejected() {
+    let found = check_script(
+        "assign-literal",
+        "fn f()\n    1 = y\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn saved_path_assignment_targets_are_allowed() {
+    let found = check_script(
+        "assign-saved",
+        "fn f()\n    ^books(id).title = x\n",
+        "check.invalid_assign_target",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn local_field_and_name_assignment_targets_are_allowed() {
+    let found = check_script(
+        "assign-local",
+        "fn f()\n    x = 1\n    book.title = x\n",
+        "check.invalid_assign_target",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn invalid_merge_target_is_rejected() {
+    let found = check_script(
+        "merge-bad",
+        "fn f()\n    merge f(x) = y\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}

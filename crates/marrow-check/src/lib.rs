@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
+mod rules;
+
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
 /// Two library files declare the same module name.
@@ -98,6 +100,13 @@ pub fn check_project(
         }
 
         check_duplicate_declarations(&file.path, &parsed.file, &mut report.diagnostics);
+
+        // Structural statement rules apply to every function body.
+        for declaration in &parsed.file.declarations {
+            if let marrow_syntax::Declaration::Function(function) = declaration {
+                rules::check_function_body(&file.path, &function.body, &mut report.diagnostics);
+            }
+        }
 
         // A library file (one that declares a `module`) must declare the name
         // its path implies. A module-less file is a script or entrypoint and is
