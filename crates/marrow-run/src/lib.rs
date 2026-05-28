@@ -3,14 +3,18 @@
 //! The evaluator runs functions over scalar values — integers, booleans, and
 //! strings: literals, locals (`let`/`var`), arithmetic, comparison, logical, and
 //! `_` concatenation operators, conditionals, `while`/`for` loops, string
-//! interpolation, and calls between functions of a checked program. Saved data,
-//! output, and structured errors build on this spine.
+//! interpolation, calls between functions, scalar reads of saved data
+//! (`^books(id).title`), and `print`/`write` output. Saved writes, transactions,
+//! and structured errors build on this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
 use marrow_check::{CheckedFunction, CheckedProgram};
+use marrow_store::mem::MemStore;
+use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{
     Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, SourceSpan, Statement, UnaryOp,
@@ -58,6 +62,8 @@ pub const RUN_NO_ENCLOSING_LOOP: &str = "run.no_enclosing_loop";
 pub const RUN_UNKNOWN_FUNCTION: &str = "run.unknown_function";
 /// A call to a function that returns no value was used where a value is needed.
 pub const RUN_NO_VALUE: &str = "run.no_value";
+/// A direct read of a saved element that is absent (unpopulated).
+pub const RUN_ABSENT: &str = "run.absent_element";
 /// A construct this slice of the runtime does not yet evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 
@@ -69,6 +75,7 @@ pub fn evaluate_function(
     args: &[Value],
 ) -> Result<Option<Value>, RuntimeError> {
     let program = CheckedProgram::default();
+    let store = MemStore::new();
     let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
@@ -77,6 +84,7 @@ pub fn evaluate_function(
         .collect();
     invoke(
         &program,
+        &store,
         output,
         &names,
         &function.body,
@@ -90,6 +98,7 @@ pub fn evaluate_function(
 /// Calls within the body resolve against the same `program`.
 pub fn run_entry(
     program: &CheckedProgram,
+    store: &MemStore,
     entry: &str,
     args: &[Value],
 ) -> Result<RunOutput, RuntimeError> {
@@ -107,6 +116,7 @@ pub fn run_entry(
         .collect();
     let value = invoke(
         program,
+        store,
         Rc::clone(&output),
         &names,
         &function.body,
@@ -124,6 +134,7 @@ pub fn run_entry(
 /// and call evaluation.
 fn invoke(
     program: &CheckedProgram,
+    store: &MemStore,
     output: Rc<RefCell<String>>,
     param_names: &[&str],
     body: &Block,
@@ -141,7 +152,7 @@ fn invoke(
             span,
         });
     }
-    let mut env = Env::new(program, output);
+    let mut env = Env::new(program, store, output);
     env.push_scope();
     for (name, arg) in param_names.iter().zip(args) {
         env.bind((*name).to_string(), arg.clone(), false);
@@ -208,6 +219,7 @@ fn eval_call(
         return eval_output(&segments[0], args, span, env);
     }
     let program = env.program;
+    let store = env.store;
     let function = resolve_function(program, segments).ok_or_else(|| RuntimeError {
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{}`", segments.join("::")),
@@ -224,6 +236,7 @@ fn eval_call(
         .collect();
     invoke(
         program,
+        store,
         Rc::clone(&env.output),
         &names,
         &function.body,
@@ -282,6 +295,7 @@ struct Binding {
 struct Env<'p> {
     scopes: Vec<Vec<(String, Binding)>>,
     program: &'p CheckedProgram,
+    store: &'p MemStore,
     output: Rc<RefCell<String>>,
 }
 
@@ -292,11 +306,12 @@ enum AssignError {
 }
 
 impl<'p> Env<'p> {
-    fn new(program: &'p CheckedProgram, output: Rc<RefCell<String>>) -> Self {
+    fn new(program: &'p CheckedProgram, store: &'p MemStore, output: Rc<RefCell<String>>) -> Self {
         Self {
             scopes: Vec::new(),
             output,
             program,
+            store,
         }
     }
 
@@ -611,7 +626,122 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
             }),
         },
         Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
+        // A dotted field read off a saved root, e.g. `^books(id).title`.
+        Expression::Field { .. } => eval_saved_field(expr, env),
         other => Err(unsupported("this expression", other.span())),
+    }
+}
+
+/// Read a scalar field off a saved record, e.g. `^books(id).title`. Lowers the
+/// path to encoded segments, reads the store, and decodes the bytes with the
+/// field's declared type from the resource schema. Only `^root(key…).field` over
+/// a scalar field is supported in this slice; other shapes are unsupported, and
+/// an unpopulated element is an absent-element error.
+fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
+    let Expression::Field { base, name, .. } = expr else {
+        return Err(unsupported("this read", expr.span()));
+    };
+    let (root, mut segments) = lower_record_path(base, env)?;
+    segments.push(PathSegment::Field(name.clone()));
+    let field_type = resource_field_type(env.program, &root, name)
+        .ok_or_else(|| unsupported("reading this field", expr.span()))?;
+    match env.store.read(&encode_path(&segments)) {
+        Some(bytes) => decode_value(bytes, field_type)
+            .and_then(saved_value_to_value)
+            .ok_or_else(|| RuntimeError {
+                code: RUN_TYPE,
+                message: format!("stored value for `{name}` did not decode to a runtime value"),
+                span: expr.span(),
+            }),
+        None => Err(RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`{name}` is absent"),
+            span: expr.span(),
+        }),
+    }
+}
+
+/// Lower a record path `^root(key…)` to its saved root name and encoded segments
+/// (`Root` + a `RecordKey` per identity key). The keys are evaluated in `env`.
+fn lower_record_path(
+    expr: &Expression,
+    env: &mut Env<'_>,
+) -> Result<(String, Vec<PathSegment>), RuntimeError> {
+    let Expression::Call { callee, args, span } = expr else {
+        return Err(unsupported("this saved path", expr.span()));
+    };
+    let Expression::SavedRoot { name, .. } = callee.as_ref() else {
+        return Err(unsupported("this saved path", *span));
+    };
+    if args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported(
+            "a keyed lookup with named or out arguments",
+            *span,
+        ));
+    }
+    let mut segments = vec![PathSegment::Root(name.clone())];
+    for arg in args {
+        let key = value_to_key(eval_expr(&arg.value, env)?)
+            .ok_or_else(|| unsupported("a key of this type", *span))?;
+        segments.push(PathSegment::RecordKey(key));
+    }
+    Ok((name.clone(), segments))
+}
+
+/// The declared scalar type of a saved root's top-level field, found by matching
+/// the root name against the program's resource schemas.
+fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Option<ValueType> {
+    let resource = program
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .find(|resource| {
+            resource
+                .saved_root
+                .as_ref()
+                .is_some_and(|saved| saved.root == root)
+        })?;
+    let field = resource.fields.iter().find(|field_| field_.name == field)?;
+    value_type_for(&field.ty.text)
+}
+
+/// The [`ValueType`] a scalar type name denotes, or `None` for a non-scalar type.
+fn value_type_for(type_name: &str) -> Option<ValueType> {
+    Some(match type_name {
+        "bool" => ValueType::Bool,
+        "int" => ValueType::Int,
+        "string" => ValueType::Str,
+        "bytes" => ValueType::Bytes,
+        "ErrorCode" => ValueType::ErrorCode,
+        "date" => ValueType::Date,
+        "instant" => ValueType::Instant,
+        "duration" => ValueType::Duration,
+        "decimal" => ValueType::Decimal,
+        _ => return None,
+    })
+}
+
+/// Convert a record-key value to a [`SavedKey`], or `None` for a type that is not
+/// a key (only int/bool/string are runtime values this slice can key on).
+fn value_to_key(value: Value) -> Option<SavedKey> {
+    Some(match value {
+        Value::Int(n) => SavedKey::Int(n),
+        Value::Bool(b) => SavedKey::Bool(b),
+        Value::Str(s) => SavedKey::Str(s),
+    })
+}
+
+/// Convert a decoded saved value to a runtime value, or `None` for a scalar type
+/// the runtime does not yet represent (date, decimal, and so on).
+fn saved_value_to_value(value: SavedValue) -> Option<Value> {
+    match value {
+        SavedValue::Int(n) => Some(Value::Int(n)),
+        SavedValue::Bool(b) => Some(Value::Bool(b)),
+        SavedValue::Str(s) => Some(Value::Str(s)),
+        _ => None,
     }
 }
 

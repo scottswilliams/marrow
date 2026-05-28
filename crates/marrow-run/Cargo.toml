@@ -10,6 +10,8 @@ authors.workspace = true
 
 [dependencies]
 marrow-check = { path = "../marrow-check" }
+marrow-schema = { path = "../marrow-schema" }
+marrow-store = { path = "../marrow-store" }
 marrow-syntax = { path = "../marrow-syntax" }
 
 [lints]

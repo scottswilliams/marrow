@@ -3,9 +3,14 @@
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
-    RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE,
-    RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, Value, evaluate_function, run_entry,
+    RUN_ABSENT, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE,
+    RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function,
+    run_entry,
 };
+use marrow_schema::compile_resource;
+use marrow_store::mem::MemStore;
+use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::value::{SavedValue, encode_value};
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
 
 /// Parse `source` and return the single function it declares.
@@ -29,12 +34,11 @@ fn function(source: &str) -> FunctionDecl {
 fn checked_program(source: &str) -> CheckedProgram {
     let parsed = parse_source(source);
     assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
-    let functions = parsed
-        .file
-        .declarations
-        .into_iter()
-        .filter_map(|declaration| match declaration {
-            Declaration::Function(function) => Some(CheckedFunction {
+    let mut functions = Vec::new();
+    let mut resources = Vec::new();
+    for declaration in parsed.file.declarations {
+        match declaration {
+            Declaration::Function(function) => functions.push(CheckedFunction {
                 name: function.name.clone(),
                 public: function.public,
                 params: function
@@ -51,9 +55,14 @@ fn checked_program(source: &str) -> CheckedProgram {
                 touches_saved_data: false,
                 body: function.body,
             }),
-            _ => None,
-        })
-        .collect();
+            Declaration::Resource(resource) => {
+                let (schema, errors) = compile_resource(&resource);
+                assert!(errors.is_empty(), "{errors:?}");
+                resources.push(schema);
+            }
+            _ => {}
+        }
+    }
     CheckedProgram {
         modules: vec![CheckedModule {
             name: "test".into(),
@@ -62,18 +71,29 @@ fn checked_program(source: &str) -> CheckedProgram {
             imports: Vec::new(),
             constants: Vec::new(),
             functions,
-            resources: Vec::new(),
+            resources,
         }],
     }
 }
 
-/// Run an entry function and return only its value, dropping any output.
+/// Run an entry function against an empty store, returning only its value.
 fn run(
     program: &CheckedProgram,
     entry: &str,
     args: &[Value],
 ) -> Result<Option<Value>, marrow_run::RuntimeError> {
-    run_entry(program, entry, args).map(|outcome| outcome.value)
+    let store = MemStore::new();
+    run_entry(program, &store, entry, args).map(|outcome| outcome.value)
+}
+
+/// Run an entry function against an empty store, returning its value and output.
+fn run_full(
+    program: &CheckedProgram,
+    entry: &str,
+    args: &[Value],
+) -> Result<RunOutput, marrow_run::RuntimeError> {
+    let store = MemStore::new();
+    run_entry(program, &store, entry, args)
 }
 
 #[test]
@@ -498,7 +518,7 @@ fn an_unknown_function_is_rejected() {
 #[test]
 fn print_writes_a_line_to_output() {
     let program = checked_program("fn main()\n    print($\"hello {1}\")\n");
-    let outcome = run_entry(&program, "test::main", &[]).expect("run");
+    let outcome = run_full(&program, "test::main", &[]).expect("run");
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.output, "hello 1\n");
 }
@@ -506,7 +526,7 @@ fn print_writes_a_line_to_output() {
 #[test]
 fn write_does_not_add_a_newline() {
     let program = checked_program("fn main()\n    write(\"a\")\n    write(\"b\")\n");
-    let outcome = run_entry(&program, "test::main", &[]).expect("run");
+    let outcome = run_full(&program, "test::main", &[]).expect("run");
     assert_eq!(outcome.output, "ab");
 }
 
@@ -515,16 +535,69 @@ fn output_accumulates_across_calls() {
     let program = checked_program(
         "fn greet(name: string)\n    print($\"hi {name}\")\n\nfn main()\n    greet(\"a\")\n    greet(\"b\")\n",
     );
-    let outcome = run_entry(&program, "test::main", &[]).expect("run");
+    let outcome = run_full(&program, "test::main", &[]).expect("run");
     assert_eq!(outcome.output, "hi a\nhi b\n");
 }
 
 #[test]
 fn print_takes_one_argument() {
     let program = checked_program("fn main()\n    print()\n");
-    let result = run_entry(&program, "test::main", &[]);
+    let result = run_full(&program, "test::main", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
     );
+}
+
+/// A program with a saved `Book` resource and functions that read a title.
+const BOOK_READER: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+
+fn title_of(id: int): string
+    return ^books(id).title
+
+fn show(id: int)
+    print($\"title: {^books(id).title}\")
+";
+
+/// A store holding `^books(id).title = title`.
+fn store_with_title(id: i64, title: &str) -> MemStore {
+    let mut store = MemStore::new();
+    store.write(
+        &encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(id)),
+            PathSegment::Field("title".into()),
+        ]),
+        encode_value(&SavedValue::Str(title.into())),
+    );
+    store
+}
+
+#[test]
+fn reads_a_scalar_field_from_saved_data() {
+    let program = checked_program(BOOK_READER);
+    let store = store_with_title(1, "Mort");
+    let outcome = run_entry(&program, &store, "test::title_of", &[Value::Int(1)]).expect("run");
+    assert_eq!(outcome.value, Some(Value::Str("Mort".into())));
+}
+
+#[test]
+fn reading_an_absent_field_is_an_error() {
+    let program = checked_program(BOOK_READER);
+    let store = MemStore::new(); // empty: the title is absent
+    let result = run_entry(&program, &store, "test::title_of", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_ABSENT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_saved_read_interpolates_and_prints() {
+    let program = checked_program(BOOK_READER);
+    let store = store_with_title(7, "Mort");
+    let outcome = run_entry(&program, &store, "test::show", &[Value::Int(7)]).expect("run");
+    assert_eq!(outcome.output, "title: Mort\n");
 }
