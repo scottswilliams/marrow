@@ -1,0 +1,282 @@
+# Syntax
+
+Marrow `.mw` is indentation-delimited. There are no braces and no `end`
+markers.
+
+## Source Text
+
+- Source files are UTF-8.
+- Identifiers use ASCII letters, digits, and `_`; they must not begin with a
+  digit.
+- Keywords are lowercase ASCII. Built-in names such as `Error` and
+  `ErrorCode` are reserved separately.
+- Semicolon starts a comment to end of line.
+- `;;` starts a documentation comment for the next declaration or resource
+  element.
+- Tabs are an error in Marrow source. Use spaces.
+
+## Blocks
+
+Blocks are introduced by indentation:
+
+```mw
+if status = "open"
+    write("open")
+else
+    write("not open")
+```
+
+Blank lines and comments do not close a block. A less-indented statement
+closes as many open blocks as needed.
+
+Lines inside open delimiters continue until the delimiter closes:
+
+```mw
+throw Error(
+    code: "book.absent",
+    message: $"Book {id} does not exist.",
+)
+```
+
+## Declarations
+
+```mw
+module shelf::books
+
+const MaxLoans: int = 5
+
+resource Book at ^books(id: int)
+    required title: string
+    required author: string
+
+pub fn add(title: string): int
+    return 1
+```
+
+Functions use one `fn` form. Parameters use `name: type`. Omitted return type
+means the function produces no value.
+
+## Resource Syntax
+
+Resource indentation mirrors tree layers:
+
+```mw
+resource Patient at ^patients(id: string)
+    name
+        required first: string
+        required last: string
+
+    visits(date: date)
+        note: string
+```
+
+Stable IDs apply to the next resource element:
+
+```mw
+;; Legal family name.
+@id("patient.name.last")
+last: string
+```
+
+Fields are sparse by default. Add `required` when a resource is invalid
+without a populated element:
+
+```mw
+required title: string
+```
+
+Indexes are declared as direct members of keyed saved resources:
+
+```mw
+index byName(name.last, id)
+index byMrn(mrn) unique
+```
+
+History is modeled as an ordinary keyed child layer:
+
+```mw
+versions(version: int)
+    title: string
+    body: string
+```
+
+## Statements
+
+Marrow statements are explicit:
+
+```mw
+let title: string = "Small Gods"
+var loanCount: int = 0
+loanCount = loanCount + 1
+^books(id).title = title
+delete ^books(id).subtitle
+var draftBook: Book
+merge draftBook = ^books(id)
+return id
+write($"created {id}")
+print($"created {id}")
+```
+
+Assignment is a statement only. It cannot appear as a subexpression, cannot be
+chained, and does not return a value.
+The right-hand expression is evaluated before the target is changed.
+
+`write(...)` and `print(...)` use call syntax, but they are statements: they
+perform output and produce no value. User-defined functions may still be
+effectful and return values.
+
+General statement chaining and postconditionals are not part of Marrow `.mw`.
+Use normal `if` blocks.
+
+## Equality And Assignment
+
+`=` means assignment only in statement position:
+
+```mw
+book.title = "Small Gods"
+```
+
+In expression and condition position, `=` means equality:
+
+```mw
+if book.title = "Small Gods"
+    write("found")
+
+let same: bool = (left = right)
+```
+
+Equality is non-associative. `a = b = c` is rejected; use parentheses if you
+need to compare boolean results.
+
+## Operators
+
+From tightest to loosest precedence:
+
+| Level | Operator | Meaning |
+|---|---|---|
+| 1 | calls, key subscripts, dotted fields | `f(x)`, `^books(id).title` |
+| 2 | unary `-`, `not` | negate, boolean not |
+| 3 | `*`, `/`, `%` | multiply, divide, remainder |
+| 4 | `+`, `-`, `_` | add, subtract, concatenate |
+| 5 | `..`, `..=` | exclusive and inclusive ranges |
+| 6 | `<`, `<=`, `>`, `>=` | comparison |
+| 7 | `=`, `!=` | equality, not equal |
+| 8 | `and` | short-circuit and |
+| 9 | `or` | short-circuit or |
+
+`%` is remainder. Use `std::math::modulo(...)` when code needs modulo
+behavior for negative operands.
+
+Arithmetic operands must be numeric. `+`, `-`, `*`, and `/` require matching
+numeric types. `+`, `-`, and `*` return that type. `/` returns `decimal`.
+`%` accepts `int` operands and returns `int`.
+
+Equality requires comparable values of the same type. Ordering comparisons
+require ordered values of the same type.
+
+Concatenation with `_` requires `string` operands.
+
+Ranges use `int` endpoints and yield `int` values when iterated. The checker
+accepts them for `for` loops, not as saved values.
+
+Use spaces around `_` when it is the concatenation operator; without spaces,
+`_` is part of an identifier.
+
+Operands and call arguments evaluate left to right. `and` and `or`
+short-circuit; other operators evaluate their operands before applying the
+operator.
+
+## Strings
+
+Ordinary strings are byte-exact UTF-8 text:
+
+```mw
+let title = "Small Gods"
+```
+
+Interpolation is explicit with `$"..."`:
+
+```mw
+write($"book {id}: {title}")
+```
+
+Inside interpolation strings, `{{` emits `{` and `}}` emits `}`.
+Interpolation expressions are ordinary expressions and cannot contain
+statements.
+
+Interpolation formats values as text for that string. It does not create an
+implicit conversion for assignment, calls, or saved writes.
+
+Byte literals use `b"..."`:
+
+```mw
+let marker: bytes = b"marrow"
+```
+
+## Paths And Calls
+
+| Syntax | Meaning |
+|---|---|
+| `book.title` | local field |
+| `books(id)` | local keyed layer |
+| `^books(id)` | saved keyed layer |
+| `^books(id).title` | saved field |
+| `module::name` | code namespace |
+
+Dots are data fields. `::` is for code namespaces.
+
+Quoted field segments are allowed for existing data with non-identifier names:
+
+```mw
+^books(id)."old-title"
+```
+
+Managed resource declarations use identifier field names. Quoted segments are
+for raw data, import, export, migration, and repair paths.
+
+## Named Arguments And Resource Literals
+
+Function calls may use named arguments:
+
+```mw
+saveBook(book: draft, notify: true)
+```
+
+Resource values can be constructed with the resource name:
+
+```mw
+let err = Error(
+    code: "book.absent",
+    message: $"Book {id} does not exist.",
+)
+```
+
+Generated resource identity types are constructed explicitly at boundaries:
+
+```mw
+let id = Book::Id(17)
+```
+
+## Spelling
+
+Marrow uses full statement keywords such as `if`, `else`, `for`,
+`transaction`, and `delete`. Output uses the call-shaped builtins `write(...)`
+and `print(...)`. Single-letter statement abbreviations are not part of `.mw`.
+
+Type names have one source spelling: `int`, `decimal`, `bool`, `string`,
+`bytes`, `date`, `instant`, `duration`, `ErrorCode`, and `unknown`.
+
+## Reserved Words
+
+Marrow reserves:
+
+```text
+module use pub fn resource at index unique
+required
+const let var if else while for in break continue return delete merge
+transaction lock try catch finally throw out inout true false
+not and or
+int decimal bool string bytes date instant duration
+sequence
+unknown Error ErrorCode
+```

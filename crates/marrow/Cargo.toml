@@ -1,0 +1,16 @@
+[package]
+name = "marrow"
+description = "The Marrow command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "marrow"
+path = "src/main.rs"
+
+[lints]
+workspace = true
