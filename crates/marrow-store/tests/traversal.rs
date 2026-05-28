@@ -166,6 +166,31 @@ fn child_keys_round_trip_instant_records_in_order() {
 }
 
 #[test]
+fn child_keys_round_trip_bytes_records() {
+    let mut store = MemStore::new();
+    // An embedded 0x00 must survive the escaping and still order correctly.
+    for bytes in [vec![0x02], vec![0x00, 0xFF], vec![0x01]] {
+        let path = [
+            PathSegment::Root("blobs".into()),
+            PathSegment::RecordKey(SavedKey::Bytes(bytes)),
+            PathSegment::Field("note".into()),
+        ];
+        store.write(&encode_path(&path), b"x".to_vec());
+    }
+    let children = store
+        .child_keys(&encode_path(&[PathSegment::Root("blobs".into())]))
+        .expect("clean store");
+    assert_eq!(
+        children,
+        vec![
+            ChildSegment::Key(SavedKey::Bytes(vec![0x00, 0xFF])),
+            ChildSegment::Key(SavedKey::Bytes(vec![0x01])),
+            ChildSegment::Key(SavedKey::Bytes(vec![0x02])),
+        ]
+    );
+}
+
+#[test]
 fn roots_are_listed_in_order_without_duplicates() {
     let mut store = MemStore::new();
     store.write(&encode_path(&seq(1)), b"x".to_vec());

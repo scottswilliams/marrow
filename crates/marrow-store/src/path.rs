@@ -21,6 +21,8 @@ pub enum SavedKey {
     Duration(i128),
     /// A UTC instant as a signed count of nanoseconds since the epoch.
     Instant(i128),
+    /// Arbitrary bytes, ordered by byte value.
+    Bytes(Vec<u8>),
 }
 
 /// One segment of a saved path.
@@ -59,6 +61,7 @@ const KEY_DATE: u8 = 0x03;
 const KEY_INSTANT: u8 = 0x04;
 const KEY_DURATION: u8 = 0x05;
 const KEY_STR: u8 = 0x07;
+const KEY_BYTES: u8 = 0x08;
 
 /// Encode a saved path to its ordered byte key.
 pub fn encode_path(segments: &[PathSegment]) -> Vec<u8> {
@@ -127,20 +130,28 @@ fn encode_key(key: &SavedKey, out: &mut Vec<u8>) {
         }
         SavedKey::Str(value) => {
             out.push(KEY_STR);
-            // UTF-8 bytes sort in Marrow string order. Escape `0x00` as
-            // `0x00 0x01` and terminate with `0x00 0x00`, so the key is
-            // self-delimiting within a longer path and a shorter string still
-            // sorts before a longer one that extends it.
-            for &byte in value.as_bytes() {
-                out.push(byte);
-                if byte == 0x00 {
-                    out.push(0x01);
-                }
-            }
-            out.push(0x00);
-            out.push(0x00);
+            encode_escaped(value.as_bytes(), out);
+        }
+        SavedKey::Bytes(value) => {
+            out.push(KEY_BYTES);
+            encode_escaped(value, out);
         }
     }
+}
+
+/// Append an order-preserving escaped byte run for a `str` or `bytes` key:
+/// escape `0x00` as `0x00 0x01` and terminate with `0x00 0x00`. The run is
+/// self-delimiting within a longer path, and a shorter value sorts before a
+/// longer one that extends it (UTF-8 / byte order is preserved).
+fn encode_escaped(value: &[u8], out: &mut Vec<u8>) {
+    for &byte in value {
+        out.push(byte);
+        if byte == 0x00 {
+            out.push(0x01);
+        }
+    }
+    out.push(0x00);
+    out.push(0x00);
 }
 
 /// An immediate child of a path: either a key value (a record or index key) or a
@@ -203,7 +214,7 @@ fn key_len(bytes: &[u8]) -> Option<usize> {
         KEY_INT => Some(9),
         KEY_DATE => Some(5),
         KEY_DURATION | KEY_INSTANT => Some(17),
-        KEY_STR => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
+        KEY_STR | KEY_BYTES => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
         _ => None,
     }
 }
@@ -239,6 +250,10 @@ fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
         KEY_STR => {
             let (decoded, _) = read_escaped_str(bytes.get(1..)?)?;
             Some(SavedKey::Str(String::from_utf8(decoded).ok()?))
+        }
+        KEY_BYTES => {
+            let (decoded, _) = read_escaped_str(bytes.get(1..)?)?;
+            Some(SavedKey::Bytes(decoded))
         }
         _ => None,
     }
