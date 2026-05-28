@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::json;
@@ -11,6 +11,7 @@ Usage:
   marrow check [--format text|json|jsonl] <file.mw>
   marrow fmt [--check | --write] <file.mw>
   marrow run <projectdir>
+  marrow test <projectdir>
   marrow --version
   marrow --help
 
@@ -28,6 +29,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|arg| arg == "run") {
         return run(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "test") {
+        return test(&args[1..]);
     }
     let mut args = args.into_iter();
     match args.next().as_deref() {
@@ -282,40 +286,10 @@ with `print`/`write` goes to stdout.
 /// `--entry` override, else `run.defaultEntry`) over the configured store. A
 /// project must check cleanly before it runs.
 fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
-    let config_path = Path::new(dir).join("marrow.json");
-    let config_text = match std::fs::read_to_string(&config_path) {
-        Ok(text) => text,
-        Err(error) => {
-            report_io_error(
-                &config_path.display().to_string(),
-                &error,
-                CheckFormat::Text,
-            );
-            return ExitCode::FAILURE;
-        }
+    let (config, program) = match load_checked_project(dir) {
+        Ok(checked) => checked,
+        Err(code) => return code,
     };
-    let config = match marrow_project::parse_config(&config_text) {
-        Ok(config) => config,
-        Err(error) => {
-            report_simple_error(error.code, &error.message, CheckFormat::Text);
-            return ExitCode::FAILURE;
-        }
-    };
-    let (report, program) = match marrow_check::check_project(Path::new(dir), &config) {
-        Ok(result) => result,
-        Err(error) => {
-            report_simple_error(
-                error.code,
-                &format!("{}: {}", error.path.display(), error.message),
-                CheckFormat::Text,
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    if report.has_errors() {
-        report_project(dir, &report, CheckFormat::Text);
-        return ExitCode::FAILURE;
-    }
 
     let Some(entry) = entry_override.or(config.default_entry.as_deref()) else {
         report_simple_error(
@@ -382,6 +356,187 @@ fn execute(
             report_simple_error(error.code, &error.message, CheckFormat::Text);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Load `<dir>/marrow.json` and check the project. On any failure — a missing or
+/// invalid config, an unreadable source root, or check errors — the problem is
+/// reported and the exit code is returned in `Err`; on success the parsed config
+/// and checked program are returned. Shared by `run` and `test`.
+fn load_checked_project(
+    dir: &str,
+) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
+    let config_path = Path::new(dir).join("marrow.json");
+    let config_text = std::fs::read_to_string(&config_path).map_err(|error| {
+        report_io_error(
+            &config_path.display().to_string(),
+            &error,
+            CheckFormat::Text,
+        );
+        ExitCode::FAILURE
+    })?;
+    let config = marrow_project::parse_config(&config_text).map_err(|error| {
+        report_simple_error(error.code, &error.message, CheckFormat::Text);
+        ExitCode::FAILURE
+    })?;
+    let (report, program) =
+        marrow_check::check_project(Path::new(dir), &config).map_err(|error| {
+            report_simple_error(
+                error.code,
+                &format!("{}: {}", error.path.display(), error.message),
+                CheckFormat::Text,
+            );
+            ExitCode::FAILURE
+        })?;
+    if report.has_errors() {
+        report_project(dir, &report, CheckFormat::Text);
+        return Err(ExitCode::FAILURE);
+    }
+    Ok((config, program))
+}
+
+/// Run a project's tests: `marrow test <projectdir>`.
+fn test(args: &[String]) -> ExitCode {
+    let mut dir = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--help" | "-h" => {
+                print!(
+                    "\
+Usage:
+  marrow test <projectdir>
+
+Check a Marrow project, then run its tests: every `pub fn` with no parameters in
+a test file (the `tests` patterns in marrow.json). Each test runs against a fresh
+in-memory store; a `std::assert::*` failure is a located test failure.
+"
+                );
+                return ExitCode::SUCCESS;
+            }
+            value if value.starts_with('-') => {
+                eprintln!("unknown test option: {value}");
+                return ExitCode::from(2);
+            }
+            value => {
+                if dir.replace(value.to_string()).is_some() {
+                    eprintln!("marrow test accepts one project directory");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        index += 1;
+    }
+
+    let Some(dir) = dir else {
+        eprintln!("missing project directory");
+        return ExitCode::from(2);
+    };
+    test_project_dir(&dir)
+}
+
+/// Check `<dir>`'s project and its test files, then run each test over a fresh
+/// in-memory store. Reports each result and a summary; exits non-zero if any test
+/// fails or errors, if the project does not check, or if no tests are found.
+fn test_project_dir(dir: &str) -> ExitCode {
+    let (config, src_program) = match load_checked_project(dir) {
+        Ok(checked) => checked,
+        Err(code) => return code,
+    };
+
+    let (test_report, test_modules) =
+        match marrow_check::check_tests(Path::new(dir), &config, &src_program) {
+            Ok(result) => result,
+            Err(error) => {
+                report_simple_error(
+                    error.code,
+                    &format!("{}: {}", error.path.display(), error.message),
+                    CheckFormat::Text,
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+    if test_report.has_errors() {
+        report_project(dir, &test_report, CheckFormat::Text);
+        return ExitCode::FAILURE;
+    }
+
+    // A test is a public, zero-parameter function in a test file. Keep each test's
+    // source file so a failure can be reported at its location.
+    let tests: Vec<(String, PathBuf)> = test_modules
+        .iter()
+        .flat_map(|module| {
+            module
+                .functions
+                .iter()
+                .filter(|function| function.public && function.params.is_empty())
+                .map(|function| {
+                    (
+                        format!("{}::{}", module.name, function.name),
+                        module.source_file.clone(),
+                    )
+                })
+        })
+        .collect();
+    if tests.is_empty() {
+        report_simple_error(
+            "test.none",
+            "no tests found; check the `tests` patterns in marrow.json",
+            CheckFormat::Text,
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // The runner resolves test names against the project plus the test modules.
+    let mut program = src_program;
+    program.modules.extend(test_modules);
+
+    let host = marrow_run::Host::with_system_clock();
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut errored = 0usize;
+    for (name, source_file) in &tests {
+        let store = RefCell::new(marrow_store::mem::MemStore::new());
+        match marrow_run::run_entry_with_host(&program, &store, &host, name, &[]) {
+            Ok(_) => {
+                println!("ok    {name}");
+                passed += 1;
+            }
+            Err(error) if error.code == marrow_run::RUN_ASSERT => {
+                println!("FAIL  {name}");
+                println!(
+                    "      {}:{}:{}: {}: {}",
+                    source_file.display(),
+                    error.span.line,
+                    error.span.column,
+                    error.code,
+                    error.message
+                );
+                failed += 1;
+            }
+            Err(error) => {
+                println!("ERROR {name}");
+                println!(
+                    "      {}:{}:{}: {}: {}",
+                    source_file.display(),
+                    error.span.line,
+                    error.span.column,
+                    error.code,
+                    error.message
+                );
+                errored += 1;
+            }
+        }
+    }
+    println!(
+        "\n{} test{}: {passed} passed, {failed} failed, {errored} errored",
+        tests.len(),
+        if tests.len() == 1 { "" } else { "s" }
+    );
+    if failed == 0 && errored == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 

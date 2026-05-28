@@ -101,6 +101,13 @@ declaration in that file must match the path.
 Public entrypoints are ordinary `pub fn` declarations selected by qualified name.
 The CLI or host decodes boundary arguments before Marrow code runs.
 
+Test files are the project's `tests` patterns. They live outside the source
+roots and are scripts, so each is named from its project-relative path
+(`tests/books_test.mw` → `tests::books_test`). `marrow test` runs every `pub fn`
+with no parameters in a test file against a fresh in-memory store, so tests are
+independent and never touch saved data. A `tests` pattern is the directory walk
+of its base: `tests/**/*.mw` walks `tests/` for `.mw` files.
+
 ## Resources And Schemas
 
 A resource declaration compiles to a schema:
