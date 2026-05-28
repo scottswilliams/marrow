@@ -1,5 +1,8 @@
 use std::fmt;
 
+mod format;
+pub use format::format_expression;
+
 pub const PARSE_SYNTAX: &str = "parse.syntax";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
