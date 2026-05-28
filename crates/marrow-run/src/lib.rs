@@ -6,13 +6,14 @@
 //! functions. It reads saved data (fields and keyed-leaf entries) and writes it
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
 //! groups writes in a `transaction` (commit/rollback with read-your-writes), and
-//! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins.
-//! Whole-resource writes, `merge`, index traversal, and structured errors build
-//! on this spine.
+//! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins and the
+//! `std::clock::now()` host capability. Whole-resource writes, `merge`, index
+//! traversal, and structured errors build on this spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedProgram};
 use marrow_schema::ResourceSchema;
@@ -36,6 +37,9 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A UTC instant in nanoseconds since the Unix epoch, e.g. from
+    /// `std::clock::now()`. Saves and loads as the `instant` type.
+    Instant(i128),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
@@ -80,39 +84,89 @@ pub const RUN_ABSENT: &str = "run.absent_element";
 pub const RUN_STORE: &str = "run.store";
 /// A construct this slice of the runtime does not yet evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
+/// A host capability a builtin needs (e.g. the clock for `std::clock::now`) was
+/// not provided to this run.
+pub const RUN_CAPABILITY: &str = "run.capability";
+
+/// The host capabilities a run may use. Pure runs need none; host modules such
+/// as `std::clock` require the matching capability, and a call made without it
+/// raises a typed capability error (`run.capability`). A command or embedding
+/// provides the capabilities its run needs.
+#[derive(Debug, Clone, Default)]
+pub struct Host {
+    /// The run's UTC instant in nanoseconds since the epoch, when a clock
+    /// capability is provided. Captured once, so every `std::clock::now()` in
+    /// the run sees one consistent instant.
+    clock: Option<i128>,
+}
+
+impl Host {
+    /// A host that provides no capabilities.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A host whose clock reads the real system time, captured now.
+    pub fn with_system_clock() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as i128)
+            .unwrap_or(0);
+        Self { clock: Some(nanos) }
+    }
+
+    /// A host whose clock returns a fixed instant (nanoseconds since the Unix
+    /// epoch, UTC), for deterministic runs and tests.
+    pub fn with_clock(nanos: i128) -> Self {
+        Self { clock: Some(nanos) }
+    }
+}
 
 /// Evaluate a standalone function with positional `args`, returning its returned
 /// value or `None`. Calls to other functions are not resolved (there is no
-/// surrounding program); use [`run_entry`] to run a function that calls others.
+/// surrounding program), and no host capabilities are provided; use [`run_entry`]
+/// to run a function that calls others.
 pub fn evaluate_function(
     function: &FunctionDecl,
     args: &[Value],
 ) -> Result<Option<Value>, RuntimeError> {
     let program = CheckedProgram::default();
     let store = RefCell::new(MemStore::new());
+    let host = Host::new();
     let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    invoke(
-        &program,
-        &store,
-        output,
-        &names,
-        &function.body,
-        function.span,
-        args,
-    )
+    let ctx = Context {
+        program: &program,
+        store: &store,
+        host: &host,
+    };
+    invoke(ctx, output, &names, &function.body, function.span, args)
 }
 
 /// Run the function named by `entry` — `"module::function"`, or a bare name
-/// searched across modules — from a checked `program` with positional `args`.
-/// Calls within the body resolve against the same `program`.
+/// searched across modules — from a checked `program` with positional `args`,
+/// providing no host capabilities. Calls within the body resolve against the
+/// same `program`.
 pub fn run_entry(
     program: &CheckedProgram,
     store: &RefCell<MemStore>,
+    entry: &str,
+    args: &[Value],
+) -> Result<RunOutput, RuntimeError> {
+    run_entry_with_host(program, store, &Host::new(), entry, args)
+}
+
+/// Like [`run_entry`], but with explicit host capabilities (e.g. a clock for
+/// `std::clock::now()`). A command or embedding supplies the capabilities its
+/// run needs.
+pub fn run_entry_with_host(
+    program: &CheckedProgram,
+    store: &RefCell<MemStore>,
+    host: &Host,
     entry: &str,
     args: &[Value],
 ) -> Result<RunOutput, RuntimeError> {
@@ -128,9 +182,13 @@ pub fn run_entry(
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    let value = invoke(
+    let ctx = Context {
         program,
         store,
+        host,
+    };
+    let value = invoke(
+        ctx,
         Rc::clone(&output),
         &names,
         &function.body,
@@ -147,8 +205,7 @@ pub fn run_entry(
 /// surface its returned value. Shared by [`evaluate_function`], [`run_entry`],
 /// and call evaluation.
 fn invoke(
-    program: &CheckedProgram,
-    store: &RefCell<MemStore>,
+    ctx: Context<'_>,
     output: Rc<RefCell<String>>,
     param_names: &[&str],
     body: &Block,
@@ -166,7 +223,7 @@ fn invoke(
             span,
         });
     }
-    let mut env = Env::new(program, store, output);
+    let mut env = Env::new(ctx, output);
     env.push_scope();
     for (name, arg) in param_names.iter().zip(args) {
         env.bind((*name).to_string(), arg.clone(), false);
@@ -248,9 +305,20 @@ fn eval_call(
             _ => {}
         }
     }
-    let program = env.program;
-    let store = env.store;
-    let function = resolve_function(program, segments).ok_or_else(|| RuntimeError {
+    // `std::clock::now()` is a host-capability builtin, not a program function.
+    if let [first, second, third] = segments.as_slice()
+        && first == "std"
+        && second == "clock"
+        && third == "now"
+    {
+        return eval_clock_now(args, span, env).map(Some);
+    }
+    let ctx = Context {
+        program: env.program,
+        store: env.store,
+        host: env.host,
+    };
+    let function = resolve_function(ctx.program, segments).ok_or_else(|| RuntimeError {
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{}`", segments.join("::")),
         span,
@@ -265,8 +333,7 @@ fn eval_call(
         .map(|param| param.name.as_str())
         .collect();
     invoke(
-        program,
-        store,
+        ctx,
         Rc::clone(&env.output),
         &names,
         &function.body,
@@ -406,6 +473,25 @@ fn eval_append(
     Ok(Value::Int(pos))
 }
 
+/// Evaluate `std::clock::now()`: the run's current UTC instant from the host's
+/// clock capability. A run with no clock capability raises a typed capability
+/// error rather than reading the wall clock implicitly.
+fn eval_clock_now(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if !args.is_empty() {
+        return Err(type_error("`std::clock::now` takes no arguments", span));
+    }
+    let nanos = env.host.clock.ok_or_else(|| RuntimeError {
+        code: RUN_CAPABILITY,
+        message: "this run provides no clock capability for `std::clock::now`".into(),
+        span,
+    })?;
+    Ok(Value::Instant(nanos))
+}
+
 /// Where control flow stands after a statement or block.
 enum Flow {
     /// Fall through to the next statement.
@@ -424,14 +510,25 @@ struct Binding {
     mutable: bool,
 }
 
-/// A lexical environment: a stack of scopes, the checked program (to resolve
-/// calls), and the shared output stream (so `print`/`write` from any activation
-/// append to one buffer). A resource has few locals, so lookups are linear and
-/// innermost-first.
+/// The ambient state every activation in a run shares: the checked program (to
+/// resolve calls), the saved-data store, and the host capabilities. All three
+/// are borrowed for the run's lifetime, so the context is cheap to copy.
+#[derive(Clone, Copy)]
+struct Context<'p> {
+    program: &'p CheckedProgram,
+    store: &'p RefCell<MemStore>,
+    host: &'p Host,
+}
+
+/// A lexical environment: a stack of scopes, the ambient run context (program,
+/// store, and host capabilities), and the shared output stream (so `print`/
+/// `write` from any activation append to one buffer). A resource has few locals,
+/// so lookups are linear and innermost-first.
 struct Env<'p> {
     scopes: Vec<Vec<(String, Binding)>>,
     program: &'p CheckedProgram,
     store: &'p RefCell<MemStore>,
+    host: &'p Host,
     output: Rc<RefCell<String>>,
 }
 
@@ -442,16 +539,13 @@ enum AssignError {
 }
 
 impl<'p> Env<'p> {
-    fn new(
-        program: &'p CheckedProgram,
-        store: &'p RefCell<MemStore>,
-        output: Rc<RefCell<String>>,
-    ) -> Self {
+    fn new(ctx: Context<'p>, output: Rc<RefCell<String>>) -> Self {
         Self {
             scopes: Vec::new(),
             output,
-            program,
-            store,
+            program: ctx.program,
+            store: ctx.store,
+            host: ctx.host,
         }
     }
 
@@ -1317,6 +1411,7 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Int(n) => SavedValue::Int(n),
         Value::Bool(b) => SavedValue::Bool(b),
         Value::Str(s) => SavedValue::Str(s),
+        Value::Instant(n) => SavedValue::Instant(n),
         Value::Resource(_) => return None,
     })
 }
@@ -1443,6 +1538,7 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Int(n) => Some(SavedKey::Int(n)),
         Value::Bool(b) => Some(SavedKey::Bool(b)),
         Value::Str(s) => Some(SavedKey::Str(s)),
+        Value::Instant(n) => Some(SavedKey::Instant(n)),
         Value::Resource(_) => None,
     }
 }
@@ -1454,6 +1550,7 @@ fn saved_value_to_value(value: SavedValue) -> Option<Value> {
         SavedValue::Int(n) => Some(Value::Int(n)),
         SavedValue::Bool(b) => Some(Value::Bool(b)),
         SavedValue::Str(s) => Some(Value::Str(s)),
+        SavedValue::Instant(n) => Some(Value::Instant(n)),
         _ => None,
     }
 }
@@ -1483,12 +1580,14 @@ fn eval_interpolation(
 }
 
 /// Render a scalar value as text: integers in decimal, booleans as
-/// `true`/`false`, strings as themselves. A resource value has no text form.
+/// `true`/`false`, strings as themselves. Resource values have no text form, and
+/// an instant is rendered through `std::clock::formatInstant`, not directly.
 fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
     Ok(match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => s,
+        Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
     })
 }

@@ -5,9 +5,9 @@ use std::cell::RefCell;
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
-    RUN_ABSENT, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE,
-    RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function,
-    run_entry,
+    Host, RUN_ABSENT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE,
+    RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput,
+    Value, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::compile_resource;
 use marrow_store::mem::MemStore;
@@ -1149,5 +1149,45 @@ fn merge_updates_supplied_fields_and_keeps_the_rest() {
         read("test::title_of"),
         Some(Value::Str("Mort".into())),
         "title kept"
+    );
+}
+
+/// A program that records the run's clock instant into a saved `instant` field
+/// and reads it back, exercising `std::clock::now()` through `let` and a managed
+/// write.
+const CLOCK_SAMPLE: &str = "\
+resource Event at ^events(id: int)
+    required changedAt: instant
+
+fn record(id: int)
+    let now: instant = std::clock::now()
+    ^events(id).changedAt = now
+
+fn changed_at_of(id: int): instant
+    return ^events(id).changedAt
+";
+
+#[test]
+fn clock_now_reads_the_host_clock_capability() {
+    let program = checked_program(CLOCK_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    // 1970-01-01T00:00:01Z, one second after the epoch.
+    let host = Host::with_clock(1_000_000_000);
+    run_entry_with_host(&program, &store, &host, "test::record", &[Value::Int(1)]).expect("record");
+    // The instant round-trips through the managed write and a typed read.
+    let outcome =
+        run_entry(&program, &store, "test::changed_at_of", &[Value::Int(1)]).expect("read");
+    assert_eq!(outcome.value, Some(Value::Instant(1_000_000_000)));
+}
+
+#[test]
+fn clock_now_without_a_clock_capability_is_a_capability_error() {
+    let program = checked_program("fn t(): instant\n    return std::clock::now()\n");
+    let store = RefCell::new(MemStore::new());
+    // Plain `run_entry` supplies no host capabilities.
+    let result = run_entry(&program, &store, "test::t", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
+        "{result:?}"
     );
 }
