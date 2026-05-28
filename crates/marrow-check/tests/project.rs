@@ -733,14 +733,64 @@ fn well_typed_operators_are_not_flagged() {
 
 #[test]
 fn operators_on_unknown_operands_are_not_flagged() {
-    // `mystery` is not a known binding, so its type is unknown; the checker only
-    // flags when both operand types are known to be incompatible.
+    // `mystery()` calls an unresolved function, so its result type is unknown; the
+    // checker only flags an operator when both operand types are known to be
+    // incompatible. (A bare name would itself be a `check.unresolved_name` error,
+    // so a call is used here to isolate the operator behavior.)
     let found = check_script(
         "op-unknown",
-        "fn f()\n    var x = mystery + 1\n",
+        "fn f()\n    var x = mystery() + 1\n",
         "check.operator_type",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_bare_undefined_name_is_flagged() {
+    // Strict typing: `mystery` is not a parameter, local, loop binding, catch
+    // binding, or module constant, so it is genuinely undefined.
+    let found = check_script(
+        "name-undefined",
+        "fn f()\n    var x = mystery\n",
+        "check.unresolved_name",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_defined_name_is_not_flagged() {
+    // A parameter is in scope, so referencing it is not an unresolved name.
+    let found = check_script(
+        "name-defined",
+        "fn f(a: int)\n    var x = a\n",
+        "check.unresolved_name",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unresolved_call_is_not_flagged_as_a_name() {
+    // A bare name in callee position names a function, not a value. An unresolved
+    // function call is a separate concern, so it is not a `check.unresolved_name`.
+    let found = check_script(
+        "name-callee",
+        "fn f()\n    var x = mystery()\n",
+        "check.unresolved_name",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_assignment_to_an_undeclared_name_is_flagged() {
+    // Assigning to a name that was never declared targets an unresolved name. The
+    // runtime faults the same way (`run.unbound_name`), so the checker catches it
+    // earlier rather than weaker than its own runtime.
+    let found = check_script(
+        "name-assign-undeclared",
+        "fn f()\n    x = 1\n",
+        "check.unresolved_name",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]

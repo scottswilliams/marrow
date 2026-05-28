@@ -52,6 +52,10 @@ pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
 /// the first position where an unresolved (`unknown`) value becomes an error
 /// rather than being skipped.
 pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
+/// A bare name used as a value does not resolve to any binding in scope (a
+/// parameter, local, loop or catch binding, or module constant). Under strict
+/// typing every value name must be defined.
+pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -888,7 +892,20 @@ fn infer_type(
             }
             MarrowType::Primitive(PrimitiveType::String)
         }
-        Expression::Name { segments, .. } if segments.len() == 1 => lookup(scope, &segments[0]),
+        Expression::Name { segments, span } if segments.len() == 1 => {
+            let name = &segments[0];
+            lookup_opt(scope, name).unwrap_or_else(|| {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_UNRESOLVED_NAME.to_string(),
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!("`{name}` is not defined"),
+                    line: span.line,
+                    column: span.column,
+                });
+                MarrowType::Unknown
+            })
+        }
         Expression::Unary { op, operand, span } => {
             let operand = infer_type(program, operand, scope, file, diagnostics);
             check_unary(*op, &operand, *span, file, diagnostics)
@@ -906,8 +923,13 @@ fn infer_type(
         Expression::Call { callee, args, span } => {
             // Visit the callee subtree (it may hold nested calls, e.g. the
             // `^books(id)` inside `^books(id).tags(pos)`) and infer each argument
-            // once. `check_call` validates the call and yields its return type.
-            infer_type(program, callee, scope, file, diagnostics);
+            // once. A bare single-segment callee names a function, not a value, so
+            // it is left to `check_call` to resolve rather than flagged as an
+            // unresolved value name. `check_call` validates the call and yields its
+            // return type.
+            if !is_bare_name(callee) {
+                infer_type(program, callee, scope, file, diagnostics);
+            }
             let arg_types: Vec<MarrowType> = args
                 .iter()
                 .map(|arg| infer_type(program, &arg.value, scope, file, diagnostics))
@@ -1098,14 +1120,22 @@ fn saved_layer_field(expr: &marrow_syntax::Expression) -> Option<(&str, &str)> {
     Some((root, layer))
 }
 
-/// Look up a name's type, innermost scope frame first; unknown when unbound.
-fn lookup(scope: &[HashMap<String, MarrowType>], name: &str) -> MarrowType {
+/// Look up a name's binding, innermost scope frame first; `None` when unbound.
+/// A bound name may still be [`MarrowType::Unknown`] (an `unknown`-typed binding
+/// or one whose type could not be inferred), which is distinct from being unbound.
+fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> Option<MarrowType> {
     scope
         .iter()
         .rev()
         .find_map(|frame| frame.get(name))
         .cloned()
-        .unwrap_or(MarrowType::Unknown)
+}
+
+/// Whether an expression is a bare single-segment name (`foo`, not `a::b` or
+/// `^books`). In callee position such a name is a function name resolved by
+/// `check_call`, so it is not treated as an unresolved value reference.
+fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
+    matches!(expr, marrow_syntax::Expression::Name { segments, .. } if segments.len() == 1)
 }
 
 /// The type of a literal by its lexical kind.

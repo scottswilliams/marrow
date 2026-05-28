@@ -35,7 +35,7 @@ fn builds_a_module_for_a_clean_library_file() {
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
              pub fn add(title: string): Book::Id\n\
-             \x20   return ^books(id)\n",
+             \x20   return nextId(^books)\n",
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
@@ -63,7 +63,7 @@ fn builds_a_module_for_a_clean_library_file() {
         MarrowType::Primitive(PrimitiveType::String)
     );
     assert!(add.return_type.is_some(), "{add:#?}");
-    // `add`'s body reads the `^books` saved root.
+    // `add`'s body touches the `^books` saved root (allocating an id with `nextId`).
     assert!(add.touches_saved_data, "{add:#?}");
     // The body is carried into the artifact for the runtime to evaluate.
     assert!(!add.body.statements.is_empty(), "{add:#?}");
