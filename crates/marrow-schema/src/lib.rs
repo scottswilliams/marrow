@@ -12,7 +12,8 @@
 use std::fmt;
 
 use marrow_syntax::{
-    FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, TypeRef,
+    FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SavedRoot, SourceSpan,
+    TypeRef,
 };
 
 /// The compiled tree shape of a resource declaration.
@@ -106,6 +107,15 @@ pub const SCHEMA_DUPLICATE_MEMBER: &str = "schema.duplicate_member";
 /// resources; nested-layer lookups are modeled as a separate resource.
 pub const SCHEMA_INDEX_IN_GROUP: &str = "schema.index_in_group";
 
+/// A managed saved field or key is typed `unknown`. `unknown` is a dynamic
+/// boundary value; saved schemas use concrete field and key types. Local-only
+/// resources may use `unknown`.
+pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
+
+/// A top-level field or layer shares a name with an identity key. Identity keys
+/// live in the saved path, so a stored member of the same name is ambiguous.
+pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -121,11 +131,12 @@ impl std::error::Error for SchemaError {}
 /// Compile a parsed resource declaration into a [`ResourceSchema`].
 ///
 /// Always returns a best-effort schema together with any errors, so callers can
-/// keep checking. This slice maps structure only and defers semantic checks.
+/// keep checking. This slice maps structure and the saved-data rules that the
+/// schema alone can decide: `unknown` is rejected in managed saved fields and
+/// keys, and an identity key may not share a name with a top-level member.
 ///
-// TODO(step 5+): type validation, rejecting `unknown` in managed fields,
-// index-argument resolution, identity-key-vs-field collisions, one-owner-per-
-// root, and stable-ID uniqueness.
+// TODO(step 5+): full type validation, index-argument resolution, one-owner-
+// per-root, and stable-ID uniqueness.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
 
@@ -168,7 +179,101 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
         layers,
         indexes,
     };
+
+    // Saved-data rules apply only to managed saved resources. They are reported
+    // over the declaration, which carries the spans the built schema does not.
+    if let Some(store) = &decl.store {
+        check_saved_data(store, &decl.members, decl.span, &mut errors);
+    }
+
     (schema, errors)
+}
+
+/// Report the saved-data rules for a managed saved resource: reject `unknown`
+/// in identity keys, fields, and keyed leaves (recursively), and reject an
+/// identity key that shares a name with a top-level member.
+///
+/// Errors are collected in source order: identity keys, then members. Identity
+/// keys have no span of their own, so their errors point at the declaration.
+fn check_saved_data(
+    store: &SavedRoot,
+    members: &[ResourceMember],
+    decl_span: SourceSpan,
+    errors: &mut Vec<SchemaError>,
+) {
+    for key in &store.keys {
+        if is_unknown(&key.ty) {
+            errors.push(unknown_error("identity key", &key.name, decl_span));
+        }
+        if let Some(span) = top_level_member_span(members, &key.name) {
+            errors.push(SchemaError {
+                code: SCHEMA_KEY_MEMBER_COLLISION,
+                message: format!(
+                    "identity key `{}` collides with a top-level member of the \
+                     same name; identity keys live in the saved path, not stored \
+                     members",
+                    key.name
+                ),
+                span,
+            });
+        }
+    }
+
+    for member in members {
+        check_member_unknown(member, errors);
+    }
+}
+
+/// Reject `unknown` on the value type of a field or keyed leaf, descending into
+/// groups. Key types use ordered scalars or identity types and never `unknown`
+/// (see `docs/language/types.md`), so layer key parameters are not checked here.
+fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
+    match member {
+        ResourceMember::Field(field) => {
+            // A keyed leaf carries its value type the same way a plain field
+            // does; both reject `unknown`.
+            let what = if field.keys.is_empty() {
+                "field"
+            } else {
+                "keyed leaf"
+            };
+            if is_unknown(&field.ty) {
+                errors.push(unknown_error(what, &field.name, field.span));
+            }
+        }
+        ResourceMember::Group(group) => {
+            for nested in &group.members {
+                check_member_unknown(nested, errors);
+            }
+        }
+        ResourceMember::Index(_) => {}
+    }
+}
+
+/// The span of a top-level field or group named `name`, if one exists. Indexes
+/// share the namespace but are not stored members, so a key may reuse an index
+/// name without ambiguity.
+fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<SourceSpan> {
+    members.iter().find_map(|member| match member {
+        ResourceMember::Field(field) if field.name == name => Some(field.span),
+        ResourceMember::Group(group) if group.name == name => Some(group.span),
+        _ => None,
+    })
+}
+
+fn is_unknown(ty: &TypeRef) -> bool {
+    ty.text == "unknown"
+}
+
+fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        code: SCHEMA_UNKNOWN_IN_SAVED,
+        message: format!(
+            "saved {what} `{name}` cannot be typed `unknown`; managed saved \
+             schemas use concrete types"
+        ),
+        span,
+    }
 }
 
 /// Compile the members nested inside a group. Fields and groups recurse; an

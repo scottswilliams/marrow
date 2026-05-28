@@ -7,7 +7,7 @@
 
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_IN_GROUP,
-    compile_resource,
+    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -207,4 +207,99 @@ resource Book at ^books(id: int)
     // second `title`.
     assert_eq!(schema.fields.len(), 2);
     assert_eq!(errors[0].span.line, 3);
+}
+
+/// Only this code, to keep `unknown`/collision assertions specific.
+fn codes(errors: &[marrow_schema::SchemaError]) -> Vec<&'static str> {
+    errors.iter().map(|error| error.code).collect()
+}
+
+#[test]
+fn saved_field_typed_unknown_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    required title: string
+    note: unknown
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("note"));
+}
+
+#[test]
+fn saved_identity_key_typed_unknown_is_an_error() {
+    let source = "\
+resource Book at ^books(id: unknown)
+    required title: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("id"));
+}
+
+#[test]
+fn saved_keyed_leaf_typed_unknown_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    tags(pos: int): unknown
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("tags"));
+}
+
+#[test]
+fn saved_nested_field_typed_unknown_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    notes(noteId: string)
+        body: unknown
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("body"));
+}
+
+#[test]
+fn local_field_typed_unknown_is_allowed() {
+    let source = "\
+resource Draft
+    title: string
+    note: unknown
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "local resources may use `unknown`: {errors:?}"
+    );
+}
+
+#[test]
+fn identity_key_name_colliding_with_field_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    required id: int
+    required title: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
+    assert!(errors[0].message.contains("id"));
+}
+
+#[test]
+fn identity_key_name_colliding_with_layer_is_an_error() {
+    let source = "\
+resource Book at ^books(notes: int)
+    notes(noteId: string)
+        text: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
+    assert!(errors[0].message.contains("notes"));
+}
+
+#[test]
+fn clean_book_has_no_new_errors() {
+    let (_, errors) = compile_resource(&resource(BOOK));
+    assert!(errors.is_empty(), "Book is clean: {errors:?}");
 }
