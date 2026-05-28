@@ -257,8 +257,89 @@ pub struct FunctionDecl {
     pub name: String,
     pub params: Vec<ParamDecl>,
     pub return_type: Option<TypeRef>,
-    pub body: SourceSpan,
+    pub body: Block,
     pub span: SourceSpan,
+}
+
+/// An indented sequence of statements.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Block {
+    pub statements: Vec<Statement>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Statement {
+    Let {
+        name: String,
+        ty: Option<TypeRef>,
+        value: Expression,
+        span: SourceSpan,
+    },
+    Var {
+        name: String,
+        ty: Option<TypeRef>,
+        value: Option<Expression>,
+        span: SourceSpan,
+    },
+    Assign {
+        target: Expression,
+        value: Expression,
+        span: SourceSpan,
+    },
+    Delete {
+        path: Expression,
+        span: SourceSpan,
+    },
+    Merge {
+        target: Expression,
+        value: Expression,
+        span: SourceSpan,
+    },
+    Return {
+        value: Option<Expression>,
+        span: SourceSpan,
+    },
+    Break {
+        label: Option<String>,
+        span: SourceSpan,
+    },
+    Continue {
+        label: Option<String>,
+        span: SourceSpan,
+    },
+    Throw {
+        value: Expression,
+        span: SourceSpan,
+    },
+    Expr {
+        value: Expression,
+        span: SourceSpan,
+    },
+    /// Compound statements (`if`, `while`, `for`, `transaction`, `lock`, `try`)
+    /// and statement lines the parser cannot yet structure. Future syntax-tree
+    /// slices replace `Unparsed` with concrete variants.
+    Unparsed {
+        span: SourceSpan,
+    },
+}
+
+impl Statement {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Let { span, .. }
+            | Self::Var { span, .. }
+            | Self::Assign { span, .. }
+            | Self::Delete { span, .. }
+            | Self::Merge { span, .. }
+            | Self::Return { span, .. }
+            | Self::Break { span, .. }
+            | Self::Continue { span, .. }
+            | Self::Throw { span, .. }
+            | Self::Expr { span, .. }
+            | Self::Unparsed { span } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1451,8 +1532,7 @@ impl<'a> Parser<'a> {
         } else {
             self.error(line, "expected an indented function body");
         }
-        let body =
-            span_for_lines(&self.lines, body_start, self.index).unwrap_or_else(|| line.span());
+        let body = self.parse_body_block(body_start, self.index, line.span());
 
         FunctionDecl {
             docs,
@@ -1463,6 +1543,27 @@ impl<'a> Parser<'a> {
             body,
             span: line.span(),
         }
+    }
+
+    /// Parse the statements of a function body from the lines in
+    /// `[body_start, body_end)`. Works on the file-wide token stream so that
+    /// statements spanning several physical lines inside open delimiters stay
+    /// together.
+    fn parse_body_block(
+        &self,
+        body_start: usize,
+        body_end: usize,
+        header_span: SourceSpan,
+    ) -> Block {
+        let Some(span) = span_for_lines(&self.lines, body_start, body_end) else {
+            return Block {
+                statements: Vec::new(),
+                span: header_span,
+            };
+        };
+        let tokens = tokens_in_range(self.tokens, span.start_byte, span.end_byte);
+        let statements = StmtParser::new(self.source, tokens).parse_block();
+        Block { statements, span }
     }
 
     fn has_child_body(&self, parent_indent: usize) -> bool {
@@ -1896,6 +1997,16 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    /// Parse the whole token slice as one expression, returning `None` unless
+    /// every significant token is consumed.
+    fn parse_complete(mut self) -> Option<Expression> {
+        if self.tokens.is_empty() {
+            return None;
+        }
+        let expr = self.expression()?;
+        (self.pos == self.tokens.len()).then_some(expr)
+    }
+
     fn peek(&self) -> Option<TokenKind> {
         self.peek_at(0)
     }
@@ -2269,6 +2380,352 @@ fn join_spans(start: SourceSpan, end: SourceSpan) -> SourceSpan {
         end_byte: end.end_byte,
         line: start.line,
         column: start.column,
+    }
+}
+
+/// Statement keywords that introduce one or more indented blocks. The body
+/// parser does not structure these yet; it keeps them as `Statement::Unparsed`
+/// while still consuming their nested blocks so following statements parse.
+fn is_compound_statement_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::If
+            | Keyword::Else
+            | Keyword::While
+            | Keyword::For
+            | Keyword::Transaction
+            | Keyword::Lock
+            | Keyword::Try
+            | Keyword::Catch
+            | Keyword::Finally
+    )
+}
+
+/// Parses the statements of a function body over the file-wide token stream.
+/// It keeps layout tokens (`NEWLINE`, `INDENT`, `DEDENT`) so statements that
+/// span several physical lines inside open delimiters are one statement, and
+/// delegates expression parsing to `ExprParser`.
+struct StmtParser<'a> {
+    source: &'a str,
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl<'a> StmtParser<'a> {
+    fn new(source: &'a str, tokens: &[Token]) -> Self {
+        let tokens = tokens
+            .iter()
+            .copied()
+            .filter(|token| !matches!(token.kind, TokenKind::Comment | TokenKind::DocComment))
+            .collect();
+        Self {
+            source,
+            tokens,
+            pos: 0,
+        }
+    }
+
+    fn parse_block(mut self) -> Vec<Statement> {
+        // A body opens with the INDENT that began it.
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.advance();
+        }
+        self.statements()
+    }
+
+    fn statements(&mut self) -> Vec<Statement> {
+        let mut statements = Vec::new();
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Dedent => break,
+                TokenKind::Newline => {
+                    self.advance();
+                }
+                TokenKind::Indent => {
+                    // A stray nested block (e.g. under a compound statement we
+                    // kept as Unparsed). Skip it rather than mis-parse.
+                    self.skip_block();
+                }
+                _ => statements.push(self.statement()),
+            }
+        }
+        statements
+    }
+
+    fn peek(&self) -> Option<TokenKind> {
+        self.tokens.get(self.pos).map(|token| token.kind)
+    }
+
+    fn advance(&mut self) -> Token {
+        let token = self.tokens[self.pos];
+        self.pos += 1;
+        token
+    }
+
+    fn statement(&mut self) -> Statement {
+        if let TokenKind::Keyword(keyword) = self.tokens[self.pos].kind
+            && is_compound_statement_keyword(keyword)
+        {
+            return self.unparsed_compound();
+        }
+
+        let newline = self.find_line_end();
+        let line = &self.tokens[self.pos..newline];
+        let statement =
+            parse_simple_statement(self.source, line).unwrap_or_else(|| Statement::Unparsed {
+                span: line_span(line),
+            });
+        self.pos = (newline + 1).min(self.tokens.len());
+        statement
+    }
+
+    /// Index of the `NEWLINE` (or layout token) that ends the current line.
+    fn find_line_end(&self) -> usize {
+        let mut index = self.pos;
+        while index < self.tokens.len()
+            && !matches!(
+                self.tokens[index].kind,
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+            )
+        {
+            index += 1;
+        }
+        index
+    }
+
+    fn unparsed_compound(&mut self) -> Statement {
+        let start = self.tokens[self.pos].span;
+        let mut end = start;
+        // Consume the header up to its NEWLINE.
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Newline => {
+                    end = self.advance().span;
+                    break;
+                }
+                TokenKind::Indent | TokenKind::Dedent => break,
+                _ => end = self.advance().span,
+            }
+        }
+        // Consume an immediately following indented block, if any.
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            end = self.skip_block();
+        }
+        Statement::Unparsed {
+            span: join_spans(start, end),
+        }
+    }
+
+    /// Consume a balanced `INDENT … DEDENT` run starting at the current
+    /// `INDENT`, returning the span of the last token consumed. Tolerates a
+    /// missing trailing `DEDENT` at the end of the body token slice.
+    fn skip_block(&mut self) -> SourceSpan {
+        let mut depth = 0usize;
+        let mut end = self.tokens[self.pos].span;
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Indent => {
+                    depth += 1;
+                    end = self.advance().span;
+                }
+                TokenKind::Dedent => {
+                    if depth == 0 {
+                        // An unmatched DEDENT closes the enclosing block; leave
+                        // it for the caller rather than underflow `depth`.
+                        break;
+                    }
+                    depth -= 1;
+                    end = self.advance().span;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => end = self.advance().span,
+            }
+        }
+        end
+    }
+}
+
+fn parse_simple_statement(source: &str, line: &[Token]) -> Option<Statement> {
+    let first = line.first()?;
+    match first.kind {
+        TokenKind::Keyword(Keyword::Let) => parse_let_or_var(source, line, false),
+        TokenKind::Keyword(Keyword::Var) => parse_let_or_var(source, line, true),
+        TokenKind::Keyword(Keyword::Return) => parse_return(source, line),
+        TokenKind::Keyword(Keyword::Delete) => {
+            let value = expr_of(source, &line[1..])?;
+            Some(Statement::Delete {
+                span: join_spans(first.span, value.span()),
+                path: value,
+            })
+        }
+        TokenKind::Keyword(Keyword::Throw) => {
+            let value = expr_of(source, &line[1..])?;
+            Some(Statement::Throw {
+                span: join_spans(first.span, value.span()),
+                value,
+            })
+        }
+        TokenKind::Keyword(Keyword::Merge) => parse_merge(source, line),
+        TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(source, line, true),
+        TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(source, line, false),
+        _ => parse_assign_or_expr(source, line),
+    }
+}
+
+fn parse_let_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statement> {
+    let keyword = line[0];
+    let name_token = line.get(1)?;
+    if name_token.kind != TokenKind::Identifier {
+        return None;
+    }
+    let name = name_token.text(source).to_string();
+    let mut index = 2;
+
+    // Keyed `var` declarations are not structured yet.
+    if is_var && line.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
+        return None;
+    }
+
+    let mut ty = None;
+    if line.get(index).map(|token| token.kind) == Some(TokenKind::Colon) {
+        index += 1;
+        let type_start = index;
+        while index < line.len() && line[index].kind != TokenKind::Equal {
+            index += 1;
+        }
+        if index == type_start {
+            return None;
+        }
+        ty = Some(type_ref_from_tokens(source, &line[type_start..index]));
+    }
+
+    match line.get(index).map(|token| token.kind) {
+        Some(TokenKind::Equal) => {
+            let value = expr_of(source, &line[index + 1..])?;
+            let span = join_spans(keyword.span, value.span());
+            Some(if is_var {
+                Statement::Var {
+                    name,
+                    ty,
+                    value: Some(value),
+                    span,
+                }
+            } else {
+                Statement::Let {
+                    name,
+                    ty,
+                    value,
+                    span,
+                }
+            })
+        }
+        // `var name: type` without an initializer is allowed; `let` is not.
+        None if is_var => Some(Statement::Var {
+            name,
+            ty,
+            value: None,
+            span: join_spans(keyword.span, line[line.len() - 1].span),
+        }),
+        _ => None,
+    }
+}
+
+fn parse_return(source: &str, line: &[Token]) -> Option<Statement> {
+    let keyword = line[0];
+    if line.len() == 1 {
+        return Some(Statement::Return {
+            value: None,
+            span: keyword.span,
+        });
+    }
+    let value = expr_of(source, &line[1..])?;
+    Some(Statement::Return {
+        span: join_spans(keyword.span, value.span()),
+        value: Some(value),
+    })
+}
+
+fn parse_merge(source: &str, line: &[Token]) -> Option<Statement> {
+    let keyword = line[0];
+    let rest = &line[1..];
+    let equal = find_top_level_equal(rest)?;
+    let target = expr_of(source, &rest[..equal])?;
+    let value = expr_of(source, &rest[equal + 1..])?;
+    Some(Statement::Merge {
+        span: join_spans(keyword.span, value.span()),
+        target,
+        value,
+    })
+}
+
+fn parse_break_or_continue(source: &str, line: &[Token], is_break: bool) -> Option<Statement> {
+    let keyword = line[0];
+    let (label, span) = match line.get(1) {
+        None => (None, keyword.span),
+        Some(token) if token.kind == TokenKind::Identifier && line.len() == 2 => (
+            Some(token.text(source).to_string()),
+            join_spans(keyword.span, token.span),
+        ),
+        _ => return None,
+    };
+    Some(if is_break {
+        Statement::Break { label, span }
+    } else {
+        Statement::Continue { label, span }
+    })
+}
+
+fn parse_assign_or_expr(source: &str, line: &[Token]) -> Option<Statement> {
+    if let Some(equal) = find_top_level_equal(line) {
+        let target = expr_of(source, &line[..equal])?;
+        let value = expr_of(source, &line[equal + 1..])?;
+        Some(Statement::Assign {
+            span: join_spans(target.span(), value.span()),
+            target,
+            value,
+        })
+    } else {
+        let value = expr_of(source, line)?;
+        Some(Statement::Expr {
+            span: value.span(),
+            value,
+        })
+    }
+}
+
+/// Index of the first top-level `=` (assignment separator), skipping `=` nested
+/// inside parentheses or brackets where it means equality.
+fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::Equal if depth == 0 => return Some(index),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn expr_of(source: &str, tokens: &[Token]) -> Option<Expression> {
+    ExprParser::new(source, tokens).parse_complete()
+}
+
+fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
+    let start = tokens[0].span.start_byte;
+    let end = tokens[tokens.len() - 1].span.end_byte;
+    TypeRef {
+        text: source[start..end].trim().to_string(),
+    }
+}
+
+fn line_span(tokens: &[Token]) -> SourceSpan {
+    match (tokens.first(), tokens.last()) {
+        (Some(first), Some(last)) => join_spans(first.span, last.span),
+        _ => SourceSpan::default(),
     }
 }
 

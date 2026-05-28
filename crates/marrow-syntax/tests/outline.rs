@@ -1,6 +1,6 @@
 use marrow_syntax::{
     ArgMode, BinaryOp, Declaration, Expression, InterpolationPart, LiteralKind, ResourceMember,
-    UnaryOp, parse_source,
+    Statement, UnaryOp, parse_source,
 };
 
 fn reference_sample() -> &'static str {
@@ -73,6 +73,186 @@ fn parses_documented_reference_sample() {
     );
     assert!(parsed.file.resource("Book").is_some());
     assert!(parsed.file.function("main").is_some());
+}
+
+#[test]
+fn parses_simple_statements_in_function_bodies() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   let title: string = \"Small Gods\"\n\
+         \x20   var count: int = 0\n\
+         \x20   count = count + 1\n\
+         \x20   print(title)\n\
+         \x20   return count\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    let statements = &main.body.statements;
+    assert_eq!(statements.len(), 5, "{statements:#?}");
+
+    assert!(
+        matches!(
+            &statements[0],
+            Statement::Let { name, ty: Some(ty), value: Expression::Literal { .. }, .. }
+                if name == "title" && ty.text == "string"
+        ),
+        "stmt 0: {:?}",
+        statements[0]
+    );
+    assert!(
+        matches!(
+            &statements[1],
+            Statement::Var { name, ty: Some(ty), value: Some(_), .. }
+                if name == "count" && ty.text == "int"
+        ),
+        "stmt 1: {:?}",
+        statements[1]
+    );
+    assert!(
+        matches!(
+            &statements[2],
+            Statement::Assign { target: Expression::Name { segments, .. }, .. }
+                if segments == &["count"]
+        ),
+        "stmt 2: {:?}",
+        statements[2]
+    );
+    assert!(
+        matches!(
+            &statements[3],
+            Statement::Expr {
+                value: Expression::Call { .. },
+                ..
+            }
+        ),
+        "stmt 3: {:?}",
+        statements[3]
+    );
+    assert!(
+        matches!(
+            &statements[4],
+            Statement::Return { value: Some(Expression::Name { segments, .. }), .. }
+                if segments == &["count"]
+        ),
+        "stmt 4: {:?}",
+        statements[4]
+    );
+}
+
+#[test]
+fn parses_saved_writes_and_var_without_value() {
+    let parsed = parse_source(
+        "module app\n\
+         fn save()\n\
+         \x20   var book: Book\n\
+         \x20   ^books(id).title = title\n\
+         \x20   delete ^books(id).subtitle\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let save = parsed.file.function("save").expect("save function");
+    let statements = &save.body.statements;
+    assert_eq!(statements.len(), 3, "{statements:#?}");
+    assert!(
+        matches!(&statements[0], Statement::Var { name, value: None, .. } if name == "book"),
+        "stmt 0: {:?}",
+        statements[0]
+    );
+    assert!(
+        matches!(
+            &statements[1],
+            Statement::Assign { target: Expression::Field { name, .. }, .. } if name == "title"
+        ),
+        "stmt 1: {:?}",
+        statements[1]
+    );
+    assert!(
+        matches!(&statements[2], Statement::Delete { .. }),
+        "stmt 2: {:?}",
+        statements[2]
+    );
+}
+
+#[test]
+fn compound_statements_are_unparsed_but_do_not_swallow_siblings() {
+    // The `for` block is kept as Unparsed, yet the following `return` still
+    // parses as its own statement.
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   for id in keys(^books)\n\
+         \x20       print(id)\n\
+         \x20   return\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let statements = &run.body.statements;
+    assert_eq!(statements.len(), 2, "{statements:#?}");
+    assert!(
+        matches!(&statements[0], Statement::Unparsed { .. }),
+        "stmt 0 should be the unparsed for-loop: {:?}",
+        statements[0]
+    );
+    assert!(
+        matches!(&statements[1], Statement::Return { value: None, .. }),
+        "stmt 1 should be the return: {:?}",
+        statements[1]
+    );
+}
+
+#[test]
+fn nested_compound_at_end_of_body_parses_without_panic() {
+    // The body ends with nested compound blocks, so every closing DEDENT lands
+    // outside the body token slice. The block parser must tolerate that.
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   let ready = true\n\
+         \x20   for id in keys(^books)\n\
+         \x20       if ready\n\
+         \x20           print(id)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let statements = &run.body.statements;
+    assert_eq!(statements.len(), 2, "{statements:#?}");
+    assert!(
+        matches!(&statements[0], Statement::Let { name, .. } if name == "ready"),
+        "stmt 0: {:?}",
+        statements[0]
+    );
+    assert!(
+        matches!(&statements[1], Statement::Unparsed { .. }),
+        "stmt 1 should be the unparsed for-loop: {:?}",
+        statements[1]
+    );
+}
+
+#[test]
+fn statement_spanning_open_delimiters_stays_one_statement() {
+    let parsed = parse_source(
+        "module app\n\
+         fn make()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing\",\n\
+         \x20   )\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let make = parsed.file.function("make").expect("make function");
+    let statements = &make.body.statements;
+    assert_eq!(statements.len(), 1, "{statements:#?}");
+    assert!(
+        matches!(
+            &statements[0],
+            Statement::Throw {
+                value: Expression::Call { .. },
+                ..
+            }
+        ),
+        "stmt 0: {:?}",
+        statements[0]
+    );
 }
 
 #[test]
