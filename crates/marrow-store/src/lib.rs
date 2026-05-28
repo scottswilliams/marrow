@@ -12,6 +12,7 @@
 //! contract.
 
 pub mod backend;
+pub mod conformance;
 pub mod mem;
 pub mod path;
 pub mod value;
