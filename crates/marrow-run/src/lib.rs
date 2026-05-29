@@ -2188,12 +2188,17 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             value,
             span,
         } => {
-            // A `.layer` off a saved record is a keyed-layer merge; a `^root(key…)`
-            // target is a whole-resource merge.
+            // A `.layer` off a saved record is a keyed-layer merge; a bare local
+            // name is a merge into a local resource var; a `^root(key…)` target is
+            // a whole-resource saved merge.
             if let Expression::Field { base, name, .. } = target
                 && is_saved_path(base)
             {
                 eval_layer_merge(base, name, value, *span, env)?;
+            } else if let Expression::Name { segments, .. } = target
+                && let [name] = segments.as_slice()
+            {
+                eval_local_merge(name, value, *span, env)?;
             } else {
                 eval_resource_merge(target, value, *span, env)?;
             }
@@ -3512,6 +3517,29 @@ fn eval_resource_merge(
     };
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Apply a merge into a local resource var `merge draft = source`: overlay each
+/// populated source field onto the local binding, leaving the local's other
+/// fields in place (docs/language `resources-and-storage.md` — a `merge`
+/// preserves fields the source does not supply). The local is ordinary program
+/// state, so this is a sequence of local-field writes, not a managed saved write.
+fn eval_local_merge(
+    target: &str,
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let Value::Resource(fields) = eval_expr(value, env)? else {
+        return Err(unsupported("merging a non-resource value", span));
+    };
+    if env.lookup(target).is_none() {
+        return Err(unsupported("merging into an unbound local", span));
+    }
+    for (field, value) in fields {
+        write_local_field(target, &field, value, span, env)?;
+    }
     Ok(())
 }
 

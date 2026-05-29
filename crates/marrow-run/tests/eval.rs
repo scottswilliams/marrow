@@ -2955,6 +2955,33 @@ fn merge_updates_supplied_fields_and_keeps_the_rest() {
     );
 }
 
+#[test]
+fn merge_into_a_local_overlays_source_fields_and_keeps_the_rest() {
+    // `merge draft = ^books(id)` overlays the saved record's populated fields onto
+    // the local `draft`, leaving draft's other fields in place. The seeded record
+    // has only `title`, so the merge sets draft.title but keeps draft.shelf.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn draft_title(id: int): string\n    var draft: Book\n    draft.shelf = \"local-shelf\"\n    merge draft = ^books(id)\n    return draft.title\n\nfn draft_shelf(id: int): string\n    var draft: Book\n    draft.shelf = \"local-shelf\"\n    merge draft = ^books(id)\n    return draft.shelf\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    seed_field(&store, 1, "title", "Mort");
+    let read = |entry: &str| {
+        run_entry(&program, &store, entry, &[Value::Int(1)])
+            .expect("run")
+            .value
+    };
+    assert_eq!(
+        read("test::draft_title"),
+        Some(Value::Str("Mort".into())),
+        "the source's populated field overlays the local"
+    );
+    assert_eq!(
+        read("test::draft_shelf"),
+        Some(Value::Str("local-shelf".into())),
+        "a local field the source does not supply is kept"
+    );
+}
+
 /// A `Book` with a shelf index AND a `tags` child layer, plus a `copy` that
 /// merges one saved record onto another (`merge ^books(to) = ^books(from)`).
 const BOOK_TREE_MERGE: &str = "\
