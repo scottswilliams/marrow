@@ -94,6 +94,12 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
             "`sourceRoots` must list at least one source directory",
         ));
     }
+    for source_root in &raw.source_roots {
+        check_under_root("sourceRoots entry", source_root)?;
+    }
+    for pattern in &raw.tests {
+        check_under_root("tests entry", pattern)?;
+    }
 
     let store = match raw.store {
         Some(store) => {
@@ -112,6 +118,9 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
                     "the `native` store backend requires a non-empty `dataDir`",
                 ));
             }
+            if let Some(data_dir) = &store.data_dir {
+                check_under_root("dataDir", data_dir)?;
+            }
             Some(StoreConfig {
                 backend,
                 data_dir: store.data_dir,
@@ -126,6 +135,31 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         store,
         tests: raw.tests,
     })
+}
+
+/// Reject a configured path that would not stay under the project root: every
+/// such value is joined onto the root, and `Path::join` discards the root for an
+/// absolute argument, while a `..` component walks above it. `label` names the
+/// field for the diagnostic.
+fn check_under_root(label: &str, value: &str) -> Result<(), ConfigError> {
+    if value.is_empty() {
+        return Err(ConfigError::new(format!("`{label}` must not be empty")));
+    }
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(ConfigError::new(format!(
+            "`{label}` `{value}` must be relative to the project root, not absolute"
+        )));
+    }
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(ConfigError::new(format!(
+            "`{label}` `{value}` must not contain a `..` component"
+        )));
+    }
+    Ok(())
 }
 
 /// The module name a library file must declare, derived from its path relative
@@ -292,9 +326,11 @@ fn collect_mw_files(
 /// Build a [`ModuleFile`] for `path`, deriving its path relative to `source_root`
 /// and the module name that relative path implies.
 fn module_file(source_root: &Path, path: PathBuf) -> ModuleFile {
+    // `path` is always discovered by walking down from `source_root`, so it is
+    // an under-root descendant and stripping the prefix cannot fail.
     let relative_path = path
         .strip_prefix(source_root)
-        .unwrap_or(&path)
+        .expect("discovered path is under its source root")
         .to_path_buf();
     let module_name = expected_module_name(&relative_path);
     ModuleFile {

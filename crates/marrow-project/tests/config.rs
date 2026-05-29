@@ -74,6 +74,44 @@ fn rejects_native_store_without_data_dir() {
 }
 
 #[test]
+fn rejects_path_entries_that_escape_the_project_root() {
+    // sourceRoots, dataDir, and tests entries are joined onto the project root,
+    // so an empty, absolute, or `..`-bearing value would escape it. Each is
+    // rejected with a message naming the offending value.
+    for (json, offender) in [
+        (r#"{ "sourceRoots": [""] }"#, ""),
+        (r#"{ "sourceRoots": ["/etc"] }"#, "/etc"),
+        (r#"{ "sourceRoots": ["../other"] }"#, "../other"),
+        (
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "/var/data" } }"#,
+            "/var/data",
+        ),
+        (
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "../data" } }"#,
+            "../data",
+        ),
+        (
+            r#"{ "sourceRoots": ["src"], "tests": ["../tests/*.mw"] }"#,
+            "../tests/*.mw",
+        ),
+        (
+            r#"{ "sourceRoots": ["src"], "tests": ["/abs/tests"] }"#,
+            "/abs/tests",
+        ),
+    ] {
+        let error = parse_config(json).expect_err("should reject");
+        assert_eq!(error.code, "config.invalid", "{json}");
+        assert!(
+            error.message.contains(offender)
+                || (offender.is_empty() && error.message.contains("empty")),
+            "message {:?} should name offender {:?}",
+            error.message,
+            offender
+        );
+    }
+}
+
+#[test]
 fn rejects_unknown_top_level_keys() {
     let error = parse_config(r#"{ "sourceRoots": ["src"], "globals": ["^x"] }"#)
         .expect_err("should reject unknown keys");
