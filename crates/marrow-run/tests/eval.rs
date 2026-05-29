@@ -578,6 +578,97 @@ fn temporal_conversions_validate_their_values() {
 }
 
 #[test]
+fn bool_conversion_accepts_canonical_int_and_string_forms() {
+    // `types.md` pins `bool(...)` to accept `false`, `true`, `0`, and `1`, from
+    // both int and the canonical string forms.
+    let program = checked_program(
+        "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
+    );
+    assert_eq!(
+        run(&program, "test::b", &[Value::Int(0)]),
+        Ok(Some(Value::Bool(false)))
+    );
+    assert_eq!(
+        run(&program, "test::b", &[Value::Int(1)]),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        run(&program, "test::bs", &[Value::Str("true".into())]),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        run(&program, "test::bs", &[Value::Str("0".into())]),
+        Ok(Some(Value::Bool(false)))
+    );
+}
+
+#[test]
+fn bool_conversion_rejects_a_non_canonical_int() {
+    // Only `0` and `1` are canonical; `2` is a type error, not a coercion.
+    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
+    assert_eq!(
+        run(&program, "test::b", &[Value::Int(2)]).unwrap_err().code,
+        RUN_TYPE
+    );
+}
+
+#[test]
+fn int_conversion_parses_canonical_text() {
+    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("12".into())]),
+        Ok(Some(Value::Int(12)))
+    );
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("-7".into())]),
+        Ok(Some(Value::Int(-7)))
+    );
+}
+
+#[test]
+fn decimal_conversion_parses_canonical_text() {
+    // `decimal("1.5")` parses to a decimal; rendered back through interpolation it
+    // round-trips to its canonical text.
+    let program = checked_program("fn d(v: string): string\n    return $\"{decimal(v)}\"\n");
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("1.5".into())]),
+        Ok(Some(Value::Str("1.5".into())))
+    );
+}
+
+#[test]
+fn a_numeric_conversion_rejects_malformed_text() {
+    // Malformed text is a typed numeric error, not a silent zero.
+    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("nope".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+    let program = checked_program("fn d(v: string): decimal\n    return decimal(v)\n");
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("1.2.3".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+}
+
+#[test]
+fn a_conversion_error_message_is_grammar_independent() {
+    // The message must not embed an article, so it reads correctly for
+    // vowel-initial type names (not 'requires a int value').
+    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("nope".into())])
+            .unwrap_err()
+            .message,
+        "cannot convert this value to int"
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");
@@ -1483,9 +1574,52 @@ fn rejects_division_by_zero() {
 }
 
 #[test]
+fn integer_remainder_by_zero_reports_one_consistent_message() {
+    // The `%` operator and `std::math::remainder`/`modulo` are the same integer
+    // remainder, so a zero divisor must report the same divide-by-zero message.
+    let f = function("fn f(a: int): int\n    return a % 0\n");
+    let result = evaluate_function(&f, &[Value::Int(10)]);
+    let Err(error) = result else {
+        panic!("expected an error, got {result:?}");
+    };
+    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.message, "integer remainder by zero");
+
+    // std::math::modulo routes through the same integer-remainder path.
+    let program = checked_program("pub fn g(): int\n    return std::math::modulo(7, 0)\n");
+    assert_eq!(
+        run(&program, "test::g", &[]).unwrap_err().message,
+        "integer remainder by zero"
+    );
+}
+
+#[test]
 fn detects_integer_overflow() {
     let f = function("fn f(a: int): int\n    return a * a\n");
     let result = evaluate_function(&f, &[Value::Int(i64::MAX)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn detects_an_over_range_integer_literal() {
+    // A literal beyond i64::MAX is a runtime overflow, not an arithmetic one.
+    let f = function("fn f(): int\n    return 99999999999999999999999999\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn detects_an_over_envelope_decimal_literal() {
+    // A decimal literal with more than 34 significant digits is outside the
+    // decimal envelope and overflows at runtime.
+    let f = function("fn f(): decimal\n    return 9.9999999999999999999999999999999999\n");
+    let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
         "{result:?}"
@@ -1830,6 +1964,23 @@ fn an_unknown_function_is_rejected() {
 }
 
 #[test]
+fn traversal_builtins_report_unsupported_not_unknown_function() {
+    // `count`/`values`/`entries` are documented core builtins whose runtime slice
+    // is not built yet. They must report `run.unsupported`, never masquerade as a
+    // missing user function (`run.unknown_function`).
+    let resource = "resource Book at ^books(id: int)\n    required title: string\n\n";
+    for builtin in ["count", "values", "entries"] {
+        let program =
+            checked_program(&format!("{resource}fn f()\n    {builtin}(^books)\n"));
+        let result = run(&program, "test::f", &[]);
+        assert!(
+            matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+            "{builtin}: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn print_writes_a_line_to_output() {
     let program = checked_program("fn main()\n    print($\"hello {1}\")\n");
     let outcome = run_full(&program, "test::main", &[]).expect("run");
@@ -2134,6 +2285,27 @@ fn reads_inside_a_transaction_see_earlier_writes() {
     let store = RefCell::new(MemStore::new());
     let outcome = run_entry(&program, &store, "test::rww", &[Value::Int(1)]).expect("run");
     assert_eq!(outcome.value, Some(Value::Str("fresh".into())));
+}
+
+#[test]
+fn a_lock_block_runs_its_body_and_releases_on_exit() {
+    // `lock` type-checks as a scope guarding its body. Under the single-writer
+    // profile it runs the block (writes land, a `return` exits) rather than
+    // failing with run.unsupported.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int): string\n    lock ^books(id)\n        ^books(id).title = \"kept\"\n        return ^books(id).title\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome =
+        run_entry(&program, &store, "test::save", &[Value::Int(1)]).expect("lock body runs");
+    assert_eq!(outcome.value, Some(Value::Str("kept".into())));
+    // The write inside the lock persisted after the lock released.
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Str("kept".into()))
+    );
 }
 
 #[test]

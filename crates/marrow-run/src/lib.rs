@@ -5,7 +5,9 @@
 //! conditionals, `while`/`for` loops, interpolation, and calls between
 //! functions. It reads saved data (fields and keyed-leaf entries) and writes it
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
-//! groups writes in a `transaction` (commit/rollback with read-your-writes), and
+//! groups writes in a `transaction` (commit/rollback with read-your-writes),
+//! guards a block with `lock` (a scope released on every exit under the
+//! single-writer profile), and
 //! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
 //! `std::assert`/`std::text`/`std::math` library helpers, and the
 //! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes, `merge`, index
@@ -791,6 +793,13 @@ fn eval_call(
                 "int" | "decimal" | "string" | "bool" | "date" | "instant" | "duration" => {
                     return eval_conversion(name, args, span, env).map(Some);
                 }
+                // `count`/`values`/`entries` are documented core traversal builtins
+                // whose tree-scan slice is not built yet. Report them as a known but
+                // unsupported builtin rather than letting them fall through to a
+                // misleading `run.unknown_function`.
+                "count" | "values" | "entries" => {
+                    return Err(unsupported(&format!("the `{name}` builtin"), span));
+                }
                 _ => {}
             }
         }
@@ -1358,10 +1367,13 @@ fn eval_bytes_conversion(
 }
 
 /// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
-/// `instant`/`duration`): validate that a dynamically-typed value is the named
-/// type and return it unchanged, or raise a type error. This is the checked
-/// bridge from an `unknown` value to a concrete type (text parsing lives in
-/// `std::clock`/`std::text`, not here).
+/// `instant`/`duration`): coerce a dynamically-typed value to the named type per
+/// `docs/language/types.md`. `bool(...)` accepts the canonical boolean values
+/// `{false, true, 0, 1}` from a bool, int, or string; `int(...)`/`decimal(...)`
+/// parse canonical numeric text from a string (and raise a typed numeric error on
+/// malformed input). The remaining conversions validate that the value already
+/// has the named type (the `unknown` → concrete bridge); temporal text parsing
+/// lives in `std::clock`, not here.
 fn eval_conversion(
     name: &str,
     args: &[Argument],
@@ -1372,24 +1384,60 @@ fn eval_conversion(
         return Err(type_error(&format!("`{name}` takes one argument"), span));
     };
     let value = eval_expr(&arg.value, env)?;
-    let matches_target = matches!(
-        (name, &value),
-        ("int", Value::Int(_))
-            | ("decimal", Value::Decimal(_))
-            | ("string", Value::Str(_))
-            | ("bool", Value::Bool(_))
-            | ("date", Value::Date(_))
-            | ("instant", Value::Instant(_))
-            | ("duration", Value::Duration(_))
-    );
-    if matches_target {
-        Ok(value)
-    } else {
-        Err(type_error(
-            &format!("`{name}` requires a {name} value"),
-            span,
-        ))
+    match name {
+        "bool" => convert_to_bool(value, span),
+        "int" => convert_to_int(value, span),
+        "decimal" => convert_to_decimal(value, span),
+        "string" if matches!(value, Value::Str(_)) => Ok(value),
+        "date" if matches!(value, Value::Date(_)) => Ok(value),
+        "instant" if matches!(value, Value::Instant(_)) => Ok(value),
+        "duration" if matches!(value, Value::Duration(_)) => Ok(value),
+        _ => Err(conversion_error(name, span)),
     }
+}
+
+/// Coerce to a bool: a bool is itself; an int or string is accepted only as a
+/// canonical boolean value (`0`/`false` → `false`, `1`/`true` → `true`).
+fn convert_to_bool(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let result = match &value {
+        Value::Bool(_) => return Ok(value),
+        Value::Int(0) => false,
+        Value::Int(1) => true,
+        Value::Str(text) if text == "false" || text == "0" => false,
+        Value::Str(text) if text == "true" || text == "1" => true,
+        _ => return Err(conversion_error("bool", span)),
+    };
+    Ok(Value::Bool(result))
+}
+
+/// Coerce to an int: an int is itself; a string parses as a canonical `i64`
+/// (a malformed or out-of-range value is a typed numeric error).
+fn convert_to_int(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Int(_) => Ok(value),
+        Value::Str(text) => text
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| conversion_error("int", span)),
+        _ => Err(conversion_error("int", span)),
+    }
+}
+
+/// Coerce to a decimal: a decimal is itself; a string parses as canonical decimal
+/// text (a malformed or out-of-envelope value is a typed numeric error).
+fn convert_to_decimal(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Decimal(_) => Ok(value),
+        Value::Str(text) => Decimal::parse(&text)
+            .map(Value::Decimal)
+            .ok_or_else(|| conversion_error("decimal", span)),
+        _ => Err(conversion_error("decimal", span)),
+    }
+}
+
+/// The type error for a value that cannot be converted to `name`.
+fn conversion_error(name: &str, span: SourceSpan) -> RuntimeError {
+    type_error(&format!("cannot convert this value to {name}"), span)
 }
 
 /// Evaluate `arg` to bytes, or a type error.
@@ -2168,6 +2216,15 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 }
                 None => handled,
             }
+        }
+        Statement::Lock { body, .. } => {
+            // A single-writer capability profile holds no contended lock, so `lock`
+            // is just a scope guarding its body: the conceptual lock is acquired for
+            // the block and released on every exit (`return`/`break`/`continue`/
+            // `throw`/error), which `eval_block` already provides by popping its
+            // scope unconditionally. The target path coordinates concurrent writers,
+            // so it is not read here.
+            eval_block(body, env)
         }
         other => Err(unsupported("this statement", other.span())),
     }
@@ -3577,7 +3634,7 @@ fn eval_binary(
         // `/` always yields a decimal (docs/language/syntax.md), so integer
         // operands divide as decimals too: `1 / 2` is `0.5`.
         BinaryOp::Divide => decimal_div(left, right, env, span),
-        BinaryOp::Remainder => int_div(left, right, env, span, i64::checked_rem),
+        BinaryOp::Remainder => int_remainder_op(left, right, env, span),
         BinaryOp::Less => compare_values(left, right, env, span, |o| o == Ordering::Less),
         BinaryOp::LessEqual => compare_values(left, right, env, span, |o| o != Ordering::Greater),
         BinaryOp::Greater => compare_values(left, right, env, span, |o| o == Ordering::Greater),
@@ -3651,25 +3708,19 @@ fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, RuntimeError> {
     }
 }
 
-/// Apply a checked integer remainder (`%`), rejecting a zero divisor and the
-/// `i64::MIN % -1` overflow. (`/` yields a decimal and uses `decimal_div`.)
-fn int_div(
+/// Evaluate the integer remainder operator (`%`) over two operands. The `/`
+/// operator yields a decimal and uses `decimal_div`, so `%` is the only integer
+/// division-family operator; it shares the one integer-remainder path (and its
+/// "integer remainder by zero" message) with `std::math::remainder`.
+fn int_remainder_op(
     left: &Expression,
     right: &Expression,
     env: &mut Env<'_>,
     span: SourceSpan,
-    op: fn(i64, i64) -> Option<i64>,
 ) -> Result<Value, RuntimeError> {
     let a = eval_int(left, env)?;
     let b = eval_int(right, env)?;
-    if b == 0 {
-        return Err(RuntimeError {
-            code: RUN_DIVIDE_BY_ZERO,
-            message: "integer division or remainder by zero".into(),
-            span,
-        });
-    }
-    op(a, b).map(Value::Int).ok_or_else(|| overflow(span))
+    int_remainder(a, b, span).map(Value::Int)
 }
 
 /// Compare two values of the same orderable type — integers or strings — and
