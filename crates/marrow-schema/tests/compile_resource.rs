@@ -7,8 +7,8 @@
 
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
-    SCHEMA_INDEX_IN_GROUP, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED,
-    SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
+    SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_KEY_MEMBER_COLLISION,
+    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -477,6 +477,78 @@ resource Reading at ^readings(at: decimal)
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
     assert!(errors[0].message.contains("at"));
+}
+
+#[test]
+fn non_unique_index_omitting_the_identity_key_is_an_error() {
+    // A non-unique index must end with all identity keys so each entry is
+    // distinct (resources-and-storage.md:230-232). `byShelf(shelf)` collapses
+    // two books on the same shelf onto one entry (review F13).
+    let source = "\
+resource Book at ^books(id: int)
+    shelf: string
+    index byShelf(shelf)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
+    assert!(errors[0].message.contains("byShelf"));
+}
+
+#[test]
+fn non_unique_index_ending_with_identity_key_is_allowed() {
+    let source = "\
+resource Book at ^books(id: int)
+    shelf: string
+    index byShelf(shelf, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(errors.is_empty(), "trailing identity key resolves: {errors:?}");
+}
+
+#[test]
+fn non_unique_index_with_identity_key_not_last_is_an_error() {
+    // The identity keys must be the trailing arguments, in declaration order.
+    let source = "\
+resource Book at ^books(id: int)
+    shelf: string
+    index byShelf(id, shelf)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
+}
+
+#[test]
+fn non_unique_index_on_composite_identity_requires_all_keys_in_order() {
+    // For a composite identity, a non-unique index must end with every identity
+    // key in declaration order (resources-and-storage.md:254-256).
+    let reversed = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+    index byStatus(status, courseId, studentId)
+";
+    let (_, errors) = compile_resource(&resource(reversed));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
+
+    let in_order = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+    index byStatus(status, studentId, courseId)
+";
+    let (_, errors) = compile_resource(&resource(in_order));
+    assert!(errors.is_empty(), "all identity keys in order resolve: {errors:?}");
+}
+
+#[test]
+fn unique_index_may_omit_the_identity_key() {
+    // A unique index points to one identity, so it may omit the identity keys
+    // (resources-and-storage.md:247-248).
+    let source = "\
+resource Book at ^books(id: int)
+    isbn: string
+    index byIsbn(isbn) unique
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(errors.is_empty(), "unique index needs no identity key: {errors:?}");
 }
 
 #[test]

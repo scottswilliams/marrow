@@ -133,6 +133,13 @@ pub const SCHEMA_DUPLICATE_STABLE_ID: &str = "schema.duplicate_stable_id";
 /// unmaintained index or key.
 pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
 
+/// A non-unique index does not end with all identity keys in declaration order.
+/// A non-unique entry is a presence marker, so two records sharing the indexed
+/// values would collapse onto one entry unless the identity keys make each entry
+/// distinct (resources-and-storage.md:230-232, :254-256). A unique index is
+/// exempt: each populated entry already points to one identity.
+pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_identity_keys";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -358,7 +365,30 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                 Some(_) => {}
             }
         }
+        if !index.unique && !ends_with_identity_keys(&index.args, keys) {
+            errors.push(SchemaError {
+                code: SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
+                message: format!(
+                    "non-unique index `{}` must end with all identity key(s) in \
+                     declaration order so each entry is distinct",
+                    index.name
+                ),
+                span: index.span,
+            });
+        }
     }
+}
+
+/// Does this index argument list end with all identity key names in declaration
+/// order? A non-unique entry is a presence marker, so without the trailing
+/// identity keys two records sharing the indexed values collapse onto one entry
+/// (resources-and-storage.md:230-232).
+fn ends_with_identity_keys(args: &[String], keys: &[KeyParam]) -> bool {
+    args.len() >= keys.len()
+        && args[args.len() - keys.len()..]
+            .iter()
+            .zip(keys)
+            .all(|(arg, key)| arg == &key.name)
 }
 
 /// The type `arg` resolves to in this resource, or `None` if it resolves to
