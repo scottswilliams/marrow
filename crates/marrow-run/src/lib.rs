@@ -821,11 +821,13 @@ fn eval_call(
                 // `keys(<layer>)` materializes the layer's child keys as a sequence
                 // value (the same enumeration `for x in <layer>` drives).
                 "keys" => return eval_keys(args, span, env).map(Some),
-                // `count`/`values`/`entries` are documented core traversal builtins
-                // whose tree-scan slice is not built yet. Report them as a known but
+                // `count(path)` is a one-layer tree scan over the lowered path.
+                "count" => return eval_count(args, span, env).map(Some),
+                // `values`/`entries` are documented core traversal builtins whose
+                // tree-scan slice is not built yet. Report them as a known but
                 // unsupported builtin rather than letting them fall through to a
                 // misleading `run.unknown_function`.
-                "count" | "values" | "entries" => {
+                "values" | "entries" => {
                     return Err(unsupported(&format!("the `{name}` builtin"), span));
                 }
                 _ => {}
@@ -1024,6 +1026,39 @@ fn eval_exists(
         .map_err(|error| store_error(error, span))?;
     let present = !matches!(presence, Presence::Absent);
     Ok(Value::Bool(present))
+}
+
+/// Evaluate `count(path)` per builtins.md: the number of immediate children when
+/// the path has any, otherwise `1` for a present scalar value and `0` when the
+/// path is absent. A path with both a value and children counts only its
+/// children (its own value is `exists(path)` territory).
+fn eval_count(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`count` takes one argument".into(),
+            span,
+        });
+    };
+    let path = encode_path(&lower_saved_path(&arg.value, env)?);
+    let store = env.store.borrow();
+    let children = store
+        .child_keys(&path)
+        .map_err(|error| store_error(error, span))?
+        .len();
+    let count = if children > 0 {
+        children
+    } else {
+        store
+            .read(&path)
+            .map_err(|error| store_error(error, span))?
+            .is_some() as usize
+    };
+    Ok(Value::Int(count as i64))
 }
 
 /// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,

@@ -1965,11 +1965,11 @@ fn an_unknown_function_is_rejected() {
 
 #[test]
 fn traversal_builtins_report_unsupported_not_unknown_function() {
-    // `count`/`values`/`entries` are documented core builtins whose runtime slice
-    // is not built yet. They must report `run.unsupported`, never masquerade as a
-    // missing user function (`run.unknown_function`).
+    // `values`/`entries` are documented core builtins whose runtime slice is not
+    // built yet. They must report `run.unsupported`, never masquerade as a missing
+    // user function (`run.unknown_function`).
     let resource = "resource Book at ^books(id: int)\n    required title: string\n\n";
-    for builtin in ["count", "values", "entries"] {
+    for builtin in ["values", "entries"] {
         let program = checked_program(&format!("{resource}fn f()\n    {builtin}(^books)\n"));
         let result = run(&program, "test::f", &[]);
         assert!(
@@ -3941,4 +3941,91 @@ fn iterates_a_keyed_child_tree() {
     // Keys iterate in sorted key order (alice before bob).
     let outcome = run_entry(&program, &store, "test::players", &[]).expect("run");
     assert_eq!(outcome.output, "alice\nbob\n");
+}
+
+/// `count(path)` over the four presence shapes builtins.md defines: a scalar
+/// field, a child-bearing layer, and absent paths.
+const BOOK_COUNT: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    tags: sequence[string]
+
+fn seed()
+    ^books(1).title = \"Mort\"
+    const a: int = append(^books(1).tags, \"fiction\")
+    const b: int = append(^books(1).tags, \"funny\")
+
+fn countTitle(): int
+    return count(^books(1).title)
+
+fn countTags(): int
+    return count(^books(1).tags)
+
+fn countMissingField(): int
+    return count(^books(1).subtitle)
+
+fn countMissingTags(): int
+    return count(^books(2).tags)
+";
+
+#[test]
+fn count_reports_scalar_presence_and_child_counts() {
+    let program = checked_program(BOOK_COUNT);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let count = |entry: &str| {
+        run_entry(&program, &store, entry, &[])
+            .expect("count")
+            .value
+    };
+    // A populated scalar field with no children counts as 1.
+    assert_eq!(count("test::countTitle"), Some(Value::Int(1)));
+    // A layer with two child entries counts its immediate children.
+    assert_eq!(count("test::countTags"), Some(Value::Int(2)));
+    // An absent field with no children counts as 0.
+    assert_eq!(count("test::countMissingField"), Some(Value::Int(0)));
+    // An absent layer (the record itself absent) counts as 0.
+    assert_eq!(count("test::countMissingTags"), Some(Value::Int(0)));
+}
+
+#[test]
+fn count_of_a_path_with_both_value_and_children_counts_children() {
+    // builtins.md: when a path has BOTH a value and children, `count` returns the
+    // number of immediate children, not children-plus-one.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\nfn n(): int\n    return count(^books(1).tags)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    // Seed a value at `^books(1).tags` itself and two children below it.
+    let tags = |extra: Option<SavedKey>| {
+        let mut segments = vec![
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::ChildLayer("tags".into()),
+        ];
+        if let Some(key) = extra {
+            segments.push(PathSegment::IndexKey(key));
+        }
+        encode_path(&segments)
+    };
+    {
+        let mut store = store.borrow_mut();
+        store.write(
+            &tags(None),
+            encode_value(&SavedValue::Str("self".into())).expect("encodes"),
+        );
+        store.write(
+            &tags(Some(SavedKey::Int(1))),
+            encode_value(&SavedValue::Str("a".into())).expect("encodes"),
+        );
+        store.write(
+            &tags(Some(SavedKey::Int(2))),
+            encode_value(&SavedValue::Str("b".into())).expect("encodes"),
+        );
+    }
+    assert_eq!(
+        run_entry(&program, &store, "test::n", &[]).expect("run").value,
+        Some(Value::Int(2)),
+    );
 }
