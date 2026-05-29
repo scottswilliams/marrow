@@ -344,11 +344,8 @@ source, tools can still restore or inspect the raw tree.
 Normal backups include generated index trees. Typed restore can verify them
 against primary resources or rebuild them when source is available.
 
-Normal restore writes into an empty target, and that is the only restore mode
-implemented today. Replace, merge, and repair restores are not implemented yet.
-When they land they will be explicit maintenance actions — they cross
-managed-root boundaries, so they will route through the maintenance capability
-rather than relaxing the empty-target guard.
+Normal restore writes into an empty target. Replace, merge, and repair restores
+are deferred — see [Deferrals](roadmap/README.md#deferrals).
 
 Backend-native files can support fast local snapshots, but they are not the
 portable archive format.
