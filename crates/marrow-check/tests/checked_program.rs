@@ -348,6 +348,27 @@ fn short_form_std_call_is_arg_checked() {
     );
 }
 
+/// Short-form resolves even when the module name is a type keyword: `use std::bytes`
+/// lets `bytes::base64Encode(...)` parse (a keyword can lead a `::` path) and check
+/// clean, not just the fully-qualified `std::bytes::base64Encode(...)`.
+#[test]
+fn short_form_keyword_module_resolves() {
+    let root = temp_project("program-shortform-bytes", |root| {
+        write(
+            root,
+            "src/shelf/b.mw",
+            "module shelf::b\n\
+             use std::bytes\n\
+             pub fn enc(): string\n\
+             \x20   return bytes::base64Encode(b\"hi\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 #[test]
 fn a_file_with_a_parse_error_contributes_no_module() {
     let root = temp_project("program-parse-error", |root| {

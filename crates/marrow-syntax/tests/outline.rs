@@ -242,6 +242,31 @@ fn parses_a_type_keyword_as_a_path_segment() {
 }
 
 #[test]
+fn parses_a_type_keyword_as_a_leading_path_segment() {
+    // A short-form std call leads its path with a type keyword, as in `bytes::length`
+    // after `use std::bytes`. The keyword must begin a path when followed by `::`,
+    // exactly as it is valid mid-path — otherwise short-form `std::bytes` is unusable.
+    let parsed = parse_source(
+        "module app\n\
+         use std::bytes\n\
+         fn main()\n\
+         \x20   return bytes::length(data)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::Return { value: Some(Expression::Call { callee, .. }), .. }
+                if matches!(callee.as_ref(),
+                    Expression::Name { segments, .. } if segments == &["bytes", "length"])
+        ),
+        "{:#?}",
+        main.body.statements[0]
+    );
+}
+
+#[test]
 fn parses_keyed_var_declaration() {
     let parsed = parse_source(
         "module app\n\

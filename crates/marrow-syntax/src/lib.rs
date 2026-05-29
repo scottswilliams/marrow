@@ -2466,6 +2466,16 @@ impl<'a> ExprParser<'a> {
                 literal(LiteralKind::Bool)
             }
             TokenKind::Identifier => self.name_expr(),
+            // A type keyword leading a `::` path is the start of a name, as in the
+            // short-form `bytes::length(...)` after `use std::bytes` (the same
+            // keyword is already valid mid-path, e.g. `std::bytes::length`).
+            // `name_expr` accepts callable keywords as path segments.
+            TokenKind::Keyword(keyword)
+                if is_callable_keyword(keyword)
+                    && matches!(self.peek_at(1), Some(TokenKind::DoubleColon)) =>
+            {
+                self.name_expr()
+            }
             // Conversion types and `Error` are only values when called, e.g.
             // `int(value)` or `Error(code: ...)`. A bare type keyword is not an
             // expression, so require a following `(`.
