@@ -1295,7 +1295,9 @@ fn data_get(args: &[String]) -> ExitCode {
             Some(bytes) => println!("{}", render_value_bytes(bytes)),
             // A valueless path with children is distinct from a truly absent one.
             None => match presence {
-                marrow_store::backend::Presence::ChildrenOnly => println!("(no value; has children)"),
+                marrow_store::backend::Presence::ChildrenOnly => {
+                    println!("(no value; has children)")
+                }
                 _ => println!("(absent)"),
             },
         },

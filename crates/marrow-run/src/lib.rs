@@ -773,7 +773,15 @@ impl Place {
                 identity,
                 layers,
                 field,
-            } => read_nested_field(root, identity, layers, field, ReadPosition::ArgSeed, span, env),
+            } => read_nested_field(
+                root,
+                identity,
+                layers,
+                field,
+                ReadPosition::ArgSeed,
+                span,
+                env,
+            ),
             Place::SavedResource { root, identity } => read_resource(root, identity, span, env),
         }
     }
@@ -3206,7 +3214,14 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
         return eval_group_field_read(base, name, expr.span(), env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
-    read_saved_field(&root, &identity, name, ReadPosition::Value, expr.span(), env)
+    read_saved_field(
+        &root,
+        &identity,
+        name,
+        ReadPosition::Value,
+        expr.span(),
+        env,
+    )
 }
 
 /// Read a top-level saved scalar field from a pre-lowered identity, decoding it
@@ -3232,7 +3247,12 @@ fn read_saved_field(
         .read(&encode_path(&segments))
         .map_err(|error| store_error(error, span))?;
     let Some(bytes) = bytes else {
-        return Err(absent_read(position, format!("`{field}` is absent"), span, env));
+        return Err(absent_read(
+            position,
+            format!("`{field}` is absent"),
+            span,
+            env,
+        ));
     };
     decode_value(&bytes, field_type)
         .and_then(saved_value_to_value)
