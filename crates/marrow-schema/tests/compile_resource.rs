@@ -124,7 +124,9 @@ fn book_tags_is_a_keyed_leaf() {
     assert_eq!(tags.key_params.len(), 1);
     assert_eq!(tags.key_params[0].name, "pos");
     assert_eq!(tags.key_params[0].ty, Type::Scalar(ScalarType::Int));
-    assert!(matches!(&tags.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str)));
+    assert!(
+        matches!(&tags.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str))
+    );
     assert!(tags.members.is_empty(), "a keyed leaf has no members");
 }
 
@@ -135,7 +137,10 @@ fn book_notes_is_a_group() {
     assert_eq!(notes.key_params.len(), 1);
     assert_eq!(notes.key_params[0].name, "noteId");
     assert_eq!(notes.key_params[0].ty, Type::Scalar(ScalarType::Str));
-    assert!(matches!(notes.element, Element::Group), "a group has no leaf type");
+    assert!(
+        matches!(notes.element, Element::Group),
+        "a group has no leaf type"
+    );
 
     assert_eq!(notes.members.len(), 1);
     let text = &notes.members[0];
@@ -310,7 +315,9 @@ resource Book at ^books(id: int)
     assert_eq!(tags.key_params.len(), 1);
     assert_eq!(tags.key_params[0].name, "pos");
     assert_eq!(tags.key_params[0].ty, Type::Scalar(ScalarType::Int));
-    assert!(matches!(&tags.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str)));
+    assert!(
+        matches!(&tags.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str))
+    );
     assert!(tags.members.is_empty(), "a keyed leaf has no members");
 }
 
