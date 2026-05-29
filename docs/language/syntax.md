@@ -317,3 +317,13 @@ int decimal bool string bytes date instant duration
 sequence
 unknown Error ErrorCode
 ```
+
+A reserved word cannot be used as a name. Bindings, parameters, resources,
+fields, functions, and module segments must not be spelled as a reserved word;
+doing so is a parse error. Existing raw data named like a keyword is reached
+through a quoted segment, as above.
+
+A bare type spelling in value position is also a parse error. A type keyword such
+as `int` is valid in a type annotation or as a conversion call `int(raw)`, but
+naming the type alone where a value is expected — `const Bad = int` — does not
+parse, because a type spelling is not an expression.

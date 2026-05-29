@@ -376,7 +376,10 @@ These rules are part of the grammar contract:
   as `write(...)` and `print(...)`; useless pure expression statements are
   rejected.
 - Conversion calls use supported scalar type keywords in expression position.
-  They take one positional argument.
+  They take one positional argument. A bare type spelling with no call, such as
+  `const Bad = int`, is a parse error: a type keyword is not an expression.
+- Reserved words are not identifiers, so a reserved word cannot be used as a
+  name for a binding, parameter, resource, field, function, or module segment.
 - Calls to generated resource identity types, such as `Book::Id(...)`, are
   checked as identity constructors.
 - Calls to resource types and `Error(...)` are checked as resource
