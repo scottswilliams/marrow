@@ -1,6 +1,6 @@
 //! The one canonical base64 codec, shared by the `std::bytes` builtins and the
 //! `marrow serve` protocol so the two surfaces accept and reject exactly the
-//! same inputs (F34).
+//! same inputs.
 //!
 //! This is standard RFC 4648 base64 with `+`/`/` and required `=` padding:
 //! encoding always pads to a multiple of four, and decoding requires that same
@@ -110,8 +110,8 @@ mod tests {
 
     #[test]
     fn rejects_non_canonical_padding() {
-        // Unpadded and over-padded inputs the old serve decoder accepted are
-        // rejected by the one canonical codec (F34).
+        // Unpadded and over-padded inputs are rejected: only the canonical,
+        // fully-padded form decodes.
         for text in ["Zm8", "Zg", "Zm9vYg", "Zg===="] {
             assert_eq!(decode(text), None, "{text:?}");
         }
