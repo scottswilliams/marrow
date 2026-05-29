@@ -6,35 +6,40 @@ developer-friendly reference page or a small update to an existing page.
 
 ## First Pass
 
-- Add `docs/quickstart.md`: create a project, write one resource, run it,
+All First Pass items are done.
+
+- [x] Add `docs/quickstart.md`: create a project, write one resource, run it,
   inspect saved data, and run tests.
-- Add `docs/cli.md`: document `marrow check`, `fmt`, `run`, `test`, `backup`,
+- [x] Add `docs/cli.md`: document `marrow check`, `fmt`, `run`, `test`, `backup`,
   `restore`, `data`, `lsp`, and `serve` with command syntax, inputs, outputs,
   exit behavior, and examples.
-- Add `docs/project-config.md`: define `marrow.json`, including `sourceRoots`,
+- [x] Add `docs/project-config.md`: define `marrow.json`, including `sourceRoots`,
   `run.defaultEntry`, `store.backend`, `store.dataDir`, and `tests`.
-- Add `docs/data-modeling.md`: explain roots, child layers, identity keys,
+- [x] Add `docs/data-modeling.md`: explain roots, child layers, identity keys,
   sparse fields, required fields, relationships, history, indexes, and common
   lookup patterns.
-- Add `docs/migrations.md`: explain schema changes, `@id`, required-field
+- [x] Add `docs/migrations.md`: explain schema changes, `@id`, required-field
   population, index rebuilds, maintenance mode, repair, and restore policy.
-- Expand `docs/error-codes.md`: list the stable `parse.*`, `check.*`,
+- [x] Expand `docs/error-codes.md`: list the stable `parse.*`, `check.*`,
   `schema.*`, `write.*`, `run.*`, `store.*`, `protocol.*`, `config.*`,
   `project.*`, and `io.*` codes that are part of the public surface.
 
 ## Tooling References
 
-- Add `docs/data-tools.md` or fold into `docs/cli.md`: define raw inspection,
-  stats, dump, integrity checks, and `get` (all implemented and read-only by
-  default), with the rule that inspection never creates the store. `diff` and
-  `load` remain deferred (they overlap restore's replace/merge/repair modes and
-  need typed source-fingerprinting); document them only once implemented.
-- Add `docs/serve-protocol.md`: document newline-delimited JSON requests and
+All Tooling Reference items are done.
+
+- [x] Add `docs/data-tools.md` (kept as its own page alongside `docs/cli.md`):
+  define raw inspection, stats, dump, integrity checks, and `get` (all
+  implemented and read-only by default), with the rule that inspection never
+  creates the store. `diff` and `load` remain deferred (they overlap restore's
+  replace/merge/repair modes and need typed source-fingerprinting); documented
+  only as deferred until implemented.
+- [x] Add `docs/serve-protocol.md`: document newline-delimited JSON requests and
   replies, path segment JSON, key JSON, base64 values, error replies, and
   paging limits for `saved_walk`.
-- Add `docs/lsp.md`: document the current LSP surface and the planned path from
+- [x] Add `docs/lsp.md`: document the current LSP surface and the planned path from
   parse diagnostics to checked project facts.
-- Add `docs/backend-contract.md`: define ordered path/value operations,
+- [x] Add `docs/backend-contract.md`: define ordered path/value operations,
   savepoints, presence states, child-key ordering, bounded scans, limits,
   conformance expectations, and native-store responsibilities.
 
