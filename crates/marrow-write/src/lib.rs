@@ -876,7 +876,7 @@ fn stored_arg_key(
     let Some(field) = schema.fields.iter().find(|field| field.name == arg) else {
         return Ok(None);
     };
-    let Some(value_type) = value_type_for(&field.ty.text) else {
+    let Some(value_type) = ValueType::from_scalar_name(&field.ty.text) else {
         return Ok(None);
     };
     let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
@@ -1043,7 +1043,7 @@ fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
 
 /// Check that `value` matches the field's declared scalar type name.
 fn check_type(field: &str, type_name: &str, value: &SavedValue) -> Result<(), WriteError> {
-    if value_type_for(type_name) == Some(value_type_of(value)) {
+    if ValueType::from_scalar_name(type_name) == Some(value_type_of(value)) {
         Ok(())
     } else {
         Err(WriteError {
@@ -1051,23 +1051,6 @@ fn check_type(field: &str, type_name: &str, value: &SavedValue) -> Result<(), Wr
             message: format!("field `{field}` does not hold a `{type_name}`"),
         })
     }
-}
-
-/// The [`ValueType`] a scalar type name denotes, or `None` for identity and
-/// other non-scalar types (which this slice does not write as plain fields).
-fn value_type_for(type_name: &str) -> Option<ValueType> {
-    Some(match type_name {
-        "bool" => ValueType::Bool,
-        "int" => ValueType::Int,
-        "string" => ValueType::Str,
-        "bytes" => ValueType::Bytes,
-        "ErrorCode" => ValueType::ErrorCode,
-        "date" => ValueType::Date,
-        "instant" => ValueType::Instant,
-        "duration" => ValueType::Duration,
-        "decimal" => ValueType::Decimal,
-        _ => return None,
-    })
 }
 
 /// The [`ValueType`] of a saved value.

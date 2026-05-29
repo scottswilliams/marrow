@@ -2769,7 +2769,7 @@ fn read_resource(
         else {
             continue;
         };
-        let value_type = value_type_for(&field.ty.text)
+        let value_type = ValueType::from_scalar_name(&field.ty.text)
             .ok_or_else(|| unsupported("reading this field type", span))?;
         let value = decode_value(&bytes, value_type)
             .and_then(saved_value_to_value)
@@ -3361,7 +3361,7 @@ fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Opt
                 .is_some_and(|saved| saved.root == root)
         })?;
     let field = resource.fields.iter().find(|field_| field_.name == field)?;
-    value_type_for(&field.ty.text)
+    ValueType::from_scalar_name(&field.ty.text)
 }
 
 /// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
@@ -3376,7 +3376,7 @@ fn resource_layer_leaf_type(
         .layers
         .iter()
         .find(|declared| declared.name == layer)?;
-    value_type_for(&layer.leaf_type.as_ref()?.text)
+    ValueType::from_scalar_name(&layer.leaf_type.as_ref()?.text)
 }
 
 /// The declared type of a scalar member field inside a saved root's GROUP layer,
@@ -3402,7 +3402,7 @@ fn resource_nested_member_type(
         LayerMember::Field(member) if member.name == field => Some(member),
         _ => None,
     })?;
-    value_type_for(&member.ty.text)
+    ValueType::from_scalar_name(&member.ty.text)
 }
 
 /// The scalar Field members of a saved root's GROUP layer, as `(name, value type)`
@@ -3423,28 +3423,12 @@ fn resource_group_members(
         .iter()
         .filter_map(|member| match member {
             LayerMember::Field(field) => {
-                Some((field.name.clone(), value_type_for(&field.ty.text)?))
+                Some((field.name.clone(), ValueType::from_scalar_name(&field.ty.text)?))
             }
             _ => None,
         })
         .collect();
     Some(members)
-}
-
-/// The [`ValueType`] a scalar type name denotes, or `None` for a non-scalar type.
-fn value_type_for(type_name: &str) -> Option<ValueType> {
-    Some(match type_name {
-        "bool" => ValueType::Bool,
-        "int" => ValueType::Int,
-        "string" => ValueType::Str,
-        "bytes" => ValueType::Bytes,
-        "ErrorCode" => ValueType::ErrorCode,
-        "date" => ValueType::Date,
-        "instant" => ValueType::Instant,
-        "duration" => ValueType::Duration,
-        "decimal" => ValueType::Decimal,
-        _ => return None,
-    })
 }
 
 /// Convert a record-key value to a [`SavedKey`], or `None` for a type that is not

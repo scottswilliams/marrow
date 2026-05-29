@@ -81,6 +81,26 @@ pub enum ValueType {
     Decimal,
 }
 
+impl ValueType {
+    /// The [`ValueType`] a scalar type name denotes, or `None` for identity and
+    /// other non-scalar types. This is the single source of truth for the
+    /// scalar-name mapping shared by the runtime and the write planner.
+    pub fn from_scalar_name(name: &str) -> Option<ValueType> {
+        Some(match name {
+            "bool" => ValueType::Bool,
+            "int" => ValueType::Int,
+            "string" => ValueType::Str,
+            "bytes" => ValueType::Bytes,
+            "ErrorCode" => ValueType::ErrorCode,
+            "date" => ValueType::Date,
+            "instant" => ValueType::Instant,
+            "duration" => ValueType::Duration,
+            "decimal" => ValueType::Decimal,
+            _ => return None,
+        })
+    }
+}
+
 /// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
 /// decimal text, strings and error codes as UTF-8, bytes verbatim, dates as
 /// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`
