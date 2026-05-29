@@ -5081,20 +5081,47 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
 
     // `count(^books.byShelf(shelf))` returns the entry count under that index
     // branch, matching `keys(...)` over the same branch.
-    assert_eq!(call("test::countBranch", &[Value::Str("fiction".into())]), Some(Value::Int(2)));
-    assert_eq!(call("test::keysBranch", &[Value::Str("fiction".into())]), Some(Value::Int(2)));
-    assert_eq!(call("test::countBranch", &[Value::Str("history".into())]), Some(Value::Int(1)));
-    assert_eq!(call("test::keysBranch", &[Value::Str("history".into())]), Some(Value::Int(1)));
+    assert_eq!(
+        call("test::countBranch", &[Value::Str("fiction".into())]),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        call("test::keysBranch", &[Value::Str("fiction".into())]),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        call("test::countBranch", &[Value::Str("history".into())]),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        call("test::keysBranch", &[Value::Str("history".into())]),
+        Some(Value::Int(1))
+    );
     // An empty branch counts as zero, like `keys(...)` of it.
-    assert_eq!(call("test::countBranch", &[Value::Str("romance".into())]), Some(Value::Int(0)));
-    assert_eq!(call("test::keysBranch", &[Value::Str("romance".into())]), Some(Value::Int(0)));
+    assert_eq!(
+        call("test::countBranch", &[Value::Str("romance".into())]),
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        call("test::keysBranch", &[Value::Str("romance".into())]),
+        Some(Value::Int(0))
+    );
 
     // The previously-correct count shapes stay byte-identical: a keyed/sequence
     // layer counts its entries, a scalar counts as 1, and a whole record counts
     // its populated immediate children. These all keep the read/child-keys path.
-    assert_eq!(call("test::countLayer", &[Value::Int(1)]), Some(Value::Int(2)));
-    assert_eq!(call("test::countLayer", &[Value::Int(3)]), Some(Value::Int(0)));
-    assert_eq!(call("test::countScalar", &[Value::Int(1)]), Some(Value::Int(1)));
+    assert_eq!(
+        call("test::countLayer", &[Value::Int(1)]),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        call("test::countLayer", &[Value::Int(3)]),
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        call("test::countScalar", &[Value::Int(1)]),
+        Some(Value::Int(1))
+    );
     assert!(matches!(call("test::countRecord", &[Value::Int(1)]), Some(Value::Int(n)) if n >= 1));
     // A primary root keeps its existing read/child-keys count: it walks the root's
     // immediate children, which includes the declared `byShelf` index node beside
