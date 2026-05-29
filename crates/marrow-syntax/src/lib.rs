@@ -125,8 +125,8 @@ pub enum Expression {
         span: SourceSpan,
     },
     /// Expression text the outline parser does not yet decompose, such as
-    /// quoted field segments. Future syntax-tree slices replace `Unparsed` with
-    /// concrete variants.
+    /// quoted field segments. Carries the raw text so the formatter can re-emit
+    /// it verbatim.
     Unparsed { text: String, span: SourceSpan },
 }
 
@@ -381,8 +381,8 @@ pub enum Statement {
         finally: Option<Block>,
         span: SourceSpan,
     },
-    /// A statement line the parser cannot yet structure (for example a quoted
-    /// field assignment target). Future syntax-tree slices shrink this set.
+    /// A statement line the parser cannot yet structure, such as a quoted
+    /// field assignment target.
     Unparsed {
         span: SourceSpan,
     },
@@ -2135,10 +2135,9 @@ fn parse_name_type(text: &str) -> (&str, Option<&str>) {
 }
 
 /// Return the tokens whose spans fall entirely within `[start_byte, end_byte)`.
-/// Tokens are sorted by start byte, and within a single-line value their end
-/// bytes are monotonic, so the matching tokens form one contiguous window.
-/// (Nested interpolation tokens are not monotonic, but the value positions that
-/// use this helper today do not contain them.)
+/// Tokens are sorted by start byte and (in the value positions that call this)
+/// have monotonic end bytes, so the matches form one contiguous window. Nested
+/// interpolation tokens break that monotonicity but do not occur here.
 fn tokens_in_range(tokens: &[Token], start_byte: usize, end_byte: usize) -> &[Token] {
     let first = tokens.partition_point(|token| token.span.start_byte < start_byte);
     let last = first + tokens[first..].partition_point(|token| token.span.end_byte <= end_byte);
@@ -2363,10 +2362,10 @@ impl<'a> ExprParser<'a> {
                     let (name, quoted) = match segment.kind {
                         TokenKind::Identifier => (segment.text(self.source).to_string(), false),
                         // A quoted segment names data with a non-identifier name,
-                        // e.g. `^books(id)."old-title"`. Store the raw inner text
-                        // (escapes unresolved, like other string literals). An
-                        // unterminated string (already a lexer error) has no
-                        // closing quote, so strip defensively rather than panic.
+                        // e.g. `^books(id)."old-title"`. Store the raw inner text,
+                        // escapes unresolved like other string literals. An
+                        // unterminated string (already a lexer error) lacks a
+                        // closing quote, so fall back to empty rather than panic.
                         TokenKind::String => {
                             let text = segment.text(self.source);
                             let inner = text
@@ -2613,9 +2612,11 @@ fn join_spans(start: SourceSpan, end: SourceSpan) -> SourceSpan {
     }
 }
 
-/// Statement keywords that introduce one or more indented blocks. The body
-/// parser does not structure these yet; it keeps them as `Statement::Unparsed`
-/// while still consuming their nested blocks so following statements parse.
+/// Statement keywords that introduce one or more indented blocks. Most have
+/// dedicated parsers; this guards the fallback that swallows a block-introducing
+/// keyword appearing where it cannot be structured (such as a stray `else`),
+/// consuming its nested block as `Statement::Unparsed` so following statements
+/// still parse.
 fn is_compound_statement_keyword(keyword: Keyword) -> bool {
     matches!(
         keyword,
@@ -2651,9 +2652,9 @@ struct StmtParser<'a> {
 
 impl<'a> StmtParser<'a> {
     fn new(source: &'a str, tokens: &[Token]) -> Self {
-        // Doc comments are not yet attached to body statements, but ordinary
-        // `;` comments are retained as block trivia so the formatter can
-        // re-emit them; keep them in the stream and collect them while parsing.
+        // Drop doc comments (not yet attached to body statements) but keep
+        // ordinary `;` comments in the stream: they are collected as block
+        // trivia during parsing so the formatter can re-emit them.
         let tokens = tokens
             .iter()
             .copied()
@@ -2705,8 +2706,8 @@ impl<'a> StmtParser<'a> {
                 }
                 TokenKind::Comment => self.take_own_line_comment(),
                 TokenKind::Indent => {
-                    // A stray nested block (e.g. under a compound statement we
-                    // kept as Unparsed). Skip it rather than mis-parse.
+                    // A stray nested block (e.g. under a compound statement left
+                    // Unparsed). Skip it rather than mis-parse.
                     self.skip_block();
                 }
                 _ => statements.push(self.statement()),
@@ -2808,7 +2809,7 @@ impl<'a> StmtParser<'a> {
         }
         let label = name.text(self.source).to_string();
         let span = name.span;
-        self.advance(); // identifier
+        self.advance(); // label identifier
         self.advance(); // `:`
         Some((label, span))
     }
