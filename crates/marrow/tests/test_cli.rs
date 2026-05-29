@@ -87,8 +87,8 @@ fn a_runtime_fault_is_reported_as_an_error() {
     let root = temp_project("test-error", |root| {
         write(root, "marrow.json", CONFIG);
         write(root, "src/app.mw", "module app\n");
-        // `/` yields `decimal` (syntax.md), so a `decimal` dividend keeps the
-        // assignment well-typed at check time; the fault is purely a runtime
+        // `/` yields `decimal`, so a `decimal` dividend keeps the assignment
+        // well-typed at check time; the fault is purely a runtime
         // divide-by-zero.
         write(
             root,

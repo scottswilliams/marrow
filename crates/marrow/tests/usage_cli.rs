@@ -1,6 +1,6 @@
-//! CLI usage-failure tier (exit code 2). `docs/error-codes.md` defines exit
-//! code 2 as a command-line usage failure "before the command body ran", so each
-//! case must exit 2 and leave nothing created or executed.
+//! CLI usage-failure tier (exit code 2). Exit code 2 means a command-line
+//! usage failure before the command body ran, so each case must exit 2 and
+//! leave nothing created or executed.
 
 use std::fs;
 use std::path::{Path, PathBuf};

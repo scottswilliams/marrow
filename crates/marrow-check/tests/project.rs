@@ -25,7 +25,7 @@ fn config() -> marrow_project::ProjectConfig {
     parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
 }
 
-/// The `.mw` code block from the reference sample (docs/language/sample.md).
+/// The `.mw` code block from the canonical reference sample.
 fn sample_source() -> String {
     let doc = include_str!("../../../docs/language/sample.md");
     doc.split("```mw")
@@ -39,8 +39,8 @@ fn sample_source() -> String {
 fn the_reference_sample_checks_clean() {
     // The canonical sample (`module shelf::sample`) must check with no diagnostics
     // — in particular no false `check.unresolved_call` on its builtins
-    // (keys/append/exists/nextId/...), which would mean `is_builtin_call` has
-    // drifted from docs/language/builtins.md.
+    // (keys/append/exists/nextId/...), which would mean `is_builtin_call` no
+    // longer recognizes the full set of builtins.
     let root = temp_project("sample-check", |root| {
         write(root, "src/shelf/sample.mw", &sample_source());
     });
@@ -1035,7 +1035,7 @@ fn a_call_to_a_defined_function_is_not_an_unresolved_call() {
 
 #[test]
 fn a_resource_constructor_is_not_an_unresolved_call() {
-    // `Book(...)` constructs a resource value (types.md:152-158); it is a known
+    // `Book(...)` constructs a resource value; it is a known
     // declared resource, not an undefined function.
     let found = check_module(
         "ctor-resource",
@@ -1049,7 +1049,7 @@ fn a_resource_constructor_is_not_an_unresolved_call() {
 
 #[test]
 fn an_identity_constructor_is_not_an_unresolved_call() {
-    // `Book::Id(1)` constructs a resource identity (types.md:276-297); it is a
+    // `Book::Id(1)` constructs a resource identity; it is a
     // known declared resource's identity, not an undefined function.
     let found = check_module(
         "ctor-identity",
@@ -1857,7 +1857,7 @@ fn a_unique_index_lookup_types_as_the_resource_identity() {
     // `^books.byIsbn(isbn)` reads back the owning identity, so it types as
     // `Book::Id` — not `Unknown`. Returned where `int` is expected, that is a
     // typed value (a non-primitive identity), so strict untyped-value checking
-    // does not fire (resources-and-storage.md:248-252).
+    // does not fire.
     let found = check_module(
         "unique-index-identity",
         "module m\n\
@@ -1871,7 +1871,7 @@ fn a_unique_index_lookup_types_as_the_resource_identity() {
 #[test]
 fn std_log_error_of_an_error_constructor_checks_clean() {
     // std::log::error takes an Error; the Error(...) constructor must type AS Error
-    // (not Unknown), so the spec-canonical log::error(Error(...)) is not a false
+    // (not Unknown), so the canonical log::error(Error(...)) is not a false
     // check.untyped_value / check.call_argument.
     let src =
         "module m\nuse std::log\nfn f()\n    log::error(Error(code: \"x.y\", message: \"m\"))\n";
@@ -2243,7 +2243,7 @@ fn const_value_with_a_nested_saved_read_is_rejected() {
 #[test]
 fn deleting_the_root_a_loop_traverses_is_rejected() {
     // `for id in ^books` traverses the `^books` identity layer; `delete ^books(id)`
-    // removes a key from that same layer, which the checker rejects (builtins.md).
+    // removes a key from that same layer, which the checker rejects.
     let found = check_module(
         "loop-delete-root",
         "module m\n\

@@ -150,7 +150,7 @@ fn next_id_over_a_string_keyed_root_is_flagged() {
 }
 
 /// `nextId` over a keyless singleton root is flagged: a singleton has no
-/// generated identity (types.md:262-263).
+/// generated identity.
 #[test]
 fn next_id_over_a_singleton_root_is_flagged() {
     let root = temp_project("program-nextid-singleton", |root| {

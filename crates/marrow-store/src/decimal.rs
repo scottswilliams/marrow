@@ -1,4 +1,4 @@
-//! Exact base-10 decimal arithmetic (docs/language/types.md).
+//! Exact base-10 decimal arithmetic.
 //!
 //! A [`Decimal`] is `coefficient * 10^(-scale)`, kept value-canonical (no
 //! trailing-zero scale, so each value has one representation) within a

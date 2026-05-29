@@ -1,7 +1,7 @@
 //! Canonical saved-value encoding.
 //!
-//! Saved values are stored in their canonical Marrow byte form
-//! (docs/language/types.md): the bytes do not depend on the backend, so backup,
+//! Saved values are stored in their canonical Marrow byte form: the bytes do
+//! not depend on the backend, so backup,
 //! diff, traversal, equality, and restore are stable. Unlike keys, values are
 //! not order-preserving — the store orders by path, not by value — so the
 //! encoding optimizes for a clear canonical round-trip. A value's type comes
@@ -31,7 +31,7 @@ pub enum SavedValue {
 
 /// A value that cannot be encoded to its canonical saved form. Today the only
 /// such case is a `date`/`instant` whose calendar year falls outside the
-/// documented 0001-9999 range (docs/language/types.md): formatting it would
+/// supported 0001-9999 range: formatting it would
 /// produce a 5-7 digit year that [`decode_value`] could never read back, so the
 /// codec rejects it rather than break the round-trip / one-canonical-form
 /// invariant.
@@ -103,8 +103,7 @@ impl ValueType {
 
 /// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
 /// decimal text, strings and error codes as UTF-8, bytes verbatim, dates as
-/// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`
-/// (docs/language/types.md).
+/// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`.
 ///
 /// This is the canonical boundary: it produces only forms [`decode_value`] reads
 /// back. A `date`/`instant` outside year 0001-9999 is a typed [`ValueError`]
@@ -159,7 +158,7 @@ fn parse_canonical_int(bytes: &[u8]) -> Option<i64> {
 
 /// The number of days from the Unix epoch (1970-01-01) to `year-month-day`, or
 /// `None` if it is out of range or not a real calendar date. Years run
-/// 0001–9999 (docs/language/types.md). Validates by reconstructing the date, so
+/// 0001–9999. Validates by reconstructing the date, so
 /// impossible dates such as 2021-02-29 are rejected.
 pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
     if !(1..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {

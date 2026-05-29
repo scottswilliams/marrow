@@ -625,8 +625,8 @@ fn temporal_conversions_validate_their_values() {
 
 #[test]
 fn bool_conversion_accepts_canonical_int_and_string_forms() {
-    // `types.md` pins `bool(...)` to accept `false`, `true`, `0`, and `1`, from
-    // both int and the canonical string forms.
+    // `bool(...)` accepts `false`, `true`, `0`, and `1`, from both int and the
+    // canonical string forms.
     let program = checked_program(
         "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
     );
@@ -1009,8 +1009,8 @@ fn a_runtime_fault_in_try_is_not_caught() {
 
 #[test]
 fn a_throw_from_a_callee_is_caught_by_the_caller() {
-    // The spec's `try { loan(...) } catch err` example: an Error thrown inside a
-    // called function unwinds through the call and is caught by the caller.
+    // An Error thrown inside a called function unwinds through the call and is
+    // caught by the caller.
     let program = checked_program(
         "fn boom()\n    throw Error(code: \"x.y\", message: \"deep\")\npub fn safe(): string\n    try\n        boom()\n    catch err: Error\n        return err.message\n    return \"none\"\n",
     );
@@ -1105,8 +1105,8 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
 
 #[test]
 fn an_out_parameter_writes_back_to_a_local() {
-    // The spec's parseInt shape: the callee fills an `out` parameter, and the
-    // caller's local sees the written value.
+    // The callee fills an `out` parameter, and the caller's local sees the
+    // written value.
     let program = checked_program(
         "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 0\n    give(out n)\n    return n\n",
     );
@@ -1151,8 +1151,8 @@ fn an_inout_parameter_reads_then_writes_a_local() {
 
 #[test]
 fn an_inout_parameter_mutates_a_local_resource() {
-    // The spec's `normalize(inout book)` shape: mutating a field of a local
-    // resource passed `inout` is visible to the caller.
+    // Mutating a field of a local resource passed `inout` is visible to the
+    // caller.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    title: string\n\nfn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
     );
@@ -1395,7 +1395,6 @@ fn out_creates_a_saved_field() {
 
 #[test]
 fn inout_writes_back_to_a_whole_saved_resource() {
-    // The spec's `normalize(inout ^books(id))` shape.
     let program = checked_program(SAVED_MODE_SAMPLE);
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seedBook", &[]).expect("seed");
@@ -2012,7 +2011,7 @@ fn an_unknown_function_is_rejected() {
 
 #[test]
 fn values_and_entries_over_an_index_branch_are_unsupported() {
-    // builtins.md: on declared index branches use `keys(...)` or direct iteration;
+    // On declared index branches use `keys(...)` or direct iteration;
     // `values`/`entries` are for primary roots and ordinary keyed layers. Over an
     // index branch they report `run.unsupported`, never a missing user function.
     let resource = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n";
@@ -2263,8 +2262,7 @@ fn next_id_allocates_past_the_highest_record() {
 #[test]
 fn next_id_skips_ahead_after_restore() {
     // After a restore the store may hold records far above any contiguous run.
-    // `nextId` chooses one past the highest existing key, never reusing a gap
-    // (builtins.md:185-191).
+    // `nextId` chooses one past the highest existing key, never reusing a gap.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): int\n    return nextId(^books)\n",
     );
@@ -2287,7 +2285,7 @@ fn next_id_skips_ahead_after_restore() {
 
 /// `nextId` over a composite-identity root faults with `write.next_id_unsupported`
 /// rather than inventing a bogus `Int(1)`: composite identities have no default
-/// allocation policy (builtins.md:180-183).
+/// allocation policy.
 #[test]
 fn next_id_over_a_composite_root_faults() {
     let program = checked_program(
@@ -2302,7 +2300,7 @@ fn next_id_over_a_composite_root_faults() {
 }
 
 /// `nextId` over a keyless singleton root faults: a singleton has no generated
-/// identity to allocate (types.md:262-263).
+/// identity to allocate.
 #[test]
 fn next_id_over_a_singleton_root_faults() {
     let program = checked_program(
@@ -2317,7 +2315,7 @@ fn next_id_over_a_singleton_root_faults() {
 }
 
 /// `nextId` over a single non-integer (string) identity key faults: only an
-/// `int` identity has the default policy (builtins.md:180-183).
+/// `int` identity has the default policy.
 #[test]
 fn next_id_over_a_string_keyed_root_faults() {
     let program = checked_program(
@@ -2726,9 +2724,9 @@ fn ownerOf(isbn: string): Book::Id
 
 #[test]
 fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
-    // The spec's recoverable-write contract: a unique-index conflict surfaces as
-    // a catchable Error, so a `try`/`catch` inside the writing function binds it
-    // by its `write.unique_conflict` code and the function continues normally.
+    // A unique-index conflict surfaces as a catchable Error, so a `try`/`catch`
+    // inside the writing function binds it by its `write.unique_conflict` code
+    // and the function continues normally.
     let program = checked_program(UNIQUE_RECOVERY);
     let store = RefCell::new(MemStore::new());
     run_entry(
@@ -2869,8 +2867,8 @@ fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
 
 #[test]
 fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
-    // The spec: a conflict caught inside a transaction has no effect, and the
-    // transaction continues and commits its other writes.
+    // A conflict caught inside a transaction has no effect, and the transaction
+    // continues and commits its other writes.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(id: int, isbn: string, t: string)\n    transaction\n        try\n            ^books(id).isbn = isbn\n        catch err: Error\n            ^books(id).title = t\n\nfn titleOf(id: int): string\n    return ^books(id).title\n",
     );
@@ -3129,7 +3127,7 @@ fn explicit_keyed_leaf_write_then_reads_back() {
 #[test]
 fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     // An explicit write past the dense range leaves a hole; append chooses one
-    // past the highest positive key, not the first gap (builtins.md).
+    // past the highest positive key, not the first gap.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos)\n",
     );
@@ -3961,8 +3959,8 @@ fn a_call_supplying_a_parameter_twice_is_rejected() {
 // `bind_arguments` guard remains as defensive depth. The parser owns this rule
 // and tests it in marrow-syntax.
 
-/// Extract the single `mw` code block from the reference sample document, so the
-/// integration test runs the exact source the docs publish.
+/// Extract the single `mw` code block from the canonical sample, so the
+/// integration test runs the exact published source.
 fn sample_source() -> String {
     let doc = include_str!("../../../docs/language/sample.md");
     doc.split("```mw")
@@ -3974,8 +3972,8 @@ fn sample_source() -> String {
 
 #[test]
 fn the_reference_sample_runs_end_to_end() {
-    // The canonical sample (docs/language/sample.md) must run on the in-memory
-    // store: add a book in a transaction (whole-resource + history group writes),
+    // The canonical sample must run on the in-memory store: add a book in a
+    // transaction (whole-resource + history group writes),
     // tag it, and print the fiction shelf via index traversal.
     let program = checked_program(&sample_source());
     let store = RefCell::new(MemStore::new());
@@ -4921,8 +4919,8 @@ fn mutating_a_different_record_layer_while_traversing_is_allowed() {
     );
 }
 
-/// `count(path)` over the four presence shapes builtins.md defines: a scalar
-/// field, a child-bearing layer, and absent paths.
+/// `count(path)` over the four presence shapes: a scalar field, a child-bearing
+/// layer, and absent paths.
 const BOOK_COUNT: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -4969,8 +4967,8 @@ fn count_reports_scalar_presence_and_child_counts() {
 
 #[test]
 fn count_of_a_path_with_both_value_and_children_counts_children() {
-    // builtins.md: when a path has BOTH a value and children, `count` returns the
-    // number of immediate children, not children-plus-one.
+    // When a path has BOTH a value and children, `count` returns the number of
+    // immediate children, not children-plus-one.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\nfn n(): int\n    return count(^books(1).tags)\n",
     );

@@ -1164,8 +1164,8 @@ fn keyword_field_name_reports_a_parse_error() {
 
 #[test]
 fn quoted_keyword_field_name_parses() {
-    // The documented escape (syntax.md): quote a reserved word to name data
-    // with it. `."at"` is a string-literal field segment, so it parses cleanly.
+    // A reserved word can name data by quoting it after the dot. `."at"` is a
+    // string-literal field segment, so it parses cleanly.
     let parsed = parse_source("const At = ^events(id).\"at\"\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
@@ -1198,9 +1198,9 @@ fn parses_named_and_moded_call_arguments() {
 
 #[test]
 fn positional_argument_after_named_is_rejected() {
-    // Grammar contract (grammar.md): "After the first named argument, remaining
-    // arguments must be named." A plain positional argument after a named one is
-    // a parse error that points at the offending argument.
+    // After the first named argument, every remaining argument must be named.
+    // A plain positional argument after a named one is a parse error that points
+    // at the offending argument.
     let source = "const Made = sub(b: 1, 2)\n";
     let parsed = parse_source(source);
     let diagnostic = parsed

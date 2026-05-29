@@ -109,8 +109,8 @@ fn reports_missing_marrow_json() {
 
 #[test]
 fn project_diagnostics_carry_the_documented_kind_envelope_field() {
-    // The error envelope's `kind` is a common field (docs/error-codes.md); the
-    // project diagnostic path must emit it just like the single-file path does.
+    // The error envelope's `kind` is a common field, so the project diagnostic
+    // path must emit it just like the single-file path does.
     let root = temp_project("proj-kind", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
         write(root, "src/shelf/books.mw", "module shelf::other\n");

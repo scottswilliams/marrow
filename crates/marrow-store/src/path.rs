@@ -2,7 +2,7 @@
 //!
 //! A Marrow saved path is a sequence of [`PathSegment`]s. Each segment encodes
 //! to a self-delimiting byte run whose lexicographic order matches Marrow's
-//! ordering rules (docs/language/types.md, docs/language/resources-and-storage.md):
+//! ordering rules:
 //! at one tree level record keys sort before named members; integer keys sort
 //! by numeric value; booleans sort false before true; names sort by UTF-8 byte
 //! order. The byte layout is Marrow's own, so a backend that merely orders raw
@@ -56,7 +56,7 @@ const KIND_NAMED: u8 = 0x03;
 const KIND_INDEX_KEY: u8 = 0x04;
 
 // Key-type tags, in Marrow's typed key order: booleans, numbers, then dates,
-// instants, and durations, then strings (docs/language/types.md).
+// instants, and durations, then strings.
 const KEY_BOOL: u8 = 0x01;
 const KEY_INT: u8 = 0x02;
 const KEY_DATE: u8 = 0x03;

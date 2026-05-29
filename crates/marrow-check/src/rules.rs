@@ -336,10 +336,10 @@ fn loop_jump_unresolved(label: Option<&str>, loop_depth: usize, loop_labels: &[S
 }
 
 /// Walk a block reporting a write/delete/append/merge that mutates the same saved
-/// layer an enclosing `for` loop is traversing (builtins.md: "Do not mutate the
-/// same tree layer a loop is traversing"). `traversed` holds the canonical text of
-/// each enclosing loop's traversed saved layer; a mutation whose affected layer
-/// matches one of them removes or adds keys from a layer being iterated.
+/// layer an enclosing `for` loop is traversing, which is forbidden because mutating
+/// a tree layer while iterating it has undefined ordering. `traversed` holds the
+/// canonical text of each enclosing loop's traversed saved layer; a mutation whose
+/// affected layer matches one of them removes or adds keys from a layer being iterated.
 fn walk_loop_layer_mutations(
     file: &Path,
     block: &Block,
