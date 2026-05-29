@@ -14,6 +14,8 @@ use marrow_syntax::{
     TypeRef,
 };
 
+pub mod stdlib;
+
 // The canonical scalar type lives in marrow-store; re-export it so resolution
 // and downstream crates share one import path for the storable scalars.
 pub use marrow_store::value::ScalarType;

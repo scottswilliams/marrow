@@ -20,6 +20,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
+use marrow_schema::stdlib::{self, Capability};
 use marrow_schema::{IndexSchema, LayerMember, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
@@ -987,31 +988,36 @@ fn eval_call(
                 _ => {}
             }
         }
-        // `std::<module>::<op>` is a builtin module call. Each capability module
-        // routes to its own handler; the pure helpers share `eval_std`. An
-        // unrecognized module falls through to the program-function dispatch.
+        // `std::<module>::<op>` is a builtin module call. A recognized op routes
+        // to its descriptor's capability family in the shared stdlib table; an
+        // unrecognized op under a known module still routes by module so its
+        // handler raises the same `unsupported` error as before, and an unknown
+        // module falls through to the program-function dispatch.
         if let [first, second, op] = segments.as_slice()
             && first == "std"
         {
-            match second.as_str() {
-                // `now()`/`today()` read the host clock capability; the rest of
-                // `std::clock` is pure, handled with the other pure helpers below.
-                "clock" if op == "now" || op == "today" => {
+            match stdlib::lookup(second, op).map(|entry| entry.capability) {
+                Some(Capability::Clock) => {
                     return eval_clock_capability(op, args, span, env).map(Some);
                 }
-                // The run's environment capability.
-                "env" => return eval_env(op, args, span, env).map(Some),
-                // The run's log capability; yields nothing.
-                "log" => return eval_log(op, args, span, env),
-                // The filesystem capability.
-                "io" => return eval_io(op, args, span, env),
-                // Testing builtins that raise `run.assertion` on failure.
-                "assert" => return eval_assert(op, args, span, env),
-                // Pure helpers, including `std::clock` ops other than now/today.
-                "text" | "math" | "bytes" | "clock" => {
-                    return eval_std(second, op, args, span, env).map(Some);
-                }
-                _ => {}
+                Some(Capability::Env) => return eval_env(op, args, span, env).map(Some),
+                Some(Capability::Log) => return eval_log(op, args, span, env),
+                Some(Capability::Io) => return eval_io(op, args, span, env),
+                Some(Capability::Assert) => return eval_assert(op, args, span, env),
+                Some(Capability::Pure) => return eval_std(second, op, args, span, env).map(Some),
+                // An unrecognized op keeps the by-module routing so its handler
+                // (or the `text|math|bytes|clock` pure dispatch) reports the same
+                // error; an unknown module falls through to function dispatch.
+                None => match second.as_str() {
+                    "env" => return eval_env(op, args, span, env).map(Some),
+                    "log" => return eval_log(op, args, span, env),
+                    "io" => return eval_io(op, args, span, env),
+                    "assert" => return eval_assert(op, args, span, env),
+                    "text" | "math" | "bytes" | "clock" => {
+                        return eval_std(second, op, args, span, env).map(Some);
+                    }
+                    _ => {}
+                },
             }
         }
     }

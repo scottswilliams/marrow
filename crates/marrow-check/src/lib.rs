@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
+use marrow_schema::stdlib::{self, ParamType, ReturnType};
 use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
@@ -2069,111 +2070,55 @@ fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<
 }
 
 /// The return type of a scalar conversion builtin (`int(x): int`, `string(x):
-/// string`, …). The conversion validates a
-/// dynamically-typed value and yields the named type.
+/// string`, …). The conversion builtins are exactly the nine storable scalars;
+/// each validates a dynamically-typed value and yields its named type.
 fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
     let [name] = segments else {
         return None;
     };
-    // The conversion builtins are exactly the nine storable scalars; each yields
-    // its named type.
     ScalarType::from_scalar_name(name).map(MarrowType::Primitive)
 }
 
-/// The declared return type of a value-returning `std::module::op` helper.
-/// Void helpers (`std::log`, `std::assert`,
-/// `std::io::write*`) and single-name builtins return `None`, leaving the call
-/// `Unknown` for the surrounding checks. Argument typing for std helpers stays the
-/// runtime's job; this only supplies the result type.
-fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
-    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
+/// The descriptor for a `std::module::op` helper, looked up in the shared table.
+fn std_op(segments: &[String]) -> Option<&'static stdlib::StdOp> {
     let [first, module, op] = segments else {
         return None;
     };
-    if first != "std" {
-        return None;
-    }
-    let primitive = |p| Some(MarrowType::Primitive(p));
-    match (module.as_str(), op.as_str()) {
-        ("text", "length") => primitive(Int),
-        ("text", "trim") => primitive(Str),
-        ("text", "contains") => primitive(Bool),
-        ("text", "split") => Some(MarrowType::Sequence(Box::new(MarrowType::Primitive(Str)))),
-        ("bytes", "length") => primitive(Int),
-        ("bytes", "base64Encode") => primitive(Str),
-        ("bytes", "base64Decode") => primitive(Bytes),
-        ("math", "absInt") => primitive(Int),
-        ("math", "absDecimal") => primitive(Decimal),
-        ("math", "floor") => primitive(Int),
-        ("math", "modulo") => primitive(Int),
-        ("math", "remainder") => primitive(Int),
-        ("clock", "now") => primitive(Instant),
-        ("clock", "today") => primitive(Date),
-        ("clock", "parseInstant") => primitive(Instant),
-        ("clock", "parseDate") => primitive(Date),
-        ("clock", "parseDuration") => primitive(Duration),
-        ("clock", "formatInstant" | "formatDate" | "formatDuration") => primitive(Str),
-        ("clock", "add") => primitive(Instant),
-        ("env", "exists") => primitive(Bool),
-        ("env", "get" | "require") => primitive(Str),
-        ("io", "readText") => primitive(Str),
-        ("io", "readBytes") => primitive(Bytes),
-        _ => None,
+    (first == "std")
+        .then(|| stdlib::lookup(module, op))
+        .flatten()
+}
+
+/// The declared return type of a value-returning `std::module::op` helper, derived
+/// from its descriptor. Void helpers (`std::log`, `std::assert`,
+/// `std::io::write*`) and single-name builtins return `None`, leaving the call
+/// `Unknown` for the surrounding checks.
+fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
+    match std_op(segments)?.ret {
+        ReturnType::Scalar(scalar) => Some(MarrowType::Primitive(scalar)),
+        ReturnType::Sequence(element) => Some(MarrowType::Sequence(Box::new(
+            MarrowType::Primitive(element),
+        ))),
+        ReturnType::Void => None,
     }
 }
 
-/// The positional parameter types of a `std::module::op` helper, in order.
-/// `Some(params)` for an enumerated helper (including void ones, whose arguments
-/// still need checking — hence a separate function from [`std_call_return_type`]);
-/// `None` for an unknown op, leaving its arguments to the runtime. A `None` slot
-/// inside the list marks a non-checked argument (`assert::absent` takes a path).
+/// The positional parameter types of a `std::module::op` helper, in order, derived
+/// from its descriptor. `None` for an unknown op, leaving its arguments to the
+/// runtime; a `None` slot inside the list marks a non-checked path argument
+/// (`assert::absent`).
 fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowType>>> {
-    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
-    let [first, module, op] = segments else {
-        return None;
-    };
-    if first != "std" {
-        return None;
-    }
-    // Each `T` is a concrete scalar parameter; `[]` is a no-argument helper.
-    let p = |types: &[ScalarType]| {
-        Some(
-            types
-                .iter()
-                .map(|t| Some(MarrowType::Primitive(*t)))
-                .collect(),
-        )
-    };
-    match (module.as_str(), op.as_str()) {
-        ("text", "length" | "trim") => p(&[Str]),
-        ("text", "contains" | "split") => p(&[Str, Str]),
-        ("bytes", "length" | "base64Encode") => p(&[Bytes]),
-        ("bytes", "base64Decode") => p(&[Str]),
-        ("math", "absInt") => p(&[Int]),
-        ("math", "absDecimal") => p(&[Decimal]),
-        ("math", "floor") => p(&[Decimal]),
-        ("math", "modulo" | "remainder") => p(&[Int, Int]),
-        ("clock", "now" | "today") => p(&[]),
-        ("clock", "parseInstant" | "parseDate" | "parseDuration") => p(&[Str]),
-        ("clock", "formatInstant") => p(&[Instant]),
-        ("clock", "formatDate") => p(&[Date]),
-        ("clock", "formatDuration") => p(&[Duration]),
-        ("clock", "add") => p(&[Instant, Duration]),
-        ("env", "exists" | "require") => p(&[Str]),
-        ("env", "get") => p(&[Str, Str]),
-        ("io", "readText" | "readBytes") => p(&[Str]),
-        ("io", "writeText") => p(&[Str, Str]),
-        ("io", "writeBytes") => p(&[Str, Bytes]),
-        ("assert", "isTrue" | "isFalse") => p(&[Bool]),
-        // `absent(path)` takes a path expression, not a scalar — leave it
-        // unchecked, matching how the checker leaves other path arguments alone.
-        ("assert", "absent") => Some(vec![None]),
-        ("assert", "fail") => p(&[Str]),
-        ("log", "info" | "warn") => p(&[Str]),
-        // `error(value)` takes an `Error` value, the one checker-only type.
-        ("log", "error") => Some(vec![Some(MarrowType::Error)]),
-        _ => None,
-    }
+    let op = std_op(segments)?;
+    Some(
+        op.params
+            .iter()
+            .map(|param| match param {
+                ParamType::Scalar(scalar) => Some(MarrowType::Primitive(*scalar)),
+                ParamType::Error => Some(MarrowType::Error),
+                ParamType::Path => None,
+            })
+            .collect(),
+    )
 }
 
 /// Discover, read, parse, and check a project's test files (the `tests`
