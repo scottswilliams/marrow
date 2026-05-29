@@ -367,8 +367,10 @@ impl Backend for RedbStore {
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
+        // With no open transaction, commit is a no-op (the in-memory store agrees):
+        // callers pair begin with commit, so a stray commit is a harmless misuse.
         let Some(journal) = self.journals.pop() else {
-            return Err(io("commit")("no open transaction"));
+            return Ok(());
         };
         match self.journals.last_mut() {
             // An inner commit keeps its writes; its undo log moves outward so an
@@ -384,8 +386,10 @@ impl Backend for RedbStore {
     }
 
     fn rollback(&mut self) -> Result<(), StoreError> {
+        // With no open transaction, rollback is a no-op (matching the in-memory
+        // store), so an unbalanced rollback is harmless rather than a store.io error.
         let Some(journal) = self.journals.pop() else {
-            return Err(io("rollback")("no open transaction"));
+            return Ok(());
         };
         if self.journals.is_empty() {
             // Outermost: abort the redb transaction, discarding every change.

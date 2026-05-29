@@ -33,6 +33,7 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     a_corrupt_path_is_a_typed_error(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
+    an_unbalanced_commit_or_rollback_is_a_no_op(&mut make());
     nested_transactions_are_savepoints(&mut make());
     a_transaction_sees_its_writes_in_traversal(&mut make());
 }
@@ -317,6 +318,26 @@ fn a_rolled_back_transaction_discards_its_writes(store: &mut dyn Backend) {
         Some(b"kept".to_vec()),
         "the pre-transaction value remains"
     );
+}
+
+fn an_unbalanced_commit_or_rollback_is_a_no_op(store: &mut dyn Backend) {
+    // With no open transaction, commit and rollback are no-ops: callers pair
+    // begin with commit/rollback, so an extra one is a harmless misuse, not an
+    // error. (One contract across backends; mem and redb agree.)
+    store.commit().unwrap();
+    store.rollback().unwrap();
+    // The store still works normally afterward.
+    store.write(&book(1), b"v".to_vec()).unwrap();
+    assert_eq!(store.read(&book(1)).unwrap(), Some(b"v".to_vec()));
+    // A balanced begin/commit after the stray calls still behaves.
+    store.begin().unwrap();
+    store.write(&book(2), b"w".to_vec()).unwrap();
+    store.commit().unwrap();
+    assert_eq!(store.read(&book(2)).unwrap(), Some(b"w".to_vec()));
+    // And a trailing stray commit/rollback remains a no-op.
+    store.commit().unwrap();
+    store.rollback().unwrap();
+    assert_eq!(store.read(&book(1)).unwrap(), Some(b"v".to_vec()));
 }
 
 fn nested_transactions_are_savepoints(store: &mut dyn Backend) {
