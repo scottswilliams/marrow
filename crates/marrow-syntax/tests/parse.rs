@@ -375,10 +375,10 @@ fn parses_if_else_if_else_chain() {
     assert!(
         matches!(
             condition,
-            Expression::Binary {
+            Some(Expression::Binary {
                 op: BinaryOp::Less,
                 ..
-            }
+            })
         ),
         "condition: {condition:?}"
     );
@@ -387,10 +387,10 @@ fn parses_if_else_if_else_chain() {
     assert!(
         matches!(
             &else_ifs[0].condition,
-            Expression::Binary {
+            Some(Expression::Binary {
                 op: BinaryOp::Equal,
                 ..
-            }
+            })
         ),
         "else-if condition: {:?}",
         else_ifs[0].condition
@@ -418,7 +418,7 @@ fn parses_transaction_and_lock_blocks() {
         );
     };
     assert!(
-        matches!(path, Expression::Call { .. }),
+        matches!(path, Some(Expression::Call { .. })),
         "lock path should be ^books(id): {path:?}"
     );
     assert_eq!(body.statements.len(), 1);
@@ -501,10 +501,10 @@ fn parses_while_and_for_loops() {
     };
     assert!(matches!(
         condition,
-        Expression::Binary {
+        Some(Expression::Binary {
             op: BinaryOp::Less,
             ..
-        }
+        })
     ));
     assert_eq!(body.statements.len(), 1);
 
@@ -884,11 +884,6 @@ fn parses_const_values_into_expression_nodes() {
             "const Pi2: decimal = std::math::PI\n",
             Expectation::Name(&["std", "math", "PI"]),
         ),
-        (
-            // A stray `@` is not a valid expression start.
-            "const Bad = @nope\n",
-            Expectation::Unparsed("@nope"),
-        ),
     ];
 
     for (source, expected) in cases {
@@ -904,16 +899,13 @@ fn parses_const_values_into_expression_nodes() {
         match (expected, &decl.value) {
             (
                 Expectation::Literal(expected_kind, expected_text),
-                Expression::Literal { kind, text, .. },
+                Some(Expression::Literal { kind, text, .. }),
             ) => {
                 assert_eq!(*kind, *expected_kind, "{source:?}");
                 assert_eq!(text, expected_text, "{source:?}");
             }
-            (Expectation::Name(expected_segments), Expression::Name { segments, .. }) => {
+            (Expectation::Name(expected_segments), Some(Expression::Name { segments, .. })) => {
                 assert_eq!(segments.as_slice(), *expected_segments, "{source:?}");
-            }
-            (Expectation::Unparsed(expected_text), Expression::Unparsed { text, .. }) => {
-                assert_eq!(text, expected_text, "{source:?}");
             }
             (expected, actual) => panic!("expected {expected:?} for {source:?}, got {actual:?}"),
         }
@@ -941,7 +933,7 @@ fn parses_top_level_multi_line_const_value() {
         panic!("expected const declaration");
     };
     assert_eq!(decl.name, "id");
-    let Expression::Call { callee, args, .. } = &decl.value else {
+    let Some(Expression::Call { callee, args, .. }) = &decl.value else {
         panic!("expected a call value, got {:?}", decl.value);
     };
     let Expression::Name { segments, .. } = callee.as_ref() else {
@@ -959,9 +951,9 @@ fn parses_const_operator_expressions_with_precedence() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Binary {
+    let Some(Expression::Binary {
         op, left, right, ..
-    } = &decl.value
+    }) = &decl.value
     else {
         panic!("expected binary expression, got {:?}", decl.value);
     };
@@ -989,7 +981,7 @@ fn parses_const_unary_and_grouping() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Unary { op, operand, .. } = &decl.value else {
+    let Some(Expression::Unary { op, operand, .. }) = &decl.value else {
         panic!("expected unary expression, got {:?}", decl.value);
     };
     assert_eq!(*op, UnaryOp::Neg);
@@ -1013,7 +1005,7 @@ fn parses_interpolation_into_text_and_expression_parts() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Interpolation { parts, .. } = &decl.value else {
+    let Some(Expression::Interpolation { parts, .. }) = &decl.value else {
         panic!("expected interpolation, got {:?}", decl.value);
     };
     assert_eq!(parts.len(), 3, "{parts:#?}");
@@ -1046,7 +1038,7 @@ fn parses_interpolation_with_embedded_call_path() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Interpolation { parts, .. } = &decl.value else {
+    let Some(Expression::Interpolation { parts, .. }) = &decl.value else {
         panic!("expected interpolation, got {:?}", decl.value);
     };
     let exprs = parts
@@ -1071,7 +1063,7 @@ fn parses_calls_paths_and_field_access() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Field { base, name, .. } = &decl.value else {
+    let Some(Expression::Field { base, name, .. }) = &decl.value else {
         panic!("expected field access, got {:?}", decl.value);
     };
     assert_eq!(name, "title");
@@ -1097,9 +1089,9 @@ fn parses_quoted_field_segments() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Field {
+    let Some(Expression::Field {
         name, quoted, base, ..
-    } = &decl.value
+    }) = &decl.value
     else {
         panic!("expected field access, got {:?}", decl.value);
     };
@@ -1116,7 +1108,7 @@ fn parses_quoted_field_segments() {
         panic!("expected const declaration");
     };
     assert!(
-        matches!(&decl.value, Expression::Field { name, quoted: false, .. } if name == "title"),
+        matches!(&decl.value, Some(Expression::Field { name, quoted: false, .. }) if name == "title"),
         "plain field should be unquoted: {:?}",
         decl.value
     );
@@ -1142,7 +1134,7 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 fn keyword_field_name_reports_a_parse_error() {
     // `at` is a reserved word (`resource X at ^root`). Used as a bare field
     // name it violates `field_name = identifier | string_lit`, so the parser
-    // must report it rather than silently dropping the statement as Unparsed.
+    // must report it rather than silently dropping the statement.
     let source = "fn touch(id: int)\n    ^events(id).at = now\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
@@ -1172,7 +1164,7 @@ fn quoted_keyword_field_name_parses() {
         panic!("expected const declaration");
     };
     assert!(
-        matches!(&decl.value, Expression::Field { name, quoted: true, .. } if name == "at"),
+        matches!(&decl.value, Some(Expression::Field { name, quoted: true, .. }) if name == "at"),
         "expected quoted field `at`, got {:?}",
         decl.value
     );
@@ -1185,7 +1177,7 @@ fn parses_named_and_moded_call_arguments() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Call { args, .. } = &decl.value else {
+    let Some(Expression::Call { args, .. }) = &decl.value else {
         panic!("expected call, got {:?}", decl.value);
     };
     assert_eq!(args.len(), 3);
@@ -1277,7 +1269,7 @@ fn parses_conversion_and_constructor_calls() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Call { callee, .. } = &decl.value else {
+    let Some(Expression::Call { callee, .. }) = &decl.value else {
         panic!("expected conversion call, got {:?}", decl.value);
     };
     assert!(
@@ -1291,7 +1283,7 @@ fn parses_conversion_and_constructor_calls() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Expression::Call { callee, args, .. } = &decl.value else {
+    let Some(Expression::Call { callee, args, .. }) = &decl.value else {
         panic!("expected constructor call, got {:?}", decl.value);
     };
     assert!(
@@ -1303,15 +1295,23 @@ fn parses_conversion_and_constructor_calls() {
 
 #[test]
 fn bare_type_keyword_is_not_a_value() {
-    // `int` alone is a type, not an expression, so it does not parse as a value.
+    // `int` alone is a type, not an expression, so it is a syntax error in
+    // value position rather than a silently accepted value.
     let parsed = parse_source("const Bad = int\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "parse.syntax"),
+        "expected a parse error: {:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
     assert!(
-        matches!(decl.value, Expression::Unparsed { .. }),
-        "expected bare `int` to be Unparsed, got {:?}",
+        decl.value.is_none(),
+        "expected bare `int` to carry no value, got {:?}",
         decl.value
     );
 }
@@ -1319,16 +1319,23 @@ fn bare_type_keyword_is_not_a_value() {
 #[test]
 fn const_chained_equality_is_not_associative() {
     // Grammar: equality is non-associative, so `a = b = c` is not a valid
-    // expression. The parser consumes `a = b` then leaves `= c`, so the value
-    // falls back to Unparsed rather than silently nesting.
+    // expression. The parser consumes `a = b` then leaves `= c`, which does not
+    // fully parse and so is a syntax error rather than silently nesting.
     let parsed = parse_source("const Bad: bool = a = b = c\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "parse.syntax"),
+        "expected a parse error: {:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
     assert!(
-        matches!(decl.value, Expression::Unparsed { .. }),
-        "expected chained equality to be Unparsed, got {:?}",
+        decl.value.is_none(),
+        "expected chained equality to carry no value, got {:?}",
         decl.value
     );
 }
@@ -1340,7 +1347,7 @@ fn const_binary_expression_span_covers_whole_expression() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let span = decl.value.span();
+    let span = decl.value.as_ref().expect("value").span();
     assert_eq!(&source[span.start_byte..span.end_byte], "60 * 60");
 }
 
@@ -1351,7 +1358,7 @@ fn const_expression_span_points_into_source() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let span = decl.value.span();
+    let span = decl.value.as_ref().expect("value").span();
     assert_eq!(&source[span.start_byte..span.end_byte], "5");
     assert_eq!(span.line, 1);
     assert_eq!(span.column, 18);
@@ -1361,7 +1368,6 @@ fn const_expression_span_points_into_source() {
 enum Expectation<'a> {
     Literal(LiteralKind, &'a str),
     Name(&'a [&'a str]),
-    Unparsed(&'a str),
 }
 
 #[test]

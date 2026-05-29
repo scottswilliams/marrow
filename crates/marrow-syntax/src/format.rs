@@ -78,7 +78,7 @@ fn format_const(decl: &ConstDecl) -> String {
         "const {}{} = {}",
         decl.name,
         format_type_annotation(&decl.ty),
-        format_expression(&decl.value)
+        format_opt_expression(decl.value.as_ref())
     ));
     out
 }
@@ -202,8 +202,7 @@ fn format_docs(docs: &[String], level: usize) -> String {
 
 /// Format a block's statements at the given indentation level, one statement
 /// per line, joined by newlines (no trailing newline). Nested blocks indent one
-/// level deeper. `source` is needed to render `Statement::Unparsed`, which keeps
-/// only a span.
+/// level deeper.
 ///
 /// Ordinary `;` comments retained on the block are re-emitted so `parse ->
 /// format` round-trips them: own-line comments appear on their own line at the
@@ -324,13 +323,13 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         } => {
             let mut out = format!(
                 "{pad}if {}\n{}",
-                format_expression(condition),
+                format_opt_expression(condition.as_ref()),
                 format_block(source, then_block, level + 1)
             );
             for else_if in else_ifs {
                 out.push_str(&format!(
                     "\n{pad}else if {}\n{}",
-                    format_expression(&else_if.condition),
+                    format_opt_expression(else_if.condition.as_ref()),
                     format_block(source, &else_if.block, level + 1)
                 ));
             }
@@ -350,7 +349,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         } => format!(
             "{pad}{}while {}\n{}",
             format_label_prefix(label),
-            format_expression(condition),
+            format_opt_expression(condition.as_ref()),
             format_block(source, body, level + 1)
         ),
         Statement::For {
@@ -379,7 +378,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         }
         Statement::Lock { path, body, .. } => format!(
             "{pad}lock {}\n{}",
-            format_expression(path),
+            format_opt_expression(path.as_ref()),
             format_block(source, body, level + 1)
         ),
         Statement::Try {
@@ -404,12 +403,6 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
                 ));
             }
             out
-        }
-        Statement::Unparsed { span } => {
-            let text = source
-                .get(span.start_byte..span.end_byte)
-                .unwrap_or_default();
-            format!("{pad}{}", text.trim())
         }
     }
 }
@@ -482,8 +475,13 @@ pub fn format_expression(expression: &Expression) -> String {
             op, left, right, ..
         } => format_binary(*op, left, right),
         Expression::Interpolation { parts, .. } => format_interpolation(parts),
-        Expression::Unparsed { text, .. } => text.clone(),
     }
+}
+
+/// Format an optional value-position expression, rendering nothing when the
+/// value did not parse (a syntax error was already reported at parse time).
+fn format_opt_expression(expression: Option<&Expression>) -> String {
+    expression.map(format_expression).unwrap_or_default()
 }
 
 fn format_binary(op: BinaryOp, left: &Expression, right: &Expression) -> String {

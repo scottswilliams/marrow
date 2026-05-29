@@ -70,7 +70,9 @@ pub struct ConstDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub ty: Option<TypeRef>,
-    pub value: Expression,
+    /// `None` when the value text did not parse as an expression; the parser
+    /// reports a syntax error in that case.
+    pub value: Option<Expression>,
     pub span: SourceSpan,
 }
 
@@ -124,9 +126,6 @@ pub enum Expression {
         parts: Vec<InterpolationPart>,
         span: SourceSpan,
     },
-    /// Expression text the grammar does not structure into a node. Carries the
-    /// raw text so the formatter can re-emit it verbatim.
-    Unparsed { text: String, span: SourceSpan },
 }
 
 impl Expression {
@@ -139,8 +138,7 @@ impl Expression {
             | Self::Field { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
-            | Self::Interpolation { span, .. }
-            | Self::Unparsed { span, .. } => *span,
+            | Self::Interpolation { span, .. } => *span,
         }
     }
 }
@@ -346,7 +344,7 @@ pub enum Statement {
         span: SourceSpan,
     },
     If {
-        condition: Expression,
+        condition: Option<Expression>,
         then_block: Block,
         else_ifs: Vec<ElseIf>,
         else_block: Option<Block>,
@@ -354,7 +352,7 @@ pub enum Statement {
     },
     While {
         label: Option<String>,
-        condition: Expression,
+        condition: Option<Expression>,
         body: Block,
         span: SourceSpan,
     },
@@ -370,7 +368,7 @@ pub enum Statement {
         span: SourceSpan,
     },
     Lock {
-        path: Expression,
+        path: Option<Expression>,
         body: Block,
         span: SourceSpan,
     },
@@ -380,18 +378,13 @@ pub enum Statement {
         finally: Option<Block>,
         span: SourceSpan,
     },
-    /// A statement line the grammar does not recognize. Parsing raises a
-    /// diagnostic and keeps this placeholder so the following statements still
-    /// parse.
-    Unparsed {
-        span: SourceSpan,
-    },
 }
 
 /// One `else if` clause of an `if` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElseIf {
-    pub condition: Expression,
+    /// `None` when the condition text did not parse as an expression.
+    pub condition: Option<Expression>,
     pub block: Block,
 }
 
@@ -430,8 +423,7 @@ impl Statement {
             | Self::For { span, .. }
             | Self::Transaction { span, .. }
             | Self::Lock { span, .. }
-            | Self::Try { span, .. }
-            | Self::Unparsed { span } => *span,
+            | Self::Try { span, .. } => *span,
         }
     }
 }
@@ -1360,8 +1352,8 @@ fn is_trivia(kind: TokenKind) -> bool {
 
 /// Recursive-descent parser for a single Marrow expression over a token slice
 /// with file-absolute spans. It covers the primary, postfix, unary, and binary
-/// precedence levels, including calls and saved paths. A value it does not
-/// structure is reported whole as `Expression::Unparsed`.
+/// precedence levels, including calls and saved paths. A value it does not fully
+/// structure yields `None`, which the caller turns into a syntax diagnostic.
 struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -1379,20 +1371,6 @@ impl<'a> ExprParser<'a> {
             source,
             tokens,
             pos: 0,
-        }
-    }
-
-    fn parse_value(mut self, fallback_span: SourceSpan, fallback_text: &str) -> Expression {
-        let unparsed = || Expression::Unparsed {
-            text: fallback_text.trim().to_string(),
-            span: fallback_span,
-        };
-        if self.tokens.is_empty() {
-            return unparsed();
-        }
-        match self.expression() {
-            Some(expr) if self.pos == self.tokens.len() => expr,
-            _ => unparsed(),
         }
     }
 
@@ -1816,8 +1794,8 @@ fn join_spans(start: SourceSpan, end: SourceSpan) -> SourceSpan {
 /// Statement keywords that introduce one or more indented blocks. Most have
 /// dedicated parsers; this guards the fallback that swallows a block-introducing
 /// keyword appearing where it cannot be structured (such as a stray `else`),
-/// consuming its nested block as `Statement::Unparsed` so following statements
-/// still parse.
+/// reporting it and consuming its nested block so following statements still
+/// parse.
 fn is_compound_statement_keyword(keyword: Keyword) -> bool {
     matches!(
         keyword,
@@ -1846,8 +1824,8 @@ struct StmtParser<'a> {
     /// `parse_nested_block`) so a comment lands in the block it appears in.
     comments: Vec<Comment>,
     /// Parse errors for statement lines the body parser cannot structure, so a
-    /// malformed statement becomes a deterministic diagnostic instead of a
-    /// silent `Statement::Unparsed`.
+    /// malformed statement becomes a deterministic diagnostic instead of being
+    /// silently accepted.
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1907,11 +1885,11 @@ impl<'a> StmtParser<'a> {
                 }
                 TokenKind::Comment => self.take_own_line_comment(),
                 TokenKind::Indent => {
-                    // A stray nested block (e.g. under a compound statement left
-                    // Unparsed). Skip it rather than mis-parse.
+                    // A stray nested block (e.g. under a swallowed compound
+                    // statement). Skip it rather than mis-parse.
                     self.skip_block();
                 }
-                _ => statements.push(self.statement()),
+                _ => statements.extend(self.statement()),
             }
         }
         statements
@@ -1927,7 +1905,10 @@ impl<'a> StmtParser<'a> {
         token
     }
 
-    fn statement(&mut self) -> Statement {
+    /// Parse one statement, or `None` when the line does not form a statement.
+    /// A line the grammar cannot structure raises a diagnostic and is dropped,
+    /// so the following statements still parse.
+    fn statement(&mut self) -> Option<Statement> {
         // A loop label (`outer:`) precedes a `while` or `for`. `try_loop_label`
         // only consumes the label when one of those keywords follows, so the
         // `_` arm is necessarily `while`.
@@ -1936,19 +1917,20 @@ impl<'a> StmtParser<'a> {
                 Some(TokenKind::Keyword(Keyword::For)) => {
                     self.for_stmt(Some(label), Some(label_span))
                 }
-                _ => self.while_stmt(Some(label), Some(label_span)),
+                _ => Some(self.while_stmt(Some(label), Some(label_span))),
             };
         }
 
         match self.tokens[self.pos].kind {
-            TokenKind::Keyword(Keyword::If) => return self.if_stmt(),
-            TokenKind::Keyword(Keyword::While) => return self.while_stmt(None, None),
+            TokenKind::Keyword(Keyword::If) => return Some(self.if_stmt()),
+            TokenKind::Keyword(Keyword::While) => return Some(self.while_stmt(None, None)),
             TokenKind::Keyword(Keyword::For) => return self.for_stmt(None, None),
-            TokenKind::Keyword(Keyword::Transaction) => return self.transaction_stmt(),
-            TokenKind::Keyword(Keyword::Lock) => return self.lock_stmt(),
-            TokenKind::Keyword(Keyword::Try) => return self.try_stmt(),
+            TokenKind::Keyword(Keyword::Transaction) => return Some(self.transaction_stmt()),
+            TokenKind::Keyword(Keyword::Lock) => return Some(self.lock_stmt()),
+            TokenKind::Keyword(Keyword::Try) => return Some(self.try_stmt()),
             TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
-                return self.unparsed_compound();
+                self.skip_compound();
+                return None;
             }
             _ => {}
         }
@@ -1956,23 +1938,20 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
-        let statement = match parse_simple_statement(self.source, line) {
-            Some(statement) => statement,
-            None => {
-                let span = line_span(line);
-                self.diagnostics.push(Diagnostic {
-                    code: PARSE_SYNTAX,
-                    kind: "parse",
-                    severity: Severity::Error,
-                    message: "expected a statement".to_string(),
-                    help: None,
-                    span,
-                    line: span.line,
-                    column: span.column,
-                });
-                Statement::Unparsed { span }
-            }
-        };
+        let statement = parse_simple_statement(self.source, line);
+        if statement.is_none() {
+            let span = line_span(line);
+            self.diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                kind: "parse",
+                severity: Severity::Error,
+                message: "expected a statement".to_string(),
+                help: None,
+                span,
+                line: span.line,
+                column: span.column,
+            });
+        }
         self.pos = (newline + 1).min(self.tokens.len());
         statement
     }
@@ -2032,27 +2011,33 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    fn for_stmt(&mut self, label: Option<String>, label_span: Option<SourceSpan>) -> Statement {
+    fn for_stmt(
+        &mut self,
+        label: Option<String>,
+        label_span: Option<SourceSpan>,
+    ) -> Option<Statement> {
         let keyword = self.advance(); // `for`
         let start = label_span.unwrap_or(keyword.span);
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
+        let header_span = line_span(header);
         let parsed = parse_for_header(self.source, header);
         self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
 
         match parsed {
-            Some((binding, iterable)) => Statement::For {
+            Some((binding, iterable)) => Some(Statement::For {
                 label,
                 binding,
                 iterable,
                 span: join_spans(start, body.span),
                 body,
-            },
-            None => Statement::Unparsed {
-                span: join_spans(start, body.span),
-            },
+            }),
+            None => {
+                self.error_span(header_span, "expected `for <binding> in <iterable>`");
+                None
+            }
         }
     }
 
@@ -2158,14 +2143,18 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse the expression that ends the current header line, consuming up to
-    /// and including its `NEWLINE`.
-    fn header_expression(&mut self) -> Expression {
+    /// Parse the expression that ends the current header line (an `if`/`while`
+    /// condition or `lock` path), consuming up to and including its `NEWLINE`.
+    /// Returns `None`, after raising a syntax error, when the header does not
+    /// parse as a complete expression.
+    fn header_expression(&mut self) -> Option<Expression> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
-        let expr =
-            expr_of(self.source, line).unwrap_or_else(|| unparsed_expression(self.source, line));
+        let expr = expr_of(self.source, line);
+        if expr.is_none() {
+            self.error_span(line_span(line), "expected an expression");
+        }
         self.pos = (newline + 1).min(self.tokens.len());
         expr
     }
@@ -2250,7 +2239,10 @@ impl<'a> StmtParser<'a> {
         index
     }
 
-    fn unparsed_compound(&mut self) -> Statement {
+    /// A block-introducing keyword (such as a stray `else`) appearing where it
+    /// cannot be structured. Report it and consume its header and nested block
+    /// so the following statements still parse.
+    fn skip_compound(&mut self) {
         let start = self.tokens[self.pos].span;
         let mut end = start;
         // Consume the header up to its NEWLINE.
@@ -2268,9 +2260,20 @@ impl<'a> StmtParser<'a> {
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             end = self.skip_block();
         }
-        Statement::Unparsed {
-            span: join_spans(start, end),
-        }
+        self.error_span(join_spans(start, end), "expected a statement");
+    }
+
+    fn error_span(&mut self, span: SourceSpan, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            code: PARSE_SYNTAX,
+            kind: "parse",
+            severity: Severity::Error,
+            message: message.into(),
+            help: None,
+            span,
+            line: span.line,
+            column: span.column,
+        });
     }
 
     /// Consume a balanced `INDENT … DEDENT` run starting at the current
@@ -2472,7 +2475,6 @@ impl<'a> DeclParser<'a> {
         // `const Name [: type] = value`. The name is the identifier after the
         // keyword; the type runs from `:` to `=`; the value is everything after.
         let equal = find_top_level_equal(&header[1..]).map(|index| index + 1);
-        let line_start = span.start_byte;
         let (name, ty, value) = match equal {
             Some(equal) => {
                 let head = &header[1..equal];
@@ -2483,29 +2485,13 @@ impl<'a> DeclParser<'a> {
                     self.error_span(span, "const declarations require a value after `=`");
                 }
                 let (name, ty) = self.const_name_type(span, head);
-                // An absent value points just past `=`, on the header line.
-                let after_equal = header[equal].span.end_byte;
-                let fallback = SourceSpan {
-                    start_byte: after_equal,
-                    end_byte: span.end_byte,
-                    line: span.line,
-                    column: (after_equal - line_start + 1) as u32,
-                };
-                let value = self.value_expression(value_tokens, fallback);
+                let value = self.value_expression(value_tokens);
                 (name, ty, value)
             }
             None => {
                 self.error_span(span, "const declarations require `=` and a value");
                 let (name, ty) = self.const_name_type(span, &header[1..]);
-                // An absent value points at end of the header line.
-                let fallback = SourceSpan {
-                    start_byte: span.end_byte,
-                    end_byte: span.end_byte,
-                    line: span.line,
-                    column: (span.end_byte - line_start + 1) as u32,
-                };
-                let value = self.value_expression(&[], fallback);
-                (name, ty, value)
+                (name, ty, None)
             }
         };
         ConstDecl {
@@ -2762,20 +2748,20 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// An expression in a value position. Anything the grammar does not structure
-    /// becomes `Expression::Unparsed`. `fallback` is the span the `Unparsed` node
-    /// carries when there are no value tokens at all.
-    fn value_expression(&self, tokens: &[Token], fallback: SourceSpan) -> Expression {
-        let span = if tokens.is_empty() {
-            fallback
-        } else {
-            value_span(tokens)
-        };
-        let text = self
-            .source
-            .get(span.start_byte..span.end_byte)
-            .unwrap_or_default();
-        ExprParser::new(self.source, tokens).parse_value(span, text)
+    /// Parse a value-position expression. Returns `None` when the value text
+    /// does not parse as a complete expression. An absent value is already
+    /// reported by the caller, so only a present-but-malformed value raises a
+    /// diagnostic here (a type spelling such as `int` in value position lands
+    /// here, where it is a syntax error rather than a silent acceptance).
+    fn value_expression(&mut self, tokens: &[Token]) -> Option<Expression> {
+        if tokens.is_empty() {
+            return None;
+        }
+        let parsed = ExprParser::new(self.source, tokens).parse_complete();
+        if parsed.is_none() {
+            self.error_span(value_span(tokens), "expected an expression");
+        }
+        parsed
     }
 
     /// Collect the tokens of the current header line (up to the next
@@ -3665,9 +3651,9 @@ fn drop_redundant_statement_errors(diagnostics: &mut Vec<Diagnostic>) {
 /// Report bare keywords used as field names. A `.` is always data field
 /// access, and a field name must be an identifier or string literal, so a
 /// reserved word immediately after `.` is never a valid field name and must
-/// be quoted (`."at"`). The structural parsers cannot build such a field and
-/// leave the line `Unparsed`, so the diagnostic is raised here from the
-/// token stream, where the `.` and the keyword are both visible.
+/// be quoted (`."at"`). The structural parsers cannot build such a field, so
+/// the diagnostic is raised here from the token stream, where the `.` and the
+/// keyword are both visible.
 fn report_keyword_field_names(source: &str, tokens: &[Token], diagnostics: &mut Vec<Diagnostic>) {
     for pair in tokens.windows(2) {
         let [dot, name] = pair else { continue };
@@ -3699,7 +3685,7 @@ fn report_keyword_field_names(source: &str, tokens: &[Token], diagnostics: &mut 
 fn report_positional_after_named(file: &SourceFile, diagnostics: &mut Vec<Diagnostic>) {
     for declaration in &file.declarations {
         match declaration {
-            Declaration::Const(decl) => walk_expr_arguments(&decl.value, diagnostics),
+            Declaration::Const(decl) => walk_opt_expr_arguments(&decl.value, diagnostics),
             Declaration::Function(decl) => walk_block_arguments(&decl.body, diagnostics),
             // Resource members are typed declarations, not expressions.
             Declaration::Resource(_) => {}
@@ -3735,10 +3721,10 @@ fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnos
             else_block,
             ..
         } => {
-            walk_expr_arguments(condition, diagnostics);
+            walk_opt_expr_arguments(condition, diagnostics);
             walk_block_arguments(then_block, diagnostics);
             for else_if in else_ifs {
-                walk_expr_arguments(&else_if.condition, diagnostics);
+                walk_opt_expr_arguments(&else_if.condition, diagnostics);
                 walk_block_arguments(&else_if.block, diagnostics);
             }
             if let Some(else_block) = else_block {
@@ -3748,7 +3734,7 @@ fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnos
         Statement::While {
             condition, body, ..
         } => {
-            walk_expr_arguments(condition, diagnostics);
+            walk_opt_expr_arguments(condition, diagnostics);
             walk_block_arguments(body, diagnostics);
         }
         Statement::For { iterable, body, .. } => {
@@ -3757,7 +3743,7 @@ fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnos
         }
         Statement::Transaction { body, .. } => walk_block_arguments(body, diagnostics),
         Statement::Lock { path, body, .. } => {
-            walk_expr_arguments(path, diagnostics);
+            walk_opt_expr_arguments(path, diagnostics);
             walk_block_arguments(body, diagnostics);
         }
         Statement::Try {
@@ -3774,7 +3760,13 @@ fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnos
                 walk_block_arguments(finally, diagnostics);
             }
         }
-        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
+        Statement::Break { .. } | Statement::Continue { .. } => {}
+    }
+}
+
+fn walk_opt_expr_arguments(expression: &Option<Expression>, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(expression) = expression {
+        walk_expr_arguments(expression, diagnostics);
     }
 }
 
@@ -3820,10 +3812,7 @@ fn walk_expr_arguments(expression: &Expression, diagnostics: &mut Vec<Diagnostic
                 }
             }
         }
-        Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::SavedRoot { .. }
-        | Expression::Unparsed { .. } => {}
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
     }
 }
 
@@ -3858,18 +3847,6 @@ fn comment_from_token(source: &str, token: Token, placement: CommentPlacement) -
         text,
         placement,
         span: token.span,
-    }
-}
-
-fn unparsed_expression(source: &str, tokens: &[Token]) -> Expression {
-    let span = line_span(tokens);
-    Expression::Unparsed {
-        text: source
-            .get(span.start_byte..span.end_byte)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        span,
     }
 }
 
@@ -4119,8 +4096,8 @@ mod decl_parser_corpus {
     }
 
     /// `const NAME (: type)? = expr` parses its value by reusing the expression
-    /// parser. These pin the value path's AST: a structured expression when the
-    /// grammar covers it, and `Unparsed` carrying the raw value text when not.
+    /// parser. This pins the value path's AST: a structured expression when the
+    /// grammar covers it, and a syntax error with no value when it does not.
     #[test]
     fn const_value_reuses_the_expression_parser() {
         let ParsedSource { file, diagnostics } = parse_source("const Total: int = 60 * 60\n");
@@ -4133,24 +4110,28 @@ mod decl_parser_corpus {
         assert!(
             matches!(
                 decl.value,
-                Expression::Binary {
+                Some(Expression::Binary {
                     op: BinaryOp::Multiply,
                     ..
-                }
+                })
             ),
             "expected a multiply expression: {:#?}",
             decl.value
         );
 
-        // A bare type name is not an expression: the value is `Unparsed`
-        // carrying the verbatim value text, not the whole line.
-        let ParsedSource { file, .. } = parse_source("const Bad = int\n");
+        // A bare type name is not an expression, so it is a syntax error and
+        // carries no value rather than being silently accepted.
+        let ParsedSource { file, diagnostics } = parse_source("const Bad = int\n");
+        assert!(
+            diagnostics.iter().any(|d| d.code == PARSE_SYNTAX),
+            "expected a parse error for a type in value position: {diagnostics:#?}"
+        );
         let Some(Declaration::Const(decl)) = file.declarations.first() else {
             panic!("expected a const declaration: {file:#?}");
         };
         assert!(
-            matches!(&decl.value, Expression::Unparsed { text, .. } if text == "int"),
-            "expected unparsed value `int`: {:#?}",
+            decl.value.is_none(),
+            "expected no value for `const Bad = int`: {:#?}",
             decl.value
         );
     }

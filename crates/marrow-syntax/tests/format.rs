@@ -81,7 +81,7 @@ fn format_const_value(source: &str) -> String {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration for {source:?}");
     };
-    format_expression(&decl.value)
+    format_expression(decl.value.as_ref().expect("value"))
 }
 
 #[test]
