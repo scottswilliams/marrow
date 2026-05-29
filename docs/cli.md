@@ -230,7 +230,7 @@ holds data, restore refuses with `restore.not_empty` (exit `1`) rather than
 overwrite it.
 
 Replace, merge, and repair restores (the non-empty cases) are deferred — see
-[Deferrals](roadmap/README.md#deferrals).
+[future/cli.md](future/cli.md).
 
 Prints the record count and exits `0`; exits `1` if the target is non-empty or on
 an I/O or store error.
@@ -262,7 +262,7 @@ store; a project with no saved data on disk reports as empty. See
 [data-tools.md](data-tools.md) for full output shapes and the path syntax.
 
 `data diff` and `data load` are deferred — see
-[Deferrals](roadmap/README.md#deferrals).
+[future/data-tools.md](future/data-tools.md).
 
 All `data` commands exit `2` on a usage error (missing directory, bad flag, an
 unparseable `<path>` for `get`), and `1` on a config or store error. `roots`,

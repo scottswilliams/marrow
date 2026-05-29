@@ -249,7 +249,7 @@ marrow restore ./project books.mwbackup
 ```
 
 Replace, merge, and repair restores — the non-empty cases — are deferred (see
-[Deferrals](roadmap/README.md#deferrals)).
+[future/cli.md](future/cli.md)).
 
 To restore over existing data today, empty the target first with a maintenance
 run (for example a `fn` that deletes the relevant roots, run with
@@ -260,7 +260,7 @@ run (for example a `fn` that deletes the relevant roots, run with
 These do not exist yet; do not plan migrations around them:
 
 - `marrow data diff` and `marrow data load` are deferred — see
-  [Deferrals](roadmap/README.md#deferrals). Today `marrow data` provides only
+  [future/data-tools.md](future/data-tools.md). Today `marrow data` provides only
   the read-only subcommands `roots`, `stats`, `dump`, `integrity`, and `get`.
 - Replace / merge / repair restore (see above).
 

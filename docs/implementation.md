@@ -345,7 +345,7 @@ Normal backups include generated index trees. Typed restore can verify them
 against primary resources or rebuild them when source is available.
 
 Normal restore writes into an empty target. Replace, merge, and repair restores
-are deferred — see [Deferrals](roadmap/README.md#deferrals).
+are deferred — see [future/cli.md](future/cli.md).
 
 Backend-native files can support fast local snapshots, but they are not the
 portable archive format.
@@ -389,7 +389,7 @@ corrupt key as `store.corrupt_path`; it exits `1` when it finds a problem), and
 `marrow data get <path>` (read one path's value). Inspection is read-only and
 never creates the store; `dump`/`get` need only `marrow.json`, while
 `integrity` typechecks against the project's checked schema. `diff` and `load`
-are deferred (see [Deferrals](roadmap/README.md#deferrals)).
+are deferred (see [future/data-tools.md](future/data-tools.md)).
 
 `marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
 portable archive — the canonical ordered (path, value) stream behind a small
@@ -399,7 +399,7 @@ replays one into an empty store in a single transaction; a non-empty target fail
 with `restore.not_empty`, since restoring over existing data is an explicit
 maintenance action. Empty-target restore is the only mode implemented today;
 replace, merge, and repair restore (the non-empty cases) are deferred (see
-[Deferrals](roadmap/README.md#deferrals)).
+[future/cli.md](future/cli.md)).
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and

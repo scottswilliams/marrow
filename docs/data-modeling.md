@@ -404,7 +404,8 @@ Some maintenance operations are not yet implemented:
 
 - `marrow data diff` and `marrow data load` are deferred, and restore today
   writes into an empty target only (replace, merge, and repair restores are
-  deferred) — see [Deferrals](roadmap/README.md#deferrals).
+  deferred) — see [future/data-tools.md](future/data-tools.md) and
+  [future/cli.md](future/cli.md).
 - A field declared with a generated identity type is not yet accepted by the
   write path; model references with a scalar key field plus identity
   construction (see [Relationships](#relationships)).

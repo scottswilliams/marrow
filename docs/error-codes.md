@@ -294,7 +294,7 @@ the store's `store.corrupt_path`, not a `data.*` code.)
 
 | Code | Meaning |
 |---|---|
-| `restore.not_empty` | `marrow restore` targets a non-empty store; normal restore writes into an empty target only. (Replace, merge, and repair restores are deferred — see [Deferrals](roadmap/README.md#deferrals).) Exit code `1`. |
+| `restore.not_empty` | `marrow restore` targets a non-empty store; normal restore writes into an empty target only. (Replace, merge, and repair restores are deferred — see [future/cli.md](future/cli.md).) Exit code `1`. |
 
 ## Typed Errors In Running Programs
 
@@ -312,6 +312,6 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 ## Deferred Surfaces
 
 `marrow data diff`/`data load` and the non-empty `marrow restore` modes
-(replace, merge, repair) are deferred — see
-[Deferrals](roadmap/README.md#deferrals). No new code family appears for a
+(replace, merge, repair) are deferred — see [future/data-tools.md](future/data-tools.md)
+and [future/cli.md](future/cli.md). No new code family appears for a
 deferred surface until that surface ships.

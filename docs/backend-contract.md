@@ -209,7 +209,7 @@ left unchanged.
 
 `marrow restore` writes into an empty target only; a non-empty target fails
 with `restore.not_empty`. Restoring over existing data — replace, merge, and
-repair modes — is deferred (see [Deferrals](roadmap/README.md#deferrals)).
+repair modes — is deferred (see [future/cli.md](future/cli.md)).
 
 ## Inspecting The Store From The CLI
 
@@ -247,7 +247,7 @@ numeric-ordered (`^books(1)` before `^books(10)`), and the `jsonl`/`json` forms
 add base64 `path_b64` and `value_b64` for the raw bytes. `data integrity`
 verifies stored values against the project's checked schema, exiting `1` on a
 finding (`data.decode`, `data.orphan`, or a `store.corrupt_path` key). `data
-diff` and `data load` are deferred (see [Deferrals](roadmap/README.md#deferrals)).
+diff` and `data load` are deferred (see [future/data-tools.md](future/data-tools.md)).
 
 These commands are raw backend inspection. Application access to saved data is
 Marrow code over typed resources — see

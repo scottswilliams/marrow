@@ -215,7 +215,7 @@ a fresh store. There is no in-place fix.
 ## Deferred: `diff` and `load`
 
 `marrow data diff` and `marrow data load` are not implemented — see
-[Deferrals](roadmap/README.md#deferrals). Until then, use `marrow backup` and
+[future/data-tools.md](future/data-tools.md). Until then, use `marrow backup` and
 `marrow restore` for bulk data movement.
 
 ## See also

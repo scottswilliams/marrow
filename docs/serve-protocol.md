@@ -291,9 +291,8 @@ What works today: the four read operations (`saved_roots`, `saved_children`,
 `saved_get`, `saved_walk`) over loopback TCP, with the path/key/base64 encodings
 and `protocol.*` / `store.*` error replies described above.
 
-Deferred: a resumable cursor for `saved_walk` (page today by walking narrower
-subtrees); local IPC over Unix sockets or Windows named pipes (loopback TCP is
-the v1 transport); and the two planned read-only extensions noted in the
-[implementation reference](implementation.md) — evaluating one checked,
-non-mutating query in a session, and registering a client's own in-memory trees
-for read-only inspection. None of those would write managed data.
+Designed read extensions that are not yet implemented — a resumable cursor for
+`saved_walk`, local IPC over Unix sockets or Windows named pipes, and two
+read-only session extensions — are described in
+[future/serve-protocol.md](future/serve-protocol.md). None would write managed
+data.

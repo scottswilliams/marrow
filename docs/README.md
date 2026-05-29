@@ -51,8 +51,10 @@ point at the [language reference](language/) for the exact rules.
 - [Backend Contract](backend-contract.md) — the ordered path/value operations,
   savepoints, presence states, bounded scans, the conformance suite, and
   native-store responsibilities a store backend must satisfy.
-- [Roadmap](roadmap/) — a status note for the implemented kernel, plus the
-  deferrals and non-goals that bound it.
+- [Future](future/) — designed, normative surfaces that are not yet
+  implemented, mirroring the pages above.
+- [Roadmap](roadmap/) — a status note for the implemented kernel and the
+  non-goals that bound it.
 
 Marrow is unreleased. If implementation and language references disagree,
 treat the disagreement as implementation work, not as a competing design.

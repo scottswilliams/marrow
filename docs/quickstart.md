@@ -210,7 +210,7 @@ marrow data stats --format json .
 ```
 
 `marrow data` is read-only. The `diff` and `load` subcommands are deferred —
-see [Deferrals](roadmap/README.md#deferrals).
+see [future/data-tools.md](future/data-tools.md).
 
 ## 5. Write And Run A Test
 
