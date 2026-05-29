@@ -199,7 +199,12 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
         match member {
             ResourceMember::Field(field) if field.keys.is_empty() => {
                 names.check(&field.name, field.span, &mut errors);
-                fields.push(field_schema(field));
+                // `name: sequence[T]` is sugar for the `name(pos: int): T` keyed
+                // leaf, so it joins the layers rather than the scalar fields.
+                match sequence_element(&field.ty.text) {
+                    Some(element) => layers.push(keyed_leaf_from_sequence(field, element)),
+                    None => fields.push(field_schema(field)),
+                }
             }
             ResourceMember::Field(field) => {
                 names.check(&field.name, field.span, &mut errors);
@@ -567,13 +572,20 @@ fn collect_stable_ids(members: &[ResourceMember], ids: &mut Vec<(String, SourceS
 /// saved schemas reject `unknown` anywhere inside (docs/language/types.md).
 fn embeds_unknown(ty: &TypeRef) -> bool {
     let mut text = ty.text.trim();
-    while let Some(inner) = text
-        .strip_prefix("sequence[")
-        .and_then(|rest| rest.strip_suffix(']'))
-    {
-        text = inner.trim();
+    while let Some(inner) = sequence_element(text) {
+        text = inner;
     }
     text == "unknown"
+}
+
+/// The element type spelling of a `sequence[T]`, or `None` for a non-sequence
+/// type. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree
+/// (resources-and-storage.md:388-400).
+fn sequence_element(text: &str) -> Option<&str> {
+    text.trim()
+        .strip_prefix("sequence[")
+        .and_then(|rest| rest.strip_suffix(']'))
+        .map(str::trim)
 }
 
 fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
@@ -617,7 +629,14 @@ fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerM
         match member {
             ResourceMember::Field(field) if field.keys.is_empty() => {
                 names.check(&field.name, field.span, errors);
-                members.push(LayerMember::Field(field_schema(field)));
+                // A nested `name: sequence[T]` desugars to the same `pos: int`
+                // keyed leaf as at the top level.
+                match sequence_element(&field.ty.text) {
+                    Some(element) => {
+                        members.push(LayerMember::Layer(keyed_leaf_from_sequence(field, element)))
+                    }
+                    None => members.push(LayerMember::Field(field_schema(field))),
+                }
             }
             ResourceMember::Field(field) => {
                 names.check(&field.name, field.span, errors);
@@ -663,6 +682,28 @@ fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
         docs: field.docs.clone(),
         key_params: field.keys.iter().map(key_def).collect(),
         leaf_type: Some(field.ty.clone()),
+        members: Vec::new(),
+        stable_id: field.stable_id.clone(),
+    }
+}
+
+/// Desugar `name: sequence[T]` into the keyed leaf `name(pos: int): T`. The
+/// implicit `pos: int` key matches the canonical sequence spelling
+/// (resources-and-storage.md:388-400), so the resulting layer is identical to
+/// the one `name(pos: int): T` produces and append/read/traverse work unchanged.
+fn keyed_leaf_from_sequence(field: &FieldDecl, element: &str) -> LayerSchema {
+    LayerSchema {
+        name: field.name.clone(),
+        docs: field.docs.clone(),
+        key_params: vec![KeyDef {
+            name: "pos".to_string(),
+            ty: TypeRef {
+                text: "int".to_string(),
+            },
+        }],
+        leaf_type: Some(TypeRef {
+            text: element.to_string(),
+        }),
         members: Vec::new(),
         stable_id: field.stable_id.clone(),
     }

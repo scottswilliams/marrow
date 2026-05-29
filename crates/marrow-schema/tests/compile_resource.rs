@@ -291,6 +291,67 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn sequence_member_desugars_to_a_pos_int_keyed_leaf() {
+    // `tags: sequence[string]` is sugar for `tags(pos: int): string`, so it
+    // compiles to the same keyed leaf the canonical spelling produces.
+    let source = "\
+resource Book at ^books(id: int)
+    tags: sequence[string]
+";
+    let schema = compile_ok(source);
+    // It lives in `layers`, not as a scalar field.
+    assert!(!schema.fields.iter().any(|f| f.name == "tags"));
+    let tags = layer(&schema, "tags");
+    assert_eq!(tags.key_params.len(), 1);
+    assert_eq!(tags.key_params[0].name, "pos");
+    assert_eq!(tags.key_params[0].ty.text, "int");
+    assert_eq!(
+        tags.leaf_type.as_ref().map(|t| t.text.as_str()),
+        Some("string")
+    );
+    assert!(tags.members.is_empty(), "a keyed leaf has no members");
+}
+
+#[test]
+fn sequence_member_matches_the_canonical_keyed_leaf() {
+    // The desugared layer is identical to the canonical `tags(pos: int): string`.
+    let sugar = layer(
+        &compile_ok("resource Book at ^books(id: int)\n    tags: sequence[string]\n"),
+        "tags",
+    )
+    .clone();
+    let canonical = layer(
+        &compile_ok("resource Book at ^books(id: int)\n    tags(pos: int): string\n"),
+        "tags",
+    )
+    .clone();
+    assert_eq!(sugar, canonical);
+}
+
+#[test]
+fn nested_sequence_member_desugars_inside_a_group() {
+    // A sequence nested inside a group desugars the same way.
+    let source = "\
+resource Book at ^books(id: int)
+    versions(version: int)
+        notes: sequence[string]
+";
+    let schema = compile_ok(source);
+    let versions = layer(&schema, "versions");
+    let LayerMember::Layer(notes) = &versions.members[0] else {
+        panic!("notes should desugar to a nested keyed-leaf layer");
+    };
+    assert_eq!(notes.name, "notes");
+    assert_eq!(notes.key_params.len(), 1);
+    assert_eq!(notes.key_params[0].name, "pos");
+    assert_eq!(notes.key_params[0].ty.text, "int");
+    assert_eq!(
+        notes.leaf_type.as_ref().map(|t| t.text.as_str()),
+        Some("string")
+    );
+}
+
+#[test]
 fn keyed_leaf_key_param_typed_unknown_is_an_error() {
     // `unknown` is rejected in saved keys (types.md:66-67), including a keyed
     // layer's own key parameters, not only identity keys and value types (F20).
