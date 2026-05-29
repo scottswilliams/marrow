@@ -226,13 +226,31 @@ fn report_project(target: &str, report: &marrow_check::CheckReport, format: Chec
     }
 }
 
-/// Render a project diagnostic as JSON. Project diagnostics carry only a code,
+/// The broad envelope category for a dotted error code (docs/error-codes.md).
+/// Derived from the code's first segment so every machine-readable surface emits
+/// a consistent `kind` field. The code prefix is not always the kind name
+/// (`run.*` is `runtime`, `store.*` is `storage`), so the mapping is explicit.
+fn kind_for_code(code: &str) -> &'static str {
+    match code.split('.').next().unwrap_or("") {
+        "parse" => "parse",
+        "check" | "schema" => "check",
+        "run" => "runtime",
+        "store" => "storage",
+        "io" => "io",
+        "protocol" => "protocol",
+        // Configuration and project-discovery failures are tooling errors.
+        _ => "tooling",
+    }
+}
+
+/// Render a project diagnostic as JSON. Project diagnostics carry a code, kind,
 /// severity, message, and file position; unlike single-file parse diagnostics
-/// they have no `kind`/`help` or byte offsets, since module-path and
-/// duplicate-module problems are reported at a declaration site.
+/// they have no `help` or byte offsets, since module-path and duplicate-module
+/// problems are reported at a declaration site.
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
     json!({
         "code": diagnostic.code,
+        "kind": kind_for_code(&diagnostic.code),
         "severity": diagnostic.severity.as_str(),
         "message": diagnostic.message,
         "source_span": {
@@ -248,6 +266,7 @@ fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
         CheckFormat::Text => eprintln!("{code}: {message}"),
         CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
             "code": code,
+            "kind": kind_for_code(code),
             "message": message,
             "source_span": null,
         })),
