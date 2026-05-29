@@ -23,9 +23,6 @@ Usage:
   marrow serve [--port <port>] <projectdir>
   marrow --version
   marrow --help
-
-Marrow is starting from the reference docs. Language commands will land as the
-native .mw source model, checker, runtime, and storage kernel grow.
 ";
 
 fn main() -> ExitCode {
