@@ -362,6 +362,7 @@ pub fn plan_resource_merge(
     schema: &ResourceSchema,
     identity: &[SavedKey],
     value: &ResourceValue,
+    source: Option<&[SavedKey]>,
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
@@ -434,6 +435,19 @@ pub fn plan_resource_merge(
                 path: encode_path(&index_path(root, &index.name, new_keys)),
                 value: index_entry_value(index.unique, identity),
             });
+        }
+    }
+
+    // A merge copies a whole tree, not just the top-level scalars. When the source
+    // is a saved identity, overlay each of its child-layer subtrees (history,
+    // sequences, keyed trees) onto the matching target layer, reusing the layer
+    // overlay so target entries the source does not cover are preserved. The
+    // overlay reads the source subtree at plan time, before any target change.
+    // Generated indexes do not span child layers, so this needs no index work.
+    if let Some(source) = source {
+        for layer in &schema.layers {
+            let layer_plan = plan_layer_merge(schema, source, identity, &layer.name, store)?;
+            steps.extend(layer_plan.steps);
         }
     }
     Ok(WritePlan { steps })

@@ -104,6 +104,18 @@ resource Book
     tags(pos: int): string
 ";
 
+/// A `Book` declaring BOTH a non-unique index over a scalar field AND a keyed
+/// child layer, to exercise a tree-shaped whole-resource merge: the child-layer
+/// entries are copied while the index reflects the merged scalar.
+const BOOK_INDEXED_LAYERS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+    tags(pos: int): string
+
+    index byShelf(shelf, id)
+";
+
 fn saved(text: &str) -> FieldValue {
     FieldValue::Saved(SavedValue::Str(text.into()))
 }
@@ -135,14 +147,15 @@ fn write_field(
         .expect("commit succeeds");
 }
 
-/// Plan and commit a merge against the current store state.
+/// Plan and commit a value-based merge against the current store state: overlay
+/// the supplied `value` fields, with no saved source identity (no child layers).
 fn merge(
     store: &mut MemStore,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     value: ResourceValue,
 ) {
-    plan_resource_merge(schema, identity, &value, store)
+    plan_resource_merge(schema, identity, &value, None, store)
         .expect("valid merge")
         .commit(store)
         .expect("commit succeeds");
@@ -1355,7 +1368,7 @@ fn a_merge_with_a_mismatched_type_is_rejected() {
     let value = ResourceValue {
         fields: vec![("title".into(), FieldValue::Saved(SavedValue::Int(5)))],
     };
-    let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, &MemStore::new());
+    let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, None, &MemStore::new());
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_TYPE_MISMATCH),
         "{result:?}"
@@ -1403,7 +1416,7 @@ fn a_merge_omitting_a_required_field_not_yet_stored_is_rejected() {
         fields: vec![("shelf".into(), saved("fiction"))],
     };
     let store = MemStore::new();
-    let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, &store);
+    let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, None, &store);
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
         "{result:?}"
@@ -1498,7 +1511,7 @@ fn a_merge_onto_a_unique_key_held_by_another_is_rejected() {
     let value = ResourceValue {
         fields: vec![("isbn".into(), saved("X"))],
     };
-    let result = plan_resource_merge(&book, &[SavedKey::Int(2)], &value, &store);
+    let result = plan_resource_merge(&book, &[SavedKey::Int(2)], &value, None, &store);
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_UNIQUE_CONFLICT),
         "{result:?}"
@@ -2176,5 +2189,94 @@ fn a_layer_merge_with_a_mismatched_target_identity_is_rejected() {
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_IDENTITY_MISMATCH),
         "{result:?}"
+    );
+}
+
+/// Plan and commit a tree-shaped whole-resource merge from a saved source
+/// identity into a target identity: overlay the supplied `value` fields AND copy
+/// the source's child-layer subtrees.
+fn merge_from(
+    store: &mut MemStore,
+    schema: &ResourceSchema,
+    target: &[SavedKey],
+    value: ResourceValue,
+    source: &[SavedKey],
+) {
+    plan_resource_merge(schema, target, &value, Some(source), store)
+        .expect("valid tree-shaped merge")
+        .commit(store)
+        .expect("commit succeeds");
+}
+
+#[test]
+fn a_whole_resource_merge_copies_child_layers_and_moves_the_index() {
+    // The source (id 1) has a tag and an indexed shelf; the target (id 2) is on a
+    // different shelf with no tags. The merge copies the tag onto the target AND
+    // moves the target's index entry to the merged shelf, with no stray entries.
+    let book = schema(BOOK_INDEXED_LAYERS);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    write_tag(&mut store, &book, 1, 1, "favorite");
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(2)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Reaper")),
+                ("shelf".into(), saved("history")),
+            ],
+        },
+    );
+
+    // Merge the source's scalars and child layers onto the target.
+    merge_from(
+        &mut store,
+        &book,
+        &[SavedKey::Int(2)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+        &[SavedKey::Int(1)],
+    );
+
+    // The source's child-layer entry is copied to the matching target path.
+    assert_eq!(
+        decode_value(
+            store.read(&tag_entry(2, 1)).expect("copied tag"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("favorite".into())),
+        "the child-layer entry is copied onto the target"
+    );
+    // The target's index entry moved to the merged shelf, with the old one gone.
+    assert_eq!(
+        store.read(&by_shelf_entry("history", 2)),
+        None,
+        "the target's old index entry is torn down"
+    );
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 2)),
+        Some(&b"1"[..]),
+        "the target's index entry reflects the merged shelf"
+    );
+    // The source's own index entry is untouched: no stray or duplicate entries.
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 1)),
+        Some(&b"1"[..]),
+        "the source's index entry is left in place"
     );
 }

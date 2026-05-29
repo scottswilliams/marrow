@@ -3468,9 +3468,12 @@ fn write_resource(
     Ok(())
 }
 
-/// Apply a managed merge `merge ^root(key…) = value`, where `value` is a
-/// materialized [`Value::Resource`]: drives [`marrow_write::plan_resource_merge`]
-/// (copy supplied fields, keep absent ones) and commits.
+/// Apply a managed merge `merge ^root(key…) = value`: drives
+/// [`marrow_write::plan_resource_merge`] (copy supplied fields, keep absent ones)
+/// and commits. When the source is another saved record of the same root
+/// (`merge ^root(to) = ^root(from)`), this is a tree-shaped merge: its child-layer
+/// subtrees are copied too, so the source identity is lowered and passed through.
+/// A local-value source (`merge ^root(id) = patch`) carries only top-level fields.
 fn eval_resource_merge(
     target: &Expression,
     value: &Expression,
@@ -3478,6 +3481,17 @@ fn eval_resource_merge(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let (root, identity) = lower_record_identity(target, env)?;
+    // A saved-record source contributes its child-layer subtrees; lower its
+    // identity (rejecting a cross-root merge) before reading its scalar fields.
+    let source = if is_saved_path(value) {
+        let (source_root, source_identity) = lower_record_identity(value, env)?;
+        if source_root != root {
+            return Err(unsupported("merging across saved roots", span));
+        }
+        Some(source_identity)
+    } else {
+        None
+    };
     let Value::Resource(fields) = eval_expr(value, env)? else {
         return Err(unsupported("merging a non-resource value", span));
     };
@@ -3488,11 +3502,13 @@ fn eval_resource_merge(
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_merge(resource, &identity, &value, &*store).map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        })?
+        plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store).map_err(
+            |error| RuntimeError {
+                code: error.code,
+                message: error.message,
+                span,
+            },
+        )?
     };
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;

@@ -2955,6 +2955,94 @@ fn merge_updates_supplied_fields_and_keeps_the_rest() {
     );
 }
 
+/// A `Book` with a shelf index AND a `tags` child layer, plus a `copy` that
+/// merges one saved record onto another (`merge ^books(to) = ^books(from)`).
+const BOOK_TREE_MERGE: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+    tags(pos: int): string
+
+    index byShelf(shelf, id)
+
+fn add(id: int, t: string, s: string)
+    ^books(id).title = t
+    ^books(id).shelf = s
+
+fn add_tag(id: int, tag: string): int
+    return append(^books(id).tags, tag)
+
+fn copy(from: int, to: int)
+    merge ^books(to) = ^books(from)
+
+fn tag_of(id: int, pos: int): string
+    return ^books(id).tags(pos)
+
+fn ids_on(shelf: string)
+    for id in keys(^books.byShelf(shelf))
+        print($\"{id}\")
+";
+
+#[test]
+fn a_tree_shaped_merge_copies_a_child_layer_and_moves_the_index() {
+    // Source (1) is on the fiction shelf with a tag; target (2) starts on the
+    // history shelf with no tags. `merge ^books(2) = ^books(1)` copies the tag
+    // onto the target AND moves the target's index entry to the merged shelf.
+    let program = checked_program(BOOK_TREE_MERGE);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str, shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str(shelf.into()),
+            ],
+        )
+        .expect("add");
+    };
+    add(1, "Mort", "fiction");
+    add(2, "Reaper", "history");
+    run_entry(
+        &program,
+        &store,
+        "test::add_tag",
+        &[Value::Int(1), Value::Str("favorite".into())],
+    )
+    .expect("tag source");
+
+    run_entry(&program, &store, "test::copy", &[Value::Int(1), Value::Int(2)]).expect("merge");
+
+    // The source's child-layer entry is copied onto the target.
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::tag_of",
+            &[Value::Int(2), Value::Int(1)],
+        )
+        .expect("read copied tag")
+        .value,
+        Some(Value::Str("favorite".into())),
+    );
+    // The index reflects the merged shelf: the target is now on fiction (with the
+    // source), and nothing is left on history — no stray entry.
+    let ids_on = |shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::ids_on",
+            &[Value::Str(shelf.into())],
+        )
+        .expect("read index")
+        .output
+    };
+    assert_eq!(ids_on("fiction"), "1\n2\n", "both records on the merged shelf");
+    assert_eq!(ids_on("history"), "", "no stray index entry on the old shelf");
+}
+
 /// A program that records the run's clock instant into a saved `instant` field
 /// and reads it back, exercising `std::clock::now()` through `const` and a managed
 /// write.
