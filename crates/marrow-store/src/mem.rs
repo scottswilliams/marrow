@@ -45,7 +45,9 @@ pub enum StoreError {
     FormatVersion { found: u32, supported: u32 },
     /// The persistent store is corrupt and could not be opened or read.
     Corruption { message: String },
-    /// A key or value exceeded a backend limit.
+    /// An archive chunk exceeded the framing limit (a length above `u32::MAX`).
+    /// Backends enforce no key/value size limit, so archive framing is the sole
+    /// producer of this variant (`store.limit`).
     LimitExceeded { limit: &'static str },
 }
 

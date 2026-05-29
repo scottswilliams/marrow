@@ -35,8 +35,10 @@ pub trait Backend {
     /// Open a savepoint. Nested `begin`s stack; writes after it stay visible to
     /// reads (read-your-writes) until the matching `commit` or `rollback`.
     fn begin(&mut self) -> Result<(), StoreError>;
-    /// Discard the innermost savepoint, keeping its writes (a normal exit).
+    /// Discard the innermost savepoint, keeping its writes (a normal exit). With
+    /// no open savepoint this is a no-op.
     fn commit(&mut self) -> Result<(), StoreError>;
-    /// Roll back to the innermost savepoint, discarding its writes.
+    /// Roll back to the innermost savepoint, discarding its writes. With no open
+    /// savepoint this is a no-op.
     fn rollback(&mut self) -> Result<(), StoreError>;
 }

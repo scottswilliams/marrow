@@ -29,6 +29,44 @@ pub enum SavedValue {
     },
 }
 
+/// A value that cannot be encoded to its canonical saved form. Today the only
+/// such case is a `date`/`instant` whose calendar year falls outside the
+/// documented 0001-9999 range (docs/language/types.md): formatting it would
+/// produce a 5-7 digit year that [`decode_value`] could never read back, so the
+/// codec rejects it rather than break the round-trip / one-canonical-form
+/// invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueError {
+    /// A date's day count lies outside year 0001-9999.
+    DateOutOfRange { days: i32 },
+    /// An instant's calendar day lies outside year 0001-9999.
+    InstantOutOfRange { nanos: i128 },
+}
+
+impl ValueError {
+    /// The stable dotted code a tool reports for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::DateOutOfRange { .. } | Self::InstantOutOfRange { .. } => "value.range",
+        }
+    }
+}
+
+impl std::fmt::Display for ValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DateOutOfRange { days } => {
+                write!(f, "date day {days} is outside the year 0001-9999 range")
+            }
+            Self::InstantOutOfRange { nanos } => {
+                write!(f, "instant {nanos}ns is outside the year 0001-9999 range")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValueError {}
+
 /// The type to decode saved bytes as. A typed read knows this from the schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueType {
@@ -47,19 +85,23 @@ pub enum ValueType {
 /// decimal text, strings and error codes as UTF-8, bytes verbatim, dates as
 /// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`
 /// (docs/language/types.md).
-pub fn encode_value(value: &SavedValue) -> Vec<u8> {
-    match value {
+///
+/// This is the canonical boundary: it produces only forms [`decode_value`] reads
+/// back. A `date`/`instant` outside year 0001-9999 is a typed [`ValueError`]
+/// rather than a non-decodable 5-7 digit year.
+pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
+    Ok(match value {
         SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
         SavedValue::Int(value) => value.to_string().into_bytes(),
         SavedValue::Str(text) | SavedValue::ErrorCode(text) => text.as_bytes().to_vec(),
         SavedValue::Bytes(bytes) => bytes.clone(),
-        SavedValue::Date(days) => format_date(*days).into_bytes(),
+        SavedValue::Date(days) => format_date(*days)?.into_bytes(),
         SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
-        SavedValue::Instant(nanos) => format_instant(*nanos).into_bytes(),
+        SavedValue::Instant(nanos) => format_instant(*nanos)?.into_bytes(),
         SavedValue::Decimal { coefficient, scale } => {
             format_decimal(*coefficient, *scale).into_bytes()
         }
-    }
+    })
 }
 
 /// Decode canonical saved bytes as `ty`, or `None` if the bytes are not a valid
@@ -108,10 +150,15 @@ pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
     (civil_from_days(days) == (year, month, day)).then_some(value)
 }
 
-/// Format days-since-epoch as the canonical `YYYY-MM-DD`.
-fn format_date(days: i32) -> String {
+/// Format days-since-epoch as the canonical `YYYY-MM-DD`, or a typed range error
+/// when the date's year falls outside 0001-9999 (`decode_value` only reads a
+/// 4-digit year, so an out-of-range year would never round-trip).
+fn format_date(days: i32) -> Result<String, ValueError> {
     let (year, month, day) = civil_from_days(days as i64);
-    format!("{year:04}-{month:02}-{day:02}")
+    if !(1..=9999).contains(&year) {
+        return Err(ValueError::DateOutOfRange { days });
+    }
+    Ok(format!("{year:04}-{month:02}-{day:02}"))
 }
 
 /// Parse the canonical `YYYY-MM-DD` form to days-since-epoch. The shape is
@@ -235,11 +282,15 @@ fn parse_duration(bytes: &[u8]) -> Option<i128> {
 
 /// Format nanoseconds-since-epoch (UTC) as the canonical
 /// `YYYY-MM-DDTHH:MM:SSZ`, including a trailing-zero-trimmed fraction only when
-/// the sub-second part is non-zero.
-fn format_instant(nanos: i128) -> String {
+/// the sub-second part is non-zero. Returns a typed range error when the calendar
+/// day falls outside year 0001-9999, matching the date boundary.
+fn format_instant(nanos: i128) -> Result<String, ValueError> {
     let days = nanos.div_euclid(NANOS_PER_DAY);
     let time_of_day = nanos.rem_euclid(NANOS_PER_DAY); // [0, NANOS_PER_DAY)
     let (year, month, day) = civil_from_days(days as i64);
+    if !(1..=9999).contains(&year) {
+        return Err(ValueError::InstantOutOfRange { nanos });
+    }
     let total_seconds = (time_of_day / NANOS_PER_SEC) as u32; // [0, 86399]
     let fraction = (time_of_day % NANOS_PER_SEC) as u32;
     let (hours, minutes, seconds) = (
@@ -253,7 +304,7 @@ fn format_instant(nanos: i128) -> String {
         out.push_str(format!("{fraction:09}").trim_end_matches('0'));
     }
     out.push('Z');
-    out
+    Ok(out)
 }
 
 /// Parse the canonical `YYYY-MM-DDTHH:MM:SSZ` (UTC) form to nanoseconds since the
@@ -303,30 +354,15 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
     Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)
 }
 
-/// The decimal envelope: at most 34 significant digits and 34 fractional places
-/// (docs/language/types.md).
-const DECIMAL_MAX_DIGITS: u32 = 34;
-
-/// Format a decimal (`coefficient * 10^(-scale)`) as canonical decimal text:
-/// no leading zeros, no trailing-zero fraction, no exponent. Normalizes its
-/// input first, so any equal-valued (coefficient, scale) produces one spelling.
-fn format_decimal(mut coefficient: i128, mut scale: u32) -> String {
-    while scale > 0 && coefficient % 10 == 0 {
-        coefficient /= 10;
-        scale -= 1;
-    }
-    if coefficient == 0 {
-        return "0".to_string();
-    }
-    let sign = if coefficient < 0 { "-" } else { "" };
-    let digits = coefficient.unsigned_abs().to_string();
-    if scale == 0 {
-        return format!("{sign}{digits}");
-    }
-    let scale = scale as usize;
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let point = padded.len() - scale;
-    format!("{sign}{}.{}", &padded[..point], &padded[point..])
+/// Format a stored decimal (`coefficient * 10^(-scale)`) as canonical decimal
+/// text by routing through the shared [`Decimal`](crate::Decimal) codec, so the
+/// saved form and decimal arithmetic share one normalization and one spelling.
+/// A [`SavedValue::Decimal`] is only ever built from an in-envelope value (decoded
+/// via [`parse_decimal`] or from a `Decimal`), so the construction always succeeds.
+fn format_decimal(coefficient: i128, scale: u32) -> String {
+    crate::Decimal::from_parts(coefficient, scale)
+        .expect("a stored decimal is within the envelope")
+        .to_text()
 }
 
 /// Parse canonical decimal text to a value-canonical [`SavedValue::Decimal`].
@@ -366,18 +402,11 @@ fn parse_decimal(bytes: &[u8]) -> Option<SavedValue> {
     if negative && magnitude == 0 {
         return None; // `-0` is not canonical
     }
-    if significant_digits(magnitude) > DECIMAL_MAX_DIGITS || scale > DECIMAL_MAX_DIGITS {
+    if crate::decimal::significant_digits(magnitude) > crate::decimal::MAX_DIGITS
+        || scale > crate::decimal::MAX_DIGITS
+    {
         return None;
     }
     let coefficient = if negative { -magnitude } else { magnitude };
     Some(SavedValue::Decimal { coefficient, scale })
-}
-
-/// The number of significant digits in a non-negative magnitude; zero has none.
-fn significant_digits(magnitude: i128) -> u32 {
-    if magnitude == 0 {
-        0
-    } else {
-        magnitude.unsigned_abs().to_string().len() as u32
-    }
 }

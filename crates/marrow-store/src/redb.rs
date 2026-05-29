@@ -116,6 +116,16 @@ impl RedbStore {
             },
         })?;
         let write = db.begin_write().map_err(io("open"))?;
+        // `Database::create` also opens an existing file, so a brand-new database
+        // must be told apart from one that already has tables. A fresh database has
+        // none; stamp the version only then. A non-empty file with no meta is a
+        // foreign or meta-less store, rejected as corruption (matching
+        // `open_read_only`) rather than silently adopted and written into.
+        let is_new = write
+            .list_tables()
+            .map_err(io("open"))?
+            .next()
+            .is_none();
         {
             // Check or stamp the format version before touching data. Read the
             // value into an owned `Option<u32>` first so the access guard drops
@@ -133,9 +143,14 @@ impl RedbStore {
                     });
                 }
                 Some(_) => {}
-                None => {
+                None if is_new => {
                     meta.insert("format_version", FORMAT_VERSION)
                         .map_err(io("open"))?;
+                }
+                None => {
+                    return Err(StoreError::Corruption {
+                        message: "store is missing its format version".into(),
+                    });
                 }
             }
         }
@@ -367,8 +382,10 @@ impl Backend for RedbStore {
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
+        // With no open transaction, commit is a no-op (the in-memory store agrees):
+        // callers pair begin with commit, so a stray commit is a harmless misuse.
         let Some(journal) = self.journals.pop() else {
-            return Err(io("commit")("no open transaction"));
+            return Ok(());
         };
         match self.journals.last_mut() {
             // An inner commit keeps its writes; its undo log moves outward so an
@@ -384,8 +401,10 @@ impl Backend for RedbStore {
     }
 
     fn rollback(&mut self) -> Result<(), StoreError> {
+        // With no open transaction, rollback is a no-op (matching the in-memory
+        // store), so an unbalanced rollback is harmless rather than a store.io error.
         let Some(journal) = self.journals.pop() else {
-            return Err(io("rollback")("no open transaction"));
+            return Ok(());
         };
         if self.journals.is_empty() {
             // Outermost: abort the redb transaction, discarding every change.
@@ -410,5 +429,49 @@ impl Backend for RedbStore {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A foreign or meta-less redb file — one with tables but no `marrow.meta` —
+    /// must be rejected as corruption, not silently adopted and stamped as a
+    /// Marrow store. (`Database::create` opens existing files too, so `open` tells
+    /// a brand-new database from an existing one by whether it has any tables.)
+    #[test]
+    fn open_rejects_an_existing_file_missing_meta() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("foreign.redb");
+
+        // Build a non-empty redb file with some other table and no `marrow.meta`.
+        {
+            let db = Database::create(&path).expect("create foreign db");
+            let write = db.begin_write().expect("begin");
+            const OTHER: TableDefinition<&str, u32> = TableDefinition::new("not.marrow");
+            write.open_table(OTHER).expect("open foreign table");
+            write.commit().expect("commit foreign db");
+        }
+
+        match RedbStore::open(&path) {
+            Err(StoreError::Corruption { .. }) => {}
+            Err(other) => panic!("expected corruption for a meta-less file, got {other:?}"),
+            Ok(_) => panic!("a meta-less file must not be adopted as a Marrow store"),
+        }
+    }
+
+    /// A brand-new file is created and stamped, and reopening the stamped store
+    /// succeeds — the new-vs-existing distinction does not break the normal path.
+    #[test]
+    fn open_creates_and_reopens_a_fresh_store() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("fresh.redb");
+        {
+            let mut store = RedbStore::open(&path).expect("create fresh");
+            store.write(b"k", b"v".to_vec()).expect("write");
+        }
+        let store = RedbStore::open(&path).expect("reopen stamped store");
+        assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
     }
 }

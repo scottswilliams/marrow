@@ -23,6 +23,7 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     delete_removes_the_subtree(&mut make());
     delete_of_an_absent_path_is_a_no_op(&mut make());
     child_keys_list_integer_records_in_order(&mut make());
+    child_keys_dedup_records_with_multiple_descendants(&mut make());
     child_keys_list_field_names_in_order(&mut make());
     child_keys_round_trip_string_records(&mut make());
     roots_are_ordered_and_deduped(&mut make());
@@ -32,6 +33,7 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     a_corrupt_path_is_a_typed_error(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
+    an_unbalanced_commit_or_rollback_is_a_no_op(&mut make());
     nested_transactions_are_savepoints(&mut make());
     a_transaction_sees_its_writes_in_traversal(&mut make());
 }
@@ -147,6 +149,30 @@ fn child_keys_list_integer_records_in_order(store: &mut dyn Backend) {
             ChildSegment::Key(SavedKey::Int(10)),
             ChildSegment::Key(SavedKey::Int(100)),
         ]
+    );
+}
+
+fn child_keys_dedup_records_with_multiple_descendants(store: &mut dyn Backend) {
+    // A record can have several descendants (^seq(1).a, ^seq(1).b); the parent's
+    // child_keys must collapse those to one entry per immediate child. With one
+    // descendant per record the dedup branch never fires, so this law gives ^seq(1)
+    // two fields before listing ^seq's children.
+    store
+        .write(&keyed_field("seq", SavedKey::Int(1), "a"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(&keyed_field("seq", SavedKey::Int(1), "b"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(&keyed_field("seq", SavedKey::Int(2), "a"), b"x".to_vec())
+        .unwrap();
+    assert_eq!(
+        store.child_keys(&root("seq")).unwrap(),
+        vec![
+            ChildSegment::Key(SavedKey::Int(1)),
+            ChildSegment::Key(SavedKey::Int(2)),
+        ],
+        "a record with multiple descendants appears once among its parent's children"
     );
 }
 
@@ -292,6 +318,26 @@ fn a_rolled_back_transaction_discards_its_writes(store: &mut dyn Backend) {
         Some(b"kept".to_vec()),
         "the pre-transaction value remains"
     );
+}
+
+fn an_unbalanced_commit_or_rollback_is_a_no_op(store: &mut dyn Backend) {
+    // With no open transaction, commit and rollback are no-ops: callers pair
+    // begin with commit/rollback, so an extra one is a harmless misuse, not an
+    // error. (One contract across backends; mem and redb agree.)
+    store.commit().unwrap();
+    store.rollback().unwrap();
+    // The store still works normally afterward.
+    store.write(&book(1), b"v".to_vec()).unwrap();
+    assert_eq!(store.read(&book(1)).unwrap(), Some(b"v".to_vec()));
+    // A balanced begin/commit after the stray calls still behaves.
+    store.begin().unwrap();
+    store.write(&book(2), b"w".to_vec()).unwrap();
+    store.commit().unwrap();
+    assert_eq!(store.read(&book(2)).unwrap(), Some(b"w".to_vec()));
+    // And a trailing stray commit/rollback remains a no-op.
+    store.commit().unwrap();
+    store.rollback().unwrap();
+    assert_eq!(store.read(&book(1)).unwrap(), Some(b"v".to_vec()));
 }
 
 fn nested_transactions_are_savepoints(store: &mut dyn Backend) {

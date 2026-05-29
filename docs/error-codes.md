@@ -58,7 +58,9 @@ Storage errors include the failed operation, a safe path or prefix when one is
 available, and the capability or limit involved. Machine-readable facts belong
 in `data`; clients do not parse `message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.limit`, and `store.corrupt_path`.
+`store.limit`, and `store.corrupt_path`. Backends enforce no key or value size
+limit, so `store.limit` is produced only by archive framing, when a record's
+length exceeds the archive's `u32` chunk-length field.
 
 The `marrow serve` data server reports a `protocol.*` code when a request is bad:
 `protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`, and

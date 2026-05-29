@@ -12,7 +12,8 @@
 use std::cmp::Ordering;
 
 /// The decimal envelope: at most 34 significant digits and 34 fractional places.
-const MAX_DIGITS: u32 = 34;
+/// Shared with the saved-value codec ([`crate::value`]) so both enforce one limit.
+pub(crate) const MAX_DIGITS: u32 = 34;
 
 /// An exact base-10 decimal, value `coefficient * 10^(-scale)`, in canonical form.
 ///
@@ -319,8 +320,9 @@ fn normalize(mut coefficient: i128, mut scale: u32) -> (i128, u32) {
     (coefficient, scale)
 }
 
-/// The number of significant digits in a coefficient; zero has none.
-fn significant_digits(coefficient: i128) -> u32 {
+/// The number of significant digits in a coefficient; zero has none. Shared with
+/// the saved-value codec ([`crate::value`]) so both count digits identically.
+pub(crate) fn significant_digits(coefficient: i128) -> u32 {
     if coefficient == 0 {
         0
     } else {
