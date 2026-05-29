@@ -3246,3 +3246,169 @@ fn the_sample_update_functions_run() {
     assert_eq!(shelf("history"), "1: Small Gods\n", "moved to history");
     assert_eq!(shelf("fiction"), "", "and left fiction");
 }
+
+// --- Wave 1: resource-identity values (G03) ---
+
+/// A single-key resource where code constructs an identity with `Book::Id(1)`,
+/// passes it to a saved read, and writes through it. The identity carries the
+/// lowered key so `^books(id)` reads the same record `^books(1)` does.
+const BOOK_IDENTITY: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+
+fn save(t: string)
+    const id = Book::Id(1)
+    ^books(id).title = t
+
+fn title(): string
+    const id = Book::Id(1)
+    return ^books(id).title
+";
+
+#[test]
+fn constructs_and_uses_a_single_key_identity() {
+    let program = checked_program(BOOK_IDENTITY);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[Value::Str("Mort".into())]).expect("save");
+    let value = run_entry(&program, &store, "test::title", &[])
+        .expect("title")
+        .value;
+    assert_eq!(value, Some(Value::Str("Mort".into())));
+    // The identity lowered to the same key a plain int does: `^books(1)`.
+    let store = store.borrow();
+    let bytes = store
+        .read(&encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::Field("title".into()),
+        ]))
+        .expect("present");
+    assert_eq!(
+        decode_value(bytes, ValueType::Str),
+        Some(SavedValue::Str("Mort".into()))
+    );
+}
+
+#[test]
+fn a_plain_int_identity_still_works() {
+    // `^books(Book::Id(1))` and `^books(1)` address the same record: the bare
+    // int path (the `nextId` flow) is unchanged by the identity variant.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn save()\n    ^books(Book::Id(1)).title = \"a\"\n\nfn read(): string\n    return ^books(1).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[]).expect("save");
+    let value = run_entry(&program, &store, "test::read", &[])
+        .expect("read")
+        .value;
+    assert_eq!(value, Some(Value::Str("a".into())));
+}
+
+/// A composite-key resource: `Enrollment::Id(studentId:..., courseId:...)` builds
+/// one identity from named keys, in declared order, and `^enrollments(id)` lowers
+/// it back into both key segments.
+const ENROLLMENT_IDENTITY: &str = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+
+fn enroll(s: string, c: string, st: string)
+    const id = Enrollment::Id(studentId: s, courseId: c)
+    ^enrollments(id).status = st
+
+fn statusOf(s: string, c: string): string
+    const id = Enrollment::Id(studentId: s, courseId: c)
+    return ^enrollments(id).status
+";
+
+#[test]
+fn constructs_and_uses_a_composite_identity_round_trips() {
+    let program = checked_program(ENROLLMENT_IDENTITY);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::enroll",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-9".into()),
+            Value::Str("active".into()),
+        ],
+    )
+    .expect("enroll");
+    let value = run_entry(
+        &program,
+        &store,
+        "test::statusOf",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-9".into()),
+        ],
+    )
+    .expect("statusOf")
+    .value;
+    assert_eq!(value, Some(Value::Str("active".into())));
+    // Keys lowered in declared order: studentId then courseId.
+    let store = store.borrow();
+    let bytes = store
+        .read(&encode_path(&[
+            PathSegment::Root("enrollments".into()),
+            PathSegment::RecordKey(SavedKey::Str("student-1".into())),
+            PathSegment::RecordKey(SavedKey::Str("course-9".into())),
+            PathSegment::Field("status".into()),
+        ]))
+        .expect("present");
+    assert_eq!(
+        decode_value(bytes, ValueType::Str),
+        Some(SavedValue::Str("active".into()))
+    );
+}
+
+#[test]
+fn composite_identity_orders_keys_by_declaration_not_arguments() {
+    // Named args supplied in reverse order still lower in declared key order.
+    let program = checked_program(
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn enroll()\n    const id = Enrollment::Id(courseId: \"c\", studentId: \"s\")\n    ^enrollments(id).status = \"active\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::enroll", &[]).expect("enroll");
+    let store = store.borrow();
+    let bytes = store
+        .read(&encode_path(&[
+            PathSegment::Root("enrollments".into()),
+            PathSegment::RecordKey(SavedKey::Str("s".into())),
+            PathSegment::RecordKey(SavedKey::Str("c".into())),
+            PathSegment::Field("status".into()),
+        ]))
+        .expect("present");
+    assert_eq!(
+        decode_value(bytes, ValueType::Str),
+        Some(SavedValue::Str("active".into()))
+    );
+}
+
+#[test]
+fn whole_resource_read_through_an_identity() {
+    // `var e: Enrollment = ^enrollments(id)` round-trips through an identity.
+    let program = checked_program(
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn statusOf(s: string, c: string): string\n    const id = Enrollment::Id(studentId: s, courseId: c)\n    var e: Enrollment = ^enrollments(id)\n    return e.status\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("enrollments".into()),
+            PathSegment::RecordKey(SavedKey::Str("s".into())),
+            PathSegment::RecordKey(SavedKey::Str("c".into())),
+            PathSegment::Field("status".into()),
+        ]),
+        encode_value(&SavedValue::Str("active".into())).expect("encodes"),
+    );
+    let value = run_entry(
+        &program,
+        &store,
+        "test::statusOf",
+        &[Value::Str("s".into()), Value::Str("c".into())],
+    )
+    .expect("statusOf")
+    .value;
+    assert_eq!(value, Some(Value::Str("active".into())));
+}

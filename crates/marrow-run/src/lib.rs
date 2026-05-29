@@ -67,6 +67,11 @@ pub enum Value {
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
     Resource(Vec<(String, Value)>),
+    /// A resource identity (`Book::Id(17)`, `Enrollment::Id(...)`): its lowered
+    /// key segments in declared identity-key order. Produced by an identity
+    /// constructor and spliced back into the saved path at a keyed lookup. It is
+    /// opaque — not a saved field value, not rendered, not iterated.
+    Identity(Vec<SavedKey>),
 }
 
 /// The result of running an entry function: its returned value (if any) and
@@ -775,6 +780,15 @@ fn eval_call(
         && name == "Error"
     {
         return eval_error_constructor(args, span, env).map(Some);
+    }
+    // `Resource::Id(...)` constructs a resource identity. It may carry named
+    // (composite) keys, so it is dispatched before the named/moded guard that
+    // routes named calls to program functions.
+    if let [name, id] = segments.as_slice()
+        && id == "Id"
+        && let Some(resource) = find_resource_by_name(env.program, name)
+    {
+        return eval_identity_constructor(resource, args, span, env).map(Some);
     }
     // Builtins and the host capability take positional arguments only; a call
     // carrying named arguments is a program-function call, handled last.
@@ -2643,22 +2657,7 @@ fn eval_resource_read(
     let Expression::SavedRoot { name: root, .. } = callee else {
         return Err(unsupported("this read", span));
     };
-    if args
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported(
-            "a keyed lookup with named or out arguments",
-            span,
-        ));
-    }
-    let mut identity = Vec::with_capacity(args.len());
-    for arg in args {
-        identity.push(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("a key of this type", span))?,
-        );
-    }
+    let identity = lower_identity_args(args, span, env)?;
     read_resource(root, &identity, span, env)
 }
 
@@ -3038,6 +3037,93 @@ fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p Reso
         })
 }
 
+/// The resource schema declared with `name`, for an identity constructor
+/// `Name::Id(...)`. Keyed on the resource name (not its saved root), since the
+/// constructor names the resource.
+fn find_resource_by_name<'p>(
+    program: &'p CheckedProgram,
+    name: &str,
+) -> Option<&'p ResourceSchema> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .find(|resource| resource.name == name)
+}
+
+/// Build a resource identity value from a `Resource::Id(...)` constructor: its
+/// keys lowered in declared identity-key order. Positional args lower in order;
+/// named args (composite keys) match by key name. A singleton (keyless) resource
+/// has no identity type, and an arity or name mismatch is a type error.
+fn eval_identity_constructor(
+    resource: &ResourceSchema,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let root = resource
+        .saved_root
+        .as_ref()
+        .filter(|saved| !saved.identity_keys.is_empty());
+    let Some(root) = root else {
+        return Err(unsupported(
+            "an identity for a resource with no identity keys",
+            span,
+        ));
+    };
+    if args.iter().any(|arg| arg.mode.is_some()) {
+        return Err(type_error(
+            "an identity key cannot be an out argument",
+            span,
+        ));
+    }
+    if args.len() != root.identity_keys.len() {
+        return Err(type_error(
+            &format!(
+                "`{}::Id` takes {} key(s), got {}",
+                resource.name,
+                root.identity_keys.len(),
+                args.len()
+            ),
+            span,
+        ));
+    }
+    // Mixed positional and named arguments are ambiguous; require one shape.
+    let named = args.iter().filter(|arg| arg.name.is_some()).count();
+    if named != 0 && named != args.len() {
+        return Err(type_error(
+            "an identity takes either positional or named keys, not both",
+            span,
+        ));
+    }
+    let mut keys = Vec::with_capacity(root.identity_keys.len());
+    if named == 0 {
+        // Positional: each argument lowers to the key at the same position.
+        for arg in args {
+            keys.push(
+                value_to_key(eval_expr(&arg.value, env)?)
+                    .ok_or_else(|| type_error("a key of this type", span))?,
+            );
+        }
+    } else {
+        // Named (composite): for each declared key, find the matching argument,
+        // so keys land in declared order regardless of argument order.
+        for key in &root.identity_keys {
+            let arg = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some(key.name.as_str()))
+                .ok_or_else(|| {
+                    type_error(&format!("identity key `{}` is missing", key.name), span)
+                })?;
+            keys.push(
+                value_to_key(eval_expr(&arg.value, env)?)
+                    .ok_or_else(|| type_error("a key of this type", span))?,
+            );
+        }
+    }
+    Ok(Value::Identity(keys))
+}
+
 /// Whether the resource declares an unkeyed nested group, which a whole-resource
 /// value owns but the runtime cannot yet materialize. A group layer has no key
 /// params (a keyed leaf or keyed group always does), so any such layer is an
@@ -3173,40 +3259,66 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
             scale: d.scale(),
         },
         Value::Bytes(b) => SavedValue::Bytes(b),
-        // A whole sequence or resource is a tree, not a scalar saved value.
-        Value::Sequence(_) | Value::Resource(_) => return None,
+        // A whole sequence or resource is a tree, not a scalar saved value; an
+        // identity is opaque and is not stored as a field value in this wave.
+        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => return None,
     })
 }
 
-/// Lower a record path `^root(key…)` to its saved root name and identity key
-/// values, evaluating each key argument in `env`.
+/// Lower a record path to its saved root name and identity key values: a keyed
+/// lookup `^root(key…)`, or a bare singleton root `^root` (a zero-key identity).
 fn lower_record_identity(
     expr: &Expression,
     env: &mut Env<'_>,
 ) -> Result<(String, Vec<SavedKey>), RuntimeError> {
+    // A bare saved root is a keyless singleton (`Settings at ^settings`): its
+    // identity is empty, which `resolve_saved_root` accepts.
+    if let Expression::SavedRoot { name, .. } = expr {
+        return Ok((name.clone(), Vec::new()));
+    }
     let Expression::Call { callee, args, span } = expr else {
         return Err(unsupported("this saved path", expr.span()));
     };
     let Expression::SavedRoot { name, .. } = callee.as_ref() else {
         return Err(unsupported("this saved path", *span));
     };
+    let keys = lower_identity_args(args, *span, env)?;
+    Ok((name.clone(), keys))
+}
+
+/// Evaluate a keyed lookup's arguments to identity key segments. A sole
+/// identity-valued argument (`^root(id)` where `id: Resource::Id`) splices its
+/// lowered keys in as the full identity; otherwise each argument is one raw key
+/// (the `^root(17)`/`nextId` flow). Named/out arguments are rejected, and an
+/// identity argument cannot be mixed with raw keys.
+fn lower_identity_args(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<SavedKey>, RuntimeError> {
     if args
         .iter()
         .any(|arg| arg.mode.is_some() || arg.name.is_some())
     {
         return Err(unsupported(
             "a keyed lookup with named or out arguments",
-            *span,
+            span,
         ));
     }
     let mut keys = Vec::with_capacity(args.len());
     for arg in args {
-        keys.push(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("a key of this type", *span))?,
-        );
+        match eval_expr(&arg.value, env)? {
+            // An identity is the whole lookup key only as the sole argument; it
+            // cannot be one component among raw keys.
+            Value::Identity(identity) if args.len() == 1 => return Ok(identity),
+            Value::Identity(_) => {
+                return Err(unsupported("an identity mixed with other keys", span));
+            }
+            value => keys
+                .push(value_to_key(value).ok_or_else(|| unsupported("a key of this type", span))?),
+        }
     }
-    Ok((name.clone(), keys))
+    Ok(keys)
 }
 
 /// A lowered keyed group-entry path: the saved root name, the record identity
@@ -3266,21 +3378,9 @@ fn lower_saved_path(
     match expr {
         Expression::SavedRoot { name, .. } => Ok(vec![PathSegment::Root(name.clone())]),
         Expression::Call { callee, args, span } => {
-            if args
-                .iter()
-                .any(|arg| arg.mode.is_some() || arg.name.is_some())
-            {
-                return Err(unsupported(
-                    "a keyed lookup with named or out arguments",
-                    *span,
-                ));
-            }
             let mut segments = lower_saved_path(callee, env)?;
-            for arg in args {
-                let key = value_to_key(eval_expr(&arg.value, env)?)
-                    .ok_or_else(|| unsupported("a key of this type", *span))?;
-                segments.push(PathSegment::RecordKey(key));
-            }
+            let keys = lower_identity_args(args, *span, env)?;
+            segments.extend(keys.into_iter().map(PathSegment::RecordKey));
             Ok(segments)
         }
         Expression::Field { base, name, .. } => {
@@ -3389,7 +3489,9 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Duration(n) => Some(SavedKey::Duration(n)),
         Value::Bytes(b) => Some(SavedKey::Bytes(b)),
         // Decimal keys are deferred; sequences and resources are not scalar keys.
-        Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) => None,
+        // An identity is not a single key — lowering splices its segments in
+        // before reaching here.
+        Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
     }
 }
 
@@ -3450,6 +3552,7 @@ fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
         Value::Date(_) => return Err(unsupported("rendering a date value", span)),
         Value::Duration(_) => return Err(unsupported("rendering a duration value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
+        Value::Identity(_) => return Err(unsupported("rendering an identity value", span)),
     })
 }
 
