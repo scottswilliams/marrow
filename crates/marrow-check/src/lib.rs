@@ -1665,7 +1665,10 @@ fn is_builtin_call(segments: &[String]) -> bool {
             | "int" | "decimal" | "string" | "bool" | "bytes" | "ErrorCode"
             | "date" | "instant" | "duration"
         ),
-        [first, _, _] => first == "std",
+        // A `std::module::op` builtin must name a real std module, mirroring
+        // import resolution (`is_std_module`/STD_MODULES); an unknown submodule is
+        // not a builtin, so it is reported like a rejected `use std::bogus`.
+        [first, module, _] => first == "std" && STD_MODULES.contains(&module.as_str()),
         _ => false,
     }
 }

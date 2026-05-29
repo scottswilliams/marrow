@@ -983,6 +983,32 @@ fn a_call_to_an_undefined_function_is_flagged() {
 }
 
 #[test]
+fn a_call_to_an_unknown_std_submodule_is_flagged() {
+    // `std::bogus::foo()` names no real std module (STD_MODULES), so it is not a
+    // builtin — it is reported consistently with `use std::bogus` rejection,
+    // rather than silently type-checking.
+    let found = check_module(
+        "call-std-bogus",
+        "module m\n\
+         fn caller()\n    std::bogus::foo()\n",
+        "check.unresolved_call",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_call_to_a_known_std_submodule_is_not_flagged() {
+    // A real std submodule call stays a builtin and is not unresolved.
+    let found = check_module(
+        "call-std-known",
+        "module m\n\
+         fn caller()\n    var n = std::text::length(\"hi\")\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_builtin_call_is_not_an_unresolved_call() {
     // Builtins dispatch before user functions, so they never resolve to a program
     // function — but they are defined, not unresolved.
