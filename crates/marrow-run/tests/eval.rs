@@ -5009,6 +5009,99 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
     );
 }
 
+/// `count` over a declared index branch returns the number of entries under that
+/// branch, exactly as `keys(...)` over the same branch would yield. The branch is
+/// a non-unique index so several entries share one query key.
+const BOOK_COUNT_INDEX: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+    tags: sequence[string]
+
+    index byShelf(shelf, id)
+
+fn add(id: int, t: string, s: string)
+    ^books(id).title = t
+    ^books(id).shelf = s
+
+fn tag(id: int, t: string): int
+    return append(^books(id).tags, t)
+
+fn countBranch(shelf: string): int
+    return count(^books.byShelf(shelf))
+
+fn keysBranch(shelf: string): int
+    var c = 0
+    for id in keys(^books.byShelf(shelf))
+        c = c + 1
+    return c
+
+fn countRoot(): int
+    return count(^books)
+
+fn countLayer(id: int): int
+    return count(^books(id).tags)
+
+fn countScalar(id: int): int
+    return count(^books(id).title)
+
+fn countRecord(id: int): int
+    return count(^books(id))
+";
+
+#[test]
+fn count_over_an_index_branch_matches_branch_entry_count() {
+    let program = checked_program(BOOK_COUNT_INDEX);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str, shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str(shelf.into()),
+            ],
+        )
+        .expect("add");
+    };
+    add(1, "Mort", "fiction");
+    add(2, "Sourcery", "fiction");
+    add(3, "Guards", "history");
+
+    let call = |entry: &str, args: &[Value]| {
+        run_entry(&program, &store, entry, args)
+            .expect("count")
+            .value
+    };
+    // Two tags on book 1, so its keyed/sequence layer has two entries.
+    call("test::tag", &[Value::Int(1), Value::Str("a".into())]);
+    call("test::tag", &[Value::Int(1), Value::Str("b".into())]);
+
+    // `count(^books.byShelf(shelf))` returns the entry count under that index
+    // branch, matching `keys(...)` over the same branch.
+    assert_eq!(call("test::countBranch", &[Value::Str("fiction".into())]), Some(Value::Int(2)));
+    assert_eq!(call("test::keysBranch", &[Value::Str("fiction".into())]), Some(Value::Int(2)));
+    assert_eq!(call("test::countBranch", &[Value::Str("history".into())]), Some(Value::Int(1)));
+    assert_eq!(call("test::keysBranch", &[Value::Str("history".into())]), Some(Value::Int(1)));
+    // An empty branch counts as zero, like `keys(...)` of it.
+    assert_eq!(call("test::countBranch", &[Value::Str("romance".into())]), Some(Value::Int(0)));
+    assert_eq!(call("test::keysBranch", &[Value::Str("romance".into())]), Some(Value::Int(0)));
+
+    // The previously-correct count shapes stay byte-identical: a keyed/sequence
+    // layer counts its entries, a scalar counts as 1, and a whole record counts
+    // its populated immediate children. These all keep the read/child-keys path.
+    assert_eq!(call("test::countLayer", &[Value::Int(1)]), Some(Value::Int(2)));
+    assert_eq!(call("test::countLayer", &[Value::Int(3)]), Some(Value::Int(0)));
+    assert_eq!(call("test::countScalar", &[Value::Int(1)]), Some(Value::Int(1)));
+    assert!(matches!(call("test::countRecord", &[Value::Int(1)]), Some(Value::Int(n)) if n >= 1));
+    // A primary root keeps its existing read/child-keys count: it walks the root's
+    // immediate children, which includes the declared `byShelf` index node beside
+    // the three record keys. This fix does not touch the primary-root path.
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(4)));
+}
+
 /// `values`/`entries` over a primary root materialize whole records; over a
 /// keyed/sequence layer they materialize each entry's value. `entries` feeds the
 /// two-name `for id, x in entries(...)` binding.

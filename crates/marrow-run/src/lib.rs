@@ -1216,6 +1216,15 @@ fn eval_count(
             span,
         });
     };
+    // A declared index branch `^root.index(args…)` addresses an `Index`/`IndexKey`
+    // layer that `lower_saved_path` would mis-encode as a `RecordKey` lookup. Count
+    // its entries through the same enumeration `keys(...)` uses over that branch, so
+    // `count` and `keys(...).len()` agree. Scalar and record paths still use the
+    // direct read/child-keys path below, unchanged.
+    if is_index_branch(&arg.value, env) {
+        let entries = enumerate_layer(&arg.value, env)?.len();
+        return Ok(Value::Int(entries as i64));
+    }
     let path = encode_path(&lower_saved_path(&arg.value, env)?);
     let store = env.store.borrow();
     let children = store
@@ -1231,6 +1240,25 @@ fn eval_count(
             .is_some() as usize
     };
     Ok(Value::Int(count as i64))
+}
+
+/// Whether `expr` is a declared index branch `^root.index(args…)` — a `Call`
+/// whose callee names an index off a saved root. This is the one saved-path shape
+/// `lower_saved_path` mis-encodes (as record-key lookups rather than an
+/// `Index`/`IndexKey` path), so `count` routes it through [`enumerate_layer`]
+/// instead, matching the same classification [`eval_call`] uses for index lookups.
+fn is_index_branch(expr: &Expression, env: &Env<'_>) -> bool {
+    let Expression::Call { callee, .. } = expr else {
+        return false;
+    };
+    let Expression::Field { base, name, .. } = callee.as_ref() else {
+        return false;
+    };
+    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return false;
+    };
+    find_resource(env.program, root)
+        .is_some_and(|resource| resource.indexes.iter().any(|index| &index.name == name))
 }
 
 /// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,
