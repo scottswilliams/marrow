@@ -8,9 +8,9 @@ indexes. Those are the checker's and runtime's job, above the store.
 
 Two backends implement the same contract and pass the same conformance suite:
 
-- the **in-memory store** (`memory`), a `BTreeMap` used for short runs, tests,
+- the in-memory store (`memory`), a `BTreeMap` used for short runs, tests,
   and the default when a project pins no backend;
-- the **native store** (`native`), persisted with [redb](https://docs.rs/redb)
+- the native store (`native`), persisted with [redb](https://docs.rs/redb)
   in a single `marrow.redb` file under the project's `dataDir`.
 
 Because the store is path/value only, the same encoded stream restores
@@ -21,21 +21,21 @@ byte-for-byte into either backend (see [Archives And Portability](#archives-and-
 A saved path is a sequence of segments — a root, identity record keys, named
 members (fields, child layers, index names), and index keys inside a layer or
 index. Each segment encodes to a self-delimiting byte run, and a path's bytes
-are its segments concatenated. The encoding is designed so that **raw
-byte-lexicographic order is exactly Marrow order**, so a backend that merely
-sorts bytes — a `BTreeMap`, or redb's `&[u8]` keys — yields Marrow order with
-no custom comparator and regardless of any host locale or collation.
+are its segments concatenated. The encoding makes raw byte-lexicographic order
+exactly Marrow order, so a backend that merely sorts bytes — a `BTreeMap`, or
+redb's `&[u8]` keys — yields Marrow order with no custom comparator and
+regardless of any host locale or collation.
 
 The order the bytes encode:
 
-- at one tree level, **record keys sort before named members** (a record-key
+- at one tree level, record keys sort before named members (a record-key
   segment carries a lower kind tag than a named segment);
-- keys sort by **type then value**: booleans (false before true), then
+- keys sort by type then value: booleans (false before true), then
   integers, then dates, instants, and durations, then strings, then bytes;
-- **integer keys sort by numeric value, not text** — `^books(1)` precedes
+- integer keys sort by numeric value, not text — `^books(1)` precedes
   `^books(10)`, and negative keys precede positive ones — because integers
   encode as sign-flipped big-endian bytes;
-- names sort by **UTF-8 byte order**;
+- names sort by UTF-8 byte order;
 - a shorter string/bytes value sorts before a longer one that extends it.
 
 An encoded ancestor is a byte-prefix of every descendant, and segment
@@ -57,7 +57,7 @@ can report I/O and corruption the in-memory store never meets).
 |---|---|---|
 | `read(path)` | `Option<Vec<u8>>` | The exact value at `path`, or `None` when nothing is stored there. Absence is never a stored sentinel — an unpopulated path simply has no entry. |
 | `write(path, value)` | — | Store `value` at `path`, replacing any value already there. |
-| `delete(path)` | — | Remove the value at `path` and **every value below it** (the whole subtree). Deleting an absent path is a no-op. |
+| `delete(path)` | — | Remove the value at `path` and every value below it (the whole subtree). Deleting an absent path is a no-op. |
 | `presence(path)` | `Presence` | Whether `path` holds a value, children, both, or neither (see below). |
 | `child_keys(path)` | `Vec<ChildSegment>` | The distinct immediate children directly below `path`, in Marrow order. |
 | `scan(path, limit)` | `ScanPage` | Up to `limit` `(path, value)` pairs in the subtree at `path`, in Marrow order, including the value at `path` itself when present. |
@@ -121,7 +121,7 @@ only by its `limit` argument.
 ## Transactions As A Savepoint Stack
 
 `begin` opens a savepoint; `commit` and `rollback` close the innermost one.
-Nested `begin`s stack, so **nesting is savepoints**: an inner `rollback` undoes
+Nested `begin`s stack, so nesting is savepoints: an inner `rollback` undoes
 only the inner level, and an inner `commit` merely folds the inner level's
 writes outward onto the still-open outer transaction. Only the outermost
 `commit` makes writes durable, and the outermost `rollback` discards the whole
@@ -129,7 +129,7 @@ transaction. Within an open transaction, reads see their own writes
 (read-your-writes), and that applies to traversal too — `presence`,
 `child_keys`, and `scan` all reflect staged writes before the commit.
 
-A `commit` or `rollback` with no open savepoint is a **no-op**, not an error:
+A `commit` or `rollback` with no open savepoint is a no-op, not an error:
 callers pair `begin` with `commit`/`rollback`, so a stray one is harmless misuse.
 
 The two backends reach the same behavior differently:
@@ -137,8 +137,8 @@ The two backends reach the same behavior differently:
 - The in-memory store snapshots the whole map on `begin`, drops the snapshot on
   `commit`, and restores it on `rollback`. Cloning the map per savepoint is
   intentional for a small reference store.
-- The native store holds **one redb write transaction for the life of the
-  outermost `begin`**, and keeps a per-level undo journal of pre-images.
+- The native store holds one redb write transaction for the life of the
+  outermost `begin`, and keeps a per-level undo journal of pre-images.
   An inner `rollback` replays its journal in reverse against the open
   transaction; an inner `commit` moves its journal outward; the outermost
   `commit` commits the redb transaction; the outermost `rollback` aborts it.
@@ -179,15 +179,15 @@ The persistent backend can fail and corrupt where the in-memory store cannot, so
 it carries extra duties. Each maps to a stable `store.*` code (see
 [Errors](error-codes.md)).
 
-- **Format version.** The native store records an on-disk format version
+- Format version. The native store records an on-disk format version
   (currently `1`) in a small metadata table. Opening a file that records a
   different version is refused as `store.format_version` — it is not auto-migrated
   or misread. A brand-new file is stamped with the version on creation.
-- **Lock.** redb holds an OS lock on the file, so a second writer for an open
+- Lock. redb holds an OS lock on the file, so a second writer for an open
   store is refused as `store.locked` rather than racing it. A read-only inspecting
   open releases the lock when it drops, so it does not block a later read-write
   open.
-- **Corruption.** A file that is not a Marrow store is rejected rather than
+- Corruption. A file that is not a Marrow store is rejected rather than
   adopted: an existing redb file with tables but no Marrow metadata is
   `store.corruption`, and a file that is not a valid database at all surfaces as
   `store.io` ("invalid data"). A read-only open never creates a missing file.
@@ -199,7 +199,7 @@ archive framing, never from a `read`/`write`.
 
 ## Archives And Portability
 
-An **archive** is the store's whole-tree dump — the ordered `(path, value)`
+An archive is the store's whole-tree dump — the ordered `(path, value)`
 pairs `scan` yields from the empty prefix — behind a small manifest (magic,
 format version, record count). Paths and values are Marrow's canonical encoded
 bytes, independent of any engine's files, so two archives of equal data are
@@ -207,16 +207,16 @@ byte-identical and an archive restores into either backend. Restore replays the
 records inside one transaction, so a target either gains the whole archive or is
 left unchanged.
 
-`marrow restore` writes into an **empty** target only; a non-empty target fails
+`marrow restore` writes into an empty target only; a non-empty target fails
 with `restore.not_empty`. Restoring over existing data — replace, merge, and
-repair modes — is **deferred**: those cases cross managed-root boundaries and
+repair modes — is deferred: those cases cross managed-root boundaries and
 will route through the maintenance capability when implemented, not loosen the
 empty-target guard.
 
 ## Inspecting The Store From The CLI
 
 `marrow data` exposes the backend's read operations over a project's saved tree.
-Inspection is **read-only and never creates the store** — a project that has not
+Inspection is read-only and never creates the store — a project that has not
 yet written reports no saved data and leaves no `marrow.redb` behind. All
 subcommands accept `--format text|json|jsonl` (text is the default). The store
 is path/value only, so these commands show raw encoded paths and bytes, with no
@@ -249,7 +249,7 @@ numeric-ordered (`^books(1)` before `^books(10)`), and the `jsonl`/`json` forms
 add base64 `path_b64` and `value_b64` for the raw bytes. `data integrity`
 verifies stored values against the project's checked schema, exiting `1` on a
 finding (`data.decode`, `data.orphan`, or a `store.corrupt_path` key). `data
-diff` and `data load` are **deferred**; they overlap restore's replace/merge/
+diff` and `data load` are deferred; they overlap restore's replace/merge/
 repair modes and will route through the maintenance capability when implemented.
 
 These commands are raw backend inspection. Application access to saved data is
