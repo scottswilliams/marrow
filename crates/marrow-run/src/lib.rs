@@ -4702,7 +4702,13 @@ fn eval_interpolation(
                 if text.contains('\\') {
                     return Err(unsupported("string escape sequences", span));
                 }
-                result.push_str(&text.replace("{{", "{").replace("}}", "}"));
+                // A doubled-brace escape can only occur when a brace is present, so
+                // a brace-free part is already literal — push it without allocating.
+                if text.contains(['{', '}']) {
+                    result.push_str(&text.replace("{{", "{").replace("}}", "}"));
+                } else {
+                    result.push_str(text);
+                }
             }
             InterpolationPart::Expr(expr) => result.push_str(&render(eval_expr(expr, env)?, span)?),
         }
