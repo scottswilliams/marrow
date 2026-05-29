@@ -656,6 +656,19 @@ fn a_numeric_conversion_rejects_malformed_text() {
 }
 
 #[test]
+fn a_conversion_error_message_is_grammar_independent() {
+    // The message must not embed an article, so it reads correctly for
+    // vowel-initial type names (not 'requires a int value').
+    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("nope".into())])
+            .unwrap_err()
+            .message,
+        "cannot convert this value to int"
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");
