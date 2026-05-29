@@ -752,8 +752,10 @@ fn resolve_place(
 }
 
 impl Place {
-    /// The current value at this place, to seed an `inout` parameter.
-    fn read(&self, span: SourceSpan, env: &Env<'_>) -> Result<Value, RuntimeError> {
+    /// The current value at this place, to seed an `inout` parameter. An absent
+    /// saved element is a plain fatal fault here ([`ReadPosition::ArgSeed`]):
+    /// argument binding is not value position.
+    fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         match self {
             Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
                 code: RUN_UNBOUND_NAME,
@@ -765,13 +767,13 @@ impl Place {
                 root,
                 identity,
                 field,
-            } => read_saved_field(root, identity, field, span, env),
+            } => read_saved_field(root, identity, field, ReadPosition::ArgSeed, span, env),
             Place::SavedNestedField {
                 root,
                 identity,
                 layers,
                 field,
-            } => read_nested_field(root, identity, layers, field, span, env),
+            } => read_nested_field(root, identity, layers, field, ReadPosition::ArgSeed, span, env),
             Place::SavedResource { root, identity } => read_resource(root, identity, span, env),
         }
     }
@@ -868,8 +870,7 @@ fn eval_call(
         && let Some(resource) = find_resource(env.program, root)
         && let Some(index) = resource.indexes.iter().find(|index| &index.name == name)
     {
-        let value = eval_index_lookup(resource, index, args, span, env);
-        return catchable_read(value, env).map(Some);
+        return eval_index_lookup(resource, index, args, span, env).map(Some);
     }
     // A call whose callee is a saved layer field is a keyed-layer read — a leaf
     // value `^books(id).tags(pos)` or a whole group entry `^books(id).versions(v)`.
@@ -1068,21 +1069,31 @@ fn raise_fault(
     }
 }
 
-/// Make a value-position read's absent-element fault catchable: an `Err(RUN_ABSENT)`
-/// from the shared `&Env` read helpers is re-raised through [`raise_fault`] so an
-/// enclosing `try`/`catch` can bind it, while keeping the `run.absent_element` code
-/// for an uncaught read. Other results pass through unchanged. (The `inout`/`out`
-/// seed reads in [`Place::read`] are argument binding, not value position, so they
-/// keep a plain fatal fault.)
-fn catchable_read(
-    result: Result<Value, RuntimeError>,
+/// Where a saved read sits, which decides how an absent element fails. A
+/// value-position read (`^book(id).title` used as a value) raises a catchable
+/// `run.absent_element` fault a `try`/`catch` can bind; an `inout`/`out` seed
+/// read is argument binding, not value position, so it stays a plain fatal fault.
+#[derive(Clone, Copy)]
+enum ReadPosition {
+    Value,
+    ArgSeed,
+}
+
+/// The absent-element error for a read at `position`: catchable in value
+/// position, plain fatal as an argument seed.
+fn absent_read(
+    position: ReadPosition,
+    message: String,
+    span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    match result {
-        Err(error) if error.code == RUN_ABSENT => {
-            Err(raise_fault(RUN_ABSENT, error.message, error.span, env))
-        }
-        other => other,
+) -> RuntimeError {
+    match position {
+        ReadPosition::Value => raise_fault(RUN_ABSENT, message, span, env),
+        ReadPosition::ArgSeed => RuntimeError {
+            code: RUN_ABSENT,
+            message,
+            span,
+        },
     }
 }
 
@@ -1929,7 +1940,17 @@ fn materialize_layer(
                 .map(|key| {
                     let layer_key = value_to_key(key.clone())
                         .ok_or_else(|| unsupported("a key of this type", span))?;
-                    let value = read_layer_entry(&root, &identity, layer, &[layer_key], span, env)?;
+                    // Materializing a known-present child key: an absent entry is a
+                    // plain fatal fault, not a catchable value-position read.
+                    let value = read_layer_entry(
+                        &root,
+                        &identity,
+                        layer,
+                        &[layer_key],
+                        ReadPosition::ArgSeed,
+                        span,
+                        env,
+                    )?;
                     Ok((key, value))
                 })
                 .collect()
@@ -3185,35 +3206,33 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
         return eval_group_field_read(base, name, expr.span(), env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
-    let value = read_saved_field(&root, &identity, name, expr.span(), env);
-    catchable_read(value, env)
+    read_saved_field(&root, &identity, name, ReadPosition::Value, expr.span(), env)
 }
 
 /// Read a top-level saved scalar field from a pre-lowered identity, decoding it
 /// with the field's declared type. An unpopulated element is an absent-element
-/// error. Shared by [`eval_saved_field`] and `out`/`inout` place reads.
+/// fault, catchable or fatal per `position`. Shared by [`eval_saved_field`] and
+/// `out`/`inout` place reads.
 fn read_saved_field(
     root: &str,
     identity: &[SavedKey],
     field: &str,
+    position: ReadPosition,
     span: SourceSpan,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let mut segments = vec![PathSegment::Root(root.to_string())];
     segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
     segments.push(PathSegment::Field(field.to_string()));
     let field_type = resource_field_type(env.program, root, field)
         .ok_or_else(|| unsupported("reading this field", span))?;
-    let store = env.store.borrow();
-    let Some(bytes) = store
+    let bytes = env
+        .store
+        .borrow()
         .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?
-    else {
-        return Err(RuntimeError {
-            code: RUN_ABSENT,
-            message: format!("`{field}` is absent"),
-            span,
-        });
+        .map_err(|error| store_error(error, span))?;
+    let Some(bytes) = bytes else {
+        return Err(absent_read(position, format!("`{field}` is absent"), span, env));
     };
     decode_value(&bytes, field_type)
         .and_then(saved_value_to_value)
@@ -3236,21 +3255,30 @@ fn eval_group_field_read(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let (root, identity, layers) = lower_layer_path(base, env)?;
-    let value = read_nested_field(&root, &identity, &layers, field, span, env);
-    catchable_read(value, env)
+    read_nested_field(
+        &root,
+        &identity,
+        &layers,
+        field,
+        ReadPosition::Value,
+        span,
+        env,
+    )
 }
 
 /// Read a scalar field inside a (possibly nested) keyed group entry from already-
 /// lowered path parts. Shared by [`eval_group_field_read`] and an `inout` place
 /// read; the value decodes with the innermost member's declared type, and an
-/// unpopulated entry is an absent-element error.
+/// unpopulated entry is an absent-element fault, catchable or fatal per
+/// `position`.
 fn read_nested_field(
     root: &str,
     identity: &[SavedKey],
     layers: &[(String, Vec<SavedKey>)],
     field: &str,
+    position: ReadPosition,
     span: SourceSpan,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
     let member_type = resource_nested_member_type(env.program, root, &layer_names, field)
@@ -3262,16 +3290,18 @@ fn read_nested_field(
         segments.extend(keys.iter().cloned().map(PathSegment::IndexKey));
     }
     segments.push(PathSegment::Field(field.to_string()));
-    let store = env.store.borrow();
-    let Some(bytes) = store
+    let bytes = env
+        .store
+        .borrow()
         .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?
-    else {
-        return Err(RuntimeError {
-            code: RUN_ABSENT,
-            message: format!("`{field}` entry is absent"),
+        .map_err(|error| store_error(error, span))?;
+    let Some(bytes) = bytes else {
+        return Err(absent_read(
+            position,
+            format!("`{field}` entry is absent"),
             span,
-        });
+            env,
+        ));
     };
     decode_value(&bytes, member_type)
         .and_then(saved_value_to_value)
@@ -3326,15 +3356,19 @@ fn eval_index_lookup(
                 .ok_or_else(|| unsupported("an index key of this type", span))?,
         ));
     }
-    let store = env.store.borrow();
-    let bytes = store
+    let bytes = env
+        .store
+        .borrow()
         .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?
-        .ok_or_else(|| RuntimeError {
-            code: RUN_ABSENT,
-            message: format!("`{}` has no entry for that key", index.name),
+        .map_err(|error| store_error(error, span))?;
+    let Some(bytes) = bytes else {
+        return Err(absent_read(
+            ReadPosition::Value,
+            format!("`{}` has no entry for that key", index.name),
             span,
-        })?;
+            env,
+        ));
+    };
     decode_identity(&bytes, root)
         .map(Value::Identity)
         .ok_or_else(|| RuntimeError {
@@ -3365,8 +3399,15 @@ fn eval_saved_layer_read(
     };
     let (root, identity) = lower_record_identity(base, env)?;
     let layer_keys = lower_layer_keys(keys, span, env)?;
-    let value = read_layer_entry(&root, &identity, layer, &layer_keys, span, env);
-    catchable_read(value, env)
+    read_layer_entry(
+        &root,
+        &identity,
+        layer,
+        &layer_keys,
+        ReadPosition::Value,
+        span,
+        env,
+    )
 }
 
 /// Read one keyed-layer entry from a lowered record identity and layer keys. A
@@ -3378,6 +3419,7 @@ fn read_layer_entry(
     identity: &[SavedKey],
     layer: &str,
     layer_keys: &[SavedKey],
+    position: ReadPosition,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -3390,16 +3432,18 @@ fn read_layer_entry(
     let Some(leaf_type) = resource_layer_leaf_type(env.program, root, layer) else {
         return read_group_entry(root, layer, &entry, span, env);
     };
-    let store = env.store.borrow();
-    let Some(bytes) = store
+    let bytes = env
+        .store
+        .borrow()
         .read(&encode_path(&entry))
-        .map_err(|error| store_error(error, span))?
-    else {
-        return Err(RuntimeError {
-            code: RUN_ABSENT,
-            message: format!("`{layer}` entry is absent"),
+        .map_err(|error| store_error(error, span))?;
+    let Some(bytes) = bytes else {
+        return Err(absent_read(
+            position,
+            format!("`{layer}` entry is absent"),
             span,
-        });
+            env,
+        ));
     };
     decode_value(&bytes, leaf_type)
         .and_then(saved_value_to_value)
@@ -3666,21 +3710,21 @@ fn eval_raw_field_read(
             .read(&encode_path(&path))
             .map_err(|error| store_error(error, span))?
     };
-    let value = match bytes {
-        Some(bytes) => decode_value(&bytes, ValueType::Str)
-            .and_then(saved_value_to_value)
-            .ok_or_else(|| RuntimeError {
-                code: RUN_TYPE,
-                message: format!("raw segment `\"{segment}\"` did not decode as text"),
-                span,
-            }),
-        None => Err(RuntimeError {
-            code: RUN_ABSENT,
-            message: format!("`\"{segment}\"` is absent"),
+    let Some(bytes) = bytes else {
+        return Err(absent_read(
+            ReadPosition::Value,
+            format!("`\"{segment}\"` is absent"),
             span,
-        }),
+            env,
+        ));
     };
-    catchable_read(value, env)
+    decode_value(&bytes, ValueType::Str)
+        .and_then(saved_value_to_value)
+        .ok_or_else(|| RuntimeError {
+            code: RUN_TYPE,
+            message: format!("raw segment `\"{segment}\"` did not decode as text"),
+            span,
+        })
 }
 
 /// Apply a managed group-entry field write
