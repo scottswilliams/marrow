@@ -1,15 +1,14 @@
 # Quickstart
 
-This is the five-minute path: create a Marrow project, write one resource and a
-public function, run it, inspect the saved data, and run a test. Every command
-here is real and copy-pasteable.
+Create a Marrow project, write one resource and a public function, run it,
+inspect the saved data, and run a test.
 
 If you do not have the `marrow` binary yet, see [Install](install.md).
 
 ## 1. Create The Project
 
 A Marrow project is a directory with a `marrow.json` and one or more source
-roots holding `.mw` files. Create the layout:
+roots holding `.mw` files:
 
 ```sh
 mkdir -p shelf/src/shelf shelf/tests
@@ -120,8 +119,8 @@ marrow run .
 `--entry <module::function>` to call a different no-argument function instead of
 the default.
 
-Because this project selects the `native` store, the data persists. Run it
-again and you will see the new books added alongside the first two:
+This project selects the `native` store, so the data persists. Run it again and
+the new books appear alongside the first two:
 
 ```sh
 marrow run .
@@ -210,15 +209,15 @@ marrow data stats --format json .
 {"project":"/path/to/shelf","records":8,"roots":1}
 ```
 
-`marrow data` is read-only. The `diff` and `load` subcommands are **deferred**
-and not available yet.
+`marrow data` is read-only. The `diff` and `load` subcommands are deferred and
+not available yet.
 
 ## 5. Write And Run A Test
 
 A test file is any `.mw` file matched by the `tests` patterns. `marrow test`
 runs every `pub fn` with no parameters in those files as a test; functions with
 parameters are helpers. Each test runs against a fresh in-memory store, so tests
-never touch your saved data and never depend on each other.
+never touch saved data and never depend on each other.
 
 Create `tests/books_test.mw`:
 

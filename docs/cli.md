@@ -1,8 +1,7 @@
 # CLI Reference
 
 The `marrow` binary is the single entry point for the language and its built-in
-database. Every subcommand is described below: its syntax, what it reads and
-writes, its flags, its exit code, and a runnable example.
+database.
 
 ```
 marrow check [--format text|json|jsonl] <file.mw | projectdir>
@@ -19,9 +18,9 @@ marrow --version
 marrow --help
 ```
 
-A *project directory* is one that contains a `marrow.json`; see
-[project-config.md](project-config.md) for its fields. Every subcommand also
-accepts `--help` (or `-h`) and prints its own usage.
+A project directory contains a `marrow.json`; see
+[project-config.md](project-config.md) for its fields. Every subcommand accepts
+`--help` (or `-h`) and prints its own usage.
 
 ## Exit Codes
 
@@ -103,8 +102,8 @@ Format Marrow source. `marrow fmt` does not read from stdin.
   differ; it writes nothing.
 - `--write` rewrites changed files in place.
 - A project directory formats every `.mw` file under its source roots, and
-  **requires** `--check` or `--write` — printing many files to stdout is
-  meaningless, so a bare `marrow fmt <dir>` is a usage error (exit `2`).
+  requires `--check` or `--write`. Printing many files to stdout is meaningless,
+  so a bare `marrow fmt <dir>` is a usage error (exit `2`).
 
 Source that does not parse is reported and left untouched (exit `1`).
 
@@ -225,12 +224,12 @@ to the `data` inspection commands.
 marrow restore <projectdir> <archive>
 ```
 
-Restore a project's saved data from an archive into an **empty** store.
+Restore a project's saved data from an archive into an empty store.
 Empty-target restore is the only mode implemented today: if the target already
 holds data, restore refuses with `restore.not_empty` (exit `1`) rather than
 overwrite it.
 
-Replace, merge, and repair restores (the non-empty cases) are **deferred**. When
+Replace, merge, and repair restores (the non-empty cases) are deferred. When
 implemented they will be explicit maintenance actions that route through the
 maintenance capability.
 
@@ -263,7 +262,7 @@ Read-only inspection of a project's saved data. It never creates or modifies the
 store; a project with no saved data on disk reports as empty. See
 [data-tools.md](data-tools.md) for full output shapes and the path syntax.
 
-`data diff` and `data load` are **deferred**: they overlap restore's
+`data diff` and `data load` are deferred: they overlap restore's
 replace/merge/repair modes and need typed source-fingerprinting; they will route
 through the maintenance capability when implemented.
 
