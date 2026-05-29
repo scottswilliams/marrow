@@ -87,10 +87,13 @@ fn a_runtime_fault_is_reported_as_an_error() {
     let root = temp_project("test-error", |root| {
         write(root, "marrow.json", CONFIG);
         write(root, "src/app.mw", "module app\n");
+        // `/` yields `decimal` (syntax.md), so a `decimal` dividend keeps the
+        // assignment well-typed at check time; the fault is purely a runtime
+        // divide-by-zero.
         write(
             root,
             "tests/app_test.mw",
-            "pub fn divides_by_zero()\n    var x: int = 1\n    x = x / 0\n",
+            "pub fn divides_by_zero()\n    var x: decimal = 1.0\n    x = x / 0.0\n",
         );
     });
     let output = run_test(&root);

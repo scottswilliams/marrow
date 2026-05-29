@@ -293,106 +293,13 @@ pub fn check_project(
         })
         .collect();
     for (file, parsed) in &parsed_files {
-        // A module's top-level constants are in scope (bare) for its functions.
-        // An annotated constant carries its annotation; an unannotated one's type
-        // is inferred from its initializer (as a local `const` already is), so a
-        // typed use like `var x: int = M` resolves rather than false-positiving
-        // `check.untyped_value`. Built in source order so an earlier constant is
-        // in scope for a later one. This pass only builds the scope map; an
-        // initializer's own diagnostics (constant-expression validity and literal
-        // range) come from `check_const_value`, so inference diagnostics are
-        // discarded here.
-        // Short→full import aliases for this file, used to expand short-form calls
-        // (`clock::now()` → `std::clock::now`) before resolution. Built once per
-        // file; the runtime rebuilds the same map from `CheckedModule::imports`.
-        let aliases = build_alias_map(
-            &parsed
-                .file
-                .uses
-                .iter()
-                .map(|use_decl| use_decl.name.clone())
-                .collect::<Vec<_>>(),
+        check_file_types(
+            &program,
+            &project_resources,
+            &file.path,
+            parsed,
+            &mut report.diagnostics,
         );
-        let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
-        for declaration in &parsed.file.declarations {
-            if let marrow_syntax::Declaration::Const(constant) = declaration {
-                let ty = match &constant.ty {
-                    Some(ty) => resolve_type(ty, &program),
-                    None => infer_type(
-                        &program,
-                        &constant.value,
-                        std::slice::from_ref(&module_constants),
-                        &aliases,
-                        &file.path,
-                        &mut Vec::new(),
-                    ),
-                };
-                module_constants.insert(constant.name.clone(), ty);
-            }
-        }
-        for declaration in &parsed.file.declarations {
-            match declaration {
-                marrow_syntax::Declaration::Function(function) => {
-                    for param in &function.params {
-                        check_type_annotation(
-                            &param.ty,
-                            function.span,
-                            &file.path,
-                            &project_resources,
-                            &mut report.diagnostics,
-                        );
-                    }
-                    if let Some(return_type) = &function.return_type {
-                        check_type_annotation(
-                            return_type,
-                            function.span,
-                            &file.path,
-                            &project_resources,
-                            &mut report.diagnostics,
-                        );
-                    }
-                    check_return_values(
-                        &file.path,
-                        &function.body,
-                        function.return_type.is_some(),
-                        &mut report.diagnostics,
-                    );
-                    check_function_types(
-                        &program,
-                        &file.path,
-                        function,
-                        &module_constants,
-                        &aliases,
-                        &mut report.diagnostics,
-                    );
-                    if function.return_type.is_some() && !block_returns(&function.body) {
-                        report.diagnostics.push(CheckDiagnostic {
-                            code: CHECK_MISSING_RETURN,
-                            severity: Severity::Error,
-                            file: file.path.clone(),
-                            message: format!(
-                                "function `{}` may reach its end without returning a value",
-                                function.name
-                            ),
-                            line: function.span.line,
-                            column: function.span.column,
-                        });
-                    }
-                }
-                marrow_syntax::Declaration::Const(constant) => {
-                    if let Some(ty) = &constant.ty {
-                        check_type_annotation(
-                            ty,
-                            constant.span,
-                            &file.path,
-                            &project_resources,
-                            &mut report.diagnostics,
-                        );
-                    }
-                }
-                marrow_syntax::Declaration::Resource(_) => {}
-            }
-        }
     }
 
     // Unresolved-call reports are trustworthy only when the whole project parsed:
@@ -408,6 +315,117 @@ pub fn check_project(
     }
 
     Ok((report, program))
+}
+
+/// Run the type-inference pass over one parsed file against the resolved
+/// `program`: unknown-type annotations, return-value placement, the full
+/// expression/statement type checks (operator/condition/assignment/call/argument
+/// types, std arity, the `nextId` single-`int` gate), and missing-return
+/// analysis. Library files (via [`check_project`]) and test scripts (via
+/// [`check_tests`]) share this pass so a test file's type errors are caught at
+/// check time, not only at run time. `project_resources` is the project-wide set
+/// of resource names used to recognize type annotations.
+fn check_file_types(
+    program: &CheckedProgram,
+    project_resources: &HashSet<String>,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    // A module's top-level constants are in scope (bare) for its functions.
+    // An annotated constant carries its annotation; an unannotated one's type
+    // is inferred from its initializer (as a local `const` already is), so a
+    // typed use like `var x: int = M` resolves rather than false-positiving
+    // `check.untyped_value`. Built in source order so an earlier constant is
+    // in scope for a later one. This pass only builds the scope map; an
+    // initializer's own diagnostics (constant-expression validity and literal
+    // range) come from `check_const_value`, so inference diagnostics are
+    // discarded here.
+    // Short→full import aliases for this file, used to expand short-form calls
+    // (`clock::now()` → `std::clock::now`) before resolution. Built once per
+    // file; the runtime rebuilds the same map from `CheckedModule::imports`.
+    let aliases = build_alias_map(
+        &parsed
+            .file
+            .uses
+            .iter()
+            .map(|use_decl| use_decl.name.clone())
+            .collect::<Vec<_>>(),
+    );
+    let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
+    for declaration in &parsed.file.declarations {
+        if let marrow_syntax::Declaration::Const(constant) = declaration {
+            let ty = match &constant.ty {
+                Some(ty) => resolve_type(ty, program),
+                None => infer_type(
+                    program,
+                    &constant.value,
+                    std::slice::from_ref(&module_constants),
+                    &aliases,
+                    file,
+                    &mut Vec::new(),
+                ),
+            };
+            module_constants.insert(constant.name.clone(), ty);
+        }
+    }
+    for declaration in &parsed.file.declarations {
+        match declaration {
+            marrow_syntax::Declaration::Function(function) => {
+                for param in &function.params {
+                    check_type_annotation(
+                        &param.ty,
+                        function.span,
+                        file,
+                        project_resources,
+                        diagnostics,
+                    );
+                }
+                if let Some(return_type) = &function.return_type {
+                    check_type_annotation(
+                        return_type,
+                        function.span,
+                        file,
+                        project_resources,
+                        diagnostics,
+                    );
+                }
+                check_return_values(
+                    file,
+                    &function.body,
+                    function.return_type.is_some(),
+                    diagnostics,
+                );
+                check_function_types(
+                    program,
+                    file,
+                    function,
+                    &module_constants,
+                    &aliases,
+                    diagnostics,
+                );
+                if function.return_type.is_some() && !block_returns(&function.body) {
+                    diagnostics.push(CheckDiagnostic {
+                        code: CHECK_MISSING_RETURN,
+                        severity: Severity::Error,
+                        file: file.to_path_buf(),
+                        message: format!(
+                            "function `{}` may reach its end without returning a value",
+                            function.name
+                        ),
+                        line: function.span.line,
+                        column: function.span.column,
+                    });
+                }
+            }
+            marrow_syntax::Declaration::Const(constant) => {
+                if let Some(ty) = &constant.ty {
+                    check_type_annotation(ty, constant.span, file, project_resources, diagnostics);
+                }
+            }
+            marrow_syntax::Declaration::Resource(_) => {}
+        }
+    }
 }
 
 /// Record a `check.unknown_type` diagnostic when `ty` names a type the checker
@@ -2205,6 +2223,48 @@ pub fn check_tests(
                 });
             }
         }
+    }
+
+    // Run the same type-inference pass library files get, so a test file's std
+    // argument/arity errors, `nextId` misuse, and ordinary type mismatches are
+    // reported at check time rather than only at run time. Types resolve against a
+    // program holding both the already-checked project modules and the clean test
+    // modules — cross-module calls and resource constructors resolve, and the
+    // `nextId` gate finds the project's resource schemas. Resource annotations are
+    // recognized project-wide (project plus test resources).
+    let combined = CheckedProgram {
+        modules: project
+            .modules
+            .iter()
+            .cloned()
+            .chain(modules.iter().cloned())
+            .collect(),
+    };
+    let project_resources: HashSet<String> = combined
+        .modules
+        .iter()
+        .flat_map(|module| &module.resources)
+        .map(|resource| resource.name.clone())
+        .collect();
+    for (file, parsed) in &parsed_files {
+        check_file_types(
+            &combined,
+            &project_resources,
+            &file.path,
+            parsed,
+            &mut report.diagnostics,
+        );
+    }
+
+    // Unresolved-call reports are trustworthy only when every test file parsed and
+    // the project program is whole: a file excluded for a parse error is not in the
+    // combined program, so a call into it would look unresolved though its
+    // definition exists. Suppress them then — the parse errors are the real fix.
+    let fully_parsed = parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
+    if !fully_parsed {
+        report
+            .diagnostics
+            .retain(|diagnostic| diagnostic.code != CHECK_UNRESOLVED_CALL);
     }
 
     Ok((report, modules))

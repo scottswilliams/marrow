@@ -1924,6 +1924,90 @@ fn check_module_report(name: &str, src: &str) -> marrow_check::CheckReport {
     report
 }
 
+/// Check a project whose `src/app.mw` library declares `app_src` and whose
+/// `tests/app_test.mw` test script holds `test_src`, returning the test report.
+/// Used by tests that assert what `marrow test`/check catches in test files.
+fn check_tests_report(name: &str, app_src: &str, test_src: &str) -> marrow_check::CheckReport {
+    let root = temp_project(name, |root| {
+        write(root, "src/app.mw", app_src);
+        write(root, "tests/app_test.mw", test_src);
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
+    assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
+    let (test_report, _modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    fs::remove_dir_all(&root).ok();
+    test_report
+}
+
+#[test]
+fn check_tests_catches_a_std_call_with_the_wrong_argument_type() {
+    // `std::text::length` takes a `string`; passing `42` is the same
+    // `check.call_argument` mismatch a library file would report — test files run
+    // the full type-inference pass, so this is caught at check time, not only at
+    // run time.
+    let report = check_tests_report(
+        "check-tests-std-arg",
+        "module app\n",
+        "pub fn t()\n    var n = std::text::length(42)\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.call_argument").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn check_tests_catches_a_nextid_misuse_on_a_composite_root() {
+    // `^orders` has a composite identity, so it has no default `nextId` policy; a
+    // test file calling `nextId(^orders)` gets the `check.next_id_requires_single_int`
+    // gate the library files already enforce.
+    let report = check_tests_report(
+        "check-tests-nextid",
+        "module app\n\
+         resource Order at ^orders(region: string, id: int)\n    required total: int\n",
+        "pub fn t()\n    var id = nextId(^orders)\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.next_id_requires_single_int").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn check_tests_catches_a_type_mismatched_assignment() {
+    // A test file's ordinary type errors are reported too: storing an `int` const
+    // into a `string` place is a `check.assignment_type` mismatch.
+    let report = check_tests_report(
+        "check-tests-assign",
+        "module app\n",
+        "pub fn t()\n    const s: string = 1\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.assignment_type").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn check_tests_leaves_a_clean_test_file_clean() {
+    // A well-typed test file that calls a project function and a std helper checks
+    // with no diagnostics — the new type pass must not false-positive.
+    let report = check_tests_report(
+        "check-tests-clean",
+        "module app\n\npub fn add(): int\n    return 1\n",
+        "pub fn t()\n    std::assert::isTrue(app::add() = 1)\n    var n = std::text::length(\"hi\")\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 #[test]
 fn finally_return_is_rejected() {
     let found = check_script(
