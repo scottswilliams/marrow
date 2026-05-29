@@ -1970,8 +1970,7 @@ fn traversal_builtins_report_unsupported_not_unknown_function() {
     // missing user function (`run.unknown_function`).
     let resource = "resource Book at ^books(id: int)\n    required title: string\n\n";
     for builtin in ["count", "values", "entries"] {
-        let program =
-            checked_program(&format!("{resource}fn f()\n    {builtin}(^books)\n"));
+        let program = checked_program(&format!("{resource}fn f()\n    {builtin}(^books)\n"));
         let result = run(&program, "test::f", &[]);
         assert!(
             matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),

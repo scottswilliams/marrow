@@ -2677,8 +2677,11 @@ impl<'a> StmtParser<'a> {
     /// the current block and consume its trailing `NEWLINE`.
     fn take_own_line_comment(&mut self) {
         let token = self.advance();
-        self.comments
-            .push(comment_from_token(self.source, token, CommentPlacement::OwnLine));
+        self.comments.push(comment_from_token(
+            self.source,
+            token,
+            CommentPlacement::OwnLine,
+        ));
         if matches!(self.peek(), Some(TokenKind::Newline)) {
             self.advance();
         }
@@ -2771,8 +2774,11 @@ impl<'a> StmtParser<'a> {
     fn split_trailing_comment(&mut self, line_end: usize) -> usize {
         if line_end > self.pos && self.tokens[line_end - 1].kind == TokenKind::Comment {
             let token = self.tokens[line_end - 1];
-            self.comments
-                .push(comment_from_token(self.source, token, CommentPlacement::Trailing));
+            self.comments.push(comment_from_token(
+                self.source,
+                token,
+                CommentPlacement::Trailing,
+            ));
             line_end - 1
         } else {
             line_end

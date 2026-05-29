@@ -2,7 +2,9 @@
 //! bytes are rejected.
 
 use marrow_store::Decimal;
-use marrow_store::value::{SavedValue, ValueError, ValueType, date_days, decode_value, encode_value};
+use marrow_store::value::{
+    SavedValue, ValueError, ValueType, date_days, decode_value, encode_value,
+};
 
 fn round_trips(value: SavedValue, ty: ValueType) {
     let bytes = encode_value(&value).expect("in-range value encodes");

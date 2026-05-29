@@ -9,8 +9,7 @@
 //! second, laxer dialect can drift in.
 
 /// The standard RFC 4648 base64 alphabet (with `+`/`/`; `=` is padding).
-const ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Encode bytes as standard, padded base64.
 pub fn encode(data: &[u8]) -> String {

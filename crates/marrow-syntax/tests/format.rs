@@ -293,7 +293,9 @@ fn structural_fingerprint(source: &str) -> String {
         out.push_str(&rest[..at]);
         // Skip past the matching closing brace of this `SourceSpan { ... }`.
         let after = &rest[at + "SourceSpan {".len()..];
-        let close = after.find('}').expect("SourceSpan debug has a closing brace");
+        let close = after
+            .find('}')
+            .expect("SourceSpan debug has a closing brace");
         rest = &after[close + 1..];
     }
     out.push_str(rest);

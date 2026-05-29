@@ -1197,8 +1197,8 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let nanos = eval_instant_arg(value, env, span)?;
-            let bytes =
-                encode_value(&SavedValue::Instant(nanos)).map_err(|error| value_error(error, span))?;
+            let bytes = encode_value(&SavedValue::Instant(nanos))
+                .map_err(|error| value_error(error, span))?;
             let text = String::from_utf8(bytes).expect("a canonical instant encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
@@ -1241,7 +1241,8 @@ fn eval_std(
             let nanos = eval_duration_arg(value, env, span)?;
             let bytes = encode_value(&SavedValue::Duration(nanos))
                 .map_err(|error| value_error(error, span))?;
-            let text = String::from_utf8(bytes).expect("a canonical duration encodes as UTF-8 text");
+            let text =
+                String::from_utf8(bytes).expect("a canonical duration encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
         ("clock", "parseDuration") => {
@@ -3367,9 +3368,10 @@ fn resource_group_members(
         .members
         .iter()
         .filter_map(|member| match member {
-            LayerMember::Field(field) => {
-                Some((field.name.clone(), ValueType::from_scalar_name(&field.ty.text)?))
-            }
+            LayerMember::Field(field) => Some((
+                field.name.clone(),
+                ValueType::from_scalar_name(&field.ty.text)?,
+            )),
             _ => None,
         })
         .collect();

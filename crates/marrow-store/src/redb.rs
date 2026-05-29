@@ -121,11 +121,7 @@ impl RedbStore {
         // none; stamp the version only then. A non-empty file with no meta is a
         // foreign or meta-less store, rejected as corruption (matching
         // `open_read_only`) rather than silently adopted and written into.
-        let is_new = write
-            .list_tables()
-            .map_err(io("open"))?
-            .next()
-            .is_none();
+        let is_new = write.list_tables().map_err(io("open"))?.next().is_none();
         {
             // Check or stamp the format version before touching data. Read the
             // value into an owned `Option<u32>` first so the access guard drops

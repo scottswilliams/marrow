@@ -250,7 +250,7 @@ fn kind_for_code(code: &str) -> &'static str {
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
     json!({
         "code": diagnostic.code,
-        "kind": kind_for_code(&diagnostic.code),
+        "kind": kind_for_code(diagnostic.code),
         "severity": diagnostic.severity.as_str(),
         "message": diagnostic.message,
         "source_span": {

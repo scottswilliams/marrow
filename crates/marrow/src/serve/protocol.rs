@@ -115,7 +115,9 @@ fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, Protocol
     let entries: Vec<Value> = page
         .entries
         .iter()
-        .map(|(path, value)| json!({ "path": base64::encode(path), "value": base64::encode(value) }))
+        .map(
+            |(path, value)| json!({ "path": base64::encode(path), "value": base64::encode(value) }),
+        )
         .collect();
     Ok(json!({ "entries": entries, "truncated": page.truncated }))
 }
