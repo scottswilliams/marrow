@@ -983,6 +983,32 @@ fn a_call_to_an_undefined_function_is_flagged() {
 }
 
 #[test]
+fn a_call_to_an_unknown_std_submodule_is_flagged() {
+    // `std::bogus::foo()` names no real std module (STD_MODULES), so it is not a
+    // builtin — it is reported consistently with `use std::bogus` rejection,
+    // rather than silently type-checking.
+    let found = check_module(
+        "call-std-bogus",
+        "module m\n\
+         fn caller()\n    std::bogus::foo()\n",
+        "check.unresolved_call",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_call_to_a_known_std_submodule_is_not_flagged() {
+    // A real std submodule call stays a builtin and is not unresolved.
+    let found = check_module(
+        "call-std-known",
+        "module m\n\
+         fn caller()\n    var n = std::text::length(\"hi\")\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_builtin_call_is_not_an_unresolved_call() {
     // Builtins dispatch before user functions, so they never resolve to a program
     // function — but they are defined, not unresolved.
@@ -1002,6 +1028,34 @@ fn a_call_to_a_defined_function_is_not_an_unresolved_call() {
         "module m\n\
          fn helper(): int\n    return 1\n\n\
          fn caller()\n    var x = helper()\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_resource_constructor_is_not_an_unresolved_call() {
+    // `Book(...)` constructs a resource value (types.md:152-158); it is a known
+    // declared resource, not an undefined function.
+    let found = check_module(
+        "ctor-resource",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn caller()\n    var b = Book(title: \"a\")\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_is_not_an_unresolved_call() {
+    // `Book::Id(1)` constructs a resource identity (types.md:276-297); it is a
+    // known declared resource's identity, not an undefined function.
+    let found = check_module(
+        "ctor-identity",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn caller()\n    const id = Book::Id(1)\n",
         "check.unresolved_call",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -1405,6 +1459,19 @@ fn a_conversion_into_a_matching_annotated_place_is_not_flagged() {
 }
 
 #[test]
+fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
+    // `ErrorCode(raw)` is `ErrorCode`, matching the declared `ErrorCode` place —
+    // the documented `const code: ErrorCode = ErrorCode(raw)` conversion checks
+    // clean (no false `check.untyped_value`).
+    let found = check_module(
+        "conv-error-code",
+        "module m\nfn f(raw: unknown)\n    const code: ErrorCode = ErrorCode(raw)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.
@@ -1416,6 +1483,36 @@ fn a_group_field_read_feeds_type_checks() {
         "check.return_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_singleton_field_read_feeds_type_checks() {
+    // `^settings.theme` on a keyless singleton resource (`Settings at ^settings`)
+    // is `string` from the schema, not Unknown — so a typed use never
+    // false-positives check.untyped_value, and a real mismatch (returning it
+    // from an `int` function) is caught.
+    let found = check_module(
+        "singleton-field",
+        "module m\n\
+         resource Settings at ^settings\n    theme: string\n\n\
+         fn f(): int\n    return ^settings.theme\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_singleton_field_read_in_a_typed_place_is_not_an_untyped_value() {
+    // The documented `const t: string = ^settings.theme` reads a singleton field
+    // into a matching place — no false check.untyped_value.
+    let found = check_module(
+        "singleton-field-ok",
+        "module m\n\
+         resource Settings at ^settings\n    theme: string\n\n\
+         fn f()\n    const t: string = ^settings.theme\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]
@@ -1443,6 +1540,78 @@ fn correctly_typed_group_and_leaf_reads_are_not_flagged() {
          fn title(): string\n    return ^books(1).versions(2).title\n\n\
          fn tag(): string\n    return ^books(1).tags(2)\n",
         "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unannotated_module_const_is_inferred_and_a_matching_use_is_not_flagged() {
+    // `const M = 5` has an inferable `int` type; using it in `var x: int = M`
+    // must not false-positive check.untyped_value.
+    let found = check_module(
+        "module-const-ok",
+        "module m\nconst M = 5\nfn f()\n    var x: int = M\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unannotated_module_const_mismatch_is_caught() {
+    // `const M = 5` is `int`; storing it into a `string` place is a real mismatch
+    // that was previously missed because the const typed to Unknown.
+    let found = check_module(
+        "module-const-mismatch",
+        "module m\nconst M = 5\nfn f()\n    var x: string = M\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_over_range_int_literal_is_flagged_at_check_time() {
+    // `99999999999999999999999999` exceeds i64; the runtime would reject it as
+    // run.overflow, so the checker flags it too.
+    let found = check_script(
+        "int-literal-overflow",
+        "fn f()\n    const x: int = 99999999999999999999999999\n",
+        "check.literal_range",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_in_range_int_literal_is_not_flagged() {
+    // i64::MAX checks clean.
+    let found = check_script(
+        "int-literal-max",
+        "fn f()\n    const x: int = 9223372036854775807\n",
+        "check.literal_range",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_over_envelope_decimal_literal_is_flagged_at_check_time() {
+    // 35 significant digits exceeds the 34-digit decimal envelope.
+    let found = check_script(
+        "decimal-literal-overflow",
+        "fn f()\n    const d: decimal = 1.2345678901234567890123456789012345\n",
+        "check.literal_range",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_in_range_decimal_literal_is_not_flagged() {
+    // 34 significant digits is exactly at the envelope, and a long trailing-zero
+    // fraction normalizes back into range — neither is flagged.
+    let found = check_script(
+        "decimal-literal-ok",
+        "fn f()\n\
+         \x20   const d: decimal = 1.234567890123456789012345678901234\n\
+         \x20   const z: decimal = 0.000000000000000000000000000000000000\n",
+        "check.literal_range",
     );
     assert!(found.is_empty(), "{found:#?}");
 }
@@ -1705,6 +1874,60 @@ fn finally_labeled_break_to_inner_loop_is_allowed() {
         "fin-break-inner-label",
         "fn f()\n    try\n        x = 1\n    finally\n        inner: while c\n            break inner\n",
         "check.finally_control_flow",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn break_outside_any_loop_is_rejected() {
+    // A `break` with no enclosing loop only fails late at runtime
+    // (RUN_NO_ENCLOSING_LOOP); the checker must reject it statically.
+    let found = check_script(
+        "break-no-loop",
+        "fn f()\n    break\n",
+        "check.loop_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].line, 2, "{:#?}", found[0]);
+}
+
+#[test]
+fn continue_outside_any_loop_is_rejected() {
+    let found = check_script(
+        "continue-no-loop",
+        "fn f()\n    continue\n",
+        "check.loop_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn labeled_break_naming_no_enclosing_loop_is_rejected() {
+    // The label names no enclosing loop, so the break can never resolve.
+    let found = check_script(
+        "break-bad-label",
+        "fn f()\n    while c\n        break outer\n",
+        "check.loop_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn break_and_continue_inside_a_loop_are_allowed() {
+    let found = check_script(
+        "break-in-loop",
+        "fn f()\n    while c\n        break\n        continue\n",
+        "check.loop_control_flow",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn labeled_break_to_an_enclosing_loop_is_allowed() {
+    let found = check_script(
+        "break-good-label",
+        "fn f()\n    outer: while a\n        while b\n            break outer\n",
+        "check.loop_control_flow",
     );
     assert!(found.is_empty(), "{found:#?}");
 }

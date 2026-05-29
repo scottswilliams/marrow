@@ -60,6 +60,10 @@ pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// reported for calls in library modules of a fully parsed project, so a
 /// module-less script or a module excluded by a parse error never false-positives.
 pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
+/// A numeric literal is provably outside its type's range: an integer literal
+/// beyond `i64`, or a decimal literal outside the 34-significant-digit /
+/// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
+pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -70,7 +74,7 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// A problem found while checking a project, located in a specific file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckDiagnostic {
-    pub code: String,
+    pub code: &'static str,
     pub severity: Severity,
     pub file: PathBuf,
     pub message: String,
@@ -145,7 +149,7 @@ pub fn check_project(
             if let Some(saved) = &schema.saved_root {
                 match root_owners.get(&saved.root) {
                     Some(first) => report.diagnostics.push(CheckDiagnostic {
-                        code: SCHEMA_DUPLICATE_ROOT_OWNER.to_string(),
+                        code: SCHEMA_DUPLICATE_ROOT_OWNER,
                         severity: Severity::Error,
                         file: file.path.clone(),
                         message: format!(
@@ -170,7 +174,7 @@ pub fn check_project(
                 }
                 match stable_id_owners.get(&id) {
                     Some(first) => report.diagnostics.push(CheckDiagnostic {
-                        code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID.to_string(),
+                        code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID,
                         severity: Severity::Error,
                         file: file.path.clone(),
                         message: format!(
@@ -197,7 +201,7 @@ pub fn check_project(
                 Some(expected) if expected == &module.name => {
                     if let Some(first) = declared.get(expected) {
                         report.diagnostics.push(CheckDiagnostic {
-                            code: CHECK_DUPLICATE_MODULE.to_string(),
+                            code: CHECK_DUPLICATE_MODULE,
                             severity: Severity::Error,
                             file: file.path.clone(),
                             message: format!(
@@ -261,7 +265,7 @@ pub fn check_project(
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, &declared) {
                 report.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_IMPORT.to_string(),
+                    code: CHECK_UNRESOLVED_IMPORT,
                     severity: Severity::Error,
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
@@ -284,22 +288,29 @@ pub fn check_project(
         .collect();
     for (file, parsed) in &parsed_files {
         // A module's top-level constants are in scope (bare) for its functions.
-        // Annotated constants carry their type; unannotated ones stay unknown.
-        let module_constants: HashMap<String, MarrowType> = parsed
-            .file
-            .declarations
-            .iter()
-            .filter_map(|declaration| match declaration {
-                marrow_syntax::Declaration::Const(constant) => Some((
-                    constant.name.clone(),
-                    constant
-                        .ty
-                        .as_ref()
-                        .map_or(MarrowType::Unknown, |ty| resolve_type(ty, &program)),
-                )),
-                _ => None,
-            })
-            .collect();
+        // An annotated constant carries its annotation; an unannotated one's type
+        // is inferred from its initializer (as a local `const` already is), so a
+        // typed use like `var x: int = M` resolves rather than false-positiving
+        // `check.untyped_value`. Built in source order so an earlier constant is
+        // in scope for a later one. Diagnostics from the initializers themselves
+        // are the function-body and `check_const_value` passes' job, so they are
+        // discarded here.
+        let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
+        for declaration in &parsed.file.declarations {
+            if let marrow_syntax::Declaration::Const(constant) = declaration {
+                let ty = match &constant.ty {
+                    Some(ty) => resolve_type(ty, &program),
+                    None => infer_type(
+                        &program,
+                        &constant.value,
+                        std::slice::from_ref(&module_constants),
+                        &file.path,
+                        &mut Vec::new(),
+                    ),
+                };
+                module_constants.insert(constant.name.clone(), ty);
+            }
+        }
         for declaration in &parsed.file.declarations {
             match declaration {
                 marrow_syntax::Declaration::Function(function) => {
@@ -336,7 +347,7 @@ pub fn check_project(
                     );
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
-                            code: CHECK_MISSING_RETURN.to_string(),
+                            code: CHECK_MISSING_RETURN,
                             severity: Severity::Error,
                             file: file.path.clone(),
                             message: format!(
@@ -391,7 +402,7 @@ fn check_type_annotation(
 ) {
     if !MarrowType::names_known_type(&ty.text, resources) {
         diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNKNOWN_TYPE.to_string(),
+            code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("unknown type `{}`", ty.text.trim()),
@@ -422,7 +433,7 @@ fn check_return_values(
                     _ => continue,
                 };
                 diagnostics.push(CheckDiagnostic {
-                    code: CHECK_RETURN_VALUE.to_string(),
+                    code: CHECK_RETURN_VALUE,
                     severity: Severity::Error,
                     file: file.to_path_buf(),
                     message: message.to_string(),
@@ -770,7 +781,7 @@ fn check_condition(
     let span = condition.span();
     match as_primitive(&condition_type) {
         Some(primitive) if primitive != PrimitiveType::Bool => diagnostics.push(CheckDiagnostic {
-            code: CHECK_CONDITION_TYPE.to_string(),
+            code: CHECK_CONDITION_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -784,7 +795,7 @@ fn check_condition(
         // to be `bool`.
         None if matches!(condition_type, MarrowType::Unknown) => {
             diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE.to_string(),
+                code: CHECK_UNTYPED_VALUE,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: "condition has no known type; it must be `bool`".to_string(),
@@ -813,7 +824,7 @@ fn check_return_type(
     };
     match as_primitive(value_type) {
         Some(actual) if actual != expected => diagnostics.push(CheckDiagnostic {
-            code: CHECK_RETURN_TYPE.to_string(),
+            code: CHECK_RETURN_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -827,7 +838,7 @@ fn check_return_type(
         // Strict typing: a value with no known type returned where a concrete type
         // is declared must be converted first.
         None if matches!(value_type, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE.to_string(),
+            code: CHECK_UNTYPED_VALUE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -859,7 +870,7 @@ fn check_assignment(
     };
     match as_primitive(value) {
         Some(value) if value != place => diagnostics.push(CheckDiagnostic {
-            code: CHECK_ASSIGNMENT_TYPE.to_string(),
+            code: CHECK_ASSIGNMENT_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -872,7 +883,7 @@ fn check_assignment(
         }),
         // A value the checker could not resolve, stored into a concrete place.
         None if matches!(value, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE.to_string(),
+            code: CHECK_UNTYPED_VALUE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -899,7 +910,10 @@ fn infer_type(
 ) -> MarrowType {
     use marrow_syntax::Expression;
     match expr {
-        Expression::Literal { kind, .. } => literal_type(*kind),
+        Expression::Literal { kind, text, span } => {
+            check_literal_range(*kind, text, *span, file, diagnostics);
+            literal_type(*kind)
+        }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
@@ -912,7 +926,7 @@ fn infer_type(
             let name = &segments[0];
             lookup_opt(scope, name).unwrap_or_else(|| {
                 diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_NAME.to_string(),
+                    code: CHECK_UNRESOLVED_NAME,
                     severity: Severity::Error,
                     file: file.to_path_buf(),
                     message: format!("`{name}` is not defined"),
@@ -981,21 +995,24 @@ fn infer_type(
     }
 }
 
-/// The declared type of a top-level saved field read `^root(key…).field`: `base`
-/// must be a keyed record access `^root(key…)` (a call whose callee is the saved
-/// root). Group-layer fields and keyed-leaf reads are not resolved yet, so they
-/// stay unknown. Mirrors the runtime's `resource_field_type`.
+/// The declared type of a top-level saved field read: `base` is either a keyed
+/// record access `^root(key…)` (a call whose callee is the saved root) or — for a
+/// keyless singleton resource (`Settings at ^settings`) addressed by its root —
+/// the saved root `^root` itself. Group-layer fields and keyed-leaf reads are not
+/// resolved here. Mirrors the runtime's `resource_field_type`.
 fn saved_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
     field: &str,
 ) -> Option<MarrowType> {
     use marrow_syntax::Expression;
-    let Expression::Call { callee, .. } = base else {
-        return None;
-    };
-    let Expression::SavedRoot { name: root, .. } = callee.as_ref() else {
-        return None;
+    let root = match base {
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            Expression::SavedRoot { name, .. } => name,
+            _ => return None,
+        },
+        Expression::SavedRoot { name, .. } => name,
+        _ => return None,
     };
     let resource = find_resource_schema(program, root)?;
     let field = resource
@@ -1173,6 +1190,65 @@ fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
     matches!(expr, marrow_syntax::Expression::Name { segments, .. } if segments.len() == 1)
 }
 
+/// The decimal envelope, mirroring `marrow_store::decimal`: at most 34
+/// significant digits and 34 fractional places.
+const DECIMAL_MAX_DIGITS: usize = 34;
+
+/// Flag a numeric literal whose magnitude is provably out of range, so it is
+/// caught at check time rather than only at run time (`run.overflow`). The lexer
+/// emits a number literal as bare ASCII digits (the sign is a separate unary
+/// operator), so an integer is in range exactly when it parses as `i64`, and a
+/// decimal `digits.digits` is in range only within the 34-significant-digit /
+/// 34-fractional-place envelope.
+fn check_literal_range(
+    kind: marrow_syntax::LiteralKind,
+    text: &str,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::LiteralKind;
+    let out_of_range = match kind {
+        LiteralKind::Integer => text.parse::<i64>().is_err(),
+        LiteralKind::Decimal => decimal_out_of_envelope(text),
+        LiteralKind::String | LiteralKind::Bytes | LiteralKind::Bool => false,
+    };
+    if out_of_range {
+        let type_name = match kind {
+            LiteralKind::Integer => "int",
+            _ => "decimal",
+        };
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_LITERAL_RANGE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!("{type_name} literal `{text}` is out of range"),
+            line: span.line,
+            column: span.column,
+        });
+    }
+}
+
+/// Whether a decimal literal `digits.digits` (or `digits`) provably falls outside
+/// the 34-digit envelope. Mirrors `marrow_store::decimal`, which normalizes before
+/// the envelope check: leading integer zeros and trailing fraction zeros drop out,
+/// so they are stripped before counting. A literal is rejected only when its
+/// canonical significant digits or fractional places exceed 34 — never a value the
+/// runtime would normalize back into range.
+fn decimal_out_of_envelope(text: &str) -> bool {
+    let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let integer = integer.trim_start_matches('0');
+    let fraction = fraction.trim_end_matches('0');
+    // Significant digits run from the first to the last nonzero digit. With the
+    // integer part empty (all zeros), leading fraction zeros are not significant.
+    let significant = if integer.is_empty() {
+        fraction.trim_start_matches('0').len()
+    } else {
+        integer.len() + fraction.len()
+    };
+    significant > DECIMAL_MAX_DIGITS || fraction.len() > DECIMAL_MAX_DIGITS
+}
+
 /// The type of a literal by its lexical kind.
 fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
     use marrow_syntax::LiteralKind;
@@ -1312,7 +1388,7 @@ fn is_ordered(primitive: PrimitiveType) -> bool {
 
 fn operator_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_OPERATOR_TYPE.to_string(),
+        code: CHECK_OPERATOR_TYPE,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
@@ -1400,6 +1476,13 @@ fn check_call(
             .or_else(|| builtin_return_type(segments, arg_types))
             .unwrap_or(MarrowType::Unknown);
     }
+    // A callee naming a declared resource is a constructor, not a function:
+    // `Book(...)` builds the resource value and `Book::Id(...)` builds its
+    // identity (types.md:152-158, 276-297). Recognize it so a spec-valid
+    // constructor is not a false `check.unresolved_call`.
+    if let Some(ty) = resource_constructor_type(program, segments) {
+        return ty;
+    }
     let Some(function) = resolve_function(program, segments) else {
         // A non-builtin call that resolves to no declared function is unresolved.
         // Only report it for calls in a library module of the program: a
@@ -1408,7 +1491,7 @@ fn check_call(
         // missing definition may live in an excluded module).
         if file_in_program(program, file) {
             diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNRESOLVED_CALL.to_string(),
+                code: CHECK_UNRESOLVED_CALL,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!("function `{}` is not defined", segments.join("::")),
@@ -1473,7 +1556,7 @@ fn check_call(
                 // parameter must be converted first.
                 None if matches!(arg_type, MarrowType::Unknown) => {
                     diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNTYPED_VALUE.to_string(),
+                        code: CHECK_UNTYPED_VALUE,
                         severity: Severity::Error,
                         file: file.to_path_buf(),
                         message: format!(
@@ -1495,7 +1578,7 @@ fn check_call(
 /// A `check.call_argument` diagnostic located at a call's span.
 fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_CALL_ARGUMENT.to_string(),
+        code: CHECK_CALL_ARGUMENT,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
@@ -1539,6 +1622,26 @@ fn resolve_function<'p>(
     }
 }
 
+/// The type produced by a resource constructor callee, if `segments` name a
+/// declared resource: `Book(...)` constructs the resource value (its
+/// [`MarrowType::Resource`]), and `Book::Id(...)` constructs its identity
+/// ([`MarrowType::Identity`]). Any other callee returns `None`, so a genuinely
+/// unresolved call is still reported.
+fn resource_constructor_type(program: &CheckedProgram, segments: &[String]) -> Option<MarrowType> {
+    let is_resource = |name: &str| {
+        program
+            .modules
+            .iter()
+            .flat_map(|module| &module.resources)
+            .any(|resource| resource.name == name)
+    };
+    match segments {
+        [name] if is_resource(name) => Some(MarrowType::Resource(name.clone())),
+        [name, id] if id == "Id" && is_resource(name) => Some(MarrowType::Identity(name.clone())),
+        _ => None,
+    }
+}
+
 /// Whether a name callee is a builtin, std helper, or the `Error` constructor —
 /// each dispatched before user functions at runtime, so never a program function.
 fn is_builtin_call(segments: &[String]) -> bool {
@@ -1562,7 +1665,10 @@ fn is_builtin_call(segments: &[String]) -> bool {
             | "int" | "decimal" | "string" | "bool" | "bytes" | "ErrorCode"
             | "date" | "instant" | "duration"
         ),
-        [first, _, _] => first == "std",
+        // A `std::module::op` builtin must name a real std module, mirroring
+        // import resolution (`is_std_module`/STD_MODULES); an unknown submodule is
+        // not a builtin, so it is reported like a rejected `use std::bogus`.
+        [first, module, _] => first == "std" && STD_MODULES.contains(&module.as_str()),
         _ => false,
     }
 }
@@ -1585,10 +1691,9 @@ fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<
 
 /// The return type of a scalar conversion builtin (`int(x): int`, `string(x):
 /// string`, …), per docs/language/builtins.md. The conversion validates a
-/// dynamically-typed value and yields the named type. (`ErrorCode` has no runtime
-/// value representation yet and is omitted.)
+/// dynamically-typed value and yields the named type.
 fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
-    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, String};
+    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, ErrorCode, Instant, Int, String};
     let [name] = segments else {
         return None;
     };
@@ -1598,6 +1703,7 @@ fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
         "string" => String,
         "bool" => Bool,
         "bytes" => Bytes,
+        "ErrorCode" => ErrorCode,
         "date" => Date,
         "instant" => Instant,
         "duration" => Duration,
@@ -1716,7 +1822,7 @@ pub fn check_tests(
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, &resolvable) {
                 report.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_IMPORT.to_string(),
+                    code: CHECK_UNRESOLVED_IMPORT,
                     severity: Severity::Error,
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
@@ -1751,7 +1857,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
         Ok(source) => source,
         Err(error) => {
             diagnostics.push(CheckDiagnostic {
-                code: IO_READ.to_string(),
+                code: IO_READ,
                 severity: Severity::Error,
                 file: file_path.to_path_buf(),
                 message: format!("failed to read source: {error}"),
@@ -1765,7 +1871,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
     let parsed = parse_source(&source);
     for diagnostic in &parsed.diagnostics {
         diagnostics.push(CheckDiagnostic {
-            code: diagnostic.code.to_string(),
+            code: diagnostic.code,
             severity: diagnostic.severity,
             file: file_path.to_path_buf(),
             message: diagnostic.message.clone(),
@@ -1800,7 +1906,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
                 let (schema, errors) = marrow_schema::compile_resource(resource);
                 for error in errors {
                     diagnostics.push(CheckDiagnostic {
-                        code: error.code.to_string(),
+                        code: error.code,
                         severity: Severity::Error,
                         file: file_path.to_path_buf(),
                         message: error.message,
@@ -1968,7 +2074,7 @@ fn module_path_error(
     message: String,
 ) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_MODULE_PATH.to_string(),
+        code: CHECK_MODULE_PATH,
         severity: Severity::Error,
         file: file.path.clone(),
         message,
@@ -2013,7 +2119,7 @@ fn check_duplicate_declarations(
         }
         match first_seen.get(name) {
             Some(first) => diagnostics.push(CheckDiagnostic {
-                code: CHECK_DUPLICATE_DECLARATION.to_string(),
+                code: CHECK_DUPLICATE_DECLARATION,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!("`{name}` is already declared on line {}", first.line),
