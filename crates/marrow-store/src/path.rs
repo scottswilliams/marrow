@@ -112,7 +112,7 @@ pub fn encode_key_value(key: &SavedKey) -> Vec<u8> {
 /// backend ranges over `lo..hi` and takes the last entry to find the highest
 /// integer record key without scanning every child. `path.rs` owns these bounds
 /// so the store never references the tag constants.
-pub fn int_record_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn int_record_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
     int_key_band(prefix, KIND_RECORD_KEY)
 }
 
@@ -121,7 +121,7 @@ pub fn int_record_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
 /// matches [`int_record_key_band`] but with the index-key kind tag, so a backend
 /// finds the highest integer position under a layer the same bounded way it finds
 /// the highest record key under a root.
-pub fn int_index_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn int_index_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
     int_key_band(prefix, KIND_INDEX_KEY)
 }
 
