@@ -392,9 +392,7 @@ corrupt key as `store.corrupt_path`; it exits `1` when it finds a problem), and
 `marrow data get <path>` (read one path's value). Inspection is read-only and
 never creates the store; `dump`/`get` need only `marrow.json`, while
 `integrity` typechecks against the project's checked schema. `diff` and `load`
-are deferred: they overlap restore's replace/merge/repair modes and need typed
-source-fingerprinting, and would route through the maintenance capability when
-implemented rather than loosen the read-only guarantee.
+are deferred (see [Deferrals](roadmap/README.md#deferrals)).
 
 `marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
 portable archive — the canonical ordered (path, value) stream behind a small
@@ -403,9 +401,8 @@ with typed restore), not an engine file. `marrow restore <projectdir> <archive>`
 replays one into an empty store in a single transaction; a non-empty target fails
 with `restore.not_empty`, since restoring over existing data is an explicit
 maintenance action. Empty-target restore is the only mode implemented today;
-replace, merge, and repair restore (the non-empty cases) are deferred and would
-route through the maintenance capability when implemented, not loosen the
-empty-target guard.
+replace, merge, and repair restore (the non-empty cases) are deferred (see
+[Deferrals](roadmap/README.md#deferrals)).
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and

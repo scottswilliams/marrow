@@ -229,9 +229,8 @@ Empty-target restore is the only mode implemented today: if the target already
 holds data, restore refuses with `restore.not_empty` (exit `1`) rather than
 overwrite it.
 
-Replace, merge, and repair restores (the non-empty cases) are deferred. When
-implemented they will be explicit maintenance actions that route through the
-maintenance capability.
+Replace, merge, and repair restores (the non-empty cases) are deferred — see
+[Deferrals](roadmap/README.md#deferrals).
 
 Prints the record count and exits `0`; exits `1` if the target is non-empty or on
 an I/O or store error.
@@ -262,9 +261,8 @@ Read-only inspection of a project's saved data. It never creates or modifies the
 store; a project with no saved data on disk reports as empty. See
 [data-tools.md](data-tools.md) for full output shapes and the path syntax.
 
-`data diff` and `data load` are deferred: they overlap restore's
-replace/merge/repair modes and need typed source-fingerprinting; they will route
-through the maintenance capability when implemented.
+`data diff` and `data load` are deferred — see
+[Deferrals](roadmap/README.md#deferrals).
 
 All `data` commands exit `2` on a usage error (missing directory, bad flag, an
 unparseable `<path>` for `get`), and `1` on a config or store error. `roots`,

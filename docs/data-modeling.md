@@ -402,10 +402,9 @@ the schema — note this checks decoding, not required-field completeness).
 
 Some maintenance operations are not yet implemented:
 
-- `marrow data diff` and `marrow data load` are deferred — they overlap
-  restore's replace/merge/repair modes and need typed source fingerprinting.
-- Restore today writes into an empty target. Replace, merge, and repair restores
-  are deferred maintenance actions.
+- `marrow data diff` and `marrow data load` are deferred, and restore today
+  writes into an empty target only (replace, merge, and repair restores are
+  deferred) — see [Deferrals](roadmap/README.md#deferrals).
 - A field declared with a generated identity type is not yet accepted by the
   write path; model references with a scalar key field plus identity
   construction (see [Relationships](#relationships)).

@@ -248,9 +248,8 @@ marrow restore ./project books.mwbackup
 # restore.not_empty: restore target already holds data; restore writes into an empty store
 ```
 
-Replace, merge, and repair restores — the non-empty cases — are deferred. When
-they land they will be explicit maintenance actions routed through the
-maintenance capability, not a relaxation of the empty-target guard.
+Replace, merge, and repair restores — the non-empty cases — are deferred (see
+[Deferrals](roadmap/README.md#deferrals)).
 
 To restore over existing data today, empty the target first with a maintenance
 run (for example a `fn` that deletes the relevant roots, run with
@@ -260,12 +259,9 @@ run (for example a `fn` that deletes the relevant roots, run with
 
 These do not exist yet; do not plan migrations around them:
 
-- `marrow data diff` and `marrow data load`. They overlap restore's
-  replace/merge/repair modes and need typed source fingerprinting. They will
-  route through the maintenance capability when implemented and will not loosen
-  the read-only guarantee of the `marrow data` inspection group. Today
-  `marrow data` provides only the read-only subcommands `roots`, `stats`, `dump`,
-  `integrity`, and `get`.
+- `marrow data diff` and `marrow data load` are deferred — see
+  [Deferrals](roadmap/README.md#deferrals). Today `marrow data` provides only
+  the read-only subcommands `roots`, `stats`, `dump`, `integrity`, and `get`.
 - Replace / merge / repair restore (see above).
 
 ## Exit Codes

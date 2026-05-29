@@ -209,8 +209,8 @@ marrow data stats --format json .
 {"project":"/path/to/shelf","records":8,"roots":1}
 ```
 
-`marrow data` is read-only. The `diff` and `load` subcommands are deferred and
-not available yet.
+`marrow data` is read-only. The `diff` and `load` subcommands are deferred —
+see [Deferrals](roadmap/README.md#deferrals).
 
 ## 5. Write And Run A Test
 
