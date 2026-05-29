@@ -2485,11 +2485,14 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             env.transaction_depth -= 1;
             match result {
                 // A throw escapes the transaction, so it rolls back like an error
-                // rather than committing.
-                Ok(Flow::Throw(value)) => {
-                    let _ = env.store.borrow_mut().rollback();
-                    Ok(Flow::Throw(value))
-                }
+                // rather than committing. If the rollback itself fails, the store
+                // is left in an indeterminate state — an integrity failure that
+                // must not be masked by a catchable throw, so surface it as a
+                // typed store error instead.
+                Ok(Flow::Throw(value)) => match env.store.borrow_mut().rollback() {
+                    Ok(()) => Ok(Flow::Throw(value)),
+                    Err(rb_err) => Err(store_error(rb_err, *span)),
+                },
                 Ok(flow) => {
                     env.store
                         .borrow_mut()
@@ -2497,10 +2500,14 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                         .map_err(|error| store_error(error, *span))?;
                     Ok(flow)
                 }
-                Err(error) => {
-                    let _ = env.store.borrow_mut().rollback();
-                    Err(error)
-                }
+                // The body errored, so the transaction rolls back. A failed
+                // rollback is a store-integrity error that supersedes the original
+                // cause (the staged writes may have partially survived), so report
+                // it; otherwise surface the original error as before.
+                Err(error) => match env.store.borrow_mut().rollback() {
+                    Ok(()) => Err(error),
+                    Err(rb_err) => Err(store_error(rb_err, *span)),
+                },
             }
         }
         Statement::Throw { value, span } => {

@@ -8,13 +8,14 @@ use std::rc::Rc;
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
     Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW,
-    RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function, run_entry,
-    run_entry_with_host,
+    RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
+    RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function,
+    run_entry, run_entry_with_host,
 };
 use marrow_schema::compile_resource;
-use marrow_store::mem::MemStore;
-use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_store::backend::Backend;
+use marrow_store::mem::{MemStore, Presence, ScanPage, StoreError};
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
 use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
@@ -2589,6 +2590,89 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
             .value,
         Some(Value::Bool(false)),
         "the staged write rolled back with the transaction"
+    );
+}
+
+/// A backend that delegates every operation to an inner [`MemStore`] but fails
+/// `rollback()` with a store-integrity error. Models a persistent store whose
+/// undo could not be applied, so the transaction handler must surface the
+/// failure rather than mask it behind the original escape.
+struct FailingRollbackStore {
+    inner: MemStore,
+}
+
+impl FailingRollbackStore {
+    fn new() -> Self {
+        Self {
+            inner: MemStore::new(),
+        }
+    }
+}
+
+impl Backend for FailingRollbackStore {
+    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Backend::read(&self.inner, path)
+    }
+    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        Backend::write(&mut self.inner, path, value)
+    }
+    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+        Backend::delete(&mut self.inner, path)
+    }
+    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
+        Backend::presence(&self.inner, path)
+    }
+    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        Backend::child_keys(&self.inner, path)
+    }
+    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan(&self.inner, path, limit)
+    }
+    fn roots(&self) -> Result<Vec<String>, StoreError> {
+        Backend::roots(&self.inner)
+    }
+    fn begin(&mut self) -> Result<(), StoreError> {
+        Backend::begin(&mut self.inner)
+    }
+    fn commit(&mut self) -> Result<(), StoreError> {
+        Backend::commit(&mut self.inner)
+    }
+    fn rollback(&mut self) -> Result<(), StoreError> {
+        Err(StoreError::Corruption {
+            message: "rollback could not be applied".into(),
+        })
+    }
+}
+
+#[test]
+fn a_failed_rollback_after_an_error_surfaces_a_store_error() {
+    // The body errors, so the transaction rolls back — but the rollback itself
+    // fails. A failed rollback is a store-integrity failure that supersedes the
+    // original cause, so the run surfaces a typed store error, not the divide.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        const x = 1 / 0\n",
+    );
+    let store = RefCell::new(FailingRollbackStore::new());
+    let result = run_entry(&program, &store, "test::risky", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_STORE),
+        "a failed rollback must surface as a store error, got {result:?}"
+    );
+}
+
+#[test]
+fn a_failed_rollback_after_a_throw_surfaces_a_store_error() {
+    // A throw escapes the transaction, which rolls back — but the rollback
+    // fails. The integrity failure must not be masked by a catchable throw, so
+    // the run surfaces a typed store error instead of the throw.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        throw Error(code: \"x.y\", message: \"boom\")\n",
+    );
+    let store = RefCell::new(FailingRollbackStore::new());
+    let result = run_entry(&program, &store, "test::risky", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_STORE),
+        "a failed rollback after a throw must surface as a store error, got {result:?}"
     );
 }
 
