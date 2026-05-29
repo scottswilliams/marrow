@@ -729,7 +729,7 @@ fn std_assert_absent_fails_when_a_value_is_present() {
             PathSegment::Root("books".into()),
             PathSegment::RecordKey(SavedKey::Int(1)),
         ]),
-        encode_value(&SavedValue::Int(1)),
+        encode_value(&SavedValue::Int(1)).expect("in-range value encodes"),
     );
     let error = run_entry(&program, &store, "test::bad", &[]).unwrap_err();
     assert_eq!(error.code, RUN_ASSERT);
@@ -2035,7 +2035,7 @@ fn store_with_title(id: i64, title: &str) -> MemStore {
             PathSegment::RecordKey(SavedKey::Int(id)),
             PathSegment::Field("title".into()),
         ]),
-        encode_value(&SavedValue::Str(title.into())),
+        encode_value(&SavedValue::Str(title.into())).expect("in-range value encodes"),
     );
     store
 }
@@ -2167,7 +2167,7 @@ fn get_returns_the_value_when_present() {
             PathSegment::RecordKey(SavedKey::Int(1)),
             PathSegment::Field("subtitle".into()),
         ]),
-        encode_value(&SavedValue::Str("A Discworld Novel".into())),
+        encode_value(&SavedValue::Str("A Discworld Novel".into())).expect("in-range value encodes"),
     );
     let value = run_entry(
         &program,
@@ -2201,7 +2201,7 @@ fn next_id_allocates_past_the_highest_record() {
                 PathSegment::RecordKey(SavedKey::Int(id)),
                 PathSegment::Field("title".into()),
             ]),
-            encode_value(&SavedValue::Str("t".into())),
+            encode_value(&SavedValue::Str("t".into())).expect("in-range value encodes"),
         );
     }
     assert_eq!(
@@ -2504,7 +2504,7 @@ fn seed_field(store: &RefCell<MemStore>, id: i64, field: &str, value: &str) {
             PathSegment::RecordKey(SavedKey::Int(id)),
             PathSegment::Field(field.into()),
         ]),
-        encode_value(&SavedValue::Str(value.into())),
+        encode_value(&SavedValue::Str(value.into())).expect("in-range value encodes"),
     );
 }
 

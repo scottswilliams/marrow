@@ -25,7 +25,7 @@ use marrow_store::Decimal;
 use marrow_store::backend::Backend;
 use marrow_store::mem::{MemStore, Presence, StoreError};
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
 use marrow_syntax::{
     ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
@@ -1195,8 +1195,9 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let nanos = eval_instant_arg(value, env, span)?;
-            let text = String::from_utf8(encode_value(&SavedValue::Instant(nanos)))
-                .expect("a canonical instant encodes as UTF-8 text");
+            let bytes =
+                encode_value(&SavedValue::Instant(nanos)).map_err(|error| value_error(error, span))?;
+            let text = String::from_utf8(bytes).expect("a canonical instant encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
         ("clock", "parseInstant") => {
@@ -1216,8 +1217,9 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let days = eval_date_arg(value, env, span)?;
-            let text = String::from_utf8(encode_value(&SavedValue::Date(days)))
-                .expect("a canonical date encodes as UTF-8 text");
+            let bytes =
+                encode_value(&SavedValue::Date(days)).map_err(|error| value_error(error, span))?;
+            let text = String::from_utf8(bytes).expect("a canonical date encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
         ("clock", "parseDate") => {
@@ -1235,8 +1237,9 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let nanos = eval_duration_arg(value, env, span)?;
-            let text = String::from_utf8(encode_value(&SavedValue::Duration(nanos)))
-                .expect("a canonical duration encodes as UTF-8 text");
+            let bytes = encode_value(&SavedValue::Duration(nanos))
+                .map_err(|error| value_error(error, span))?;
+            let text = String::from_utf8(bytes).expect("a canonical duration encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
         ("clock", "parseDuration") => {
@@ -3787,6 +3790,16 @@ fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         code: RUN_STORE,
         message: format!("a saved-data operation failed: {error:?}"),
+        span,
+    }
+}
+
+/// Surface a value-encoding range error (e.g. a date/instant outside year
+/// 0001-9999) as a runtime error, preserving the codec's stable dotted code.
+fn value_error(error: ValueError, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        code: error.code(),
+        message: error.to_string(),
         span,
     }
 }

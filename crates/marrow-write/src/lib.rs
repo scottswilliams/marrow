@@ -17,7 +17,7 @@ use marrow_store::mem::StoreError;
 use marrow_store::path::{
     ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
 };
-use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
 
 /// A field's value in a write: a saved value, or explicitly absent (omitted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +75,16 @@ fn store_failed(error: StoreError) -> WriteError {
     WriteError {
         code: WRITE_STORE,
         message: format!("the store could not be read while planning: {error:?}"),
+    }
+}
+
+/// Wrap a value-encoding error (e.g. a date/instant outside year 0001-9999) met
+/// while planning a write, preserving the codec's stable dotted code so the
+/// write is rejected rather than persisting a non-canonical value.
+fn encode_failed(error: ValueError) -> WriteError {
+    WriteError {
+        code: error.code(),
+        message: error.to_string(),
     }
 }
 
@@ -162,7 +172,7 @@ pub fn plan_resource_write(
     for (name, saved) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&field_path(root, identity, name)),
-            value: encode_value(saved),
+            value: encode_value(saved).map_err(encode_failed)?,
         });
     }
 
@@ -256,7 +266,7 @@ pub fn plan_field_write(
 
     let mut steps = vec![PlanStep::Write {
         path: encode_path(&field_path(root, identity, field)),
-        value: encode_value(value),
+        value: encode_value(value).map_err(encode_failed)?,
     }];
 
     // Keep any index the field feeds coherent: remove the entry for the
@@ -348,7 +358,7 @@ pub fn plan_resource_merge(
     for (name, saved) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&field_path(root, identity, name)),
-            value: encode_value(saved),
+            value: encode_value(saved).map_err(encode_failed)?,
         });
     }
 
@@ -420,7 +430,7 @@ pub fn plan_layer_leaf_write(
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
             path: encode_path(&layer_leaf_path(root, identity, layer, key)),
-            value: encode_value(value),
+            value: encode_value(value).map_err(encode_failed)?,
         }],
     })
 }
@@ -478,7 +488,7 @@ pub fn plan_nested_field_write(
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
             path: encode_path(&path),
-            value: encode_value(value),
+            value: encode_value(value).map_err(encode_failed)?,
         }],
     })
 }
@@ -553,7 +563,7 @@ pub fn plan_layer_group_write(
     for (name, saved) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&layer_field_path(root, identity, layer, key, name)),
-            value: encode_value(saved),
+            value: encode_value(saved).map_err(encode_failed)?,
         });
     }
     Ok(WritePlan { steps })
