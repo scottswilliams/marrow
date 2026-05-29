@@ -1874,7 +1874,7 @@ fn check_next_id(
     let Some(saved_root) = &resource.saved_root else {
         return MarrowType::Unknown;
     };
-    if single_int_root(saved_root) {
+    if saved_root.single_int_root() {
         return MarrowType::Identity(resource.name.clone());
     }
     diagnostics.push(CheckDiagnostic {
@@ -1885,31 +1885,12 @@ fn check_next_id(
             "`nextId` requires a resource with one `int` identity key, but `^{root}` \
              ({}) has no default allocation policy; composite and non-integer \
              identities are application-provided",
-            next_id_shape(saved_root),
+            saved_root.next_id_shape(),
         ),
         line: span.line,
         column: span.column,
     });
     MarrowType::Unknown
-}
-
-/// Does this saved root qualify for the default `nextId` policy? Exactly one `int`
-/// identity key. This mirrors the runtime's write-planner gate — the one contract
-/// the runtime gate and the checker must agree on — duplicated only because the
-/// checker cannot depend on the runtime; both key off `KeyDef.ty.text == "int"`.
-fn single_int_root(root: &marrow_schema::SavedRootSchema) -> bool {
-    matches!(root.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
-}
-
-/// Name the identity shape that disqualifies a root from the default `nextId`
-/// policy, for the rejection message (mirrors the runtime's helper of the same
-/// name): a keyless singleton, a single non-`int` key, or a composite identity.
-fn next_id_shape(root: &marrow_schema::SavedRootSchema) -> String {
-    match root.identity_keys.as_slice() {
-        [] => "a keyless singleton".into(),
-        [key] => format!("a single `{}` key", key.ty.text.trim()),
-        keys => format!("a composite identity of {} keys", keys.len()),
-    }
 }
 
 /// A `check.call_argument` diagnostic located at a call's span.

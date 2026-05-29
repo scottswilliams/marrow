@@ -765,16 +765,6 @@ fn resolve_saved_root<'a>(
     Ok(root)
 }
 
-/// Does this saved root qualify for the default `nextId` policy? The policy is
-/// available only for a resource with exactly one `int` identity key; composite
-/// identities, non-integer identities, and keyless singletons are
-/// application-provided. This predicate is the single contract the runtime gate
-/// (here) and the checker (`marrow-check`'s `check_next_id`) must agree on; the
-/// checker keeps a mirror copy because it cannot depend on this crate.
-pub fn single_int_root(root: &SavedRootSchema) -> bool {
-    matches!(root.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
-}
-
 /// The next identity for a single-`int` keyed saved root: one greater than the
 /// highest existing integer record key, or `1` when the root is empty. This is
 /// the default `nextId` policy. Non-integer immediate children — such as index
@@ -787,7 +777,7 @@ pub fn single_int_root(root: &SavedRootSchema) -> bool {
 /// policy from the schema, mirroring `next_layer_pos`.
 pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, WriteError> {
     let root = saved_root_of(schema)?;
-    if !single_int_root(root) {
+    if !root.single_int_root() {
         return Err(WriteError {
             code: WRITE_NEXT_ID_UNSUPPORTED,
             message: format!(
@@ -795,7 +785,7 @@ pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, Writ
                  per-root policy is only available for a resource with one `int` \
                  identity key",
                 schema.name,
-                next_id_shape(root),
+                root.next_id_shape(),
             ),
         });
     }
@@ -807,21 +797,6 @@ pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, Writ
         })?
         .unwrap_or(0);
     next_after(highest)
-}
-
-/// Name the identity shape that disqualifies a root from the default `nextId`
-/// policy, for the rejection message: a composite identity (two or more keys), a
-/// single non-integer key, or a keyless singleton root.
-fn next_id_shape(root: &SavedRootSchema) -> String {
-    match root.identity_keys.as_slice() {
-        [] => "this root is a keyless singleton".into(),
-        [key] => format!(
-            "its identity key `{}` is `{}`, not `int`",
-            key.name,
-            key.ty.text.trim()
-        ),
-        keys => format!("it has a composite identity of {} keys", keys.len()),
-    }
 }
 
 /// One greater than the highest existing integer key, or a typed overflow when
