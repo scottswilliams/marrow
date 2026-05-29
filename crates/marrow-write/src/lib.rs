@@ -801,7 +801,11 @@ pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, Writ
 fn next_id_shape(root: &SavedRootSchema) -> String {
     match root.identity_keys.as_slice() {
         [] => "this root is a keyless singleton".into(),
-        [key] => format!("its identity key `{}` is `{}`, not `int`", key.name, key.ty.text.trim()),
+        [key] => format!(
+            "its identity key `{}` is `{}`, not `int`",
+            key.name,
+            key.ty.text.trim()
+        ),
         keys => format!("it has a composite identity of {} keys", keys.len()),
     }
 }

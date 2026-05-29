@@ -546,7 +546,11 @@ fn short_form_std_call_runs() {
         &["std::clock"],
     );
     assert_eq!(
-        run(&program, "test::roundtrip", &[Value::Str("2024-02-29".into())]),
+        run(
+            &program,
+            "test::roundtrip",
+            &[Value::Str("2024-02-29".into())]
+        ),
         Ok(Some(Value::Str("2024-02-29".into())))
     );
 }

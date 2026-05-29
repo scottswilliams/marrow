@@ -588,7 +588,15 @@ fn check_block_types(
 ) {
     scope.push(HashMap::new());
     for statement in &block.statements {
-        check_statement_types(program, file, return_type, statement, scope, aliases, diagnostics);
+        check_statement_types(
+            program,
+            file,
+            return_type,
+            statement,
+            scope,
+            aliases,
+            diagnostics,
+        );
     }
     scope.pop();
 }
@@ -684,9 +692,24 @@ fn check_statement_types(
             ..
         } => {
             check_condition(program, file, condition, scope, aliases, diagnostics);
-            check_block_types(program, file, return_type, then_block, scope, aliases, diagnostics);
+            check_block_types(
+                program,
+                file,
+                return_type,
+                then_block,
+                scope,
+                aliases,
+                diagnostics,
+            );
             for else_if in else_ifs {
-                check_condition(program, file, &else_if.condition, scope, aliases, diagnostics);
+                check_condition(
+                    program,
+                    file,
+                    &else_if.condition,
+                    scope,
+                    aliases,
+                    diagnostics,
+                );
                 check_block_types(
                     program,
                     file,
@@ -698,14 +721,30 @@ fn check_statement_types(
                 );
             }
             if let Some(block) = else_block {
-                check_block_types(program, file, return_type, block, scope, aliases, diagnostics);
+                check_block_types(
+                    program,
+                    file,
+                    return_type,
+                    block,
+                    scope,
+                    aliases,
+                    diagnostics,
+                );
             }
         }
         Statement::While {
             condition, body, ..
         } => {
             check_condition(program, file, condition, scope, aliases, diagnostics);
-            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
+            check_block_types(
+                program,
+                file,
+                return_type,
+                body,
+                scope,
+                aliases,
+                diagnostics,
+            );
         }
         Statement::For {
             binding,
@@ -727,15 +766,39 @@ fn check_statement_types(
                 frame.insert(second.clone(), MarrowType::Unknown);
             }
             scope.push(frame);
-            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
+            check_block_types(
+                program,
+                file,
+                return_type,
+                body,
+                scope,
+                aliases,
+                diagnostics,
+            );
             scope.pop();
         }
         Statement::Transaction { body, .. } => {
-            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
+            check_block_types(
+                program,
+                file,
+                return_type,
+                body,
+                scope,
+                aliases,
+                diagnostics,
+            );
         }
         Statement::Lock { path, body, .. } => {
             infer_type(program, path, scope, aliases, file, diagnostics);
-            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
+            check_block_types(
+                program,
+                file,
+                return_type,
+                body,
+                scope,
+                aliases,
+                diagnostics,
+            );
         }
         Statement::Try {
             body,
@@ -743,7 +806,15 @@ fn check_statement_types(
             finally,
             ..
         } => {
-            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
+            check_block_types(
+                program,
+                file,
+                return_type,
+                body,
+                scope,
+                aliases,
+                diagnostics,
+            );
             if let Some(clause) = catch {
                 // The catch clause binds an Error value for the duration of its block.
                 let mut frame = HashMap::new();
@@ -764,7 +835,15 @@ fn check_statement_types(
                 scope.pop();
             }
             if let Some(finally) = finally {
-                check_block_types(program, file, return_type, finally, scope, aliases, diagnostics);
+                check_block_types(
+                    program,
+                    file,
+                    return_type,
+                    finally,
+                    scope,
+                    aliases,
+                    diagnostics,
+                );
             }
         }
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
@@ -992,8 +1071,16 @@ fn infer_type(
                 .iter()
                 .map(|arg| infer_type(program, &arg.value, scope, aliases, file, diagnostics))
                 .collect();
-            let call_type =
-                check_call(program, callee, args, &arg_types, aliases, *span, file, diagnostics);
+            let call_type = check_call(
+                program,
+                callee,
+                args,
+                &arg_types,
+                aliases,
+                *span,
+                file,
+                diagnostics,
+            );
             // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
@@ -1541,6 +1628,10 @@ fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
 /// It flags the argument count (every parameter is required), a named argument
 /// that names no parameter, and an argument whose type does not match its
 /// parameter (only when both are known, incompatible primitives, like operators).
+// Each argument is an independent input threaded through the type-check pipeline
+// (program/aliases/file/diagnostics are the cross-cutting context every node
+// carries, like `scope`); bundling them would not aid clarity here.
+#[allow(clippy::too_many_arguments)]
 fn check_call(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
@@ -1578,7 +1669,14 @@ fn check_call(
     // the runtime. A std helper's return type feeds the surrounding type checks.
     if is_builtin_call(segments) {
         if let Some(params) = std_call_params(segments) {
-            check_args_against(&segments.join("::"), &params, arg_types, span, file, diagnostics);
+            check_args_against(
+                &segments.join("::"),
+                &params,
+                arg_types,
+                span,
+                file,
+                diagnostics,
+            );
         }
         return std_call_return_type(segments)
             .or_else(|| conversion_return_type(segments))
@@ -1648,7 +1746,14 @@ fn check_call(
         if let Some(param) = param
             && let Some(parameter) = as_primitive(&param.ty)
         {
-            check_one_arg(&segments.join("::"), parameter, arg_type, span, file, diagnostics);
+            check_one_arg(
+                &segments.join("::"),
+                parameter,
+                arg_type,
+                span,
+                file,
+                diagnostics,
+            );
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
@@ -2343,7 +2448,11 @@ pub fn expand_alias(
     if segments.len() >= 2
         && let Some(full) = aliases.get(&segments[0])
     {
-        return full.iter().cloned().chain(segments[1..].iter().cloned()).collect();
+        return full
+            .iter()
+            .cloned()
+            .chain(segments[1..].iter().cloned())
+            .collect();
     }
     segments.to_vec()
 }

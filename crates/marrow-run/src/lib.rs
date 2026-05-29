@@ -348,6 +348,10 @@ enum Completion {
 /// returned normally — a throw or fault skips write-back). Shared by
 /// [`evaluate_function`], [`run_entry`], and call evaluation; non-`out`/`inout`
 /// calls pass an empty `writeback`.
+// The activation's inputs are independent (context, output, the frame's import
+// aliases, parameter names, body, span, args, write-back set); bundling them
+// would not aid clarity.
+#[allow(clippy::too_many_arguments)]
 fn invoke(
     ctx: Context<'_>,
     output: Rc<RefCell<String>>,
@@ -483,10 +487,12 @@ fn resolve_module<'p>(
 ) -> Option<&'p CheckedModule> {
     let (name, module) = segments.split_last()?;
     if module.is_empty() {
-        program
-            .modules
-            .iter()
-            .find(|module| module.functions.iter().any(|function| &function.name == name))
+        program.modules.iter().find(|module| {
+            module
+                .functions
+                .iter()
+                .any(|function| &function.name == name)
+        })
     } else {
         let module_name = module.join("::");
         program
@@ -500,10 +506,7 @@ fn resolve_module<'p>(
 /// map when no module is found (e.g. the bare-program [`evaluate_function`] path).
 /// Reuses the checker's [`marrow_check::build_alias_map`] over the module's
 /// `imports` so check and run expand short-form identically.
-fn frame_aliases(
-    program: &CheckedProgram,
-    segments: &[String],
-) -> HashMap<String, Vec<String>> {
+fn frame_aliases(program: &CheckedProgram, segments: &[String]) -> HashMap<String, Vec<String>> {
     resolve_module(program, segments)
         .map(|module| marrow_check::build_alias_map(&module.imports))
         .unwrap_or_default()

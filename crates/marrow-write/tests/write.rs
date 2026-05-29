@@ -8,12 +8,12 @@ use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
     FieldValue, ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
-    WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER,
-    WRITE_REQUIRED_ABSENT,
-    WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id,
-    next_layer_pos, plan_field_delete, plan_field_write, plan_layer_field_write,
-    plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
+    WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
+    WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_delete,
+    plan_field_write, plan_layer_field_write, plan_layer_group_write, plan_layer_leaf_write,
+    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -449,9 +449,8 @@ fn next_id_allocates_after_the_highest_record() {
 /// than scanning integer child keys and inventing a bogus `1`.
 #[test]
 fn next_id_over_a_composite_root_is_unsupported() {
-    let item = schema(
-        "resource Item at ^items(tenant: string, id: int)\n    required name: string\n",
-    );
+    let item =
+        schema("resource Item at ^items(tenant: string, id: int)\n    required name: string\n");
     let store = MemStore::new();
     let result = next_id(&item, &store);
     assert!(
