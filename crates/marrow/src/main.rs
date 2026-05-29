@@ -279,6 +279,7 @@ fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
 fn run(args: &[String]) -> ExitCode {
     let mut entry = None;
     let mut dir = None;
+    let mut maintenance = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -290,16 +291,26 @@ fn run(args: &[String]) -> ExitCode {
                 };
                 entry = Some(value.clone());
             }
+            // The explicit maintenance escape hatch: it grants the run the
+            // maintenance capability (whole-root delete, required-field delete,
+            // raw quoted-segment access). An operator must type it; the default
+            // run and `run.defaultEntry` can never inject it.
+            "--maintenance" => maintenance = true,
             "--help" | "-h" => {
                 print!(
                     "\
 Usage:
-  marrow run [--entry <module::function>] <projectdir>
+  marrow run [--entry <module::function>] [--maintenance] <projectdir>
 
 Check a Marrow project, then run an entry function over the store its
 `marrow.json` selects (an in-memory store when none is configured). The entry
 is `--entry` if given, else the project's `run.defaultEntry`. Output written
 with `print`/`write` goes to stdout.
+
+  --maintenance  Run with the maintenance capability, for migration, repair,
+                 and restore tooling. It permits whole managed-root deletes,
+                 required-field deletes, and raw quoted-segment access that the
+                 default run rejects. Use it deliberately.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -322,13 +333,13 @@ with `print`/`write` goes to stdout.
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    run_project_dir(&dir, entry.as_deref())
+    run_project_dir(&dir, entry.as_deref(), maintenance)
 }
 
 /// Load and check `<dir>/marrow.json`'s project, then run its entry (the
 /// `--entry` override, else `run.defaultEntry`) over the configured store. A
 /// project must check cleanly before it runs.
-fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
+fn run_project_dir(dir: &str, entry_override: Option<&str>, maintenance: bool) -> ExitCode {
     let (config, program) = match load_checked_project(dir) {
         Ok(checked) => checked,
         Err(code) => return code,
@@ -347,10 +358,10 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
         Err(code) => code,
         Ok(None) => {
             let store = RefCell::new(marrow_store::mem::MemStore::new());
-            execute(&program, &store, entry)
+            execute(&program, &store, entry, maintenance)
         }
         Ok(Some(path)) => match marrow_store::redb::RedbStore::open(&path) {
-            Ok(store) => execute(&program, &RefCell::new(store), entry),
+            Ok(store) => execute(&program, &RefCell::new(store), entry, maintenance),
             Err(error) => {
                 report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
                 ExitCode::FAILURE
@@ -450,18 +461,23 @@ pub(crate) fn open_store_for_inspection(
 /// store is the ordered-tree backend the project selected; the run reads the
 /// real system clock for `std::clock::now()`, the real environment for
 /// `std::env`, the real filesystem for `std::io`, and writes `std::log` output to
-/// standard error.
+/// standard error. `maintenance` grants the maintenance capability only when the
+/// operator passed `--maintenance`; an ordinary run leaves it off.
 fn execute(
     program: &marrow_check::CheckedProgram,
     store: &RefCell<dyn marrow_store::backend::Backend>,
     entry: &str,
+    maintenance: bool,
 ) -> ExitCode {
     let log = std::rc::Rc::new(RefCell::new(String::new()));
-    let host = marrow_run::Host::new()
+    let mut host = marrow_run::Host::new()
         .with_system_clock()
         .with_system_environment()
         .with_log_sink(std::rc::Rc::clone(&log))
         .with_filesystem();
+    if maintenance {
+        host = host.with_maintenance();
+    }
     let result = marrow_run::run_entry_with_host(program, store, &host, entry, &[]);
     // Flush any log output (collected even on a failing run) to standard error,
     // keeping it off the program's own stdout stream.
