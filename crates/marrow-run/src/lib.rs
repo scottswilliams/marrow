@@ -234,6 +234,9 @@ pub fn evaluate_function(
     )? {
         (Completion::Returned(value), _) => Ok(value),
         (Completion::Threw(error), _) => Err(uncaught_throw(&error, function.span)),
+        (Completion::Faulted { error, code }, _) => {
+            Err(uncaught_fault(&error, code, function.span))
+        }
     }
 }
 
@@ -288,6 +291,9 @@ pub fn run_entry_with_host(
     )? {
         (Completion::Returned(value), _) => value,
         (Completion::Threw(error), _) => return Err(uncaught_throw(&error, function.span)),
+        (Completion::Faulted { error, code }, _) => {
+            return Err(uncaught_fault(&error, code, function.span));
+        }
     };
     Ok(RunOutput {
         value,
@@ -302,6 +308,14 @@ pub fn run_entry_with_host(
 enum Completion {
     Returned(Option<Value>),
     Threw(Value),
+    /// A recoverable fault (e.g. `write.unique_conflict`, `run.absent_element`)
+    /// that escaped a called function uncaught. It crosses the call boundary as a
+    /// catchable error like a throw, but keeps its own dotted `code` so an
+    /// uncaught fault surfaces with that code, not `run.uncaught_error`.
+    Faulted {
+        error: Value,
+        code: &'static str,
+    },
 }
 
 /// Bind `args` to `param_names`, evaluate `body` in a fresh activation, and
@@ -372,7 +386,16 @@ fn invoke(
             Some(thrown) => Completion::Threw(thrown),
             None => return Err(error),
         },
-        Err(error) => return Err(error),
+        // A recoverable fault that escaped the callee uncaught: re-surface it as
+        // this activation's outcome so the caller's `try` can bind it, preserving
+        // the fault's own dotted code. A fault with no stashed Error is fatal.
+        Err(error) => match propagated {
+            Some(thrown) => Completion::Faulted {
+                error: thrown,
+                code: error.code,
+            },
+            None => return Err(error),
+        },
         Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
             return Err(RuntimeError {
                 code: RUN_NO_ENCLOSING_LOOP,
@@ -931,6 +954,30 @@ fn complete_call(
     match completion {
         Completion::Returned(value) => Ok(value),
         Completion::Threw(error) => Err(raise(error, span, env)),
+        Completion::Faulted { error, code } => Err(reraise_fault(error, code, span, env)),
+    }
+}
+
+/// Re-raise a fault that escaped a called function so the caller's `try` can bind
+/// it, preserving the fault's own dotted code (mirrors [`raise`] for throws).
+fn reraise_fault(
+    error: Value,
+    code: &'static str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> RuntimeError {
+    let fault = uncaught_fault(&error, code, span);
+    env.pending_throw = Some(error);
+    fault
+}
+
+/// The fatal form of an uncaught fault: keeps the fault's dotted `code` (unlike
+/// [`uncaught_throw`], which collapses an uncaught `throw` to `run.uncaught_error`).
+fn uncaught_fault(value: &Value, code: &'static str, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        code,
+        message: error_field(value, "message").unwrap_or_default(),
+        span,
     }
 }
 
@@ -3637,10 +3684,12 @@ fn resource_value_of(
     })
 }
 
-/// Apply a whole-resource delete `delete ^root(key…)`, driving
-/// [`marrow_write::plan_resource_delete`] (which removes the record and tears
-/// down its generated index entries) and committing it. Field and layer deletes
-/// are not yet supported.
+/// Apply a `delete`, dispatching on the target shape: a `.field` off a saved
+/// record deletes that field (tearing down any index it feeds, with a guard
+/// against deleting a top-level required field); a `.layer(key…)` deletes that
+/// keyed entry's subtree; a bare `^root(key…)` or singleton deletes the whole
+/// record via [`marrow_write::plan_resource_delete`] (removing the record and its
+/// index entries). All commit before returning.
 fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result<(), RuntimeError> {
     // Read the target shape to dispatch, mirroring the merge target-shape pattern:
     // a `.field` off a saved record is a field delete (top-level, or a group-entry
@@ -3735,6 +3784,10 @@ fn delete_nested_field(
     if resource_nested_member_type(env.program, root, &layer_names, field).is_none() {
         return Err(unsupported("deleting this group field", span));
     }
+    // No required-field guard is needed here yet: a required field inside an unkeyed
+    // group is currently a compile error (`schema.required_in_unkeyed_group`). When
+    // that interim rejection is lifted (group materialization), add the guard that
+    // `eval_field_delete` applies to top-level required fields.
     let mut path = vec![PathSegment::Root(root.into())];
     path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
     for (layer, keys) in layers {

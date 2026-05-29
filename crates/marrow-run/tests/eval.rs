@@ -4877,3 +4877,71 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     let entries = run_entry(&program, &store, "test::tagEntries", &[Value::Int(1)]).expect("run");
     assert_eq!(entries.output, "1=fiction\n2=funny\n");
 }
+
+const BOOK_ISBN_SAVE: &str = "\
+module test
+resource Book at ^books(id: int)
+    isbn: string
+    index byIsbn(isbn) unique
+fn save(i: int, code: string)
+    ^books(Book::Id(i)).isbn = code
+";
+
+#[test]
+fn a_recoverable_write_fault_is_catchable_across_a_call_boundary() {
+    // A write fault raised in a CALLED function must be catchable by the caller's
+    // try/catch (the transaction-recovery contract), not only within the same frame.
+    let program = checked_program(&format!(
+        "{BOOK_ISBN_SAVE}\
+         pub fn run(): string\n\
+         \x20   save(1, \"x\")\n\
+         \x20   try\n\
+         \x20       save(2, \"x\")\n\
+         \x20       return \"uncaught\"\n\
+         \x20   catch e: Error\n\
+         \x20       return e.code\n"
+    ));
+    let store = RefCell::new(MemStore::new());
+    let value = run_entry(&program, &store, "test::run", &[])
+        .expect("run")
+        .value;
+    assert_eq!(value, Some(Value::Str("write.unique_conflict".into())));
+}
+
+#[test]
+fn an_uncaught_cross_boundary_write_fault_keeps_its_dotted_code() {
+    // Crossing a call boundary must not collapse an uncaught fault to
+    // run.uncaught_error: it surfaces with its own dotted code (and exit code).
+    let program = checked_program(&format!(
+        "{BOOK_ISBN_SAVE}\
+         pub fn run()\n\
+         \x20   save(1, \"x\")\n\
+         \x20   save(2, \"x\")\n"
+    ));
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(&program, &store, "test::run", &[]).unwrap_err();
+    assert_eq!(error.code, "write.unique_conflict", "{error:?}");
+}
+
+const PATIENT_SPARSE_GROUP: &str = "\
+module test
+resource Patient at ^patients(id: string)
+    name
+        first: string
+        last: string
+";
+
+#[test]
+fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
+    // Field delete descends unkeyed-group layers. A REQUIRED field inside an
+    // unkeyed group cannot be declared today (schema.required_in_unkeyed_group
+    // rejects it at compile time), so the nested required-delete guard is deferred
+    // to the group-materialization wave that lifts that interim rejection.
+    let program = checked_program(&format!(
+        "{PATIENT_SPARSE_GROUP}\
+         pub fn drop()\n\
+         \x20   delete ^patients(\"p1\").name.last\n"
+    ));
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::drop", &[]).expect("sparse group-field delete is a no-op");
+}
