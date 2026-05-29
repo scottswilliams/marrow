@@ -391,6 +391,392 @@ pub fn analyze_project(
     })
 }
 
+/// The type of the expression at byte `offset` in `parsed` (a file of `program`),
+/// or `None` when no expression covers the offset. Editor tooling uses this for
+/// hover and type-aware actions. It reconstructs the cursor's lexical scope
+/// exactly as the checker does — module constants and imports, the enclosing
+/// function's parameters, the `const`/`var` bindings that precede the cursor, and
+/// any loop or catch binding whose body the cursor sits in — then infers the
+/// smallest expression covering the offset. It records no diagnostics.
+pub fn type_at(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    offset: usize,
+) -> Option<MarrowType> {
+    let prelude = file_prelude(program, file, parsed);
+    let function = enclosing_function(parsed, offset)?;
+    let mut scope = function_base_scope(program, function, &prelude.module_constants);
+    walk_block_to_offset(
+        program,
+        &function.body,
+        offset,
+        &prelude.aliases,
+        file,
+        &mut scope,
+    );
+    let expr = smallest_expression_at(&function.body, offset)?;
+    Some(infer_type(
+        program,
+        expr,
+        &scope,
+        &prelude.aliases,
+        file,
+        &mut Vec::new(),
+    ))
+}
+
+/// The bindings visible at byte `offset` in `parsed` (a file of `program`), as
+/// `(name, type)` pairs, for completion. The reconstructed scope is the same one
+/// [`type_at`] infers against: module constants and imports, then — when the
+/// offset is inside a function — that function's parameters, the `const`/`var`
+/// locals declared before the cursor, and any loop or catch binding in scope.
+/// Import aliases are surfaced with [`MarrowType::Unknown`] (they name modules,
+/// not values). Inner bindings shadow outer ones. It records no diagnostics.
+pub fn scope_at(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    offset: usize,
+) -> Vec<(String, MarrowType)> {
+    let prelude = file_prelude(program, file, parsed);
+    // Imports and module constants are the outermost frame; a later frame's
+    // binding shadows them. Imports name modules, so they carry no value type.
+    let mut scope: Vec<HashMap<String, MarrowType>> = vec![
+        prelude
+            .aliases
+            .keys()
+            .map(|alias| (alias.clone(), MarrowType::Unknown))
+            .collect(),
+        prelude.module_constants.clone(),
+    ];
+    if let Some(function) = enclosing_function(parsed, offset) {
+        scope.extend(function_base_scope(
+            program,
+            function,
+            &prelude.module_constants,
+        ));
+        walk_block_to_offset(
+            program,
+            &function.body,
+            offset,
+            &prelude.aliases,
+            file,
+            &mut scope,
+        );
+    }
+    // Flatten outermost-first so an inner binding overwrites a shadowed outer one,
+    // leaving each visible name once with the type that actually applies.
+    let mut visible: HashMap<String, MarrowType> = HashMap::new();
+    for frame in scope {
+        visible.extend(frame);
+    }
+    let mut bindings: Vec<(String, MarrowType)> = visible.into_iter().collect();
+    bindings.sort_by(|a, b| a.0.cmp(&b.0));
+    bindings
+}
+
+/// The function declaration whose body span covers `offset`, if any. A cursor in a
+/// function signature or at module level has no enclosing body and yields `None`.
+fn enclosing_function(
+    parsed: &marrow_syntax::ParsedSource,
+    offset: usize,
+) -> Option<&marrow_syntax::FunctionDecl> {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Function(function)
+                if span_covers(function.body.span, offset) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+}
+
+/// The base scope frame for a function body: the module's constants overlaid with
+/// the parameter list, mirroring [`check_function_types`] (a parameter shadows a
+/// like-named constant).
+fn function_base_scope(
+    program: &CheckedProgram,
+    function: &marrow_syntax::FunctionDecl,
+    module_constants: &HashMap<String, MarrowType>,
+) -> Vec<HashMap<String, MarrowType>> {
+    let mut base = module_constants.clone();
+    for param in &function.params {
+        base.insert(param.name.clone(), resolve_type(&param.ty, program));
+    }
+    vec![base]
+}
+
+/// Replay the binding behavior of [`check_block_types`]/[`check_statement_types`]
+/// up to `offset`: push a frame for `block`, record each `const`/`var` binding the
+/// block introduces before the cursor, and descend into the one nested block (and
+/// its loop or catch frame) that covers the cursor. Statements after the cursor
+/// are not visible and are skipped. This shares the checker's binding primitives
+/// (`local_binding`, the loop/catch frames) so the reconstructed scope cannot
+/// drift from the one the checker builds.
+fn walk_block_to_offset(
+    program: &CheckedProgram,
+    block: &marrow_syntax::Block,
+    offset: usize,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+) {
+    scope.push(HashMap::new());
+    for statement in &block.statements {
+        // A binding declared at or after the cursor is not yet in scope. Compared
+        // against the statement's start so the cursor on a `const`'s own line does
+        // not see that `const` (its initializer cannot reference itself).
+        if statement.span().start_byte >= offset {
+            break;
+        }
+        // Record the binding this statement introduces, exactly as the checker
+        // does, before deciding whether to descend into it.
+        if let Some((name, ty)) = local_binding(program, statement, scope, aliases, file) {
+            bind(scope, &name, ty);
+        }
+        // Descend into the nested block (and its loop/catch frame) that the cursor
+        // sits in. Only one statement can cover the cursor, so the walk stops here.
+        if span_covers(statement.span(), offset)
+            && let Some(body) = descend_target(program, statement, offset, aliases, file, scope)
+        {
+            walk_block_to_offset(program, body, offset, aliases, file, scope);
+            return;
+        }
+    }
+}
+
+/// The nested block of `statement` that covers `offset`, pushing the loop or catch
+/// frame that block runs under (a `for` binding, a `catch` error value) onto
+/// `scope` first, mirroring [`check_statement_types`]. Returns `None` when the
+/// cursor is in the statement but not in one of its bodies (for example in an `if`
+/// condition), leaving `scope` untouched.
+fn descend_target<'b>(
+    program: &CheckedProgram,
+    statement: &'b marrow_syntax::Statement,
+    offset: usize,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+) -> Option<&'b marrow_syntax::Block> {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            if span_covers(then_block.span, offset) {
+                return Some(then_block);
+            }
+            for else_if in else_ifs {
+                if span_covers(else_if.block.span, offset) {
+                    return Some(&else_if.block);
+                }
+            }
+            else_block
+                .as_ref()
+                .filter(|block| span_covers(block.span, offset))
+        }
+        Statement::While { body, .. }
+        | Statement::Transaction { body, .. }
+        | Statement::Lock { body, .. } => span_covers(body.span, offset).then_some(body),
+        Statement::For {
+            binding,
+            iterable,
+            body,
+            ..
+        } => {
+            if !span_covers(body.span, offset) {
+                return None;
+            }
+            let frame = for_frame(program, binding, iterable, scope, aliases, file);
+            scope.push(frame);
+            Some(body)
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            if span_covers(body.span, offset) {
+                return Some(body);
+            }
+            if let Some(clause) = catch
+                && span_covers(clause.block.span, offset)
+            {
+                let mut frame = HashMap::new();
+                frame.insert(clause.name.clone(), MarrowType::Error);
+                scope.push(frame);
+                return Some(&clause.block);
+            }
+            finally
+                .as_ref()
+                .filter(|block| span_covers(block.span, offset))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `span` covers `offset`, inclusive of the end byte so a cursor at the
+/// closing edge of an expression still resolves.
+fn span_covers(span: SourceSpan, offset: usize) -> bool {
+    span.start_byte <= offset && offset <= span.end_byte
+}
+
+/// The smallest expression in a function `body` whose span covers `offset`, the
+/// expression the cursor sits on. Walks every expression the type pass would
+/// visit, keeping the tightest span. Statement-level structure (conditions,
+/// initializers, call arguments, nested blocks) is traversed so the cursor lands
+/// on the leaf expression rather than an enclosing one.
+fn smallest_expression_at(
+    body: &marrow_syntax::Block,
+    offset: usize,
+) -> Option<&marrow_syntax::Expression> {
+    let mut best: Option<&marrow_syntax::Expression> = None;
+    collect_block_expression(body, offset, &mut best);
+    best
+}
+
+fn collect_block_expression<'b>(
+    block: &'b marrow_syntax::Block,
+    offset: usize,
+    best: &mut Option<&'b marrow_syntax::Expression>,
+) {
+    use marrow_syntax::Statement;
+    for statement in &block.statements {
+        match statement {
+            Statement::Const { value, .. } | Statement::Throw { value, .. } => {
+                collect_expression(value, offset, best);
+            }
+            Statement::Expr { value, .. } => collect_expression(value, offset, best),
+            Statement::Var { value, .. } => {
+                if let Some(value) = value {
+                    collect_expression(value, offset, best);
+                }
+            }
+            Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+                collect_expression(target, offset, best);
+                collect_expression(value, offset, best);
+            }
+            Statement::Delete { path, .. } => collect_expression(path, offset, best),
+            Statement::Return { value, .. } => {
+                if let Some(value) = value {
+                    collect_expression(value, offset, best);
+                }
+            }
+            Statement::If {
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                if let Some(condition) = condition {
+                    collect_expression(condition, offset, best);
+                }
+                collect_block_expression(then_block, offset, best);
+                for else_if in else_ifs {
+                    if let Some(condition) = &else_if.condition {
+                        collect_expression(condition, offset, best);
+                    }
+                    collect_block_expression(&else_if.block, offset, best);
+                }
+                if let Some(block) = else_block {
+                    collect_block_expression(block, offset, best);
+                }
+            }
+            Statement::While {
+                condition, body, ..
+            } => {
+                if let Some(condition) = condition {
+                    collect_expression(condition, offset, best);
+                }
+                collect_block_expression(body, offset, best);
+            }
+            Statement::For { iterable, body, .. } => {
+                collect_expression(iterable, offset, best);
+                collect_block_expression(body, offset, best);
+            }
+            Statement::Transaction { body, .. } => collect_block_expression(body, offset, best),
+            Statement::Lock { path, body, .. } => {
+                if let Some(path) = path {
+                    collect_expression(path, offset, best);
+                }
+                collect_block_expression(body, offset, best);
+            }
+            Statement::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                collect_block_expression(body, offset, best);
+                if let Some(clause) = catch {
+                    collect_block_expression(&clause.block, offset, best);
+                }
+                if let Some(finally) = finally {
+                    collect_block_expression(finally, offset, best);
+                }
+            }
+            Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+}
+
+/// Keep `expr` as the best match when its span covers `offset` and is no wider
+/// than the current best, then recurse into its subexpressions so the tightest
+/// covering leaf wins.
+fn collect_expression<'e>(
+    expr: &'e marrow_syntax::Expression,
+    offset: usize,
+    best: &mut Option<&'e marrow_syntax::Expression>,
+) {
+    use marrow_syntax::Expression;
+    let span = expr.span();
+    if !span_covers(span, offset) {
+        return;
+    }
+    let width = span.end_byte.saturating_sub(span.start_byte);
+    let replace = best.is_none_or(|current| {
+        let current = current.span();
+        width <= current.end_byte.saturating_sub(current.start_byte)
+    });
+    if replace {
+        *best = Some(expr);
+    }
+    match expr {
+        Expression::Unary { operand, .. } => collect_expression(operand, offset, best),
+        Expression::Binary { left, right, .. } => {
+            collect_expression(left, offset, best);
+            collect_expression(right, offset, best);
+        }
+        Expression::Call { callee, args, .. } => {
+            collect_expression(callee, offset, best);
+            for arg in args {
+                collect_expression(&arg.value, offset, best);
+            }
+        }
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            collect_expression(base, offset, best);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let marrow_syntax::InterpolationPart::Expr(inner) = part {
+                    collect_expression(inner, offset, best);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
 /// file against `program` with `project_resources`, then suppress unresolved-call
 /// reports when any file failed to parse or read. This is the shared tail of
@@ -451,21 +837,24 @@ fn check_resolved_files(
     }
 }
 
-/// Run the type-inference pass over one parsed file against the resolved
-/// `program`: unknown-type annotations, return-value placement, the
-/// expression/statement type checks (operator/condition/assignment/call/argument
-/// types, std arity, the `nextId` single-`int` gate), and missing-return
-/// analysis. Library files (via [`check_project`]) and test scripts (via
-/// [`check_tests`]) share this pass. `project_resources` is the project-wide set
-/// of resource names used to recognize type annotations.
-fn check_file_types(
+/// The file-level prelude every function body in a file shares: its short→full
+/// import aliases and its module-level constants, both of which are in scope
+/// before any function's own parameters and locals.
+struct FilePrelude {
+    aliases: HashMap<String, Vec<String>>,
+    module_constants: HashMap<String, MarrowType>,
+}
+
+/// Build a file's [`FilePrelude`]: the alias map from its imports and the typed
+/// module constants, in source order so an earlier constant is in scope for a
+/// later one. The type-check pass and the editor queries both start from this,
+/// so the bindings a function body sees are derived in exactly one place.
+fn file_prelude(
     program: &CheckedProgram,
-    project_resources: &HashSet<String>,
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    // Short→full import aliases for this file, used to expand short-form calls
+) -> FilePrelude {
+    // Short→full import aliases, used to expand short-form calls
     // (`clock::now()` → `std::clock::now`) before resolution. The runtime
     // rebuilds the same map from `CheckedModule::imports`.
     let aliases = build_alias_map(
@@ -479,8 +868,7 @@ fn check_file_types(
     // A module's top-level constants are in scope (bare) for its functions, an
     // annotated one carrying its annotation and an unannotated one its inferred
     // type, so a typed use like `var x: int = M` resolves rather than
-    // false-positiving `check.untyped_value`. Built in source order so an earlier
-    // constant is in scope for a later one. Initializer diagnostics
+    // false-positiving `check.untyped_value`. Initializer diagnostics
     // (constant-expression validity, literal range) come from `check_const_value`,
     // so inference diagnostics are discarded here.
     let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
@@ -502,6 +890,30 @@ fn check_file_types(
             module_constants.insert(constant.name.clone(), ty);
         }
     }
+    FilePrelude {
+        aliases,
+        module_constants,
+    }
+}
+
+/// Run the type-inference pass over one parsed file against the resolved
+/// `program`: unknown-type annotations, return-value placement, the
+/// expression/statement type checks (operator/condition/assignment/call/argument
+/// types, std arity, the `nextId` single-`int` gate), and missing-return
+/// analysis. Library files (via [`check_project`]) and test scripts (via
+/// [`check_tests`]) share this pass. `project_resources` is the project-wide set
+/// of resource names used to recognize type annotations.
+fn check_file_types(
+    program: &CheckedProgram,
+    project_resources: &HashSet<String>,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let FilePrelude {
+        aliases,
+        module_constants,
+    } = file_prelude(program, file, parsed);
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
@@ -762,10 +1174,7 @@ fn check_statement_types(
     use marrow_syntax::Statement;
     match statement {
         Statement::Const {
-            name,
-            ty,
-            value,
-            span,
+            ty, value, span, ..
         } => {
             let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
             if let Some(ty) = ty {
@@ -777,14 +1186,12 @@ fn check_statement_types(
                     diagnostics,
                 );
             }
-            bind(scope, name, binding_type(ty.as_ref(), value_type, program));
+            if let Some((name, ty)) = local_binding(program, statement, scope, aliases, file) {
+                bind(scope, &name, ty);
+            }
         }
         Statement::Var {
-            name,
-            ty,
-            value,
-            span,
-            ..
+            ty, value, span, ..
         } => {
             let value_type = match value {
                 Some(value) => infer_type(program, value, scope, aliases, file, diagnostics),
@@ -800,7 +1207,9 @@ fn check_statement_types(
                     diagnostics,
                 );
             }
-            bind(scope, name, binding_type(ty.as_ref(), value_type, program));
+            if let Some((name, ty)) = local_binding(program, statement, scope, aliases, file) {
+                bind(scope, &name, ty);
+            }
         }
         Statement::Assign {
             target,
@@ -898,19 +1307,10 @@ fn check_statement_types(
             body,
             ..
         } => {
-            let iterable_type = infer_type(program, iterable, scope, aliases, file, diagnostics);
-            // The loop binding(s) are in scope for the body. Iterating a sequence
-            // binds its single binding to the element type; other iterables (ranges,
-            // index keys) and the key/value form stay unknown.
-            let first_type = match (&binding.second, &iterable_type) {
-                (None, MarrowType::Sequence(element)) => (**element).clone(),
-                _ => MarrowType::Unknown,
-            };
-            let mut frame = HashMap::new();
-            frame.insert(binding.first.clone(), first_type);
-            if let Some(second) = &binding.second {
-                frame.insert(second.clone(), MarrowType::Unknown);
-            }
+            // Inferring the iterable here also operator-checks it; its diagnostics
+            // belong to the type pass, so `for_frame` re-infers with a discard sink.
+            infer_type(program, iterable, scope, aliases, file, diagnostics);
+            let frame = for_frame(program, binding, iterable, scope, aliases, file);
             scope.push(frame);
             check_block_types(
                 program,
@@ -1013,6 +1413,75 @@ fn bind(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
     if let Some(frame) = scope.last_mut() {
         frame.insert(name.to_string(), ty);
     }
+}
+
+/// The `(name, type)` a `const`/`var` statement introduces into its block,
+/// computed exactly as [`check_statement_types`] computes it: the annotation when
+/// written, otherwise the inferred initializer type, resolved against `scope`. Any
+/// other statement introduces no block-frame binding and returns `None`. The
+/// checker and the editor scope reconstruction share this so a binding's type is
+/// derived in one place. Initializer diagnostics belong to the type-check pass, so
+/// inference here discards them.
+fn local_binding(
+    program: &CheckedProgram,
+    statement: &marrow_syntax::Statement,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<(String, MarrowType)> {
+    use marrow_syntax::Statement;
+    let mut sink = Vec::new();
+    let (name, annotation, value_type) = match statement {
+        Statement::Const {
+            name, ty, value, ..
+        } => (
+            name,
+            ty,
+            infer_type(program, value, scope, aliases, file, &mut sink),
+        ),
+        Statement::Var {
+            name, ty, value, ..
+        } => {
+            let value_type = match value {
+                Some(value) => infer_type(program, value, scope, aliases, file, &mut sink),
+                None => MarrowType::Unknown,
+            };
+            (name, ty, value_type)
+        }
+        _ => return None,
+    };
+    Some((
+        name.clone(),
+        binding_type(annotation.as_ref(), value_type, program),
+    ))
+}
+
+/// The scope frame a `for` loop's body runs under, mirroring
+/// [`check_statement_types`]: the loop binding(s) in scope for the body. Iterating
+/// a sequence binds its single binding to the element type; other iterables
+/// (ranges, index keys) and the key/value form stay unknown. The checker and the
+/// editor scope reconstruction share this so a loop binding's type is derived in
+/// one place. Inference here discards diagnostics; the type pass emits the
+/// iterable's separately.
+fn for_frame(
+    program: &CheckedProgram,
+    binding: &marrow_syntax::ForBinding,
+    iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> HashMap<String, MarrowType> {
+    let iterable_type = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
+    let first_type = match (&binding.second, &iterable_type) {
+        (None, MarrowType::Sequence(element)) => (**element).clone(),
+        _ => MarrowType::Unknown,
+    };
+    let mut frame = HashMap::new();
+    frame.insert(binding.first.clone(), first_type);
+    if let Some(second) = &binding.second {
+        frame.insert(second.clone(), MarrowType::Unknown);
+    }
+    frame
 }
 
 /// Type-check an `if`/`while` condition. Inferring it also operator-checks it;
