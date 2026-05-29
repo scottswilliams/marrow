@@ -3754,3 +3754,191 @@ fn traverses_a_composite_identity_index() {
     let outcome = run_entry(&program, &store, "test::activeStatuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\nactive\n");
 }
+
+// --- Wave 2: unified saved-layer enumeration (G09/G11/G12/G13) ---
+
+/// Iterating a primary keyed root yields its record identities. `^books` is a
+/// single-`int`-key root, so each identity is a bare `Value::Int` that re-addresses
+/// the record.
+const BOOK_PRIMARY: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+
+fn add(id: int, t: string)
+    ^books(id).title = t
+
+fn titles()
+    for id in ^books
+        print(^books(id).title)
+
+fn ids()
+    const all = keys(^books)
+    for id in all
+        print($\"{id}\")
+";
+
+#[test]
+fn iterates_a_primary_keyed_root() {
+    let program = checked_program(BOOK_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(title.into())],
+        )
+        .expect("add");
+    };
+    add(2, "Sourcery");
+    add(1, "Mort");
+
+    // Bare-root iteration yields ids in key order, each addressing its record.
+    let outcome = run_entry(&program, &store, "test::titles", &[]).expect("run");
+    assert_eq!(outcome.output, "Mort\nSourcery\n");
+}
+
+#[test]
+fn keys_of_a_primary_root_materializes_a_sequence() {
+    let program = checked_program(BOOK_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Int(1), Value::Str("Mort".into())],
+    )
+    .expect("add");
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Int(2), Value::Str("Sourcery".into())],
+    )
+    .expect("add");
+
+    // `keys(^books)` is a value: a `Value::Sequence` the loop binds in turn.
+    let outcome = run_entry(&program, &store, "test::ids", &[]).expect("run");
+    assert_eq!(outcome.output, "1\n2\n");
+}
+
+#[test]
+fn iterating_a_singleton_root_is_a_type_error() {
+    // A keyless singleton has no identities to enumerate; iterating it is a
+    // type error, not a silent empty loop.
+    let program = checked_program(
+        "resource Settings at ^settings\n    theme: string\n\nfn each()\n    for s in ^settings\n        print(\"x\")\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(&program, &store, "test::each", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_TYPE, "{error:?}");
+}
+
+/// Iterating a composite primary root reconstructs the full identity per record,
+/// so `^enrollments(id)` re-addresses each one.
+const ENROLLMENT_PRIMARY: &str = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+
+fn enroll(s: string, c: string, st: string)
+    const id = Enrollment::Id(studentId: s, courseId: c)
+    ^enrollments(id).status = st
+
+fn statuses()
+    for id in ^enrollments
+        print(^enrollments(id).status)
+";
+
+#[test]
+fn iterates_a_composite_primary_root() {
+    let program = checked_program(ENROLLMENT_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let enroll = |s: &str, c: &str, st: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::enroll",
+            &[
+                Value::Str(s.into()),
+                Value::Str(c.into()),
+                Value::Str(st.into()),
+            ],
+        )
+        .expect("enroll");
+    };
+    enroll("student-1", "course-9", "active");
+    enroll("student-2", "course-1", "dropped");
+
+    // Each reconstructed composite identity re-addresses its record.
+    let outcome = run_entry(&program, &store, "test::statuses", &[]).expect("run");
+    assert_eq!(outcome.output, "active\ndropped\n");
+}
+
+/// Iterating a sequence/keyed child layer yields the layer's keys.
+const BOOK_TAGS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    tags: sequence[string]
+
+fn seed()
+    ^books(1).title = \"Mort\"
+    const a: int = append(^books(1).tags, \"fiction\")
+    const b: int = append(^books(1).tags, \"funny\")
+
+fn positions()
+    for pos in ^books(1).tags
+        print($\"{pos}\")
+
+fn keysOf()
+    for pos in keys(^books(1).tags)
+        print($\"{pos}\")
+";
+
+#[test]
+fn iterates_a_sequence_child_layer() {
+    let program = checked_program(BOOK_TAGS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    // Bare iteration over the layer yields its 1-based positions in key order.
+    let outcome = run_entry(&program, &store, "test::positions", &[]).expect("run");
+    assert_eq!(outcome.output, "1\n2\n");
+
+    // `keys(^books(1).tags)` yields the same positions.
+    let outcome = run_entry(&program, &store, "test::keysOf", &[]).expect("run");
+    assert_eq!(outcome.output, "1\n2\n");
+}
+
+/// A keyed (non-sequence) child tree iterates its declared keys. (Seeded through
+/// the store directly; explicit keyed-leaf writes arrive in G-leafwrite.)
+const PLAYER_SCORES: &str = "\
+resource Game at ^games(id: int)
+    scores(playerId: string): int
+
+fn players()
+    for p in ^games(1).scores
+        print(p)
+";
+
+#[test]
+fn iterates_a_keyed_child_tree() {
+    let program = checked_program(PLAYER_SCORES);
+    let store = RefCell::new(MemStore::new());
+    let score = |player: &str, n: i64| {
+        store.borrow_mut().write(
+            &encode_path(&[
+                PathSegment::Root("games".into()),
+                PathSegment::RecordKey(SavedKey::Int(1)),
+                PathSegment::ChildLayer("scores".into()),
+                PathSegment::IndexKey(SavedKey::Str(player.into())),
+            ]),
+            encode_value(&SavedValue::Int(n)).expect("in-range value encodes"),
+        );
+    };
+    score("bob", 7);
+    score("alice", 10);
+
+    // Keys iterate in sorted key order (alice before bob).
+    let outcome = run_entry(&program, &store, "test::players", &[]).expect("run");
+    assert_eq!(outcome.output, "alice\nbob\n");
+}

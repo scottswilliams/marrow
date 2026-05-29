@@ -818,6 +818,9 @@ fn eval_call(
                 "int" | "decimal" | "string" | "bool" | "date" | "instant" | "duration" => {
                     return eval_conversion(name, args, span, env).map(Some);
                 }
+                // `keys(<layer>)` materializes the layer's child keys as a sequence
+                // value (the same enumeration `for x in <layer>` drives).
+                "keys" => return eval_keys(args, span, env).map(Some),
                 // `count`/`values`/`entries` are documented core traversal builtins
                 // whose tree-scan slice is not built yet. Report them as a known but
                 // unsupported builtin rather than letting them fall through to a
@@ -1599,6 +1602,23 @@ fn eval_append(
     Ok(Value::Int(pos))
 }
 
+/// Evaluate `keys(<layer>)` as a value: enumerate the layer's child keys into a
+/// [`Value::Sequence`]. The same enumeration drives `for x in <layer>`.
+fn eval_keys(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [path] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`keys` takes one argument".into(),
+            span,
+        });
+    };
+    Ok(Value::Sequence(enumerate_layer(&path.value, env)?))
+}
+
 /// Number of nanoseconds in a UTC day, for `today()`'s instant-to-date reduction.
 const NANOS_PER_DAY: i128 = 86_400_000_000_000;
 
@@ -2303,93 +2323,154 @@ fn range_bounds(
     }
 }
 
-/// Materialize a non-range `for` iterable to a sequence of values. Only
-/// `keys(saved_path)` is supported: it yields the immediate child keys under the
-/// path — e.g. `keys(^books.byShelf("fiction"))` yields the book ids on that
-/// shelf, for index traversal.
+/// Materialize a non-range `for` iterable to a sequence of values. A saved-layer
+/// path — a primary root `^books`, an index branch `^books.byShelf("x")`, or a
+/// keyed/sequence child layer `^books(id).tags` — and `keys(<layer>)` of one both
+/// enumerate the layer's child keys through [`enumerate_layer`]. Every other
+/// iterable must evaluate to an in-memory sequence (e.g. `std::text::split(...)`).
 fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
-    // `keys(^root.index(args…))` is index-traversal syntax; every other iterable
-    // must evaluate to an in-memory sequence (e.g. `std::text::split(...)`).
-    let is_keys = matches!(
-        iterable,
-        Expression::Call { callee, .. }
-            if matches!(callee.as_ref(),
-                Expression::Name { segments, .. } if segments.len() == 1 && segments[0] == "keys")
-    );
-    if !is_keys {
-        return match eval_expr(iterable, env)? {
-            Value::Sequence(items) => Ok(items),
-            _ => Err(unsupported("iterating this value", iterable.span())),
-        };
+    if let Some(path) = keys_argument(iterable) {
+        return enumerate_layer(path, env);
     }
-    let Expression::Call { args, span, .. } = iterable else {
-        return Err(unsupported("iterating this value", iterable.span()));
+    if is_saved_path(iterable) {
+        return enumerate_layer(iterable, env);
+    }
+    match eval_expr(iterable, env)? {
+        Value::Sequence(items) => Ok(items),
+        _ => Err(unsupported("iterating this value", iterable.span())),
+    }
+}
+
+/// The single argument of a `keys(<path>)` call, or `None` for any other
+/// expression. Shared by the loop materializer and the standalone `keys` builtin.
+fn keys_argument(expr: &Expression) -> Option<&Expression> {
+    let Expression::Call { callee, args, .. } = expr else {
+        return None;
     };
-    let [path] = args.as_slice() else {
-        return Err(RuntimeError {
-            code: RUN_TYPE,
-            message: "`keys` takes one argument".into(),
-            span: *span,
-        });
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
     };
-    // The path is an index lookup `^root.index(key…)`: lower it to the index
-    // prefix, whose immediate children are the matching record keys.
-    let Expression::Call {
-        callee: index_callee,
-        args: index_args,
-        ..
-    } = &path.value
-    else {
-        return Err(unsupported("keys of this path", *span));
-    };
+    if segments.len() != 1 || segments[0] != "keys" {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        _ => None,
+    }
+}
+
+/// Enumerate the child keys of a saved layer as the values a `for` loop binds or
+/// `keys(...)` materializes. Classifies the path once and descends one shared
+/// key-collector ([`collect_child_identities`]):
+///
+/// - `^root` (a keyed primary root) yields its record identities — a bare key
+///   value for a single-key identity, a [`Value::Identity`] for a composite one;
+///   a keyless singleton has no identities to iterate (a type error).
+/// - `^root.index(args…)` yields the identities in that index branch.
+/// - `^root(id…).layer` yields the keyed/sequence layer's child keys.
+fn enumerate_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
+    match path {
+        // A primary keyed root: its immediate children are the record-key segments
+        // of the (possibly composite) identity. A keyless singleton has none.
+        Expression::SavedRoot { name, span } => {
+            let arity = match root_identity_arity(env.program, name) {
+                Some(0) => {
+                    return Err(type_error(
+                        &format!("`^{name}` is a singleton with no identities to iterate"),
+                        *span,
+                    ));
+                }
+                Some(arity) => arity,
+                None => return Err(unsupported("iterating this saved path", *span)),
+            };
+            let prefix = vec![PathSegment::Root(name.clone())];
+            collect_child_identities(&prefix, arity, &[], PathSegment::RecordKey, *span, env)
+        }
+        // An index branch `^root.index(args…)` (a `Call` whose callee is a `.index`
+        // off a saved root) or a keyed/sequence child layer `^root(id…).layer`.
+        Expression::Call { callee, args, span } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
+            enumerate_index_branch(callee, args, *span, env)
+        }
+        Expression::Field { .. } => enumerate_child_layer(path, env),
+        other => Err(unsupported("iterating this saved path", other.span())),
+    }
+}
+
+/// Enumerate the identities in a declared index branch `^root.index(args…)`. A
+/// non-unique index ends with all identity keys, so the levels below the supplied
+/// query args are the entry's remaining identity-key segments; descend them per
+/// entry to reconstruct the full identity rather than only its first key component.
+fn enumerate_index_branch(
+    callee: &Expression,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
     let Expression::Field {
         base, name: index, ..
-    } = index_callee.as_ref()
+    } = callee
     else {
-        return Err(unsupported("keys of this path", *span));
+        return Err(unsupported("iterating this saved path", span));
     };
     let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
-        return Err(unsupported("keys of this path", *span));
+        return Err(unsupported("iterating this saved path", span));
     };
-    if index_args
+    if args
         .iter()
         .any(|arg| arg.mode.is_some() || arg.name.is_some())
     {
         return Err(unsupported(
             "an index lookup with named or out arguments",
-            *span,
+            span,
         ));
     }
-    let mut segments = vec![
+    let mut prefix = vec![
         PathSegment::Root(root.clone()),
         PathSegment::Index(index.clone()),
     ];
-    for arg in index_args {
-        segments.push(PathSegment::IndexKey(
+    for arg in args {
+        prefix.push(PathSegment::IndexKey(
             value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("an index key of this type", *span))?,
+                .ok_or_else(|| unsupported("an index key of this type", span))?,
         ));
     }
-    // A non-unique index ends with all identity keys, so the levels below the
-    // supplied query args are the entry's remaining identity-key segments. Descend
-    // them per entry to reconstruct the full identity rather than yielding only the
-    // first raw key component.
     let schema = find_resource(env.program, root)
         .and_then(|resource| resource.indexes.iter().find(|i| &i.name == index))
-        .ok_or_else(|| unsupported("keys of this path", *span))?;
-    let depth = schema.args.len().saturating_sub(index_args.len());
-    index_entries(&segments, depth, &Vec::new(), *span, env)
+        .ok_or_else(|| unsupported("iterating this saved path", span))?;
+    let depth = schema.args.len().saturating_sub(args.len());
+    collect_child_identities(&prefix, depth, &[], PathSegment::IndexKey, span, env)
 }
 
-/// Collect the resource identities reachable below `prefix` in a non-unique index
-/// tree, descending `depth` remaining identity-key levels. `keys` accumulates the
-/// identity-key segments gathered so far. At the final level each entry yields one
-/// identity: a single key value (renderable, addresses `^root(key)`) for a
-/// single-key identity, or a [`Value::Identity`] for a composite one.
-fn index_entries(
+/// Enumerate the child keys of a keyed/sequence child layer `^root(id…).layer`.
+/// The layer's keys are single-key (`pos: int` for a sequence, `playerId: string`
+/// for a keyed tree), so each child key is a bare value.
+fn enumerate_child_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
+    let Expression::Field {
+        base, name: layer, ..
+    } = path
+    else {
+        return Err(unsupported("iterating this saved path", path.span()));
+    };
+    let span = path.span();
+    let (root, identity) = lower_record_identity(base, env)?;
+    let mut prefix = vec![PathSegment::Root(root)];
+    prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
+    prefix.push(PathSegment::ChildLayer(layer.clone()));
+    collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, span, env)
+}
+
+/// Collect the identities reachable below `prefix`, descending `depth` remaining
+/// key levels. `make_segment` builds the [`PathSegment`] for each descent step —
+/// `RecordKey` below a primary root, `IndexKey` below an index branch or child
+/// layer. `keys` accumulates the key segments gathered so far. At the final level
+/// each entry yields one identity: a single key value (renderable, addresses
+/// `^root(key)`) for a single-key identity, or a [`Value::Identity`] for a
+/// composite one.
+fn collect_child_identities(
     prefix: &[PathSegment],
     depth: usize,
     keys: &[SavedKey],
+    make_segment: fn(SavedKey) -> PathSegment,
     span: SourceSpan,
     env: &Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
@@ -2411,8 +2492,8 @@ fn index_entries(
         let mut keys = keys.to_vec();
         keys.push(key.clone());
         if depth <= 1 {
-            // The last identity-key level: a single-key identity stays a raw key
-            // value; a composite one reconstructs its full `Value::Identity`.
+            // The last key level: a single-key identity stays a raw key value; a
+            // composite one reconstructs its full `Value::Identity`.
             values.push(if keys.len() == 1 {
                 saved_key_to_value(key)
                     .ok_or_else(|| unsupported("iterating keys of this type", span))?
@@ -2421,8 +2502,15 @@ fn index_entries(
             });
         } else {
             let mut prefix = prefix.to_vec();
-            prefix.push(PathSegment::IndexKey(key));
-            values.extend(index_entries(&prefix, depth - 1, &keys, span, env)?);
+            prefix.push(make_segment(key));
+            values.extend(collect_child_identities(
+                &prefix,
+                depth - 1,
+                &keys,
+                make_segment,
+                span,
+                env,
+            )?);
         }
     }
     Ok(values)
