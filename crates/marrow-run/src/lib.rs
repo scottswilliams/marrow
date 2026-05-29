@@ -31,10 +31,11 @@ use marrow_syntax::{
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_REQUIRED_FIELD, WriteError, decode_identity, next_id,
-    next_layer_pos, plan_field_delete, plan_field_write, plan_layer_group_write,
-    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write, plan_resource_delete,
-    plan_resource_merge, plan_resource_write,
+    FieldValue, ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
+    WRITE_REQUIRES_MAINTENANCE, WriteError, decode_identity, next_id, next_layer_pos,
+    plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
+    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 pub mod base64;
@@ -147,6 +148,14 @@ pub struct Host {
     /// Whether the run may touch the real filesystem through `std::io`. Marrow
     /// does not sandbox paths; the host either grants filesystem access or not.
     filesystem: bool,
+    /// Whether this run may perform maintenance-only managed operations:
+    /// dropping a whole managed root, deleting a required field on its own, and
+    /// raw (quoted-segment) writes/reads under a managed root. Default `false`;
+    /// a tool opts in explicitly with [`Host::with_maintenance`]. Maintenance is
+    /// not a language feature — it is a host capability tools select for
+    /// migration, repair, and restore. An ordinary `marrow run` of the default
+    /// entry never sets it, so the protected operations stay unreachable there.
+    maintenance: bool,
 }
 
 impl Host {
@@ -197,6 +206,16 @@ impl Host {
     /// A host that grants `std::io` access to the real filesystem.
     pub fn with_filesystem(mut self) -> Self {
         self.filesystem = true;
+        self
+    }
+
+    /// A host that may perform maintenance-only managed operations: dropping a
+    /// whole managed root, deleting a required field on its own, and raw
+    /// (quoted-segment) writes/reads under a managed root. Selected only by
+    /// explicit tooling (migration, repair, restore) — never by an ordinary run,
+    /// so the default path can never reach maintenance behavior.
+    pub fn with_maintenance(mut self) -> Self {
+        self.maintenance = true;
         self
     }
 }
@@ -2136,6 +2155,24 @@ impl<'p> Env<'p> {
         Ok(())
     }
 
+    /// Gate a maintenance-only managed operation. Returns `Ok(())` when this run
+    /// holds the maintenance capability ([`Host::with_maintenance`]); otherwise
+    /// raises a catchable fault with `code`/`message` so the protected operation
+    /// is rejected unless a tool explicitly opted in. Routing through
+    /// [`raise_fault`] keeps the rejection catchable like the other write faults.
+    fn require_maintenance(
+        &mut self,
+        code: &'static str,
+        message: String,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        if self.host.maintenance {
+            Ok(())
+        } else {
+            Err(raise_fault(code, message, span, self))
+        }
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(Vec::new());
     }
@@ -3707,6 +3744,15 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
     {
         return eval_layer_entry_delete(base, name, args, span, env);
     }
+    // `delete ^books` on a KEYED root (arity >= 1) is a whole managed-root drop:
+    // maintenance work, gated on the capability. Deleting one identity
+    // (`delete ^books(1)`, a `Call`) and a keyless singleton (`delete ^settings`,
+    // arity 0) stay ordinary work and fall through to the record-delete path.
+    if let Expression::SavedRoot { name, .. } = path
+        && matches!(root_identity_arity(env.program, name), Some(arity) if arity >= 1)
+    {
+        return eval_whole_root_delete(name, span, env);
+    }
     let (root, identity) = lower_record_identity(path, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
@@ -3718,6 +3764,35 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Drop a whole managed root `delete ^books` (a keyed root). This is maintenance
+/// work: without the maintenance capability it is rejected with
+/// `write.requires_maintenance`. Under maintenance, one backend subtree delete of
+/// the root prefix removes every record AND every generated index branch, since
+/// they all sit under `[Root(name)]` (the backend `delete` removes the value and
+/// every value below it). The traversal guard still fires against the root prefix,
+/// so a root drop during a loop over that root is caught.
+fn eval_whole_root_delete(
+    name: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    env.require_maintenance(
+        WRITE_REQUIRES_MAINTENANCE,
+        format!(
+            "dropping the whole managed root `^{name}` is maintenance work; \
+             run in maintenance mode to drop the root"
+        ),
+        span,
+    )?;
+    let root = vec![PathSegment::Root(name.to_string())];
+    env.guard_traversed_layer(&root, span)?;
+    env.store
+        .borrow_mut()
+        .delete(&encode_path(&root))
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3745,15 +3820,20 @@ fn eval_field_delete(
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
     // Deleting a required field on its own would leave the resource invalid; it is
-    // only allowed when the surrounding entry or whole resource is deleted.
-    if resource
-        .fields
-        .iter()
-        .any(|declared| declared.name == field && declared.required)
+    // only allowed when the surrounding entry or whole resource is deleted, or
+    // under an explicit maintenance run (repair may drop a required field).
+    if !env.host.maintenance
+        && resource
+            .fields
+            .iter()
+            .any(|declared| declared.name == field && declared.required)
     {
         return Err(raise_fault(
             WRITE_REQUIRED_FIELD,
-            format!("cannot delete required field `{field}`; delete the whole record instead"),
+            format!(
+                "cannot delete required field `{field}`; delete the whole record \
+                 instead, or run in maintenance mode"
+            ),
             span,
             env,
         ));

@@ -4945,3 +4945,161 @@ fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::drop", &[]).expect("sparse group-field delete is a no-op");
 }
+
+// --- Maintenance mode & managed-root protection (Wave 4) ---
+
+/// A two-key books program with an index, reused by the maintenance tests below:
+/// it can seed records, drop the whole `^books` root, and count remaining records
+/// and index entries so a root drop's effect is observable.
+const MAINTENANCE_BOOKS: &str = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\nfn drop_root()\n    delete ^books\n\nfn record_count(): int\n    var c = 0\n    for id in ^books\n        c = c + 1\n    return c\n\nfn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n";
+
+#[test]
+fn deleting_a_whole_root_without_maintenance_is_rejected() {
+    // `delete ^books` on a keyed root is maintenance work; with no maintenance
+    // capability the run is rejected with `write.requires_maintenance`.
+    let program = checked_program(MAINTENANCE_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let result = run_entry(&program, &store, "test::drop_root", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.requires_maintenance"),
+        "{result:?}"
+    );
+    // The records still exist: the rejected delete did not touch the store.
+    assert_eq!(
+        run_entry(&program, &store, "test::record_count", &[])
+            .expect("count")
+            .value,
+        Some(Value::Int(2))
+    );
+}
+
+#[test]
+fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
+    // With the maintenance capability, `delete ^books` drops the entire managed
+    // root subtree: no records and no index entries remain.
+    let program = checked_program(MAINTENANCE_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[]).expect("seed");
+    run_entry_with_host(&program, &store, &host, "test::drop_root", &[]).expect("drop root");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::record_count", &[])
+            .expect("count")
+            .value,
+        Some(Value::Int(0)),
+        "no records remain after the root drop"
+    );
+    assert_eq!(
+        run_entry_with_host(
+            &program,
+            &store,
+            &host,
+            "test::shelf_count",
+            &[Value::Str("fiction".into())]
+        )
+        .expect("count")
+        .value,
+        Some(Value::Int(0)),
+        "no index entries remain after the root drop"
+    );
+}
+
+#[test]
+fn whole_identity_delete_stays_ungated_under_no_maintenance() {
+    // `delete ^books(1)` is ordinary whole-identity work: it must still succeed
+    // with no maintenance capability, leaving the sibling record in place.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\nfn drop_one()\n    delete ^books(1)\n\nfn record_count(): int\n    var c = 0\n    for id in ^books\n        c = c + 1\n    return c\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    run_entry(&program, &store, "test::drop_one", &[]).expect("ordinary identity delete");
+    assert_eq!(
+        run_entry(&program, &store, "test::record_count", &[])
+            .expect("count")
+            .value,
+        Some(Value::Int(1)),
+        "the sibling record survives an ordinary identity delete"
+    );
+}
+
+#[test]
+fn deleting_a_required_field_under_maintenance_succeeds() {
+    // A required-field delete is rejected without maintenance (existing behavior),
+    // but a maintenance run lifts the guard and actually removes the field.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn drop_title(id: int)\n    delete ^books(id).title\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry_with_host(&program, &store, &host, "test::drop_title", &[Value::Int(1)])
+        .expect("maintenance lifts the required-field guard");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_title", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "the required field is gone after a maintenance delete"
+    );
+}
+
+#[test]
+fn raw_quoted_segment_without_maintenance_is_rejected() {
+    // A quoted/raw segment under a managed root is gated: without maintenance it
+    // raises `write.raw_requires_maintenance`, distinct from an unknown-field typo.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn raw_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");
+    let result = run_entry(&program, &store, "test::raw_write", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.raw_requires_maintenance"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn raw_quoted_segment_under_maintenance_round_trips() {
+    // Under maintenance, a quoted/raw segment lowers to a raw backend write and
+    // read at the literal segment, bypassing the schema's declared fields.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn raw_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\nfn raw_read(id: int): string\n    return ^books(id).\"old-title\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::raw_write",
+        &[Value::Int(1), Value::Str("legacy".into())],
+    )
+    .expect("raw write under maintenance");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::raw_read", &[Value::Int(1)])
+            .expect("raw read")
+            .value,
+        Some(Value::Str("legacy".into())),
+        "the raw literal segment round-trips under maintenance"
+    );
+}
+
+#[test]
+fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
+    // Maintenance grants RAW (quoted) access only; an unquoted undeclared field is
+    // still a typo, so it stays `write.unknown_field` even with maintenance on.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn typo(id: int)\n    ^books(id).nope = \"x\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let result = run_entry_with_host(&program, &store, &host, "test::typo", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.unknown_field"),
+        "{result:?}"
+    );
+}

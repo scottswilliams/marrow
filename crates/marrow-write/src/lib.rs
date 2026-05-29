@@ -72,8 +72,22 @@ pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 /// Deleting a `required` field on its own is rejected: a required field can only
 /// go away when its surrounding keyed entry or whole resource is deleted
 /// (docs/language `resources-and-storage.md`). The runtime enforces this guard
-/// before planning, since `plan_field_delete` itself only sees one field.
+/// before planning, since `plan_field_delete` itself only sees one field. The
+/// guard lifts under an explicit maintenance run, which may drop a required field.
 pub const WRITE_REQUIRED_FIELD: &str = "write.required_field";
+/// A maintenance-only managed operation — dropping a whole managed root
+/// (`delete ^books`) — was attempted without the maintenance capability.
+/// Deleting one identity is ordinary work; dropping the whole root is
+/// maintenance work that code must opt into (docs/language
+/// `resources-and-storage.md`, "Delete And Merge"). The runtime enforces this.
+pub const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
+/// A quoted/raw path segment under a managed root (`^books(id)."old-title"`) was
+/// used outside maintenance. Quoted segments are for existing raw data, import,
+/// export, migration, and repair; they do not create undeclared fields. Without
+/// maintenance the runtime rejects them — distinct from `write.unknown_field`, so
+/// a tool can tell "you used raw syntax" from "you typo'd a declared field"
+/// (docs/language `resources-and-storage.md`, "Managed Saved Trees").
+pub const WRITE_RAW_REQUIRES_MAINTENANCE: &str = "write.raw_requires_maintenance";
 
 /// Wrap a store error met while planning a write into a `write.store` failure.
 fn store_failed(error: StoreError) -> WriteError {
