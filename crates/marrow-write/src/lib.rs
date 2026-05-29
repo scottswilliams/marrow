@@ -25,7 +25,7 @@ pub enum FieldValue {
 }
 
 /// A resource value supplied to a write: its top-level fields, by name. Keyed
-/// layers are added in a later slice.
+/// layers are written through the dedicated layer planners, not this value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceValue {
     pub fields: Vec<(String, FieldValue)>,
@@ -67,13 +67,12 @@ pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 /// The integer key space is exhausted: the highest existing key is `i64::MAX`,
 /// so no next identity or layer position can be allocated.
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
-/// `nextId` was asked for a root whose identity shape has no default integer
-/// allocation policy: a composite identity (two or more keys), a single
-/// non-integer identity key, or a keyless singleton root. The default per-root
-/// policy is only available for a resource with one `int` identity key; other
-/// identity shapes are application-provided (builtins.md:180-183,
-/// types.md:262-263). Distinct from `write.no_saved_root` so a tool can tell a
-/// local/singleton resource from one whose identity is simply not auto-allocated.
+/// `nextId` was asked for a root whose identity has no default integer
+/// allocation policy: a composite identity, a single non-integer key, or a
+/// keyless singleton. The default per-root policy applies only to a resource with
+/// one `int` identity key; other shapes are application-provided. Distinct from
+/// `write.no_saved_root` so a tool can tell a local/singleton resource from one
+/// whose identity is simply not auto-allocated.
 pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 /// Deleting a `required` field on its own is rejected: a required field can only
 /// go away when its surrounding keyed entry or whole resource is deleted
@@ -143,10 +142,7 @@ impl WritePlan {
     /// plan's savepoint back, leaving the store byte-for-byte unchanged.
     pub fn commit(self, store: &mut dyn Backend, in_txn: bool) -> Result<(), StoreError> {
         // Inside a user transaction the open savepoint already makes the block
-        // atomic, so apply in place; a nested begin/commit here would only add a
-        // redundant savepoint. With no transaction open, wrap the plan in its own
-        // savepoint so a multi-step write lands all-or-nothing (one batched
-        // transaction on a persistent backend) and a mid-plan failure rolls back.
+        // atomic, so apply in place rather than nesting a redundant savepoint.
         if in_txn {
             return apply_steps(self.steps, store);
         }
@@ -774,18 +770,17 @@ fn resolve_saved_root<'a>(
 /// Does this saved root qualify for the default `nextId` policy? The policy is
 /// available only for a resource with exactly one `int` identity key; composite
 /// identities, non-integer identities, and keyless singletons are
-/// application-provided (builtins.md:180-183, types.md:262-263). This predicate
-/// is the single contract the runtime gate (here) and the checker
-/// (`marrow-check`'s `check_next_id`) must agree on; the checker keeps a mirror
-/// copy because it cannot depend on this crate.
+/// application-provided. This predicate is the single contract the runtime gate
+/// (here) and the checker (`marrow-check`'s `check_next_id`) must agree on; the
+/// checker keeps a mirror copy because it cannot depend on this crate.
 pub fn single_int_root(root: &SavedRootSchema) -> bool {
     matches!(root.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
 }
 
 /// The next identity for a single-`int` keyed saved root: one greater than the
 /// highest existing integer record key, or `1` when the root is empty. This is
-/// the default `nextId` policy (builtins.md:180-183). Non-integer immediate
-/// children — such as index names — are ignored.
+/// the default `nextId` policy. Non-integer immediate children — such as index
+/// names — are ignored.
 ///
 /// The single-`int`-root gate is enforced here, not just documented: a resource
 /// with no saved root yields `WRITE_NO_SAVED_ROOT`, and a composite, non-integer,
@@ -868,9 +863,8 @@ pub fn next_layer_pos(
             code: WRITE_STORE,
             message: format!("could not read entries under keyed layer `{layer}`"),
         })?
-        // Appending fills no holes, so the policy reads only the highest
-        // positive position; any non-positive key (never an append result) is
-        // ignored, matching the prior positive-only filter.
+        // Appending fills no holes, so only the highest positive position
+        // matters; a non-positive key is never an append result, so ignore it.
         .filter(|&pos| pos >= 1)
         .unwrap_or(0);
     next_after(highest)
