@@ -280,6 +280,10 @@ impl Backend for MemStore {
         self.max_int_in_band(prefix, int_index_key_band(prefix))
     }
 
+    /// Cloning the whole map per savepoint is intentional: this is the
+    /// reference/test store for small stores and short runs, where a wholesale
+    /// snapshot stays dead-simple and obviously correct. Large-store efficiency
+    /// is the persistent backend's job (redb keeps a per-key undo journal).
     fn begin(&mut self) -> Result<(), StoreError> {
         self.savepoints.push(self.entries.clone());
         Ok(())
