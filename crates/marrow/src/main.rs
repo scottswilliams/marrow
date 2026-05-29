@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_store::path::display_path;
+use marrow_syntax::Diagnose;
 use serde_json::json;
 
 mod lsp;
@@ -210,37 +211,48 @@ fn report_project(target: &str, report: &marrow_check::CheckReport, format: Chec
     }
 }
 
-/// The broad `kind` category for a dotted error code, derived from the code's
-/// first segment. The prefix is not always the kind name
-/// (`run.*` is `runtime`, `store.*` is `storage`), so the mapping is explicit.
-fn kind_for_code(code: &str) -> &'static str {
-    match code.split('.').next().unwrap_or("") {
-        "parse" => "parse",
-        "check" | "schema" => "check",
-        "run" => "runtime",
-        "store" => "storage",
-        "io" => "io",
-        "protocol" => "protocol",
-        // Configuration and project-discovery failures are tooling errors.
-        _ => "tooling",
+/// The error envelope shared by every diagnostic the CLI emits as JSON: the
+/// `code`/`kind`/`message` scaffold every code carries, plus its per-source
+/// `source_span`. Parse and project diagnostics add a `severity`; a parse
+/// diagnostic also carries `help` (and byte offsets in its span). The optional
+/// keys are passed in rather than read off the trait so the absent-key cases stay
+/// exactly absent.
+fn envelope(
+    diagnostic: &dyn Diagnose,
+    source_span: serde_json::Value,
+    severity: Option<&str>,
+    help: Option<Option<&str>>,
+) -> serde_json::Value {
+    let mut record = json!({
+        "code": diagnostic.code(),
+        "kind": diagnostic.kind(),
+        "message": diagnostic.message(),
+        "source_span": source_span,
+    });
+    let object = record.as_object_mut().expect("json! built an object");
+    if let Some(severity) = severity {
+        object.insert("severity".into(), json!(severity));
     }
+    if let Some(help) = help {
+        object.insert("help".into(), json!(help));
+    }
+    record
 }
 
 /// Render a project diagnostic as JSON. Unlike single-file parse diagnostics,
 /// project diagnostics carry no `help` or byte offsets — they are reported at a
 /// declaration site rather than a byte span.
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
-    json!({
-        "code": diagnostic.code,
-        "kind": kind_for_code(diagnostic.code),
-        "severity": diagnostic.severity.as_str(),
-        "message": diagnostic.message,
-        "source_span": {
+    envelope(
+        diagnostic,
+        json!({
             "file": diagnostic.file.display().to_string(),
             "line": diagnostic.line,
             "column": diagnostic.column,
-        },
-    })
+        }),
+        Some(diagnostic.severity.as_str()),
+        None,
+    )
 }
 
 fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
@@ -248,7 +260,7 @@ fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
         CheckFormat::Text => eprintln!("{code}: {message}"),
         CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
             "code": code,
-            "kind": kind_for_code(code),
+            "kind": marrow_syntax::kind_for_code(code),
             "message": message,
             "source_span": null,
         })),
@@ -1143,6 +1155,15 @@ struct IntegrityProblem {
     message: String,
 }
 
+impl Diagnose for IntegrityProblem {
+    fn code(&self) -> &str {
+        self.code
+    }
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// Check one stored record against the schema, returning a problem when the path
 /// does not decode, names data the schema cannot account for, or holds bytes that
 /// are not a canonical form of its declared type.
@@ -1218,12 +1239,7 @@ fn report_integrity(dir: &str, records: usize, problems: &[IntegrityProblem], fo
 /// Render an integrity problem as the standard error envelope. These findings
 /// have no source line, so the location is a `path` field rather than a span.
 fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
-    json!({
-        "code": problem.code,
-        "kind": kind_for_code(problem.code),
-        "message": problem.message,
-        "source_span": { "path": problem.path },
-    })
+    envelope(problem, json!({ "path": problem.path }), None, None)
 }
 
 /// `marrow data get <projectdir> <path>`: read and print one path's value. Raw
@@ -1553,20 +1569,18 @@ fn report_io_error(file: &str, error: &std::io::Error, format: CheckFormat) {
 }
 
 fn diagnostic_record(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> serde_json::Value {
-    json!({
-        "code": diagnostic.code,
-        "kind": diagnostic.kind,
-        "severity": diagnostic.severity.as_str(),
-        "message": diagnostic.message,
-        "help": diagnostic.help,
-        "source_span": {
+    envelope(
+        diagnostic,
+        json!({
             "file": file,
             "line": diagnostic.span.line,
             "column": diagnostic.span.column,
             "start_byte": diagnostic.span.start_byte,
             "end_byte": diagnostic.span.end_byte,
-        },
-    })
+        }),
+        Some(diagnostic.severity.as_str()),
+        Some(diagnostic.help()),
+    )
 }
 
 fn write_json(value: serde_json::Value) {

@@ -86,6 +86,18 @@ pub struct CheckDiagnostic {
     pub column: u32,
 }
 
+impl marrow_syntax::Diagnose for CheckDiagnostic {
+    fn code(&self) -> &str {
+        self.code
+    }
+    fn message(&self) -> &str {
+        &self.message
+    }
+    fn severity(&self) -> Severity {
+        self.severity
+    }
+}
+
 /// The result of checking a project: every diagnostic across its files, in
 /// file then source order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

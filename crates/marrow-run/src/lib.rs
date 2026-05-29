@@ -97,6 +97,15 @@ pub struct RuntimeError {
     pub span: SourceSpan,
 }
 
+impl marrow_syntax::Diagnose for RuntimeError {
+    fn code(&self) -> &str {
+        self.code
+    }
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// A value was used where another type was required (e.g. `+` on a non-integer,
 /// a non-boolean condition, or assigning to an immutable binding).
 pub const RUN_TYPE: &str = "run.type";
