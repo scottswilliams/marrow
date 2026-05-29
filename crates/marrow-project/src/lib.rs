@@ -231,7 +231,7 @@ pub fn discover_modules(
     let mut files = Vec::new();
     for source_root in &config.source_roots {
         let root = project_root.join(source_root);
-        collect_mw_files(&root, &root, &mut files)?;
+        collect_mw_files(&root, &root, &mut files, true)?;
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     // Overlapping source roots (e.g. "src" and "src/sub") reach the same file
@@ -247,12 +247,9 @@ pub fn discover_modules(
 /// names are relative to the project root (`tests/books_test.mw` →
 /// `tests::books_test`).
 ///
-/// Each pattern is the directory-walk subset of a glob, honoring glob recursion
-/// convention: a trailing double-star (`/**/*.mw`, `/**`) walks the base
-/// directory recursively, while a single-star (`/*.mw`) matches only its
-/// immediate directory; a bare directory is walked recursively; a bare `.mw`
-/// file is taken directly. A pattern that matches nothing is skipped (no tests),
-/// not an error. Results are sorted by path with duplicates removed.
+/// A pattern that matches nothing is skipped (no tests), not an error. See
+/// [`test_pattern_base`] for how each pattern's glob tail selects recursion.
+/// Results are sorted by path with duplicates removed.
 pub fn discover_test_modules(
     project_root: &Path,
     config: &ProjectConfig,
@@ -264,11 +261,7 @@ pub fn discover_test_modules(
         if target.is_file() {
             files.push(module_file(project_root, target));
         } else if target.is_dir() {
-            if recursive {
-                collect_mw_files(project_root, &target, &mut files)?;
-            } else {
-                collect_mw_files_shallow(project_root, &target, &mut files)?;
-            }
+            collect_mw_files(project_root, &target, &mut files, recursive)?;
         }
         // A pattern that resolves to nothing on disk contributes no tests.
     }
@@ -278,10 +271,10 @@ pub fn discover_test_modules(
 }
 
 /// The base path of a `tests` pattern and whether its directory is walked
-/// recursively, with a trailing glob tail removed. Honoring glob convention, a
-/// double-star tail (`/**/*.mw`, `/**`) recurses while a single-star tail
-/// (`/*.mw`) matches only the immediate directory. A bare directory walks
-/// recursively; a bare `.mw` file is taken directly.
+/// recursively, with the trailing glob tail removed. A double-star tail
+/// (`/**/*.mw`, `/**`) recurses; a single-star tail (`/*.mw`) matches only the
+/// immediate directory; a bare directory recurses; a bare `.mw` file is taken
+/// directly.
 ///
 /// `tests/**/*.mw` → (`tests`, recursive), `tests/*.mw` → (`tests`, shallow),
 /// `tests` → (`tests`, recursive), `tests/smoke.mw` → (`tests/smoke.mw`, _).
@@ -294,26 +287,10 @@ fn test_pattern_base(pattern: &str) -> (&str, bool) {
     (pattern, true)
 }
 
-/// Walk `dir` only, collecting its immediate `.mw` files (no recursion). Backs
-/// the single-star (`/*.mw`) test pattern.
-fn collect_mw_files_shallow(
-    source_root: &Path,
-    dir: &Path,
-    out: &mut Vec<ModuleFile>,
-) -> Result<(), DiscoverError> {
-    walk_mw_files(source_root, dir, out, false)
-}
-
-/// Walk `dir` recursively, collecting every `.mw` file beneath it.
+/// Collect the `.mw` files in `dir`, descending into subdirectories when
+/// `recursive`. Each file is paired with the module name its path relative to
+/// `source_root` implies.
 fn collect_mw_files(
-    source_root: &Path,
-    dir: &Path,
-    out: &mut Vec<ModuleFile>,
-) -> Result<(), DiscoverError> {
-    walk_mw_files(source_root, dir, out, true)
-}
-
-fn walk_mw_files(
     source_root: &Path,
     dir: &Path,
     out: &mut Vec<ModuleFile>,
@@ -339,7 +316,7 @@ fn walk_mw_files(
         let path = entry.path();
         if file_type.is_dir() {
             if recursive {
-                walk_mw_files(source_root, &path, out, true)?;
+                collect_mw_files(source_root, &path, out, true)?;
             }
         } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("mw")
         {
