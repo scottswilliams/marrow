@@ -17,17 +17,16 @@ fn book_title(id: i64) -> Vec<u8> {
     ])
 }
 
+/// Encode a value known to be in range, unwrapping the canonical bytes.
+fn encoded(value: &SavedValue) -> Vec<u8> {
+    encode_value(value).expect("in-range value encodes")
+}
+
 #[test]
 fn an_archive_round_trips_through_a_fresh_store() {
     let mut source = MemStore::new();
-    source.write(
-        &book_title(1),
-        encode_value(&SavedValue::Str("Dune".into())),
-    );
-    source.write(
-        &book_title(2),
-        encode_value(&SavedValue::Str("Sand".into())),
-    );
+    source.write(&book_title(1), encoded(&SavedValue::Str("Dune".into())));
+    source.write(&book_title(2), encoded(&SavedValue::Str("Sand".into())));
 
     let mut buffer = Vec::new();
     let written = write_archive(&source, &mut buffer).expect("write archive");
@@ -91,15 +90,9 @@ fn equal_data_produces_identical_archives() {
     // The archive is the store's ordered stream behind a fixed header, so equal
     // data always serializes to identical bytes.
     let mut a = MemStore::new();
-    a.write(
-        &book_title(1),
-        encode_value(&SavedValue::Str("Dune".into())),
-    );
+    a.write(&book_title(1), encoded(&SavedValue::Str("Dune".into())));
     let mut b = MemStore::new();
-    b.write(
-        &book_title(1),
-        encode_value(&SavedValue::Str("Dune".into())),
-    );
+    b.write(&book_title(1), encoded(&SavedValue::Str("Dune".into())));
 
     let mut buffer_a = Vec::new();
     let mut buffer_b = Vec::new();
