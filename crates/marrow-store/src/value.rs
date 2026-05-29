@@ -7,6 +7,8 @@
 //! encoding optimizes for a clear canonical round-trip. A value's type comes
 //! from the schema at read time, so the bytes carry no type tag.
 
+use crate::Decimal;
+
 /// A scalar value in decoded form: the one type the store, the runtime, and the
 /// serve protocol all share for a stored leaf. The eight arms are exactly the
 /// storable scalars.
@@ -23,12 +25,8 @@ pub enum Scalar {
     Duration(i128),
     /// A UTC instant, held as a signed count of nanoseconds since the epoch.
     Instant(i128),
-    /// An exact base-10 decimal with value `coefficient * 10^(-scale)`, kept
-    /// value-canonical (no trailing-zero scale).
-    Decimal {
-        coefficient: i128,
-        scale: u32,
-    },
+    /// An exact base-10 decimal, already in canonical form.
+    Decimal(Decimal),
 }
 
 /// The saved form of a scalar is the scalar itself; `SavedValue` is the name the
@@ -141,9 +139,7 @@ pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
         SavedValue::Date(days) => format_date(*days)?.into_bytes(),
         SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
         SavedValue::Instant(nanos) => format_instant(*nanos)?.into_bytes(),
-        SavedValue::Decimal { coefficient, scale } => {
-            format_decimal(*coefficient, *scale).into_bytes()
-        }
+        SavedValue::Decimal(value) => value.to_text().into_bytes(),
     })
 }
 
@@ -167,7 +163,14 @@ pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
         ScalarType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
         ScalarType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
         ScalarType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
-        ScalarType::Decimal => parse_decimal(bytes),
+        // Decode through the shared decimal codec, then enforce the
+        // one-canonical-form invariant: a value is canonical iff it re-encodes to
+        // the very bytes given, so non-canonical spellings (`1.50`, `01`, `-0`)
+        // are rejected even though `Decimal::parse` would normalize them.
+        ScalarType::Decimal => {
+            let value = Decimal::parse(std::str::from_utf8(bytes).ok()?)?;
+            (value.to_text().as_bytes() == bytes).then_some(SavedValue::Decimal(value))
+        }
     }
 }
 
@@ -395,61 +398,4 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
     };
     let seconds_of_day = i128::from(hours * 3600 + minutes * 60 + seconds);
     Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)
-}
-
-/// Format a stored decimal (`coefficient * 10^(-scale)`) as canonical decimal
-/// text by routing through the shared [`Decimal`](crate::Decimal) codec, so the
-/// saved form and decimal arithmetic share one normalization and one spelling.
-/// A [`SavedValue::Decimal`] is only ever built from an in-envelope value (decoded
-/// via [`parse_decimal`] or from a `Decimal`), so the construction always succeeds.
-fn format_decimal(coefficient: i128, scale: u32) -> String {
-    crate::Decimal::from_parts(coefficient, scale)
-        .expect("a stored decimal is within the envelope")
-        .to_text()
-}
-
-/// Parse canonical decimal text to a value-canonical [`SavedValue::Decimal`].
-/// Rejects leading zeros, trailing-zero or empty fractions, `-0`, exponents, and
-/// anything outside the decimal envelope.
-fn parse_decimal(bytes: &[u8]) -> Option<SavedValue> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let (negative, rest) = match text.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, text),
-    };
-    let (integer, fraction) = match rest.split_once('.') {
-        Some((integer, fraction)) => (integer, Some(fraction)),
-        None => (rest, None),
-    };
-
-    if integer.is_empty() || !integer.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    if integer.len() > 1 && integer.starts_with('0') {
-        return None; // leading zero
-    }
-    if let Some(fraction) = fraction
-        && (fraction.is_empty()
-            || fraction.ends_with('0')
-            || !fraction.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return None; // empty, trailing-zero, or non-digit fraction
-    }
-
-    let scale = fraction.map_or(0, str::len) as u32;
-    let digits = match fraction {
-        Some(fraction) => format!("{integer}{fraction}"),
-        None => integer.to_string(),
-    };
-    let magnitude: i128 = digits.parse().ok()?; // out-of-range coefficient -> None
-    if negative && magnitude == 0 {
-        return None; // `-0` is not canonical
-    }
-    if crate::decimal::significant_digits(magnitude) > crate::decimal::MAX_DIGITS
-        || scale > crate::decimal::MAX_DIGITS
-    {
-        return None;
-    }
-    let coefficient = if negative { -magnitude } else { magnitude };
-    Some(SavedValue::Decimal { coefficient, scale })
 }

@@ -200,7 +200,11 @@ fn decimals_round_trip_through_canonical_text() {
 
 #[test]
 fn decimal_encoding_is_value_canonical() {
-    let enc = |coefficient, scale| encoded(&SavedValue::Decimal { coefficient, scale });
+    let enc = |coefficient, scale| {
+        encoded(&SavedValue::Decimal(
+            Decimal::from_parts(coefficient, scale).expect("in-envelope decimal"),
+        ))
+    };
     // Trailing-zero scale is normalized away to one spelling per value.
     assert_eq!(enc(15, 1), b"1.5");
     assert_eq!(enc(150, 2), b"1.5");
@@ -241,10 +245,7 @@ fn saved_decimal_encoding_matches_the_shared_decimal_codec() {
     // normalization of a trailing-zero scale.
     for text in ["0", "1.5", "-0.25", "123.456", "1.50", "0.50", "100"] {
         let decimal = Decimal::parse(text).expect("valid decimal");
-        let saved = SavedValue::Decimal {
-            coefficient: decimal.coefficient(),
-            scale: decimal.scale(),
-        };
+        let saved = SavedValue::Decimal(decimal);
         assert_eq!(
             encoded(&saved),
             decimal.to_text().as_bytes(),

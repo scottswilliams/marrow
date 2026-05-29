@@ -4514,10 +4514,7 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Instant(n) => SavedValue::Instant(n),
         Value::Date(d) => SavedValue::Date(d),
         Value::Duration(n) => SavedValue::Duration(n),
-        Value::Decimal(d) => SavedValue::Decimal {
-            coefficient: d.coefficient(),
-            scale: d.scale(),
-        },
+        Value::Decimal(d) => SavedValue::Decimal(d),
         Value::Bytes(b) => SavedValue::Bytes(b),
         // A whole sequence or resource is a tree, not a scalar saved value; an
         // identity is opaque and is not stored as a field value.
@@ -4904,9 +4901,7 @@ fn saved_value_to_value(value: SavedValue) -> Option<Value> {
         SavedValue::Instant(n) => Some(Value::Instant(n)),
         SavedValue::Date(d) => Some(Value::Date(d)),
         SavedValue::Duration(n) => Some(Value::Duration(n)),
-        SavedValue::Decimal { coefficient, scale } => {
-            Decimal::from_parts(coefficient, scale).map(Value::Decimal)
-        }
+        SavedValue::Decimal(d) => Some(Value::Decimal(d)),
         SavedValue::Bytes(b) => Some(Value::Bytes(b)),
         _ => None,
     }
