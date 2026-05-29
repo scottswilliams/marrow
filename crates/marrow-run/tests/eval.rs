@@ -1053,7 +1053,7 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
     // A transaction writes, then a called function throws. The throw escapes the
     // transaction, so it rolls back and the write never lands.
     let program = checked_program(
-        "resource Account at ^accts(id: int)\n    balance: int\n\nfn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return get(^accts(1).balance, -1)\n",
+        "resource Account at ^accts(id: int)\n    balance: int\n\nfn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
     );
     let store = RefCell::new(MemStore::new());
     let result = run_entry(&program, &store, "test::run_it", &[]);
@@ -2173,7 +2173,8 @@ fn a_mistyped_field_write_is_rejected() {
     );
 }
 
-/// A program that queries saved `Book` data with `exists` and `get`.
+/// A program that queries saved `Book` data with `exists` and the `??`
+/// absence-default.
 const BOOK_QUERY: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -2186,7 +2187,7 @@ fn has_title(id: int): bool
     return exists(^books(id).title)
 
 fn subtitle_or(id: int, fallback: string): string
-    return get(^books(id).subtitle, fallback)
+    return ^books(id).subtitle ?? fallback
 ";
 
 #[test]
@@ -2206,7 +2207,7 @@ fn exists_reports_record_and_field_presence() {
 }
 
 #[test]
-fn get_returns_the_default_for_an_absent_field() {
+fn coalesce_returns_the_default_for_an_absent_field() {
     let program = checked_program(BOOK_QUERY);
     let store = RefCell::new(store_with_title(1, "Mort")); // subtitle is absent
     let value = run_entry(
@@ -2221,7 +2222,7 @@ fn get_returns_the_default_for_an_absent_field() {
 }
 
 #[test]
-fn get_returns_the_value_when_present() {
+fn coalesce_returns_the_value_when_present() {
     let program = checked_program(BOOK_QUERY);
     let store = RefCell::new(store_with_title(1, "Mort"));
     // Populate the sparse subtitle directly.
@@ -2242,6 +2243,109 @@ fn get_returns_the_value_when_present() {
     .expect("run")
     .value;
     assert_eq!(value, Some(Value::Str("A Discworld Novel".into())));
+}
+
+/// A `Patient` with an unkeyed `name` group, queried with a `?.` chain defaulted
+/// by `??`. The chain `^patients(id)?.name?.first` reads the first name when the
+/// whole record, the `name` group, and the field are all populated, and is absent
+/// (caught by `??`) when any step along the way is missing.
+const PATIENT_CHAIN: &str = "\
+resource Patient at ^patients(id: int)
+    name
+        first: string
+        last: string
+
+fn first_name_or(id: int, fallback: string): string
+    return ^patients(id)?.name?.first ?? fallback
+";
+
+fn store_with_first_name(id: i64, first: &str) -> MemStore {
+    let mut store = MemStore::new();
+    store.write(
+        &encode_path(&[
+            PathSegment::Root("patients".into()),
+            PathSegment::RecordKey(SavedKey::Int(id)),
+            PathSegment::ChildLayer("name".into()),
+            PathSegment::Field("first".into()),
+        ]),
+        encode_value(&SavedValue::Str(first.into())).expect("in-range value encodes"),
+    );
+    store
+}
+
+#[test]
+fn optional_chain_with_default_reads_a_present_value() {
+    let program = checked_program(PATIENT_CHAIN);
+    let store = RefCell::new(store_with_first_name(1, "Granny"));
+    let value = run_entry(
+        &program,
+        &store,
+        "test::first_name_or",
+        &[Value::Int(1), Value::Str("(unknown)".into())],
+    )
+    .expect("run")
+    .value;
+    assert_eq!(value, Some(Value::Str("Granny".into())));
+}
+
+#[test]
+fn optional_chain_defaults_when_the_record_is_absent() {
+    let program = checked_program(PATIENT_CHAIN);
+    // Record 2 was never written: the whole record is absent, so the chain
+    // short-circuits and `??` supplies the default.
+    let store = RefCell::new(store_with_first_name(1, "Granny"));
+    let value = run_entry(
+        &program,
+        &store,
+        "test::first_name_or",
+        &[Value::Int(2), Value::Str("(unknown)".into())],
+    )
+    .expect("run")
+    .value;
+    assert_eq!(value, Some(Value::Str("(unknown)".into())));
+}
+
+#[test]
+fn optional_chain_defaults_when_an_intermediate_field_is_absent() {
+    let program = checked_program(PATIENT_CHAIN);
+    // The record exists (it has a `last` name) but `name.first` does not: the
+    // final hop short-circuits the chain, and `??` supplies the default.
+    let mut store = MemStore::new();
+    store.write(
+        &encode_path(&[
+            PathSegment::Root("patients".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::ChildLayer("name".into()),
+            PathSegment::Field("last".into()),
+        ]),
+        encode_value(&SavedValue::Str("Weatherwax".into())).expect("in-range value encodes"),
+    );
+    let store = RefCell::new(store);
+    let value = run_entry(
+        &program,
+        &store,
+        "test::first_name_or",
+        &[Value::Int(1), Value::Str("(unknown)".into())],
+    )
+    .expect("run")
+    .value;
+    assert_eq!(value, Some(Value::Str("(unknown)".into())));
+}
+
+#[test]
+fn an_unguarded_optional_chain_that_ends_absent_still_raises() {
+    // Without a trailing `??`, an absent `?.` chain surfaces the absent-element
+    // fault like any other read — the short-circuit only changes how an enclosing
+    // `??` or `catch` sees it.
+    let program = checked_program(
+        "resource Patient at ^patients(id: int)\n    name\n        first: string\n        last: string\n\nfn first_name(id: int): string\n    return ^patients(id)?.name?.first\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::first_name", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_ABSENT),
+        "{result:?}"
+    );
 }
 
 #[test]
@@ -2486,9 +2590,9 @@ fn deleting_a_required_field_is_rejected() {
 fn deleting_a_layer_entry_leaves_other_entries() {
     // `delete ^books(id).versions(v)` removes one group-entry subtree; siblings
     // survive. Read each entry's `.title` to prove it: the deleted entry's title
-    // falls back to the `get` default, the survivor's stays intact.
+    // falls back to the `??` default, the survivor's stays intact.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\nfn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\nfn version_title(id: int, v: int): string\n    return get(^books(id).versions(v).title, \"<gone>\")\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\nfn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\nfn version_title(id: int, v: int): string\n    return ^books(id).versions(v).title ?? \"<gone>\"\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");

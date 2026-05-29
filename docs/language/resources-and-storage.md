@@ -466,7 +466,7 @@ Rules:
 
 - Direct read of an unpopulated element raises an absent-element error unless
   the checker can prove the element exists.
-- `get(path, default)` returns `default` for an unpopulated sparse path. It
+- `path ?? default` returns `default` for an unpopulated sparse path. It
   does not hide schema errors.
 - `exists(path)` checks whether a value or child exists and narrows the path
   inside the guarded block.
@@ -480,7 +480,7 @@ Rules:
 if exists(^books(id).subtitle)
     write(^books(id).subtitle)
 
-const subtitle: string = get(^books(id).subtitle, "")
+const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
 ## Delete And Merge

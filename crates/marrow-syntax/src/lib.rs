@@ -109,6 +109,15 @@ pub enum Expression {
         quoted: bool,
         span: SourceSpan,
     },
+    /// Optional field access `base?.name`: the same read as `Field`, but an
+    /// absent base or field short-circuits the rest of the chain to absent
+    /// rather than failing the read. The leaf type matches the plain field.
+    OptionalField {
+        base: Box<Expression>,
+        name: String,
+        quoted: bool,
+        span: SourceSpan,
+    },
     Unary {
         op: UnaryOp,
         operand: Box<Expression>,
@@ -136,6 +145,7 @@ impl Expression {
             | Self::SavedRoot { span, .. }
             | Self::Call { span, .. }
             | Self::Field { span, .. }
+            | Self::OptionalField { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Interpolation { span, .. } => *span,
@@ -197,6 +207,9 @@ pub enum BinaryOp {
     GreaterEqual,
     Equal,
     NotEqual,
+    /// The absence-default `??`: yields the left path read when populated, else
+    /// the right default. The left operand must be a path read or `?.` chain.
+    Coalesce,
     And,
     Or,
 }
@@ -621,6 +634,8 @@ pub enum TokenKind {
     Equal,
     EqualEqual,
     BangEqual,
+    QuestionDot,
+    QuestionQuestion,
     Less,
     LessEqual,
     Greater,
@@ -1145,6 +1160,8 @@ impl<'a> Lexer<'a> {
             ("..", TokenKind::DotDot),
             ("==", TokenKind::EqualEqual),
             ("!=", TokenKind::BangEqual),
+            ("?.", TokenKind::QuestionDot),
+            ("??", TokenKind::QuestionQuestion),
             ("<=", TokenKind::LessEqual),
             (">=", TokenKind::GreaterEqual),
         ] {
@@ -1489,15 +1506,28 @@ impl<'a> ExprParser<'a> {
     }
 
     fn equality_expr(&mut self) -> Option<Expression> {
-        let left = self.comparison_expr()?;
+        let left = self.coalesce_expr()?;
         let op = match self.peek() {
             Some(TokenKind::EqualEqual) => BinaryOp::Equal,
             Some(TokenKind::BangEqual) => BinaryOp::NotEqual,
             _ => return Some(left),
         };
         self.advance();
-        let right = self.comparison_expr()?;
+        let right = self.coalesce_expr()?;
         Some(binary_expr(op, left, right))
+    }
+
+    /// `??` sits one level tighter than equality and looser than comparison, on
+    /// its own non-associative level: `name ?? "anon" == "anon"` parses as
+    /// `(name ?? "anon") == "anon"`, and `a ?? b ?? c` is rejected.
+    fn coalesce_expr(&mut self) -> Option<Expression> {
+        let left = self.comparison_expr()?;
+        if !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
+            return Some(left);
+        }
+        self.advance();
+        let right = self.comparison_expr()?;
+        Some(binary_expr(BinaryOp::Coalesce, left, right))
     }
 
     fn comparison_expr(&mut self) -> Option<Expression> {
@@ -1602,43 +1632,22 @@ impl<'a> ExprParser<'a> {
                     };
                 }
                 Some(TokenKind::Dot) => {
-                    let dot = self.advance();
-                    let segment = *self.tokens.get(self.pos)?;
-                    let (name, quoted) = match segment.kind {
-                        TokenKind::Identifier => (segment.text(self.source).to_string(), false),
-                        // A quoted segment names data with a non-identifier name,
-                        // e.g. `^books(id)."old-title"`. Store the raw inner text,
-                        // escapes unresolved like other string literals. An
-                        // unterminated string (already a lexer error) lacks a
-                        // closing quote, so fall back to empty rather than panic.
-                        TokenKind::String => {
-                            let text = segment.text(self.source);
-                            let inner = text
-                                .strip_prefix('"')
-                                .and_then(|rest| rest.strip_suffix('"'))
-                                .unwrap_or("");
-                            (inner.to_string(), true)
-                        }
-                        // A `.` is always data field access, and a field name must
-                        // be an identifier or string literal, so a reserved word
-                        // after `.` is never a valid field name and must be quoted
-                        // (`."at"`). Report it where both tokens are in view.
-                        TokenKind::Keyword(_) => {
-                            let keyword = segment.text(self.source);
-                            self.error(
-                                join_spans(dot.span, segment.span),
-                                format!("`{keyword}` is a keyword and cannot be used as a field name"),
-                                Some(format!(
-                                    "quote the reserved word to use it as a data name: .\"{keyword}\""
-                                )),
-                            );
-                            return None;
-                        }
-                        _ => return None,
-                    };
-                    self.advance();
-                    let span = join_spans(expr.span(), segment.span);
+                    let (name, quoted, end) = self.field_segment()?;
+                    let span = join_spans(expr.span(), end);
                     expr = Expression::Field {
+                        base: Box::new(expr),
+                        name,
+                        quoted,
+                        span,
+                    };
+                }
+                // `base?.name`: the same field segment as `.`, but the read
+                // short-circuits to absent rather than failing if the base or
+                // field is missing.
+                Some(TokenKind::QuestionDot) => {
+                    let (name, quoted, end) = self.field_segment()?;
+                    let span = join_spans(expr.span(), end);
+                    expr = Expression::OptionalField {
                         base: Box::new(expr),
                         name,
                         quoted,
@@ -1649,6 +1658,49 @@ impl<'a> ExprParser<'a> {
             }
         }
         Some(expr)
+    }
+
+    /// Parse the operator-then-name of a field access — the part after `.` or
+    /// `?.` — consuming both tokens. Returns the field name, whether it was a
+    /// quoted data name, and the span of the name token. The leading operator
+    /// token must already be the current token.
+    fn field_segment(&mut self) -> Option<(String, bool, SourceSpan)> {
+        let op = self.advance();
+        let segment = *self.tokens.get(self.pos)?;
+        let (name, quoted) = match segment.kind {
+            TokenKind::Identifier => (segment.text(self.source).to_string(), false),
+            // A quoted segment names data with a non-identifier name, e.g.
+            // `^books(id)."old-title"`. Store the raw inner text, escapes
+            // unresolved like other string literals. An unterminated string
+            // (already a lexer error) lacks a closing quote, so fall back to
+            // empty rather than panic.
+            TokenKind::String => {
+                let text = segment.text(self.source);
+                let inner = text
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .unwrap_or("");
+                (inner.to_string(), true)
+            }
+            // Field access always names data, and a field name must be an
+            // identifier or string literal, so a reserved word here is never a
+            // valid field name and must be quoted (`."at"`). Report it where
+            // both tokens are in view.
+            TokenKind::Keyword(_) => {
+                let keyword = segment.text(self.source);
+                self.error(
+                    join_spans(op.span, segment.span),
+                    format!("`{keyword}` is a keyword and cannot be used as a field name"),
+                    Some(format!(
+                        "quote the reserved word to use it as a data name: .\"{keyword}\""
+                    )),
+                );
+                return None;
+            }
+            _ => return None,
+        };
+        self.advance();
+        Some((name, quoted, segment.span))
     }
 
     fn arguments(&mut self) -> Option<Vec<Argument>> {

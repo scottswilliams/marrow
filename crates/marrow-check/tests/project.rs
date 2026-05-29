@@ -1366,14 +1366,40 @@ fn exists_and_append_builtin_return_types_feed_checks() {
 }
 
 #[test]
-fn get_builtin_returns_the_default_type() {
-    // `get(path, default)` returns the leaf-or-default type; with a string default
-    // it is `string`, so `+ 1` is string-plus-int.
+fn coalesce_yields_the_default_type() {
+    // `path ?? default` types to the path's leaf-or-default type; with a string
+    // default it is `string`, so `+ 1` is string-plus-int.
     let found = check_module(
-        "get-return",
+        "coalesce-return",
         "module m\n\
          resource Book at ^books(id: int)\n    title: string\n\n\
-         fn f()\n    var x = get(^books(1).title, \"none\") + 1\n",
+         fn f()\n    var x = (^books(1).title ?? \"none\") + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn coalesce_rejects_a_present_non_path_left_operand() {
+    // `??` only defaults an absent read; a literal (or any always-present value)
+    // on the left has nothing to default, so it is an operator misuse.
+    let found = check_module(
+        "coalesce-non-path",
+        "module m\nfn f()\n    var x = 1 ?? 2\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn coalesce_rejects_a_mismatched_default_type() {
+    // The default must match the path's leaf type: an `int` field defaulted with a
+    // string is an operator misuse.
+    let found = check_module(
+        "coalesce-mismatch",
+        "module m\n\
+         resource Book at ^books(id: int)\n    pages: int\n\n\
+         fn f()\n    var x = ^books(1).pages ?? \"none\"\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

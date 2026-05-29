@@ -87,10 +87,10 @@ if exists(^books(id).subtitle)
     write(^books(id).subtitle)
 ```
 
-Use `get(path, default)` when absence is expected:
+Use the absence-default `??` when absence is expected:
 
 ```mw
-const subtitle: string = get(^books(id).subtitle, "")
+const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
 Directly reading an unpopulated element raises an absent-element error unless

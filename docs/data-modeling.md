@@ -155,10 +155,10 @@ can prove it exists. Guard with `exists`, or read with a default:
 if exists(^books(id).subtitle)
     write(^books(id).subtitle)
 
-const subtitle: string = get(^books(id).subtitle, "")
+const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
-`get(path, default)` is for sparse paths only; it does not hide schema or
+`path ?? default` is for sparse paths only; it does not hide schema or
 decode errors. A `required` field inside a keyed layer is required for entries
 that exist, not for every possible key.
 

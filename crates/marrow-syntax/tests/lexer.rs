@@ -402,6 +402,46 @@ fn lexes_equality_operator() {
 }
 
 #[test]
+fn lexes_absence_operators() {
+    // `?.` and `??` each lex as a single multi-character punctuation token.
+    let lexed = lex_source("write(a?.b ?? c)\n");
+    assert!(
+        !lexed.has_errors(),
+        "`?.` and `??` should lex cleanly, got {:#?}",
+        lexed.diagnostics
+    );
+    assert!(
+        lexed
+            .tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::QuestionDot),
+        "expected a QuestionDot token"
+    );
+    assert!(
+        lexed
+            .tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::QuestionQuestion),
+        "expected a QuestionQuestion token"
+    );
+}
+
+#[test]
+fn rejects_a_bare_question_mark() {
+    // A lone `?` is not part of any operator, so it stays an unexpected character;
+    // only `?.` and `??` are recognized.
+    let lexed = lex_source("write(a ? b)\n");
+    assert!(
+        lexed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unexpected character `?`")),
+        "expected a bare `?` to be rejected, got {:#?}",
+        lexed.diagnostics
+    );
+}
+
+#[test]
 fn lexes_all_language_reference_mw_blocks_without_errors() {
     for fixture in language_reference_mw_blocks() {
         let lexed = lex_source(&fixture.source);

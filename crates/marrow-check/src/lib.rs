@@ -1121,9 +1121,15 @@ fn infer_type(
             right,
             span,
         } => {
-            let left = infer_type(program, left, scope, aliases, file, diagnostics);
-            let right = infer_type(program, right, scope, aliases, file, diagnostics);
-            check_binary(*op, &left, &right, *span, file, diagnostics)
+            let left_type = infer_type(program, left, scope, aliases, file, diagnostics);
+            let right_type = infer_type(program, right, scope, aliases, file, diagnostics);
+            // `??` only defaults an absent path read, so its left operand must be a
+            // path read or `?.` chain — a present non-path value is never absent
+            // and has nothing to default. The result is the leaf type of that read.
+            if matches!(op, marrow_syntax::BinaryOp::Coalesce) {
+                return check_coalesce(left, &left_type, &right_type, *span, file, diagnostics);
+            }
+            check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
         }
         Expression::Call { callee, args, span } => {
             // Visit the callee subtree (it may hold nested calls, e.g. the
@@ -1161,7 +1167,10 @@ fn infer_type(
                 call_type
             }
         }
-        Expression::Field { base, name, .. } => {
+        // A plain field read and an optional (`?.`) field read resolve to the same
+        // declared leaf type: the short-circuit only changes the read's runtime
+        // behavior on absence, not the type of a populated leaf.
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
             let base_type = infer_type(program, base, scope, aliases, file, diagnostics);
             // A saved field read resolves to its declared type: a top-level field
             // `^root(key…).field` or a group-layer field `^root(key…).layer(key…).field`.
@@ -1607,6 +1616,9 @@ fn check_binary(
             left == ScalarType::Int && right == ScalarType::Int,
             MarrowType::Unknown,
         ),
+        // `??` constrains its operands by the path's leaf type, not by scalar
+        // shape alone, so it is typed in `check_coalesce` before reaching here.
+        BinaryOp::Coalesce => (left == right, MarrowType::Primitive(left)),
     };
     if !valid {
         diagnostics.push(operator_diagnostic(
@@ -1622,6 +1634,63 @@ fn check_binary(
         return MarrowType::Unknown;
     }
     result
+}
+
+/// Type-check `path ?? default`. The result is the leaf type of the path read on
+/// the left (a populated read yields that value; an absent one yields the
+/// default), so the default must be the same scalar type. A non-path left operand
+/// is rejected: only a read that can be absent has anything to default.
+fn check_coalesce(
+    left: &marrow_syntax::Expression,
+    left_type: &MarrowType,
+    right_type: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    if !is_path_read(left) {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            "operator `??` applies only to a path read or `?.` chain".to_string(),
+        ));
+        return MarrowType::Unknown;
+    }
+    // Both sides must be the same scalar, like the other value operators. When
+    // either is still untyped, defer rather than guess, yielding the known side
+    // (or `Unknown`) so a surrounding operator never fires on an uncertain operand.
+    match (as_primitive(left_type), as_primitive(right_type)) {
+        (Some(leaf), Some(default)) if leaf == default => MarrowType::Primitive(leaf),
+        (Some(leaf), Some(default)) => {
+            diagnostics.push(operator_diagnostic(
+                file,
+                span,
+                format!(
+                    "operator `??` cannot default `{}` with `{}`",
+                    leaf.name(),
+                    default.name(),
+                ),
+            ));
+            MarrowType::Unknown
+        }
+        // An untyped leaf falls back to the default's type; an untyped default
+        // leaves the result the leaf type. Either way an unknown stays unknown.
+        (None, _) => right_type.clone(),
+        (Some(leaf), None) => MarrowType::Primitive(leaf),
+    }
+}
+
+/// Whether an expression is a path read whose value can be absent — the only
+/// left operand `??` accepts. A field read (`book.title`, `^books(id).title`),
+/// an optional field read (`book?.shelf`), or a call-shaped saved read
+/// (`^books(id)`, `^books(id).tags(1)`) can be absent; a bare local, literal, or
+/// computed value is always present and has nothing to default.
+fn is_path_read(expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    matches!(
+        expr,
+        Expression::Field { .. } | Expression::OptionalField { .. } | Expression::Call { .. }
+    )
 }
 
 /// The scalar a type denotes, or `None` for any non-scalar (resource, identity,
@@ -1688,6 +1757,7 @@ fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
         BinaryOp::GreaterEqual => ">=",
         BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
+        BinaryOp::Coalesce => "??",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
     }
@@ -2055,7 +2125,7 @@ fn is_builtin_call(segments: &[String]) -> bool {
             matches!(
                 name.as_str(),
                 // presence and reads
-                "exists" | "get"
+                "exists"
                 // tree traversal
                 | "keys" | "values" | "entries" | "count"
                 // sequence updates and id allocation
@@ -2074,18 +2144,17 @@ fn is_builtin_call(segments: &[String]) -> bool {
     }
 }
 
-/// The return type of a single-name data builtin: `exists(path): bool`,
-/// `append(layer, value): int`, and `get(path, default)`, which yields the saved
-/// leaf-or-default type (taken from the default argument). `nextId` is handled in
-/// [`check_next_id`], which has the `^root` argument it needs to type the identity.
-fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<MarrowType> {
+/// The return type of a single-name data builtin: `exists(path): bool` and
+/// `append(layer, value): int`. `nextId` is handled in [`check_next_id`], which
+/// has the `^root` argument it needs to type the identity. The absence-default
+/// `??` is an operator, not a builtin, and is typed in [`check_coalesce`].
+fn builtin_return_type(segments: &[String], _arg_types: &[MarrowType]) -> Option<MarrowType> {
     let [name] = segments else {
         return None;
     };
     match name.as_str() {
         "exists" => Some(MarrowType::Primitive(ScalarType::Bool)),
         "append" => Some(MarrowType::Primitive(ScalarType::Int)),
-        "get" => arg_types.get(1).cloned(),
         _ => None,
     }
 }
@@ -2447,7 +2516,9 @@ fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
             expr_touches_saved_data(callee)
                 || args.iter().any(|arg| expr_touches_saved_data(&arg.value))
         }
-        Expression::Field { base, .. } => expr_touches_saved_data(base),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            expr_touches_saved_data(base)
+        }
         Expression::Unary { operand, .. } => expr_touches_saved_data(operand),
         Expression::Binary { left, right, .. } => {
             expr_touches_saved_data(left) || expr_touches_saved_data(right)

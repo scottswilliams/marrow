@@ -8,7 +8,8 @@
 //! groups writes in a `transaction` (commit/rollback with read-your-writes),
 //! guards a block with `lock` (a scope released on every exit under the
 //! single-writer profile), and provides the
-//! `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
+//! `print`/`write`/`exists`/`nextId`/`append` builtins, the `?.` optional read
+//! and `??` absence-default, the
 //! `std::assert`/`std::text`/`std::math` library helpers, and the
 //! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes,
 //! `merge`, index traversal, and structured errors build on the same spine.
@@ -997,7 +998,6 @@ fn eval_call(
             match name.as_str() {
                 "print" | "write" => return eval_output(name, args, span, env),
                 "exists" => return eval_exists(args, span, env).map(Some),
-                "get" => return eval_get(args, span, env).map(Some),
                 "nextId" => return eval_next_id(args, span, env).map(Some),
                 "append" => return eval_append(args, span, env).map(Some),
                 "bytes" => return eval_bytes_conversion(args, span, env).map(Some),
@@ -1816,22 +1816,20 @@ fn eval_error_constructor(
     Ok(Value::Resource(fields))
 }
 
-/// Evaluate `get(path, default)`: the value at a sparse saved path, or `default`
-/// when it is absent. Schema/type errors are not hidden — only absence falls
-/// back to the default.
-fn eval_get(args: &[Argument], span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
-    let [path, default] = args else {
-        return Err(RuntimeError::fault(
-            RUN_TYPE,
-            "`get` takes a path and a default".into(),
-            span,
-        ));
-    };
-    match eval_saved_field(&path.value, env) {
-        // `get` absorbs an absent read as ordinary control flow, falling back to
+/// Evaluate `path ?? default`: the value at the left path read, or `default` when
+/// it is absent. Schema/type errors are not hidden — only an absent element
+/// (`run.absent_element`) falls back to the default.
+fn eval_coalesce(
+    path: &Expression,
+    default: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    match eval_expr(path, env) {
+        // `??` absorbs an absent read as ordinary control flow, falling back to
         // the default. The absent fault's catchable `throw` value rides the `Err`
-        // and is simply discarded here, so it never unwinds as a throw.
-        Err(error) if error.code == RUN_ABSENT => eval_expr(&default.value, env),
+        // and is simply discarded here, so it never unwinds as a throw. A `?.`
+        // chain on the left short-circuits to this same absent fault.
+        Err(error) if error.code == RUN_ABSENT => eval_expr(default, env),
         other => other,
     }
 }
@@ -3215,6 +3213,11 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
                 eval_local_field_get(base, name, *span, env)
             }
         }
+        // An optional field read `base?.name`: the same read as `Field`, but an
+        // absent base or field short-circuits the chain to absent.
+        Expression::OptionalField {
+            base, name, span, ..
+        } => eval_optional_field(expr, base, name, *span, env),
         // A bare saved root read (`^settings`) is a whole-resource read of a
         // keyless singleton; a keyed root needs a `^root(key…)` call.
         Expression::SavedRoot { name, span, .. } => read_resource(name, &[], *span, env),
@@ -3234,11 +3237,25 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     else {
         return Err(unsupported("this read", expr.span()));
     };
+    read_saved_field(base, name, *quoted, expr.span(), env)
+}
+
+/// Read a saved field given its parts. Shared by the plain `.field` read and the
+/// optional `?.field` read, which lower and read identically; only their
+/// short-circuiting on an absent intermediate differs, and that is handled by the
+/// callers raising/propagating `run.absent_element`.
+fn read_saved_field(
+    base: &Expression,
+    name: &str,
+    quoted: bool,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
     // A quoted/raw segment under a managed root (`^books(id)."old-title"`) is raw
     // access: gated to maintenance, reading the literal segment rather than a
     // declared field. An unquoted field falls through to the declared-field path.
-    if *quoted {
-        return eval_raw_field_read(base, name, expr.span(), env);
+    if quoted {
+        return eval_raw_field_read(base, name, span, env);
     }
     // A plain `^root(id…).field` base is a top-level field; a base reached through
     // one or more group layers (`^root(id…).layer(key…)….field` or the unkeyed
@@ -3246,8 +3263,30 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     // base and re-terminating at the field carries the layer chain either way, and
     // `SavedPath::read` reads top-level or nested by whether that chain is empty.
     lower(base, env)?
-        .into_field(name.clone(), base.span())?
-        .read(ReadPosition::Value, expr.span(), env)
+        .into_field(name.to_string(), base.span())?
+        .read(ReadPosition::Value, span, env)
+}
+
+/// Read an optional field `base?.name`. The read is the same as a plain field
+/// read — saved off a `^root` chain, or local off a resource value — so the leaf
+/// type is unchanged. An absent base or field surfaces as `run.absent_element`,
+/// which short-circuits an enclosing `?.` chain and is caught by a `??` default;
+/// outermost and unguarded, it surfaces like any absent read.
+fn eval_optional_field(
+    expr: &Expression,
+    base: &Expression,
+    name: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let Expression::OptionalField { quoted, .. } = expr else {
+        return Err(unsupported("this read", span));
+    };
+    if is_saved_path(base) {
+        read_saved_field(base, name, *quoted, span, env)
+    } else {
+        eval_local_field_get(base, name, span, env)
+    }
 }
 
 /// Read a resource identity from a declared index lookup `^root.index(args…)`.
@@ -4267,7 +4306,9 @@ fn is_saved_path(expr: &Expression) -> bool {
     match expr {
         Expression::SavedRoot { .. } => true,
         Expression::Call { callee, .. } => is_saved_path(callee),
-        Expression::Field { base, .. } => is_saved_path(base),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            is_saved_path(base)
+        }
         _ => false,
     }
 }
@@ -4620,10 +4661,13 @@ fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError
             .push((name.clone(), lower_keys(args, *span, false, env)?));
         return Ok(path);
     }
-    // An unkeyed group hop `….name` (a `.field` off a saved path, not a call)
-    // appends a zero-key layer level, so `^patients(id).name` descends into the
-    // group `name`. The record base is handled by the terminal arms below.
-    if let Expression::Field { base, name, .. } = expr
+    // An unkeyed group hop `….name` (a `.field`/`?.field` off a saved path, not a
+    // call) appends a zero-key layer level, so `^patients(id).name` descends into
+    // the group `name`. An optional hop lowers the same; its short-circuit is a
+    // read-time concern, not a path-shape one. The record base is handled by the
+    // terminal arms below.
+    if let Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } =
+        expr
         && is_saved_path(base)
     {
         let mut path = lower(base, env)?;
@@ -5188,6 +5232,7 @@ fn eval_binary(
         BinaryOp::GreaterEqual => compare_values(left, right, env, span, |o| o != Ordering::Less),
         BinaryOp::Equal => Ok(Value::Bool(values_equal(left, right, env, span)?)),
         BinaryOp::NotEqual => Ok(Value::Bool(!values_equal(left, right, env, span)?)),
+        BinaryOp::Coalesce => eval_coalesce(left, right, env),
         BinaryOp::Concat => concat(left, right, env, span),
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
             Err(unsupported("this operator", span))

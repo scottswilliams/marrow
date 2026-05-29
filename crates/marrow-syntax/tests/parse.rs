@@ -1922,6 +1922,72 @@ fn equality_and_inequality_parse_in_expression_position() {
 }
 
 #[test]
+fn absence_operators_parse_in_expression_position() {
+    // `??` parses as the coalesce binary operator; `?.` parses as an optional
+    // field read whose base is the preceding path.
+    let parsed = parse_source("fn f(a: int): int\n    return ^books(a)?.pages ?? 0\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Statement::Return {
+        value: Some(value), ..
+    } = &parsed.file.function("f").expect("f").body.statements[0]
+    else {
+        panic!("expected a return statement");
+    };
+    // `??` binds looser than `?.`, so the whole `^books(a)?.pages` is the left
+    // operand of one `??`.
+    let Expression::Binary {
+        op: BinaryOp::Coalesce,
+        left,
+        ..
+    } = value
+    else {
+        panic!("expected `??` to parse as coalesce: {value:?}");
+    };
+    assert!(
+        matches!(left.as_ref(), Expression::OptionalField { name, .. } if name == "pages"),
+        "expected `?.` to parse as an optional field read: {left:?}"
+    );
+}
+
+#[test]
+fn coalesce_binds_tighter_than_equality() {
+    // `name ?? "anon" == "anon"` groups as `(name ?? "anon") == "anon"`: the `??`
+    // sits one level tighter than `==`.
+    let parsed = parse_source(
+        "fn f(a: string): bool\n    return ^names(a)?.value ?? \"anon\" == \"anon\"\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Statement::Return {
+        value: Some(value), ..
+    } = &parsed.file.function("f").expect("f").body.statements[0]
+    else {
+        panic!("expected a return statement");
+    };
+    assert!(
+        matches!(
+            value,
+            Expression::Binary {
+                op: BinaryOp::Equal,
+                left,
+                ..
+            } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
+        ),
+        "expected `(.. ?? ..) == ..`: {value:?}"
+    );
+}
+
+#[test]
+fn chained_coalesce_is_not_associative() {
+    // `??` is non-associative, so `a ?? b ?? c` does not parse.
+    let parsed = parse_source("fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        "expected a parse error for chained `??`: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn bare_equals_in_expression_position_is_a_parse_error() {
     // `=` is assignment only; a `=` left over in expression position (here nested
     // in a condition where it cannot be the statement assignment) does not parse.

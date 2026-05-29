@@ -464,6 +464,16 @@ pub fn format_expression(expression: &Expression) -> String {
             };
             format!("{}.{}", format_child(base, PREC_ATOM), segment)
         }
+        Expression::OptionalField {
+            base, name, quoted, ..
+        } => {
+            let segment = if *quoted {
+                format!("\"{name}\"")
+            } else {
+                name.clone()
+            };
+            format!("{}?.{}", format_child(base, PREC_ATOM), segment)
+        }
         Expression::Unary { op, operand, .. } => {
             let operand = format_child(operand, PREC_UNARY);
             match op {
@@ -559,21 +569,23 @@ fn binary_precedence(op: BinaryOp) -> u8 {
         BinaryOp::Or => 1,
         BinaryOp::And => 2,
         BinaryOp::Equal | BinaryOp::NotEqual => 3,
-        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 4,
-        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => 5,
-        BinaryOp::Concat => 6,
-        BinaryOp::Add | BinaryOp::Subtract => 7,
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => 8,
+        BinaryOp::Coalesce => 4,
+        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 5,
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => 6,
+        BinaryOp::Concat => 7,
+        BinaryOp::Add | BinaryOp::Subtract => 8,
+        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => 9,
     }
 }
 
-/// Equality, comparison, and range are non-associative per the grammar; all
-/// other binary operators are left-associative.
+/// Equality, `??`, comparison, and range are non-associative per the grammar;
+/// all other binary operators are left-associative.
 fn is_left_associative(op: BinaryOp) -> bool {
     !matches!(
         op,
         BinaryOp::Equal
             | BinaryOp::NotEqual
+            | BinaryOp::Coalesce
             | BinaryOp::Less
             | BinaryOp::LessEqual
             | BinaryOp::Greater
@@ -597,6 +609,7 @@ fn binary_symbol(op: BinaryOp) -> &'static str {
         BinaryOp::GreaterEqual => ">=",
         BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
+        BinaryOp::Coalesce => "??",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
         // Ranges are emitted without spaces by `format_binary`.

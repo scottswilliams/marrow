@@ -32,7 +32,7 @@ fully describe until a migration runs.
 
 A sparse element is a source change. Add the field and ship it; existing records
 remain valid. An unpopulated sparse element is absent, not zero or empty — read
-it with `get(path, default)` or guard it with `exists(path)`.
+it with `path ?? default` or guard it with `exists(path)`.
 
 ```mw
 resource Book at ^books(id: int)

@@ -172,16 +172,17 @@ From tightest to loosest precedence:
 
 | Level | Operator | Meaning |
 |---|---|---|
-| 1 | calls, key subscripts, dotted fields | `f(x)`, `^books(id).title` |
+| 1 | calls, key subscripts, dotted fields, `?.` | `f(x)`, `^books(id).title`, `book?.shelf` |
 | 2 | unary `-`, `not` | negate, boolean not |
 | 3 | `*`, `/`, `%` | multiply, divide, remainder |
 | 4 | `+`, `-` | add, subtract |
 | 5 | `_` | concatenate |
 | 6 | `..`, `..=` | exclusive and inclusive ranges |
 | 7 | `<`, `<=`, `>`, `>=` | comparison |
-| 8 | `==`, `!=` | equality, not equal |
-| 9 | `and` | short-circuit and |
-| 10 | `or` | short-circuit or |
+| 8 | `??` | absence default |
+| 9 | `==`, `!=` | equality, not equal |
+| 10 | `and` | short-circuit and |
+| 11 | `or` | short-circuit or |
 
 `%` is remainder. Use `std::math::modulo(...)` when code needs modulo
 behavior for negative operands.
@@ -194,6 +195,20 @@ Equality requires comparable values of the same type. Ordering comparisons
 require ordered values of the same type.
 
 Concatenation with `_` requires `string` operands.
+
+The absence-default `??` reads a possibly-absent path on its left and yields the
+right operand when that path is absent. Its left operand must be a path read or a
+`?.` chain — a value that is always present has nothing to default — and the
+default must match the path's leaf type. It binds tighter than `==`, so
+`name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. It does not chain:
+write one `??` per read.
+
+The optional read `?.` accesses a field that may be absent. An absent step
+short-circuits the rest of the chain to absent rather than failing the read, so
+`^books(id)?.binding?.shelf` is absent when any step along the way is. An
+unguarded `?.` chain that ends absent raises an absent-element error like any
+other read; pair it with `??` to supply a default. Only absence is short-circuited
+— schema and decoding errors still surface.
 
 Ranges use `int` endpoints and yield `int` values when iterated. The checker
 accepts them for `for` loops, not as saved values.

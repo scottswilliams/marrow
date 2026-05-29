@@ -11,16 +11,24 @@ if exists(^books(id))
     write(^books(id).title)
 ```
 
-`get(path, default)` reads a value when populated and otherwise returns the
-default:
+The absence-default operator `??` reads a value when populated and otherwise
+yields the default:
 
 ```mw
-const subtitle = get(^books(id).subtitle, "")
+const subtitle = ^books(id).subtitle ?? ""
 ```
 
-Prefer typed resources and `exists(...)` checks over wide use of `get`.
-`get` is for sparse paths. It does not suppress schema or decoding errors; a
-missing required field in saved data is still invalid data.
+The optional read `?.` accesses a field that may be absent without failing the
+whole read; an absent step short-circuits the rest of the chain, so a `?.` chain
+paired with `??` reads a deep value with one fallback:
+
+```mw
+const shelf = ^books(id)?.binding?.shelf ?? "unshelved"
+```
+
+These are for sparse paths. They do not suppress schema or decoding errors; a
+missing required field in saved data is still invalid data. The operators are
+covered in detail under Operators in the syntax reference.
 
 ## Tree Traversal
 

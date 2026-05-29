@@ -235,7 +235,9 @@ finally_clause   = "finally" NEWLINE block ;
 ## Expressions
 
 Assignment is not an expression. Equality is `==` and inequality is `!=`; the
-single `=` is assignment only and is a parse error in expression position.
+single `=` is assignment only and is a parse error in expression position. The
+absence-default `??` and the optional read `?.` apply to possibly-absent path
+reads.
 
 ```ebnf
 expression      = or_expr ;
@@ -244,7 +246,9 @@ or_expr         = and_expr ("or" and_expr)* ;
 and_expr        = equality_expr ("and" equality_expr)* ;
 
 equality_expr   =
-    comparison_expr (("==" | "!=") comparison_expr)? ;
+    coalesce_expr (("==" | "!=") coalesce_expr)? ;
+
+coalesce_expr   = comparison_expr ("??" comparison_expr)? ;
 
 comparison_expr = range_expr (("<" | "<=" | ">" | ">=") range_expr)? ;
 range_expr      = concat_expr ((".." | "..=") concat_expr)? ;
@@ -261,13 +265,20 @@ postfix_expr    =
 postfix_op      =
       paren_suffix
     | field_suffix
+    | optional_field_suffix
     ;
 
 paren_suffix    = "(" argument_list? ")" ;
 field_suffix    = "." field_name ;
+optional_field_suffix = "?." field_name ;
 
 field_name      = identifier | string_lit ;
 ```
+
+`??` is non-associative: `a ?? b ?? c` is rejected. It binds tighter than `==`,
+so `name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. Its left operand
+must be a path read or a `?.` chain; that constraint is enforced by the checker,
+not the grammar.
 
 ## Primary Expressions
 
@@ -354,6 +365,12 @@ These rules are part of the grammar contract:
 - At statement start, `target = expr` is assignment; the single `=` is always
   assignment and never equality, so a `=` in expression position is a parse
   error. Equality is `==` and inequality is `!=`.
+- The absence-default `??` is non-associative and binds tighter than `==`. Its
+  left operand must be a path read or a `?.` chain; a present non-path left is
+  rejected as an operator misuse.
+- The optional read `?.` is a postfix field access that short-circuits the chain
+  to absent when a step is absent; only absence is short-circuited, not schema or
+  decoding errors.
 - Assignment cannot be nested inside calls, conditions, returns, or subscripts.
 - Expression statements must be effectful calls or call-shaped builtins such
   as `write(...)` and `print(...)`; useless pure expression statements are

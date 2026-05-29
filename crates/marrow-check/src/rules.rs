@@ -60,7 +60,9 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
         Expression::Literal { kind, text, span } => {
             crate::check_literal_range(*kind, text, *span, file, out);
         }
-        Expression::Field { base, .. } => check_literal_ranges(file, base, out),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            check_literal_ranges(file, base, out)
+        }
         Expression::Unary { operand, .. } => check_literal_ranges(file, operand, out),
         Expression::Binary { left, right, .. } => {
             check_literal_ranges(file, left, out);
@@ -530,7 +532,10 @@ fn is_key_lookup_target(callee: &Expression) -> bool {
 fn is_constant_expr(expr: &Expression) -> bool {
     match expr {
         Expression::Literal { .. } | Expression::Name { .. } => true,
-        Expression::SavedRoot { .. } | Expression::Call { .. } => false,
+        // `?.` is a possibly-absent read, never a compile-time constant.
+        Expression::SavedRoot { .. }
+        | Expression::Call { .. }
+        | Expression::OptionalField { .. } => false,
         Expression::Field { base, .. } => is_constant_expr(base),
         Expression::Unary { operand, .. } => is_constant_expr(operand),
         Expression::Binary { left, right, .. } => is_constant_expr(left) && is_constant_expr(right),
