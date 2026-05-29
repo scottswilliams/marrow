@@ -2280,3 +2280,97 @@ fn a_whole_resource_merge_copies_child_layers_and_moves_the_index() {
         "the source's index entry is left in place"
     );
 }
+
+/// The encoded prefix of the whole `^books.byShelf` index subtree, for scanning
+/// every entry to prove there are no stray or duplicate ones.
+fn by_shelf_subtree() -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::Index("byShelf".into()),
+    ])
+}
+
+/// The encoded prefix of `^books(id).tags`, for scanning the copied child layer.
+fn tags_subtree(id: i64) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer("tags".into()),
+    ])
+}
+
+#[test]
+fn a_tree_merge_copies_child_entries_and_leaves_no_stray_index_entries() {
+    // The source (1) has two tags and is on the fiction shelf; the target (2) is
+    // on history with one overlapping tag. Merging the source onto the target must
+    // copy BOTH child-layer entries (the overlap overwritten by the source) AND
+    // leave the index holding exactly one entry per record on the right shelf —
+    // no stray history entry, no duplicate fiction entry for the target.
+    let book = schema(BOOK_INDEXED_LAYERS);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    write_tag(&mut store, &book, 1, 1, "favorite");
+    write_tag(&mut store, &book, 1, 2, "gift");
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(2)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Reaper")),
+                ("shelf".into(), saved("history")),
+            ],
+        },
+    );
+    write_tag(&mut store, &book, 2, 1, "old"); // overlaps source pos 1
+
+    merge_from(
+        &mut store,
+        &book,
+        &[SavedKey::Int(2)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+        &[SavedKey::Int(1)],
+    );
+
+    // Both source child-layer entries are copied onto the target; the overlapping
+    // position is overwritten by the source's value.
+    let tags = store.scan(&tags_subtree(2), usize::MAX);
+    let tag_values: Vec<_> = tags
+        .entries
+        .iter()
+        .map(|(_, bytes)| decode_value(bytes, ValueType::Str))
+        .collect();
+    assert_eq!(
+        tag_values,
+        vec![
+            Some(SavedValue::Str("favorite".into())),
+            Some(SavedValue::Str("gift".into())),
+        ],
+        "both child-layer entries copied, the overlap overwritten by the source"
+    );
+
+    // The index holds exactly one entry per record, both on the merged shelf — no
+    // stray history entry and no duplicate fiction entry for the target.
+    let index = store.scan(&by_shelf_subtree(), usize::MAX);
+    let index_keys: Vec<_> = index.entries.iter().map(|(path, _)| path.clone()).collect();
+    assert_eq!(
+        index_keys,
+        vec![by_shelf_entry("fiction", 1), by_shelf_entry("fiction", 2)],
+        "exactly one fiction entry per record, no stray or duplicate entries"
+    );
+}
