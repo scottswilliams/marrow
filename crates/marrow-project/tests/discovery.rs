@@ -82,8 +82,7 @@ fn overlapping_source_roots_discover_each_file_once() {
     let root = temp_project("overlapping-roots", |root| {
         write(root, "src/sub/x.mw", "module sub::x\n");
     });
-    let config =
-        parse_config(r#"{ "sourceRoots": ["src", "src/sub"] }"#).expect("config");
+    let config = parse_config(r#"{ "sourceRoots": ["src", "src/sub"] }"#).expect("config");
 
     let modules = discover_modules(&root, &config).expect("discover");
     let found: Vec<(PathBuf, Option<String>)> = modules
@@ -153,11 +152,15 @@ fn single_star_test_glob_does_not_recurse() {
     // is reserved for the `tests/**/*.mw` double-star form.
     let root = temp_project("test-single-star", |root| {
         write(root, "tests/top_test.mw", "pub fn ok()\n    return\n");
-        write(root, "tests/deep/nested_test.mw", "pub fn ok()\n    return\n");
+        write(
+            root,
+            "tests/deep/nested_test.mw",
+            "pub fn ok()\n    return\n",
+        );
     });
 
-    let single = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/*.mw"] }"#)
-        .expect("config");
+    let single =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/*.mw"] }"#).expect("config");
     let modules = discover_test_modules(&root, &single).expect("discover tests");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
     assert_eq!(modules.len(), 1, "{modules:#?}");
@@ -165,8 +168,8 @@ fn single_star_test_glob_does_not_recurse() {
     assert!(!names.contains(&Some("tests::deep::nested_test".to_string())));
 
     // The double-star form still walks subdirectories.
-    let double = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#)
-        .expect("config");
+    let double =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let modules = discover_test_modules(&root, &double).expect("discover tests");
     fs::remove_dir_all(&root).ok();
     assert_eq!(modules.len(), 2, "{modules:#?}");

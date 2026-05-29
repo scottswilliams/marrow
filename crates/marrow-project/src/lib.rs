@@ -111,8 +111,7 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
             })?;
             // The native backend opens against a directory, so it cannot run
             // without one; reject the unrunnable config here rather than at open.
-            if backend == StoreBackend::Native
-                && store.data_dir.as_deref().unwrap_or("").is_empty()
+            if backend == StoreBackend::Native && store.data_dir.as_deref().unwrap_or("").is_empty()
             {
                 return Err(ConfigError::new(
                     "the `native` store backend requires a non-empty `dataDir`",
