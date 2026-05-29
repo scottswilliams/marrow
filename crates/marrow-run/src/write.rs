@@ -1167,7 +1167,7 @@ fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
     Some(match value {
         SavedValue::Int(value) => SavedKey::Int(*value),
         SavedValue::Bool(value) => SavedKey::Bool(*value),
-        SavedValue::Str(value) | SavedValue::ErrorCode(value) => SavedKey::Str(value.clone()),
+        SavedValue::Str(value) => SavedKey::Str(value.clone()),
         SavedValue::Bytes(value) => SavedKey::Bytes(value.clone()),
         SavedValue::Date(value) => SavedKey::Date(*value),
         SavedValue::Duration(value) => SavedKey::Duration(*value),
@@ -1195,7 +1195,6 @@ fn value_type_of(value: &SavedValue) -> ScalarType {
         SavedValue::Int(_) => ScalarType::Int,
         SavedValue::Str(_) => ScalarType::Str,
         SavedValue::Bytes(_) => ScalarType::Bytes,
-        SavedValue::ErrorCode(_) => ScalarType::ErrorCode,
         SavedValue::Date(_) => ScalarType::Date,
         SavedValue::Duration(_) => ScalarType::Duration,
         SavedValue::Instant(_) => ScalarType::Instant,

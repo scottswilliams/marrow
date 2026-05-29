@@ -93,7 +93,6 @@ pub enum PrimitiveType {
     Date,
     Instant,
     Duration,
-    ErrorCode,
     Error,
 }
 
@@ -154,7 +153,6 @@ impl PrimitiveType {
             ScalarType::Int => Self::Int,
             ScalarType::Str => Self::String,
             ScalarType::Bytes => Self::Bytes,
-            ScalarType::ErrorCode => Self::ErrorCode,
             ScalarType::Date => Self::Date,
             ScalarType::Duration => Self::Duration,
             ScalarType::Instant => Self::Instant,
@@ -170,7 +168,6 @@ impl PrimitiveType {
             Self::Int => ScalarType::Int,
             Self::String => ScalarType::Str,
             Self::Bytes => ScalarType::Bytes,
-            Self::ErrorCode => ScalarType::ErrorCode,
             Self::Date => ScalarType::Date,
             Self::Duration => ScalarType::Duration,
             Self::Instant => ScalarType::Instant,
@@ -180,8 +177,8 @@ impl PrimitiveType {
     }
 
     /// The canonical source spelling of this primitive (`int`, `string`,
-    /// `ErrorCode`, …). The nine scalars read the store's name table; `Error` is
-    /// the checker-only spelling.
+    /// `decimal`, …). The storable scalars read the store's name table; `Error`
+    /// is the checker-only spelling.
     pub(crate) fn name(self) -> &'static str {
         match self.as_scalar() {
             Some(scalar) => scalar.name(),

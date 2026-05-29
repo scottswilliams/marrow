@@ -840,11 +840,8 @@ fn uninitialized_default(ty: &Type) -> Option<Value> {
         Type::Scalar(ScalarType::Instant) => Value::Instant(0),
         Type::Scalar(ScalarType::Duration) => Value::Duration(0),
         Type::Scalar(ScalarType::Decimal) => Value::Decimal(Decimal::parse("0")?),
-        // `ErrorCode`, identities, and unresolved names have no zero value.
-        Type::Scalar(ScalarType::ErrorCode)
-        | Type::Identity(_)
-        | Type::Named(_)
-        | Type::Unknown => {
+        // Identities and unresolved names have no zero value.
+        Type::Identity(_) | Type::Named(_) | Type::Unknown => {
             return None;
         }
     })
@@ -3260,7 +3257,7 @@ fn read_saved_field(
         ));
     };
     decode_value(&bytes, field_type)
-        .and_then(saved_value_to_value)
+        .map(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
             message: format!("stored value for `{field}` did not decode to a runtime value"),
@@ -3329,7 +3326,7 @@ fn read_nested_field(
         ));
     };
     decode_value(&bytes, member_type)
-        .and_then(saved_value_to_value)
+        .map(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
             message: format!("stored value for `{field}` did not decode to a runtime value"),
@@ -3471,7 +3468,7 @@ fn read_layer_entry(
         ));
     };
     decode_value(&bytes, leaf_type)
-        .and_then(saved_value_to_value)
+        .map(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
             message: format!("stored value in `{layer}` did not decode to a runtime value"),
@@ -3504,7 +3501,7 @@ fn read_group_entry(
             continue;
         };
         let value = decode_value(&bytes, value_type)
-            .and_then(saved_value_to_value)
+            .map(saved_value_to_value)
             .ok_or_else(|| RuntimeError {
                 code: RUN_TYPE,
                 message: format!("stored value for `{name}` did not decode to a runtime value"),
@@ -3584,7 +3581,7 @@ fn read_resource(
             .scalar()
             .ok_or_else(|| unsupported("reading this field type", span))?;
         let value = decode_value(&bytes, value_type)
-            .and_then(saved_value_to_value)
+            .map(saved_value_to_value)
             .ok_or_else(|| RuntimeError {
                 code: RUN_TYPE,
                 message: format!("stored value for `{}` did not decode", field.name),
@@ -3746,7 +3743,7 @@ fn eval_raw_field_read(
         ));
     };
     decode_value(&bytes, ScalarType::Str)
-        .and_then(saved_value_to_value)
+        .map(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
             message: format!("raw segment `\"{segment}\"` did not decode as text"),
@@ -4891,19 +4888,18 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
     }
 }
 
-/// Convert a decoded saved value to a runtime value, or `None` for a saved
-/// variant with no runtime value (the `ErrorCode` index marker).
-fn saved_value_to_value(value: SavedValue) -> Option<Value> {
+/// Convert a decoded saved value to its runtime value. Total: every scalar has a
+/// runtime form.
+fn saved_value_to_value(value: SavedValue) -> Value {
     match value {
-        SavedValue::Int(n) => Some(Value::Int(n)),
-        SavedValue::Bool(b) => Some(Value::Bool(b)),
-        SavedValue::Str(s) => Some(Value::Str(s)),
-        SavedValue::Instant(n) => Some(Value::Instant(n)),
-        SavedValue::Date(d) => Some(Value::Date(d)),
-        SavedValue::Duration(n) => Some(Value::Duration(n)),
-        SavedValue::Decimal(d) => Some(Value::Decimal(d)),
-        SavedValue::Bytes(b) => Some(Value::Bytes(b)),
-        _ => None,
+        SavedValue::Int(n) => Value::Int(n),
+        SavedValue::Bool(b) => Value::Bool(b),
+        SavedValue::Str(s) => Value::Str(s),
+        SavedValue::Instant(n) => Value::Instant(n),
+        SavedValue::Date(d) => Value::Date(d),
+        SavedValue::Duration(n) => Value::Duration(n),
+        SavedValue::Decimal(d) => Value::Decimal(d),
+        SavedValue::Bytes(b) => Value::Bytes(b),
     }
 }
 

@@ -21,10 +21,6 @@ fn values_round_trip_through_canonical_bytes() {
     round_trips(SavedValue::Int(i64::MAX), ScalarType::Int);
     round_trips(SavedValue::Str("Dune".into()), ScalarType::Str);
     round_trips(SavedValue::Str(String::new()), ScalarType::Str);
-    round_trips(
-        SavedValue::ErrorCode("store.limit_exceeded".into()),
-        ScalarType::ErrorCode,
-    );
     round_trips(SavedValue::Bytes(vec![0x00, 0xFF, 0x01]), ScalarType::Bytes);
 }
 
@@ -317,7 +313,6 @@ fn scalar_type_names_map_to_their_value_type() {
         ("int", Int),
         ("string", Str),
         ("bytes", Bytes),
-        ("ErrorCode", ErrorCode),
         ("date", Date),
         ("instant", Instant),
         ("duration", Duration),
@@ -326,6 +321,10 @@ fn scalar_type_names_map_to_their_value_type() {
         assert_eq!(ScalarType::from_scalar_name(name), Some(ty), "{name}");
         assert_eq!(ty.name(), name, "{name} round-trips");
     }
+    // `ErrorCode` is a recognized spelling whose storage form is a plain string,
+    // so it maps to `Str`; `Str` still spells back as `string`.
+    assert_eq!(ScalarType::from_scalar_name("ErrorCode"), Some(Str));
+    assert_eq!(Str.name(), "string");
     for name in ["Book", "Book::Id", "unknown", "Int", ""] {
         assert_eq!(ScalarType::from_scalar_name(name), None, "{name}");
     }

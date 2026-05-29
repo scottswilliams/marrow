@@ -24,7 +24,8 @@ fn scalar_names_resolve_to_their_scalar() {
     assert_eq!(resolve("date"), Type::Scalar(ScalarType::Date));
     assert_eq!(resolve("instant"), Type::Scalar(ScalarType::Instant));
     assert_eq!(resolve("duration"), Type::Scalar(ScalarType::Duration));
-    assert_eq!(resolve("ErrorCode"), Type::Scalar(ScalarType::ErrorCode));
+    // `ErrorCode` is a recognized spelling whose storage form is a plain string.
+    assert_eq!(resolve("ErrorCode"), Type::Scalar(ScalarType::Str));
 }
 
 #[test]

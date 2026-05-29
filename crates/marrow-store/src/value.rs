@@ -18,7 +18,6 @@ pub enum Scalar {
     Int(i64),
     Str(String),
     Bytes(Vec<u8>),
-    ErrorCode(String),
     /// A calendar date, held as days since the Unix epoch (1970-01-01).
     Date(i32),
     /// An elapsed span, held as a signed count of nanoseconds.
@@ -78,7 +77,6 @@ pub enum ScalarType {
     Int,
     Str,
     Bytes,
-    ErrorCode,
     Date,
     Duration,
     Instant,
@@ -89,12 +87,16 @@ pub enum ScalarType {
 /// every downstream name probe read this one table, so a new scalar is one row
 /// here, not a hand-spelled copy in each crate. The source keyword is `string`
 /// while the variant is historically `Str`; that bridge lives only here.
+///
+/// `ErrorCode` is a language-level spelling whose storage form is a plain string,
+/// so it maps to `Str`; it sits after the `string` row so the reverse `name()`
+/// lookup keeps yielding `string` for a `Str`.
 const SCALAR_NAMES: [(&str, ScalarType); 9] = [
     ("bool", ScalarType::Bool),
     ("int", ScalarType::Int),
     ("string", ScalarType::Str),
     ("bytes", ScalarType::Bytes),
-    ("ErrorCode", ScalarType::ErrorCode),
+    ("ErrorCode", ScalarType::Str),
     ("date", ScalarType::Date),
     ("instant", ScalarType::Instant),
     ("duration", ScalarType::Duration),
@@ -124,7 +126,7 @@ impl ScalarType {
 }
 
 /// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
-/// decimal text, strings and error codes as UTF-8, bytes verbatim, dates as
+/// decimal text, strings as UTF-8, bytes verbatim, dates as
 /// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`.
 ///
 /// This is the canonical boundary: it produces only forms [`decode_value`] reads
@@ -134,7 +136,7 @@ pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
     Ok(match value {
         SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
         SavedValue::Int(value) => value.to_string().into_bytes(),
-        SavedValue::Str(text) | SavedValue::ErrorCode(text) => text.as_bytes().to_vec(),
+        SavedValue::Str(text) => text.as_bytes().to_vec(),
         SavedValue::Bytes(bytes) => bytes.clone(),
         SavedValue::Date(days) => format_date(*days)?.into_bytes(),
         SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
@@ -157,9 +159,6 @@ pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
         ScalarType::Int => Some(SavedValue::Int(parse_canonical_int(bytes)?)),
         ScalarType::Str => Some(SavedValue::Str(String::from_utf8(bytes.to_vec()).ok()?)),
         ScalarType::Bytes => Some(SavedValue::Bytes(bytes.to_vec())),
-        ScalarType::ErrorCode => Some(SavedValue::ErrorCode(
-            String::from_utf8(bytes.to_vec()).ok()?,
-        )),
         ScalarType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
         ScalarType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
         ScalarType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
