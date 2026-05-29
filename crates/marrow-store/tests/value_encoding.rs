@@ -308,8 +308,8 @@ fn instant_encode_enforces_the_canonical_year_range() {
 
 #[test]
 fn scalar_type_names_map_to_their_value_type() {
-    // The single source of truth shared by the runtime and the write planner
-    // (F33): every documented scalar maps, and non-scalar names do not.
+    // The mapping shared by the runtime and the write planner: every documented
+    // scalar maps, and non-scalar names do not.
     use ValueType::*;
     for (name, ty) in [
         ("bool", Bool),
