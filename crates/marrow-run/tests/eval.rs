@@ -5095,6 +5095,28 @@ fn raw_quoted_segment_under_maintenance_round_trips() {
 }
 
 #[test]
+fn a_raw_segment_write_of_a_non_string_is_rejected() {
+    // Raw segments are an untyped text boundary: they read back as text, so a raw
+    // write takes a string. A non-string scalar is rejected (run.type) rather than
+    // stored as bytes the raw read could never return — keeping the round-trip
+    // symmetric.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn raw_write(id: int, n: int)\n    ^books(id).\"count\" = n\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let error = run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::raw_write",
+        &[Value::Int(1), Value::Int(5)],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TYPE, "{error:?}");
+}
+
+#[test]
 fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
     // Maintenance grants RAW (quoted) access only; an unquoted undeclared field is
     // still a typo, so it stays `write.unknown_field` even with maintenance on.

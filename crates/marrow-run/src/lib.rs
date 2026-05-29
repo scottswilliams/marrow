@@ -3497,6 +3497,17 @@ fn eval_raw_field_write(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let path = raw_segment_path(base, segment, span, env)?;
+    // Raw segments are an untyped text boundary: `eval_raw_field_read` decodes them
+    // as text, so a raw write takes a string to keep the round-trip symmetric.
+    // Convert other scalars explicitly before a raw write.
+    if !matches!(value, Value::Str(_)) {
+        return Err(type_error(
+            &format!(
+                "a raw segment `\"{segment}\"` takes a string value; convert before a raw write"
+            ),
+            span,
+        ));
+    }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a raw segment", span))?;
     let bytes = encode_value(&saved).map_err(|error| RuntimeError {
