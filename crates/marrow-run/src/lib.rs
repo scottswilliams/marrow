@@ -3235,10 +3235,11 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
 }
 
 /// Read a scalar field off a saved record, e.g. `^books(id).title`. Lowers the
-/// path to encoded segments, reads the store, and decodes the bytes with the
-/// field's declared type from the resource schema. A group-entry target
-/// `^root(key…).layer(key…).field` is dispatched to [`eval_group_field_read`].
-/// An unpopulated element is an absent-element error.
+/// path, re-terminates it at the field, and reads the store, decoding the bytes
+/// with the field's declared type from the resource schema. Top-level and
+/// group-entry fields (`^root(key…).layer(key…).field`) take the same lowered
+/// path; the layer chain it carries decides which read it is. An unpopulated
+/// element is an absent-element error.
 fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
     let Expression::Field {
         base, name, quoted, ..
@@ -4012,8 +4013,8 @@ fn eval_whole_root_delete(
 /// (`^books(id).subtitle`) drives the write planner's `plan_field_delete` — removing
 /// the field path and tearing down any index it feeds — after the required-field
 /// guard. A group-entry field (`^books(id).versions(v).text`) is a plain subtree
-/// delete of that one path (groups carry no generated indexes, matching
-/// [`eval_group_field_write`]'s comment). A top-level field delete does not change
+/// delete of that one path (group layers carry no generated indexes, so there is
+/// nothing to tear down). A top-level field delete does not change
 /// any traversed layer's key set, so it is not guarded against the identity layer.
 fn eval_field_delete(
     base: &Expression,

@@ -1406,7 +1406,8 @@ fn inout_writes_back_to_a_whole_saved_resource() {
 }
 
 /// A resource with a `versions(version)` group layer, for `out`/`inout` into a
-/// field inside a keyed group entry (a `SavedNestedField` place).
+/// field inside a keyed group entry (a saved path with a layer chain ending at a
+/// field).
 const GROUP_FIELD_MODE_SAMPLE: &str = "\
 resource Book at ^books(id: int)
     title: string
