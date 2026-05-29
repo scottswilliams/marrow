@@ -578,6 +578,84 @@ fn temporal_conversions_validate_their_values() {
 }
 
 #[test]
+fn bool_conversion_accepts_canonical_int_and_string_forms() {
+    // `types.md` pins `bool(...)` to accept `false`, `true`, `0`, and `1`, from
+    // both int and the canonical string forms.
+    let program = checked_program(
+        "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
+    );
+    assert_eq!(
+        run(&program, "test::b", &[Value::Int(0)]),
+        Ok(Some(Value::Bool(false)))
+    );
+    assert_eq!(
+        run(&program, "test::b", &[Value::Int(1)]),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        run(&program, "test::bs", &[Value::Str("true".into())]),
+        Ok(Some(Value::Bool(true)))
+    );
+    assert_eq!(
+        run(&program, "test::bs", &[Value::Str("0".into())]),
+        Ok(Some(Value::Bool(false)))
+    );
+}
+
+#[test]
+fn bool_conversion_rejects_a_non_canonical_int() {
+    // Only `0` and `1` are canonical; `2` is a type error, not a coercion.
+    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
+    assert_eq!(
+        run(&program, "test::b", &[Value::Int(2)]).unwrap_err().code,
+        RUN_TYPE
+    );
+}
+
+#[test]
+fn int_conversion_parses_canonical_text() {
+    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("12".into())]),
+        Ok(Some(Value::Int(12)))
+    );
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("-7".into())]),
+        Ok(Some(Value::Int(-7)))
+    );
+}
+
+#[test]
+fn decimal_conversion_parses_canonical_text() {
+    // `decimal("1.5")` parses to a decimal; rendered back through interpolation it
+    // round-trips to its canonical text.
+    let program = checked_program("fn d(v: string): string\n    return $\"{decimal(v)}\"\n");
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("1.5".into())]),
+        Ok(Some(Value::Str("1.5".into())))
+    );
+}
+
+#[test]
+fn a_numeric_conversion_rejects_malformed_text() {
+    // Malformed text is a typed numeric error, not a silent zero.
+    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    assert_eq!(
+        run(&program, "test::n", &[Value::Str("nope".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+    let program = checked_program("fn d(v: string): decimal\n    return decimal(v)\n");
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("1.2.3".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+}
+
+#[test]
 fn evaluates_conditionals() {
     let max =
         function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");

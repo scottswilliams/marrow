@@ -1358,10 +1358,13 @@ fn eval_bytes_conversion(
 }
 
 /// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
-/// `instant`/`duration`): validate that a dynamically-typed value is the named
-/// type and return it unchanged, or raise a type error. This is the checked
-/// bridge from an `unknown` value to a concrete type (text parsing lives in
-/// `std::clock`/`std::text`, not here).
+/// `instant`/`duration`): coerce a dynamically-typed value to the named type per
+/// `docs/language/types.md`. `bool(...)` accepts the canonical boolean values
+/// `{false, true, 0, 1}` from a bool, int, or string; `int(...)`/`decimal(...)`
+/// parse canonical numeric text from a string (and raise a typed numeric error on
+/// malformed input). The remaining conversions validate that the value already
+/// has the named type (the `unknown` → concrete bridge); temporal text parsing
+/// lives in `std::clock`, not here.
 fn eval_conversion(
     name: &str,
     args: &[Argument],
@@ -1372,24 +1375,60 @@ fn eval_conversion(
         return Err(type_error(&format!("`{name}` takes one argument"), span));
     };
     let value = eval_expr(&arg.value, env)?;
-    let matches_target = matches!(
-        (name, &value),
-        ("int", Value::Int(_))
-            | ("decimal", Value::Decimal(_))
-            | ("string", Value::Str(_))
-            | ("bool", Value::Bool(_))
-            | ("date", Value::Date(_))
-            | ("instant", Value::Instant(_))
-            | ("duration", Value::Duration(_))
-    );
-    if matches_target {
-        Ok(value)
-    } else {
-        Err(type_error(
-            &format!("`{name}` requires a {name} value"),
-            span,
-        ))
+    match name {
+        "bool" => convert_to_bool(value, span),
+        "int" => convert_to_int(value, span),
+        "decimal" => convert_to_decimal(value, span),
+        "string" if matches!(value, Value::Str(_)) => Ok(value),
+        "date" if matches!(value, Value::Date(_)) => Ok(value),
+        "instant" if matches!(value, Value::Instant(_)) => Ok(value),
+        "duration" if matches!(value, Value::Duration(_)) => Ok(value),
+        _ => Err(conversion_error(name, span)),
     }
+}
+
+/// Coerce to a bool: a bool is itself; an int or string is accepted only as a
+/// canonical boolean value (`0`/`false` → `false`, `1`/`true` → `true`).
+fn convert_to_bool(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let result = match &value {
+        Value::Bool(_) => return Ok(value),
+        Value::Int(0) => false,
+        Value::Int(1) => true,
+        Value::Str(text) if text == "false" || text == "0" => false,
+        Value::Str(text) if text == "true" || text == "1" => true,
+        _ => return Err(conversion_error("bool", span)),
+    };
+    Ok(Value::Bool(result))
+}
+
+/// Coerce to an int: an int is itself; a string parses as a canonical `i64`
+/// (a malformed or out-of-range value is a typed numeric error).
+fn convert_to_int(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Int(_) => Ok(value),
+        Value::Str(text) => text
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| conversion_error("int", span)),
+        _ => Err(conversion_error("int", span)),
+    }
+}
+
+/// Coerce to a decimal: a decimal is itself; a string parses as canonical decimal
+/// text (a malformed or out-of-envelope value is a typed numeric error).
+fn convert_to_decimal(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Decimal(_) => Ok(value),
+        Value::Str(text) => Decimal::parse(&text)
+            .map(Value::Decimal)
+            .ok_or_else(|| conversion_error("decimal", span)),
+        _ => Err(conversion_error("decimal", span)),
+    }
+}
+
+/// The type error for a value that cannot be converted to `name`.
+fn conversion_error(name: &str, span: SourceSpan) -> RuntimeError {
+    type_error(&format!("cannot convert this value to {name}"), span)
 }
 
 /// Evaluate `arg` to bytes, or a type error.
