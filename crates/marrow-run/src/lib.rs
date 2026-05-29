@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram, MarrowType, PrimitiveType};
+use marrow_check::{
+    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType, PrimitiveType,
+};
 use marrow_schema::{IndexSchema, LayerMember, ResourceSchema};
 use marrow_store::Decimal;
 use marrow_store::backend::Backend;
@@ -245,6 +247,8 @@ pub fn evaluate_function(
     match invoke(
         ctx,
         output,
+        // The bare-program path has no modules, so no import aliases to expand.
+        HashMap::new(),
         &names,
         &function.body,
         function.span,
@@ -302,6 +306,7 @@ pub fn run_entry_with_host(
     let value = match invoke(
         ctx,
         Rc::clone(&output),
+        frame_aliases(program, &segments),
         &names,
         &function.body,
         function.span,
@@ -346,6 +351,7 @@ enum Completion {
 fn invoke(
     ctx: Context<'_>,
     output: Rc<RefCell<String>>,
+    aliases: HashMap<String, Vec<String>>,
     param_names: &[&str],
     body: &Block,
     span: SourceSpan,
@@ -363,7 +369,7 @@ fn invoke(
             span,
         });
     }
-    let mut env = Env::new(ctx, output);
+    let mut env = Env::new(ctx, output, aliases);
     env.push_scope();
     for (name, arg) in param_names.iter().zip(args) {
         // `out`/`inout` parameters are reassignable inside the callee; plain
@@ -464,6 +470,43 @@ fn resolve_function<'p>(
             .iter()
             .find(|function| &function.name == name)
     }
+}
+
+/// The module that owns the function `segments` resolves to, mirroring
+/// [`resolve_function`]'s matching: a qualified `mod::fn` names exactly that
+/// module; a bare name takes the first module declaring a function of that name.
+/// Used to build the call frame's short→full import alias map, so a short-form
+/// `clock::now()` in that module's body expands the same way the checker did.
+fn resolve_module<'p>(
+    program: &'p CheckedProgram,
+    segments: &[String],
+) -> Option<&'p CheckedModule> {
+    let (name, module) = segments.split_last()?;
+    if module.is_empty() {
+        program
+            .modules
+            .iter()
+            .find(|module| module.functions.iter().any(|function| &function.name == name))
+    } else {
+        let module_name = module.join("::");
+        program
+            .modules
+            .iter()
+            .find(|module| module.name == module_name)
+    }
+}
+
+/// The short→full import alias map for the module owning `segments`, or an empty
+/// map when no module is found (e.g. the bare-program [`evaluate_function`] path).
+/// Reuses the checker's [`marrow_check::build_alias_map`] over the module's
+/// `imports` so check and run expand short-form identically.
+fn frame_aliases(
+    program: &CheckedProgram,
+    segments: &[String],
+) -> HashMap<String, Vec<String>> {
+    resolve_module(program, segments)
+        .map(|module| marrow_check::build_alias_map(&module.imports))
+        .unwrap_or_default()
 }
 
 /// Bind a call's positional and named arguments to a function's parameters,
@@ -837,6 +880,12 @@ fn eval_call(
     let Expression::Name { segments, .. } = callee else {
         return Err(unsupported("calling this expression", span));
     };
+    // Expand a short-form leading segment through the active module's import
+    // aliases once, up front, so `clock::now()` dispatches like
+    // `std::clock::now()` and `books::add(...)` like `shelf::books::add(...)`,
+    // matching the checker (`marrow_check::expand_alias`). All builtin/std/function
+    // dispatch below uses the expanded form; with no aliases it is a no-op.
+    let segments = marrow_check::expand_alias(segments, &env.aliases);
     // `Error(...)` is the builtin error constructor (named arguments), not a
     // program function.
     if let [name] = segments.as_slice()
@@ -936,13 +985,13 @@ fn eval_call(
         store: env.store,
         host: env.host,
     };
-    let function = resolve_function(ctx.program, segments).ok_or_else(|| RuntimeError {
+    let function = resolve_function(ctx.program, &segments).ok_or_else(|| RuntimeError {
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{}`", segments.join("::")),
         span,
     })?;
     if has_moded {
-        return eval_call_with_modes(function, args, span, env);
+        return eval_call_with_modes(function, &segments, args, span, env);
     }
     let values = bind_arguments(&function.params, args, span, env)?;
     let names: Vec<&str> = function
@@ -953,6 +1002,7 @@ fn eval_call(
     let (completion, _) = invoke(
         ctx,
         Rc::clone(&env.output),
+        frame_aliases(ctx.program, &segments),
         &names,
         &function.body,
         function.span,
@@ -1058,6 +1108,7 @@ fn catchable_read(
 /// mode must match the parameter's.
 fn eval_call_with_modes(
     function: &CheckedFunction,
+    segments: &[String],
     args: &[Argument],
     span: SourceSpan,
     env: &mut Env<'_>,
@@ -1082,6 +1133,7 @@ fn eval_call_with_modes(
     let (completion, finals) = invoke(
         ctx,
         Rc::clone(&env.output),
+        frame_aliases(ctx.program, segments),
         &names,
         &function.body,
         function.span,
@@ -2120,6 +2172,12 @@ struct Env<'p> {
     /// innermost last. A write/delete/append/merge whose affected layer is in this
     /// set mutates a layer being iterated, which is a [`RUN_TRAVERSAL`] fault.
     traversed_layers: Vec<Vec<u8>>,
+    /// The active function's module short→full import alias map, so a short-form
+    /// call (`clock::now()`) expands to its full path (`std::clock::now`) before
+    /// dispatch, exactly as the checker resolved it. Empty for the bare-program
+    /// [`evaluate_function`] path and any module with no imports, making expansion
+    /// a strict no-op there.
+    aliases: HashMap<String, Vec<String>>,
 }
 
 /// Why an assignment did not land.
@@ -2129,7 +2187,11 @@ enum AssignError {
 }
 
 impl<'p> Env<'p> {
-    fn new(ctx: Context<'p>, output: Rc<RefCell<String>>) -> Self {
+    fn new(
+        ctx: Context<'p>,
+        output: Rc<RefCell<String>>,
+        aliases: HashMap<String, Vec<String>>,
+    ) -> Self {
         Self {
             scopes: Vec::new(),
             output,
@@ -2138,6 +2200,7 @@ impl<'p> Env<'p> {
             host: ctx.host,
             pending_throw: None,
             traversed_layers: Vec::new(),
+            aliases,
         }
     }
 

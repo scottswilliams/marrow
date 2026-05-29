@@ -38,6 +38,13 @@ fn function(source: &str) -> FunctionDecl {
 /// `test`, so `run(&program, "test::name", ...)` resolves calls between
 /// them. Parameter types are left `Unknown` — the runtime binds by name.
 fn checked_program(source: &str) -> CheckedProgram {
+    checked_program_with_imports(source, &[])
+}
+
+/// Like [`checked_program`], but with the module's resolved `use` targets
+/// populated, so short-form calls (`clock::parseDate(...)`) expand to their full
+/// paths at the call site (the checker normally builds this from `use` decls).
+fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgram {
     let parsed = parse_source(source);
     assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
     let mut functions = Vec::new();
@@ -74,7 +81,7 @@ fn checked_program(source: &str) -> CheckedProgram {
             name: "test".into(),
             source_file: std::path::PathBuf::new(),
             span: Default::default(),
-            imports: Vec::new(),
+            imports: imports.iter().map(|name| name.to_string()).collect(),
             constants: Vec::new(),
             functions,
             resources,
@@ -524,6 +531,40 @@ fn temporal_values_order_and_equate() {
     assert_eq!(
         call("test::durationBefore", "PT60S", "PT3600S"),
         Ok(Some(Value::Bool(true)))
+    );
+}
+
+/// A short-form `clock::formatDate(clock::parseDate(s))` dispatches at runtime
+/// exactly like the fully-qualified `std::clock::...` form, because the call
+/// frame carries the module's `use std::clock` alias and `eval_call` expands the
+/// leading segment before std dispatch. Uses pure helpers, so no host clock is
+/// needed.
+#[test]
+fn short_form_std_call_runs() {
+    let program = checked_program_with_imports(
+        "fn roundtrip(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
+        &["std::clock"],
+    );
+    assert_eq!(
+        run(&program, "test::roundtrip", &[Value::Str("2024-02-29".into())]),
+        Ok(Some(Value::Str("2024-02-29".into())))
+    );
+}
+
+/// Without the matching import, a short-form `clock::parseDate(...)` does not
+/// expand and is not a known function — `run.unknown_function`. (The checker
+/// catches this earlier with `check.unresolved_call`; this is the runtime's own
+/// behavior, kept symmetric.)
+#[test]
+fn short_form_without_import_is_unknown_at_runtime() {
+    let program = checked_program_with_imports(
+        "fn stamp(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
+        &[],
+    );
+    let result = run(&program, "test::stamp", &[Value::Str("2024-02-29".into())]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNKNOWN_FUNCTION),
+        "{result:?}"
     );
 }
 
