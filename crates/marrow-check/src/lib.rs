@@ -302,6 +302,17 @@ pub fn check_project(
         // initializer's own diagnostics (constant-expression validity and literal
         // range) come from `check_const_value`, so inference diagnostics are
         // discarded here.
+        // Short→full import aliases for this file, used to expand short-form calls
+        // (`clock::now()` → `std::clock::now`) before resolution. Built once per
+        // file; the runtime rebuilds the same map from `CheckedModule::imports`.
+        let aliases = build_alias_map(
+            &parsed
+                .file
+                .uses
+                .iter()
+                .map(|use_decl| use_decl.name.clone())
+                .collect::<Vec<_>>(),
+        );
         let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
         for declaration in &parsed.file.declarations {
             if let marrow_syntax::Declaration::Const(constant) = declaration {
@@ -311,6 +322,7 @@ pub fn check_project(
                         &program,
                         &constant.value,
                         std::slice::from_ref(&module_constants),
+                        &aliases,
                         &file.path,
                         &mut Vec::new(),
                     ),
@@ -350,6 +362,7 @@ pub fn check_project(
                         &file.path,
                         function,
                         &module_constants,
+                        &aliases,
                         &mut report.diagnostics,
                     );
                     if function.return_type.is_some() && !block_returns(&function.body) {
@@ -534,6 +547,7 @@ fn check_function_types(
     file: &Path,
     function: &marrow_syntax::FunctionDecl,
     module_constants: &HashMap<String, MarrowType>,
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     // The base scope frame is the module's constants overlaid with the parameter
@@ -556,6 +570,7 @@ fn check_function_types(
         &return_type,
         &function.body,
         &mut scope,
+        aliases,
         diagnostics,
     );
 }
@@ -568,11 +583,12 @@ fn check_block_types(
     return_type: &MarrowType,
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     scope.push(HashMap::new());
     for statement in &block.statements {
-        check_statement_types(program, file, return_type, statement, scope, diagnostics);
+        check_statement_types(program, file, return_type, statement, scope, aliases, diagnostics);
     }
     scope.pop();
 }
@@ -585,6 +601,7 @@ fn check_statement_types(
     return_type: &MarrowType,
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     use marrow_syntax::Statement;
@@ -595,7 +612,7 @@ fn check_statement_types(
             value,
             span,
         } => {
-            let value_type = infer_type(program, value, scope, file, diagnostics);
+            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
             if let Some(ty) = ty {
                 check_assignment(
                     file,
@@ -615,7 +632,7 @@ fn check_statement_types(
             ..
         } => {
             let value_type = match value {
-                Some(value) => infer_type(program, value, scope, file, diagnostics),
+                Some(value) => infer_type(program, value, scope, aliases, file, diagnostics),
                 None => MarrowType::Unknown,
             };
             // An annotated initializer must match the declared type.
@@ -643,21 +660,21 @@ fn check_statement_types(
             // The target's type is known for a local variable or a saved field;
             // for other places (a local resource field, a whole resource) it is
             // unknown and the assignment is left alone.
-            let target_type = infer_type(program, target, scope, file, diagnostics);
-            let value_type = infer_type(program, value, scope, file, diagnostics);
+            let target_type = infer_type(program, target, scope, aliases, file, diagnostics);
+            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
             check_assignment(file, *span, &target_type, &value_type, diagnostics);
         }
         Statement::Delete { path, .. } => {
-            infer_type(program, path, scope, file, diagnostics);
+            infer_type(program, path, scope, aliases, file, diagnostics);
         }
         Statement::Return { value, span } => {
             if let Some(value) = value {
-                let value_type = infer_type(program, value, scope, file, diagnostics);
+                let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
                 check_return_type(file, *span, return_type, &value_type, diagnostics);
             }
         }
         Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
-            infer_type(program, value, scope, file, diagnostics);
+            infer_type(program, value, scope, aliases, file, diagnostics);
         }
         Statement::If {
             condition,
@@ -666,28 +683,29 @@ fn check_statement_types(
             else_block,
             ..
         } => {
-            check_condition(program, file, condition, scope, diagnostics);
-            check_block_types(program, file, return_type, then_block, scope, diagnostics);
+            check_condition(program, file, condition, scope, aliases, diagnostics);
+            check_block_types(program, file, return_type, then_block, scope, aliases, diagnostics);
             for else_if in else_ifs {
-                check_condition(program, file, &else_if.condition, scope, diagnostics);
+                check_condition(program, file, &else_if.condition, scope, aliases, diagnostics);
                 check_block_types(
                     program,
                     file,
                     return_type,
                     &else_if.block,
                     scope,
+                    aliases,
                     diagnostics,
                 );
             }
             if let Some(block) = else_block {
-                check_block_types(program, file, return_type, block, scope, diagnostics);
+                check_block_types(program, file, return_type, block, scope, aliases, diagnostics);
             }
         }
         Statement::While {
             condition, body, ..
         } => {
-            check_condition(program, file, condition, scope, diagnostics);
-            check_block_types(program, file, return_type, body, scope, diagnostics);
+            check_condition(program, file, condition, scope, aliases, diagnostics);
+            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
         }
         Statement::For {
             binding,
@@ -695,7 +713,7 @@ fn check_statement_types(
             body,
             ..
         } => {
-            let iterable_type = infer_type(program, iterable, scope, file, diagnostics);
+            let iterable_type = infer_type(program, iterable, scope, aliases, file, diagnostics);
             // The loop binding(s) are in scope for the body. Iterating a sequence
             // binds its single binding to the element type; other iterables (ranges,
             // index keys) and the key/value form stay unknown for now.
@@ -709,15 +727,15 @@ fn check_statement_types(
                 frame.insert(second.clone(), MarrowType::Unknown);
             }
             scope.push(frame);
-            check_block_types(program, file, return_type, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
             scope.pop();
         }
         Statement::Transaction { body, .. } => {
-            check_block_types(program, file, return_type, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
         }
         Statement::Lock { path, body, .. } => {
-            infer_type(program, path, scope, file, diagnostics);
-            check_block_types(program, file, return_type, body, scope, diagnostics);
+            infer_type(program, path, scope, aliases, file, diagnostics);
+            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
         }
         Statement::Try {
             body,
@@ -725,7 +743,7 @@ fn check_statement_types(
             finally,
             ..
         } => {
-            check_block_types(program, file, return_type, body, scope, diagnostics);
+            check_block_types(program, file, return_type, body, scope, aliases, diagnostics);
             if let Some(clause) = catch {
                 // The catch clause binds an Error value for the duration of its block.
                 let mut frame = HashMap::new();
@@ -740,12 +758,13 @@ fn check_statement_types(
                     return_type,
                     &clause.block,
                     scope,
+                    aliases,
                     diagnostics,
                 );
                 scope.pop();
             }
             if let Some(finally) = finally {
-                check_block_types(program, file, return_type, finally, scope, diagnostics);
+                check_block_types(program, file, return_type, finally, scope, aliases, diagnostics);
             }
         }
         Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
@@ -782,9 +801,10 @@ fn check_condition(
     file: &Path,
     condition: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let condition_type = infer_type(program, condition, scope, file, diagnostics);
+    let condition_type = infer_type(program, condition, scope, aliases, file, diagnostics);
     let span = condition.span();
     match as_primitive(&condition_type) {
         Some(primitive) if primitive != PrimitiveType::Bool => diagnostics.push(CheckDiagnostic {
@@ -912,6 +932,7 @@ fn infer_type(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
@@ -924,7 +945,7 @@ fn infer_type(
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
-                    infer_type(program, expr, scope, file, diagnostics);
+                    infer_type(program, expr, scope, aliases, file, diagnostics);
                 }
             }
             MarrowType::Primitive(PrimitiveType::String)
@@ -944,7 +965,7 @@ fn infer_type(
             })
         }
         Expression::Unary { op, operand, span } => {
-            let operand = infer_type(program, operand, scope, file, diagnostics);
+            let operand = infer_type(program, operand, scope, aliases, file, diagnostics);
             check_unary(*op, &operand, *span, file, diagnostics)
         }
         Expression::Binary {
@@ -953,8 +974,8 @@ fn infer_type(
             right,
             span,
         } => {
-            let left = infer_type(program, left, scope, file, diagnostics);
-            let right = infer_type(program, right, scope, file, diagnostics);
+            let left = infer_type(program, left, scope, aliases, file, diagnostics);
+            let right = infer_type(program, right, scope, aliases, file, diagnostics);
             check_binary(*op, &left, &right, *span, file, diagnostics)
         }
         Expression::Call { callee, args, span } => {
@@ -965,13 +986,14 @@ fn infer_type(
             // unresolved value name. `check_call` validates the call and yields its
             // return type.
             if !is_bare_name(callee) {
-                infer_type(program, callee, scope, file, diagnostics);
+                infer_type(program, callee, scope, aliases, file, diagnostics);
             }
             let arg_types: Vec<MarrowType> = args
                 .iter()
-                .map(|arg| infer_type(program, &arg.value, scope, file, diagnostics))
+                .map(|arg| infer_type(program, &arg.value, scope, aliases, file, diagnostics))
                 .collect();
-            let call_type = check_call(program, callee, args, &arg_types, *span, file, diagnostics);
+            let call_type =
+                check_call(program, callee, args, &arg_types, aliases, *span, file, diagnostics);
             // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
@@ -985,7 +1007,7 @@ fn infer_type(
             }
         }
         Expression::Field { base, name, .. } => {
-            let base_type = infer_type(program, base, scope, file, diagnostics);
+            let base_type = infer_type(program, base, scope, aliases, file, diagnostics);
             // A saved field read resolves to its declared type: a top-level field
             // `^root(key…).field` or a group-layer field `^root(key…).layer(key…).field`.
             // A field off a resource-typed local (`book.title`) resolves through the
@@ -1524,6 +1546,7 @@ fn check_call(
     callee: &marrow_syntax::Expression,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
+    aliases: &HashMap<String, Vec<String>>,
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -1531,6 +1554,11 @@ fn check_call(
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
         return MarrowType::Unknown;
     };
+    // Expand a short-form leading segment through the file's imports once, up front,
+    // so `clock::now()` resolves like `std::clock::now()` and a project `books::add`
+    // like `shelf::books::add`. All downstream resolution uses the expanded form.
+    let expanded = expand_alias(segments, aliases);
+    let segments = expanded.as_slice();
     if args.iter().any(|arg| arg.mode.is_some()) {
         return MarrowType::Unknown;
     }
@@ -1539,7 +1567,7 @@ fn check_call(
     // generic builtin branch typed only from `arg_types`. It types to `Resource::Id`
     // for a single-`int` root and reports `check.next_id_requires_single_int` for
     // any other shape (composite/non-int/singleton).
-    if let [name] = segments.as_slice()
+    if let [name] = segments
         && name == "nextId"
     {
         return check_next_id(program, args, span, file, diagnostics);
@@ -2186,6 +2214,43 @@ fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
             InterpolationPart::Expr(expr) => expr_touches_saved_data(expr),
         }),
     }
+}
+
+/// Build the per-file short→full alias map from a file's full import paths
+/// (`["std::clock", "shelf::books"]`): key = the short trailing segment
+/// (`"clock"`, `"books"`), value = the full path split into segments
+/// (`["std","clock"]`). Same short-name derivation as
+/// [`check_duplicate_declarations`], so the two stay consistent. Drives short-form
+/// call resolution; the runtime builds the identical map from
+/// `CheckedModule::imports`.
+pub fn build_alias_map(import_paths: &[String]) -> std::collections::HashMap<String, Vec<String>> {
+    import_paths
+        .iter()
+        .map(|path| {
+            let short = path.rsplit("::").next().unwrap_or(path).to_string();
+            let full = path.split("::").map(str::to_string).collect();
+            (short, full)
+        })
+        .collect()
+}
+
+/// Expand a call/name's leading segment through the file's import aliases, applied
+/// once up front before any builtin/std/function resolution. `clock::now` with
+/// `{clock → [std,clock]}` becomes `[std,clock,now]`. A single-segment name is
+/// never expanded (short-form requires the module qualifier), and a leading
+/// segment that is not an alias is left untouched (so `std::clock::now` and a
+/// project `mod::fn` pass through unchanged). This is the shared semantics both the
+/// checker and the runtime apply, so short-form resolves symmetrically.
+pub fn expand_alias(
+    segments: &[String],
+    aliases: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    if segments.len() >= 2
+        && let Some(full) = aliases.get(&segments[0])
+    {
+        return full.iter().cloned().chain(segments[1..].iter().cloned()).collect();
+    }
+    segments.to_vec()
 }
 
 /// The standard-library modules. Host modules resolve at check time even when a

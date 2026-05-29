@@ -177,6 +177,79 @@ fn next_id_over_a_singleton_root_is_flagged() {
     );
 }
 
+/// `use std::clock` lets a short-form `clock::now()` resolve and type to its
+/// declared result (`instant`), just as the fully-qualified form does.
+#[test]
+fn short_form_std_import_resolves() {
+    let root = temp_project("program-shortform-clock", |root| {
+        write(
+            root,
+            "src/shelf/times.mw",
+            "module shelf::times\n\
+             use std::clock\n\
+             pub fn stamp(): instant\n\
+             \x20   return clock::now()\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// Without the import, the short-form `clock::now()` does not resolve and reports
+/// `check.unresolved_call` — short-form requires the matching `use`.
+#[test]
+fn short_form_without_import_is_unresolved() {
+    let root = temp_project("program-shortform-noimport", |root| {
+        write(
+            root,
+            "src/shelf/times.mw",
+            "module shelf::times\n\
+             pub fn stamp(): instant\n\
+             \x20   return clock::now()\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.unresolved_call"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// Short-form works for project modules too: `use shelf::books` lets `books::add`
+/// resolve to the qualified function in that module.
+#[test]
+fn short_form_project_import_resolves() {
+    let root = temp_project("program-shortform-project", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             pub fn make(): int\n\
+             \x20   return 1\n",
+        );
+        write(
+            root,
+            "src/shelf/app.mw",
+            "module shelf::app\n\
+             use shelf::books\n\
+             pub fn run(): int\n\
+             \x20   return books::make()\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 #[test]
 fn a_file_with_a_parse_error_contributes_no_module() {
     let root = temp_project("program-parse-error", |root| {
