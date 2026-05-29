@@ -1543,6 +1543,54 @@ fn an_unannotated_module_const_mismatch_is_caught() {
 }
 
 #[test]
+fn an_over_range_int_literal_is_flagged_at_check_time() {
+    // `99999999999999999999999999` exceeds i64; the runtime would reject it as
+    // run.overflow, so the checker flags it too.
+    let found = check_script(
+        "int-literal-overflow",
+        "fn f()\n    const x: int = 99999999999999999999999999\n",
+        "check.literal_range",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_in_range_int_literal_is_not_flagged() {
+    // i64::MAX checks clean.
+    let found = check_script(
+        "int-literal-max",
+        "fn f()\n    const x: int = 9223372036854775807\n",
+        "check.literal_range",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_over_envelope_decimal_literal_is_flagged_at_check_time() {
+    // 35 significant digits exceeds the 34-digit decimal envelope.
+    let found = check_script(
+        "decimal-literal-overflow",
+        "fn f()\n    const d: decimal = 1.2345678901234567890123456789012345\n",
+        "check.literal_range",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_in_range_decimal_literal_is_not_flagged() {
+    // 34 significant digits is exactly at the envelope, and a long trailing-zero
+    // fraction normalizes back into range — neither is flagged.
+    let found = check_script(
+        "decimal-literal-ok",
+        "fn f()\n\
+         \x20   const d: decimal = 1.234567890123456789012345678901234\n\
+         \x20   const z: decimal = 0.000000000000000000000000000000000000\n",
+        "check.literal_range",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn rejects_a_var_initializer_of_the_wrong_type() {
     // `x` is declared `int` but initialized with a string.
     let found = check_script(

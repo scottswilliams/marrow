@@ -60,6 +60,10 @@ pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// reported for calls in library modules of a fully parsed project, so a
 /// module-less script or a module excluded by a parse error never false-positives.
 pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
+/// A numeric literal is provably outside its type's range: an integer literal
+/// beyond `i64`, or a decimal literal outside the 34-significant-digit /
+/// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
+pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -906,7 +910,10 @@ fn infer_type(
 ) -> MarrowType {
     use marrow_syntax::Expression;
     match expr {
-        Expression::Literal { kind, .. } => literal_type(*kind),
+        Expression::Literal { kind, text, span } => {
+            check_literal_range(*kind, text, *span, file, diagnostics);
+            literal_type(*kind)
+        }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
@@ -1181,6 +1188,65 @@ fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> Option<Marro
 /// `check_call`, so it is not treated as an unresolved value reference.
 fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
     matches!(expr, marrow_syntax::Expression::Name { segments, .. } if segments.len() == 1)
+}
+
+/// The decimal envelope, mirroring `marrow_store::decimal`: at most 34
+/// significant digits and 34 fractional places.
+const DECIMAL_MAX_DIGITS: usize = 34;
+
+/// Flag a numeric literal whose magnitude is provably out of range, so it is
+/// caught at check time rather than only at run time (`run.overflow`). The lexer
+/// emits a number literal as bare ASCII digits (the sign is a separate unary
+/// operator), so an integer is in range exactly when it parses as `i64`, and a
+/// decimal `digits.digits` is in range only within the 34-significant-digit /
+/// 34-fractional-place envelope.
+fn check_literal_range(
+    kind: marrow_syntax::LiteralKind,
+    text: &str,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::LiteralKind;
+    let out_of_range = match kind {
+        LiteralKind::Integer => text.parse::<i64>().is_err(),
+        LiteralKind::Decimal => decimal_out_of_envelope(text),
+        LiteralKind::String | LiteralKind::Bytes | LiteralKind::Bool => false,
+    };
+    if out_of_range {
+        let type_name = match kind {
+            LiteralKind::Integer => "int",
+            _ => "decimal",
+        };
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_LITERAL_RANGE.to_string(),
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!("{type_name} literal `{text}` is out of range"),
+            line: span.line,
+            column: span.column,
+        });
+    }
+}
+
+/// Whether a decimal literal `digits.digits` (or `digits`) provably falls outside
+/// the 34-digit envelope. Mirrors `marrow_store::decimal`, which normalizes before
+/// the envelope check: leading integer zeros and trailing fraction zeros drop out,
+/// so they are stripped before counting. A literal is rejected only when its
+/// canonical significant digits or fractional places exceed 34 — never a value the
+/// runtime would normalize back into range.
+fn decimal_out_of_envelope(text: &str) -> bool {
+    let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let integer = integer.trim_start_matches('0');
+    let fraction = fraction.trim_end_matches('0');
+    // Significant digits run from the first to the last nonzero digit. With the
+    // integer part empty (all zeros), leading fraction zeros are not significant.
+    let significant = if integer.is_empty() {
+        fraction.trim_start_matches('0').len()
+    } else {
+        integer.len() + fraction.len()
+    };
+    significant > DECIMAL_MAX_DIGITS || fraction.len() > DECIMAL_MAX_DIGITS
 }
 
 /// The type of a literal by its lexical kind.
