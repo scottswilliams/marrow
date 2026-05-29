@@ -140,6 +140,12 @@ pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
 /// exempt: each populated entry already points to one identity.
 pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_identity_keys";
 
+/// An index is declared on a resource with no keyed saved root. Declared indexes
+/// are members of keyed saved resources; a singleton (keyless) or local
+/// (non-saved) resource has no generated identity for an entry to point to
+/// (resources-and-storage.md:217-219).
+pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -332,6 +338,10 @@ fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<Sourc
 /// reached through unkeyed groups; they do not walk keyed child layers
 /// (resources-and-storage.md:197-199). Each unresolved argument is reported at
 /// its index's span, in index then argument order.
+///
+/// An index also requires a keyed saved root: a singleton (keyless) or local
+/// (non-saved) resource has no identity for an entry to point to, which is
+/// reported once per index and short-circuits the per-argument checks.
 fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
     let keys = decl
         .store
@@ -342,6 +352,18 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
         let ResourceMember::Index(index) = member else {
             continue;
         };
+        if keys.is_empty() {
+            errors.push(SchemaError {
+                code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+                message: format!(
+                    "index `{}` requires a keyed saved root; a singleton or local \
+                     resource has no identity for an index entry to point to",
+                    index.name
+                ),
+                span: index.span,
+            });
+            continue;
+        }
         for arg in &index.args {
             match index_arg_type(arg, keys, &decl.members) {
                 None => errors.push(SchemaError {

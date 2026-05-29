@@ -7,8 +7,9 @@
 
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
-    SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_KEY_MEMBER_COLLISION,
-    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
+    SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
+    SCHEMA_UNORDERABLE_KEY, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -549,6 +550,34 @@ resource Book at ^books(id: int)
 ";
     let (_, errors) = compile_resource(&resource(source));
     assert!(errors.is_empty(), "unique index needs no identity key: {errors:?}");
+}
+
+#[test]
+fn index_on_a_singleton_resource_is_an_error() {
+    // A singleton saved resource has no generated identity for an index entry to
+    // point to (resources-and-storage.md:217-219), so an index is rejected (F21).
+    let source = "\
+resource Settings at ^settings
+    theme: string
+    index byTheme(theme)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
+    assert!(errors[0].message.contains("byTheme"));
+}
+
+#[test]
+fn index_on_a_local_resource_is_an_error() {
+    // A local (non-saved) resource has no saved root at all, so it cannot carry a
+    // declared index.
+    let source = "\
+resource Draft
+    title: string
+    index byTitle(title)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
+    assert!(errors[0].message.contains("byTitle"));
 }
 
 #[test]
