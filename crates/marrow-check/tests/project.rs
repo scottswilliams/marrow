@@ -1617,6 +1617,20 @@ fn an_in_range_decimal_literal_is_not_flagged() {
 }
 
 #[test]
+fn an_over_range_module_const_literal_is_flagged_at_check_time() {
+    // A module-level `const` initializer is range-checked like a local one. The
+    // diagnostic previously fired only during scope-building type inference, whose
+    // diagnostics are discarded, so an out-of-range module constant slipped past
+    // `marrow check` and was caught only at runtime.
+    let found = check_module(
+        "module-const-literal-overflow",
+        "module m\nconst BIG: int = 99999999999999999999999999\n",
+        "check.literal_range",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn rejects_a_var_initializer_of_the_wrong_type() {
     // `x` is declared `int` but initialized with a string.
     let found = check_script(

@@ -42,6 +42,35 @@ pub fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<CheckDia
             "a `const` value must be a constant expression, not a host call or saved-data read",
         ));
     }
+    check_literal_ranges(file, value, out);
+}
+
+/// Range-check every literal inside a `const` value so an out-of-range integer or
+/// decimal literal is reported at check time, not only at runtime. Mirrors the
+/// constant-expression shape walked by `is_constant_expr`.
+fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagnostic>) {
+    match expr {
+        Expression::Literal { kind, text, span } => {
+            crate::check_literal_range(*kind, text, *span, file, out);
+        }
+        Expression::Field { base, .. } => check_literal_ranges(file, base, out),
+        Expression::Unary { operand, .. } => check_literal_ranges(file, operand, out),
+        Expression::Binary { left, right, .. } => {
+            check_literal_ranges(file, left, out);
+            check_literal_ranges(file, right, out);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    check_literal_ranges(file, expr, out);
+                }
+            }
+        }
+        Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Call { .. }
+        | Expression::Unparsed { .. } => {}
+    }
 }
 
 /// Walk a block applying the catch and assign-target rules to each statement,

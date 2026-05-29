@@ -2138,12 +2138,11 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             }
         }
         Statement::Lock { body, .. } => {
-            // A single-writer capability profile holds no contended lock, so `lock`
-            // is just a scope guarding its body: the conceptual lock is acquired for
-            // the block and released on every exit (`return`/`break`/`continue`/
-            // `throw`/error), which `eval_block` already provides by popping its
-            // scope unconditionally. The target path coordinates concurrent writers,
-            // so it is not read here.
+            // A single-writer capability profile holds no contended lock, so there
+            // is no lock state to acquire or release: `lock` is just its body. The
+            // body runs in `eval_block`, which pops its scope on every exit
+            // (including errors). The target path only matters for coordinating
+            // concurrent writers, so it is not read here.
             eval_block(body, env)
         }
         other => Err(unsupported("this statement", other.span())),

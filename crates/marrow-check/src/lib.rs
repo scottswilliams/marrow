@@ -292,8 +292,9 @@ pub fn check_project(
         // is inferred from its initializer (as a local `const` already is), so a
         // typed use like `var x: int = M` resolves rather than false-positiving
         // `check.untyped_value`. Built in source order so an earlier constant is
-        // in scope for a later one. Diagnostics from the initializers themselves
-        // are the function-body and `check_const_value` passes' job, so they are
+        // in scope for a later one. This pass only builds the scope map; an
+        // initializer's own diagnostics (constant-expression validity and literal
+        // range) come from `check_const_value`, so inference diagnostics are
         // discarded here.
         let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
         for declaration in &parsed.file.declarations {
@@ -1200,7 +1201,7 @@ const DECIMAL_MAX_DIGITS: usize = 34;
 /// operator), so an integer is in range exactly when it parses as `i64`, and a
 /// decimal `digits.digits` is in range only within the 34-significant-digit /
 /// 34-fractional-place envelope.
-fn check_literal_range(
+pub(crate) fn check_literal_range(
     kind: marrow_syntax::LiteralKind,
     text: &str,
     span: SourceSpan,
