@@ -31,10 +31,10 @@ use marrow_syntax::{
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_REQUIRED_FIELD, decode_identity, next_id, next_layer_pos,
-    plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    FieldValue, ResourceValue, WRITE_REQUIRED_FIELD, WriteError, decode_identity, next_id,
+    next_layer_pos, plan_field_delete, plan_field_write, plan_layer_group_write,
+    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write, plan_resource_delete,
+    plan_resource_merge, plan_resource_write,
 };
 
 pub mod base64;
@@ -361,12 +361,18 @@ fn invoke(
         Ok(Flow::Return(value)) => Completion::Returned(value),
         Ok(Flow::Normal) => Completion::Returned(None),
         Ok(Flow::Throw(value)) => Completion::Threw(value),
-        // An `Err` with a pending throw is a throw propagating out of a call;
-        // surface it as this activation's throw. Any other `Err` is a real fault.
-        Err(error) => match propagated {
+        // A propagating `throw` rides the `Err` channel as the `RUN_UNCAUGHT_THROW`
+        // sentinel with the Error stashed; surface it as this activation's throw.
+        // A catchable fault (e.g. `write.unique_conflict`, `run.absent_element`)
+        // also stashes its Error so an enclosing `try` can bind it, but its `Err`
+        // keeps its own dotted code: when it escapes uncaught, surface that code
+        // unchanged rather than collapsing it to `run.uncaught_error`. The stashed
+        // Error was already taken into `propagated`, so it does not leak onward.
+        Err(error) if error.code == RUN_UNCAUGHT_THROW => match propagated {
             Some(thrown) => Completion::Threw(thrown),
             None => return Err(error),
         },
+        Err(error) => return Err(error),
         Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
             return Err(RuntimeError {
                 code: RUN_NO_ENCLOSING_LOOP,
@@ -774,7 +780,8 @@ fn eval_call(
         && let Some(resource) = find_resource(env.program, root)
         && let Some(index) = resource.indexes.iter().find(|index| &index.name == name)
     {
-        return eval_index_lookup(resource, index, args, span, env).map(Some);
+        let value = eval_index_lookup(resource, index, args, span, env);
+        return catchable_read(value, env).map(Some);
     }
     // A call whose callee is a saved layer field is a keyed-layer read — a leaf
     // value `^books(id).tags(pos)` or a whole group entry `^books(id).versions(v)`.
@@ -935,6 +942,47 @@ fn raise(error: Value, span: SourceSpan, env: &mut Env<'_>) -> RuntimeError {
     let sentinel = uncaught_throw(&error, span);
     env.pending_throw = Some(error);
     sentinel
+}
+
+/// Raise a recoverable runtime fault (a managed-write failure or an absent-element
+/// read) as a catchable Error while keeping its dotted code. Like [`raise`], it
+/// stashes an `Error` value carrying `code`/`message` so an enclosing `try`/`catch`
+/// can bind it. Unlike [`raise`], the returned [`RuntimeError`] keeps the fault's
+/// own dotted code rather than the `RUN_UNCAUGHT_THROW` sentinel, so an uncaught
+/// fault surfaces with the same code it did before it became catchable.
+fn raise_fault(
+    code: &'static str,
+    message: String,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> RuntimeError {
+    env.pending_throw = Some(Value::Resource(vec![
+        ("code".to_string(), Value::Str(code.to_string())),
+        ("message".to_string(), Value::Str(message.clone())),
+    ]));
+    RuntimeError {
+        code,
+        message,
+        span,
+    }
+}
+
+/// Make a value-position read's absent-element fault catchable: an `Err(RUN_ABSENT)`
+/// from the shared `&Env` read helpers is re-raised through [`raise_fault`] so an
+/// enclosing `try`/`catch` can bind it, while keeping the `run.absent_element` code
+/// for an uncaught read. Other results pass through unchanged. (The `inout`/`out`
+/// seed reads in [`Place::read`] are argument binding, not value position, so they
+/// keep a plain fatal fault.)
+fn catchable_read(
+    result: Result<Value, RuntimeError>,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    match result {
+        Err(error) if error.code == RUN_ABSENT => {
+            Err(raise_fault(RUN_ABSENT, error.message, error.span, env))
+        }
+        other => other,
+    }
 }
 
 /// Evaluate a program-function call that has `out`/`inout` arguments. Each moded
@@ -1564,7 +1612,13 @@ fn eval_get(args: &[Argument], span: SourceSpan, env: &mut Env<'_>) -> Result<Va
         });
     };
     match eval_saved_field(&path.value, env) {
-        Err(error) if error.code == RUN_ABSENT => eval_expr(&default.value, env),
+        Err(error) if error.code == RUN_ABSENT => {
+            // An absent read is a catchable fault that stashed its Error; `get`
+            // absorbs the absence as ordinary control flow, so clear the stash
+            // before it can be mistaken for an unwinding throw.
+            env.pending_throw = None;
+            eval_expr(&default.value, env)
+        }
         other => other,
     }
 }
@@ -1586,12 +1640,11 @@ fn eval_next_id(
     let Expression::SavedRoot { name, .. } = &arg.value else {
         return Err(unsupported("`nextId` of this path", span));
     };
-    let store = env.store.borrow();
-    let next = next_id(name, &*store).map_err(|error| RuntimeError {
-        code: error.code,
-        message: error.message,
-        span,
-    })?;
+    let next = {
+        let store = env.store.borrow();
+        next_id(name, &*store)
+    };
+    let next = next.map_err(|error| write_fault(error, span, env))?;
     Ok(Value::Int(next))
 }
 
@@ -1625,18 +1678,11 @@ fn eval_append(
         .ok_or_else(|| unsupported("appending a resource value", span))?;
     let pos = {
         let store = env.store.borrow();
-        next_layer_pos(resource, &identity, layer, &*store).map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        })?
+        next_layer_pos(resource, &identity, layer, &*store)
     };
+    let pos = pos.map_err(|error| write_fault(error, span, env))?;
     let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
-        .map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        })?;
+        .map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(Value::Int(pos))
@@ -1822,17 +1868,15 @@ fn eval_env(
                 .cloned()
                 .unwrap_or_else(|| default.clone()),
         )),
-        ("require", [name]) => {
-            variables
-                .get(name)
-                .cloned()
-                .map(Value::Str)
-                .ok_or_else(|| RuntimeError {
-                    code: RUN_ABSENT,
-                    message: format!("required environment variable `{name}` is absent"),
-                    span,
-                })
-        }
+        ("require", [name]) => match variables.get(name).cloned() {
+            Some(value) => Ok(Value::Str(value)),
+            None => Err(raise_fault(
+                RUN_ABSENT,
+                format!("required environment variable `{name}` is absent"),
+                span,
+                env,
+            )),
+        },
         ("exists" | "get" | "require", _) => Err(std_arity("env", op, span)),
         _ => Err(unsupported(&format!("std::env::{op}"), span)),
     }
@@ -2916,7 +2960,8 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
         return eval_group_field_read(base, name, expr.span(), env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
-    read_saved_field(&root, &identity, name, expr.span(), env)
+    let value = read_saved_field(&root, &identity, name, expr.span(), env);
+    catchable_read(value, env)
 }
 
 /// Read a top-level saved scalar field from a pre-lowered identity, decoding it
@@ -2966,7 +3011,8 @@ fn eval_group_field_read(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let (root, identity, layers) = lower_layer_path(base, env)?;
-    read_nested_field(&root, &identity, &layers, field, span, env)
+    let value = read_nested_field(&root, &identity, &layers, field, span, env);
+    catchable_read(value, env)
 }
 
 /// Read a scalar field inside a (possibly nested) keyed group entry from already-
@@ -3094,7 +3140,8 @@ fn eval_saved_layer_read(
     };
     let (root, identity) = lower_record_identity(base, env)?;
     let layer_keys = lower_layer_keys(keys, span, env)?;
-    read_layer_entry(&root, &identity, layer, &layer_keys, span, env)
+    let value = read_layer_entry(&root, &identity, layer, &layer_keys, span, env);
+    catchable_read(value, env)
 }
 
 /// Read one keyed-layer entry from a lowered record identity and layer keys. A
@@ -3294,14 +3341,9 @@ fn write_saved_field(
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_field_write(resource, identity, field, &saved, &*store).map_err(|error| {
-            RuntimeError {
-                code: error.code,
-                message: error.message,
-                span,
-            }
-        })?
+        plan_field_write(resource, identity, field, &saved, &*store)
     };
+    let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3347,13 +3389,8 @@ fn write_nested_field(
         .iter()
         .map(|(name, keys)| (name.as_str(), keys.as_slice()))
         .collect();
-    let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved).map_err(
-        |error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        },
-    )?;
+    let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved)
+        .map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3383,13 +3420,8 @@ fn eval_group_entry_write(
         let resource = find_resource(env.program, &root)
             .ok_or_else(|| unsupported("writing to this saved root", span))?;
         let layer_keys = lower_layer_keys(keys, span, env)?;
-        let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved).map_err(
-            |error| RuntimeError {
-                code: error.code,
-                message: error.message,
-                span,
-            },
-        )?;
+        let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved)
+            .map_err(|error| write_fault(error, span, env))?;
         plan.commit(&mut *env.store.borrow_mut())
             .map_err(|error| store_error(error, span))?;
         return Ok(());
@@ -3404,13 +3436,8 @@ fn eval_group_entry_write(
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
     let layer_keys = lower_layer_keys(keys, span, env)?;
     let value = resource_value_of(fields, span)?;
-    let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value).map_err(
-        |error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        },
-    )?;
+    let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value)
+        .map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3462,12 +3489,9 @@ fn write_resource(
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_write(resource, identity, &value, &*store).map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        })?
+        plan_resource_write(resource, identity, &value, &*store)
     };
+    let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3507,14 +3531,9 @@ fn eval_resource_merge(
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store).map_err(
-            |error| RuntimeError {
-                code: error.code,
-                message: error.message,
-                span,
-            },
-        )?
+        plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store)
     };
+    let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3582,14 +3601,9 @@ fn eval_layer_merge(
     env.guard_traversed_layer(&layer_prefix(&to_root, &to_identity, layer), span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store).map_err(
-            |error| RuntimeError {
-                code: error.code,
-                message: error.message,
-                span,
-            },
-        )?
+        plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store)
     };
+    let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3651,12 +3665,9 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
     env.guard_traversed_layer(&[PathSegment::Root(root.clone())], span)?;
     let plan = {
         let store = env.store.borrow();
-        plan_resource_delete(resource, &identity, &*store).map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        })?
+        plan_resource_delete(resource, &identity, &*store)
     };
+    let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3691,22 +3702,18 @@ fn eval_field_delete(
         .iter()
         .any(|declared| declared.name == field && declared.required)
     {
-        return Err(RuntimeError {
-            code: WRITE_REQUIRED_FIELD,
-            message: format!(
-                "cannot delete required field `{field}`; delete the whole record instead"
-            ),
+        return Err(raise_fault(
+            WRITE_REQUIRED_FIELD,
+            format!("cannot delete required field `{field}`; delete the whole record instead"),
             span,
-        });
+            env,
+        ));
     }
     let plan = {
         let store = env.store.borrow();
-        plan_field_delete(resource, &identity, field, &*store).map_err(|error| RuntimeError {
-            code: error.code,
-            message: error.message,
-            span,
-        })?
+        plan_field_delete(resource, &identity, field, &*store)
     };
+    let plan = plan.map_err(|error| write_fault(error, span, env))?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
@@ -3984,15 +3991,15 @@ fn eval_local_field_get(
     let Value::Resource(fields) = eval_expr(base, env)? else {
         return Err(unsupported("a field of a non-resource value", span));
     };
-    fields
-        .into_iter()
-        .find(|(name, _)| name == field)
-        .map(|(_, value)| value)
-        .ok_or_else(|| RuntimeError {
-            code: RUN_ABSENT,
-            message: format!("`{field}` is absent"),
+    match fields.into_iter().find(|(name, _)| name == field) {
+        Some((_, value)) => Ok(value),
+        None => Err(raise_fault(
+            RUN_ABSENT,
+            format!("`{field}` is absent"),
             span,
-        })
+            env,
+        )),
+    }
 }
 
 /// Set a field of a local resource variable, e.g. `book.title = t`. The base
@@ -4674,6 +4681,17 @@ fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
         message: format!("a saved-data operation failed: {error:?}"),
         span,
     }
+}
+
+/// Surface a managed-write planning failure (`marrow_write::WriteError`) as a
+/// catchable fault: the spec treats a rejected managed write — a unique conflict,
+/// a missing required field, a type or identity mismatch, a value-range error, or
+/// a store read error met while planning — as recoverable, so a `try`/`catch`
+/// can bind it and a transaction can continue or roll back. The fault keeps the
+/// `write.*` (or value-codec) code so an uncaught one surfaces unchanged. Call
+/// after dropping any `env.store` borrow held while planning.
+fn write_fault(error: WriteError, span: SourceSpan, env: &mut Env<'_>) -> RuntimeError {
+    raise_fault(error.code, error.message, span, env)
 }
 
 /// Surface a value-encoding range error (e.g. a date/instant outside year

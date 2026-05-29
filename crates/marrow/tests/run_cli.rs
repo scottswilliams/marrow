@@ -193,6 +193,33 @@ fn an_uncaught_throw_exits_one_with_the_thrown_code_on_stderr() {
 }
 
 #[test]
+fn an_uncaught_unique_conflict_exits_one_with_its_write_code_on_stderr() {
+    // A managed-write fault that escapes the entry stays fatal and exits non-zero,
+    // and its `write.unique_conflict` dotted code still reaches stderr — the
+    // uncaught surface is unchanged now that the fault is also catchable.
+    let root = temp_project("run-conflict", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+             pub fn main()\n    ^books(1).title = \"Mort\"\n    ^books(1).isbn = \"978-0\"\n    ^books(2).title = \"Pyramids\"\n    ^books(2).isbn = \"978-0\"\n",
+        );
+    });
+    let output = run_run(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("write.unique_conflict"), "{stderr}");
+}
+
+#[test]
 fn maps_an_unknown_entry_to_a_runtime_code() {
     let root = temp_project("run-unknown", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);

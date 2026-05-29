@@ -2460,6 +2460,292 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
     );
 }
 
+/// A `Book` with a unique `isbn` index plus helpers that seed a record, attempt
+/// a conflicting write under `try`/`catch`, and read a field back. Used by the
+/// recoverable-write-fault tests.
+const UNIQUE_RECOVERY: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    isbn: string
+
+    index byIsbn(isbn) unique
+
+fn seed(id: int, t: string, isbn: string)
+    ^books(id).title = t
+    ^books(id).isbn = isbn
+
+fn claimOrCode(id: int, isbn: string): string
+    try
+        ^books(id).isbn = isbn
+    catch err: Error
+        return err.code
+    return \"written\"
+
+fn claim(id: int, isbn: string)
+    ^books(id).isbn = isbn
+
+fn recover(id: int, isbn: string, fallback: string): string
+    try
+        ^books(id).isbn = isbn
+    catch err: Error
+        ^books(id).title = fallback
+    return ^books(id).title
+
+fn titleOf(id: int): string
+    return ^books(id).title
+
+fn isbnOf(id: int): string
+    return ^books(id).isbn
+
+fn ownerOf(isbn: string): Book::Id
+    return ^books.byIsbn(isbn)
+";
+
+#[test]
+fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
+    // The spec's recoverable-write contract: a unique-index conflict surfaces as
+    // a catchable Error, so a `try`/`catch` inside the writing function binds it
+    // by its `write.unique_conflict` code and the function continues normally.
+    let program = checked_program(UNIQUE_RECOVERY);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(2),
+            Value::Str("Pyramids".into()),
+            Value::Str("978-9".into()),
+        ],
+    )
+    .expect("seed");
+    // Book 2 tries to claim book 1's isbn: a unique conflict the catch binds.
+    let caught = run_entry(
+        &program,
+        &store,
+        "test::claimOrCode",
+        &[Value::Int(2), Value::Str("978-0".into())],
+    )
+    .expect("caught")
+    .value;
+    assert_eq!(caught, Some(Value::Str("write.unique_conflict".into())));
+}
+
+#[test]
+fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
+    // After catching the conflict, code keeps running (writes a fallback) and the
+    // rejected write left no effect: book 2 still owns its original isbn.
+    let program = checked_program(UNIQUE_RECOVERY);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(2),
+            Value::Str("Pyramids".into()),
+            Value::Str("978-9".into()),
+        ],
+    )
+    .expect("seed");
+    let title = run_entry(
+        &program,
+        &store,
+        "test::recover",
+        &[
+            Value::Int(2),
+            Value::Str("978-0".into()),
+            Value::Str("fallback".into()),
+        ],
+    )
+    .expect("recovered")
+    .value;
+    assert_eq!(title, Some(Value::Str("fallback".into())), "catch body ran");
+    // The rejected write left no effect: book 2 still has its original isbn and the
+    // unique index still maps the conflicting isbn to book 1, not book 2.
+    assert_eq!(
+        run_entry(&program, &store, "test::isbnOf", &[Value::Int(2)])
+            .expect("read")
+            .value,
+        Some(Value::Str("978-9".into())),
+        "book 2's isbn was not overwritten",
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::ownerOf",
+            &[Value::Str("978-0".into())]
+        )
+        .expect("read")
+        .value,
+        Some(Value::Identity(vec![SavedKey::Int(1)])),
+        "the unique index still points at book 1",
+    );
+}
+
+#[test]
+fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
+    // Preserve uncaught behavior: a conflict that escapes the entry surfaces with
+    // its own `write.unique_conflict` code (not run.uncaught_error), exactly as
+    // before it became catchable.
+    let program = checked_program(UNIQUE_RECOVERY);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(2),
+            Value::Str("Pyramids".into()),
+            Value::Str("978-9".into()),
+        ],
+    )
+    .expect("seed");
+    let result = run_entry(
+        &program,
+        &store,
+        "test::claim",
+        &[Value::Int(2), Value::Str("978-0".into())],
+    );
+    assert_eq!(result.expect_err("conflict").code, "write.unique_conflict",);
+}
+
+#[test]
+fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
+    // The spec: a conflict caught inside a transaction has no effect, and the
+    // transaction continues and commits its other writes.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(id: int, isbn: string, t: string)\n    transaction\n        try\n            ^books(id).isbn = isbn\n        catch err: Error\n            ^books(id).title = t\n\nfn titleOf(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(2),
+            Value::Str("Pyramids".into()),
+            Value::Str("978-9".into()),
+        ],
+    )
+    .expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::run_it",
+        &[
+            Value::Int(2),
+            Value::Str("978-0".into()),
+            Value::Str("after".into()),
+        ],
+    )
+    .expect("transaction commits after catching");
+    // The transaction's other write (the title) committed.
+    assert_eq!(
+        run_entry(&program, &store, "test::titleOf", &[Value::Int(2)])
+            .expect("read")
+            .value,
+        Some(Value::Str("after".into())),
+    );
+}
+
+#[test]
+fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
+    // After a `try` catches a write fault, the stashed Error is cleared, so a later
+    // genuine fault (divide-by-zero) still faults rather than being miscaught.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(): int\n    try\n        ^books(2).isbn = \"978-0\"\n    catch err: Error\n        write(\"caught\")\n    return 1 / 0\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[
+            Value::Int(2),
+            Value::Str("Pyramids".into()),
+            Value::Str("978-9".into()),
+        ],
+    )
+    .expect("seed");
+    assert_eq!(
+        run_entry(&program, &store, "test::run_it", &[])
+            .unwrap_err()
+            .code,
+        RUN_DIVIDE_BY_ZERO,
+    );
+}
+
+#[test]
+fn an_absent_element_read_is_catchable() {
+    // The documented catchable runtime fault: a direct read of an unpopulated
+    // element raises a catchable Error a `try`/`catch` can bind.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    title: string\n\nfn titleOrCode(id: int): string\n    try\n        return ^books(id).title\n    catch err: Error\n        return err.code\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let caught = run_entry(&program, &store, "test::titleOrCode", &[Value::Int(1)])
+        .expect("caught")
+        .value;
+    assert_eq!(caught, Some(Value::Str("run.absent_element".into())));
+}
+
 #[test]
 fn reads_inside_a_transaction_see_earlier_writes() {
     let program = checked_program(
@@ -3040,7 +3326,13 @@ fn a_tree_shaped_merge_copies_a_child_layer_and_moves_the_index() {
     )
     .expect("tag source");
 
-    run_entry(&program, &store, "test::copy", &[Value::Int(1), Value::Int(2)]).expect("merge");
+    run_entry(
+        &program,
+        &store,
+        "test::copy",
+        &[Value::Int(1), Value::Int(2)],
+    )
+    .expect("merge");
 
     // The source's child-layer entry is copied onto the target.
     assert_eq!(
@@ -3066,8 +3358,16 @@ fn a_tree_shaped_merge_copies_a_child_layer_and_moves_the_index() {
         .expect("read index")
         .output
     };
-    assert_eq!(ids_on("fiction"), "1\n2\n", "both records on the merged shelf");
-    assert_eq!(ids_on("history"), "", "no stray index entry on the old shelf");
+    assert_eq!(
+        ids_on("fiction"),
+        "1\n2\n",
+        "both records on the merged shelf"
+    );
+    assert_eq!(
+        ids_on("history"),
+        "",
+        "no stray index entry on the old shelf"
+    );
 }
 
 /// A program that records the run's clock instant into a saved `instant` field
