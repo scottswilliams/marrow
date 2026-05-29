@@ -1358,6 +1358,7 @@ struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     pos: usize,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> ExprParser<'a> {
@@ -1371,17 +1372,35 @@ impl<'a> ExprParser<'a> {
             source,
             tokens,
             pos: 0,
+            diagnostics: Vec::new(),
         }
     }
 
     /// Parse the whole token slice as one expression, returning `None` unless
-    /// every significant token is consumed.
-    fn parse_complete(mut self) -> Option<Expression> {
+    /// every significant token is consumed. Syntax-rule diagnostics raised while
+    /// parsing (a keyword field name, a positional argument after a named one)
+    /// are drained into the caller's `diagnostics`.
+    fn parse_complete(mut self, diagnostics: &mut Vec<Diagnostic>) -> Option<Expression> {
         if self.tokens.is_empty() {
             return None;
         }
-        let expr = self.expression()?;
+        let expr = self.expression();
+        diagnostics.append(&mut self.diagnostics);
+        let expr = expr?;
         (self.pos == self.tokens.len()).then_some(expr)
+    }
+
+    fn error(&mut self, span: SourceSpan, message: String, help: Option<String>) {
+        self.diagnostics.push(Diagnostic {
+            code: PARSE_SYNTAX,
+            kind: "parse",
+            severity: Severity::Error,
+            message,
+            help,
+            span,
+            line: span.line,
+            column: span.column,
+        });
     }
 
     fn peek(&self) -> Option<TokenKind> {
@@ -1536,7 +1555,7 @@ impl<'a> ExprParser<'a> {
                     };
                 }
                 Some(TokenKind::Dot) => {
-                    self.advance();
+                    let dot = self.advance();
                     let segment = *self.tokens.get(self.pos)?;
                     let (name, quoted) = match segment.kind {
                         TokenKind::Identifier => (segment.text(self.source).to_string(), false),
@@ -1552,6 +1571,21 @@ impl<'a> ExprParser<'a> {
                                 .and_then(|rest| rest.strip_suffix('"'))
                                 .unwrap_or("");
                             (inner.to_string(), true)
+                        }
+                        // A `.` is always data field access, and a field name must
+                        // be an identifier or string literal, so a reserved word
+                        // after `.` is never a valid field name and must be quoted
+                        // (`."at"`). Report it where both tokens are in view.
+                        TokenKind::Keyword(_) => {
+                            let keyword = segment.text(self.source);
+                            self.error(
+                                join_spans(dot.span, segment.span),
+                                format!("`{keyword}` is a keyword and cannot be used as a field name"),
+                                Some(format!(
+                                    "quote the reserved word to use it as a data name: .\"{keyword}\""
+                                )),
+                            );
+                            return None;
                         }
                         _ => return None,
                     };
@@ -1575,8 +1609,23 @@ impl<'a> ExprParser<'a> {
         if matches!(self.peek(), Some(TokenKind::RightParen)) {
             return Some(args);
         }
+        let mut seen_named = false;
         loop {
-            args.push(self.argument()?);
+            let arg = self.argument()?;
+            // After the first named argument, every remaining argument must be
+            // named: a plain positional one (no name, no `out`/`inout` mode)
+            // would silently back-fill an earlier parameter. Mode arguments keep
+            // their own rules and are not plain positionals.
+            if seen_named && arg.name.is_none() && arg.mode.is_none() {
+                let span = arg.value.span();
+                self.error(
+                    span,
+                    "a positional argument cannot follow a named argument".to_string(),
+                    Some("name this argument or move it before the named arguments".to_string()),
+                );
+            }
+            seen_named |= arg.name.is_some();
+            args.push(arg);
             if !matches!(self.peek(), Some(TokenKind::Comma)) {
                 break;
             }
@@ -1938,19 +1987,14 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
-        let statement = parse_simple_statement(self.source, line);
-        if statement.is_none() {
-            let span = line_span(line);
-            self.diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                kind: "parse",
-                severity: Severity::Error,
-                message: "expected a statement".to_string(),
-                help: None,
-                span,
-                line: span.line,
-                column: span.column,
-            });
+        let before = self.diagnostics.len();
+        let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
+        // The generic fallback only fires when nothing more specific was raised
+        // for the line: a keyword field name or another inline syntax-rule
+        // diagnostic already explains the failure, and a single line reports once.
+        if statement.is_none() && self.diagnostics.len() == before {
+            let span = line_span(&self.tokens[self.pos..content_end]);
+            self.error_span(span, "expected a statement");
         }
         self.pos = (newline + 1).min(self.tokens.len());
         statement
@@ -2022,7 +2066,7 @@ impl<'a> StmtParser<'a> {
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
         let header_span = line_span(header);
-        let parsed = parse_for_header(self.source, header);
+        let parsed = parse_for_header(self.source, header, &mut self.diagnostics);
         self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
 
@@ -2151,9 +2195,12 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
-        let expr = expr_of(self.source, line);
+        let expr = expr_of(self.source, line, &mut self.diagnostics);
         if expr.is_none() {
-            self.error_span(line_span(line), "expected an expression");
+            self.error_span(
+                line_span(&self.tokens[self.pos..content_end]),
+                "expected an expression",
+            );
         }
         self.pos = (newline + 1).min(self.tokens.len());
         expr
@@ -2307,30 +2354,34 @@ impl<'a> StmtParser<'a> {
     }
 }
 
-fn parse_simple_statement(source: &str, line: &[Token]) -> Option<Statement> {
+fn parse_simple_statement(
+    source: &str,
+    line: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
     let first = line.first()?;
     match first.kind {
-        TokenKind::Keyword(Keyword::Const) => parse_const_or_var(source, line, false),
-        TokenKind::Keyword(Keyword::Var) => parse_const_or_var(source, line, true),
-        TokenKind::Keyword(Keyword::Return) => parse_return(source, line),
+        TokenKind::Keyword(Keyword::Const) => parse_const_or_var(source, line, false, diagnostics),
+        TokenKind::Keyword(Keyword::Var) => parse_const_or_var(source, line, true, diagnostics),
+        TokenKind::Keyword(Keyword::Return) => parse_return(source, line, diagnostics),
         TokenKind::Keyword(Keyword::Delete) => {
-            let value = expr_of(source, &line[1..])?;
+            let value = expr_of(source, &line[1..], diagnostics)?;
             Some(Statement::Delete {
                 span: join_spans(first.span, value.span()),
                 path: value,
             })
         }
         TokenKind::Keyword(Keyword::Throw) => {
-            let value = expr_of(source, &line[1..])?;
+            let value = expr_of(source, &line[1..], diagnostics)?;
             Some(Statement::Throw {
                 span: join_spans(first.span, value.span()),
                 value,
             })
         }
-        TokenKind::Keyword(Keyword::Merge) => parse_merge(source, line),
+        TokenKind::Keyword(Keyword::Merge) => parse_merge(source, line, diagnostics),
         TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(source, line, true),
         TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(source, line, false),
-        _ => parse_assign_or_expr(source, line),
+        _ => parse_assign_or_expr(source, line, diagnostics),
     }
 }
 
@@ -2428,9 +2479,6 @@ impl<'a> DeclParser<'a> {
             }
         }
 
-        report_keyword_field_names(self.source, self.tokens, &mut self.diagnostics);
-        report_positional_after_named(&file, &mut self.diagnostics);
-        drop_redundant_statement_errors(&mut self.diagnostics);
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
@@ -2757,7 +2805,7 @@ impl<'a> DeclParser<'a> {
         if tokens.is_empty() {
             return None;
         }
-        let parsed = ExprParser::new(self.source, tokens).parse_complete();
+        let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
         if parsed.is_none() {
             self.error_span(value_span(tokens), "expected an expression");
         }
@@ -3365,7 +3413,12 @@ fn match_paren(tokens: &[Token]) -> Option<usize> {
     None
 }
 
-fn parse_const_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statement> {
+fn parse_const_or_var(
+    source: &str,
+    line: &[Token],
+    is_var: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
     let keyword = line[0];
     let name_token = line.get(1)?;
     if name_token.kind != TokenKind::Identifier {
@@ -3401,7 +3454,7 @@ fn parse_const_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Stat
 
     match line.get(index).map(|token| token.kind) {
         Some(TokenKind::Equal) => {
-            let value = expr_of(source, &line[index + 1..])?;
+            let value = expr_of(source, &line[index + 1..], diagnostics)?;
             let span = join_spans(keyword.span, value.span());
             Some(if is_var {
                 Statement::Var {
@@ -3506,7 +3559,11 @@ fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
     parts
 }
 
-fn parse_return(source: &str, line: &[Token]) -> Option<Statement> {
+fn parse_return(
+    source: &str,
+    line: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
     let keyword = line[0];
     if line.len() == 1 {
         return Some(Statement::Return {
@@ -3514,19 +3571,23 @@ fn parse_return(source: &str, line: &[Token]) -> Option<Statement> {
             span: keyword.span,
         });
     }
-    let value = expr_of(source, &line[1..])?;
+    let value = expr_of(source, &line[1..], diagnostics)?;
     Some(Statement::Return {
         span: join_spans(keyword.span, value.span()),
         value: Some(value),
     })
 }
 
-fn parse_merge(source: &str, line: &[Token]) -> Option<Statement> {
+fn parse_merge(
+    source: &str,
+    line: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
     let keyword = line[0];
     let rest = &line[1..];
     let equal = find_top_level_equal(rest)?;
-    let target = expr_of(source, &rest[..equal])?;
-    let value = expr_of(source, &rest[equal + 1..])?;
+    let target = expr_of(source, &rest[..equal], diagnostics)?;
+    let value = expr_of(source, &rest[equal + 1..], diagnostics)?;
     Some(Statement::Merge {
         span: join_spans(keyword.span, value.span()),
         target,
@@ -3551,17 +3612,21 @@ fn parse_break_or_continue(source: &str, line: &[Token], is_break: bool) -> Opti
     })
 }
 
-fn parse_assign_or_expr(source: &str, line: &[Token]) -> Option<Statement> {
+fn parse_assign_or_expr(
+    source: &str,
+    line: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
     if let Some(equal) = find_top_level_equal(line) {
-        let target = expr_of(source, &line[..equal])?;
-        let value = expr_of(source, &line[equal + 1..])?;
+        let target = expr_of(source, &line[..equal], diagnostics)?;
+        let value = expr_of(source, &line[equal + 1..], diagnostics)?;
         Some(Statement::Assign {
             span: join_spans(target.span(), value.span()),
             target,
             value,
         })
     } else {
-        let value = expr_of(source, line)?;
+        let value = expr_of(source, line, diagnostics)?;
         Some(Statement::Expr {
             span: value.span(),
             value,
@@ -3592,10 +3657,14 @@ fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
 /// Parse a `for` header `binding in iterable` into the loop binding and the
 /// iterable expression. Returns `None` if the `in` keyword or binding is
 /// malformed.
-fn parse_for_header(source: &str, header: &[Token]) -> Option<(ForBinding, Expression)> {
+fn parse_for_header(
+    source: &str,
+    header: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(ForBinding, Expression)> {
     let in_index = find_top_level(header, TokenKind::Keyword(Keyword::In))?;
     let binding = parse_for_binding(source, &header[..in_index])?;
-    let iterable = expr_of(source, &header[in_index + 1..])?;
+    let iterable = expr_of(source, &header[in_index + 1..], diagnostics)?;
     Some((binding, iterable))
 }
 
@@ -3635,189 +3704,12 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
     }
 }
 
-/// Drop the generic "expected a statement" fallback on any line that already
-/// carries a more specific diagnostic (e.g. a keyword used as a field name),
-/// so a single malformed line reports once with the most useful message.
-fn drop_redundant_statement_errors(diagnostics: &mut Vec<Diagnostic>) {
-    let specific_lines: std::collections::HashSet<u32> = diagnostics
-        .iter()
-        .filter(|d| d.message != "expected a statement")
-        .map(|d| d.line)
-        .collect();
-    diagnostics
-        .retain(|d| d.message != "expected a statement" || !specific_lines.contains(&d.line));
-}
-
-/// Report bare keywords used as field names. A `.` is always data field
-/// access, and a field name must be an identifier or string literal, so a
-/// reserved word immediately after `.` is never a valid field name and must
-/// be quoted (`."at"`). The structural parsers cannot build such a field, so
-/// the diagnostic is raised here from the token stream, where the `.` and the
-/// keyword are both visible.
-fn report_keyword_field_names(source: &str, tokens: &[Token], diagnostics: &mut Vec<Diagnostic>) {
-    for pair in tokens.windows(2) {
-        let [dot, name] = pair else { continue };
-        if dot.kind != TokenKind::Dot || !matches!(name.kind, TokenKind::Keyword(_)) {
-            continue;
-        }
-        let keyword = name.text(source);
-        let span = join_spans(dot.span, name.span);
-        diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
-            kind: "parse",
-            severity: Severity::Error,
-            message: format!("`{keyword}` is a keyword and cannot be used as a field name"),
-            help: Some(format!(
-                "quote the reserved word to use it as a data name: .\"{keyword}\""
-            )),
-            span,
-            line: span.line,
-            column: span.column,
-        });
-    }
-}
-
-/// Report positional arguments that follow a named argument. After the first
-/// named argument, every remaining argument must be named, because a positional
-/// argument after a named one would silently back-fill an earlier parameter. The
-/// argument list is parsed before its ordering matters, so the rule is checked
-/// here over the built tree, where every call's arguments and spans are known.
-fn report_positional_after_named(file: &SourceFile, diagnostics: &mut Vec<Diagnostic>) {
-    for declaration in &file.declarations {
-        match declaration {
-            Declaration::Const(decl) => walk_opt_expr_arguments(&decl.value, diagnostics),
-            Declaration::Function(decl) => walk_block_arguments(&decl.body, diagnostics),
-            // Resource members are typed declarations, not expressions.
-            Declaration::Resource(_) => {}
-        }
-    }
-}
-
-fn walk_block_arguments(block: &Block, diagnostics: &mut Vec<Diagnostic>) {
-    for statement in &block.statements {
-        walk_statement_arguments(statement, diagnostics);
-    }
-}
-
-fn walk_statement_arguments(statement: &Statement, diagnostics: &mut Vec<Diagnostic>) {
-    match statement {
-        Statement::Const { value, .. }
-        | Statement::Expr { value, .. }
-        | Statement::Throw { value, .. } => walk_expr_arguments(value, diagnostics),
-        Statement::Var { value, .. } | Statement::Return { value, .. } => {
-            if let Some(value) = value {
-                walk_expr_arguments(value, diagnostics);
-            }
-        }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
-            walk_expr_arguments(target, diagnostics);
-            walk_expr_arguments(value, diagnostics);
-        }
-        Statement::Delete { path, .. } => walk_expr_arguments(path, diagnostics),
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            walk_opt_expr_arguments(condition, diagnostics);
-            walk_block_arguments(then_block, diagnostics);
-            for else_if in else_ifs {
-                walk_opt_expr_arguments(&else_if.condition, diagnostics);
-                walk_block_arguments(&else_if.block, diagnostics);
-            }
-            if let Some(else_block) = else_block {
-                walk_block_arguments(else_block, diagnostics);
-            }
-        }
-        Statement::While {
-            condition, body, ..
-        } => {
-            walk_opt_expr_arguments(condition, diagnostics);
-            walk_block_arguments(body, diagnostics);
-        }
-        Statement::For { iterable, body, .. } => {
-            walk_expr_arguments(iterable, diagnostics);
-            walk_block_arguments(body, diagnostics);
-        }
-        Statement::Transaction { body, .. } => walk_block_arguments(body, diagnostics),
-        Statement::Lock { path, body, .. } => {
-            walk_opt_expr_arguments(path, diagnostics);
-            walk_block_arguments(body, diagnostics);
-        }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            walk_block_arguments(body, diagnostics);
-            if let Some(catch) = catch {
-                walk_block_arguments(&catch.block, diagnostics);
-            }
-            if let Some(finally) = finally {
-                walk_block_arguments(finally, diagnostics);
-            }
-        }
-        Statement::Break { .. } | Statement::Continue { .. } => {}
-    }
-}
-
-fn walk_opt_expr_arguments(expression: &Option<Expression>, diagnostics: &mut Vec<Diagnostic>) {
-    if let Some(expression) = expression {
-        walk_expr_arguments(expression, diagnostics);
-    }
-}
-
-fn walk_expr_arguments(expression: &Expression, diagnostics: &mut Vec<Diagnostic>) {
-    match expression {
-        Expression::Call { callee, args, .. } => {
-            walk_expr_arguments(callee, diagnostics);
-            let mut seen_named = false;
-            for arg in args {
-                // A plain positional argument (no name, no `out`/`inout` mode)
-                // after a named one breaks the grammar contract; point at it.
-                // Mode arguments are not plain positionals and keep their own
-                // rules (see `parses_named_and_moded_call_arguments`).
-                if seen_named && arg.name.is_none() && arg.mode.is_none() {
-                    let span = arg.value.span();
-                    diagnostics.push(Diagnostic {
-                        code: PARSE_SYNTAX,
-                        kind: "parse",
-                        severity: Severity::Error,
-                        message: "a positional argument cannot follow a named argument".to_string(),
-                        help: Some(
-                            "name this argument or move it before the named arguments".to_string(),
-                        ),
-                        span,
-                        line: span.line,
-                        column: span.column,
-                    });
-                }
-                seen_named |= arg.name.is_some();
-                walk_expr_arguments(&arg.value, diagnostics);
-            }
-        }
-        Expression::Field { base, .. } => walk_expr_arguments(base, diagnostics),
-        Expression::Unary { operand, .. } => walk_expr_arguments(operand, diagnostics),
-        Expression::Binary { left, right, .. } => {
-            walk_expr_arguments(left, diagnostics);
-            walk_expr_arguments(right, diagnostics);
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    walk_expr_arguments(expr, diagnostics);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
-    }
-}
-
-fn expr_of(source: &str, tokens: &[Token]) -> Option<Expression> {
-    ExprParser::new(source, tokens).parse_complete()
+fn expr_of(
+    source: &str,
+    tokens: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    ExprParser::new(source, tokens).parse_complete(diagnostics)
 }
 
 fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {

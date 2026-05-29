@@ -1155,6 +1155,26 @@ fn keyword_field_name_reports_a_parse_error() {
 }
 
 #[test]
+fn keyword_field_name_reports_once_not_also_expected_a_statement() {
+    // A line that fails because of a keyword field name carries the specific
+    // diagnostic only: the generic "expected a statement" fallback must not also
+    // fire on the same line.
+    let source = "fn touch(id: int)\n    ^events(id).at = now\n";
+    let parsed = parse_source(source);
+    let on_offending_line: Vec<_> = parsed.diagnostics.iter().filter(|d| d.line == 2).collect();
+    assert_eq!(
+        on_offending_line.len(),
+        1,
+        "the keyword-field line should report exactly once: {on_offending_line:#?}"
+    );
+    assert!(
+        on_offending_line[0].message.contains("field name"),
+        "{:#?}",
+        on_offending_line[0]
+    );
+}
+
+#[test]
 fn quoted_keyword_field_name_parses() {
     // A reserved word can name data by quoting it after the dot. `."at"` is a
     // string-literal field segment, so it parses cleanly.
@@ -1214,6 +1234,25 @@ fn positional_argument_after_named_is_rejected() {
     assert_eq!(
         &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
         "2"
+    );
+    // The rule is non-fatal: the call still parses with both arguments so later
+    // checks see the whole tree, and the violation reports exactly once.
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Some(Expression::Call { args, .. }) = &decl.value else {
+        panic!("expected call, got {:?}", decl.value);
+    };
+    assert_eq!(args.len(), 2);
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d
+                .message
+                .contains("positional argument cannot follow a named argument"))
+            .count(),
+        1
     );
 }
 
@@ -1299,10 +1338,7 @@ fn bare_type_keyword_is_not_a_value() {
     // value position rather than a silently accepted value.
     let parsed = parse_source("const Bad = int\n");
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "parse.syntax"),
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
         "expected a parse error: {:#?}",
         parsed.diagnostics
     );
@@ -1323,10 +1359,7 @@ fn const_chained_equality_is_not_associative() {
     // fully parse and so is a syntax error rather than silently nesting.
     let parsed = parse_source("const Bad: bool = a = b = c\n");
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "parse.syntax"),
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
         "expected a parse error: {:#?}",
         parsed.diagnostics
     );
