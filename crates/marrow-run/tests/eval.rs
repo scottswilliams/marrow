@@ -2232,6 +2232,27 @@ fn reads_inside_a_transaction_see_earlier_writes() {
 }
 
 #[test]
+fn a_lock_block_runs_its_body_and_releases_on_exit() {
+    // `lock` type-checks as a scope guarding its body. Under the single-writer
+    // profile it runs the block (writes land, a `return` exits) rather than
+    // failing with run.unsupported.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int): string\n    lock ^books(id)\n        ^books(id).title = \"kept\"\n        return ^books(id).title\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome =
+        run_entry(&program, &store, "test::save", &[Value::Int(1)]).expect("lock body runs");
+    assert_eq!(outcome.value, Some(Value::Str("kept".into())));
+    // The write inside the lock persisted after the lock released.
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Str("kept".into()))
+    );
+}
+
+#[test]
 fn append_writes_at_the_next_position() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n",

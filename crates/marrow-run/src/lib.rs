@@ -5,7 +5,9 @@
 //! conditionals, `while`/`for` loops, interpolation, and calls between
 //! functions. It reads saved data (fields and keyed-leaf entries) and writes it
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
-//! groups writes in a `transaction` (commit/rollback with read-your-writes), and
+//! groups writes in a `transaction` (commit/rollback with read-your-writes),
+//! guards a block with `lock` (a scope released on every exit under the
+//! single-writer profile), and
 //! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
 //! `std::assert`/`std::text`/`std::math` library helpers, and the
 //! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes, `merge`, index
@@ -2214,6 +2216,15 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 }
                 None => handled,
             }
+        }
+        Statement::Lock { body, .. } => {
+            // A single-writer capability profile holds no contended lock, so `lock`
+            // is just a scope guarding its body: the conceptual lock is acquired for
+            // the block and released on every exit (`return`/`break`/`continue`/
+            // `throw`/error), which `eval_block` already provides by popping its
+            // scope unconditionally. The target path coordinates concurrent writers,
+            // so it is not read here.
+            eval_block(body, env)
         }
         other => Err(unsupported("this statement", other.span())),
     }
