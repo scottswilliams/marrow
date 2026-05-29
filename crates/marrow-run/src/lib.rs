@@ -2370,23 +2370,59 @@ fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value
                 .ok_or_else(|| unsupported("an index key of this type", *span))?,
         ));
     }
+    // A non-unique index ends with all identity keys, so the levels below the
+    // supplied query args are the entry's remaining identity-key segments. Descend
+    // them per entry to reconstruct the full identity rather than yielding only the
+    // first raw key component.
+    let schema = find_resource(env.program, root)
+        .and_then(|resource| resource.indexes.iter().find(|i| &i.name == index))
+        .ok_or_else(|| unsupported("keys of this path", *span))?;
+    let depth = schema.args.len().saturating_sub(index_args.len());
+    index_entries(&segments, depth, &Vec::new(), *span, env)
+}
+
+/// Collect the resource identities reachable below `prefix` in a non-unique index
+/// tree, descending `depth` remaining identity-key levels. `keys` accumulates the
+/// identity-key segments gathered so far. At the final level each entry yields one
+/// identity: a single key value (renderable, addresses `^root(key)`) for a
+/// single-key identity, or a [`Value::Identity`] for a composite one.
+fn index_entries(
+    prefix: &[PathSegment],
+    depth: usize,
+    keys: &[SavedKey],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
     let children = {
         let store = env.store.borrow();
         store
-            .child_keys(&encode_path(&segments))
+            .child_keys(&encode_path(prefix))
             .map_err(|_| RuntimeError {
                 code: RUN_STORE,
                 message: "could not read the keys at this path".into(),
-                span: *span,
+                span,
             })?
     };
-    let mut values = Vec::with_capacity(children.len());
+    let mut values = Vec::new();
     for child in children {
-        if let ChildSegment::Key(key) = child {
-            values.push(
+        let ChildSegment::Key(key) = child else {
+            continue;
+        };
+        let mut keys = keys.to_vec();
+        keys.push(key.clone());
+        if depth <= 1 {
+            // The last identity-key level: a single-key identity stays a raw key
+            // value; a composite one reconstructs its full `Value::Identity`.
+            values.push(if keys.len() == 1 {
                 saved_key_to_value(key)
-                    .ok_or_else(|| unsupported("iterating keys of this type", *span))?,
-            );
+                    .ok_or_else(|| unsupported("iterating keys of this type", span))?
+            } else {
+                Value::Identity(keys)
+            });
+        } else {
+            let mut prefix = prefix.to_vec();
+            prefix.push(PathSegment::IndexKey(key));
+            values.extend(index_entries(&prefix, depth - 1, &keys, span, env)?);
         }
     }
     Ok(values)

@@ -3669,3 +3669,50 @@ fn a_non_unique_index_in_value_position_is_rejected() {
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
     assert!(error.message.contains("keys("), "{error:?}");
 }
+
+// --- Wave 1: composite-identity index traversal (G04/G08) ---
+
+/// A composite-identity resource indexed by status. The non-unique index ends
+/// with both identity keys, so traversal must descend both levels per entry and
+/// reconstruct the full `Enrollment::Id` (not just the first key component).
+const ENROLLMENT_STATUS: &str = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+
+    index byStatus(status, studentId, courseId)
+
+fn enroll(s: string, c: string, st: string)
+    const id = Enrollment::Id(studentId: s, courseId: c)
+    ^enrollments(id).status = st
+
+fn activeStatuses()
+    for id in keys(^enrollments.byStatus(\"active\"))
+        print(^enrollments(id).status)
+";
+
+#[test]
+fn traverses_a_composite_identity_index() {
+    let program = checked_program(ENROLLMENT_STATUS);
+    let store = RefCell::new(MemStore::new());
+    let enroll = |s: &str, c: &str, st: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::enroll",
+            &[
+                Value::Str(s.into()),
+                Value::Str(c.into()),
+                Value::Str(st.into()),
+            ],
+        )
+        .expect("enroll");
+    };
+    enroll("student-1", "course-9", "active");
+    enroll("student-2", "course-9", "active");
+    enroll("student-3", "course-9", "dropped");
+
+    // Each reconstructed identity addresses its record: every active enrollment
+    // reads back `active`. Two such entries exist, in (studentId, courseId) order.
+    let outcome = run_entry(&program, &store, "test::activeStatuses", &[]).expect("run");
+    assert_eq!(outcome.output, "active\nactive\n");
+}
