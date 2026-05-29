@@ -668,38 +668,23 @@ fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
 
 /// A resolved assignable place for an `out`/`inout` argument, captured before the
 /// call (its saved identity keys evaluated once) so it can be read for `inout` and
-/// written back without re-evaluating those keys.
+/// written back without re-evaluating those keys. A saved target is held as a
+/// lowered [`SavedPath`] with a known terminal, so reads and write-backs route
+/// through the same path model a direct read or assignment uses.
 enum Place {
     /// A bare local variable: `n` or `book`.
     Local(String),
     /// A field of a local resource variable: `book.title`.
     LocalField { base: String, field: String },
-    /// A saved scalar field: `^books(id).title`.
-    SavedField {
-        root: String,
-        identity: Vec<SavedKey>,
-        field: String,
-    },
-    /// A saved scalar field inside a keyed group entry, at any nesting depth:
-    /// `^books(id).versions(v).comments(c).text`. `layers` is the chain of
-    /// `(layer, key…)` levels from the record to the innermost group.
-    SavedNestedField {
-        root: String,
-        identity: Vec<SavedKey>,
-        layers: Vec<(String, Vec<SavedKey>)>,
-        field: String,
-    },
-    /// A whole saved resource: `^books(id)`.
-    SavedResource {
-        root: String,
-        identity: Vec<SavedKey>,
-    },
+    /// A saved target: a scalar field (`^books(id).title`), a nested group field
+    /// (`^books(id).versions(v).text`), or a whole record (`^books(id)`), as a
+    /// lowered path whose terminal records which.
+    Saved(SavedPath),
 }
 
 /// Resolve an `out`/`inout` argument expression to its [`Place`], evaluating any
 /// saved identity keys now. Supports a bare local, a field of a local resource, a
-/// saved scalar field, and a whole saved resource; other shapes (keyed group
-/// entries) defer.
+/// saved scalar field, and a whole saved resource; other shapes defer.
 fn resolve_place(
     expr: &Expression,
     span: SourceSpan,
@@ -712,22 +697,11 @@ fn resolve_place(
         Expression::Field { base, name, .. } if is_saved_path(base) => {
             // `^root(id…).field` is a top-level field; a deeper base
             // `^root(id…).layer(key…)….field` is a field inside a nested group
-            // entry. Lowering the base yields the chain (empty for the top level).
-            let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
-            if layers.is_empty() {
-                Ok(Place::SavedField {
-                    root,
-                    identity,
-                    field: name.clone(),
-                })
-            } else {
-                Ok(Place::SavedNestedField {
-                    root,
-                    identity,
-                    layers,
-                    field: name.clone(),
-                })
-            }
+            // entry. Lowering the base yields a record path; peel the trailing
+            // `.field` onto it as the path's terminal (the layer chain, empty for a
+            // top-level field, is already carried by the lowered path).
+            let path = lower(base, env)?.into_field(name.clone(), base.span())?;
+            Ok(Place::Saved(path))
         }
         // `book.title` — a field of a local resource variable (the base is a bare
         // local name, not a saved path).
@@ -742,8 +716,13 @@ fn resolve_place(
             })
         }
         Expression::Call { .. } if is_saved_path(expr) => {
-            let (root, identity) = lower(expr, env)?.into_record(expr.span())?;
-            Ok(Place::SavedResource { root, identity })
+            let path = lower(expr, env)?;
+            // A whole saved record is the only assignable call here: a layer chain
+            // or index branch has no whole-record value to read or write back.
+            if !path.layers.is_empty() || !matches!(path.terminal, Terminal::Record) {
+                return Err(unsupported("this saved path", expr.span()));
+            }
+            Ok(Place::Saved(path))
         }
         _ => Err(unsupported(
             "an out/inout argument that is not an assignable place",
@@ -764,26 +743,7 @@ impl Place {
                 span,
             }),
             Place::LocalField { base, field } => read_local_field(base, field, span, env),
-            Place::SavedField {
-                root,
-                identity,
-                field,
-            } => read_saved_field(root, identity, field, ReadPosition::ArgSeed, span, env),
-            Place::SavedNestedField {
-                root,
-                identity,
-                layers,
-                field,
-            } => read_nested_field(
-                root,
-                identity,
-                layers,
-                field,
-                ReadPosition::ArgSeed,
-                span,
-                env,
-            ),
-            Place::SavedResource { root, identity } => read_resource(root, identity, span, env),
+            Place::Saved(path) => path.read(ReadPosition::ArgSeed, span, env),
         }
     }
 
@@ -794,20 +754,7 @@ impl Place {
                 .assign(&name, value)
                 .map_err(|error| assign_error(&name, error, span)),
             Place::LocalField { base, field } => write_local_field(&base, &field, value, span, env),
-            Place::SavedField {
-                root,
-                identity,
-                field,
-            } => write_saved_field(&root, &identity, &field, value, span, env),
-            Place::SavedNestedField {
-                root,
-                identity,
-                layers,
-                field,
-            } => write_nested_field(&root, &identity, &layers, &field, value, span, env),
-            Place::SavedResource { root, identity } => {
-                write_resource(&root, &identity, value, span, env)
-            }
+            Place::Saved(path) => path.write(value, span, env),
         }
     }
 }
@@ -3008,10 +2955,12 @@ fn traversed_layer_prefix(
             base, name: layer, ..
         } => {
             let (root, identity) = lower(base, env)?.into_record(base.span())?;
-            let mut prefix = vec![PathSegment::Root(root)];
-            prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
-            prefix.push(PathSegment::ChildLayer(layer.clone()));
-            Ok(Some(prefix))
+            Ok(Some(saved_segments(
+                &root,
+                &identity,
+                &[(layer.clone(), Vec::new())],
+                None,
+            )))
         }
         _ => Ok(None),
     }
@@ -3147,9 +3096,7 @@ fn enumerate_child_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Val
     };
     let span = path.span();
     let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    let mut prefix = vec![PathSegment::Root(root)];
-    prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
-    prefix.push(PathSegment::ChildLayer(layer.clone()));
+    let prefix = saved_segments(&root, &identity, &[(layer.clone(), Vec::new())], None);
     collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, span, env)
 }
 
@@ -3299,131 +3246,14 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     if *quoted {
         return eval_raw_field_read(base, name, expr.span(), env);
     }
-    // A field reached through one or more group layers reads inside that group:
-    // a keyed GROUP entry `^root(id…).layer(key…)….field` (a layer call whose
-    // callee is a `.layer` access), or an unkeyed group `^root(id…).name.field`
-    // (a `.field` off a `.field` of the record). A plain `^root(id…).field` base
-    // is a top-level field read.
-    if is_group_base(base) {
-        return eval_group_field_read(base, name, expr.span(), env);
-    }
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    read_saved_field(
-        &root,
-        &identity,
-        name,
-        ReadPosition::Value,
-        expr.span(),
-        env,
-    )
-}
-
-/// Read a top-level saved scalar field from a pre-lowered identity, decoding it
-/// with the field's declared type. An unpopulated element is an absent-element
-/// fault, catchable or fatal per `position`. Shared by [`eval_saved_field`] and
-/// `out`/`inout` place reads.
-fn read_saved_field(
-    root: &str,
-    identity: &[SavedKey],
-    field: &str,
-    position: ReadPosition,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let mut segments = vec![PathSegment::Root(root.to_string())];
-    segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
-    segments.push(PathSegment::Field(field.to_string()));
-    let field_type = resource_field_type(env.program, root, field)
-        .ok_or_else(|| unsupported("reading this field", span))?;
-    let bytes = env
-        .store
-        .borrow()
-        .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?;
-    let Some(bytes) = bytes else {
-        return Err(absent_read(
-            position,
-            format!("`{field}` is absent"),
-            span,
-            env,
-        ));
-    };
-    decode_value(&bytes, field_type)
-        .map(saved_value_to_value)
-        .ok_or_else(|| RuntimeError {
-            code: RUN_TYPE,
-            message: format!("stored value for `{field}` did not decode to a runtime value"),
-            span,
-        })
-}
-
-/// Read a field inside a keyed GROUP entry at any nesting depth, e.g.
-/// `^books(id).versions(v).comments(c).text`. `base` is the group-entry path; it
-/// is lowered to the record identity and the chain of layer levels, the store is
-/// read, and the value is decoded with the innermost member's declared type; an
-/// absent entry is an absent-element error.
-fn eval_group_field_read(
-    base: &Expression,
-    field: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
-    read_nested_field(
-        &root,
-        &identity,
-        &layers,
-        field,
-        ReadPosition::Value,
-        span,
-        env,
-    )
-}
-
-/// Read a scalar field inside a (possibly nested) keyed group entry from already-
-/// lowered path parts. Shared by [`eval_group_field_read`] and an `inout` place
-/// read; the value decodes with the innermost member's declared type, and an
-/// unpopulated entry is an absent-element fault, catchable or fatal per
-/// `position`.
-fn read_nested_field(
-    root: &str,
-    identity: &[SavedKey],
-    layers: &[(String, Vec<SavedKey>)],
-    field: &str,
-    position: ReadPosition,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
-    let member_type = resource_nested_member_type(env.program, root, &layer_names, field)
-        .ok_or_else(|| unsupported("reading this group field", span))?;
-    let mut segments = vec![PathSegment::Root(root.to_string())];
-    segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
-    for (name, keys) in layers {
-        segments.push(PathSegment::ChildLayer(name.clone()));
-        segments.extend(keys.iter().cloned().map(PathSegment::IndexKey));
-    }
-    segments.push(PathSegment::Field(field.to_string()));
-    let bytes = env
-        .store
-        .borrow()
-        .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?;
-    let Some(bytes) = bytes else {
-        return Err(absent_read(
-            position,
-            format!("`{field}` entry is absent"),
-            span,
-            env,
-        ));
-    };
-    decode_value(&bytes, member_type)
-        .map(saved_value_to_value)
-        .ok_or_else(|| RuntimeError {
-            code: RUN_TYPE,
-            message: format!("stored value for `{field}` did not decode to a runtime value"),
-            span,
-        })
+    // A plain `^root(id…).field` base is a top-level field; a base reached through
+    // one or more group layers (`^root(id…).layer(key…)….field` or the unkeyed
+    // group hop `^root(id…).name.field`) is a field inside that group. Lowering the
+    // base and re-terminating at the field carries the layer chain either way, and
+    // `SavedPath::read` reads top-level or nested by whether that chain is empty.
+    lower(base, env)?
+        .into_field(name.clone(), base.span())?
+        .read(ReadPosition::Value, expr.span(), env)
 }
 
 /// Read a resource identity from a declared index lookup `^root.index(args…)`.
@@ -3537,10 +3367,12 @@ fn read_layer_entry(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let mut entry = vec![PathSegment::Root(root.to_string())];
-    entry.extend(identity.iter().cloned().map(PathSegment::RecordKey));
-    entry.push(PathSegment::ChildLayer(layer.to_string()));
-    entry.extend(layer_keys.iter().cloned().map(PathSegment::IndexKey));
+    let entry = saved_segments(
+        root,
+        identity,
+        &[(layer.to_string(), layer_keys.to_vec())],
+        None,
+    );
 
     // A leaf layer reads one value; a group layer materializes its entry.
     let Some(leaf_type) = resource_layer_leaf_type(env.program, root, layer) else {
@@ -3654,8 +3486,7 @@ fn read_resource(
             span,
         ));
     }
-    let mut prefix = vec![PathSegment::Root(root.to_string())];
-    prefix.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    let prefix = saved_segments(root, identity, &[], None);
 
     let store = env.store.borrow();
     let mut fields = Vec::new();
@@ -3684,12 +3515,12 @@ fn read_resource(
     Ok(Value::Resource(fields))
 }
 
-/// Apply a managed field write `^root(key…).field = value`. Lowers the identity,
-/// evaluates the value, and drives the write planner's `plan_field_write` — which
-/// validates the field and value and keeps generated indexes coherent — then
-/// commits the plan to the store. A planning failure surfaces with its `write.*`
-/// code. A group-entry target `^root(key…).layer(key…).field = value` is
-/// dispatched to [`eval_group_field_write`].
+/// Apply a managed field write `^root(key…).field = value`. Lowers the path,
+/// evaluates the value, and drives [`SavedPath::write`] — which routes a top-level
+/// field through the write planner's `plan_field_write` (validating the field and
+/// value and keeping generated indexes coherent) and a group-entry target
+/// `^root(key…).layer(key…).field = value` through `plan_nested_field_write` — then
+/// commits. A planning failure surfaces with its `write.*` code.
 fn eval_saved_field_write(
     base: &Expression,
     field: &str,
@@ -3705,16 +3536,15 @@ fn eval_saved_field_write(
         let value = eval_expr(value, env)?;
         return eval_raw_field_write(base, field, value, span, env);
     }
-    // A field reached through one or more group layers writes inside that group:
-    // a keyed GROUP entry `^root(id…).layer(key…)….field = v`, or an unkeyed group
-    // `^root(id…).name.field = v`. A plain `^root(id…).field` base is a top-level
-    // field write.
-    if is_group_base(base) {
-        return eval_group_field_write(base, field, value, span, env);
-    }
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
+    // A plain `^root(id…).field` base is a top-level field write; a base reached
+    // through one or more group layers (`^root(id…).layer(key…)….field = v` or the
+    // unkeyed group hop `^root(id…).name.field = v`) writes inside that group.
+    // Lowering the base and re-terminating at the field carries the layer chain
+    // either way, and `SavedPath::write` routes top-level or nested by whether that
+    // chain is empty. The path keys are evaluated before the right-hand value.
+    let path = lower(base, env)?.into_field(field.to_string(), base.span())?;
     let value = eval_expr(value, env)?;
-    write_saved_field(&root, &identity, field, value, span, env)
+    path.write(value, span, env)
 }
 
 /// Apply a managed top-level field write from a pre-lowered identity and an
@@ -3765,10 +3595,7 @@ fn raw_segment_path(
         ),
         span,
     )?;
-    let mut path = vec![PathSegment::Root(root)];
-    path.extend(identity.into_iter().map(PathSegment::RecordKey));
-    path.push(PathSegment::Field(segment.to_string()));
-    Ok(path)
+    Ok(saved_segments(&root, &identity, &[], Some(segment)))
 }
 
 /// Write a quoted/raw segment `^root(key…)."segment" = value` under maintenance:
@@ -3843,29 +3670,13 @@ fn eval_raw_field_read(
         })
 }
 
-/// Apply a managed group-entry field write
-/// `^root(key…).layer(key…)….field = value`: a single-field update inside a keyed
-/// GROUP entry at any nesting depth (e.g. `^books(id).versions(v).comments(c).text`),
-/// leaving the entry's other members in place. `base` is the group-entry path; it
-/// is lowered to the record identity and the chain of layer levels, then drives
-/// the write planner's `plan_nested_field_write` and commits. Generated indexes do not
-/// span keyed child layers, so there is no index interaction.
-fn eval_group_field_write(
-    base: &Expression,
-    field: &str,
-    value: &Expression,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
-    let value = eval_expr(value, env)?;
-    write_nested_field(&root, &identity, &layers, field, value, span, env)
-}
-
 /// Write `value` to a scalar field inside a (possibly nested) keyed group entry
-/// from already-lowered path parts. Shared by [`eval_group_field_write`] and an
-/// `out`/`inout` place write. Groups carry no generated indexes, so this is a
-/// plain replace-in-place write.
+/// `^root(key…).layer(key…)….field = value`, a single-field update at any nesting
+/// depth (e.g. `^books(id).versions(v).comments(c).text`) that leaves the entry's
+/// other members in place. Driven from a lowered path's group chain by both a
+/// direct write and an `out`/`inout` place write via [`SavedPath::write`]. Groups
+/// carry no generated indexes, so this is a plain replace-in-place write through
+/// the write planner's `plan_nested_field_write`.
 fn write_nested_field(
     root: &str,
     identity: &[SavedKey],
@@ -4075,7 +3886,8 @@ fn eval_layer_merge(
         ));
     }
     let (to_root, to_identity) = lower(target_record, env)?.into_record(target_record.span())?;
-    let (from_root, from_identity) = lower(source_record, env)?.into_record(source_record.span())?;
+    let (from_root, from_identity) =
+        lower(source_record, env)?.into_record(source_record.span())?;
     if from_root != to_root {
         return Err(unsupported("merging a layer across saved roots", span));
     }
@@ -4096,10 +3908,7 @@ fn eval_layer_merge(
 /// the prefix [`traversed_layer_prefix`] produces for a loop over that layer, so
 /// [`Env::guard_traversed_layer`] can compare them.
 fn layer_prefix(root: &str, identity: &[SavedKey], layer: &str) -> Vec<PathSegment> {
-    let mut prefix = vec![PathSegment::Root(root.into())];
-    prefix.extend(identity.iter().cloned().map(PathSegment::RecordKey));
-    prefix.push(PathSegment::ChildLayer(layer.into()));
-    prefix
+    saved_segments(root, identity, &[(layer.to_string(), Vec::new())], None)
 }
 
 /// Lower a materialized resource value's present fields to a `ResourceValue` for
@@ -4262,13 +4071,7 @@ fn delete_nested_field(
     // group is a compile error (`schema.required_in_unkeyed_group`). If group
     // materialization ever lifts that rejection, add the guard that
     // `eval_field_delete` applies to top-level required fields.
-    let mut path = vec![PathSegment::Root(root.into())];
-    path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
-    for (layer, keys) in layers {
-        path.push(PathSegment::ChildLayer(layer.clone()));
-        path.extend(keys.iter().cloned().map(PathSegment::IndexKey));
-    }
-    path.push(PathSegment::Field(field.into()));
+    let path = saved_segments(root, identity, layers, Some(field));
     env.store
         .borrow_mut()
         .delete(&encode_path(&path))
@@ -4307,14 +4110,11 @@ fn eval_layer_entry_delete(
     if chain.is_empty() {
         env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
     }
-    let mut path = vec![PathSegment::Root(root.clone())];
-    path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
-    for (name, level_keys) in &chain {
-        path.push(PathSegment::ChildLayer(name.clone()));
-        path.extend(level_keys.iter().cloned().map(PathSegment::IndexKey));
-    }
-    path.push(PathSegment::ChildLayer(layer.into()));
-    path.extend(entry_keys.into_iter().map(PathSegment::IndexKey));
+    // The full level chain to the entry: the lowered group chain plus the terminal
+    // keyed layer being deleted.
+    let mut levels = chain;
+    levels.push((layer.to_string(), entry_keys));
+    let path = saved_segments(&root, &identity, &levels, None);
     env.store
         .borrow_mut()
         .delete(&encode_path(&path))
@@ -4618,6 +4418,10 @@ enum Terminal {
     /// The path stops at the record or group entry itself (`^root(id)`,
     /// `^root(id).layer(k)`).
     Record,
+    /// The path stops at a named scalar field of the record or innermost group
+    /// entry (`^root(id).field`, `^root(id).layer(k).field`). Produced when a place
+    /// resolution peels the trailing `.field` onto an otherwise-`Record` path.
+    Field(String),
     /// A declared index branch `^root.index(args…)`. It hangs directly off the root
     /// with no record identity or layer chain.
     Index,
@@ -4647,6 +4451,140 @@ impl SavedPath {
             Err(unsupported("this saved path", span))
         }
     }
+
+    /// Re-terminate a record-base path at the named scalar `field`, so a lowered
+    /// `^root(id…)` or `^root(id…).layer(key…)` base gains a trailing
+    /// [`Terminal::Field`]. Used when a place resolution peels the trailing `.field`
+    /// off the spine; an index branch has no field below it and is rejected.
+    fn into_field(mut self, field: String, span: SourceSpan) -> Result<Self, RuntimeError> {
+        if matches!(self.terminal, Terminal::Record) {
+            self.terminal = Terminal::Field(field);
+            Ok(self)
+        } else {
+            Err(unsupported("this saved path", span))
+        }
+    }
+
+    /// The encoded path segments this lowered path addresses: the root, identity
+    /// record keys, each `(layer, key…)` level, and the trailing scalar field for a
+    /// [`Terminal::Field`]. The single [`PathSegment`]-vec builder for the
+    /// record/layer/field shape. An index branch has no such segment form, so this
+    /// panics on [`Terminal::Index`] — callers route index paths separately.
+    fn to_segments(&self) -> Vec<PathSegment> {
+        let field = match &self.terminal {
+            Terminal::Record => None,
+            Terminal::Field(name) => Some(name.as_str()),
+            Terminal::Index => panic!("an index branch has no record/layer segment form"),
+        };
+        saved_segments(&self.root, &self.identity, &self.layers, field)
+    }
+
+    /// The current value at this lowered path. A `Terminal::Field` reads that
+    /// scalar field (top-level or inside the group chain), decoding it with the
+    /// field's declared type; a `Terminal::Record` reads the whole record. An
+    /// unpopulated element raises an absent-element fault, catchable or fatal per
+    /// `position`. Shared by value-position field reads and `out`/`inout` seeds.
+    fn read(
+        &self,
+        position: ReadPosition,
+        span: SourceSpan,
+        env: &mut Env<'_>,
+    ) -> Result<Value, RuntimeError> {
+        let Terminal::Field(field) = &self.terminal else {
+            return match self.terminal {
+                Terminal::Record => read_resource(&self.root, &self.identity, span, env),
+                Terminal::Index => Err(unsupported("reading this saved path", span)),
+                Terminal::Field(_) => unreachable!("guarded by the let-else"),
+            };
+        };
+        let field_type = self.field_type(env.program, field).ok_or_else(|| {
+            // A top-level field rejects as "reading this field"; a group-entry field
+            // as "reading this group field", keeping each read's message.
+            let what = if self.layers.is_empty() {
+                "reading this field"
+            } else {
+                "reading this group field"
+            };
+            unsupported(what, span)
+        })?;
+        let bytes = env
+            .store
+            .borrow()
+            .read(&encode_path(&self.to_segments()))
+            .map_err(|error| store_error(error, span))?;
+        let Some(bytes) = bytes else {
+            // A top-level field reads "is absent"; a group-entry field "entry is
+            // absent", keeping each read's message as it was.
+            let what = if self.layers.is_empty() {
+                format!("`{field}` is absent")
+            } else {
+                format!("`{field}` entry is absent")
+            };
+            return Err(absent_read(position, what, span, env));
+        };
+        decode_value(&bytes, field_type)
+            .map(saved_value_to_value)
+            .ok_or_else(|| RuntimeError {
+                code: RUN_TYPE,
+                message: format!("stored value for `{field}` did not decode to a runtime value"),
+                span,
+            })
+    }
+
+    /// Write `value` to this lowered path, routing a scalar field or whole-record
+    /// write the same way a direct assignment to the path would. Shared by direct
+    /// saved writes and `out`/`inout` write-back.
+    fn write(self, value: Value, span: SourceSpan, env: &mut Env<'_>) -> Result<(), RuntimeError> {
+        match self.terminal {
+            Terminal::Field(field) if self.layers.is_empty() => {
+                write_saved_field(&self.root, &self.identity, &field, value, span, env)
+            }
+            Terminal::Field(field) => write_nested_field(
+                &self.root,
+                &self.identity,
+                &self.layers,
+                &field,
+                value,
+                span,
+                env,
+            ),
+            Terminal::Record => write_resource(&self.root, &self.identity, value, span, env),
+            Terminal::Index => Err(unsupported("writing this saved path", span)),
+        }
+    }
+
+    /// The declared scalar type of this path's [`Terminal::Field`]: a top-level
+    /// field when the layer chain is empty, otherwise a nested group member.
+    fn field_type(&self, program: &CheckedProgram, field: &str) -> Option<ScalarType> {
+        if self.layers.is_empty() {
+            resource_field_type(program, &self.root, field)
+        } else {
+            let layer_names: Vec<&str> = self.layers.iter().map(|(n, _)| n.as_str()).collect();
+            resource_nested_member_type(program, &self.root, &layer_names, field)
+        }
+    }
+}
+
+/// Build the encoded path segments for a saved member: the root, the identity
+/// record keys, each `(layer, key…)` level (outermost first), and an optional
+/// trailing scalar field. The one builder every record/layer/field read, write,
+/// and delete shares, so a path encodes byte-identically wherever it is built.
+fn saved_segments(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    field: Option<&str>,
+) -> Vec<PathSegment> {
+    let mut segments = vec![PathSegment::Root(root.to_string())];
+    segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    for (name, keys) in layers {
+        segments.push(PathSegment::ChildLayer(name.clone()));
+        segments.extend(keys.iter().cloned().map(PathSegment::IndexKey));
+    }
+    if let Some(field) = field {
+        segments.push(PathSegment::Field(field.to_string()));
+    }
+    segments
 }
 
 /// A lowered keyed group-entry path: the saved root name, the record identity
@@ -4715,7 +4653,10 @@ fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError
     let Expression::SavedRoot { name, .. } = callee.as_ref() else {
         return Err(unsupported("this saved path", *span));
     };
-    Ok(record_path(name.clone(), lower_keys(args, *span, true, env)?))
+    Ok(record_path(
+        name.clone(),
+        lower_keys(args, *span, true, env)?,
+    ))
 }
 
 /// A record-base [`SavedPath`]: a root and identity with no layers and a record
@@ -4726,6 +4667,84 @@ fn record_path(root: String, identity: Vec<SavedKey>) -> SavedPath {
         identity,
         layers: Vec::new(),
         terminal: Terminal::Record,
+    }
+}
+
+#[cfg(test)]
+mod to_segments_tests {
+    use super::*;
+
+    fn book_path(terminal: Terminal) -> SavedPath {
+        SavedPath {
+            root: "books".into(),
+            identity: vec![SavedKey::Int(7)],
+            layers: vec![("versions".into(), vec![SavedKey::Int(2)])],
+            terminal,
+        }
+    }
+
+    // The single builder must reproduce the exact segment sequence the open-coded
+    // builders emitted for each shape, so a path encodes byte-identically wherever
+    // it is built. A nested field is `Root, RecordKey, ChildLayer, IndexKey, Field`.
+    #[test]
+    fn nested_field_terminal_segments_match_the_open_coded_form() {
+        assert_eq!(
+            book_path(Terminal::Field("text".into())).to_segments(),
+            vec![
+                PathSegment::Root("books".into()),
+                PathSegment::RecordKey(SavedKey::Int(7)),
+                PathSegment::ChildLayer("versions".into()),
+                PathSegment::IndexKey(SavedKey::Int(2)),
+                PathSegment::Field("text".into()),
+            ]
+        );
+    }
+
+    // A top-level field is `Root, RecordKey, Field` — no layer segments.
+    #[test]
+    fn top_level_field_terminal_drops_the_layer_chain() {
+        let path = SavedPath {
+            root: "books".into(),
+            identity: vec![SavedKey::Int(7)],
+            layers: Vec::new(),
+            terminal: Terminal::Field("title".into()),
+        };
+        assert_eq!(
+            path.to_segments(),
+            vec![
+                PathSegment::Root("books".into()),
+                PathSegment::RecordKey(SavedKey::Int(7)),
+                PathSegment::Field("title".into()),
+            ]
+        );
+    }
+
+    // A record terminal stops at the group entry with no trailing field segment.
+    #[test]
+    fn record_terminal_has_no_trailing_field() {
+        assert_eq!(
+            book_path(Terminal::Record).to_segments(),
+            vec![
+                PathSegment::Root("books".into()),
+                PathSegment::RecordKey(SavedKey::Int(7)),
+                PathSegment::ChildLayer("versions".into()),
+                PathSegment::IndexKey(SavedKey::Int(2)),
+            ]
+        );
+    }
+
+    // An index branch has no record/layer segment form, so `to_segments` refuses it
+    // rather than emitting a malformed path.
+    #[test]
+    #[should_panic(expected = "index branch has no record/layer segment form")]
+    fn index_terminal_has_no_segment_form() {
+        let _ = SavedPath {
+            root: "books".into(),
+            identity: Vec::new(),
+            layers: Vec::new(),
+            terminal: Terminal::Index,
+        }
+        .to_segments();
     }
 }
 
