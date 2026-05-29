@@ -13,10 +13,8 @@
 use std::collections::BTreeMap;
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
-use crate::path::{
-    ChildSegment, SavedKey, decode_child_segment, decode_key_value, int_index_key_band,
-    int_record_key_band, root_name, segment_len,
-};
+use crate::path::{ChildSegment, int_index_key_band, int_record_key_band};
+use crate::traversal;
 
 /// An in-memory map of encoded saved paths to encoded values. Transactions are a
 /// stack of whole-map savepoints (see the [`Backend`] `begin`/`commit`/`rollback`
@@ -46,13 +44,8 @@ impl MemStore {
     }
 
     /// Whether the encoded `path` holds a value, children, both, or neither.
-    pub fn presence(&self, path: &[u8]) -> Presence {
-        match (self.entries.contains_key(path), self.has_descendants(path)) {
-            (false, false) => Presence::Absent,
-            (true, false) => Presence::ValueOnly,
-            (false, true) => Presence::ChildrenOnly,
-            (true, true) => Presence::ValueAndChildren,
-        }
+    pub fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
+        traversal::presence(self.entries.contains_key(path), self.range_from(path), path)
     }
 
     /// Remove the value at the encoded `path` and every value below it. Deleting
@@ -67,91 +60,52 @@ impl MemStore {
     /// Returns [`StoreError::CorruptPath`] if a stored descendant key cannot be
     /// decoded.
     pub fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        let mut children = Vec::new();
-        let mut last: Option<Vec<u8>> = None;
-        for key in self.subtree_keys(path) {
-            if key.len() <= path.len() {
-                continue; // the path's own entry, not a child
-            }
-            let rest = &key[path.len()..];
-            let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
-            let segment = &rest[..len];
-            if last.as_deref() == Some(segment) {
-                continue; // same immediate child as the previous descendant
-            }
-            last = Some(segment.to_vec());
-            children.push(decode_child_segment(segment).ok_or_else(|| corrupt(key))?);
-        }
-        Ok(children)
+        traversal::child_keys(self.range_from(path), path)
     }
 
     /// Up to `limit` (encoded path, value) pairs in the subtree at the encoded
     /// `path`, in Marrow order, including the value at `path` itself when
     /// present. `truncated` is set when more remained past the limit.
     pub fn scan(&self, path: &[u8], limit: usize) -> ScanPage {
-        let mut page = ScanPage::default();
-        for (key, value) in self
-            .entries
-            .range(path.to_vec()..)
-            .take_while(|(key, _)| key.starts_with(path))
-        {
-            if page.entries.len() == limit {
-                page.truncated = true;
-                break;
-            }
-            page.entries.push((key.clone(), value.clone()));
-        }
-        page
+        // The in-memory range never faults, so the shared scan cannot error here.
+        traversal::scan(self.range_from(path), path, limit).expect("in-memory scan never faults")
     }
 
     /// The distinct saved root names, in Marrow order. Returns
     /// [`StoreError::CorruptPath`] if a stored key does not begin with a valid
     /// root segment.
     pub fn roots(&self) -> Result<Vec<String>, StoreError> {
-        let mut roots: Vec<String> = Vec::new();
-        for key in self.entries.keys() {
-            let name = root_name(key).ok_or_else(|| corrupt(key))?;
-            if roots.last() != Some(&name) {
-                roots.push(name);
-            }
-        }
-        Ok(roots)
+        traversal::roots(self.range_from(&[]))
     }
 
-    /// Does any stored key lie strictly below `prefix`? An encoded ancestor is a
-    /// byte-prefix of its descendants, and segment terminators keep unrelated
-    /// paths from sharing the prefix, so a longer prefixed key is a descendant.
-    fn has_descendants(&self, prefix: &[u8]) -> bool {
-        self.subtree_keys(prefix)
-            .any(|key| key.len() > prefix.len())
-    }
-
-    /// The stored keys in the subtree at `prefix` (the prefix entry and every
-    /// descendant), in Marrow order.
-    fn subtree_keys<'a>(&'a self, prefix: &'a [u8]) -> impl Iterator<Item = &'a Vec<u8>> {
+    /// The stored entries from `prefix` onward, in Marrow order, adapted to the
+    /// shared [`traversal`] item shape. The in-memory range is infallible, so each
+    /// pair is wrapped as `Ok`; the prefix bound is applied by the traversal
+    /// functions themselves.
+    fn range_from<'a>(
+        &'a self,
+        prefix: &[u8],
+    ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
         self.entries
             .range(prefix.to_vec()..)
-            .map(|(key, _)| key)
-            .take_while(move |key| key.starts_with(prefix))
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
 
     /// The highest integer key in the half-open byte `band` of integer-keyed
     /// children of `prefix`. The band is one contiguous numeric-ordered run, so
-    /// its last entry is the highest; the key after `prefix` is the kind tag (one
-    /// byte) then the integer key encoding, so it decodes from `prefix.len() + 1`.
-    /// Returns `None` when the band is empty. O(log n), not a full child walk.
+    /// its last entry is the highest; the shared decode reads the key just past the
+    /// kind tag. `None` when the band is empty. O(log n), not a full child walk.
     fn max_int_in_band(
         &self,
         prefix: &[u8],
         (lo, hi): (Vec<u8>, Vec<u8>),
     ) -> Result<Option<i64>, StoreError> {
-        match self.entries.range(lo..hi).next_back() {
-            Some((key, _)) => match decode_key_value(key.get(prefix.len() + 1..).unwrap_or(&[])) {
-                Some((SavedKey::Int(value), _)) => Ok(Some(value)),
-                _ => Err(corrupt(key)),
-            },
-            None => Ok(None),
-        }
+        let last = self
+            .entries
+            .range(lo..hi)
+            .next_back()
+            .map(|(key, _)| Ok(key.as_slice()));
+        traversal::max_int_key(last, prefix)
     }
 }
 
@@ -175,7 +129,7 @@ impl Backend for MemStore {
     }
 
     fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        Ok(MemStore::presence(self, path))
+        MemStore::presence(self, path)
     }
 
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
@@ -218,11 +172,6 @@ impl Backend for MemStore {
         }
         Ok(())
     }
-}
-
-/// Build a [`StoreError::CorruptPath`] for a stored key that failed to decode.
-fn corrupt(key: &[u8]) -> StoreError {
-    StoreError::CorruptPath { path: key.to_vec() }
 }
 
 #[cfg(test)]

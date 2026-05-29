@@ -46,19 +46,19 @@ fn writing_replaces_the_existing_value() {
 #[test]
 fn presence_reports_all_four_states() {
     let mut store = MemStore::new();
-    assert_eq!(store.presence(&book(1)), Presence::Absent);
+    assert_eq!(store.presence(&book(1)), Ok(Presence::Absent));
 
     // A whole-resource value at the record, no children yet.
     store.write(&book(1), b"whole".to_vec());
-    assert_eq!(store.presence(&book(1)), Presence::ValueOnly);
+    assert_eq!(store.presence(&book(1)), Ok(Presence::ValueOnly));
 
     // A field below the record adds children.
     store.write(&book_field(1, "title"), b"Dune".to_vec());
-    assert_eq!(store.presence(&book(1)), Presence::ValueAndChildren);
+    assert_eq!(store.presence(&book(1)), Ok(Presence::ValueAndChildren));
 
     // A different record with only a field below it, no whole value.
     store.write(&book_field(2, "title"), b"Sand".to_vec());
-    assert_eq!(store.presence(&book(2)), Presence::ChildrenOnly);
+    assert_eq!(store.presence(&book(2)), Ok(Presence::ChildrenOnly));
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn delete_removes_the_value_and_its_subtree() {
 
     store.delete(&book(1));
 
-    assert_eq!(store.presence(&book(1)), Presence::Absent);
+    assert_eq!(store.presence(&book(1)), Ok(Presence::Absent));
     assert_eq!(store.read(&book_field(1, "title")), None);
     assert_eq!(store.read(&book_field(1, "author")), None);
     // A sibling record is untouched.
@@ -108,7 +108,7 @@ fn dump_and_restore_reproduce_the_store() {
     // The restored store reproduces the dump, the roots, and presence exactly.
     assert_eq!(restored.scan(&[], usize::MAX), dump);
     assert_eq!(restored.roots(), store.roots());
-    assert_eq!(restored.presence(&book(1)), Presence::ValueAndChildren);
+    assert_eq!(restored.presence(&book(1)), Ok(Presence::ValueAndChildren));
 }
 
 #[test]

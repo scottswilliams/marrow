@@ -18,6 +18,7 @@ pub mod mem;
 pub mod path;
 #[cfg(feature = "native")]
 pub mod redb;
+mod traversal;
 pub mod value;
 
 // The reusable backend conformance suite is test-only: it holds every backend to
