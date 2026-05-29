@@ -797,7 +797,11 @@ mod tests {
             (SavedKey::Instant(1_700_000_000_000_000_000), "instant"),
         ] {
             assert_eq!(key.wire_tag(), tag, "{key:?}");
-            assert_eq!(key.clone().into_value().as_key(), Some(key.clone()), "{key:?}");
+            assert_eq!(
+                key.clone().into_value().as_key(),
+                Some(key.clone()),
+                "{key:?}"
+            );
         }
         // A decimal has no order-preserving key encoding.
         assert_eq!(SavedValue::Decimal(crate::Decimal::ZERO).as_key(), None);
