@@ -22,12 +22,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use marrow_check::{
     CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType, PrimitiveType,
 };
-use marrow_schema::{IndexSchema, LayerMember, ResourceSchema};
+use marrow_schema::{IndexSchema, LayerMember, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_store::value::{SavedValue, ValueError, ScalarType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, ValueError, decode_value, encode_value};
 use marrow_syntax::{
     ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
@@ -826,23 +826,27 @@ fn zero_value(ty: &MarrowType) -> Value {
     }
 }
 
-/// The default value a typed `var` with no initializer starts at, by its declared
-/// type name. `None` for a type with no representable default (it stays
-/// unsupported). Resource types are handled by the caller (an empty resource).
-fn uninitialized_default(type_name: &str) -> Option<Value> {
-    if type_name.starts_with("sequence") {
-        return Some(Value::Sequence(Vec::new()));
-    }
-    Some(match type_name {
-        "int" => Value::Int(0),
-        "bool" => Value::Bool(false),
-        "string" => Value::Str(String::new()),
-        "bytes" => Value::Bytes(Vec::new()),
-        "date" => Value::Date(0),
-        "instant" => Value::Instant(0),
-        "duration" => Value::Duration(0),
-        "decimal" => Value::Decimal(Decimal::parse("0")?),
-        _ => return None,
+/// The default value a typed `var` with no initializer starts at, by its resolved
+/// type. `None` for a type with no representable default (it stays unsupported).
+/// Resource types are handled by the caller (an empty resource).
+fn uninitialized_default(ty: &Type) -> Option<Value> {
+    Some(match ty {
+        Type::Sequence(_) => Value::Sequence(Vec::new()),
+        Type::Scalar(ScalarType::Int) => Value::Int(0),
+        Type::Scalar(ScalarType::Bool) => Value::Bool(false),
+        Type::Scalar(ScalarType::Str) => Value::Str(String::new()),
+        Type::Scalar(ScalarType::Bytes) => Value::Bytes(Vec::new()),
+        Type::Scalar(ScalarType::Date) => Value::Date(0),
+        Type::Scalar(ScalarType::Instant) => Value::Instant(0),
+        Type::Scalar(ScalarType::Duration) => Value::Duration(0),
+        Type::Scalar(ScalarType::Decimal) => Value::Decimal(Decimal::parse("0")?),
+        // `ErrorCode`, identities, and unresolved names have no zero value.
+        Type::Scalar(ScalarType::ErrorCode)
+        | Type::Identity(_)
+        | Type::Named(_)
+        | Type::Unknown => {
+            return None;
+        }
     })
 }
 
@@ -2405,11 +2409,11 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 // unwritten place (e.g. an `out` argument target, the documented
                 // `var n: int` then `f(out n)` pattern) is usable before its first
                 // assignment.
-                None => match ty {
-                    Some(ty) if is_resource_type(env.program, &ty.text) => {
+                None => match ty.as_ref().map(Type::resolve) {
+                    Some(Type::Named(name)) if is_resource_type(env.program, &name) => {
                         Value::Resource(Vec::new())
                     }
-                    Some(ty) => uninitialized_default(&ty.text).ok_or_else(|| {
+                    Some(ty) => uninitialized_default(&ty).ok_or_else(|| {
                         unsupported("an uninitialized variable of this type", *span)
                     })?,
                     None => return Err(unsupported("an uninitialized variable", *span)),
@@ -3575,7 +3579,9 @@ fn read_resource(
         else {
             continue;
         };
-        let value_type = ScalarType::from_scalar_name(&field.ty.text)
+        let value_type = field
+            .ty
+            .scalar()
             .ok_or_else(|| unsupported("reading this field type", span))?;
         let value = decode_value(&bytes, value_type)
             .and_then(saved_value_to_value)
@@ -4681,7 +4687,7 @@ fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Opt
                 .is_some_and(|saved| saved.root == root)
         })?;
     let field = resource.fields.iter().find(|field_| field_.name == field)?;
-    ScalarType::from_scalar_name(&field.ty.text)
+    field.ty.scalar()
 }
 
 /// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
@@ -4696,7 +4702,7 @@ fn resource_layer_leaf_type(
         .layers
         .iter()
         .find(|declared| declared.name == layer)?;
-    ScalarType::from_scalar_name(&layer.leaf_type.as_ref()?.text)
+    layer.leaf_type.as_ref()?.scalar()
 }
 
 /// The declared type of a scalar member field inside a saved root's GROUP layer,
@@ -4722,7 +4728,7 @@ fn resource_nested_member_type(
         LayerMember::Field(member) if member.name == field => Some(member),
         _ => None,
     })?;
-    ScalarType::from_scalar_name(&member.ty.text)
+    member.ty.scalar()
 }
 
 /// How a stored saved path relates to the project schema, for data-integrity
@@ -4863,10 +4869,7 @@ fn resource_group_members(
         .members
         .iter()
         .filter_map(|member| match member {
-            LayerMember::Field(field) => Some((
-                field.name.clone(),
-                ScalarType::from_scalar_name(&field.ty.text)?,
-            )),
+            LayerMember::Field(field) => Some((field.name.clone(), field.ty.scalar()?)),
             _ => None,
         })
         .collect();

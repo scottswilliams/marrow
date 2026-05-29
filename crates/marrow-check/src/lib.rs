@@ -432,7 +432,7 @@ fn check_type_annotation(
     resources: &HashSet<String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if !MarrowType::names_known_type(&ty.text, resources) {
+    if !MarrowType::names_known_type(ty, resources) {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
@@ -1147,7 +1147,7 @@ fn saved_field_type(
         .fields
         .iter()
         .find(|declared| declared.name == field)?;
-    Some(MarrowType::resolve(&field.ty, &[]))
+    Some(MarrowType::from_resolved(field.ty.clone(), &[]))
 }
 
 /// The schema of the resource that owns saved root `^root`, if any. Mirrors the
@@ -1242,7 +1242,7 @@ fn local_field_type(
         .fields
         .iter()
         .find(|declared| declared.name == field)?;
-    Some(MarrowType::resolve(&field.ty, &[]))
+    Some(MarrowType::from_resolved(field.ty.clone(), &[]))
 }
 
 /// The declared type of a group field read at any nesting depth, reached through
@@ -1261,7 +1261,7 @@ fn saved_group_field_type(
         marrow_schema::LayerMember::Field(member) if member.name == field => Some(member),
         _ => None,
     })?;
-    Some(MarrowType::resolve(&member.ty, &[]))
+    Some(MarrowType::from_resolved(member.ty.clone(), &[]))
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -1313,7 +1313,7 @@ fn saved_leaf_type(
     let (root, layers) = saved_layer_chain(callee)?;
     let resource = find_resource_schema(program, root)?;
     let layer = descend_layers(resource, &layers)?;
-    Some(MarrowType::resolve(layer.leaf_type.as_ref()?, &[]))
+    Some(MarrowType::from_resolved(layer.leaf_type.clone()?, &[]))
 }
 
 /// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
@@ -1969,8 +1969,7 @@ fn is_builtin_call(segments: &[String]) -> bool {
                 // write and print
                 | "write" | "print"
                 // error constructor
-                | "Error"
-            // conversions: the nine storable scalars, by canonical name.
+                | "Error" // conversions: the nine storable scalars, by canonical name.
             ) || ScalarType::from_scalar_name(name).is_some()
         }
         // A `std::module::op` builtin must name a real std module, mirroring

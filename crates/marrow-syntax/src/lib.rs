@@ -460,6 +460,15 @@ pub struct TypeRef {
     pub text: String,
 }
 
+impl fmt::Display for TypeRef {
+    // The parser keeps the verbatim source spelling so the formatter re-emits a
+    // type annotation exactly as written. Resolution to a structured type happens
+    // once in marrow-schema; this text is the AST's only remaining use of it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: &'static str,

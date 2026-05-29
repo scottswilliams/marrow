@@ -11,11 +11,11 @@
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
-use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema};
+use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema, Type};
 use marrow_store::backend::Backend;
 use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
-use marrow_store::value::{SavedValue, ValueError, ScalarType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, ValueError, decode_value, encode_value};
 
 /// A field's value in a write: a saved value, or explicitly absent (omitted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +191,7 @@ pub fn plan_resource_write(
     for field in &schema.fields {
         match supplied_value(value, &field.name) {
             Some(FieldValue::Saved(saved)) => {
-                check_type(&field.name, &field.ty.text, saved)?;
+                check_type(&field.name, &field.ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
             Some(FieldValue::Absent) | None => {
@@ -301,7 +301,7 @@ pub fn plan_field_write(
             code: WRITE_UNKNOWN_FIELD,
             message: format!("resource `{}` has no field `{field}`", schema.name),
         })?;
-    check_type(field, &declared.ty.text, value)?;
+    check_type(field, &declared.ty, value)?;
 
     // Reject a unique-index conflict on the written field before staging.
     for index in &schema.indexes {
@@ -418,7 +418,7 @@ pub fn plan_resource_merge(
     for field in &schema.fields {
         match supplied_value(value, &field.name) {
             Some(FieldValue::Saved(saved)) => {
-                check_type(&field.name, &field.ty.text, saved)?;
+                check_type(&field.name, &field.ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
             Some(FieldValue::Absent) | None => {
@@ -535,7 +535,7 @@ pub fn plan_layer_leaf_write(
             ),
         });
     }
-    check_type(layer, &leaf_type.text, value)?;
+    check_type(layer, leaf_type, value)?;
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
             path: encode_path(&layer_leaf_path(root, identity, layer, key)),
@@ -591,7 +591,7 @@ pub fn plan_nested_field_write(
             code: WRITE_UNKNOWN_FIELD,
             message: format!("group layer `{}` has no field `{field}`", innermost.name),
         })?;
-    check_type(field, &member.ty.text, value)?;
+    check_type(field, &member.ty, value)?;
     let mut path = nested_layer_path(root, identity, layers);
     path.push(PathSegment::Field(field.into()));
     Ok(WritePlan {
@@ -651,7 +651,7 @@ pub fn plan_layer_group_write(
         };
         match supplied_value(value, &field.name) {
             Some(FieldValue::Saved(saved)) => {
-                check_type(&field.name, &field.ty.text, saved)?;
+                check_type(&field.name, &field.ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
             Some(FieldValue::Absent) | None => {
@@ -1010,7 +1010,7 @@ fn stored_arg_key(
     let Some(field) = schema.fields.iter().find(|field| field.name == arg) else {
         return Ok(None);
     };
-    let Some(value_type) = ScalarType::from_scalar_name(&field.ty.text) else {
+    let Some(value_type) = field.ty.scalar() else {
         return Ok(None);
     };
     let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
@@ -1177,13 +1177,13 @@ fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
 }
 
 /// Check that `value` matches the field's declared scalar type name.
-fn check_type(field: &str, type_name: &str, value: &SavedValue) -> Result<(), WriteError> {
-    if ScalarType::from_scalar_name(type_name) == Some(value_type_of(value)) {
+fn check_type(field: &str, ty: &Type, value: &SavedValue) -> Result<(), WriteError> {
+    if ty.scalar() == Some(value_type_of(value)) {
         Ok(())
     } else {
         Err(WriteError {
             code: WRITE_TYPE_MISMATCH,
-            message: format!("field `{field}` does not hold a `{type_name}`"),
+            message: format!("field `{field}` does not hold a `{ty}`"),
         })
     }
 }

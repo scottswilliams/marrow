@@ -9,7 +9,8 @@ use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
     SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
-    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
+    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, ScalarType, Type,
+    compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -75,7 +76,7 @@ fn book_saved_root_has_one_identity_key() {
     assert_eq!(root.root, "books");
     assert_eq!(root.identity_keys.len(), 1);
     assert_eq!(root.identity_keys[0].name, "id");
-    assert_eq!(root.identity_keys[0].ty.text, "int");
+    assert_eq!(root.identity_keys[0].ty, Type::Scalar(ScalarType::Int));
 }
 
 #[test]
@@ -102,7 +103,7 @@ fn book_top_level_fields() {
         .find(|f| f.name == "loanedTo")
         .expect("loanedTo field");
     assert!(!loaned_to.required, "loanedTo is sparse");
-    assert_eq!(loaned_to.ty.text, "string");
+    assert_eq!(loaned_to.ty, Type::Scalar(ScalarType::Str));
 
     // `tags` is a keyed leaf, not a top-level field.
     assert!(!schema.fields.iter().any(|f| f.name == "tags"));
@@ -114,11 +115,8 @@ fn book_tags_is_a_keyed_leaf() {
     let tags = layer(&schema, "tags");
     assert_eq!(tags.key_params.len(), 1);
     assert_eq!(tags.key_params[0].name, "pos");
-    assert_eq!(tags.key_params[0].ty.text, "int");
-    assert_eq!(
-        tags.leaf_type.as_ref().map(|t| t.text.as_str()),
-        Some("string")
-    );
+    assert_eq!(tags.key_params[0].ty, Type::Scalar(ScalarType::Int));
+    assert_eq!(tags.leaf_type, Some(Type::Scalar(ScalarType::Str)));
     assert!(tags.members.is_empty(), "a keyed leaf has no members");
 }
 
@@ -128,7 +126,7 @@ fn book_notes_is_a_group() {
     let notes = layer(&schema, "notes");
     assert_eq!(notes.key_params.len(), 1);
     assert_eq!(notes.key_params[0].name, "noteId");
-    assert_eq!(notes.key_params[0].ty.text, "string");
+    assert_eq!(notes.key_params[0].ty, Type::Scalar(ScalarType::Str));
     assert!(notes.leaf_type.is_none(), "a group has no leaf type");
 
     assert_eq!(notes.members.len(), 1);
@@ -136,7 +134,7 @@ fn book_notes_is_a_group() {
         panic!("notes.text should be a field");
     };
     assert_eq!(text.name, "text");
-    assert_eq!(text.ty.text, "string");
+    assert_eq!(text.ty, Type::Scalar(ScalarType::Str));
     assert!(!text.required);
 }
 
@@ -146,15 +144,15 @@ fn book_versions_is_a_history_group() {
     let versions = layer(&schema, "versions");
     assert_eq!(versions.key_params.len(), 1);
     assert_eq!(versions.key_params[0].name, "version");
-    assert_eq!(versions.key_params[0].ty.text, "int");
+    assert_eq!(versions.key_params[0].ty, Type::Scalar(ScalarType::Int));
     assert!(versions.leaf_type.is_none());
 
-    let fields: Vec<(&str, bool, &str)> = versions
+    let fields: Vec<(&str, bool, String)> = versions
         .members
         .iter()
         .map(|member| match member {
             LayerMember::Field(field) => {
-                (field.name.as_str(), field.required, field.ty.text.as_str())
+                (field.name.as_str(), field.required, field.ty.to_string())
             }
             LayerMember::Layer(layer) => panic!("unexpected nested layer `{}`", layer.name),
         })
@@ -162,9 +160,9 @@ fn book_versions_is_a_history_group() {
     assert_eq!(
         fields,
         [
-            ("title", true, "string"),
-            ("shelf", true, "string"),
-            ("changedAt", true, "instant"),
+            ("title", true, "string".to_string()),
+            ("shelf", true, "string".to_string()),
+            ("changedAt", true, "instant".to_string()),
         ]
     );
 }
@@ -304,11 +302,8 @@ resource Book at ^books(id: int)
     let tags = layer(&schema, "tags");
     assert_eq!(tags.key_params.len(), 1);
     assert_eq!(tags.key_params[0].name, "pos");
-    assert_eq!(tags.key_params[0].ty.text, "int");
-    assert_eq!(
-        tags.leaf_type.as_ref().map(|t| t.text.as_str()),
-        Some("string")
-    );
+    assert_eq!(tags.key_params[0].ty, Type::Scalar(ScalarType::Int));
+    assert_eq!(tags.leaf_type, Some(Type::Scalar(ScalarType::Str)));
     assert!(tags.members.is_empty(), "a keyed leaf has no members");
 }
 
@@ -344,11 +339,8 @@ resource Book at ^books(id: int)
     assert_eq!(notes.name, "notes");
     assert_eq!(notes.key_params.len(), 1);
     assert_eq!(notes.key_params[0].name, "pos");
-    assert_eq!(notes.key_params[0].ty.text, "int");
-    assert_eq!(
-        notes.leaf_type.as_ref().map(|t| t.text.as_str()),
-        Some("string")
-    );
+    assert_eq!(notes.key_params[0].ty, Type::Scalar(ScalarType::Int));
+    assert_eq!(notes.leaf_type, Some(Type::Scalar(ScalarType::Str)));
 }
 
 #[test]

@@ -112,7 +112,7 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
                 "{pad}{required}{}{}: {}",
                 field.name,
                 format_key_params(&field.keys),
-                field.ty.text,
+                field.ty,
             ));
             out
         }
@@ -181,12 +181,12 @@ fn format_param(param: &ParamDecl) -> String {
         Some(ParamMode::InOut) => "inout ",
         None => "",
     };
-    format!("{mode}{}: {}", param.name, param.ty.text)
+    format!("{mode}{}: {}", param.name, param.ty)
 }
 
 fn format_return_type(return_type: &Option<TypeRef>) -> String {
     match return_type {
-        Some(ty) => format!(": {}", ty.text),
+        Some(ty) => format!(": {ty}"),
         None => String::new(),
     }
 }
@@ -416,7 +416,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
 
 fn format_type_annotation(ty: &Option<TypeRef>) -> String {
     match ty {
-        Some(ty) => format!(": {}", ty.text),
+        Some(ty) => format!(": {ty}"),
         None => String::new(),
     }
 }
@@ -427,7 +427,7 @@ fn format_key_params(keys: &[KeyParam]) -> String {
     }
     let keys = keys
         .iter()
-        .map(|key| format!("{}: {}", key.name, key.ty.text))
+        .map(|key| format!("{}: {}", key.name, key.ty))
         .collect::<Vec<_>>()
         .join(", ");
     format!("({keys})")

@@ -18,6 +18,88 @@ use marrow_syntax::{
 // and downstream crates share one import path for the storable scalars.
 pub use marrow_store::value::ScalarType;
 
+/// A type annotation resolved once during schema compilation, so downstream
+/// crates match on structure instead of re-parsing the source spelling.
+///
+/// Resolution is structural and module-blind: it decides everything a single
+/// declaration can (a scalar, a `sequence[...]`, an `X::Id` identity, `unknown`),
+/// and leaves any other bare or qualified name as [`Type::Named`]. The checker,
+/// which knows the project's resource names, promotes a `Named` to a resource
+/// reference or flags it unknown; the runtime only ever reads the scalar leaves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Type {
+    Scalar(ScalarType),
+    Sequence(Box<Type>),
+    /// A resource identity such as `Book::Id`, carrying the resource name.
+    Identity(String),
+    /// A bare or qualified name that is not a scalar, sequence, identity, or
+    /// `unknown`: a resource reference (the checker confirms it) or a typo.
+    Named(String),
+    /// The explicit dynamic boundary type `unknown`.
+    Unknown,
+}
+
+impl Type {
+    /// Resolve a [`TypeRef`]'s source spelling to its structure. Total and
+    /// module-blind: every spelling maps to exactly one [`Type`], with anything
+    /// not decidable from the text alone landing in [`Type::Named`].
+    pub fn resolve(ty: &TypeRef) -> Self {
+        Self::resolve_text(ty.text.trim())
+    }
+
+    fn resolve_text(text: &str) -> Self {
+        // `sequence[T]` is built-in element-type sugar; recurse on the element.
+        if let Some(element) = sequence_element(text) {
+            return Self::Sequence(Box::new(Self::resolve_text(element)));
+        }
+        if let Some(scalar) = ScalarType::from_scalar_name(text) {
+            return Self::Scalar(scalar);
+        }
+        if text == "unknown" {
+            return Self::Unknown;
+        }
+        // A resource identity such as `Book::Id` names the resource it wraps.
+        if let Some(resource) = text.strip_suffix("::Id") {
+            return Self::Identity(resource.to_string());
+        }
+        Self::Named(text.to_string())
+    }
+
+    /// The scalar this type denotes, or `None` for a sequence, identity, named,
+    /// or unknown type. The runtime decodes a saved leaf by this scalar.
+    pub fn scalar(&self) -> Option<ScalarType> {
+        match self {
+            Self::Scalar(scalar) => Some(*scalar),
+            _ => None,
+        }
+    }
+
+    /// Does this type embed `unknown`? A type embeds `unknown` when it is
+    /// `unknown` itself or a `sequence[...]` whose element embeds it. Managed
+    /// saved schemas reject `unknown` anywhere inside.
+    pub fn embeds_unknown(&self) -> bool {
+        match self {
+            Self::Unknown => true,
+            Self::Sequence(element) => element.embeds_unknown(),
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Display for Type {
+    /// The canonical source spelling, the inverse of [`Type::resolve`]. Used in
+    /// rejection messages that name the offending type.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scalar(scalar) => f.write_str(scalar.name()),
+            Self::Sequence(element) => write!(f, "sequence[{element}]"),
+            Self::Identity(resource) => write!(f, "{resource}::Id"),
+            Self::Named(name) => f.write_str(name),
+            Self::Unknown => f.write_str("unknown"),
+        }
+    }
+}
+
 /// The compiled tree shape of a resource declaration.
 ///
 /// Members are kept in source order in `Vec`s rather than maps: a resource has
@@ -49,7 +131,7 @@ impl SavedRootSchema {
     /// types `nextId(^root)`) and the runtime write planner (which allocates the
     /// next id) gate on, so it lives here on the shape they both key off.
     pub fn single_int_root(&self) -> bool {
-        matches!(self.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
+        matches!(self.identity_keys.as_slice(), [key] if key.ty == Type::Scalar(ScalarType::Int))
     }
 
     /// Name the identity shape that disqualifies this root from the default
@@ -60,7 +142,7 @@ impl SavedRootSchema {
     pub fn next_id_shape(&self) -> String {
         match self.identity_keys.as_slice() {
             [] => "a keyless singleton".into(),
-            [key] => format!("a single `{}` key", key.ty.text.trim()),
+            [key] => format!("a single `{}` key", key.ty),
             keys => format!("a composite identity of {} keys", keys.len()),
         }
     }
@@ -70,7 +152,7 @@ impl SavedRootSchema {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyDef {
     pub name: String,
-    pub ty: TypeRef,
+    pub ty: Type,
 }
 
 /// A scalar field stored directly on a resource or inside an unkeyed group.
@@ -79,7 +161,7 @@ pub struct FieldSchema {
     pub name: String,
     pub docs: Vec<String>,
     pub required: bool,
-    pub ty: TypeRef,
+    pub ty: Type,
     pub stable_id: Option<String>,
 }
 
@@ -93,7 +175,7 @@ pub struct LayerSchema {
     pub name: String,
     pub docs: Vec<String>,
     pub key_params: Vec<KeyDef>,
-    pub leaf_type: Option<TypeRef>,
+    pub leaf_type: Option<Type>,
     pub members: Vec<LayerMember>,
     pub stable_id: Option<String>,
 }
@@ -225,9 +307,11 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
                 names.check(&field.name, field.span, &mut errors);
                 // `name: sequence[T]` is sugar for the `name(pos: int): T` keyed
                 // leaf, so it joins the layers rather than the scalar fields.
-                match sequence_element(&field.ty.text) {
-                    Some(element) => layers.push(keyed_leaf_from_sequence(field, element)),
-                    None => fields.push(field_schema(field)),
+                match Type::resolve(&field.ty) {
+                    Type::Sequence(element) => {
+                        layers.push(keyed_leaf_from_sequence(field, *element))
+                    }
+                    ty => fields.push(field_schema(field, ty)),
                 }
             }
             ResourceMember::Field(field) => {
@@ -280,10 +364,11 @@ fn check_saved_data(
 ) {
     check_duplicate_key_params(&store.keys, decl_span, errors);
     for key in &store.keys {
-        if embeds_unknown(&key.ty) {
+        let ty = Type::resolve(&key.ty);
+        if ty.embeds_unknown() {
             errors.push(unknown_error("identity key", &key.name, decl_span));
         }
-        if is_unorderable_key_type(&key.ty) {
+        if is_unorderable_key_type(&ty) {
             errors.push(unorderable_key_error("identity key", &key.name, decl_span));
         }
         if let Some(span) = top_level_member_span(members, &key.name) {
@@ -364,10 +449,11 @@ fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
 /// no span of their own, so errors point at the keyed layer's `span`.
 fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
     for key in keys {
-        if embeds_unknown(&key.ty) {
+        let ty = Type::resolve(&key.ty);
+        if ty.embeds_unknown() {
             errors.push(unknown_error("key", &key.name, span));
         }
-        if is_unorderable_key_type(&key.ty) {
+        if is_unorderable_key_type(&ty) {
             errors.push(unorderable_key_error("key", &key.name, span));
         }
     }
@@ -386,7 +472,7 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
             } else {
                 "keyed leaf"
             };
-            if embeds_unknown(&field.ty) {
+            if Type::resolve(&field.ty).embeds_unknown() {
                 errors.push(unknown_error(what, &field.name, field.span));
             }
         }
@@ -464,15 +550,17 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                     ),
                     span: index.span,
                 }),
-                Some(ty) if is_unorderable_key_type(ty) => errors.push(SchemaError {
-                    code: SCHEMA_UNORDERABLE_KEY,
-                    message: format!(
-                        "index `{}` argument `{arg}` is a `decimal`, which has no \
+                Some(ty) if is_unorderable_key_type(&Type::resolve(ty)) => {
+                    errors.push(SchemaError {
+                        code: SCHEMA_UNORDERABLE_KEY,
+                        message: format!(
+                            "index `{}` argument `{arg}` is a `decimal`, which has no \
                          key encoding; index arguments use ordered key types",
-                        index.name
-                    ),
-                    span: index.span,
-                }),
+                            index.name
+                        ),
+                        span: index.span,
+                    })
+                }
                 Some(_) => {}
             }
         }
@@ -589,19 +677,9 @@ fn collect_stable_ids(members: &[ResourceMember], ids: &mut Vec<(String, SourceS
     }
 }
 
-/// Does this saved type embed `unknown`? A type embeds `unknown` when it is
-/// `unknown` itself or a `sequence[...]` whose element type embeds it. Managed
-/// saved schemas reject `unknown` anywhere inside.
-fn embeds_unknown(ty: &TypeRef) -> bool {
-    let mut text = ty.text.trim();
-    while let Some(inner) = sequence_element(text) {
-        text = inner;
-    }
-    text == "unknown"
-}
-
 /// The element type spelling of a `sequence[T]`, or `None` for a non-sequence
-/// type. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree.
+/// type. The one place the `sequence[...]` spelling is parsed; [`Type::resolve`]
+/// drives off it. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree.
 fn sequence_element(text: &str) -> Option<&str> {
     text.trim()
         .strip_prefix("sequence[")
@@ -625,8 +703,8 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
 /// resource identity types. `decimal` is the one scalar the store cannot encode
 /// as a key, so it is rejected wherever a key is expected: identity keys,
 /// keyed-layer key parameters, and index arguments.
-fn is_unorderable_key_type(ty: &TypeRef) -> bool {
-    ty.text.trim() == "decimal"
+fn is_unorderable_key_type(ty: &Type) -> bool {
+    *ty == Type::Scalar(ScalarType::Decimal)
 }
 
 fn unorderable_key_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
@@ -652,11 +730,11 @@ fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerM
                 names.check(&field.name, field.span, errors);
                 // A nested `name: sequence[T]` desugars to the same `pos: int`
                 // keyed leaf as at the top level.
-                match sequence_element(&field.ty.text) {
-                    Some(element) => {
-                        members.push(LayerMember::Layer(keyed_leaf_from_sequence(field, element)))
-                    }
-                    None => members.push(LayerMember::Field(field_schema(field))),
+                match Type::resolve(&field.ty) {
+                    Type::Sequence(element) => members.push(LayerMember::Layer(
+                        keyed_leaf_from_sequence(field, *element),
+                    )),
+                    ty => members.push(LayerMember::Field(field_schema(field, ty))),
                 }
             }
             ResourceMember::Field(field) => {
@@ -684,12 +762,12 @@ fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerM
     members
 }
 
-fn field_schema(field: &FieldDecl) -> FieldSchema {
+fn field_schema(field: &FieldDecl, ty: Type) -> FieldSchema {
     FieldSchema {
         name: field.name.clone(),
         docs: field.docs.clone(),
         required: field.required,
-        ty: field.ty.clone(),
+        ty,
         stable_id: field.stable_id.clone(),
     }
 }
@@ -702,7 +780,7 @@ fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
         name: field.name.clone(),
         docs: field.docs.clone(),
         key_params: field.keys.iter().map(key_def).collect(),
-        leaf_type: Some(field.ty.clone()),
+        leaf_type: Some(Type::resolve(&field.ty)),
         members: Vec::new(),
         stable_id: field.stable_id.clone(),
     }
@@ -712,19 +790,15 @@ fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
 /// implicit `pos: int` key matches the canonical sequence spelling, so the
 /// resulting layer is identical to the one `name(pos: int): T` produces and
 /// append/read/traverse work unchanged.
-fn keyed_leaf_from_sequence(field: &FieldDecl, element: &str) -> LayerSchema {
+fn keyed_leaf_from_sequence(field: &FieldDecl, element: Type) -> LayerSchema {
     LayerSchema {
         name: field.name.clone(),
         docs: field.docs.clone(),
         key_params: vec![KeyDef {
             name: "pos".to_string(),
-            ty: TypeRef {
-                text: "int".to_string(),
-            },
+            ty: Type::Scalar(ScalarType::Int),
         }],
-        leaf_type: Some(TypeRef {
-            text: element.to_string(),
-        }),
+        leaf_type: Some(element),
         members: Vec::new(),
         stable_id: field.stable_id.clone(),
     }
@@ -777,7 +851,7 @@ fn index_schema(index: &IndexDecl) -> IndexSchema {
 fn key_def(key: &KeyParam) -> KeyDef {
     KeyDef {
         name: key.name.clone(),
-        ty: key.ty.clone(),
+        ty: Type::resolve(&key.ty),
     }
 }
 

@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use marrow_store::value::ScalarType;
+use marrow_schema::{ScalarType, Type};
 use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
 
 /// The resolved shape of a checked project: every clean library module, in the
@@ -102,68 +102,50 @@ impl MarrowType {
     /// module. Best-effort and total: it never errors, falling back to
     /// [`MarrowType::Unknown`] for anything it cannot place.
     pub(crate) fn resolve(ty: &TypeRef, module_resources: &[String]) -> Self {
-        Self::resolve_text(ty.text.trim(), module_resources)
+        Self::from_resolved(Type::resolve(ty), module_resources)
     }
 
-    fn resolve_text(text: &str, module_resources: &[String]) -> Self {
-        // `sequence[T]` is built-in element-type sugar; recurse on the element.
-        if let Some(element) = text
-            .strip_prefix("sequence[")
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            return Self::Sequence(Box::new(Self::resolve_text(
-                element.trim(),
-                module_resources,
-            )));
+    /// Promote a schema-resolved [`Type`] to the checker's lattice using the
+    /// module's resource names. The structure (scalar, sequence, identity,
+    /// `unknown`) is already decided; this layer only places a bare [`Type::Named`]
+    /// as a resource reference, the checker-only `Error` type, or `Unknown`.
+    pub(crate) fn from_resolved(ty: Type, module_resources: &[String]) -> Self {
+        match ty {
+            Type::Scalar(scalar) => Self::Primitive(PrimitiveType::from_scalar(scalar)),
+            Type::Sequence(element) => {
+                Self::Sequence(Box::new(Self::from_resolved(*element, module_resources)))
+            }
+            Type::Identity(resource) => Self::Identity(resource),
+            Type::Unknown => Self::Unknown,
+            // `Error` is the one checker-only type the store does not model, so it
+            // never resolves to a scalar; recognize it here.
+            Type::Named(name) if name == "Error" => Self::Primitive(PrimitiveType::Error),
+            Type::Named(name) if module_resources.contains(&name) => Self::Resource(name),
+            Type::Named(_) => Self::Unknown,
         }
-        if let Some(primitive) = PrimitiveType::from_keyword(text) {
-            return Self::Primitive(primitive);
-        }
-        if text == "unknown" {
-            return Self::Unknown;
-        }
-        // A resource identity such as `Book::Id` names the resource it wraps.
-        if let Some(resource) = text.strip_suffix("::Id") {
-            return Self::Identity(resource.to_string());
-        }
-        if module_resources.iter().any(|name| name == text) {
-            return Self::Resource(text.to_string());
-        }
-        Self::Unknown
     }
 
-    /// Whether `text` names a type the checker recognizes: a primitive, `unknown`,
-    /// a `sequence[...]` of a known type, a qualified or identity type (anything
-    /// containing `::`, validated more precisely later), or a resource declared
-    /// anywhere in `resources` (project-wide). Used to flag unknown type
+    /// Whether `ty` names a type the checker recognizes: a scalar, `Error`,
+    /// `unknown`, a `sequence[...]` of a known type, a qualified or identity type
+    /// (anything containing `::`, validated more precisely later), or a resource
+    /// declared anywhere in `resources` (project-wide). Used to flag unknown type
     /// annotations without false-flagging cross-module references.
-    pub(crate) fn names_known_type(text: &str, resources: &HashSet<String>) -> bool {
-        let text = text.trim();
-        if let Some(element) = text
-            .strip_prefix("sequence[")
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            return Self::names_known_type(element.trim(), resources);
+    pub(crate) fn names_known_type(ty: &TypeRef, resources: &HashSet<String>) -> bool {
+        Self::resolved_is_known(&Type::resolve(ty), resources)
+    }
+
+    fn resolved_is_known(ty: &Type, resources: &HashSet<String>) -> bool {
+        match ty {
+            Type::Scalar(_) | Type::Identity(_) | Type::Unknown => true,
+            Type::Sequence(element) => Self::resolved_is_known(element, resources),
+            // A qualified name (any `::`) is assumed a cross-module reference and
+            // accepted; `Error` and declared resources are known by name.
+            Type::Named(name) => name.contains("::") || name == "Error" || resources.contains(name),
         }
-        text.contains("::")
-            || text == "unknown"
-            || PrimitiveType::from_keyword(text).is_some()
-            || resources.contains(text)
     }
 }
 
 impl PrimitiveType {
-    /// Map a primitive type keyword to its [`PrimitiveType`]. The nine storable
-    /// scalars come from the store's canonical name table; `Error` is the one
-    /// checker-only type the store does not have (it is a runtime error value,
-    /// not a storable scalar), so it is matched here.
-    fn from_keyword(text: &str) -> Option<Self> {
-        if text == "Error" {
-            return Some(Self::Error);
-        }
-        ScalarType::from_scalar_name(text).map(Self::from_scalar)
-    }
-
     /// The [`PrimitiveType`] for a storable [`ScalarType`]. Total: every scalar
     /// has a primitive counterpart (the checker adds `Error` on top).
     pub(crate) fn from_scalar(scalar: ScalarType) -> Self {
