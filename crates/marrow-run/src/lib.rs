@@ -1515,8 +1515,8 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let nanos = eval_instant_arg(value, env, span)?;
-            let bytes = encode_value(&SavedValue::Instant(nanos))
-                .map_err(|error| error.located(span))?;
+            let bytes =
+                encode_value(&SavedValue::Instant(nanos)).map_err(|error| error.located(span))?;
             let text = String::from_utf8(bytes).expect("a canonical instant encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
@@ -1557,8 +1557,8 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let nanos = eval_duration_arg(value, env, span)?;
-            let bytes = encode_value(&SavedValue::Duration(nanos))
-                .map_err(|error| error.located(span))?;
+            let bytes =
+                encode_value(&SavedValue::Duration(nanos)).map_err(|error| error.located(span))?;
             let text =
                 String::from_utf8(bytes).expect("a canonical duration encodes as UTF-8 text");
             Ok(Value::Str(text))
