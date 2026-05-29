@@ -1964,13 +1964,14 @@ fn an_unknown_function_is_rejected() {
 }
 
 #[test]
-fn traversal_builtins_report_unsupported_not_unknown_function() {
-    // `values`/`entries` are documented core builtins whose runtime slice is not
-    // built yet. They must report `run.unsupported`, never masquerade as a missing
-    // user function (`run.unknown_function`).
-    let resource = "resource Book at ^books(id: int)\n    required title: string\n\n";
+fn values_and_entries_over_an_index_branch_are_unsupported() {
+    // builtins.md: on declared index branches use `keys(...)` or direct iteration;
+    // `values`/`entries` are for primary roots and ordinary keyed layers. Over an
+    // index branch they report `run.unsupported`, never a missing user function.
+    let resource = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n";
     for builtin in ["values", "entries"] {
-        let program = checked_program(&format!("{resource}fn f()\n    {builtin}(^books)\n"));
+        let program =
+            checked_program(&format!("{resource}fn f()\n    {builtin}(^books.byShelf(\"x\"))\n"));
         let result = run(&program, "test::f", &[]);
         assert!(
             matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
@@ -4028,4 +4029,75 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
         run_entry(&program, &store, "test::n", &[]).expect("run").value,
         Some(Value::Int(2)),
     );
+}
+
+/// `values`/`entries` over a primary root materialize whole records; over a
+/// keyed/sequence layer they materialize each entry's value. `entries` feeds the
+/// two-name `for id, x in entries(...)` binding.
+const BOOK_VALUES: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    tags: sequence[string]
+
+fn add(id: int, t: string)
+    ^books(id).title = t
+
+fn tag(id: int, t: string): int
+    return append(^books(id).tags, t)
+
+fn titles()
+    for book in values(^books)
+        print(book.title)
+
+fn idsAndTitles()
+    for id, book in entries(^books)
+        print($\"{id}: {book.title}\")
+
+fn tagValues(id: int)
+    for tag in values(^books(id).tags)
+        print(tag)
+
+fn tagEntries(id: int)
+    for pos, tag in entries(^books(id).tags)
+        print($\"{pos}={tag}\")
+";
+
+#[test]
+fn values_and_entries_materialize_whole_records_over_a_primary_root() {
+    let program = checked_program(BOOK_VALUES);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, t: &str| {
+        run_entry(&program, &store, "test::add", &[Value::Int(id), Value::Str(t.into())])
+            .expect("add");
+    };
+    add(2, "Sourcery");
+    add(1, "Mort");
+
+    // `values(^books)` yields each whole record, in key order, with field access.
+    let titles = run_entry(&program, &store, "test::titles", &[]).expect("run");
+    assert_eq!(titles.output, "Mort\nSourcery\n");
+
+    // `entries(^books)` binds the identity and the materialized record together.
+    let pairs = run_entry(&program, &store, "test::idsAndTitles", &[]).expect("run");
+    assert_eq!(pairs.output, "1: Mort\n2: Sourcery\n");
+}
+
+#[test]
+fn values_and_entries_materialize_entries_over_a_keyed_layer() {
+    let program = checked_program(BOOK_VALUES);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::add", &[Value::Int(1), Value::Str("Mort".into())])
+        .expect("add");
+    run_entry(&program, &store, "test::tag", &[Value::Int(1), Value::Str("fiction".into())])
+        .expect("tag");
+    run_entry(&program, &store, "test::tag", &[Value::Int(1), Value::Str("funny".into())])
+        .expect("tag");
+
+    // `values(^books(1).tags)` yields each leaf value in key order.
+    let values = run_entry(&program, &store, "test::tagValues", &[Value::Int(1)]).expect("run");
+    assert_eq!(values.output, "fiction\nfunny\n");
+
+    // `entries(...)` binds each 1-based position to its leaf value.
+    let entries = run_entry(&program, &store, "test::tagEntries", &[Value::Int(1)]).expect("run");
+    assert_eq!(entries.output, "1=fiction\n2=funny\n");
 }

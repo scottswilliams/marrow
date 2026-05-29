@@ -823,13 +823,11 @@ fn eval_call(
                 "keys" => return eval_keys(args, span, env).map(Some),
                 // `count(path)` is a one-layer tree scan over the lowered path.
                 "count" => return eval_count(args, span, env).map(Some),
-                // `values`/`entries` are documented core traversal builtins whose
-                // tree-scan slice is not built yet. Report them as a known but
-                // unsupported builtin rather than letting them fall through to a
-                // misleading `run.unknown_function`.
-                "values" | "entries" => {
-                    return Err(unsupported(&format!("the `{name}` builtin"), span));
-                }
+                // `values`/`entries` materialize each child's value (a whole record
+                // for a primary root, an entry value for a keyed layer); `entries`
+                // pairs it with the key for the two-name `for k, v in ...` binding.
+                "values" => return eval_values(args, span, env).map(Some),
+                "entries" => return eval_entries(args, span, env).map(Some),
                 _ => {}
             }
         }
@@ -1654,6 +1652,104 @@ fn eval_keys(
     Ok(Value::Sequence(enumerate_layer(&path.value, env)?))
 }
 
+/// Evaluate `values(<layer>)`: each child materialized to its value, in key
+/// order. The same materialization drives `for x in values(<layer>)`.
+fn eval_values(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [path] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`values` takes one argument".into(),
+            span,
+        });
+    };
+    let values = materialize_layer(&path.value, env)?
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect();
+    Ok(Value::Sequence(values))
+}
+
+/// Evaluate `entries(<layer>)`: each child as a `[key, value]` pair sequence, in
+/// key order. The two-name `for k, v in entries(<layer>)` binding unpacks each
+/// pair; the same materialization drives it.
+fn eval_entries(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [path] = args else {
+        return Err(RuntimeError {
+            code: RUN_TYPE,
+            message: "`entries` takes one argument".into(),
+            span,
+        });
+    };
+    let entries = materialize_layer(&path.value, env)?
+        .into_iter()
+        .map(|(key, value)| Value::Sequence(vec![key, value]))
+        .collect();
+    Ok(Value::Sequence(entries))
+}
+
+/// Materialize a layer's children as `(key, value)` pairs in key order: a whole
+/// record per child key for a primary root `^books`, or each entry's value for a
+/// keyed/sequence child layer `^books(id).tags`. Reuses [`enumerate_layer`] for
+/// the keys and the existing whole-record / layer-entry reads for the values.
+/// Index branches inspect identities only (builtins.md), so `values`/`entries`
+/// over one is rejected; iterate it or use `keys(...)` instead.
+fn materialize_layer(
+    path: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    let keys = enumerate_layer(path, env)?;
+    match path {
+        // A primary keyed root: each child key is a record identity, materialized
+        // by a whole-record read.
+        Expression::SavedRoot { name, span } => keys
+            .into_iter()
+            .map(|key| {
+                let identity = identity_keys(&key, *span)?;
+                Ok((key, read_resource(name, &identity, *span, env)?))
+            })
+            .collect(),
+        // A keyed/sequence child layer `^root(id…).layer`: each child key addresses
+        // one entry, materialized by a layer-entry read.
+        Expression::Field { base, name: layer, .. } => {
+            let span = path.span();
+            let (root, identity) = lower_record_identity(base, env)?;
+            keys.into_iter()
+                .map(|key| {
+                    let layer_key =
+                        value_to_key(key.clone()).ok_or_else(|| unsupported("a key of this type", span))?;
+                    let value = read_layer_entry(&root, &identity, layer, &[layer_key], span, env)?;
+                    Ok((key, value))
+                })
+                .collect()
+        }
+        // An index branch `^root.index(args…)` yields identities for `keys(...)`;
+        // its marker values are a raw inspection detail, not `values`/`entries`.
+        other => Err(unsupported(
+            "values/entries over this path (use keys(...) or direct iteration)",
+            other.span(),
+        )),
+    }
+}
+
+/// The identity keys a primary-root child value addresses: a single-key identity
+/// arrives as a bare key value, a composite one as a [`Value::Identity`].
+fn identity_keys(key: &Value, span: SourceSpan) -> Result<Vec<SavedKey>, RuntimeError> {
+    match key {
+        Value::Identity(keys) => Ok(keys.clone()),
+        other => Ok(vec![
+            value_to_key(other.clone()).ok_or_else(|| unsupported("a key of this type", span))?,
+        ]),
+    }
+}
+
 /// Number of nanoseconds in a UTC day, for `today()`'s instant-to-date reduction.
 const NANOS_PER_DAY: i128 = 86_400_000_000_000;
 
@@ -2284,8 +2380,43 @@ fn eval_for(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if binding.second.is_some() {
-        return Err(unsupported("a two-name loop binding", span));
+    // A two-name binding (`for k, v in entries(...)`) iterates `[key, value]`
+    // pairs; ranges have no second name to bind.
+    if let Some(second) = &binding.second {
+        if matches!(
+            iterable,
+            Expression::Binary {
+                op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+                ..
+            }
+        ) {
+            return Err(unsupported("a two-name binding over a range", span));
+        }
+        for entry in eval_collection(iterable, env)? {
+            let Value::Sequence(pair) = entry else {
+                return Err(unsupported(
+                    "a two-name binding over a non-pair iterable (use entries(...))",
+                    span,
+                ));
+            };
+            let [key, value] = <[Value; 2]>::try_from(pair).map_err(|_| {
+                unsupported(
+                    "a two-name binding over a non-pair iterable (use entries(...))",
+                    span,
+                )
+            })?;
+            env.push_scope();
+            env.bind(binding.first.clone(), key, false);
+            env.bind(second.clone(), value, false);
+            let flow = eval_block(body, env);
+            env.pop_scope();
+            match classify(flow?, label) {
+                LoopStep::Iterate => {}
+                LoopStep::Stop => break,
+                LoopStep::Propagate(flow) => return Ok(flow),
+            }
+        }
+        return Ok(Flow::Normal);
     }
     // A non-range iterable (e.g. `keys(^books.byShelf("x"))`) materializes to a
     // sequence of values, which the loop binds one at a time.
@@ -2818,14 +2949,29 @@ fn eval_saved_layer_read(
     };
     let (root, identity) = lower_record_identity(base, env)?;
     let layer_keys = lower_layer_keys(keys, span, env)?;
-    let mut entry = vec![PathSegment::Root(root.clone())];
-    entry.extend(identity.into_iter().map(PathSegment::RecordKey));
-    entry.push(PathSegment::ChildLayer(layer.clone()));
-    entry.extend(layer_keys.into_iter().map(PathSegment::IndexKey));
+    read_layer_entry(&root, &identity, layer, &layer_keys, span, env)
+}
+
+/// Read one keyed-layer entry from a lowered record identity and layer keys. A
+/// leaf layer reads its single decoded value; a group layer materializes its
+/// entry as a [`Value::Resource`]. Shared by [`eval_saved_layer_read`] and the
+/// `values`/`entries` materializer.
+fn read_layer_entry(
+    root: &str,
+    identity: &[SavedKey],
+    layer: &str,
+    layer_keys: &[SavedKey],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let mut entry = vec![PathSegment::Root(root.to_string())];
+    entry.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    entry.push(PathSegment::ChildLayer(layer.to_string()));
+    entry.extend(layer_keys.iter().cloned().map(PathSegment::IndexKey));
 
     // A leaf layer reads one value; a group layer materializes its entry.
-    let Some(leaf_type) = resource_layer_leaf_type(env.program, &root, layer) else {
-        return read_group_entry(&root, layer, &entry, span, env);
+    let Some(leaf_type) = resource_layer_leaf_type(env.program, root, layer) else {
+        return read_group_entry(root, layer, &entry, span, env);
     };
     let store = env.store.borrow();
     let Some(bytes) = store
