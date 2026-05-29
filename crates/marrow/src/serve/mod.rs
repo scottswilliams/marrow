@@ -6,10 +6,10 @@
 //! loop, and per-connection framing. It is distinct from `marrow lsp` (the editor
 //! language server, which speaks `Content-Length`-framed JSON-RPC over stdio).
 //!
-//! Loopback TCP is the v1 transport: it is the only dependency-free, cross-platform
-//! socket in `std` (local IPC over Unix sockets or Windows named pipes is a later,
-//! dependency-bearing transport). The listener binds `127.0.0.1` only; exposing it
-//! beyond loopback would require authentication and transport security.
+//! Loopback TCP is the transport because it is the only dependency-free,
+//! cross-platform socket in `std`; Unix sockets and Windows named pipes would each
+//! add a dependency. The listener binds `127.0.0.1` only — exposing it beyond
+//! loopback would require authentication and transport security.
 
 mod protocol;
 

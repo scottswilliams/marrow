@@ -360,6 +360,7 @@ fn data_integrity_format_json_problems_carry_a_tooling_kind() {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
     let problem = &value["problems"][0];
     assert_eq!(problem["code"], serde_json::json!("data.orphan"));
-    // `kind_for_code`'s default arm classifies `data.*` as tooling without edits.
+    // `data.*` has no dedicated kind, so `kind_for_code`'s default arm classifies
+    // it as tooling.
     assert_eq!(problem["kind"], serde_json::json!("tooling"));
 }

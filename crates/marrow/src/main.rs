@@ -29,45 +29,30 @@ Usage:
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.first().is_some_and(|arg| arg == "check") {
-        return check(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "fmt") {
-        return fmt(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "run") {
-        return run(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "test") {
-        return test(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "backup") {
-        return backup(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "restore") {
-        return restore(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "data") {
-        return data(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "lsp") {
-        return lsp::run(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "serve") {
-        return serve::run(&args[1..]);
-    }
-    let mut args = args.into_iter();
-    match args.next().as_deref() {
-        None | Some("--help" | "-h" | "help") => {
+    let Some((command, rest)) = args.split_first() else {
+        print!("{HELP}");
+        return ExitCode::SUCCESS;
+    };
+    match command.as_str() {
+        "check" => check(rest),
+        "fmt" => fmt(rest),
+        "run" => run(rest),
+        "test" => test(rest),
+        "backup" => backup(rest),
+        "restore" => restore(rest),
+        "data" => data(rest),
+        "lsp" => lsp::run(rest),
+        "serve" => serve::run(rest),
+        "--help" | "-h" | "help" => {
             print!("{HELP}");
             ExitCode::SUCCESS
         }
-        Some("--version" | "-V" | "version") => {
+        "--version" | "-V" | "version" => {
             println!("marrow {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Some(command) => {
-            eprintln!("unknown command: {command}");
+        other => {
+            eprintln!("unknown command: {other}");
             eprintln!("run `marrow --help` for available commands");
             ExitCode::from(2)
         }
@@ -225,9 +210,8 @@ fn report_project(target: &str, report: &marrow_check::CheckReport, format: Chec
     }
 }
 
-/// The broad envelope category for a dotted error code (docs/error-codes.md).
-/// Derived from the code's first segment so every machine-readable surface emits
-/// a consistent `kind` field. The code prefix is not always the kind name
+/// The broad `kind` category for a dotted error code (docs/error-codes.md),
+/// derived from the code's first segment. The prefix is not always the kind name
 /// (`run.*` is `runtime`, `store.*` is `storage`), so the mapping is explicit.
 fn kind_for_code(code: &str) -> &'static str {
     match code.split('.').next().unwrap_or("") {
@@ -242,10 +226,9 @@ fn kind_for_code(code: &str) -> &'static str {
     }
 }
 
-/// Render a project diagnostic as JSON. Project diagnostics carry a code, kind,
-/// severity, message, and file position; unlike single-file parse diagnostics
-/// they have no `help` or byte offsets, since module-path and duplicate-module
-/// problems are reported at a declaration site.
+/// Render a project diagnostic as JSON. Unlike single-file parse diagnostics,
+/// project diagnostics carry no `help` or byte offsets — they are reported at a
+/// declaration site rather than a byte span.
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
     json!({
         "code": diagnostic.code,
@@ -290,10 +273,9 @@ fn run(args: &[String]) -> ExitCode {
                 };
                 entry = Some(value.clone());
             }
-            // The explicit maintenance escape hatch: it grants the run the
-            // maintenance capability (whole-root delete, required-field delete,
-            // raw quoted-segment access). An operator must type it; the default
-            // run and `run.defaultEntry` can never inject it.
+            // Grants the maintenance capability (whole-root delete, required-field
+            // delete, raw quoted-segment access). An operator must type it; the
+            // default run and `run.defaultEntry` can never inject it.
             "--maintenance" => maintenance = true,
             "--help" | "-h" => {
                 print!(
@@ -370,9 +352,8 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>, maintenance: bool) -
 }
 
 /// The project store's redb file path (native backend), or `Ok(None)` for the
-/// in-memory default. Pure — no filesystem side effects. Infallible today;
-/// the `Result` is kept for [`resolve_store_path`], which can fail creating the
-/// directory.
+/// in-memory default. No filesystem side effects. The `Result` mirrors
+/// [`resolve_store_path`], which can fail while creating the directory.
 fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -456,12 +437,10 @@ pub(crate) fn open_store_for_inspection(
     }
 }
 
-/// Run `entry` from a checked `program` over `store`, printing its output. The
-/// store is the ordered-tree backend the project selected; the run reads the
-/// real system clock for `std::clock::now()`, the real environment for
-/// `std::env`, the real filesystem for `std::io`, and writes `std::log` output to
-/// standard error. `maintenance` grants the maintenance capability only when the
-/// operator passed `--maintenance`; an ordinary run leaves it off.
+/// Run `entry` from a checked `program` over `store`, printing its output. The run
+/// gets the real system clock, environment, and filesystem, and sends `std::log`
+/// output to standard error. `maintenance` grants the maintenance capability only
+/// when the operator passed `--maintenance`.
 fn execute(
     program: &marrow_check::CheckedProgram,
     store: &RefCell<dyn marrow_store::backend::Backend>,
@@ -478,8 +457,8 @@ fn execute(
         host = host.with_maintenance();
     }
     let result = marrow_run::run_entry_with_host(program, store, &host, entry, &[]);
-    // Flush any log output (collected even on a failing run) to standard error,
-    // keeping it off the program's own stdout stream.
+    // Log output is collected even on a failing run; it goes to stderr, off the
+    // program's own stdout stream.
     eprint!("{}", log.borrow());
     match result {
         Ok(outcome) => {
@@ -602,8 +581,8 @@ fn test_project_dir(dir: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // A test is a public, zero-parameter function in a test file. Keep each test's
-    // source file so a failure can be reported at its location.
+    // A test is a public, zero-parameter function in a test file. Each test keeps
+    // its source file so a failure can be reported at its location.
     let tests: Vec<(String, PathBuf)> = test_modules
         .iter()
         .flat_map(|module| {
@@ -851,8 +830,7 @@ fn one_positional_with_format(
 }
 
 /// Parse `data get`'s arguments: a project directory, a path string, and an
-/// optional `--format`. Two positionals in order, rejecting options and a wrong
-/// count, mirroring `one_positional_with_format`'s shape.
+/// optional `--format`, rejecting options and a wrong positional count.
 fn data_get_args(args: &[String]) -> Result<(String, String, CheckFormat), ExitCode> {
     let mut positionals = Vec::new();
     let mut format = CheckFormat::Text;
