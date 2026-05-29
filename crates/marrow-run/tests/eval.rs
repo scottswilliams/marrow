@@ -945,8 +945,9 @@ fn throw_surfaces_as_an_uncaught_error() {
     );
     let error = run(&program, "test::bad", &[]).unwrap_err();
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
-    assert!(error.message.contains("book.absent"), "{}", error.message);
-    assert!(error.message.contains("no book"), "{}", error.message);
+    // The rendered message is byte-identical to the `uncaught error [code]: msg`
+    // formula, pinning the format the CLI surfaces for an uncaught throw.
+    assert_eq!(error.message, "uncaught error [book.absent]: no book");
 }
 
 #[test]
@@ -1017,6 +1018,21 @@ fn a_throw_from_a_callee_is_caught_by_the_caller() {
     assert_eq!(
         run(&program, "test::safe", &[]),
         Ok(Some(Value::Str("deep".into())))
+    );
+}
+
+#[test]
+fn an_expression_position_call_throw_is_caught_like_a_statement_throw() {
+    // The throw rides one channel regardless of position: a throw from a call used
+    // mid-expression (`var x = boom() + 1`) unwinds on the same `Err` channel a
+    // bare `throw` statement does, so the same `catch` binds it. This pins the A32
+    // goal that expression- and statement-position throws agree.
+    let program = checked_program(
+        "fn boom(): int\n    throw Error(code: \"x.y\", message: \"mid\")\npub fn safe(): string\n    try\n        var total: int = boom() + 1\n    catch err: Error\n        return err.message\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::safe", &[]),
+        Ok(Some(Value::Str("mid".into())))
     );
 }
 
