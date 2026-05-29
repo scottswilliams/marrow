@@ -1166,10 +1166,7 @@ fn check_record(
                 Some(IntegrityProblem {
                     code: "data.decode",
                     path: display_path(path),
-                    message: format!(
-                        "stored value is not a canonical {} form",
-                        ty.name()
-                    ),
+                    message: format!("stored value is not a canonical {} form", ty.name()),
                 })
             }
         }

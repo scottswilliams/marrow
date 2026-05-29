@@ -1706,12 +1706,18 @@ fn a_keyed_leaf_write_replaces_only_that_entry() {
     write_tag(&mut store, &book, 5, 1, "c");
 
     assert_eq!(
-        decode_value(store.read(&tag_entry(5, 1)).expect("tag 1"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(5, 1)).expect("tag 1"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("c".into())),
         "the keyed entry is replaced in place"
     );
     assert_eq!(
-        decode_value(store.read(&tag_entry(5, 2)).expect("tag 2"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(5, 2)).expect("tag 2"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("b".into())),
         "a sibling entry is untouched"
     );
@@ -2157,11 +2163,17 @@ fn a_layer_merge_copies_entries_to_the_target_record() {
     write_tag(&mut store, &book, 1, 2, "gift");
     merge_tags(&mut store, &book, 1, 2);
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(2, 1)).expect("tag 1"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("favorite".into()))
     );
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(2, 2)).expect("tag 2"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("gift".into()))
     );
 }
@@ -2176,12 +2188,18 @@ fn a_layer_merge_overlays_and_keeps_uncovered_target_entries() {
     write_tag(&mut store, &book, 2, 2, "kept");
     merge_tags(&mut store, &book, 1, 2);
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(2, 1)).expect("tag 1"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("from-source".into())),
         "an overlapping key is overwritten by the source"
     );
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(2, 2)).expect("tag 2"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("kept".into())),
         "a target entry the source does not cover is kept"
     );
@@ -2194,7 +2212,10 @@ fn a_layer_merge_from_an_empty_source_is_a_no_op() {
     write_tag(&mut store, &book, 2, 1, "kept"); // record 1 has no tags
     merge_tags(&mut store, &book, 1, 2);
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ScalarType::Str),
+        decode_value(
+            store.read(&tag_entry(2, 1)).expect("tag 1"),
+            ScalarType::Str
+        ),
         Some(SavedValue::Str("kept".into())),
         "merging an empty source changes nothing"
     );

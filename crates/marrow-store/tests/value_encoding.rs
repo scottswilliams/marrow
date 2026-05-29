@@ -3,7 +3,7 @@
 
 use marrow_store::Decimal;
 use marrow_store::value::{
-    SavedValue, ValueError, ScalarType, date_days, decode_value, encode_value,
+    SavedValue, ScalarType, ValueError, date_days, decode_value, encode_value,
 };
 
 fn round_trips(value: SavedValue, ty: ScalarType) {
