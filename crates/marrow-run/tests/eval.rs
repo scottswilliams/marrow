@@ -2214,6 +2214,93 @@ fn next_id_allocates_past_the_highest_record() {
 }
 
 #[test]
+fn next_id_skips_ahead_after_restore() {
+    // After a restore the store may hold records far above any contiguous run.
+    // `nextId` chooses one past the highest existing key, never reusing a gap
+    // (builtins.md:185-191).
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): int\n    return nextId(^books)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(900)),
+            PathSegment::Field("title".into()),
+        ]),
+        encode_value(&SavedValue::Str("t".into())).expect("in-range value encodes"),
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::fresh", &[])
+            .expect("run")
+            .value,
+        Some(Value::Int(901))
+    );
+}
+
+/// `nextId` over a composite-identity root faults with `write.next_id_unsupported`
+/// rather than inventing a bogus `Int(1)`: composite identities have no default
+/// allocation policy (builtins.md:180-183).
+#[test]
+fn next_id_over_a_composite_root_faults() {
+    let program = checked_program(
+        "resource Enrollment at ^enrollments(studentId: int, courseId: int)\n    required grade: string\n\nfn fresh(): int\n    return nextId(^enrollments)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::fresh", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.next_id_unsupported"),
+        "{result:?}"
+    );
+}
+
+/// `nextId` over a keyless singleton root faults: a singleton has no generated
+/// identity to allocate (types.md:262-263).
+#[test]
+fn next_id_over_a_singleton_root_faults() {
+    let program = checked_program(
+        "resource Settings at ^settings\n    required theme: string\n\nfn fresh(): int\n    return nextId(^settings)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::fresh", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.next_id_unsupported"),
+        "{result:?}"
+    );
+}
+
+/// `nextId` over a single non-integer (string) identity key faults: only an
+/// `int` identity has the default policy (builtins.md:180-183).
+#[test]
+fn next_id_over_a_string_keyed_root_faults() {
+    let program = checked_program(
+        "resource Tag at ^tags(slug: string)\n    required name: string\n\nfn fresh(): int\n    return nextId(^tags)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::fresh", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.next_id_unsupported"),
+        "{result:?}"
+    );
+}
+
+/// `nextId` of a saved root no resource declares is a `run.unsupported`: there is
+/// no schema to decide an allocation policy (mirrors `eval_append`'s unknown-root
+/// path).
+#[test]
+fn next_id_over_an_undeclared_root_is_unsupported() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): int\n    return nextId(^bogus)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::fresh", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn delete_removes_a_record() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn set_title(id: int, t: string)\n    ^books(id).title = t\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",

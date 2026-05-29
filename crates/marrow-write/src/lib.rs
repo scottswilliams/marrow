@@ -69,6 +69,14 @@ pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 /// The integer key space is exhausted: the highest existing key is `i64::MAX`,
 /// so no next identity or layer position can be allocated.
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
+/// `nextId` was asked for a root whose identity shape has no default integer
+/// allocation policy: a composite identity (two or more keys), a single
+/// non-integer identity key, or a keyless singleton root. The default per-root
+/// policy is only available for a resource with one `int` identity key; other
+/// identity shapes are application-provided (builtins.md:180-183,
+/// types.md:262-263). Distinct from `write.no_saved_root` so a tool can tell a
+/// local/singleton resource from one whose identity is simply not auto-allocated.
+pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 /// Deleting a `required` field on its own is rejected: a required field can only
 /// go away when its surrounding keyed entry or whole resource is deleted
 /// (docs/language `resources-and-storage.md`). The runtime enforces this guard
@@ -704,16 +712,23 @@ pub fn plan_layer_merge(
     Ok(WritePlan { steps })
 }
 
+/// A resource's saved root, or `WRITE_NO_SAVED_ROOT` when it has none (a local or
+/// singleton resource). Shared by [`resolve_saved_root`] (which adds an arity
+/// check against a supplied identity) and [`next_id`] (which has no identity).
+fn saved_root_of(schema: &ResourceSchema) -> Result<&SavedRootSchema, WriteError> {
+    schema.saved_root.as_ref().ok_or_else(|| WriteError {
+        code: WRITE_NO_SAVED_ROOT,
+        message: format!("resource `{}` has no saved root", schema.name),
+    })
+}
+
 /// Resolve a resource's saved root and check the supplied identity has the
 /// expected number of keys.
 fn resolve_saved_root<'a>(
     schema: &'a ResourceSchema,
     identity: &[SavedKey],
 ) -> Result<&'a SavedRootSchema, WriteError> {
-    let root = schema.saved_root.as_ref().ok_or_else(|| WriteError {
-        code: WRITE_NO_SAVED_ROOT,
-        message: format!("resource `{}` has no saved root", schema.name),
-    })?;
+    let root = saved_root_of(schema)?;
     if identity.len() != root.identity_keys.len() {
         return Err(WriteError {
             code: WRITE_IDENTITY_MISMATCH,
@@ -728,16 +743,46 @@ fn resolve_saved_root<'a>(
     Ok(root)
 }
 
+/// Does this saved root qualify for the default `nextId` policy? The policy is
+/// available only for a resource with exactly one `int` identity key; composite
+/// identities, non-integer identities, and keyless singletons are
+/// application-provided (builtins.md:180-183, types.md:262-263). This predicate
+/// is the single contract the runtime gate (here) and the checker
+/// (`marrow-check`'s `check_next_id`) must agree on; the checker keeps a mirror
+/// copy because it cannot depend on this crate.
+pub fn single_int_root(root: &SavedRootSchema) -> bool {
+    matches!(root.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
+}
+
 /// The next identity for a single-`int` keyed saved root: one greater than the
 /// highest existing integer record key, or `1` when the root is empty. This is
-/// the default `nextId` policy (docs/implementation.md). Non-integer immediate
+/// the default `nextId` policy (builtins.md:180-183). Non-integer immediate
 /// children — such as index names — are ignored.
-pub fn next_id(root: &str, store: &dyn Backend) -> Result<i64, WriteError> {
+///
+/// The single-`int`-root gate is enforced here, not just documented: a resource
+/// with no saved root yields `WRITE_NO_SAVED_ROOT`, and a composite, non-integer,
+/// or keyless-singleton root yields [`WRITE_NEXT_ID_UNSUPPORTED`]. Taking the
+/// `&ResourceSchema` (rather than a bare root name) lets the function decide the
+/// policy from the schema, mirroring `next_layer_pos`.
+pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, WriteError> {
+    let root = saved_root_of(schema)?;
+    if !single_int_root(root) {
+        return Err(WriteError {
+            code: WRITE_NEXT_ID_UNSUPPORTED,
+            message: format!(
+                "`nextId` has no default allocation policy for `{}`: {}; the default \
+                 per-root policy is only available for a resource with one `int` \
+                 identity key",
+                schema.name,
+                next_id_shape(root),
+            ),
+        });
+    }
     let children = store
-        .child_keys(&encode_path(&[PathSegment::Root(root.into())]))
+        .child_keys(&encode_path(&[PathSegment::Root(root.root.clone())]))
         .map_err(|_| WriteError {
             code: WRITE_STORE,
-            message: format!("could not read records under `^{root}`"),
+            message: format!("could not read records under `^{}`", root.root),
         })?;
     let highest = children
         .iter()
@@ -748,6 +793,17 @@ pub fn next_id(root: &str, store: &dyn Backend) -> Result<i64, WriteError> {
         .max()
         .unwrap_or(0);
     next_after(highest)
+}
+
+/// Name the identity shape that disqualifies a root from the default `nextId`
+/// policy, for the rejection message: a composite identity (two or more keys), a
+/// single non-integer key, or a keyless singleton root.
+fn next_id_shape(root: &SavedRootSchema) -> String {
+    match root.identity_keys.as_slice() {
+        [] => "this root is a keyless singleton".into(),
+        [key] => format!("its identity key `{}` is `{}`, not `int`", key.name, key.ty.text.trim()),
+        keys => format!("it has a composite identity of {} keys", keys.len()),
+    }
 }
 
 /// One greater than the highest existing integer key, or a typed overflow when

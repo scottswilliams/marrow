@@ -1706,9 +1706,16 @@ fn eval_next_id(
     let Expression::SavedRoot { name, .. } = &arg.value else {
         return Err(unsupported("`nextId` of this path", span));
     };
+    // Resolve the root to its schema (mirroring `eval_append`): an undeclared root
+    // is a `run.unsupported`, while a declared root with no default integer policy
+    // (composite, non-int, or singleton) surfaces as a catchable `write.*` fault
+    // from `next_id`. The schema-driven gate replaces the old name-only scan, which
+    // would invent a bogus `Int(1)` for any root.
+    let resource = find_resource(env.program, name)
+        .ok_or_else(|| unsupported("`nextId` of an undeclared saved root", span))?;
     let next = {
         let store = env.store.borrow();
-        next_id(name, &*store)
+        next_id(resource, &*store)
     };
     let next = next.map_err(|error| write_fault(error, span, env))?;
     Ok(Value::Int(next))

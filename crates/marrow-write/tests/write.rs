@@ -8,7 +8,8 @@ use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
     FieldValue, ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
-    WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT,
+    WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER,
+    WRITE_REQUIRED_ABSENT,
     WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id,
     next_layer_pos, plan_field_delete, plan_field_write, plan_layer_field_write,
     plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
@@ -427,7 +428,7 @@ fn a_whole_resource_write_replaces_the_previous_value() {
 fn next_id_allocates_after_the_highest_record() {
     let book = schema(BOOK);
     let mut store = MemStore::new();
-    assert_eq!(next_id("books", &store), Ok(1));
+    assert_eq!(next_id(&book, &store), Ok(1));
 
     // Write records 5 and 1 (out of order); the next id is one past the highest.
     for id in [5, 1] {
@@ -440,7 +441,48 @@ fn next_id_allocates_after_the_highest_record() {
             },
         );
     }
-    assert_eq!(next_id("books", &store), Ok(6));
+    assert_eq!(next_id(&book, &store), Ok(6));
+}
+
+/// A composite-identity root has no default `nextId` policy: composite identities
+/// are application-provided (builtins.md:180-183). `next_id` rejects it rather
+/// than scanning integer child keys and inventing a bogus `1`.
+#[test]
+fn next_id_over_a_composite_root_is_unsupported() {
+    let item = schema(
+        "resource Item at ^items(tenant: string, id: int)\n    required name: string\n",
+    );
+    let store = MemStore::new();
+    let result = next_id(&item, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NEXT_ID_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+/// A single non-integer (string) identity key has no default `nextId` policy.
+#[test]
+fn next_id_over_a_string_keyed_root_is_unsupported() {
+    let tag = schema("resource Tag at ^tags(slug: string)\n    required name: string\n");
+    let store = MemStore::new();
+    let result = next_id(&tag, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NEXT_ID_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+/// A keyless singleton root has no generated identity at all, so `nextId` is not
+/// available for it (types.md:262-263).
+#[test]
+fn next_id_over_a_singleton_root_is_unsupported() {
+    let settings = schema("resource Settings at ^settings\n    required theme: string\n");
+    let store = MemStore::new();
+    let result = next_id(&settings, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_NEXT_ID_UNSUPPORTED),
+        "{result:?}"
+    );
 }
 
 #[test]
@@ -458,7 +500,7 @@ fn next_id_at_the_key_space_boundary_is_a_typed_overflow() {
             fields: vec![("title".into(), saved("t"))],
         },
     );
-    let result = next_id("books", &store);
+    let result = next_id(&book, &store);
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_ID_OVERFLOW),
         "{result:?}"
