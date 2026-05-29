@@ -571,6 +571,15 @@ enum Place {
         identity: Vec<SavedKey>,
         field: String,
     },
+    /// A saved scalar field inside a keyed group entry, at any nesting depth:
+    /// `^books(id).versions(v).comments(c).text`. `layers` is the chain of
+    /// `(layer, key…)` levels from the record to the innermost group.
+    SavedNestedField {
+        root: String,
+        identity: Vec<SavedKey>,
+        layers: Vec<(String, Vec<SavedKey>)>,
+        field: String,
+    },
     /// A whole saved resource: `^books(id)`.
     SavedResource {
         root: String,
@@ -592,12 +601,24 @@ fn resolve_place(
             Ok(Place::Local(segments[0].clone()))
         }
         Expression::Field { base, name, .. } if is_saved_path(base) => {
-            let (root, identity) = lower_record_identity(base, env)?;
-            Ok(Place::SavedField {
-                root,
-                identity,
-                field: name.clone(),
-            })
+            // `^root(id…).field` is a top-level field; a deeper base
+            // `^root(id…).layer(key…)….field` is a field inside a nested group
+            // entry. `lower_layer_path` yields the chain (empty for the top level).
+            let (root, identity, layers) = lower_layer_path(base, env)?;
+            if layers.is_empty() {
+                Ok(Place::SavedField {
+                    root,
+                    identity,
+                    field: name.clone(),
+                })
+            } else {
+                Ok(Place::SavedNestedField {
+                    root,
+                    identity,
+                    layers,
+                    field: name.clone(),
+                })
+            }
         }
         // `book.title` — a field of a local resource variable (the base is a bare
         // local name, not a saved path).
@@ -637,6 +658,12 @@ impl Place {
                 identity,
                 field,
             } => read_saved_field(root, identity, field, span, env),
+            Place::SavedNestedField {
+                root,
+                identity,
+                layers,
+                field,
+            } => read_nested_field(root, identity, layers, field, span, env),
             Place::SavedResource { root, identity } => read_resource(root, identity, span, env),
         }
     }
@@ -653,6 +680,12 @@ impl Place {
                 identity,
                 field,
             } => write_saved_field(&root, &identity, &field, value, span, env),
+            Place::SavedNestedField {
+                root,
+                identity,
+                layers,
+                field,
+            } => write_nested_field(&root, &identity, &layers, &field, value, span, env),
             Place::SavedResource { root, identity } => {
                 write_resource(&root, &identity, value, span, env)
             }
@@ -2493,15 +2526,30 @@ fn eval_group_field_read(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let (root, identity, chain) = lower_layer_path(base, env)?;
-    let layer_names: Vec<&str> = chain.iter().map(|(name, _)| name.as_str()).collect();
-    let member_type = resource_nested_member_type(env.program, &root, &layer_names, field)
+    let (root, identity, layers) = lower_layer_path(base, env)?;
+    read_nested_field(&root, &identity, &layers, field, span, env)
+}
+
+/// Read a scalar field inside a (possibly nested) keyed group entry from already-
+/// lowered path parts. Shared by [`eval_group_field_read`] and an `inout` place
+/// read; the value decodes with the innermost member's declared type, and an
+/// unpopulated entry is an absent-element error.
+fn read_nested_field(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    field: &str,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    let member_type = resource_nested_member_type(env.program, root, &layer_names, field)
         .ok_or_else(|| unsupported("reading this group field", span))?;
-    let mut segments = vec![PathSegment::Root(root)];
-    segments.extend(identity.into_iter().map(PathSegment::RecordKey));
-    for (name, keys) in chain {
-        segments.push(PathSegment::ChildLayer(name));
-        segments.extend(keys.into_iter().map(PathSegment::IndexKey));
+    let mut segments = vec![PathSegment::Root(root.to_string())];
+    segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    for (name, keys) in layers {
+        segments.push(PathSegment::ChildLayer(name.clone()));
+        segments.extend(keys.iter().cloned().map(PathSegment::IndexKey));
     }
     segments.push(PathSegment::Field(field.to_string()));
     let store = env.store.borrow();
@@ -2748,23 +2796,39 @@ fn eval_group_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity, chain) = lower_layer_path(base, env)?;
-    let resource = find_resource(env.program, &root)
+    let (root, identity, layers) = lower_layer_path(base, env)?;
+    let value = eval_expr(value, env)?;
+    write_nested_field(&root, &identity, &layers, field, value, span, env)
+}
+
+/// Write `value` to a scalar field inside a (possibly nested) keyed group entry
+/// from already-lowered path parts. Shared by [`eval_group_field_write`] and an
+/// `out`/`inout` place write. Groups carry no generated indexes, so this is a
+/// plain replace-in-place write.
+fn write_nested_field(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    field: &str,
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let saved = value_to_saved(eval_expr(value, env)?)
+    let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
-    let layers: Vec<(&str, &[SavedKey])> = chain
+    let layer_refs: Vec<(&str, &[SavedKey])> = layers
         .iter()
         .map(|(name, keys)| (name.as_str(), keys.as_slice()))
         .collect();
-    let plan =
-        plan_nested_field_write(resource, &identity, &layers, field, &saved).map_err(|error| {
-            RuntimeError {
-                code: error.code,
-                message: error.message,
-                span,
-            }
-        })?;
+    let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved).map_err(
+        |error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        },
+    )?;
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())

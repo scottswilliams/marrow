@@ -1269,6 +1269,62 @@ fn inout_writes_back_to_a_whole_saved_resource() {
     assert_eq!(title, Some(Value::Str("renamed".into())));
 }
 
+/// A resource with a `versions(version)` group layer, for `out`/`inout` into a
+/// field inside a keyed group entry (a `SavedNestedField` place).
+const GROUP_FIELD_MODE_SAMPLE: &str = "\
+resource Book at ^books(id: int)
+    title: string
+    versions(version: int)
+        title: string
+
+fn addBang(inout t: string)
+    t = t _ \"!\"
+
+fn makeTitle(out t: string)
+    t = \"made\"
+
+pub fn seed()
+    ^books(1).versions(2).title = \"v\"
+
+pub fn bump()
+    addBang(inout ^books(1).versions(2).title)
+
+pub fn produce()
+    makeTitle(out ^books(1).versions(3).title)
+
+pub fn versionTitle(): string
+    return ^books(1).versions(2).title
+
+pub fn producedTitle(): string
+    return ^books(1).versions(3).title
+";
+
+#[test]
+fn inout_writes_back_to_a_group_entry_field() {
+    // `inout ^books(id).versions(v).title` — a field inside a keyed group entry as
+    // an inout target: read the current value, mutate, write back.
+    let program = checked_program(GROUP_FIELD_MODE_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    run_entry(&program, &store, "test::bump", &[]).expect("bump");
+    let title = run_entry(&program, &store, "test::versionTitle", &[])
+        .expect("read")
+        .value;
+    assert_eq!(title, Some(Value::Str("v!".into())));
+}
+
+#[test]
+fn out_creates_a_group_entry_field() {
+    // `out` never reads the place, so the group-entry field need not exist first.
+    let program = checked_program(GROUP_FIELD_MODE_SAMPLE);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::produce", &[]).expect("produce");
+    let title = run_entry(&program, &store, "test::producedTitle", &[])
+        .expect("read")
+        .value;
+    assert_eq!(title, Some(Value::Str("made".into())));
+}
+
 #[test]
 fn a_saved_write_back_is_skipped_when_the_callee_throws() {
     let program = checked_program(SAVED_MODE_SAMPLE);
