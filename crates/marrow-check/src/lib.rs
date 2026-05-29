@@ -349,16 +349,18 @@ fn check_file_types(
     let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
-            let ty = match &constant.ty {
-                Some(ty) => resolve_type(ty, program),
-                None => infer_type(
+            let ty = match (&constant.ty, &constant.value) {
+                (Some(ty), _) => resolve_type(ty, program),
+                (None, Some(value)) => infer_type(
                     program,
-                    &constant.value,
+                    value,
                     std::slice::from_ref(&module_constants),
                     &aliases,
                     file,
                     &mut Vec::new(),
                 ),
+                // The value did not parse; the parser already reported the error.
+                (None, None) => MarrowType::Unknown,
             };
             module_constants.insert(constant.name.clone(), ty);
         }
@@ -702,7 +704,9 @@ fn check_statement_types(
             else_block,
             ..
         } => {
-            check_condition(program, file, condition, scope, aliases, diagnostics);
+            if let Some(condition) = condition {
+                check_condition(program, file, condition, scope, aliases, diagnostics);
+            }
             check_block_types(
                 program,
                 file,
@@ -713,14 +717,9 @@ fn check_statement_types(
                 diagnostics,
             );
             for else_if in else_ifs {
-                check_condition(
-                    program,
-                    file,
-                    &else_if.condition,
-                    scope,
-                    aliases,
-                    diagnostics,
-                );
+                if let Some(condition) = &else_if.condition {
+                    check_condition(program, file, condition, scope, aliases, diagnostics);
+                }
                 check_block_types(
                     program,
                     file,
@@ -746,7 +745,9 @@ fn check_statement_types(
         Statement::While {
             condition, body, ..
         } => {
-            check_condition(program, file, condition, scope, aliases, diagnostics);
+            if let Some(condition) = condition {
+                check_condition(program, file, condition, scope, aliases, diagnostics);
+            }
             check_block_types(
                 program,
                 file,
@@ -800,7 +801,9 @@ fn check_statement_types(
             );
         }
         Statement::Lock { path, body, .. } => {
-            infer_type(program, path, scope, aliases, file, diagnostics);
+            if let Some(path) = path {
+                infer_type(program, path, scope, aliases, file, diagnostics);
+            }
             check_block_types(
                 program,
                 file,
@@ -854,7 +857,7 @@ fn check_statement_types(
                 );
             }
         }
-        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => {}
+        Statement::Break { .. } | Statement::Continue { .. } => {}
     }
 }
 
@@ -1142,11 +1145,8 @@ fn infer_type(
                 .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
         }
-        // A multi-segment name, saved root, or undecomposed text has no known
-        // primitive type.
-        Expression::Name { .. } | Expression::SavedRoot { .. } | Expression::Unparsed { .. } => {
-            MarrowType::Unknown
-        }
+        // A multi-segment name or saved root has no known primitive type.
+        Expression::Name { .. } | Expression::SavedRoot { .. } => MarrowType::Unknown,
     }
 }
 
@@ -2327,7 +2327,9 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
                 resources.push(schema);
             }
             marrow_syntax::Declaration::Const(constant) => {
-                rules::check_const_value(file_path, &constant.value, diagnostics);
+                if let Some(value) = &constant.value {
+                    rules::check_const_value(file_path, value, diagnostics);
+                }
                 constants.push(CheckedConst {
                     name: constant.name.clone(),
                     ty: constant
@@ -2403,23 +2405,29 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
             else_block,
             ..
         } => {
-            expr_touches_saved_data(condition)
+            condition.as_ref().is_some_and(expr_touches_saved_data)
                 || block_touches_saved_data(then_block)
                 || else_ifs.iter().any(|else_if| {
-                    expr_touches_saved_data(&else_if.condition)
+                    else_if
+                        .condition
+                        .as_ref()
+                        .is_some_and(expr_touches_saved_data)
                         || block_touches_saved_data(&else_if.block)
                 })
                 || else_block.as_ref().is_some_and(block_touches_saved_data)
         }
         Statement::While {
             condition, body, ..
-        } => expr_touches_saved_data(condition) || block_touches_saved_data(body),
+        } => {
+            condition.as_ref().is_some_and(expr_touches_saved_data)
+                || block_touches_saved_data(body)
+        }
         Statement::For { iterable, body, .. } => {
             expr_touches_saved_data(iterable) || block_touches_saved_data(body)
         }
         Statement::Transaction { body, .. } => block_touches_saved_data(body),
         Statement::Lock { path, body, .. } => {
-            expr_touches_saved_data(path) || block_touches_saved_data(body)
+            path.as_ref().is_some_and(expr_touches_saved_data) || block_touches_saved_data(body)
         }
         Statement::Try {
             body,
@@ -2433,7 +2441,7 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
                     .is_some_and(|catch| block_touches_saved_data(&catch.block))
                 || finally.as_ref().is_some_and(block_touches_saved_data)
         }
-        Statement::Break { .. } | Statement::Continue { .. } | Statement::Unparsed { .. } => false,
+        Statement::Break { .. } | Statement::Continue { .. } => false,
     }
 }
 
@@ -2441,7 +2449,7 @@ fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
     use marrow_syntax::{Expression, InterpolationPart};
     match expr {
         Expression::SavedRoot { .. } => true,
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::Unparsed { .. } => false,
+        Expression::Literal { .. } | Expression::Name { .. } => false,
         Expression::Call { callee, args, .. } => {
             expr_touches_saved_data(callee)
                 || args.iter().any(|arg| expr_touches_saved_data(&arg.value))

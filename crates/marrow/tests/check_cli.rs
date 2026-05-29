@@ -93,14 +93,19 @@ fn check_jsonl_reports_diagnostics_and_summary() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("jsonl record"))
         .collect::<Vec<_>>();
-    assert_eq!(records.len(), 2, "{records:#?}");
+    // The tab-indented declaration parses to two diagnostics: the tab is rejected,
+    // and the function is then left without a parseable indented body. Each parse
+    // record precedes the trailing summary.
+    assert_eq!(records.len(), 3, "{records:#?}");
     assert_eq!(records[0]["code"], "parse.syntax");
     assert_eq!(records[0]["kind"], "parse");
     assert_eq!(records[0]["source_span"]["line"], 2);
     assert_eq!(records[0]["source_span"]["column"], 1);
-    assert_eq!(records[1]["kind"], "summary");
-    assert_eq!(records[1]["status"], "failed");
-    assert_eq!(records[1]["diagnostics"], 1);
+    assert_eq!(records[1]["code"], "parse.syntax");
+    assert_eq!(records[1]["kind"], "parse");
+    assert_eq!(records[2]["kind"], "summary");
+    assert_eq!(records[2]["status"], "failed");
+    assert_eq!(records[2]["diagnostics"], 2);
 }
 
 /// Create an empty temporary project directory (caller fills it).

@@ -2549,13 +2549,13 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             then_block,
             else_ifs,
             else_block,
-            ..
+            span,
         } => {
-            if eval_bool(condition, env)? {
+            if eval_condition(condition.as_ref(), *span, env)? {
                 return eval_block(then_block, env);
             }
             for else_if in else_ifs {
-                if eval_bool(&else_if.condition, env)? {
+                if eval_condition(else_if.condition.as_ref(), *span, env)? {
                     return eval_block(&else_if.block, env);
                 }
             }
@@ -2570,8 +2570,8 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             label,
             condition,
             body,
-            ..
-        } => eval_while(label, condition, body, env),
+            span,
+        } => eval_while(label, condition.as_ref(), body, *span, env),
         Statement::For {
             label,
             binding,
@@ -2698,7 +2698,6 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             // concurrent writers, so it is not read here.
             eval_block(body, env)
         }
-        other => Err(unsupported("this statement", other.span())),
     }
 }
 
@@ -2735,11 +2734,12 @@ fn targets_this_loop(jump_label: &Option<String>, loop_label: &Option<String>) -
 
 fn eval_while(
     label: &Option<String>,
-    condition: &Expression,
+    condition: Option<&Expression>,
     body: &Block,
+    span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    while eval_bool(condition, env)? {
+    while eval_condition(condition, span, env)? {
         match classify(eval_block(body, env)?, label) {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
@@ -3230,7 +3230,6 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
         // A bare saved root read (`^settings`) is a whole-resource read of a
         // keyless singleton; a keyed root needs a `^root(key…)` call.
         Expression::SavedRoot { name, span, .. } => read_resource(name, &[], *span, env),
-        other => Err(unsupported("this expression", other.span())),
     }
 }
 
@@ -5342,6 +5341,20 @@ fn eval_int(expr: &Expression, env: &mut Env<'_>) -> Result<i64, RuntimeError> {
     match eval_expr(expr, env)? {
         Value::Int(n) => Ok(n),
         _ => Err(type_error("expected an integer", expr.span())),
+    }
+}
+
+/// Evaluate an `if`/`while`/`else if` condition. The condition is `None` only when
+/// it did not parse, which the checker rejects before a program reaches the runtime;
+/// guard against it anyway so a malformed condition faults rather than panics.
+fn eval_condition(
+    condition: Option<&Expression>,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<bool, RuntimeError> {
+    match condition {
+        Some(condition) => eval_bool(condition, env),
+        None => Err(unsupported("a condition that did not parse", span)),
     }
 }
 

@@ -499,22 +499,22 @@ fn keyed_leaf_with_a_decimal_key_param_is_an_error() {
     // A keyed-layer key must be an ordered key type; `decimal` is not.
     let source = "\
 resource Book at ^books(id: int)
-    samples(at: decimal): int
+    samples(ts: decimal): int
 ";
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
-    assert!(errors[0].message.contains("at"));
+    assert!(errors[0].message.contains("ts"));
 }
 
 #[test]
 fn identity_key_typed_decimal_is_an_error() {
     let source = "\
-resource Reading at ^readings(at: decimal)
+resource Reading at ^readings(ts: decimal)
     required value: int
 ";
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
-    assert!(errors[0].message.contains("at"));
+    assert!(errors[0].message.contains("ts"));
 }
 
 #[test]

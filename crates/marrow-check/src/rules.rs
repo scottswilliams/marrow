@@ -73,10 +73,7 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
                 }
             }
         }
-        Expression::Name { .. }
-        | Expression::SavedRoot { .. }
-        | Expression::Call { .. }
-        | Expression::Unparsed { .. } => {}
+        Expression::Name { .. } | Expression::SavedRoot { .. } | Expression::Call { .. } => {}
     }
 }
 
@@ -542,7 +539,6 @@ fn is_constant_expr(expr: &Expression) -> bool {
             InterpolationPart::Text { .. } => true,
             InterpolationPart::Expr(expr) => is_constant_expr(expr),
         }),
-        Expression::Unparsed { .. } => true,
     }
 }
 
