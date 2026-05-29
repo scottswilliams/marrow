@@ -270,11 +270,53 @@ pub fn check_project(
         parsed_files.push((file, parsed));
     }
 
-    // Pass 2: every `use` must name a project module or a standard-library
-    // module, now that the full project module set is known.
-    for (file, parsed) in &parsed_files {
+    // Pass 3: flag type annotations on functions and constants that name an
+    // unknown type. Resource member types are validated by schema compilation.
+    let project_resources: HashSet<String> = parsed_files
+        .iter()
+        .flat_map(|(_, parsed)| parsed.file.declarations.iter())
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
+    check_resolved_files(
+        files.len(),
+        &parsed_files,
+        &declared,
+        &program,
+        &project_resources,
+        &mut report,
+    );
+
+    Ok((report, program))
+}
+
+/// Resolve every `use` against `resolvable`, run the type pass over each parsed
+/// file against `program` with `project_resources`, then suppress unresolved-call
+/// reports when any file failed to parse or read. This is the shared tail of
+/// check_project and check_tests: pass 1 (parse plus each caller's module and
+/// ownership construction) differs and stays in the caller, but once the
+/// resolvable module set, program, and resource set are known every step is
+/// identical. `files_len` is the discovered-file count, passed in so the helper
+/// does not depend on the two callers' differing discovery return shapes; the
+/// `files_len == parsed_files.len()` check keeps the read-failure-drops-a-file
+/// invariant both callers rely on.
+fn check_resolved_files(
+    files_len: usize,
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    resolvable: &HashMap<String, PathBuf>,
+    program: &CheckedProgram,
+    project_resources: &HashSet<String>,
+    report: &mut CheckReport,
+) {
+    // Pass 2: every `use` must name a project module, a sibling module, or a
+    // standard-library module, now that the full resolvable module set is known.
+    for (file, parsed) in parsed_files {
         for use_decl in &parsed.file.uses {
-            if !is_resolved_import(&use_decl.name, &declared) {
+            if !is_resolved_import(&use_decl.name, resolvable) {
                 report.diagnostics.push(CheckDiagnostic {
                     code: CHECK_UNRESOLVED_IMPORT,
                     severity: Severity::Error,
@@ -286,39 +328,30 @@ pub fn check_project(
         }
     }
 
-    // Pass 3: flag type annotations on functions and constants that name an
-    // unknown type. Resource member types are validated by schema compilation.
-    let project_resources: HashSet<String> = parsed_files
-        .iter()
-        .flat_map(|(_, parsed)| parsed.file.declarations.iter())
-        .filter_map(|declaration| match declaration {
-            marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
-            _ => None,
-        })
-        .collect();
-    for (file, parsed) in &parsed_files {
+    // Pass 3: flag type annotations that name an unknown type.
+    for (file, parsed) in parsed_files {
         check_file_types(
-            &program,
-            &project_resources,
+            program,
+            project_resources,
             &file.path,
             parsed,
             &mut report.diagnostics,
         );
     }
 
-    // Unresolved-call reports are trustworthy only when the whole project parsed:
-    // a file that failed to parse or read is excluded from the program, so a call
-    // into it would look unresolved though its definition exists. Suppress them in
-    // that case — the parse or read errors are the real problem to fix first.
-    let fully_parsed = files.len() == parsed_files.len()
+    // Unresolved-call reports are trustworthy only when every file parsed and the
+    // program is whole: a file that failed to parse or read is excluded from the
+    // program, so a call into it would look unresolved though its definition
+    // exists. Suppress them then — the parse or read errors are the real problem to
+    // fix first. (A read failure drops a file from `parsed_files` without setting
+    // has_errors, so the length check is needed alongside the has_errors check.)
+    let fully_parsed = files_len == parsed_files.len()
         && parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
     if !fully_parsed {
         report
             .diagnostics
             .retain(|diagnostic| diagnostic.code != CHECK_UNRESOLVED_CALL);
     }
-
-    Ok((report, program))
 }
 
 /// Run the type-inference pass over one parsed file against the resolved
@@ -2171,19 +2204,6 @@ pub fn check_tests(
     for module in &modules {
         resolvable.insert(module.name.clone(), module.source_file.clone());
     }
-    for (file, parsed) in &parsed_files {
-        for use_decl in &parsed.file.uses {
-            if !is_resolved_import(&use_decl.name, &resolvable) {
-                report.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_IMPORT,
-                    severity: Severity::Error,
-                    file: file.path.clone(),
-                    message: format!("cannot resolve import `{}`", use_decl.name),
-                    span: use_decl.span,
-                });
-            }
-        }
-    }
 
     // Run the same type-inference pass library files get, so a test file's std
     // argument/arity errors, `nextId` misuse, and ordinary type mismatches are
@@ -2206,29 +2226,18 @@ pub fn check_tests(
         .flat_map(|module| &module.resources)
         .map(|resource| resource.name.clone())
         .collect();
-    for (file, parsed) in &parsed_files {
-        check_file_types(
-            &combined,
-            &project_resources,
-            &file.path,
-            parsed,
-            &mut report.diagnostics,
-        );
-    }
 
-    // Unresolved-call reports are trustworthy only when every test file parsed and
-    // the project program is whole: a file excluded for a parse OR read error is
-    // not in the combined program, so a call into it would look unresolved though
-    // its definition exists. Suppress them then — the parse/read errors are the
-    // real fix. (Matches check_project: a read failure drops a file from
-    // parsed_files without setting has_errors, so the length check is needed too.)
-    let fully_parsed = files.len() == parsed_files.len()
-        && parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
-    if !fully_parsed {
-        report
-            .diagnostics
-            .retain(|diagnostic| diagnostic.code != CHECK_UNRESOLVED_CALL);
-    }
+    // Passes 2-3 plus unresolved-call suppression are shared with check_project.
+    // A read failure drops a file from `parsed_files` so a call into it would look
+    // unresolved; the suppression there handles that exactly as check_project does.
+    check_resolved_files(
+        files.len(),
+        &parsed_files,
+        &resolvable,
+        &combined,
+        &project_resources,
+        &mut report,
+    );
 
     Ok((report, modules))
 }
