@@ -1,15 +1,15 @@
 # Project Configuration
 
-A Marrow project is source plus an explicit storage selection, described by a
-single file, `marrow.json`, at the project root. Every project command —
-`check`, `run`, `test`, `fmt`, `backup`, `restore`, `data`, `serve` — reads
-`<projectdir>/marrow.json` first. The file holds project choices only: source
-roots, a default entrypoint, the store backend and its data directory, and test
-patterns. It never holds compiled schemas, index metadata, migration history,
-permissions, connection strings, or secrets.
+A Marrow project is described by a single file, `marrow.json`, at the project
+root. Every project command — `check`, `run`, `test`, `fmt`, `backup`,
+`restore`, `data`, `serve` — reads `<projectdir>/marrow.json` first. The file
+holds project choices only: source roots, a default entrypoint, the store
+backend and its data directory, and test patterns. It does not hold compiled
+schemas, index metadata, migration history, permissions, connection strings, or
+secrets.
 
-The file is small and closed: unknown keys are rejected, so a typo is an error,
-not a silently ignored setting.
+Unknown keys are rejected, so a typo is an error rather than a silently ignored
+setting.
 
 ## Complete Example
 
@@ -92,14 +92,14 @@ value does not print it.
 The storage selection. When `store` is omitted entirely, commands use an
 in-memory store: nothing is persisted, and each `run` or `test` starts empty.
 
-- **`memory`** — an in-memory store. Creates no files. `dataDir` is ignored if
+- `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
   present (and may be omitted).
 
   ```json
   { "sourceRoots": ["src"], "store": { "backend": "memory" } }
   ```
 
-- **`native`** — the persistent on-disk store. Requires a non-empty `dataDir`,
+- `native` — the persistent on-disk store. Requires a non-empty `dataDir`,
   a relative path under the project root. The store file is created at
   `<dataDir>/marrow.redb`. The data directory is created on first use by a
   command that writes (such as `run`); read-only inspection (`data`, `serve`)

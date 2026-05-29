@@ -1,13 +1,12 @@
 # Data Modeling
 
-A practical guide to shaping saved data in Marrow: saved roots, child layers,
-identity keys, sparse and required fields, relationships, history, indexes, and
-the lookup patterns they enable.
+How to shape saved data in Marrow: saved roots, child layers, identity keys,
+sparse and required fields, relationships, history, indexes, and the lookup
+patterns they enable.
 
-This page is grounded in
 [`language/resources-and-storage.md`](language/resources-and-storage.md) and
-[`language/types.md`](language/types.md). Read those for the full rules; this
-page shows how to put them together.
+[`language/types.md`](language/types.md) give the full rules; this page shows how
+to put them together.
 
 A resource is a typed tree shape. The same shape can be a local value or saved
 data. Saved data is marked with `^` and persists in the project database; local
@@ -60,20 +59,19 @@ resource Patient at ^patients(id: string)
         provider: string
 ```
 
-- An **unkeyed group** (`name`) is structural. It groups fields under the
-  containing resource. A `required` field inside it is required for the whole
-  resource. Its fields read as `^patients(id).name.first`.
-- A **keyed layer** (`visits(date: date)`) creates repeatable children. Each
-  entry is addressed by its key: `^patients(id).visits(someDate).note`.
-  Required-field checks apply only to entries that exist, not to every possible
-  key.
+- An unkeyed group (`name`) is structural. It groups fields under the containing
+  resource. A `required` field inside it is required for the whole resource. Its
+  fields read as `^patients(id).name.first`.
+- A keyed layer (`visits(date: date)`) creates repeatable children. Each entry
+  is addressed by its key: `^patients(id).visits(someDate).note`. Required-field
+  checks apply only to entries that exist, not to every possible key.
 
 Use a child layer for data owned by the parent and normally reached through it.
 Use a separate saved resource when the child has its own identity, lifecycle, or
 important lookup paths.
 
 A whole-resource read materializes top-level scalars and unkeyed groups into a
-local value. It does **not** pull in keyed child layers — those are read through
+local value. It does not pull in keyed child layers — those are read through
 their saved paths or traversed with `keys`, `values`, and `entries`:
 
 ```mw
@@ -95,8 +93,7 @@ const id = Book::Id(17)
 ^books(id).title = "Small Gods"
 ```
 
-Composite identities list more than one key and still produce **one** identity
-type:
+Composite identities list more than one key and still produce one identity type:
 
 ```mw
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
@@ -118,16 +115,16 @@ runtime lowers each key component into the saved path. With one record at
 ^enrollments(1)("cs101").status   active
 ```
 
-Key facts to model around:
+Rules to model around:
 
-- **Identity keys live in the path, not as fields.** A resource keyed by `id`
-  does not also declare a field, group, or layer named `id`. If you also need
-  the same business value as a readable field, give the field a different name.
-- **Identities are opaque and may have gaps.** Do not encode business meaning
-  into them or treat them as gap-free counters; failed or rolled-back work can
-  leave unused IDs behind.
-- **Identity keys do not change in place.** Changing a key means "this is a
-  different record" — create a new record and delete or migrate the old one.
+- Identity keys live in the path, not as fields. A resource keyed by `id` does
+  not also declare a field, group, or layer named `id`. To also expose the same
+  business value as a readable field, give the field a different name.
+- Identities are opaque and may have gaps. Do not encode business meaning into
+  them or treat them as gap-free counters; failed or rolled-back work can leave
+  unused IDs behind.
+- Identity keys do not change in place. Changing a key means "this is a different
+  record" — create a new record and delete or migrate the old one.
 
 For a single `int` key, `nextId` allocates the next identity:
 
@@ -142,9 +139,9 @@ command arguments, host IO) with the identity constructor, e.g. `Book::Id(17)`.
 
 ## Sparse vs Required Fields
 
-Fields are **sparse by default**. A sparse declaration says what type the
-element has *when populated*. An unpopulated element is not an empty string,
-zero, or false — there is simply no node in the tree.
+Fields are sparse by default. A sparse declaration says what type the element
+has when populated. An unpopulated element is not an empty string, zero, or
+false — there is simply no node in the tree.
 
 ```mw
 subtitle: string         ; sparse: may be absent
@@ -190,7 +187,7 @@ transaction
     ^books(id).author = "Terry Pratchett"
 ```
 
-Whole-resource assignment **replaces** the record for that identity: fields and
+Whole-resource assignment replaces the record for that identity: fields and
 child entries absent from the assigned value are removed. Use single field
 writes to update an existing record without disturbing its other fields or its
 keyed child layers:
@@ -201,8 +198,8 @@ keyed child layers:
 
 ## Relationships
 
-Marrow has **no implicit foreign keys.** Saving an identity does not create a
-constraint, cascade, or join — it is just a typed value. Applications enforce
+Marrow has no implicit foreign keys. Saving an identity does not create a
+constraint, cascade, or join; it is a typed value. Applications enforce
 relationship rules in code, or model the relationship as a resource plus an
 index.
 
@@ -233,10 +230,10 @@ pub fn printByAuthor(authorId: Author::Id)
 ```
 
 Store the related key as a scalar (`int` here) and reconstruct the identity with
-its constructor when you need it. A field declared with a generated identity type
+its constructor when needed. A field declared with a generated identity type
 (for example `authorId: Author::Id`) is not yet supported by the runtime write
-path — such a write fails with `run.unsupported`. Use a scalar key field
-plus explicit identity construction, as above.
+path; such a write fails with `run.unsupported`. Use a scalar key field plus
+explicit identity construction, as above.
 
 Cascading cleanup is ordinary application or migration code. `delete` does not
 follow identity values stored in other resources.
@@ -270,9 +267,9 @@ History entries live under the keyed layer:
 ^policies(policyId).versions(version).changedAt
 ```
 
-Writing a current field does **not** automatically create a new version — code
-writes history entries deliberately, usually together with the current update in
-a transaction:
+Writing a current field does not automatically create a new version; code writes
+history entries deliberately, usually together with the current update in a
+transaction:
 
 ```mw
 pub fn revise(id: Policy::Id, title: string, changedAt: instant)
@@ -298,7 +295,7 @@ explicit backfill.
 
 ## Indexes
 
-Use an index when a value is an *alternate lookup path*, not a different record.
+Use an index when a value is an alternate lookup path, not a different record.
 Indexes are declared members of keyed saved resources:
 
 ```mw
@@ -314,15 +311,15 @@ resource Book at ^books(id: int)
 Rules the project checker enforces (reported when you `marrow check
 <projectdir>` or `marrow run`):
 
-- A **non-unique index must end with all identity keys** in declaration order so
+- A non-unique index must end with all identity keys in declaration order so
   each entry is distinct. Omitting them is rejected with
   `schema.index_missing_identity_keys`.
-- A **unique index may omit the identity key**, because each populated lookup
-  path points to exactly one record.
-- An index **requires a keyed root.** A singleton has no identity for an entry
-  to point to (`schema.index_requires_keyed_root`).
+- A unique index may omit the identity key, because each populated lookup path
+  points to exactly one record.
+- An index requires a keyed root. A singleton has no identity for an entry to
+  point to (`schema.index_requires_keyed_root`).
 - Index arguments may name identity keys, fields, or nested fields through
-  unkeyed groups. They do **not** walk keyed child layers.
+  unkeyed groups. They do not walk keyed child layers.
 
 Index entries exist only when every indexed value is populated; absent fields
 create no placeholder entry. A unique index rejects conflicts among populated
@@ -343,20 +340,20 @@ Marrow reads saved data with paths, traversal, and declared indexes. There is no
 separate query language — if you need a new access pattern, add an index and
 backfill its tree.
 
-**By identity** (when the identity is known):
+By identity, when the identity is known:
 
 ```mw
 const title = ^books(id).title
 ```
 
-**By unique index** (one populated path → one identity):
+By unique index, where one populated path resolves to one identity:
 
 ```mw
 const id: Book::Id = ^books.byIsbn(isbn)
 const title = ^books(id).title
 ```
 
-**By non-unique index** (iterate the identities under a branch):
+By non-unique index, iterating the identities under a branch:
 
 ```mw
 for id in keys(^books.byShelf("fiction"))
@@ -370,7 +367,7 @@ Use `values(...)` and `entries(...)` on primary roots and ordinary keyed layers;
 the marker values that back non-unique index entries are a raw-inspection detail,
 not typed data.
 
-**By traversal** (follow a stored reference, reconstructing the identity):
+By traversal, following a stored reference and reconstructing the identity:
 
 ```mw
 const author = ^authors(Author::Id(^books(id).authorId)).name
@@ -378,8 +375,8 @@ const author = ^authors(Author::Id(^books(id).authorId)).name
 
 ## Inspecting the Saved Tree
 
-Saved resources are not opaque blobs — tools read the same tree code does. The
-`marrow data` commands are read-only and never modify the store:
+Tools read the same saved tree that code does. The `marrow data` commands are
+read-only and never modify the store:
 
 ```text
 $ marrow data dump <projectdir>
@@ -403,12 +400,12 @@ the schema — note this checks decoding, not required-field completeness).
 
 ## What Is Deferred
 
-For accuracy, some maintenance operations are not yet implemented:
+Some maintenance operations are not yet implemented:
 
-- `marrow data diff` and `marrow data load` are **deferred** — they overlap
+- `marrow data diff` and `marrow data load` are deferred — they overlap
   restore's replace/merge/repair modes and need typed source fingerprinting.
-- Restore today writes into an empty target. **Replace, merge, and repair
-  restores are deferred** maintenance actions.
+- Restore today writes into an empty target. Replace, merge, and repair restores
+  are deferred maintenance actions.
 - A field declared with a generated identity type is not yet accepted by the
   write path; model references with a scalar key field plus identity
   construction (see [Relationships](#relationships)).
