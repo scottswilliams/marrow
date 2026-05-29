@@ -9,8 +9,8 @@ use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram,
 use marrow_run::{
     Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
     RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
-    RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function,
-    run_entry, run_entry_with_host,
+    RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, SavedPathClass, Value,
+    classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::compile_resource;
 use marrow_store::backend::Backend;
@@ -5351,5 +5351,87 @@ fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
     assert!(
         matches!(result, Err(ref error) if error.code == "write.unknown_field"),
         "{result:?}"
+    );
+}
+
+#[test]
+fn classify_saved_path_distinguishes_fields_layers_indexes_and_orphans() {
+    // A resource with a top-level field, a keyed-leaf layer, a nested group
+    // field, and an index covers every classification the inspector reports.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20title: string\n\
+         \x20\x20\x20\x20shelf: string\n\
+         \x20\x20\x20\x20tags(pos: int): string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         \n\
+         \x20\x20\x20\x20index byShelf(shelf, id)\n",
+    );
+
+    let field = vec![
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("title".into()),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &field),
+        SavedPathClass::Scalar(ValueType::Str)
+    );
+
+    let leaf_layer = vec![
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("tags".into()),
+        PathSegment::IndexKey(SavedKey::Int(0)),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &leaf_layer),
+        SavedPathClass::Scalar(ValueType::Str)
+    );
+
+    let nested = vec![
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("versions".into()),
+        PathSegment::IndexKey(SavedKey::Int(2)),
+        PathSegment::Field("note".into()),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &nested),
+        SavedPathClass::Scalar(ValueType::Str)
+    );
+
+    let index_marker = vec![
+        PathSegment::Root("books".into()),
+        PathSegment::Field("byShelf".into()),
+        PathSegment::IndexKey(SavedKey::Str("A".into())),
+        PathSegment::IndexKey(SavedKey::Int(1)),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &index_marker),
+        SavedPathClass::IndexMarker
+    );
+
+    // Data under an unknown root, or naming a field the schema does not declare,
+    // is an orphan.
+    let unknown_root = vec![
+        PathSegment::Root("ghosts".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("title".into()),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &unknown_root),
+        SavedPathClass::Orphan
+    );
+
+    let unknown_field = vec![
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("nope".into()),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &unknown_field),
+        SavedPathClass::Orphan
     );
 }

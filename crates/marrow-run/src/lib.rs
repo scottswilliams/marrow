@@ -4644,6 +4644,127 @@ fn resource_nested_member_type(
     ValueType::from_scalar_name(&member.ty.text)
 }
 
+/// How a stored saved path relates to the project schema, for data-integrity
+/// inspection. A path is classified by composing the same field/layer/index
+/// resolution the runtime uses for reads, so the inspector and the runtime agree
+/// on what each path means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedPathClass {
+    /// The path is a declared scalar leaf of the given type; its stored bytes
+    /// should decode as a canonical form of that type.
+    Scalar(ValueType),
+    /// The path is a generated index entry (`^root.index(keys…)`). Its value is a
+    /// presence marker or a stored identity, raw-only by design — not a typed
+    /// scalar, and a legal, expected store-level value.
+    IndexMarker,
+    /// The path is under no declared root, or names a member the schema does not
+    /// declare — stale or foreign data the schema cannot account for.
+    Orphan,
+}
+
+/// Classify a decoded saved path against the program's schemas
+/// (docs/implementation.md inspection). Named segments arrive uniformly as
+/// [`PathSegment::Field`] because the store cannot tell a field, layer, or index
+/// name apart from bytes — this resolves the ambiguity with the schema:
+///
+/// - `^root(identity…).field` is a top-level field;
+/// - `^root(identity…).layer(keys…)` is a keyed-leaf layer entry;
+/// - `^root(identity…).layer(keys…).field` (any depth) is a nested group field;
+/// - `^root.index(keys…)` is a generated index entry;
+/// - anything under an unknown root or naming an undeclared member is an orphan.
+///
+/// It composes [`resource_field_type`], [`resource_layer_leaf_type`], and
+/// [`resource_nested_member_type`] so the schema-walk stays in one place.
+pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -> SavedPathClass {
+    let Some((PathSegment::Root(root), rest)) = segments.split_first() else {
+        return SavedPathClass::Orphan;
+    };
+    let Some(arity) = root_identity_arity(program, root) else {
+        return SavedPathClass::Orphan;
+    };
+
+    // The identity record keys directly under the root.
+    let identity_keys = rest
+        .iter()
+        .take_while(|segment| matches!(segment, PathSegment::RecordKey(_)))
+        .count();
+    let after_identity = &rest[identity_keys..];
+
+    // An index lives directly under the root, before any identity keys:
+    // `^root.index(keys…)`. A named segment with no preceding record key is an
+    // index name (or an orphan if undeclared).
+    if identity_keys == 0
+        && let Some((PathSegment::Field(name), keys)) = after_identity.split_first()
+        && keys
+            .iter()
+            .all(|segment| matches!(segment, PathSegment::IndexKey(_)))
+    {
+        if find_resource(program, root)
+            .is_some_and(|resource| resource.indexes.iter().any(|index| index.name == *name))
+        {
+            return SavedPathClass::IndexMarker;
+        }
+        return SavedPathClass::Orphan;
+    }
+
+    // A record value path carries the full identity, then a member chain.
+    if identity_keys != arity {
+        return SavedPathClass::Orphan;
+    }
+    classify_member(program, root, after_identity)
+}
+
+/// Classify the member chain of a record path (everything after the identity
+/// keys): a sequence of named segments, each optionally followed by its index
+/// keys. The named segments are the field/layer names; their interleaved index
+/// keys position a layer entry. The chain resolves to a scalar leaf — a
+/// top-level field, a keyed-leaf layer entry, or a nested group field — or an
+/// orphan when the schema does not declare it.
+fn classify_member(
+    program: &CheckedProgram,
+    root: &str,
+    members: &[PathSegment],
+) -> SavedPathClass {
+    // Split the chain into its named segments and reject any stray structure (a
+    // record key in member position, etc.). A bare identity path has no member
+    // and carries no scalar leaf, so a value stored there is an orphan.
+    let mut names = Vec::new();
+    for segment in members {
+        match segment {
+            PathSegment::Field(name) => names.push(name.as_str()),
+            // Index keys position the preceding layer; they carry no new name.
+            PathSegment::IndexKey(_) => {}
+            // A record key or root in member position is malformed for a record.
+            PathSegment::RecordKey(_)
+            | PathSegment::Root(_)
+            | PathSegment::ChildLayer(_)
+            | PathSegment::Index(_) => return SavedPathClass::Orphan,
+        }
+    }
+    let Some((&last, layers)) = names.split_last() else {
+        return SavedPathClass::Orphan;
+    };
+
+    // No leading layers: either a top-level field `^root(id).field` or a single
+    // keyed-leaf layer entry `^root(id).layer(keys…)`.
+    if layers.is_empty() {
+        if let Some(ty) = resource_field_type(program, root, last) {
+            return SavedPathClass::Scalar(ty);
+        }
+        if let Some(ty) = resource_layer_leaf_type(program, root, last) {
+            return SavedPathClass::Scalar(ty);
+        }
+        return SavedPathClass::Orphan;
+    }
+
+    // Leading layers: a nested group field `^root(id).layer(keys…)….field`, or a
+    // deeper keyed-leaf layer whose own name is the tail.
+    if let Some(ty) = resource_nested_member_type(program, root, layers, last) {
+        return SavedPathClass::Scalar(ty);
+    }
+    SavedPathClass::Orphan
+}
+
 /// The scalar Field members of a saved root's GROUP layer, as `(name, value type)`
 /// in declaration order, for materializing a whole group entry. `None` if the
 /// layer is unknown.

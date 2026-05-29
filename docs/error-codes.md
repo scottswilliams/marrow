@@ -73,3 +73,12 @@ The `marrow serve` data server reports a `protocol.*` code when a request is bad
 `protocol.bad_request` (malformed operation arguments — a missing or bad `path`,
 an unknown path segment or key type, or invalid base64). A request that reaches
 the store carries the store's own `store.*` code through unchanged.
+
+`marrow data integrity` reports `data.*` codes (kind `tooling`) for the findings
+it surfaces while verifying saved data against the project schema:
+`data.decode` for a stored value that is not a canonical form of its declared
+type, and `data.orphan` for saved data under an unknown root or naming a member
+the schema does not declare. An undecodable stored key it meets is surfaced with
+the store's own `store.corrupt_path`. A `data` or `fmt` command run against a
+project with a missing or invalid `marrow.json` reports the `config.*` family
+`load_config` already produces.

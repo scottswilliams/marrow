@@ -95,3 +95,180 @@ fn inspecting_an_unseeded_project_reports_no_data_and_creates_nothing() {
     assert!(stdout.contains("(no saved data)"), "{stdout}");
     assert!(!created, "inspection must not create the store");
 }
+
+/// Seed the `native_project` fixture and return its directory string. The fixture
+/// stores one record, `^counter(1).value = 42`.
+fn seeded_project(name: &str) -> (PathBuf, String) {
+    let project = native_project(name);
+    let dir = project.to_str().unwrap().to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0)
+    );
+    (project, dir)
+}
+
+#[test]
+fn data_dump_prints_each_record_as_path_and_value() {
+    let (project, dir) = seeded_project("data-dump");
+    let output = marrow(&["data", "dump", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    // The one seeded record renders as its Marrow path and raw value text.
+    assert!(stdout.contains("^counter(1).value"), "{stdout}");
+    assert!(stdout.contains("42"), "{stdout}");
+}
+
+#[test]
+fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
+    let project = native_project("data-dump-empty");
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["data", "dump", &dir]);
+    let created = project.join(".data").join("marrow.redb").exists();
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(stdout.contains("(no saved data)"), "{stdout}");
+    assert!(!created, "dump must not create the store");
+}
+
+/// Write `records` to `path` as a Marrow archive, reusing the store's own
+/// archive writer over an in-memory store so the bytes match a real backup. This
+/// lets a test plant a deliberately-malformed value at a declared path, then
+/// restore it through the CLI to exercise integrity over corruption.
+fn write_archive_with(path: &Path, records: &[(Vec<u8>, Vec<u8>)]) {
+    use marrow_store::mem::MemStore;
+    let mut store = MemStore::new();
+    for (key, value) in records {
+        store.write(key, value.clone());
+    }
+    let file = fs::File::create(path).expect("create archive");
+    let mut writer = std::io::BufWriter::new(file);
+    marrow_store::archive::write_archive(&store, &mut writer).expect("write archive");
+    use std::io::Write;
+    writer.flush().expect("flush archive");
+}
+
+#[test]
+fn data_integrity_passes_on_a_healthy_seeded_project() {
+    let (project, dir) = seeded_project("data-integrity-ok");
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(stdout.contains("integrity verified"), "{stdout}");
+}
+
+#[test]
+fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_path};
+
+    // An empty project, with a hand-built archive planting a bad value at the
+    // declared int field `^counter(1).value`. Restore writes it as-is, then
+    // integrity finds the mismatch.
+    let project = native_project("data-integrity-decode");
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("corrupt.mra");
+    let bad_path = encode_path(&[
+        PathSegment::Root("counter".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("value".into()),
+    ]);
+    // `+1` is not a canonical int form, so `decode_value` rejects it.
+    write_archive_with(&archive, &[(bad_path, b"+1".to_vec())]);
+    assert_eq!(
+        marrow(&["restore", &dir, archive.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.decode"), "{stderr}");
+    assert!(stderr.contains("^counter(1).value"), "{stderr}");
+}
+
+#[test]
+fn data_integrity_reports_orphan_data_under_an_unknown_root() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_path};
+
+    let project = native_project("data-integrity-orphan");
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("orphan.mra");
+    // `^ghosts(1).value` is under a root the schema does not declare.
+    let orphan_path = encode_path(&[
+        PathSegment::Root("ghosts".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("value".into()),
+    ]);
+    write_archive_with(&archive, &[(orphan_path, b"7".to_vec())]);
+    assert_eq!(
+        marrow(&["restore", &dir, archive.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.orphan"), "{stderr}");
+    assert!(stderr.contains("^ghosts(1).value"), "{stderr}");
+}
+
+#[test]
+fn data_get_reads_a_path_value_and_reports_absence() {
+    let (project, dir) = seeded_project("data-get");
+    let present = marrow(&["data", "get", &dir, "^counter(1).value"]);
+    let absent = marrow(&["data", "get", &dir, "^counter(2).value"]);
+    let malformed = marrow(&["data", "get", &dir, "counter(1)"]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(present.status.code(), Some(0), "{present:?}");
+    assert!(
+        String::from_utf8(present.stdout).unwrap().contains("42"),
+        "present value"
+    );
+
+    assert_eq!(absent.status.code(), Some(0), "{absent:?}");
+    assert!(
+        String::from_utf8(absent.stdout)
+            .unwrap()
+            .contains("(absent)"),
+        "absent marker"
+    );
+
+    // A path that does not parse fails before touching the store: a usage error.
+    assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
+}
+
+#[test]
+fn data_get_and_integrity_on_an_unseeded_project_create_nothing() {
+    let project = native_project("data-readonly");
+    let dir = project.to_str().unwrap().to_string();
+    let get = marrow(&["data", "get", &dir, "^counter(1).value"]);
+    let integrity = marrow(&["data", "integrity", &dir]);
+    // Read-only: no command may create the store file.
+    let created = project.join(".data").join("marrow.redb").exists();
+    fs::remove_dir_all(&project).ok();
+
+    // An absent path on an empty store is a successful, queryable absence.
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    assert!(
+        String::from_utf8(get.stdout).unwrap().contains("(absent)"),
+        "absent on empty store"
+    );
+    // Nothing to verify is healthy.
+    assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
+    assert!(!created, "inspection must not create the store");
+}

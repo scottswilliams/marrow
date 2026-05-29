@@ -383,8 +383,18 @@ Inspection has two modes:
 
 `marrow data` is the raw saved-tree command group for inspection, dump, diff,
 load, integrity checks, and stats. Today it provides `marrow data roots` (list
-the saved roots) and `marrow data stats` (count saved roots and records);
-inspection is read-only and never creates the store.
+the saved roots), `marrow data stats` (count saved roots and records), `marrow
+data dump` (print every stored path/value in encoded order — the same canonical
+stream backup writes), `marrow data integrity` (verify every stored value
+decodes as a canonical form of its declared schema type, reporting decode
+mismatches as `data.decode`, stale or foreign data as `data.orphan`, and a
+corrupt key as `store.corrupt_path`; it exits `1` when it finds a problem), and
+`marrow data get <path>` (read one path's value). Inspection is read-only and
+never creates the store; `dump`/`get` need only `marrow.json`, while
+`integrity` typechecks against the project's checked schema. `diff` and `load`
+are deferred: they overlap restore's replace/merge/repair modes and need typed
+source-fingerprinting, and would route through the maintenance capability when
+implemented rather than loosen the read-only guarantee.
 
 `marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
 portable archive — the canonical ordered (path, value) stream behind a small
