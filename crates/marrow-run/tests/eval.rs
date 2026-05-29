@@ -1604,6 +1604,29 @@ fn detects_integer_overflow() {
 }
 
 #[test]
+fn detects_an_over_range_integer_literal() {
+    // A literal beyond i64::MAX is a runtime overflow, not an arithmetic one.
+    let f = function("fn f(): int\n    return 99999999999999999999999999\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn detects_an_over_envelope_decimal_literal() {
+    // A decimal literal with more than 34 significant digits is outside the
+    // decimal envelope and overflows at runtime.
+    let f = function("fn f(): decimal\n    return 9.9999999999999999999999999999999999\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn rejects_an_unbound_name() {
     let f = function("fn f(): int\n    return x\n");
     let result = evaluate_function(&f, &[]);
