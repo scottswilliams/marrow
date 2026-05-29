@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use marrow_check::{MarrowType, PrimitiveType, check_project};
+use marrow_check::{MarrowType, check_project};
 use marrow_project::parse_config;
+use marrow_store::value::ScalarType;
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -58,10 +59,7 @@ fn builds_a_module_for_a_clean_library_file() {
     assert!(add.public, "{add:#?}");
     assert_eq!(add.params.len(), 1, "{:#?}", add.params);
     assert_eq!(add.params[0].name, "title");
-    assert_eq!(
-        add.params[0].ty,
-        MarrowType::Primitive(PrimitiveType::String)
-    );
+    assert_eq!(add.params[0].ty, MarrowType::Primitive(ScalarType::Str));
     assert!(add.return_type.is_some(), "{add:#?}");
     // `add`'s body touches the `^books` saved root (allocating an id with `nextId`).
     assert!(add.touches_saved_data, "{add:#?}");

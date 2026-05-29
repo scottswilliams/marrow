@@ -73,27 +73,17 @@ pub struct CheckedParam {
 /// (including cross-module resource references) is [`MarrowType::Unknown`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarrowType {
-    Primitive(PrimitiveType),
+    /// One of the storable scalar types.
+    Primitive(ScalarType),
+    /// The checker-only type of a caught or thrown error value (`catch e: Error`,
+    /// `throw Error(...)`). It has no storage form and never resolves to a scalar.
+    Error,
     /// A resource declared in the same module, by name.
     Resource(String),
     /// A resource identity such as `Book::Id`, carrying the resource name.
     Identity(String),
     Sequence(Box<MarrowType>),
     Unknown,
-}
-
-/// The built-in scalar types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrimitiveType {
-    Int,
-    Decimal,
-    Bool,
-    String,
-    Bytes,
-    Date,
-    Instant,
-    Duration,
-    Error,
 }
 
 impl MarrowType {
@@ -110,7 +100,7 @@ impl MarrowType {
     /// as a resource reference, the checker-only `Error` type, or `Unknown`.
     pub(crate) fn from_resolved(ty: Type, module_resources: &[String]) -> Self {
         match ty {
-            Type::Scalar(scalar) => Self::Primitive(PrimitiveType::from_scalar(scalar)),
+            Type::Scalar(scalar) => Self::Primitive(scalar),
             Type::Sequence(element) => {
                 Self::Sequence(Box::new(Self::from_resolved(*element, module_resources)))
             }
@@ -118,7 +108,7 @@ impl MarrowType {
             Type::Unknown => Self::Unknown,
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
-            Type::Named(name) if name == "Error" => Self::Primitive(PrimitiveType::Error),
+            Type::Named(name) if name == "Error" => Self::Error,
             Type::Named(name) if module_resources.contains(&name) => Self::Resource(name),
             Type::Named(_) => Self::Unknown,
         }
@@ -140,49 +130,6 @@ impl MarrowType {
             // A qualified name (any `::`) is assumed a cross-module reference and
             // accepted; `Error` and declared resources are known by name.
             Type::Named(name) => name.contains("::") || name == "Error" || resources.contains(name),
-        }
-    }
-}
-
-impl PrimitiveType {
-    /// The [`PrimitiveType`] for a storable [`ScalarType`]. Total: every scalar
-    /// has a primitive counterpart (the checker adds `Error` on top).
-    pub(crate) fn from_scalar(scalar: ScalarType) -> Self {
-        match scalar {
-            ScalarType::Bool => Self::Bool,
-            ScalarType::Int => Self::Int,
-            ScalarType::Str => Self::String,
-            ScalarType::Bytes => Self::Bytes,
-            ScalarType::Date => Self::Date,
-            ScalarType::Duration => Self::Duration,
-            ScalarType::Instant => Self::Instant,
-            ScalarType::Decimal => Self::Decimal,
-        }
-    }
-
-    /// The storable [`ScalarType`] this primitive denotes, or `None` for `Error`,
-    /// which is a checker-only type with no storage form.
-    fn as_scalar(self) -> Option<ScalarType> {
-        Some(match self {
-            Self::Bool => ScalarType::Bool,
-            Self::Int => ScalarType::Int,
-            Self::String => ScalarType::Str,
-            Self::Bytes => ScalarType::Bytes,
-            Self::Date => ScalarType::Date,
-            Self::Duration => ScalarType::Duration,
-            Self::Instant => ScalarType::Instant,
-            Self::Decimal => ScalarType::Decimal,
-            Self::Error => return None,
-        })
-    }
-
-    /// The canonical source spelling of this primitive (`int`, `string`,
-    /// `decimal`, …). The storable scalars read the store's name table; `Error`
-    /// is the checker-only spelling.
-    pub(crate) fn name(self) -> &'static str {
-        match self.as_scalar() {
-            Some(scalar) => scalar.name(),
-            None => "Error",
         }
     }
 }

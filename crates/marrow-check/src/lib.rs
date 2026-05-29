@@ -16,7 +16,6 @@ mod rules;
 
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
-    PrimitiveType,
 };
 
 /// A library file declares a module name that does not match its path.
@@ -829,10 +828,7 @@ fn check_statement_types(
             if let Some(clause) = catch {
                 // The catch clause binds an Error value for the duration of its block.
                 let mut frame = HashMap::new();
-                frame.insert(
-                    clause.name.clone(),
-                    MarrowType::Primitive(PrimitiveType::Error),
-                );
+                frame.insert(clause.name.clone(), MarrowType::Error);
                 scope.push(frame);
                 check_block_types(
                     program,
@@ -897,14 +893,11 @@ fn check_condition(
     let condition_type = infer_type(program, condition, scope, aliases, file, diagnostics);
     let span = condition.span();
     match as_primitive(&condition_type) {
-        Some(primitive) if primitive != PrimitiveType::Bool => diagnostics.push(CheckDiagnostic {
+        Some(primitive) if primitive != ScalarType::Bool => diagnostics.push(CheckDiagnostic {
             code: CHECK_CONDITION_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
-            message: format!(
-                "condition must be `bool`, found `{}`",
-                primitive_name(primitive)
-            ),
+            message: format!("condition must be `bool`, found `{}`", primitive.name()),
             line: span.line,
             column: span.column,
         }),
@@ -946,8 +939,8 @@ fn check_return_type(
             file: file.to_path_buf(),
             message: format!(
                 "function returns `{}`, but this value is `{}`",
-                primitive_name(expected),
-                primitive_name(actual),
+                expected.name(),
+                actual.name(),
             ),
             line: span.line,
             column: span.column,
@@ -960,7 +953,7 @@ fn check_return_type(
             file: file.to_path_buf(),
             message: format!(
                 "this `return` value has no known type, but the function returns `{}`; convert it first",
-                primitive_name(expected),
+                expected.name(),
             ),
             line: span.line,
             column: span.column,
@@ -992,8 +985,8 @@ fn check_assignment(
             file: file.to_path_buf(),
             message: format!(
                 "expected `{}`, but the value is `{}`",
-                primitive_name(place),
-                primitive_name(value),
+                place.name(),
+                value.name(),
             ),
             line: span.line,
             column: span.column,
@@ -1005,7 +998,7 @@ fn check_assignment(
             file: file.to_path_buf(),
             message: format!(
                 "the value stored into `{}` has no known type; convert it before typed use",
-                primitive_name(place),
+                place.name(),
             ),
             line: span.line,
             column: span.column,
@@ -1038,7 +1031,7 @@ fn infer_type(
                     infer_type(program, expr, scope, aliases, file, diagnostics);
                 }
             }
-            MarrowType::Primitive(PrimitiveType::String)
+            MarrowType::Primitive(ScalarType::Str)
         }
         Expression::Name { segments, span } if segments.len() == 1 => {
             let name = &segments[0];
@@ -1440,11 +1433,11 @@ fn decimal_out_of_envelope(text: &str) -> bool {
 fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
     use marrow_syntax::LiteralKind;
     MarrowType::Primitive(match kind {
-        LiteralKind::Integer => PrimitiveType::Int,
-        LiteralKind::Decimal => PrimitiveType::Decimal,
-        LiteralKind::String => PrimitiveType::String,
-        LiteralKind::Bytes => PrimitiveType::Bytes,
-        LiteralKind::Bool => PrimitiveType::Bool,
+        LiteralKind::Integer => ScalarType::Int,
+        LiteralKind::Decimal => ScalarType::Decimal,
+        LiteralKind::String => ScalarType::Str,
+        LiteralKind::Bytes => ScalarType::Bytes,
+        LiteralKind::Bool => ScalarType::Bool,
     })
 }
 
@@ -1464,7 +1457,7 @@ fn check_unary(
     };
     let valid = match op {
         UnaryOp::Neg => is_numeric(operand),
-        UnaryOp::Not => operand == PrimitiveType::Bool,
+        UnaryOp::Not => operand == ScalarType::Bool,
     };
     if !valid {
         diagnostics.push(operator_diagnostic(
@@ -1473,7 +1466,7 @@ fn check_unary(
             format!(
                 "operator `{}` cannot be applied to `{}`",
                 unary_symbol(op),
-                primitive_name(operand),
+                operand.name(),
             ),
         ));
         return MarrowType::Unknown;
@@ -1504,30 +1497,30 @@ fn check_binary(
         ),
         BinaryOp::Divide => (
             is_numeric(left) && left == right,
-            MarrowType::Primitive(PrimitiveType::Decimal),
+            MarrowType::Primitive(ScalarType::Decimal),
         ),
         BinaryOp::Remainder => (
-            left == PrimitiveType::Int && right == PrimitiveType::Int,
-            MarrowType::Primitive(PrimitiveType::Int),
+            left == ScalarType::Int && right == ScalarType::Int,
+            MarrowType::Primitive(ScalarType::Int),
         ),
         BinaryOp::Concat => (
-            left == PrimitiveType::String && right == PrimitiveType::String,
-            MarrowType::Primitive(PrimitiveType::String),
+            left == ScalarType::Str && right == ScalarType::Str,
+            MarrowType::Primitive(ScalarType::Str),
         ),
         BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => (
             is_ordered(left) && left == right,
-            MarrowType::Primitive(PrimitiveType::Bool),
+            MarrowType::Primitive(ScalarType::Bool),
         ),
         BinaryOp::Equal | BinaryOp::NotEqual => {
-            (left == right, MarrowType::Primitive(PrimitiveType::Bool))
+            (left == right, MarrowType::Primitive(ScalarType::Bool))
         }
         BinaryOp::And | BinaryOp::Or => (
-            left == PrimitiveType::Bool && right == PrimitiveType::Bool,
-            MarrowType::Primitive(PrimitiveType::Bool),
+            left == ScalarType::Bool && right == ScalarType::Bool,
+            MarrowType::Primitive(ScalarType::Bool),
         ),
         // A range is not a value an operator consumes; accept int endpoints.
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => (
-            left == PrimitiveType::Int && right == PrimitiveType::Int,
+            left == ScalarType::Int && right == ScalarType::Int,
             MarrowType::Unknown,
         ),
     };
@@ -1538,8 +1531,8 @@ fn check_binary(
             format!(
                 "operator `{}` cannot be applied to `{}` and `{}`",
                 binary_symbol(op),
-                primitive_name(left),
-                primitive_name(right),
+                left.name(),
+                right.name(),
             ),
         ));
         return MarrowType::Unknown;
@@ -1547,29 +1540,31 @@ fn check_binary(
     result
 }
 
-/// The primitive a type denotes, or `None` for any non-primitive (resource,
-/// identity, sequence, or unknown) type that no operator reasons about.
-fn as_primitive(ty: &MarrowType) -> Option<PrimitiveType> {
+/// The scalar a type denotes, or `None` for any non-scalar (resource, identity,
+/// sequence, the checker-only `Error`, or unknown) type that no operator reasons
+/// about. `Error` returning `None` is what keeps it out of every operator,
+/// condition, return, and assignment check.
+fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
     match ty {
-        MarrowType::Primitive(primitive) => Some(*primitive),
+        MarrowType::Primitive(scalar) => Some(*scalar),
         _ => None,
     }
 }
 
-fn is_numeric(primitive: PrimitiveType) -> bool {
-    matches!(primitive, PrimitiveType::Int | PrimitiveType::Decimal)
+fn is_numeric(scalar: ScalarType) -> bool {
+    matches!(scalar, ScalarType::Int | ScalarType::Decimal)
 }
 
-fn is_ordered(primitive: PrimitiveType) -> bool {
+fn is_ordered(scalar: ScalarType) -> bool {
     matches!(
-        primitive,
-        PrimitiveType::Int
-            | PrimitiveType::Decimal
-            | PrimitiveType::String
-            | PrimitiveType::Bytes
-            | PrimitiveType::Date
-            | PrimitiveType::Instant
-            | PrimitiveType::Duration
+        scalar,
+        ScalarType::Int
+            | ScalarType::Decimal
+            | ScalarType::Str
+            | ScalarType::Bytes
+            | ScalarType::Date
+            | ScalarType::Instant
+            | ScalarType::Duration
     )
 }
 
@@ -1582,10 +1577,6 @@ fn operator_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckD
         line: span.line,
         column: span.column,
     }
-}
-
-fn primitive_name(primitive: PrimitiveType) -> &'static str {
-    primitive.name()
 }
 
 fn unary_symbol(op: marrow_syntax::UnaryOp) -> &'static str {
@@ -1684,9 +1675,7 @@ fn check_call(
             // The `Error(...)` constructor builds a builtin Error value, so it types
             // as `Error` (not `Unknown`) — e.g. `std::log::error(Error(...))` and
             // `throw Error(...)` both expect an `Error`.
-            .or_else(|| {
-                (segments == ["Error"]).then_some(MarrowType::Primitive(PrimitiveType::Error))
-            })
+            .or_else(|| (segments == ["Error"]).then_some(MarrowType::Error))
             .unwrap_or(MarrowType::Unknown);
     }
     // A callee naming a declared resource is a constructor, not a function:
@@ -1750,11 +1739,11 @@ fn check_call(
             None => function.params.get(index),
         };
         if let Some(param) = param
-            && let Some(parameter) = as_primitive(&param.ty)
+            && as_primitive(&param.ty).is_some()
         {
             check_one_arg(
                 &segments.join("::"),
-                parameter,
+                &param.ty,
                 arg_type,
                 span,
                 file,
@@ -1765,57 +1754,74 @@ fn check_call(
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
 }
 
-/// Check one positional/named argument's type against its parameter's primitive
-/// type: a known-but-different primitive is a `check.call_argument`; an `Unknown`
-/// argument for a concrete parameter is a `check.untyped_value` (strict typing —
-/// convert dynamic data before typed use). Shared by the user-function and std
-/// argument loops; `label` names the callee for the message.
+/// Check one positional/named argument against the type its parameter expects: a
+/// known-but-different type is a `check.call_argument`; an `Unknown` argument for a
+/// concrete parameter is a `check.untyped_value` (strict typing — convert dynamic
+/// data before typed use). Shared by the user-function and std argument loops;
+/// `label` names the callee for the message. The expectation is a scalar for every
+/// slot except `std::log::error`, which expects the checker-only `Error` value.
 fn check_one_arg(
     label: &str,
-    parameter: PrimitiveType,
+    parameter: &MarrowType,
     arg_type: &MarrowType,
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    match as_primitive(arg_type) {
-        Some(argument) if argument != parameter => {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!(
-                    "argument to `{label}` expects `{}`, but found `{}`",
-                    primitive_name(parameter),
-                    primitive_name(argument),
-                ),
-            ));
-        }
-        None if matches!(arg_type, MarrowType::Unknown) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
-                    "argument to `{label}` has no known type, but `{}` is expected; convert it first",
-                    primitive_name(parameter),
-                ),
-                line: span.line,
-                column: span.column,
-            });
-        }
-        _ => {}
+    // An argument matches when it is the same scalar, or `Error` for the `Error`
+    // expectation; resources, identities, and sequences are non-scalar values no
+    // operator reasons about and are left to the runtime, as before.
+    let matched = match parameter {
+        MarrowType::Primitive(p) => as_primitive(arg_type) == Some(*p),
+        MarrowType::Error => !matches!(arg_type, MarrowType::Primitive(_) | MarrowType::Unknown),
+        _ => true,
+    };
+    if matched {
+        return;
+    }
+    if matches!(arg_type, MarrowType::Unknown) {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_UNTYPED_VALUE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "argument to `{label}` has no known type, but `{}` is expected; convert it first",
+                marrow_type_name(parameter),
+            ),
+            line: span.line,
+            column: span.column,
+        });
+    } else if as_primitive(arg_type).is_some() {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "argument to `{label}` expects `{}`, but found `{}`",
+                marrow_type_name(parameter),
+                marrow_type_name(arg_type),
+            ),
+        ));
+    }
+}
+
+/// The source spelling of a scalar or the checker-only `Error` type, for argument
+/// diagnostics. Only ever called on a scalar or `Error` expectation/argument.
+fn marrow_type_name(ty: &MarrowType) -> &'static str {
+    match ty {
+        MarrowType::Primitive(scalar) => scalar.name(),
+        MarrowType::Error => "Error",
+        _ => "value",
     }
 }
 
 /// Check positional `args` against a fixed positional parameter list (the std
 /// helper signatures): an arity mismatch is a `check.call_argument`, and each
-/// argument with a known-required primitive parameter is checked by
-/// [`check_one_arg`]. A `None` parameter slot (e.g. a path argument) is not a
-/// primitive and is left alone. Std helpers are positional-only — named-argument
-/// matching stays user-function-only.
+/// argument with a known-required parameter type is checked by [`check_one_arg`].
+/// A `None` parameter slot (e.g. a path argument) is left alone. Std helpers are
+/// positional-only — named-argument matching stays user-function-only.
 fn check_args_against(
     label: &str,
-    params: &[Option<PrimitiveType>],
+    params: &[Option<MarrowType>],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
@@ -1834,7 +1840,7 @@ fn check_args_against(
     }
     for (parameter, arg_type) in params.iter().zip(arg_types) {
         if let Some(parameter) = parameter {
-            check_one_arg(label, *parameter, arg_type, span, file, diagnostics);
+            check_one_arg(label, parameter, arg_type, span, file, diagnostics);
         }
     }
 }
@@ -1989,8 +1995,8 @@ fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<
         return None;
     };
     match name.as_str() {
-        "exists" => Some(MarrowType::Primitive(PrimitiveType::Bool)),
-        "append" => Some(MarrowType::Primitive(PrimitiveType::Int)),
+        "exists" => Some(MarrowType::Primitive(ScalarType::Bool)),
+        "append" => Some(MarrowType::Primitive(ScalarType::Int)),
         "get" => arg_types.get(1).cloned(),
         _ => None,
     }
@@ -2005,8 +2011,7 @@ fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
     };
     // The conversion builtins are exactly the nine storable scalars; each yields
     // its named type.
-    ScalarType::from_scalar_name(name)
-        .map(|scalar| MarrowType::Primitive(PrimitiveType::from_scalar(scalar)))
+    ScalarType::from_scalar_name(name).map(MarrowType::Primitive)
 }
 
 /// The declared return type of a value-returning `std::module::op` helper.
@@ -2015,7 +2020,7 @@ fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
 /// `Unknown` for the surrounding checks. Argument typing for std helpers stays the
 /// runtime's job; this only supplies the result type.
 fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
-    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, String};
+    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
     let [first, module, op] = segments else {
         return None;
     };
@@ -2025,13 +2030,11 @@ fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
     let primitive = |p| Some(MarrowType::Primitive(p));
     match (module.as_str(), op.as_str()) {
         ("text", "length") => primitive(Int),
-        ("text", "trim") => primitive(String),
+        ("text", "trim") => primitive(Str),
         ("text", "contains") => primitive(Bool),
-        ("text", "split") => Some(MarrowType::Sequence(Box::new(MarrowType::Primitive(
-            String,
-        )))),
+        ("text", "split") => Some(MarrowType::Sequence(Box::new(MarrowType::Primitive(Str)))),
         ("bytes", "length") => primitive(Int),
-        ("bytes", "base64Encode") => primitive(String),
+        ("bytes", "base64Encode") => primitive(Str),
         ("bytes", "base64Decode") => primitive(Bytes),
         ("math", "absInt") => primitive(Int),
         ("math", "absDecimal") => primitive(Decimal),
@@ -2043,59 +2046,66 @@ fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
         ("clock", "parseInstant") => primitive(Instant),
         ("clock", "parseDate") => primitive(Date),
         ("clock", "parseDuration") => primitive(Duration),
-        ("clock", "formatInstant" | "formatDate" | "formatDuration") => primitive(String),
+        ("clock", "formatInstant" | "formatDate" | "formatDuration") => primitive(Str),
         ("clock", "add") => primitive(Instant),
         ("env", "exists") => primitive(Bool),
-        ("env", "get" | "require") => primitive(String),
-        ("io", "readText") => primitive(String),
+        ("env", "get" | "require") => primitive(Str),
+        ("io", "readText") => primitive(Str),
         ("io", "readBytes") => primitive(Bytes),
         _ => None,
     }
 }
 
-/// The positional parameter primitive types of a `std::module::op` helper, in
-/// order. `Some(params)` for an
-/// enumerated helper (including void ones, whose arguments still need checking —
-/// hence a separate function from [`std_call_return_type`]); `None` for an unknown
-/// op, leaving its arguments to the runtime. A `None` slot inside the list marks a
-/// non-primitive argument (`assert::absent` takes a path), which is not checked.
-fn std_call_params(segments: &[String]) -> Option<Vec<Option<PrimitiveType>>> {
-    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Error, Instant, Int, String};
+/// The positional parameter types of a `std::module::op` helper, in order.
+/// `Some(params)` for an enumerated helper (including void ones, whose arguments
+/// still need checking — hence a separate function from [`std_call_return_type`]);
+/// `None` for an unknown op, leaving its arguments to the runtime. A `None` slot
+/// inside the list marks a non-checked argument (`assert::absent` takes a path).
+fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowType>>> {
+    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
     let [first, module, op] = segments else {
         return None;
     };
     if first != "std" {
         return None;
     }
-    // Each `T` is a concrete primitive parameter; `[]` is a no-argument helper.
-    let p = |types: &[PrimitiveType]| Some(types.iter().map(|t| Some(*t)).collect());
+    // Each `T` is a concrete scalar parameter; `[]` is a no-argument helper.
+    let p = |types: &[ScalarType]| {
+        Some(
+            types
+                .iter()
+                .map(|t| Some(MarrowType::Primitive(*t)))
+                .collect(),
+        )
+    };
     match (module.as_str(), op.as_str()) {
-        ("text", "length" | "trim") => p(&[String]),
-        ("text", "contains" | "split") => p(&[String, String]),
+        ("text", "length" | "trim") => p(&[Str]),
+        ("text", "contains" | "split") => p(&[Str, Str]),
         ("bytes", "length" | "base64Encode") => p(&[Bytes]),
-        ("bytes", "base64Decode") => p(&[String]),
+        ("bytes", "base64Decode") => p(&[Str]),
         ("math", "absInt") => p(&[Int]),
         ("math", "absDecimal") => p(&[Decimal]),
         ("math", "floor") => p(&[Decimal]),
         ("math", "modulo" | "remainder") => p(&[Int, Int]),
         ("clock", "now" | "today") => p(&[]),
-        ("clock", "parseInstant" | "parseDate" | "parseDuration") => p(&[String]),
+        ("clock", "parseInstant" | "parseDate" | "parseDuration") => p(&[Str]),
         ("clock", "formatInstant") => p(&[Instant]),
         ("clock", "formatDate") => p(&[Date]),
         ("clock", "formatDuration") => p(&[Duration]),
         ("clock", "add") => p(&[Instant, Duration]),
-        ("env", "exists" | "require") => p(&[String]),
-        ("env", "get") => p(&[String, String]),
-        ("io", "readText" | "readBytes") => p(&[String]),
-        ("io", "writeText") => p(&[String, String]),
-        ("io", "writeBytes") => p(&[String, Bytes]),
+        ("env", "exists" | "require") => p(&[Str]),
+        ("env", "get") => p(&[Str, Str]),
+        ("io", "readText" | "readBytes") => p(&[Str]),
+        ("io", "writeText") => p(&[Str, Str]),
+        ("io", "writeBytes") => p(&[Str, Bytes]),
         ("assert", "isTrue" | "isFalse") => p(&[Bool]),
-        // `absent(path)` takes a path expression, not a primitive — leave it
+        // `absent(path)` takes a path expression, not a scalar — leave it
         // unchecked, matching how the checker leaves other path arguments alone.
         ("assert", "absent") => Some(vec![None]),
-        ("assert", "fail") => p(&[String]),
-        ("log", "info" | "warn") => p(&[String]),
-        ("log", "error") => p(&[Error]),
+        ("assert", "fail") => p(&[Str]),
+        ("log", "info" | "warn") => p(&[Str]),
+        // `error(value)` takes an `Error` value, the one checker-only type.
+        ("log", "error") => Some(vec![Some(MarrowType::Error)]),
         _ => None,
     }
 }

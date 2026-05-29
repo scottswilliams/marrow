@@ -19,9 +19,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::{
-    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType, PrimitiveType,
-};
+use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_schema::{IndexSchema, LayerMember, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
@@ -820,10 +818,10 @@ impl Place {
 /// type without a simple zero starts as an empty resource.
 fn zero_value(ty: &MarrowType) -> Value {
     match ty {
-        MarrowType::Primitive(PrimitiveType::Int) => Value::Int(0),
-        MarrowType::Primitive(PrimitiveType::Bool) => Value::Bool(false),
-        MarrowType::Primitive(PrimitiveType::String) => Value::Str(String::new()),
-        MarrowType::Primitive(PrimitiveType::Bytes) => Value::Bytes(Vec::new()),
+        MarrowType::Primitive(ScalarType::Int) => Value::Int(0),
+        MarrowType::Primitive(ScalarType::Bool) => Value::Bool(false),
+        MarrowType::Primitive(ScalarType::Str) => Value::Str(String::new()),
+        MarrowType::Primitive(ScalarType::Bytes) => Value::Bytes(Vec::new()),
         _ => Value::Resource(Vec::new()),
     }
 }
