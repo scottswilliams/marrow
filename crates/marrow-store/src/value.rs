@@ -50,6 +50,21 @@ impl Scalar {
             Scalar::Decimal(_) => return None,
         })
     }
+
+    /// The [`ScalarType`] discriminant of this scalar, the inverse of the `ty`
+    /// argument [`decode_value`] decodes by.
+    pub fn ty(&self) -> ScalarType {
+        match self {
+            Scalar::Bool(_) => ScalarType::Bool,
+            Scalar::Int(_) => ScalarType::Int,
+            Scalar::Str(_) => ScalarType::Str,
+            Scalar::Bytes(_) => ScalarType::Bytes,
+            Scalar::Date(_) => ScalarType::Date,
+            Scalar::Duration(_) => ScalarType::Duration,
+            Scalar::Instant(_) => ScalarType::Instant,
+            Scalar::Decimal(_) => ScalarType::Decimal,
+        }
+    }
 }
 
 /// A value that cannot be encoded to its canonical saved form. Today the only
