@@ -175,6 +175,125 @@ fn next_id_over_a_singleton_root_is_flagged() {
     );
 }
 
+// --- Ordered navigation: reversed / next / prev ---
+
+/// `reversed`, `next`, and `prev` are builtins, so they never report
+/// `check.unresolved_call`. `reversed` is type-transparent: it yields the same
+/// element type as its argument, so `for w in reversed(std::text::split(...))`
+/// binds `w` to `string` just like `for w in std::text::split(...)` does — and
+/// misusing it (`w + 1`, a string plus an int) is flagged. If `reversed` regressed
+/// the element type to `Unknown`, this misuse would pass silently, so the
+/// diagnostic proves the element type survives the wrapper.
+#[test]
+fn reversed_preserves_the_sequence_element_type() {
+    let root = temp_project("program-reversed-transparent", |root| {
+        write(
+            root,
+            "src/shelf/words.mw",
+            "module shelf::words\n\
+             fn shout()\n\
+             \x20   for w in reversed(std::text::split(\"a,b,c\", \",\"))\n\
+             \x20       var x = w + 1\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    // `w` is `string`, so `w + 1` is a string-plus-int operator type error — not an
+    // unresolved-call error (which would mean `reversed` was never recognized).
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code.starts_with("check.") && d.code != "check.unresolved_call"),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "check.unresolved_call"),
+        "reversed must be a recognized builtin: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// `next(^root(id))` over a keyed root types to the resource identity, so
+/// `^root(next(^root(id))).field` reads the neighbor's field and checks clean —
+/// the navigated neighbor is a `Resource::Id`. `prev` mirrors it.
+#[test]
+fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
+    let root = temp_project("program-next-identity", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn afterTitle(id: int): string\n\
+             \x20   return ^books(next(^books(id))).title\n\
+             pub fn beforeTitle(id: int): string\n\
+             \x20   return ^books(prev(^books(id))).title\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// `next`/`prev` take exactly one argument; a zero- or two-argument call reports
+/// the standard `check.call_argument` arity diagnostic.
+#[test]
+fn next_with_wrong_arity_is_flagged() {
+    let root = temp_project("program-next-arity", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             fn bad(id: int)\n\
+             \x20   const x = next(^books(id), ^books(id))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `next` over a keyed child-layer position types to the layer's key type, so
+/// `next(^books(id).tags(p)) ?? -1` defaults an `int` with an `int` and checks
+/// clean — the edge fault's `??` default drives the result type.
+#[test]
+fn next_of_a_layer_position_coalesces_to_the_key_type() {
+    let root = temp_project("program-next-layer-coalesce", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   tags(pos: int): string\n\
+             pub fn nextPos(id: int, p: int): int\n\
+             \x20   return next(^books(id).tags(p)) ?? -1\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 /// `use std::clock` lets a short-form `clock::now()` resolve and type to its
 /// declared result (`instant`), just as the fully-qualified form does.
 #[test]

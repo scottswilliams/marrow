@@ -300,6 +300,15 @@ Identity values are opaque. Do not encode business meaning into them, and do
 not rely on them being gap-free. Failed or rolled-back work may leave unused
 IDs behind.
 
+`next(^books(id))` and `prev(^books(id))` type to that resource's identity
+(`Book::Id`), so the neighbor is addressed like any identity:
+`^books(next(^books(id))).title` is well-typed. Over a keyed child layer, `next`
+and `prev` type to the layer's key. `reversed(...)` preserves its argument's
+element type, so `for x in reversed(layer)` binds `x` exactly as `for x in layer`
+does. Stepping off the edge raises the catchable `run.absent_element` fault, and
+`??` defaults it — the default's type drives the result, as it does for any
+absent read.
+
 ## Mutability
 
 `const` introduces an immutable binding; `var` introduces a mutable one. Scope

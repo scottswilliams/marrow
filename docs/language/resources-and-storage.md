@@ -417,6 +417,13 @@ Use sequences when integer order is the important access pattern. Use keyed
 trees when the keys have meaning, may be sparse, or are iterated in sorted key
 order.
 
+Iteration over any layer — forward (`for`, `keys`, `values`, `entries`), reverse
+(`reversed`), or by stored neighbor (`next`, `prev`) — visits only stored entries,
+in key order, and skips holes. A gap left by a delete, by failed work, or by
+sparse keys is passed over, never visited as an empty position. This stored-only,
+gap-skipping, key-ordered walk is the storage guarantee the `reversed`,
+`next`, and `prev` helpers in the builtins reference rest on.
+
 ## Reading And Writing
 
 Read and write fields directly:

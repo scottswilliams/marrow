@@ -56,11 +56,23 @@ Explicit traversal helpers:
 | `values(tree)` | Values/resources at the next layer |
 | `entries(tree)` | Key and value/resource pairs |
 | `count(path)` | Populated immediate children, or scalar presence |
+| `reversed(iterable)` | The same elements in reverse key order |
+| `next(element)` | The nearest stored neighbor identity in key order |
+| `prev(element)` | The nearest stored neighbor identity, the other way |
 
 `keys(...)` is the lightest traversal shape when code only needs identities or
 child keys. `values(...)` and `entries(...)` materialize the values or
 resources they yield. Deep raw tree walks belong to inspection, backup, repair,
 and migration tools.
+
+### Stored Entries In Key Order
+
+Every form of iteration — `for`, `keys(...)`, `values(...)`, `entries(...)`,
+`reversed(...)`, and `next(...)`/`prev(...)` — visits only **stored** entries, in
+key order, and **skips holes**. There are no placeholder positions to step onto:
+deleting an entry removes it from every traversal, and a gap left by a delete or
+by sparse keys is passed over rather than visited. This is the storage guarantee
+the ordered-navigation helpers below rest on.
 
 Do not mutate the same tree layer a loop is traversing. The checker rejects
 obvious cases. When a dynamic path writes the layer currently being traversed,
@@ -82,6 +94,57 @@ paths, store an explicit counter or use a declared index.
 
 String and byte lengths use `std::text::length(text)` and
 `std::bytes::length(value)`.
+
+### Reverse Iteration
+
+`reversed(iterable)` yields the same elements as the iterable in reverse key
+order. It works over keys, values, and entries of any layer or index branch, and
+over an in-memory `sequence`:
+
+```mw
+for id in reversed(^books)
+    write($"{id}")
+
+for tag in reversed(values(^books(id).tags))
+    write(tag)
+
+for word in reversed(std::text::split(line, ","))
+    write(word)
+```
+
+Over a saved layer the reversal walks the stored entries from the high key
+downward — it is a true reverse, not a copy of the forward result reversed after
+the fact — so an early `break` stops without reading the rest of the layer. A
+composite identity reverses at every key level, so `reversed(^enrollments)` is the
+exact reverse of `^enrollments`, not its outermost key flipped over a forward
+tail. Over a `sequence` the elements are reversed directly.
+
+### Stored Neighbors
+
+`next(element)` returns the nearest stored entry after `element` in key order;
+`prev(element)` returns the nearest stored entry before it. Both are stateless —
+there is no cursor — and both skip gaps, returning the nearest entry that is
+actually stored rather than the next key value:
+
+```mw
+const after = ^books(next(^books(id))).title
+```
+
+The result is the neighbor's **identity**, addressed like any key, so fields are
+read through it (`^books(next(^books(id))).field`). Neighbors are found for any
+key type — string, date, integer, and so on — through the same order-preserving
+key encoding tree iteration uses.
+
+`next` and `prev` are scoped to one key level. Applied to a bare layer they return
+its edge entry: `next(^books)` is the first stored record, `prev(^books)` the
+last; `next(^books(id).tags)` is the first stored position in that layer.
+
+Stepping off the edge — `next` of the last entry, or `prev` of the first — raises
+the catchable `run.absent_element` fault, so it composes with `??`:
+
+```mw
+const following = next(^books(id)) ?? ^books(id)
+```
 
 ## Sequence Updates
 

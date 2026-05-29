@@ -1014,6 +1014,11 @@ fn eval_call(
                 // pairs it with the key for the two-name `for k, v in ...` binding.
                 "values" => return eval_values(args, span, env).map(Some),
                 "entries" => return eval_entries(args, span, env).map(Some),
+                // `reversed(<iterable>)` yields the same elements in reverse key
+                // order; `next`/`prev` return the nearest stored neighbor identity.
+                "reversed" => return eval_reversed(args, span, env).map(Some),
+                "next" => return eval_neighbor(Direction::Ascending, args, span, env).map(Some),
+                "prev" => return eval_neighbor(Direction::Descending, args, span, env).map(Some),
                 _ => {}
             }
         }
@@ -1135,6 +1140,17 @@ fn raise_fault(code: &'static str, message: String, span: SourceSpan) -> Runtime
 enum ReadPosition {
     Value,
     ArgSeed,
+}
+
+/// The order a saved-layer walk yields its children. `for`/`keys`/`values`/
+/// `entries` enumerate `Ascending`; `reversed(...)` enumerates `Descending`; and
+/// `next`/`prev` seek the next/previous neighbor. The whole walk reverses as one,
+/// so a composite identity is true-reversed at every level, not only its
+/// outermost component.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Ascending,
+    Descending,
 }
 
 /// The absent-element error for a read at `position`: catchable in value
@@ -1958,6 +1974,225 @@ fn eval_entries(
     Ok(Value::Sequence(entries))
 }
 
+/// Evaluate `reversed(<iterable>)`: the same elements in reverse key order. Over a
+/// saved layer — directly (`reversed(L)`/`reversed(keys(L))`), or wrapped in
+/// `values`/`entries` — the reversal is pushed into the enumeration as a
+/// `Descending` double-ended store walk, so it is O(k), early-breakable, and a
+/// true reverse at every composite-identity level. Over any other value the
+/// argument must already be an in-memory `sequence`, whose `Vec` is reversed in
+/// place (e.g. `reversed(std::text::split(...))`).
+fn eval_reversed(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(RuntimeError {
+            throw: None,
+            code: RUN_TYPE,
+            message: "`reversed` takes one argument".into(),
+            span,
+        });
+    };
+    // `reversed(values(L))` / `reversed(entries(L))`: materialize the layer in
+    // reverse key order, then shape the rows the way `values`/`entries` do.
+    if let Some(inner) = values_or_entries(&arg.value) {
+        let rows = materialize_layer_dir(inner.layer, Direction::Descending, env)?;
+        return Ok(Value::Sequence(match inner.kind {
+            MaterializeKind::Values => rows.into_iter().map(|(_, value)| value).collect(),
+            MaterializeKind::Entries => rows
+                .into_iter()
+                .map(|(key, value)| Value::Sequence(vec![key, value]))
+                .collect(),
+        }));
+    }
+    // `reversed(L)` / `reversed(keys(L))`: the layer's identities, descending.
+    if let Some(layer) =
+        keys_argument(&arg.value).or((is_saved_path(&arg.value)).then_some(&arg.value))
+    {
+        return Ok(Value::Sequence(enumerate_layer_dir(
+            layer,
+            Direction::Descending,
+            env,
+        )?));
+    }
+    // Any other argument must evaluate to an in-memory sequence, reversed directly.
+    match eval_expr(&arg.value, env)? {
+        Value::Sequence(mut items) => {
+            items.reverse();
+            Ok(Value::Sequence(items))
+        }
+        _ => Err(unsupported(
+            "reversing this value (expected an iterable)",
+            span,
+        )),
+    }
+}
+
+/// Which value shape a `values`/`entries` wrapper materializes.
+enum MaterializeKind {
+    Values,
+    Entries,
+}
+
+/// A `values(L)`/`entries(L)` wrapper recognized inside `reversed(...)`: the inner
+/// layer expression and which shape it materializes.
+struct ValuesOrEntries<'a> {
+    layer: &'a Expression,
+    kind: MaterializeKind,
+}
+
+/// Classify a `values(<layer>)` or `entries(<layer>)` call, or `None` otherwise.
+fn values_or_entries(expr: &Expression) -> Option<ValuesOrEntries<'_>> {
+    let Expression::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
+    };
+    let kind = match segments.as_slice() {
+        [name] if name == "values" => MaterializeKind::Values,
+        [name] if name == "entries" => MaterializeKind::Entries,
+        _ => return None,
+    };
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(ValuesOrEntries {
+            layer: &arg.value,
+            kind,
+        }),
+        _ => None,
+    }
+}
+
+/// Evaluate `next(<element>)` (`Ascending`) or `prev(<element>)` (`Descending`):
+/// the nearest stored neighbor in key order, skipping gaps. The argument is a
+/// saved path scoped to one key level — a specific element (`^root(id)`,
+/// `^root(id).layer(k)`) whose innermost key is the seek anchor, or a bare layer
+/// (`^root`, `^root(id).layer`) whose first/last stored child is returned. The
+/// result is the neighbor identity, read fields through `^root(neighbor).field`.
+/// Stepping off the edge (`next` of the last, `prev` of the first) raises the
+/// catchable `run.absent_element`, so it composes with `??`.
+fn eval_neighbor(
+    dir: Direction,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        let which = if dir == Direction::Ascending {
+            "next"
+        } else {
+            "prev"
+        };
+        return Err(RuntimeError {
+            throw: None,
+            code: RUN_TYPE,
+            message: format!("`{which}` takes one argument"),
+            span,
+        });
+    };
+    let (parent, anchor) = neighbor_target(&arg.value, env)?;
+    let parent_bytes = encode_path(&parent);
+    let neighbor = {
+        let store = env.store.borrow();
+        let result = match (&anchor, dir) {
+            // A bare layer: the first stored child for `next`, the last for `prev`.
+            (None, Direction::Ascending) => store.first_child(&parent_bytes),
+            (None, Direction::Descending) => store.last_child(&parent_bytes),
+            // A specific element: the sibling just past its key, gaps skipped.
+            (Some(segment), Direction::Ascending) => store.next_sibling(&parent_bytes, segment),
+            (Some(segment), Direction::Descending) => store.prev_sibling(&parent_bytes, segment),
+        };
+        result.map_err(|_| RuntimeError {
+            throw: None,
+            code: RUN_STORE,
+            message: "could not seek the neighbor at this path".into(),
+            span,
+        })?
+    };
+    match neighbor {
+        Some(ChildSegment::Key(key)) => {
+            saved_key_to_value(key).ok_or_else(|| unsupported("a neighbor key of this type", span))
+        }
+        // A named member is not a key-level position, so `next`/`prev` never land
+        // on one; a corrupt store row would be the only source.
+        Some(ChildSegment::Name(_)) => Err(unsupported("a neighbor at this path", span)),
+        None => {
+            let edge = if dir == Direction::Ascending {
+                "after"
+            } else {
+                "before"
+            };
+            Err(raise_fault(
+                RUN_ABSENT,
+                format!("no element {edge} this position in its layer"),
+                span,
+            ))
+        }
+    }
+}
+
+/// Split a `next`/`prev` argument into the parent layer prefix and the optional
+/// anchor child segment to seek past. A specific element — a record `^root(id…)`
+/// (single-key identity) or a keyed group entry `^root(id…).layer(k)` — anchors at
+/// its innermost key, with the parent being everything above it. A bare layer —
+/// the primary keyed root `^root` or an unkeyed group hop `^root(id).layer` — has
+/// no anchor (its `first`/`last` child is sought). Other shapes (index branches,
+/// composite multi-level identities, fields) are unsupported.
+fn neighbor_target(
+    expr: &Expression,
+    env: &mut Env<'_>,
+) -> Result<(Vec<PathSegment>, Option<Vec<u8>>), RuntimeError> {
+    let span = expr.span();
+    // A bare primary keyed root `^root`: seek among its record identities.
+    if let Expression::SavedRoot { name, .. } = expr
+        && root_identity_arity(env.program, name).is_some_and(|arity| arity > 0)
+    {
+        return Ok((vec![PathSegment::Root(name.clone())], None));
+    }
+    let path = lower(expr, env)?;
+    if !matches!(path.terminal, Terminal::Record) {
+        return Err(unsupported("`next`/`prev` of this path", span));
+    }
+    // No layers: a record address `^root(id…)`. Its identity must be a single key
+    // (one level), the anchor; the parent is the root. The anchor is the encoded
+    // record-key child segment (kind tag + key) the store's seek compares against.
+    if path.layers.is_empty() {
+        return match path.identity.as_slice() {
+            [key] => Ok((
+                vec![PathSegment::Root(path.root.clone())],
+                Some(encode_path(&[PathSegment::RecordKey(key.clone())])),
+            )),
+            // A composite identity addresses many levels; `next`/`prev` are scoped
+            // to one key level, so a multi-key record is out of scope here.
+            _ => Err(unsupported(
+                "`next`/`prev` of a composite-identity record (scope a single key level)",
+                span,
+            )),
+        };
+    }
+    // A layer chain: the parent is the root, identity, and every layer level above
+    // the innermost, ending at the innermost layer's name. The innermost layer's
+    // last key is the anchor — an encoded index-key child segment; an unkeyed group
+    // hop (`^root(id).layer`) has none, so it is a bare layer whose first/last child
+    // is sought.
+    let (last_name, last_keys) = path.layers.last().expect("non-empty checked above");
+    let prior = &path.layers[..path.layers.len() - 1];
+    let mut parent = saved_segments(&path.root, &path.identity, prior, None);
+    parent.push(PathSegment::ChildLayer(last_name.clone()));
+    match last_keys.as_slice() {
+        [] => Ok((parent, None)),
+        [key] => Ok((
+            parent,
+            Some(encode_path(&[PathSegment::IndexKey(key.clone())])),
+        )),
+        _ => Err(unsupported(
+            "`next`/`prev` of a multi-key layer position (scope a single key level)",
+            span,
+        )),
+    }
+}
+
 /// Materialize a layer's children as `(key, value)` pairs in key order: a whole
 /// record per child key for a primary root `^books`, or each entry's value for a
 /// keyed/sequence child layer `^books(id).tags`. Reuses [`enumerate_layer`] for
@@ -1968,7 +2203,18 @@ fn materialize_layer(
     path: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
-    let keys = enumerate_layer(path, env)?;
+    materialize_layer_dir(path, Direction::Ascending, env)
+}
+
+/// [`materialize_layer`] in `dir` order: the keys enumerate in that direction, so
+/// `reversed(values(L))` / `reversed(entries(L))` materialize each child value in
+/// reverse key order.
+fn materialize_layer_dir(
+    path: &Expression,
+    dir: Direction,
+    env: &mut Env<'_>,
+) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    let keys = enumerate_layer_dir(path, dir, env)?;
     match path {
         // A primary keyed root: each child key is a record identity, materialized
         // by a whole-record read.
@@ -2871,6 +3117,15 @@ fn range_bounds(
 /// enumerate the layer's child keys through [`enumerate_layer`]. Every other
 /// iterable must evaluate to an in-memory sequence (e.g. `std::text::split(...)`).
 fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
+    // `for x in reversed(L)` walks the same layer in reverse key order. A
+    // `reversed(...)` over a saved layer (directly or wrapped in `keys`/`values`/
+    // `entries`) enumerates `Descending`; a `reversed(<sequence>)` falls through to
+    // the in-memory reversal `eval_reversed` returns.
+    if let Some(inner) = reversed_argument(iterable)
+        && let Some(layer) = traversal_argument(inner).or(is_saved_path(inner).then_some(inner))
+    {
+        return enumerate_layer_dir(layer, Direction::Descending, env);
+    }
     if let Some(path) = keys_argument(iterable) {
         return enumerate_layer(path, env);
     }
@@ -2896,7 +3151,11 @@ fn traversed_layer_prefix(
     iterable: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
-    let path = traversal_argument(iterable).unwrap_or(iterable);
+    // `reversed(...)` traverses the same layer (just backward), so unwrap it the
+    // same way `keys`/`values`/`entries` are — the guarded prefix is unchanged by
+    // direction. A `reversed(keys(L))` peels both wrappers.
+    let unwrapped = reversed_argument(iterable).unwrap_or(iterable);
+    let path = traversal_argument(unwrapped).unwrap_or(unwrapped);
     if !is_saved_path(path) {
         return Ok(None);
     }
@@ -2962,6 +3221,26 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
     }
 }
 
+/// The single argument of a `reversed(<iterable>)` call, or `None` for any other
+/// expression. Lets the loop materializer and write-guard see through the
+/// `reversed` wrapper to the layer it traverses (its inner `keys`/`values`/
+/// `entries` or bare saved path), exactly as [`traversal_argument`] does.
+fn reversed_argument(expr: &Expression) -> Option<&Expression> {
+    let Expression::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
+    };
+    if segments.len() != 1 || segments[0] != "reversed" {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        _ => None,
+    }
+}
+
 /// The single argument of a `keys(<path>)` call, or `None` for any other
 /// expression. Shared by the loop materializer and the standalone `keys` builtin.
 fn keys_argument(expr: &Expression) -> Option<&Expression> {
@@ -2990,6 +3269,18 @@ fn keys_argument(expr: &Expression) -> Option<&Expression> {
 /// - `^root.index(args…)` yields the identities in that index branch.
 /// - `^root(id…).layer` yields the keyed/sequence layer's child keys.
 fn enumerate_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
+    enumerate_layer_dir(path, Direction::Ascending, env)
+}
+
+/// Enumerate a saved layer's child keys in `dir` order — the direction-threaded
+/// core of [`enumerate_layer`]. `Ascending` is `for`/`keys`/`values`/`entries`;
+/// `Descending` is `reversed(...)`. The whole descent carries one direction, so a
+/// composite identity reverses at every level.
+fn enumerate_layer_dir(
+    path: &Expression,
+    dir: Direction,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
     match path {
         // A primary keyed root: its immediate children are the record-key segments
         // of the (possibly composite) identity. A keyless singleton has none.
@@ -3005,14 +3296,14 @@ fn enumerate_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, R
                 None => return Err(unsupported("iterating this saved path", *span)),
             };
             let prefix = vec![PathSegment::Root(name.clone())];
-            collect_child_identities(&prefix, arity, &[], PathSegment::RecordKey, *span, env)
+            collect_child_identities(&prefix, arity, &[], PathSegment::RecordKey, dir, *span, env)
         }
         // An index branch `^root.index(args…)` (a `Call` whose callee is a `.index`
         // off a saved root) or a keyed/sequence child layer `^root(id…).layer`.
         Expression::Call { callee, args, span } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
-            enumerate_index_branch(callee, args, *span, env)
+            enumerate_index_branch(callee, args, dir, *span, env)
         }
-        Expression::Field { .. } => enumerate_child_layer(path, env),
+        Expression::Field { .. } => enumerate_child_layer(path, dir, env),
         other => Err(unsupported("iterating this saved path", other.span())),
     }
 }
@@ -3024,6 +3315,7 @@ fn enumerate_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, R
 fn enumerate_index_branch(
     callee: &Expression,
     args: &[Argument],
+    dir: Direction,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
@@ -3059,13 +3351,17 @@ fn enumerate_index_branch(
         .and_then(|resource| resource.indexes.iter().find(|i| &i.name == index))
         .ok_or_else(|| unsupported("iterating this saved path", span))?;
     let depth = schema.args.len().saturating_sub(args.len());
-    collect_child_identities(&prefix, depth, &[], PathSegment::IndexKey, span, env)
+    collect_child_identities(&prefix, depth, &[], PathSegment::IndexKey, dir, span, env)
 }
 
 /// Enumerate the child keys of a keyed/sequence child layer `^root(id…).layer`.
 /// The layer's keys are single-key (`pos: int` for a sequence, `playerId: string`
 /// for a keyed tree), so each child key is a bare value.
-fn enumerate_child_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
+fn enumerate_child_layer(
+    path: &Expression,
+    dir: Direction,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
     let Expression::Field {
         base, name: layer, ..
     } = path
@@ -3075,7 +3371,7 @@ fn enumerate_child_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Val
     let span = path.span();
     let (root, identity) = lower(base, env)?.into_record(base.span())?;
     let prefix = saved_segments(&root, &identity, &[(layer.clone(), Vec::new())], None);
-    collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, span, env)
+    collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, dir, span, env)
 }
 
 /// Collect the identities reachable below `prefix`, descending `depth` remaining
@@ -3090,19 +3386,26 @@ fn collect_child_identities(
     depth: usize,
     keys: &[SavedKey],
     make_segment: fn(SavedKey) -> PathSegment,
+    dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
     let children = {
         let store = env.store.borrow();
-        store
-            .child_keys(&encode_path(prefix))
-            .map_err(|_| RuntimeError {
-                throw: None,
-                code: RUN_STORE,
-                message: "could not read the keys at this path".into(),
-                span,
-            })?
+        let encoded = encode_path(prefix);
+        // `reversed(...)` walks the store's double-ended range backward, so a
+        // composite identity descends in reverse at every level — a true reverse,
+        // not the outermost component flipped over an ascending tail.
+        match dir {
+            Direction::Ascending => store.child_keys(&encoded),
+            Direction::Descending => store.child_keys_rev(&encoded),
+        }
+        .map_err(|_| RuntimeError {
+            throw: None,
+            code: RUN_STORE,
+            message: "could not read the keys at this path".into(),
+            span,
+        })?
     };
     let mut values = Vec::new();
     for child in children {
@@ -3128,6 +3431,7 @@ fn collect_child_identities(
                 depth - 1,
                 &keys,
                 make_segment,
+                dir,
                 span,
                 env,
             )?);

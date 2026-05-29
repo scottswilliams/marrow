@@ -2376,6 +2376,25 @@ fn check_call(
     {
         return check_next_id(program, args, span, file, diagnostics);
     }
+    // `reversed` is type-transparent: it yields the same elements in reverse order,
+    // so its result is exactly its argument's type (a `sequence[T]` stays
+    // `sequence[T]`; an untyped layer stays `Unknown`, never regressing loop-element
+    // typing). `next`/`prev` need the argument *expression* — the `^path` — to find
+    // the resource/layer they navigate, so they too resolve here before the generic
+    // builtin branch typed only from `arg_types`.
+    if let [name] = segments {
+        match name.as_str() {
+            "reversed" => {
+                check_arity(name, 1, args, span, file, diagnostics);
+                return arg_types.first().cloned().unwrap_or(MarrowType::Unknown);
+            }
+            "next" | "prev" => {
+                check_arity(name, 1, args, span, file, diagnostics);
+                return check_neighbor(program, name, args, span, file, diagnostics);
+            }
+            _ => {}
+        }
+    }
     // Builtins dispatch before user functions. For std helpers the signatures are
     // fixed, so argument types and arity are checked here the
     // same way user-function arguments are; other builtins leave their arguments to
@@ -2616,6 +2635,97 @@ fn check_next_id(
     MarrowType::Unknown
 }
 
+/// Type `next(<element>)` / `prev(<element>)`: the navigated neighbor's identity
+/// type. A primary keyed root `^root` or a record `^root(id…)` navigates among
+/// record identities, so the result is the owning resource's `Resource::Id` — the
+/// type that makes `^root(next(^root(id))).field` check. A keyed child-layer
+/// position `^root(id…).layer(k)` or a bare child layer `^root(id…).layer`
+/// navigates among that layer's keys, so the result is the layer's single key
+/// type. Any other shape (an index branch, a scalar field, a composite-identity
+/// record) is left `Unknown`; the runtime reports an unsupported navigation, and a
+/// surrounding `??` still types the default. `next`/`prev` are not type errors at
+/// check time — the edge fault is runtime and `??`-catchable.
+fn check_neighbor(
+    program: &CheckedProgram,
+    _which: &str,
+    args: &[marrow_syntax::Argument],
+    _span: SourceSpan,
+    _file: &Path,
+    _diagnostics: &mut [CheckDiagnostic],
+) -> MarrowType {
+    use marrow_syntax::Expression;
+    let [arg] = args else {
+        return MarrowType::Unknown;
+    };
+    match &arg.value {
+        // A bare primary keyed root `^root` or a keyed record `^root(id…)`: the
+        // neighbor is a record identity.
+        Expression::SavedRoot { name: root, .. } => record_identity_type(program, root),
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            // `^root(id…)`: a keyed record; its neighbor is another record identity.
+            Expression::SavedRoot { name: root, .. } => record_identity_type(program, root),
+            // `^root(id…).layer(k)`: a keyed layer position; its neighbor is a key.
+            Expression::Field { .. } => layer_key_type(program, callee.as_ref()),
+            _ => MarrowType::Unknown,
+        },
+        // A bare child layer `^root(id…).layer`: navigate among the layer's keys.
+        Expression::Field { .. } => layer_key_type(program, &arg.value),
+        _ => MarrowType::Unknown,
+    }
+}
+
+/// The `Resource::Id` identity type of the resource at saved root `root`, or
+/// `Unknown` when `root` names no keyed saved root.
+fn record_identity_type(program: &CheckedProgram, root: &str) -> MarrowType {
+    match find_resource_schema(program, root) {
+        Some(resource) if resource.saved_root.is_some() => {
+            MarrowType::Identity(resource.name.clone())
+        }
+        _ => MarrowType::Unknown,
+    }
+}
+
+/// The single key type of the child layer a `^root(id…).layer` accessor names, or
+/// `Unknown` when the layer is undeclared or not single-keyed. The neighbor of a
+/// layer position is one of these keys, so `next`/`prev` over the layer type to it.
+fn layer_key_type(program: &CheckedProgram, layer_field: &marrow_syntax::Expression) -> MarrowType {
+    let Some((root, layers)) = saved_layer_chain(layer_field) else {
+        return MarrowType::Unknown;
+    };
+    let Some(resource) = find_resource_schema(program, root) else {
+        return MarrowType::Unknown;
+    };
+    match resource
+        .descend_layers(&layers)
+        .map(|node| node.key_params.as_slice())
+    {
+        Some([key]) => MarrowType::from_resolved(key.ty.clone(), &[]),
+        _ => MarrowType::Unknown,
+    }
+}
+
+/// Report a `check.call_argument` arity diagnostic when a fixed-arity builtin is
+/// called with the wrong number of arguments.
+fn check_arity(
+    name: &str,
+    arity: usize,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if args.len() != arity {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "`{name}` expects {arity} argument(s), but {} were given",
+                args.len()
+            ),
+        ));
+    }
+}
+
 /// A `check.call_argument` diagnostic located at a call's span.
 fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
@@ -2712,6 +2822,8 @@ fn is_builtin_call(segments: &[String]) -> bool {
                 "exists"
                 // tree traversal
                 | "keys" | "values" | "entries" | "count"
+                // ordered navigation
+                | "reversed" | "next" | "prev"
                 // sequence updates and id allocation
                 | "append" | "nextId"
                 // write and print

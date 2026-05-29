@@ -5063,6 +5063,337 @@ fn mutating_a_different_record_layer_while_traversing_is_allowed() {
     );
 }
 
+// --- Ordered navigation: reversed / next / prev ---
+
+/// A primary keyed root with a keyed child layer, used to exercise reverse
+/// iteration and stored-neighbor seeks over both record identities and layer keys.
+const NAV_BOOKS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    tags(pos: int): string
+
+fn add(id: int, t: string)
+    ^books(id).title = t
+
+fn delId(id: int)
+    delete ^books(id)
+
+fn tag(id: int, t: string)
+    const p: int = append(^books(id).tags, t)
+
+fn idsDescending()
+    for id in reversed(^books)
+        print($\"{id}\")
+
+fn keysReversed()
+    const r = reversed(keys(^books))
+    for id in r
+        print($\"{id}\")
+
+fn titlesDescending()
+    for id in reversed(^books)
+        print(^books(id).title)
+
+fn nextOf(id: int): int
+    return next(^books(id))
+
+fn prevOf(id: int): int
+    return prev(^books(id))
+
+fn firstId(): int
+    return next(^books)
+
+fn lastId(): int
+    return prev(^books)
+
+fn nextOrDefault(id: int): int
+    return next(^books(id)) ?? -1
+
+fn nextTitle(id: int): string
+    return ^books(next(^books(id))).title
+
+fn breakAfterFirst(): int
+    var seen = 0
+    for id in reversed(^books)
+        seen = seen + 1
+        break
+    return seen
+";
+
+#[test]
+fn reversed_layer_iterates_descending_and_skips_a_hole() {
+    let program = checked_program(NAV_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(title.into())],
+        )
+        .expect("add");
+    };
+    add(1, "Mort");
+    add(2, "Sourcery");
+    add(3, "Reaper");
+
+    // `reversed(^books)` yields ids in descending key order.
+    let outcome = run_entry(&program, &store, "test::idsDescending", &[]).expect("run");
+    assert_eq!(outcome.output, "3\n2\n1\n");
+
+    // `reversed(keys(^books))` yields the same descending order — `reversed` over a
+    // `keys(...)` wrapper enumerates the layer backward, not a copy-then-reverse.
+    let outcome = run_entry(&program, &store, "test::keysReversed", &[]).expect("run");
+    assert_eq!(outcome.output, "3\n2\n1\n");
+
+    // Each descending id re-addresses its record (a true reverse over stored keys).
+    let outcome = run_entry(&program, &store, "test::titlesDescending", &[]).expect("run");
+    assert_eq!(outcome.output, "Reaper\nSourcery\nMort\n");
+
+    // Deleting the middle record leaves a hole; reverse iteration skips it,
+    // visiting only stored entries.
+    run_entry(&program, &store, "test::delId", &[Value::Int(2)]).expect("del");
+    let outcome = run_entry(&program, &store, "test::idsDescending", &[]).expect("run");
+    assert_eq!(outcome.output, "3\n1\n");
+}
+
+#[test]
+fn next_and_prev_skip_a_deleted_hole() {
+    let program = checked_program(NAV_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str("t".into())],
+        )
+        .expect("add");
+    };
+    add(1);
+    add(2);
+    add(5);
+    // Delete the middle stored key, leaving a gap between 1 and 5.
+    run_entry(&program, &store, "test::delId", &[Value::Int(2)]).expect("del");
+
+    // `next(^books(1))` is the nearest *stored* successor, skipping the gap at 2.
+    assert_eq!(
+        run_entry(&program, &store, "test::nextOf", &[Value::Int(1)])
+            .expect("next")
+            .value,
+        Some(Value::Int(5))
+    );
+    // `prev(^books(5))` mirrors it: the nearest stored predecessor is 1.
+    assert_eq!(
+        run_entry(&program, &store, "test::prevOf", &[Value::Int(5)])
+            .expect("prev")
+            .value,
+        Some(Value::Int(1))
+    );
+}
+
+#[test]
+fn next_of_bare_layer_is_first_and_prev_is_last() {
+    let program = checked_program(NAV_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str("t".into())],
+        )
+        .expect("add");
+    };
+    add(4);
+    add(2);
+    add(9);
+
+    // `next(^books)` (a bare layer) is the first stored entry; `prev(^books)` the
+    // last — in key order, regardless of insertion order.
+    assert_eq!(
+        run_entry(&program, &store, "test::firstId", &[])
+            .expect("first")
+            .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::lastId", &[])
+            .expect("last")
+            .value,
+        Some(Value::Int(9))
+    );
+}
+
+#[test]
+fn prev_of_first_is_absent_and_composes_with_coalesce() {
+    let program = checked_program(NAV_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str("t".into())],
+        )
+        .expect("add");
+    };
+    add(1);
+    add(2);
+
+    // `prev` of the first stored key steps off the edge: a catchable absent-element
+    // fault, not a value.
+    let faulted = run_entry(&program, &store, "test::prevOf", &[Value::Int(1)]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_ABSENT),
+        "{faulted:?}"
+    );
+
+    // `next` of the last stored key is likewise absent, and `?? -1` recovers it —
+    // the edge fault composes with `??`.
+    assert_eq!(
+        run_entry(&program, &store, "test::nextOrDefault", &[Value::Int(2)])
+            .expect("coalesce")
+            .value,
+        Some(Value::Int(-1))
+    );
+}
+
+#[test]
+fn next_neighbor_identity_reads_a_field() {
+    let program = checked_program(NAV_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Int(1), Value::Str("Mort".into())],
+    )
+    .expect("add");
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Int(2), Value::Str("Sourcery".into())],
+    )
+    .expect("add");
+
+    // `^books(next(^books(1))).title` reads the neighbor record's field through its
+    // returned identity.
+    assert_eq!(
+        run_entry(&program, &store, "test::nextTitle", &[Value::Int(1)])
+            .expect("nextTitle")
+            .value,
+        Some(Value::Str("Sourcery".into()))
+    );
+}
+
+#[test]
+fn reversed_iteration_supports_early_break() {
+    let program = checked_program(NAV_BOOKS);
+    let store = RefCell::new(MemStore::new());
+    for id in 1..=3 {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str("t".into())],
+        )
+        .expect("add");
+    }
+    // A `break` on the first reversed element stops the loop after one iteration.
+    assert_eq!(
+        run_entry(&program, &store, "test::breakAfterFirst", &[])
+            .expect("break")
+            .value,
+        Some(Value::Int(1))
+    );
+}
+
+#[test]
+fn next_on_a_keyed_child_layer_position() {
+    // `next(^books(1).tags(1))` seeks among the layer's integer positions.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\nfn nextPos(p: int): int\n    return next(^books(1).tags(p))\n\nfn firstPos(): int\n    return next(^books(1).tags)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    // Positions are 1, 2, 3; the successor of 1 is 2.
+    assert_eq!(
+        run_entry(&program, &store, "test::nextPos", &[Value::Int(1)])
+            .expect("nextPos")
+            .value,
+        Some(Value::Int(2))
+    );
+    // `next(^books(1).tags)` (a bare layer) is the first stored position.
+    assert_eq!(
+        run_entry(&program, &store, "test::firstPos", &[])
+            .expect("firstPos")
+            .value,
+        Some(Value::Int(1))
+    );
+}
+
+#[test]
+fn reversed_over_an_in_memory_sequence_reverses_directly() {
+    // `reversed(std::text::split(...))` reverses the in-memory sequence — no store
+    // involved — so a `for` over it yields the elements back-to-front.
+    let program = checked_program(
+        "fn rev()\n    for word in reversed(std::text::split(\"a,b,c\", \",\"))\n        print(word)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome = run_entry(&program, &store, "test::rev", &[]).expect("run");
+    assert_eq!(outcome.output, "c\nb\na\n");
+}
+
+#[test]
+fn reversed_respects_the_traversed_layer_write_guard() {
+    // Mutating the layer mid-`reversed`-loop is still a traversal fault: the
+    // write-guard sees through the `reversed(...)` wrapper to the same layer prefix.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in reversed(^books)\n        delete ^books(id)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::clear", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn reversed_over_a_composite_root_is_a_true_reverse() {
+    // A composite identity reverses at every level, so the whole identity stream is
+    // the exact reverse of the ascending one — not just the outermost component.
+    let program = checked_program(ENROLLMENT_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let enroll = |s: &str, c: &str, st: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::enroll",
+            &[
+                Value::Str(s.into()),
+                Value::Str(c.into()),
+                Value::Str(st.into()),
+            ],
+        )
+        .expect("enroll");
+    };
+    enroll("s1", "c1", "active");
+    enroll("s1", "c2", "dropped");
+    enroll("s2", "c1", "active");
+
+    // Ascending identity order is (s1,c1),(s1,c2),(s2,c1); reverse is the mirror.
+    let program = checked_program(&format!(
+        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id in reversed(^enrollments)\n        print(^enrollments(id).status)\n"
+    ));
+    let outcome = run_entry(&program, &store, "test::revStatuses", &[]).expect("run");
+    assert_eq!(outcome.output, "active\ndropped\nactive\n");
+}
+
 /// `count(path)` over the four presence shapes: a scalar field, a child-bearing
 /// layer, and absent paths.
 const BOOK_COUNT: &str = "\
