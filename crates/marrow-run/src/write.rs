@@ -17,18 +17,12 @@ use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ScalarType, ValueError, decode_value, encode_value};
 
-/// A field's value in a write: a saved value, or explicitly absent (omitted).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldValue {
-    Saved(SavedValue),
-    Absent,
-}
-
-/// A resource value supplied to a write: its top-level fields, by name. Keyed
-/// layers are written through the dedicated layer planners, not this value.
+/// A resource value supplied to a write: its present top-level fields, by name.
+/// A field not listed here is simply not supplied (absent). Keyed layers are
+/// written through the dedicated layer planners, not this value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceValue {
-    pub fields: Vec<(String, FieldValue)>,
+    pub fields: Vec<(String, SavedValue)>,
 }
 
 /// A managed write that could not be planned. `code` is a stable `write.*`
@@ -190,11 +184,11 @@ pub fn plan_resource_write(
     let mut to_write = Vec::new();
     for field in &schema.fields {
         match supplied_value(value, &field.name) {
-            Some(FieldValue::Saved(saved)) => {
+            Some(saved) => {
                 check_type(&field.name, &field.ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
-            Some(FieldValue::Absent) | None => {
+            None => {
                 if field.required {
                     return Err(WriteError {
                         code: WRITE_REQUIRED_ABSENT,
@@ -394,9 +388,8 @@ pub fn plan_field_delete(
 
 /// Plan a managed merge: copy the supplied fields of `value` over the resource
 /// already stored at `identity`, leaving stored fields the merge does not supply
-/// untouched (a partial update, not a replace). An omitted or
-/// [`FieldValue::Absent`] field is
-/// left as stored; clearing a field is `delete`, not `merge`. Validates supplied
+/// untouched (a partial update, not a replace). A field the merge does not
+/// supply is left as stored; clearing a field is `delete`, not `merge`. Validates supplied
 /// field types and that every required field is populated AFTER the merge
 /// (supplied here or already stored), and rejects a unique conflict, before
 /// staging. Generated index entries are kept coherent against the EFFECTIVE
@@ -417,11 +410,11 @@ pub fn plan_resource_merge(
     let mut to_write = Vec::new();
     for field in &schema.fields {
         match supplied_value(value, &field.name) {
-            Some(FieldValue::Saved(saved)) => {
+            Some(saved) => {
                 check_type(&field.name, &field.ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
-            Some(FieldValue::Absent) | None => {
+            None => {
                 if field.required
                     && store
                         .read(&encode_path(&field_path(root, identity, &field.name)))
@@ -544,28 +537,6 @@ pub fn plan_layer_leaf_write(
     })
 }
 
-/// Plan a group-entry field write: set `field` of the keyed group entry at
-/// `^root(identity).layer(key…)` to `value`. `layer` must be a declared GROUP
-/// layer (e.g. `versions(version: int)` or `notes(noteId: string)`), `key` must
-/// match the layer's key arity, `field` must be a scalar member of that group,
-/// and `value` must match the member's type. A group-entry field holds a single
-/// value at one path, and generated indexes do not span keyed child layers,
-/// so this is a plain replace-in-
-/// place write with no index maintenance; it leaves the entry's other members in
-/// place. Returns a [`WriteError`] if the layer is unknown, is a leaf rather than
-/// a group, the key arity is wrong, the field is not a scalar member, or the
-/// value is mistyped.
-pub fn plan_layer_field_write(
-    schema: &ResourceSchema,
-    identity: &[SavedKey],
-    layer: &str,
-    key: &[SavedKey],
-    field: &str,
-    value: &SavedValue,
-) -> Result<WritePlan, WriteError> {
-    plan_nested_field_write(schema, identity, &[(layer, key)], field, value)
-}
-
 /// Plan a field write into a (possibly nested) keyed group entry, descending the
 /// `layers` chain of `(layer, key…)` levels from the resource. Each level must
 /// name a group layer with matching key arity; the field is a scalar member of
@@ -650,11 +621,11 @@ pub fn plan_layer_group_write(
             continue;
         };
         match supplied_value(value, &field.name) {
-            Some(FieldValue::Saved(saved)) => {
+            Some(saved) => {
                 check_type(&field.name, &field.ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
-            Some(FieldValue::Absent) | None => {
+            None => {
                 if field.required {
                     return Err(WriteError {
                         code: WRITE_REQUIRED_ABSENT,
@@ -844,7 +815,7 @@ pub fn next_layer_pos(
 }
 
 /// The supplied value for `field` in `value`, if any.
-fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a FieldValue> {
+fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a SavedValue> {
     value
         .fields
         .iter()
@@ -985,8 +956,8 @@ fn index_keys(
             keys.push(identity[position].clone());
         } else {
             match value.fields.iter().find(|(name, _)| name == arg) {
-                Some((_, FieldValue::Saved(saved))) => keys.push(saved_value_to_key(saved)?),
-                _ => return None,
+                Some((_, saved)) => keys.push(saved_value_to_key(saved)?),
+                None => return None,
             }
         }
     }
@@ -1073,8 +1044,8 @@ fn effective_index_keys(
 ) -> Result<Option<Vec<SavedKey>>, StoreError> {
     args.iter()
         .map(|arg| match supplied_value(value, arg) {
-            Some(FieldValue::Saved(saved)) => Ok(saved_value_to_key(saved)),
-            _ => stored_arg_key(arg, root, identity, schema, store),
+            Some(saved) => Ok(saved_value_to_key(saved)),
+            None => stored_arg_key(arg, root, identity, schema, store),
         })
         .collect()
 }

@@ -1,14 +1,13 @@
 //! Managed whole-resource writes: validate against the schema, lower the fields
 //! into the store, and keep generated index entries coherent.
 
-use marrow_run::write::{
-    FieldValue, ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
+use crate::write::{
+    ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
     WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
     WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
     WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_delete,
-    plan_field_write, plan_layer_field_write, plan_layer_group_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    plan_field_write, plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge,
+    plan_nested_field_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 use marrow_schema::{ResourceSchema, compile_resource};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
@@ -118,8 +117,8 @@ resource Book at ^books(id: int)
     index byShelf(shelf, id)
 ";
 
-fn saved(text: &str) -> FieldValue {
-    FieldValue::Saved(SavedValue::Str(text.into()))
+fn saved(text: &str) -> SavedValue {
+    SavedValue::Str(text.into())
 }
 
 /// Plan and commit a whole-resource write against the current store state.
@@ -198,11 +197,10 @@ fn field_path(id: i64, field: &str) -> Vec<u8> {
 
 /// Plan and commit a group-entry field write of `^books(id).notes(noteId).text`.
 fn write_note(store: &mut MemStore, schema: &ResourceSchema, id: i64, note: &str, text: &str) {
-    plan_layer_field_write(
+    plan_nested_field_write(
         schema,
         &[SavedKey::Int(id)],
-        "notes",
-        &[SavedKey::Str(note.into())],
+        &[("notes", &[SavedKey::Str(note.into())])],
         "text",
         &SavedValue::Str(text.into()),
     )
@@ -381,7 +379,7 @@ fn a_field_type_mismatch_is_rejected() {
     let book = schema(BOOK);
     // `title` is a string; an int does not satisfy it.
     let value = ResourceValue {
-        fields: vec![("title".into(), FieldValue::Saved(SavedValue::Int(5)))],
+        fields: vec![("title".into(), SavedValue::Int(5))],
     };
     let result = plan_resource_write(&book, &[SavedKey::Int(42)], &value, &MemStore::new());
     assert!(
@@ -1385,14 +1383,12 @@ fn an_explicit_absent_in_a_merge_leaves_the_target_field() {
             ],
         },
     );
-    // An explicit Absent means "not contributed", same as omission: leave it.
+    // Not supplying `shelf` means "not contributed": leave it as stored.
     merge(
         &mut store,
         &book,
         &[SavedKey::Int(1)],
-        ResourceValue {
-            fields: vec![("shelf".into(), FieldValue::Absent)],
-        },
+        ResourceValue { fields: vec![] },
     );
     assert_eq!(
         decode_value(
@@ -1408,7 +1404,7 @@ fn an_explicit_absent_in_a_merge_leaves_the_target_field() {
 fn a_merge_with_a_mismatched_type_is_rejected() {
     let book = schema(BOOK);
     let value = ResourceValue {
-        fields: vec![("title".into(), FieldValue::Saved(SavedValue::Int(5)))],
+        fields: vec![("title".into(), SavedValue::Int(5))],
     };
     let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, None, &MemStore::new());
     assert!(
@@ -1853,22 +1849,20 @@ fn a_group_entry_field_write_touches_only_that_member() {
     let mut store = MemStore::new();
     // `versions` is a multi-member group; writing one member must not clear its
     // siblings in the same entry.
-    plan_layer_field_write(
+    plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "versions",
-        &[SavedKey::Int(1)],
+        &[("versions", &[SavedKey::Int(1)])],
         "title",
         &SavedValue::Str("Mort".into()),
     )
     .expect("title write")
     .commit(&mut store, false)
     .expect("commit succeeds");
-    plan_layer_field_write(
+    plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "versions",
-        &[SavedKey::Int(1)],
+        &[("versions", &[SavedKey::Int(1)])],
         "shelf",
         &SavedValue::Str("fiction".into()),
     )
@@ -1922,11 +1916,10 @@ fn a_group_entry_field_write_replaces_only_that_entry() {
 #[test]
 fn a_group_entry_field_write_to_an_unknown_member_is_rejected() {
     let book = schema(BOOK_LAYERS);
-    let result = plan_layer_field_write(
+    let result = plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "notes",
-        &[SavedKey::Str("n1".into())],
+        &[("notes", &[SavedKey::Str("n1".into())])],
         "bogus",
         &SavedValue::Str("x".into()),
     );
@@ -1940,11 +1933,10 @@ fn a_group_entry_field_write_to_an_unknown_member_is_rejected() {
 fn a_group_entry_field_write_to_a_leaf_layer_is_rejected() {
     let book = schema(BOOK_LAYERS);
     // `tags` is a keyed leaf, not a group, so it has no member fields to write.
-    let result = plan_layer_field_write(
+    let result = plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "tags",
-        &[SavedKey::Int(1)],
+        &[("tags", &[SavedKey::Int(1)])],
         "text",
         &SavedValue::Str("x".into()),
     );
@@ -1957,11 +1949,10 @@ fn a_group_entry_field_write_to_a_leaf_layer_is_rejected() {
 #[test]
 fn a_group_entry_field_write_to_an_unknown_layer_is_rejected() {
     let book = schema(BOOK_LAYERS);
-    let result = plan_layer_field_write(
+    let result = plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "chapters",
-        &[SavedKey::Str("c1".into())],
+        &[("chapters", &[SavedKey::Str("c1".into())])],
         "text",
         &SavedValue::Str("x".into()),
     );
@@ -1975,11 +1966,13 @@ fn a_group_entry_field_write_to_an_unknown_layer_is_rejected() {
 fn a_group_entry_field_write_with_the_wrong_key_arity_is_rejected() {
     let book = schema(BOOK_LAYERS);
     // `notes` takes one key; supplying two is rejected.
-    let result = plan_layer_field_write(
+    let result = plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "notes",
-        &[SavedKey::Str("n1".into()), SavedKey::Str("n2".into())],
+        &[(
+            "notes",
+            &[SavedKey::Str("n1".into()), SavedKey::Str("n2".into())],
+        )],
         "text",
         &SavedValue::Str("x".into()),
     );
@@ -1993,11 +1986,10 @@ fn a_group_entry_field_write_with_the_wrong_key_arity_is_rejected() {
 fn a_group_entry_field_write_with_a_mismatched_value_type_is_rejected() {
     let book = schema(BOOK_LAYERS);
     // `notes.text` holds strings; an int does not satisfy the member type.
-    let result = plan_layer_field_write(
+    let result = plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "notes",
-        &[SavedKey::Str("n1".into())],
+        &[("notes", &[SavedKey::Str("n1".into())])],
         "text",
         &SavedValue::Int(7),
     );
@@ -2010,11 +2002,10 @@ fn a_group_entry_field_write_with_a_mismatched_value_type_is_rejected() {
 #[test]
 fn a_group_entry_field_write_to_a_resource_without_a_saved_root_is_rejected() {
     let book = schema(LOCAL_BOOK_LAYERS);
-    let result = plan_layer_field_write(
+    let result = plan_nested_field_write(
         &book,
         &[SavedKey::Int(5)],
-        "notes",
-        &[SavedKey::Str("n1".into())],
+        &[("notes", &[SavedKey::Str("n1".into())])],
         "text",
         &SavedValue::Str("x".into()),
     );

@@ -33,7 +33,7 @@ use marrow_syntax::{
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use write::{
-    FieldValue, ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
+    ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
     WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity, next_id, next_layer_pos,
     plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
     plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
@@ -41,7 +41,9 @@ use write::{
 };
 
 pub mod base64;
-pub mod write;
+pub(crate) mod write;
+#[cfg(test)]
+mod write_tests;
 
 /// A runtime value: the scalars a pure function manipulates plus the in-memory
 /// and saved-tree shapes the data features produce (sequences, resource trees,
@@ -4020,7 +4022,7 @@ fn resource_value_of(
     for (name, value) in fields {
         let saved =
             value_to_saved(value).ok_or_else(|| unsupported("a nested resource field", span))?;
-        resource_fields.push((name, FieldValue::Saved(saved)));
+        resource_fields.push((name, saved));
     }
     Ok(ResourceValue {
         fields: resource_fields,
