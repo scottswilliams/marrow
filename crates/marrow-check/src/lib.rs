@@ -82,8 +82,7 @@ pub struct CheckDiagnostic {
     pub severity: Severity,
     pub file: PathBuf,
     pub message: String,
-    pub line: u32,
-    pub column: u32,
+    pub span: SourceSpan,
 }
 
 impl marrow_syntax::Diagnose for CheckDiagnostic {
@@ -173,8 +172,7 @@ pub fn check_project(
                             saved.root,
                             first.display()
                         ),
-                        line: resource.span.line,
-                        column: resource.span.column,
+                        span: resource.span,
                     }),
                     None => {
                         root_owners.insert(saved.root.clone(), file.path.clone());
@@ -197,8 +195,7 @@ pub fn check_project(
                             "stable id `{id}` is already declared in `{}`",
                             first.display()
                         ),
-                        line: span.line,
-                        column: span.column,
+                        span,
                     }),
                     None => {
                         stable_id_owners.insert(id.clone(), file.path.clone());
@@ -224,8 +221,7 @@ pub fn check_project(
                                 "module `{expected}` is already declared by `{}`",
                                 first.display()
                             ),
-                            line: module.span.line,
-                            column: module.span.column,
+                            span: module.span,
                         });
                     } else {
                         declared.insert(expected.clone(), file.path.clone());
@@ -284,8 +280,7 @@ pub fn check_project(
                     severity: Severity::Error,
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
-                    line: use_decl.span.line,
-                    column: use_decl.span.column,
+                    span: use_decl.span,
                 });
             }
         }
@@ -421,8 +416,7 @@ fn check_file_types(
                             "function `{}` may reach its end without returning a value",
                             function.name
                         ),
-                        line: function.span.line,
-                        column: function.span.column,
+                        span: function.span,
                     });
                 }
             }
@@ -452,8 +446,7 @@ fn check_type_annotation(
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("unknown type `{}`", ty.text.trim()),
-            line: span.line,
-            column: span.column,
+            span,
         });
     }
 }
@@ -482,8 +475,7 @@ fn check_return_values(
                     severity: Severity::Error,
                     file: file.to_path_buf(),
                     message: message.to_string(),
-                    line: span.line,
-                    column: span.column,
+                    span: *span,
                 });
             }
             Statement::If {
@@ -914,8 +906,7 @@ fn check_condition(
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("condition must be `bool`, found `{}`", primitive.name()),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         // Strict typing: a condition whose type cannot be resolved cannot be shown
         // to be `bool`.
@@ -925,8 +916,7 @@ fn check_condition(
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: "condition has no known type; it must be `bool`".to_string(),
-                line: span.line,
-                column: span.column,
+                span,
             });
         }
         // `Error` is a concrete (non-scalar) type, not an unknown one, so it cannot
@@ -936,8 +926,7 @@ fn check_condition(
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: "condition must be `bool`, found `Error`".to_string(),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         _ => {}
     }
@@ -968,8 +957,7 @@ fn check_return_type(
                 expected.name(),
                 actual.name(),
             ),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         // Strict typing: a value with no known type returned where a concrete type
         // is declared must be converted first.
@@ -981,8 +969,7 @@ fn check_return_type(
                 "this `return` value has no known type, but the function returns `{}`; convert it first",
                 expected.name(),
             ),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         // `Error` is a concrete type, so returning it where a scalar is declared is
         // a real type mismatch (not an untyped value).
@@ -994,8 +981,7 @@ fn check_return_type(
                 "function returns `{}`, but this value is `Error`",
                 expected.name(),
             ),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         _ => {}
     }
@@ -1027,8 +1013,7 @@ fn check_assignment(
                 place.name(),
                 value.name(),
             ),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         // A value the checker could not resolve, stored into a concrete place.
         None if matches!(value, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
@@ -1039,8 +1024,7 @@ fn check_assignment(
                 "the value stored into `{}` has no known type; convert it before typed use",
                 place.name(),
             ),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         // `Error` is a concrete type, so storing it into a scalar place is a real
         // type mismatch (not an untyped value).
@@ -1049,8 +1033,7 @@ fn check_assignment(
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("expected `{}`, but the value is `Error`", place.name()),
-            line: span.line,
-            column: span.column,
+            span,
         }),
         _ => {}
     }
@@ -1090,8 +1073,7 @@ fn infer_type(
                     severity: Severity::Error,
                     file: file.to_path_buf(),
                     message: format!("`{name}` is not defined"),
-                    line: span.line,
-                    column: span.column,
+                    span: *span,
                 });
                 MarrowType::Unknown
             })
@@ -1445,8 +1427,7 @@ pub(crate) fn check_literal_range(
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("{type_name} literal `{text}` is out of range"),
-            line: span.line,
-            column: span.column,
+            span,
         });
     }
 }
@@ -1645,8 +1626,7 @@ fn operator_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckD
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
-        line: span.line,
-        column: span.column,
+        span,
     }
 }
 
@@ -1768,8 +1748,7 @@ fn check_call(
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!("function `{}` is not defined", segments.join("::")),
-                line: span.line,
-                column: span.column,
+                span,
             });
         }
         return MarrowType::Unknown;
@@ -1864,8 +1843,7 @@ fn check_one_arg(
                 "argument to `{label}` has no known type, but `{}` is expected; convert it first",
                 marrow_type_name(parameter),
             ),
-            line: span.line,
-            column: span.column,
+            span,
         });
     } else if matches!(arg_type, MarrowType::Primitive(_) | MarrowType::Error) {
         // A scalar or an `Error` value (both concrete) in a slot that expects a
@@ -1962,8 +1940,7 @@ fn check_next_id(
              identities are application-provided",
             saved_root.next_id_shape(),
         ),
-        line: span.line,
-        column: span.column,
+        span,
     });
     MarrowType::Unknown
 }
@@ -1975,8 +1952,7 @@ fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagn
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
-        line: span.line,
-        column: span.column,
+        span,
     }
 }
 
@@ -2203,8 +2179,7 @@ pub fn check_tests(
                     severity: Severity::Error,
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
-                    line: use_decl.span.line,
-                    column: use_decl.span.column,
+                    span: use_decl.span,
                 });
             }
         }
@@ -2283,8 +2258,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
                 severity: Severity::Error,
                 file: file_path.to_path_buf(),
                 message: format!("failed to read source: {error}"),
-                line: 0,
-                column: 0,
+                span: SourceSpan::default(),
             });
             return None;
         }
@@ -2297,8 +2271,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
             severity: diagnostic.severity,
             file: file_path.to_path_buf(),
             message: diagnostic.message.clone(),
-            line: diagnostic.line,
-            column: diagnostic.column,
+            span: diagnostic.span,
         });
     }
 
@@ -2332,8 +2305,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
                         severity: Severity::Error,
                         file: file_path.to_path_buf(),
                         message: error.message,
-                        line: error.span.line,
-                        column: error.span.column,
+                        span: error.span,
                     });
                 }
                 resources.push(schema);
@@ -2549,8 +2521,7 @@ fn module_path_error(
         severity: Severity::Error,
         file: file.path.clone(),
         message,
-        line: module.span.line,
-        column: module.span.column,
+        span: module.span,
     }
 }
 
@@ -2594,8 +2565,7 @@ fn check_duplicate_declarations(
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!("`{name}` is already declared on line {}", first.line),
-                line: span.line,
-                column: span.column,
+                span: *span,
             }),
             None => {
                 first_seen.insert(name, *span);

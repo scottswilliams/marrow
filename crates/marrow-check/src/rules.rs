@@ -148,8 +148,7 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("catch type must be `Error`, found `{}`", ty.text),
-            line: catch.block.span.line,
-            column: catch.block.span.column,
+            span: catch.block.span,
         });
     }
 }
@@ -555,8 +554,7 @@ fn diagnostic(
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: message.to_string(),
-        line: span.line,
-        column: span.column,
+        span,
     }
 }
 
@@ -573,7 +571,6 @@ fn diagnostic_at(
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: message.to_string(),
-        line: span.line,
-        column: span.column,
+        span,
     }
 }

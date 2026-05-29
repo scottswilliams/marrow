@@ -176,8 +176,8 @@ fn report_project(target: &str, report: &marrow_check::CheckReport, format: Chec
                     eprintln!(
                         "{}:{}:{}: {}: {}: {}",
                         diagnostic.file.display(),
-                        diagnostic.line,
-                        diagnostic.column,
+                        diagnostic.span.line,
+                        diagnostic.span.column,
                         diagnostic.severity.as_str(),
                         diagnostic.code,
                         diagnostic.message
@@ -247,8 +247,8 @@ fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_
         diagnostic,
         json!({
             "file": diagnostic.file.display().to_string(),
-            "line": diagnostic.line,
-            "column": diagnostic.column,
+            "line": diagnostic.span.line,
+            "column": diagnostic.span.column,
         }),
         Some(diagnostic.severity.as_str()),
         None,

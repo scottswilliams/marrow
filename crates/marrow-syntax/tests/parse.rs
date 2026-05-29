@@ -797,8 +797,8 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
 
     assert!(parsed.has_errors());
     assert_eq!(parsed.diagnostics[0].code, "parse.syntax");
-    assert_eq!(parsed.diagnostics[0].line, 2);
-    assert_eq!(parsed.diagnostics[0].column, 1);
+    assert_eq!(parsed.diagnostics[0].span.line, 2);
+    assert_eq!(parsed.diagnostics[0].span.column, 1);
     assert!(parsed.diagnostics[0].message.contains("tabs"));
     let tab_reports = parsed
         .diagnostics
@@ -826,7 +826,7 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
         let syntax = parsed
             .diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.line == 3)
+            .find(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.span.line == 3)
             .unwrap_or_else(|| panic!("expected a line-3 parse.syntax diagnostic for {source:?}"));
         assert_eq!(syntax.kind, "parse", "{source:?}");
     }
@@ -844,7 +844,7 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
         .expect("expected obsolete operator diagnostic");
     assert_eq!(obsolete.code, "parse.syntax");
     assert_eq!(obsolete.kind, "parse");
-    assert_eq!(obsolete.line, 3);
+    assert_eq!(obsolete.span.line, 3);
     assert_eq!(
         obsolete.help.as_deref(),
         Some("Use `=` for equality."),
@@ -1161,7 +1161,11 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
     // fire on the same line.
     let source = "fn touch(id: int)\n    ^events(id).at = now\n";
     let parsed = parse_source(source);
-    let on_offending_line: Vec<_> = parsed.diagnostics.iter().filter(|d| d.line == 2).collect();
+    let on_offending_line: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.span.line == 2)
+        .collect();
     assert_eq!(
         on_offending_line.len(),
         1,
@@ -1415,7 +1419,7 @@ fn rejects_parameter_defaults() {
         .expect("expected parameter-defaults diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
     assert_eq!(diagnostic.kind, "parse");
-    assert_eq!(diagnostic.line, 2);
+    assert_eq!(diagnostic.span.line, 2);
     assert!(
         !diagnostic.message.contains("expected"),
         "diagnostic should not fall back to a generic message, got {:?}",
@@ -1434,7 +1438,7 @@ fn rejects_user_defined_generics_on_functions() {
         .find(|diagnostic| diagnostic.message.contains("user-defined generics"))
         .expect("expected user-defined-generics diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
-    assert_eq!(diagnostic.line, 2);
+    assert_eq!(diagnostic.span.line, 2);
 }
 
 #[test]
@@ -1448,7 +1452,7 @@ fn rejects_top_level_type_aliases() {
         .find(|diagnostic| diagnostic.message.contains("type aliases"))
         .expect("expected type-aliases diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
-    assert_eq!(diagnostic.line, 2);
+    assert_eq!(diagnostic.span.line, 2);
 }
 
 #[test]
@@ -1463,7 +1467,7 @@ fn merges_lexer_and_parser_diagnostics_in_source_order() {
     let mut lines = parsed
         .diagnostics
         .iter()
-        .map(|diagnostic| diagnostic.line)
+        .map(|diagnostic| diagnostic.span.line)
         .collect::<Vec<_>>();
     let mut sorted = lines.clone();
     sorted.sort();
@@ -1784,7 +1788,11 @@ fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
     // The same single-report guard applies to header expressions: an `if`
     // condition that fails on a keyword field name carries only that diagnostic.
     let parsed = parse_source("fn f()\n    if a.at\n        return\n");
-    let on_offending_line: Vec<_> = parsed.diagnostics.iter().filter(|d| d.line == 2).collect();
+    let on_offending_line: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|d| d.span.line == 2)
+        .collect();
     assert_eq!(
         on_offending_line.len(),
         1,

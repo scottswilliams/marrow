@@ -469,8 +469,6 @@ pub struct Diagnostic {
     pub message: String,
     pub help: Option<String>,
     pub span: SourceSpan,
-    pub line: u32,
-    pub column: u32,
 }
 
 impl fmt::Display for Diagnostic {
@@ -478,8 +476,8 @@ impl fmt::Display for Diagnostic {
         write!(
             f,
             "{}:{}: {}: {}: {}",
-            self.line,
-            self.column,
+            self.span.line,
+            self.span.column,
             self.severity.as_str(),
             self.code,
             self.message
@@ -920,8 +918,6 @@ impl<'a> Lexer<'a> {
             severity: Severity::Error,
             message: message.to_string(),
             help: Some(help.to_string()),
-            line: span.line,
-            column: span.column,
             span,
         });
         Some(end)
@@ -1283,8 +1279,6 @@ impl<'a> Lexer<'a> {
             severity: Severity::Error,
             message: message.into(),
             help: None,
-            line: span.line,
-            column: span.column,
             span,
         });
     }
@@ -1453,8 +1447,6 @@ impl<'a> ExprParser<'a> {
             message,
             help,
             span,
-            line: span.line,
-            column: span.column,
         });
     }
 
@@ -2377,8 +2369,6 @@ impl<'a> StmtParser<'a> {
             message: message.into(),
             help: None,
             span,
-            line: span.line,
-            column: span.column,
         });
     }
 
@@ -3087,8 +3077,6 @@ impl<'a> DeclParser<'a> {
             message: message.into(),
             help: None,
             span,
-            line: span.line,
-            column: span.column,
         });
     }
 }

@@ -320,8 +320,8 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
             .message
             .contains("unexpected character")
     );
-    assert_eq!(lexed.diagnostics[0].line, 2);
-    assert_eq!(lexed.diagnostics[0].column, 1);
+    assert_eq!(lexed.diagnostics[0].span.line, 2);
+    assert_eq!(lexed.diagnostics[0].span.column, 1);
 }
 
 #[test]

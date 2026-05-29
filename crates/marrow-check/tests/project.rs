@@ -276,7 +276,7 @@ fn reports_duplicate_function_declaration() {
         duplicates[0].message
     );
     // The later occurrence is reported.
-    assert_eq!(duplicates[0].line, 4, "{:#?}", duplicates[0]);
+    assert_eq!(duplicates[0].span.line, 4, "{:#?}", duplicates[0]);
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn reports_import_short_name_collision_with_declaration() {
         duplicates[0].message
     );
     // The function declaration is the later occurrence.
-    assert_eq!(duplicates[0].line, 3, "{:#?}", duplicates[0]);
+    assert_eq!(duplicates[0].span.line, 3, "{:#?}", duplicates[0]);
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn reports_unresolved_import() {
         "{}",
         unresolved[0].message
     );
-    assert_eq!(unresolved[0].line, 1, "{:#?}", unresolved[0]);
+    assert_eq!(unresolved[0].span.line, 1, "{:#?}", unresolved[0]);
 }
 
 #[test]
@@ -2016,7 +2016,7 @@ fn finally_return_is_rejected() {
         "check.finally_control_flow",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].line, 5, "{:#?}", found[0]);
+    assert_eq!(found[0].span.line, 5, "{:#?}", found[0]);
 }
 
 #[test]
@@ -2071,7 +2071,7 @@ fn break_outside_any_loop_is_rejected() {
         "check.loop_control_flow",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].line, 2, "{:#?}", found[0]);
+    assert_eq!(found[0].span.line, 2, "{:#?}", found[0]);
 }
 
 #[test]
@@ -2252,7 +2252,7 @@ fn deleting_the_root_a_loop_traverses_is_rejected() {
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].line, 7, "{:#?}", found[0]);
+    assert_eq!(found[0].span.line, 7, "{:#?}", found[0]);
 }
 
 #[test]
