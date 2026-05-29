@@ -3517,6 +3517,44 @@ fn singleton_whole_read_and_write_round_trip() {
 /// A resource with an unkeyed nested group (`name { first; last }`). Its fields
 /// are addressed `^patients(p).name.first` — a `.field` off a `.field` off the
 /// record, with no keyed layer in between.
+#[test]
+fn a_whole_read_of_a_keyed_root_without_an_identity_is_rejected() {
+    // `^books` is a keyed resource root, not a singleton; reading it whole without
+    // an identity must error (run.type), not silently read the empty-identity path.
+    let program = checked_program(
+        "module test\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         pub fn read()\n\
+         \x20   var b: Book = ^books\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::read", &[]);
+    assert!(
+        matches!(result, Err(ref e) if e.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_field_read_off_a_keyed_root_without_an_identity_is_rejected() {
+    // `^books.title` addresses a keyed root with no identity; it must error rather
+    // than read the wrong (identity-less) path.
+    let program = checked_program(
+        "module test\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         pub fn read(): string\n\
+         \x20   return ^books.title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::read", &[]);
+    assert!(
+        matches!(result, Err(ref e) if e.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
 const PATIENT_UNKEYED_GROUP: &str = "\
 resource Patient at ^patients(id: int)
     mrn: string

@@ -2788,6 +2788,21 @@ fn read_resource(
 ) -> Result<Value, RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("reading this saved root", span))?;
+    let arity = resource
+        .saved_root
+        .as_ref()
+        .map_or(0, |saved| saved.identity_keys.len());
+    if identity.len() != arity {
+        // A whole-resource read needs the root's full identity: a keyed root such
+        // as `^books` is a collection of records, not a readable value on its own.
+        return Err(type_error(
+            &format!(
+                "`^{root}` expects {arity} identity key(s), got {}",
+                identity.len()
+            ),
+            span,
+        ));
+    }
     if declares_unkeyed_group(resource) {
         return Err(unsupported(
             "a whole-resource read of a resource with an unkeyed nested group \
@@ -3151,6 +3166,16 @@ fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p Reso
         })
 }
 
+/// The number of declared identity keys for the resource at saved root `name`,
+/// or `None` when `name` is not a managed saved root. A keyless singleton has
+/// arity 0; a keyed root such as `^books` has a positive arity, so it cannot be
+/// read or addressed without an identity.
+fn root_identity_arity(program: &CheckedProgram, name: &str) -> Option<usize> {
+    find_resource(program, name)
+        .and_then(|resource| resource.saved_root.as_ref())
+        .map(|root| root.identity_keys.len())
+}
+
 /// The resource schema declared with `name`, for an identity constructor
 /// `Name::Id(...)`. Keyed on the resource name (not its saved root), since the
 /// constructor names the resource.
@@ -3398,10 +3423,21 @@ fn lower_record_identity(
     expr: &Expression,
     env: &mut Env<'_>,
 ) -> Result<(String, Vec<SavedKey>), RuntimeError> {
-    // A bare saved root is a keyless singleton (`Settings at ^settings`): its
-    // identity is empty, which `resolve_saved_root` accepts.
-    if let Expression::SavedRoot { name, .. } = expr {
-        return Ok((name.clone(), Vec::new()));
+    // A bare saved root is a whole-resource address only for a keyless singleton
+    // (`Settings at ^settings`). For a keyed root such as `^books` it is not a
+    // record — addressing or reading it without an identity is a type error, not
+    // a silent read of the identity-less path.
+    if let Expression::SavedRoot { name, span } = expr {
+        return match root_identity_arity(env.program, name) {
+            Some(0) => Ok((name.clone(), Vec::new())),
+            Some(arity) => Err(type_error(
+                &format!(
+                    "`^{name}` expects {arity} identity key(s), got 0; address a record with `^{name}(id)`"
+                ),
+                *span,
+            )),
+            None => Err(unsupported("this saved path", *span)),
+        };
     }
     let Expression::Call { callee, args, span } = expr else {
         return Err(unsupported("this saved path", expr.span()));
