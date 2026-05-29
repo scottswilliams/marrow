@@ -1252,7 +1252,7 @@ fn eval_exists(
     let store = env.store.borrow();
     let presence = store
         .presence(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     let present = !matches!(presence, Presence::Absent);
     Ok(Value::Bool(present))
 }
@@ -1286,14 +1286,14 @@ fn eval_count(
     let store = env.store.borrow();
     let children = store
         .child_keys(&path)
-        .map_err(|error| store_error(error, span))?
+        .map_err(|error| error.located(span))?
         .len();
     let count = if children > 0 {
         children
     } else {
         store
             .read(&path)
-            .map_err(|error| store_error(error, span))?
+            .map_err(|error| error.located(span))?
             .is_some() as usize
     };
     Ok(Value::Int(count as i64))
@@ -1366,7 +1366,7 @@ fn eval_assert(
             let store = env.store.borrow();
             let presence = store
                 .presence(&encode_path(&segments))
-                .map_err(|error| store_error(error, span))?;
+                .map_err(|error| error.located(span))?;
             if !matches!(presence, Presence::Absent) {
                 return Err(RuntimeError {
                     code: RUN_ASSERT,
@@ -1516,7 +1516,7 @@ fn eval_std(
             };
             let nanos = eval_instant_arg(value, env, span)?;
             let bytes = encode_value(&SavedValue::Instant(nanos))
-                .map_err(|error| value_error(error, span))?;
+                .map_err(|error| error.located(span))?;
             let text = String::from_utf8(bytes).expect("a canonical instant encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
@@ -1538,7 +1538,7 @@ fn eval_std(
             };
             let days = eval_date_arg(value, env, span)?;
             let bytes =
-                encode_value(&SavedValue::Date(days)).map_err(|error| value_error(error, span))?;
+                encode_value(&SavedValue::Date(days)).map_err(|error| error.located(span))?;
             let text = String::from_utf8(bytes).expect("a canonical date encodes as UTF-8 text");
             Ok(Value::Str(text))
         }
@@ -1558,7 +1558,7 @@ fn eval_std(
             };
             let nanos = eval_duration_arg(value, env, span)?;
             let bytes = encode_value(&SavedValue::Duration(nanos))
-                .map_err(|error| value_error(error, span))?;
+                .map_err(|error| error.located(span))?;
             let text =
                 String::from_utf8(bytes).expect("a canonical duration encodes as UTF-8 text");
             Ok(Value::Str(text))
@@ -2371,7 +2371,7 @@ impl<'p> Env<'p> {
     ) -> Result<(), RuntimeError> {
         let plan = plan.map_err(|error| write_fault(error, span, self))?;
         plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth > 0)
-            .map_err(|error| store_error(error, span))
+            .map_err(|error| error.located(span))
     }
 
     fn push_scope(&mut self) {
@@ -2596,7 +2596,7 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             env.store
                 .borrow_mut()
                 .begin()
-                .map_err(|error| store_error(error, *span))?;
+                .map_err(|error| error.located(*span))?;
             // A managed write inside this block now rides the open savepoint, so it
             // applies its steps in place rather than opening its own (see
             // `WritePlan::commit`'s `in_txn`). The depth tracks nesting so an inner
@@ -2612,13 +2612,13 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 // typed store error instead.
                 Ok(Flow::Throw(value)) => match env.store.borrow_mut().rollback() {
                     Ok(()) => Ok(Flow::Throw(value)),
-                    Err(rb_err) => Err(store_error(rb_err, *span)),
+                    Err(rb_err) => Err(rb_err.located(*span)),
                 },
                 Ok(flow) => {
                     env.store
                         .borrow_mut()
                         .commit()
-                        .map_err(|error| store_error(error, *span))?;
+                        .map_err(|error| error.located(*span))?;
                     Ok(flow)
                 }
                 // The body errored, so the transaction rolls back. A failed
@@ -2627,7 +2627,7 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 // it; otherwise surface the original error as before.
                 Err(error) => match env.store.borrow_mut().rollback() {
                     Ok(()) => Err(error),
-                    Err(rb_err) => Err(store_error(rb_err, *span)),
+                    Err(rb_err) => Err(rb_err.located(*span)),
                 },
             }
         }
@@ -3319,7 +3319,7 @@ fn eval_index_lookup(
         .store
         .borrow()
         .read(&encode_path(&segments))
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     let Some(bytes) = bytes else {
         return Err(absent_read(
             ReadPosition::Value,
@@ -3397,7 +3397,7 @@ fn read_layer_entry(
         .store
         .borrow()
         .read(&encode_path(&entry))
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     let Some(bytes) = bytes else {
         return Err(absent_read(
             position,
@@ -3435,7 +3435,7 @@ fn read_group_entry(
         segments.push(PathSegment::Field(name.clone()));
         let Some(bytes) = store
             .read(&encode_path(&segments))
-            .map_err(|error| store_error(error, span))?
+            .map_err(|error| error.located(span))?
         else {
             continue;
         };
@@ -3510,7 +3510,7 @@ fn read_resource(
         segments.push(PathSegment::Field(field.name.clone()));
         let Some(bytes) = store
             .read(&encode_path(&segments))
-            .map_err(|error| store_error(error, span))?
+            .map_err(|error| error.located(span))?
         else {
             continue;
         };
@@ -3646,7 +3646,7 @@ fn eval_raw_field_write(
     env.store
         .borrow_mut()
         .write(&encode_path(&path), bytes)
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     Ok(())
 }
 
@@ -3666,7 +3666,7 @@ fn eval_raw_field_read(
         let store = env.store.borrow();
         store
             .read(&encode_path(&path))
-            .map_err(|error| store_error(error, span))?
+            .map_err(|error| error.located(span))?
     };
     let Some(bytes) = bytes else {
         return Err(absent_read(
@@ -4013,7 +4013,7 @@ fn eval_whole_root_delete(
     env.store
         .borrow_mut()
         .delete(&encode_path(&root))
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     Ok(())
 }
 
@@ -4090,7 +4090,7 @@ fn delete_nested_field(
     env.store
         .borrow_mut()
         .delete(&encode_path(&path))
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     Ok(())
 }
 
@@ -4133,7 +4133,7 @@ fn eval_layer_entry_delete(
     env.store
         .borrow_mut()
         .delete(&encode_path(&path))
-        .map_err(|error| store_error(error, span))?;
+        .map_err(|error| error.located(span))?;
     Ok(())
 }
 
@@ -4526,7 +4526,7 @@ impl SavedPath {
             .store
             .borrow()
             .read(&encode_path(&self.to_segments()))
-            .map_err(|error| store_error(error, span))?;
+            .map_err(|error| error.located(span))?;
         let Some(bytes) = bytes else {
             // A top-level field reads "is absent"; a group-entry field "entry is
             // absent", keeping each read's message as it was.
@@ -5374,11 +5374,32 @@ fn eval_bool(expr: &Expression, env: &mut Env<'_>) -> Result<bool, RuntimeError>
     }
 }
 
-fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        code: RUN_STORE,
-        message: format!("a saved-data operation failed: {error}"),
-        span,
+/// A store or codec error met at a known source construct becomes a
+/// [`RuntimeError`] anchored to that span, so a backend or value-range failure
+/// reports at the path expression that triggered it.
+trait Located {
+    fn located(self, span: SourceSpan) -> RuntimeError;
+}
+
+impl Located for StoreError {
+    fn located(self, span: SourceSpan) -> RuntimeError {
+        RuntimeError {
+            code: RUN_STORE,
+            message: format!("a saved-data operation failed: {self}"),
+            span,
+        }
+    }
+}
+
+/// A value-encoding range error (e.g. a date/instant outside year 0001-9999)
+/// keeps the codec's stable dotted code.
+impl Located for ValueError {
+    fn located(self, span: SourceSpan) -> RuntimeError {
+        RuntimeError {
+            code: self.code(),
+            message: self.to_string(),
+            span,
+        }
     }
 }
 
@@ -5391,16 +5412,6 @@ fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
 /// after dropping any `env.store` borrow held while planning.
 fn write_fault(error: WriteError, span: SourceSpan, env: &mut Env<'_>) -> RuntimeError {
     raise_fault(error.code, error.message, span, env)
-}
-
-/// Surface a value-encoding range error (e.g. a date/instant outside year
-/// 0001-9999) as a runtime error, preserving the codec's stable dotted code.
-fn value_error(error: ValueError, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        code: error.code(),
-        message: error.to_string(),
-        span,
-    }
 }
 
 fn unsupported(what: &str, span: SourceSpan) -> RuntimeError {

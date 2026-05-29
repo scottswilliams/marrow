@@ -86,21 +86,25 @@ pub const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
 /// a tool can tell "you used raw syntax" from "you typo'd a declared field".
 pub const WRITE_RAW_REQUIRES_MAINTENANCE: &str = "write.raw_requires_maintenance";
 
-/// Wrap a store error met while planning a write into a `write.store` failure.
-fn store_failed(error: StoreError) -> WriteError {
-    WriteError {
-        code: WRITE_STORE,
-        message: format!("the store could not be read while planning: {error}"),
+/// A store error met while planning a write becomes a `write.store` failure.
+impl From<StoreError> for WriteError {
+    fn from(error: StoreError) -> Self {
+        WriteError {
+            code: WRITE_STORE,
+            message: format!("the store could not be read while planning: {error}"),
+        }
     }
 }
 
-/// Wrap a value-encoding error (e.g. a date/instant outside year 0001-9999) met
-/// while planning a write, preserving the codec's stable dotted code so the
-/// write is rejected rather than persisting a non-canonical value.
-fn encode_failed(error: ValueError) -> WriteError {
-    WriteError {
-        code: error.code(),
-        message: error.to_string(),
+/// A value-encoding error (e.g. a date/instant outside year 0001-9999) met while
+/// planning a write keeps the codec's stable dotted code, so the write is
+/// rejected rather than persisting a non-canonical value.
+impl From<ValueError> for WriteError {
+    fn from(error: ValueError) -> Self {
+        WriteError {
+            code: error.code(),
+            message: error.to_string(),
+        }
     }
 }
 
@@ -215,7 +219,7 @@ pub fn plan_resource_write(
     for (name, saved) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&field_path(root, identity, name)),
-            value: encode_value(saved).map_err(encode_failed)?,
+            value: encode_value(saved)?,
         });
     }
 
@@ -224,9 +228,7 @@ pub fn plan_resource_write(
     // exists only when every indexed value is populated. A unique entry stores
     // the owning identity; a non-unique entry stores a presence marker.
     for index in &schema.indexes {
-        if let Some(old_keys) =
-            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
-        {
+        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store)? {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
             });
@@ -255,9 +257,7 @@ pub fn plan_resource_delete(
         path: encode_path(&identity_path(root, identity)),
     }];
     for index in &schema.indexes {
-        if let Some(keys) =
-            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
-        {
+        if let Some(keys) = stored_index_keys(&index.args, root, identity, schema, store)? {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &keys)),
             });
@@ -301,15 +301,14 @@ pub fn plan_field_write(
     for index in &schema.indexes {
         if index.unique && index.args.iter().any(|arg| arg == field) {
             let new_keys =
-                field_write_index_keys(&index.args, root, identity, field, value, schema, store)
-                    .map_err(store_failed)?;
+                field_write_index_keys(&index.args, root, identity, field, value, schema, store)?;
             check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
         }
     }
 
     let mut steps = vec![PlanStep::Write {
         path: encode_path(&field_path(root, identity, field)),
-        value: encode_value(value).map_err(encode_failed)?,
+        value: encode_value(value)?,
     }];
 
     // Keep any index the field feeds coherent: remove the entry for the
@@ -320,16 +319,13 @@ pub fn plan_field_write(
         if !index.args.iter().any(|arg| arg == field) {
             continue;
         }
-        if let Some(old_keys) =
-            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
-        {
+        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store)? {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
             });
         }
         if let Some(new_keys) =
-            field_write_index_keys(&index.args, root, identity, field, value, schema, store)
-                .map_err(store_failed)?
+            field_write_index_keys(&index.args, root, identity, field, value, schema, store)?
         {
             steps.push(PlanStep::Write {
                 path: encode_path(&index_path(root, &index.name, &new_keys)),
@@ -375,9 +371,7 @@ pub fn plan_field_delete(
         if !index.args.iter().any(|arg| arg == field) {
             continue;
         }
-        if let Some(old_keys) =
-            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
-        {
+        if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store)? {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
             });
@@ -417,8 +411,7 @@ pub fn plan_resource_merge(
             None => {
                 if field.required
                     && store
-                        .read(&encode_path(&field_path(root, identity, &field.name)))
-                        .map_err(store_failed)?
+                        .read(&encode_path(&field_path(root, identity, &field.name)))?
                         .is_none()
                 {
                     return Err(WriteError {
@@ -436,8 +429,7 @@ pub fn plan_resource_merge(
     // Reject a unique-index conflict on the effective resource before staging.
     for index in &schema.indexes {
         if index.unique {
-            let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)
-                .map_err(store_failed)?;
+            let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)?;
             check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
         }
     }
@@ -447,7 +439,7 @@ pub fn plan_resource_merge(
     for (name, saved) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&field_path(root, identity, name)),
-            value: encode_value(saved).map_err(encode_failed)?,
+            value: encode_value(saved)?,
         });
     }
 
@@ -455,10 +447,8 @@ pub fn plan_resource_merge(
     // left alone (so an entry resting on an untouched field survives), a changed
     // key moves.
     for index in &schema.indexes {
-        let old_keys =
-            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?;
-        let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)
-            .map_err(store_failed)?;
+        let old_keys = stored_index_keys(&index.args, root, identity, schema, store)?;
+        let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)?;
         if old_keys == new_keys {
             continue;
         }
@@ -532,7 +522,7 @@ pub fn plan_layer_leaf_write(
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
             path: encode_path(&layer_leaf_path(root, identity, layer, key)),
-            value: encode_value(value).map_err(encode_failed)?,
+            value: encode_value(value)?,
         }],
     })
 }
@@ -568,7 +558,7 @@ pub fn plan_nested_field_write(
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
             path: encode_path(&path),
-            value: encode_value(value).map_err(encode_failed)?,
+            value: encode_value(value)?,
         }],
     })
 }
@@ -643,7 +633,7 @@ pub fn plan_layer_group_write(
     for (name, saved) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&layer_field_path(root, identity, layer, key, name)),
-            value: encode_value(saved).map_err(encode_failed)?,
+            value: encode_value(saved)?,
         });
     }
     Ok(WritePlan { steps })
@@ -692,7 +682,7 @@ pub fn plan_layer_merge(
     // Overlay: copy each source entry to the matching target path — the suffix
     // after the layer prefix (keys and any nested fields) is identical — and
     // leave target entries the source does not cover untouched.
-    let page = store.scan(&source, usize::MAX).map_err(store_failed)?;
+    let page = store.scan(&source, usize::MAX)?;
     let mut steps = Vec::with_capacity(page.entries.len());
     for (path, value) in page.entries {
         let mut target_path = target.clone();
@@ -1111,9 +1101,7 @@ fn check_unique_conflict(
     let Some(new_keys) = new_keys else {
         return Ok(());
     };
-    let stored = store
-        .read(&encode_path(&index_path(root, index, new_keys)))
-        .map_err(store_failed)?;
+    let stored = store.read(&encode_path(&index_path(root, index, new_keys)))?;
     let Some(bytes) = stored else {
         return Ok(());
     };
