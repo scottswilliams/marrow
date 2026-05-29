@@ -784,6 +784,30 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
 }
 
 #[test]
+fn reports_malformed_body_statements_with_a_diagnostic() {
+    // A statement the body parser cannot structure must surface a parse error
+    // rather than becoming a silent `Statement::Unparsed` no-op.
+    let cases = [
+        "module app\nfn main()\n    foo +\n",
+        "module app\nfn main()\n    const x: int\n",
+    ];
+    for source in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "expected a diagnostic for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.line == 3)
+            .unwrap_or_else(|| panic!("expected a line-3 parse.syntax diagnostic for {source:?}"));
+        assert_eq!(syntax.kind, "parse", "{source:?}");
+    }
+}
+
+#[test]
 fn surfaces_lexer_diagnostics_for_function_body_tokens() {
     let parsed = parse_source("module app\nfn main()\n    return a == b\n");
 

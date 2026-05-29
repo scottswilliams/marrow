@@ -1365,10 +1365,25 @@ impl<'a> Parser<'a> {
 
         self.report_keyword_field_names();
         report_positional_after_named(&file, &mut self.diagnostics);
+        self.drop_redundant_statement_errors();
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
         }
+    }
+
+    /// Drop the generic "expected a statement" fallback on any line that already
+    /// carries a more specific diagnostic (e.g. a keyword used as a field name),
+    /// so a single malformed line reports once with the most useful message.
+    fn drop_redundant_statement_errors(&mut self) {
+        let specific_lines: std::collections::HashSet<u32> = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.message != "expected a statement")
+            .map(|d| d.line)
+            .collect();
+        self.diagnostics
+            .retain(|d| d.message != "expected a statement" || !specific_lines.contains(&d.line));
     }
 
     /// Report bare keywords used as field names. A `.` is always data field
@@ -1729,7 +1744,7 @@ impl<'a> Parser<'a> {
     /// statements spanning several physical lines inside open delimiters stay
     /// together.
     fn parse_body_block(
-        &self,
+        &mut self,
         body_start: usize,
         body_end: usize,
         header_span: SourceSpan,
@@ -1742,7 +1757,9 @@ impl<'a> Parser<'a> {
             };
         };
         let tokens = tokens_in_range(self.tokens, span.start_byte, span.end_byte);
-        let (statements, comments) = StmtParser::new(self.source, tokens).parse_block();
+        let (statements, comments, diagnostics) =
+            StmtParser::new(self.source, tokens).parse_block();
+        self.diagnostics.extend(diagnostics);
         Block {
             statements,
             comments,
@@ -2618,6 +2635,10 @@ struct StmtParser<'a> {
     /// order. Each nested block swaps in a fresh accumulator (see
     /// `parse_nested_block`) so a comment lands in the block it appears in.
     comments: Vec<Comment>,
+    /// Parse errors for statement lines the body parser cannot structure, so a
+    /// malformed statement becomes a deterministic diagnostic instead of a
+    /// silent `Statement::Unparsed`.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> StmtParser<'a> {
@@ -2635,16 +2656,21 @@ impl<'a> StmtParser<'a> {
             tokens,
             pos: 0,
             comments: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
-    fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>) {
+    fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>, Vec<Diagnostic>) {
         // A body opens with the INDENT that began it.
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.advance();
         }
         let statements = self.statements();
-        (statements, std::mem::take(&mut self.comments))
+        (
+            statements,
+            std::mem::take(&mut self.comments),
+            std::mem::take(&mut self.diagnostics),
+        )
     }
 
     /// Record an own-line comment token (a leading or standalone comment) for
@@ -2717,10 +2743,23 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
-        let statement =
-            parse_simple_statement(self.source, line).unwrap_or_else(|| Statement::Unparsed {
-                span: line_span(line),
-            });
+        let statement = match parse_simple_statement(self.source, line) {
+            Some(statement) => statement,
+            None => {
+                let span = line_span(line);
+                self.diagnostics.push(Diagnostic {
+                    code: PARSE_SYNTAX,
+                    kind: "parse",
+                    severity: Severity::Error,
+                    message: "expected a statement".to_string(),
+                    help: None,
+                    span,
+                    line: span.line,
+                    column: span.column,
+                });
+                Statement::Unparsed { span }
+            }
+        };
         self.pos = (newline + 1).min(self.tokens.len());
         statement
     }
