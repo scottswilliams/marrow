@@ -31,7 +31,7 @@ pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = "check.loop_mutates_traversed_layer";
 
 /// Apply every structural statement rule to one function body.
-pub fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
+pub(crate) fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
     walk_block(file, body, out);
     walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
     walk_loop_layer_mutations(file, body, &mut Vec::new(), out);
@@ -40,7 +40,7 @@ pub fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnos
 /// A `const` value must be a compile-time constant expression: literals and
 /// other constants combined with operators, never a host call or saved-data
 /// read.
-pub fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<CheckDiagnostic>) {
+pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<CheckDiagnostic>) {
     if !is_constant_expr(value) {
         out.push(diagnostic(
             CHECK_NON_CONSTANT_CONST,
