@@ -1400,6 +1400,13 @@ fn check_call(
             .or_else(|| builtin_return_type(segments, arg_types))
             .unwrap_or(MarrowType::Unknown);
     }
+    // A callee naming a declared resource is a constructor, not a function:
+    // `Book(...)` builds the resource value and `Book::Id(...)` builds its
+    // identity (types.md:152-158, 276-297). Recognize it so a spec-valid
+    // constructor is not a false `check.unresolved_call`.
+    if let Some(ty) = resource_constructor_type(program, segments) {
+        return ty;
+    }
     let Some(function) = resolve_function(program, segments) else {
         // A non-builtin call that resolves to no declared function is unresolved.
         // Only report it for calls in a library module of the program: a
@@ -1536,6 +1543,26 @@ fn resolve_function<'p>(
             .functions
             .iter()
             .find(|function| &function.name == name)
+    }
+}
+
+/// The type produced by a resource constructor callee, if `segments` name a
+/// declared resource: `Book(...)` constructs the resource value (its
+/// [`MarrowType::Resource`]), and `Book::Id(...)` constructs its identity
+/// ([`MarrowType::Identity`]). Any other callee returns `None`, so a genuinely
+/// unresolved call is still reported.
+fn resource_constructor_type(program: &CheckedProgram, segments: &[String]) -> Option<MarrowType> {
+    let is_resource = |name: &str| {
+        program
+            .modules
+            .iter()
+            .flat_map(|module| &module.resources)
+            .any(|resource| resource.name == name)
+    };
+    match segments {
+        [name] if is_resource(name) => Some(MarrowType::Resource(name.clone())),
+        [name, id] if id == "Id" && is_resource(name) => Some(MarrowType::Identity(name.clone())),
+        _ => None,
     }
 }
 

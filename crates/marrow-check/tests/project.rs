@@ -1008,6 +1008,34 @@ fn a_call_to_a_defined_function_is_not_an_unresolved_call() {
 }
 
 #[test]
+fn a_resource_constructor_is_not_an_unresolved_call() {
+    // `Book(...)` constructs a resource value (types.md:152-158); it is a known
+    // declared resource, not an undefined function.
+    let found = check_module(
+        "ctor-resource",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn caller()\n    var b = Book(title: \"a\")\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_is_not_an_unresolved_call() {
+    // `Book::Id(1)` constructs a resource identity (types.md:276-297); it is a
+    // known declared resource's identity, not an undefined function.
+    let found = check_module(
+        "ctor-identity",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn caller()\n    const id = Book::Id(1)\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn an_unknown_call_in_a_module_less_script_is_not_flagged() {
     // A module-less script's functions are not in the program (not runnable as a
     // call target), so its calls are not resolution-checked — only library-module
