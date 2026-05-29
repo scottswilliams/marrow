@@ -1235,13 +1235,7 @@ fn eval_exists(
             span,
         });
     };
-    let segments = lower_saved_path(&arg.value, env)?;
-    let store = env.store.borrow();
-    let presence = store
-        .presence(&encode_path(&segments))
-        .map_err(|error| error.located(span))?;
-    let present = !matches!(presence, Presence::Absent);
-    Ok(Value::Bool(present))
+    Ok(Value::Bool(saved_path_present(&arg.value, span, env)?))
 }
 
 /// Evaluate `count(path)`: the number of immediate children when
@@ -1262,15 +1256,15 @@ fn eval_count(
         });
     };
     // A declared index branch `^root.index(args…)` addresses an `Index`/`IndexKey`
-    // layer that `lower_saved_path` would mis-encode as a `RecordKey` lookup. Count
-    // its entries through the same enumeration `keys(...)` uses over that branch, so
-    // `count` and `keys(...).len()` agree. Scalar and record paths still use the
-    // direct read/child-keys path below, unchanged.
+    // layer that has no record/layer segment form. Count its entries through the same
+    // enumeration `keys(...)` uses over that branch, so `count` and `keys(...).len()`
+    // agree. Scalar, record, and keyed-leaf/group layer paths fall through to the
+    // direct read/child-keys path below.
     if is_index_branch(&arg.value, env) {
         let entries = enumerate_layer(&arg.value, env)?.len();
         return Ok(Value::Int(entries as i64));
     }
-    let path = encode_path(&lower_saved_path(&arg.value, env)?);
+    let path = encode_path(&node_segments(&arg.value, env)?);
     let store = env.store.borrow();
     let children = store
         .child_keys(&path)
@@ -1288,10 +1282,10 @@ fn eval_count(
 }
 
 /// Whether `expr` is a declared index branch `^root.index(args…)` — a `Call`
-/// whose callee names an index off a saved root. This is the one saved-path shape
-/// `lower_saved_path` mis-encodes (as record-key lookups rather than an
-/// `Index`/`IndexKey` path), so `count` routes it through [`enumerate_layer`]
-/// instead, matching the same classification [`eval_call`] uses for index lookups.
+/// whose callee names an index off a saved root. An index branch has no
+/// record/layer segment form, so `count`, `exists`, and `std::assert::absent`
+/// route it through [`enumerate_layer`] instead, matching the same classification
+/// [`eval_call`] uses for index lookups.
 fn is_index_branch(expr: &Expression, env: &Env<'_>) -> bool {
     let Expression::Call { callee, .. } = expr else {
         return false;
@@ -1354,12 +1348,7 @@ fn eval_assert(
                     span,
                 });
             };
-            let segments = lower_saved_path(&arg.value, env)?;
-            let store = env.store.borrow();
-            let presence = store
-                .presence(&encode_path(&segments))
-                .map_err(|error| error.located(span))?;
-            if !matches!(presence, Presence::Absent) {
+            if saved_path_present(&arg.value, span, env)? {
                 return Err(RuntimeError {
                     throw: None,
                     code: RUN_ASSERT,
@@ -4713,6 +4702,48 @@ fn record_path(root: String, identity: Vec<SavedKey>) -> SavedPath {
     }
 }
 
+/// The encoded segments of a presence/count target — the path that `exists`,
+/// `count`, and `std::assert::absent` probe. Every shape goes through the one
+/// canonical [`lower`], so the segments are byte-identical to those a read or
+/// write to the same path builds (a keyed-leaf or group entry uses
+/// `ChildLayer`/`IndexKey`, not record keys). The bare primary root `^books` is
+/// the exception: `lower` rejects it as a value address (it has no identity), but
+/// as a presence/count target it is the root node itself, whose unambiguous,
+/// argument-free segment form is a single [`PathSegment::Root`]. A declared index
+/// branch has no record/layer segment form, so it is routed through
+/// [`enumerate_layer`] by the caller, never here.
+fn node_segments(expr: &Expression, env: &mut Env<'_>) -> Result<Vec<PathSegment>, RuntimeError> {
+    // A bare keyed primary root addresses the root node, whose children are its
+    // records — `count(^books)`/`exists(^books)` operate on that node directly.
+    if let Expression::SavedRoot { name, .. } = expr
+        && root_identity_arity(env.program, name).is_some_and(|arity| arity > 0)
+    {
+        return Ok(vec![PathSegment::Root(name.clone())]);
+    }
+    Ok(lower(expr, env)?.to_segments())
+}
+
+/// Whether a saved path holds a value or any children — the presence test behind
+/// `exists` and `std::assert::absent`. A declared index branch has no
+/// record/layer segment form, so — exactly as `count` does — its presence is
+/// whether the branch enumerates any entries; every other shape probes the
+/// canonical [`node_segments`].
+fn saved_path_present(
+    expr: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<bool, RuntimeError> {
+    if is_index_branch(expr, env) {
+        return Ok(!enumerate_layer(expr, env)?.is_empty());
+    }
+    let segments = node_segments(expr, env)?;
+    let store = env.store.borrow();
+    let presence = store
+        .presence(&encode_path(&segments))
+        .map_err(|error| error.located(span))?;
+    Ok(!matches!(presence, Presence::Absent))
+}
+
 #[cfg(test)]
 mod to_segments_tests {
     use super::*;
@@ -4828,30 +4859,6 @@ fn lower_keys(
         }
     }
     Ok(keys)
-}
-
-/// Lower any saved path expression — `^root`, `^root(key…)`, or a `.field` off
-/// one — to its encoded segments. Used by `exists`, which needs only the path,
-/// not the resource schema.
-fn lower_saved_path(
-    expr: &Expression,
-    env: &mut Env<'_>,
-) -> Result<Vec<PathSegment>, RuntimeError> {
-    match expr {
-        Expression::SavedRoot { name, .. } => Ok(vec![PathSegment::Root(name.clone())]),
-        Expression::Call { callee, args, span } => {
-            let mut segments = lower_saved_path(callee, env)?;
-            let keys = lower_keys(args, *span, true, env)?;
-            segments.extend(keys.into_iter().map(PathSegment::RecordKey));
-            Ok(segments)
-        }
-        Expression::Field { base, name, .. } => {
-            let mut segments = lower_saved_path(base, env)?;
-            segments.push(PathSegment::Field(name.clone()));
-            Ok(segments)
-        }
-        other => Err(unsupported("this saved path", other.span())),
-    }
 }
 
 /// The declared scalar type of a saved root's top-level field.

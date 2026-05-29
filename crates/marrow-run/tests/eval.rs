@@ -5249,6 +5249,155 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
     assert_eq!(call("test::countRoot", &[]), Some(Value::Int(4)));
 }
 
+/// A resource carrying both a keyed-leaf layer (`tags(pos: int): string`) and a
+/// GROUP layer (`versions(version: int)` with member fields). Used to prove that
+/// `exists`, `count`, and `std::assert::absent` agree with the actual stored path
+/// for a keyed layer entry — the paths a record/field read or write lowers to.
+const BOOK_KEYED_PRESENCE: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    tags(pos: int): string
+    versions(version: int)
+        required note: string
+
+fn seed()
+    ^books(1).title = \"Mort\"
+    ^books(1).tags(1) = \"fiction\"
+    ^books(1).versions(2).note = \"draft\"
+
+fn tagExists(id: int, pos: int): bool
+    return exists(^books(id).tags(pos))
+
+fn versionExists(id: int, ver: int): bool
+    return exists(^books(id).versions(ver))
+
+fn tagCount(id: int): int
+    return count(^books(id).tags)
+
+fn versionFieldCount(id: int, ver: int): int
+    return count(^books(id).versions(ver))
+
+fn topLevelExists(id: int): bool
+    return exists(^books(id).title)
+
+fn topLevelCount(id: int): int
+    return count(^books(id).title)
+
+fn assertTagAbsent(id: int, pos: int)
+    std::assert::absent(^books(id).tags(pos))
+
+fn assertVersionAbsent(id: int, ver: int)
+    std::assert::absent(^books(id).versions(ver))
+";
+
+// A keyed-leaf layer entry and a group-layer entry are stored under
+// `ChildLayer`/`IndexKey` segments — the same shape a normal read or write
+// lowers to. `exists`, `count`, and `std::assert::absent` must read that same
+// path, not a record-key mis-encoding, so they agree byte-for-byte with what is
+// actually stored. (Before routing these through the one canonical lowering, the
+// schema-unaware escape hatch encoded `tags(pos)` as a record-key lookup, so
+// `exists` mis-reported absent and `assert::absent` passed over a written entry.)
+#[test]
+fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
+    let program = checked_program(BOOK_KEYED_PRESENCE);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let call =
+        |entry: &str, args: &[Value]| run_entry(&program, &store, entry, args).expect("run").value;
+
+    // A present keyed-leaf entry `^books(1).tags(1)` exists, and the layer counts
+    // its one entry.
+    assert_eq!(
+        call("test::tagExists", &[Value::Int(1), Value::Int(1)]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        call("test::tagCount", &[Value::Int(1)]),
+        Some(Value::Int(1))
+    );
+
+    // A present group entry `^books(1).versions(2)` exists (it carries a `note`
+    // child), and counting it counts that one populated member.
+    assert_eq!(
+        call("test::versionExists", &[Value::Int(1), Value::Int(2)]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        call("test::versionFieldCount", &[Value::Int(1), Value::Int(2)]),
+        Some(Value::Int(1))
+    );
+
+    // `std::assert::absent` over either written entry is a failed assertion, not a
+    // silent pass: the entry is present.
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::assertTagAbsent",
+            &[Value::Int(1), Value::Int(1)]
+        )
+        .unwrap_err()
+        .code,
+        RUN_ASSERT
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::assertVersionAbsent",
+            &[Value::Int(1), Value::Int(2)]
+        )
+        .unwrap_err()
+        .code,
+        RUN_ASSERT
+    );
+
+    // An absent keyed-leaf entry and an absent group entry report absent: `exists`
+    // is false and `std::assert::absent` passes.
+    assert_eq!(
+        call("test::tagExists", &[Value::Int(1), Value::Int(9)]),
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        call("test::versionExists", &[Value::Int(1), Value::Int(9)]),
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::assertTagAbsent",
+            &[Value::Int(1), Value::Int(9)]
+        )
+        .expect("absent tag passes")
+        .value,
+        None
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::assertVersionAbsent",
+            &[Value::Int(1), Value::Int(9)]
+        )
+        .expect("absent version passes")
+        .value,
+        None
+    );
+
+    // The already-correct top-level-field shapes stay green: a present field
+    // exists and counts as one.
+    assert_eq!(
+        call("test::topLevelExists", &[Value::Int(1)]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        call("test::topLevelCount", &[Value::Int(1)]),
+        Some(Value::Int(1))
+    );
+}
+
 /// `values`/`entries` over a primary root materialize whole records; over a
 /// keyed/sequence layer they materialize each entry's value. `entries` feeds the
 /// two-name `for id, x in entries(...)` binding.
