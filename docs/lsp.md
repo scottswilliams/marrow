@@ -119,7 +119,7 @@ The server is a parse-diagnostics slice. These are not provided today:
 
 ## Planned Path
 
-The intended progression mirrors the runtime build order: from source-only
+The intended progression mirrors how the runtime is layered: from source-only
 parse facts to facts derived from a checked project.
 
 1. Parse diagnostics (today). Per-buffer syntax errors and warnings with

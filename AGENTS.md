@@ -114,7 +114,8 @@ belong together.
 
 - `docs/language/` is the language reference.
 - `docs/implementation.md` is the implementation and backend reference.
-- `docs/roadmap/` tracks implementation order.
+- `docs/roadmap/` is a status note: the implemented kernel, plus the deferrals
+  and non-goals that bound it.
 - Other durable language, database, implementation, backend, tooling, and
   roadmap docs belong under `docs/`, not scattered elsewhere.
 - Public examples and demos exist only when they match `docs/language/` and
