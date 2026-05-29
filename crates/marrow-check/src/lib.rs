@@ -2257,10 +2257,13 @@ pub fn check_tests(
     }
 
     // Unresolved-call reports are trustworthy only when every test file parsed and
-    // the project program is whole: a file excluded for a parse error is not in the
-    // combined program, so a call into it would look unresolved though its
-    // definition exists. Suppress them then — the parse errors are the real fix.
-    let fully_parsed = parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
+    // the project program is whole: a file excluded for a parse OR read error is
+    // not in the combined program, so a call into it would look unresolved though
+    // its definition exists. Suppress them then — the parse/read errors are the
+    // real fix. (Matches check_project: a read failure drops a file from
+    // parsed_files without setting has_errors, so the length check is needed too.)
+    let fully_parsed = files.len() == parsed_files.len()
+        && parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
     if !fully_parsed {
         report
             .diagnostics
