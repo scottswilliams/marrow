@@ -34,7 +34,7 @@ use marrow_syntax::{
 };
 use marrow_write::{
     FieldValue, ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
-    WRITE_REQUIRES_MAINTENANCE, WriteError, decode_identity, next_id, next_layer_pos,
+    WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity, next_id, next_layer_pos,
     plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
     plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
     plan_resource_write,
@@ -1837,10 +1837,8 @@ fn eval_append(
         next_layer_pos(resource, &identity, layer, &*store)
     };
     let pos = pos.map_err(|error| write_fault(error, span, env))?;
-    let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
-        .map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved);
+    env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))
 }
 
@@ -2279,6 +2277,21 @@ impl<'p> Env<'p> {
         } else {
             Err(raise_fault(code, message, span, self))
         }
+    }
+
+    /// Apply a planned managed write: surface a planning failure as a catchable
+    /// `write.*` fault, then commit the plan's staged steps. `in_txn` is whether a
+    /// user `transaction` is open, so the plan rides that savepoint instead of
+    /// opening its own. Centralizes the open-savepoint invariant every write/merge/
+    /// delete shares, and a store failure during commit is a runtime store error.
+    fn apply_plan(
+        &mut self,
+        plan: Result<WritePlan, WriteError>,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        let plan = plan.map_err(|error| write_fault(error, span, self))?;
+        plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth > 0)
+            .map_err(|error| store_error(error, span))
     }
 
     fn push_scope(&mut self) {
@@ -3568,9 +3581,7 @@ fn write_saved_field(
         let store = env.store.borrow();
         plan_field_write(resource, identity, field, &saved, &*store)
     };
-    let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -3717,10 +3728,8 @@ fn write_nested_field(
         .iter()
         .map(|(name, keys)| (name.as_str(), keys.as_slice()))
         .collect();
-    let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved)
-        .map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved);
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -3748,10 +3757,8 @@ fn eval_group_entry_write(
         let resource = find_resource(env.program, &root)
             .ok_or_else(|| unsupported("writing to this saved root", span))?;
         let layer_keys = lower_layer_keys(keys, span, env)?;
-        let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved)
-            .map_err(|error| write_fault(error, span, env))?;
-        plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-            .map_err(|error| store_error(error, span))?;
+        let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved);
+        env.apply_plan(plan, span)?;
         return Ok(());
     }
     let Value::Resource(fields) = eval_expr(value, env)? else {
@@ -3764,10 +3771,8 @@ fn eval_group_entry_write(
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
     let layer_keys = lower_layer_keys(keys, span, env)?;
     let value = resource_value_of(fields, span)?;
-    let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value)
-        .map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value);
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -3819,9 +3824,7 @@ fn write_resource(
         let store = env.store.borrow();
         plan_resource_write(resource, identity, &value, &*store)
     };
-    let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -3861,9 +3864,7 @@ fn eval_resource_merge(
         let store = env.store.borrow();
         plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store)
     };
-    let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -3931,9 +3932,7 @@ fn eval_layer_merge(
         let store = env.store.borrow();
         plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store)
     };
-    let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -4006,9 +4005,7 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
         let store = env.store.borrow();
         plan_resource_delete(resource, &identity, &*store)
     };
-    let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
@@ -4086,9 +4083,7 @@ fn eval_field_delete(
         let store = env.store.borrow();
         plan_field_delete(resource, &identity, field, &*store)
     };
-    let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
-        .map_err(|error| store_error(error, span))?;
+    env.apply_plan(plan, span)?;
     Ok(())
 }
 
