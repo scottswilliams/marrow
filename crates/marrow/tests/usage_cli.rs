@@ -28,7 +28,11 @@ fn an_unknown_subcommand_is_a_usage_failure() {
     let output = marrow(&["frobnicate"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     // Nothing executed: the help banner (the success path) was not printed.
-    assert!(output.stdout.is_empty(), "unexpected stdout: {:?}", output.stdout);
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("unknown command"), "{stderr}");
 }
@@ -38,7 +42,11 @@ fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     // The command body never ran, so it produced no program output.
-    assert!(output.stdout.is_empty(), "unexpected stdout: {:?}", output.stdout);
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("missing project directory"), "{stderr}");
 }
@@ -47,7 +55,11 @@ fn run_with_no_project_dir_is_a_usage_failure() {
 fn run_entry_with_no_value_is_a_usage_failure() {
     let output = marrow(&["run", "--entry"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "unexpected stdout: {:?}", output.stdout);
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("missing value for --entry"), "{stderr}");
 }
