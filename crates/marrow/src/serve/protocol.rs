@@ -509,4 +509,34 @@ mod tests {
         );
         assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
     }
+
+    #[test]
+    fn an_unknown_key_type_is_a_bad_request() {
+        let store = MemStore::new();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"frob": 1}}] }),
+        );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    }
+
+    #[test]
+    fn a_bytes_key_with_invalid_base64_is_a_bad_request() {
+        let store = MemStore::new();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"bytes": "!!!"}}] }),
+        );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    }
+
+    #[test]
+    fn a_wide_integer_key_that_is_not_an_integer_is_a_bad_request() {
+        let store = MemStore::new();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"duration": "notanint"}}] }),
+        );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    }
 }
