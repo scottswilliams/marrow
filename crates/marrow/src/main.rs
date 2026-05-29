@@ -810,36 +810,6 @@ fn restore(args: &[String]) -> ExitCode {
     }
 }
 
-/// Parse exactly one positional path for a command, handling `--help` and
-/// rejecting options or a wrong count.
-fn one_positional(command: &str, args: &[String]) -> Result<String, ExitCode> {
-    let mut dir = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--help" | "-h" => {
-                print!("Usage:\n  marrow {command} <projectdir>\n");
-                return Err(ExitCode::SUCCESS);
-            }
-            value if value.starts_with('-') => {
-                eprintln!("unknown {command} option: {value}");
-                return Err(ExitCode::from(2));
-            }
-            value => {
-                if dir.replace(value.to_string()).is_some() {
-                    eprintln!("marrow {command} accepts one project directory");
-                    return Err(ExitCode::from(2));
-                }
-            }
-        }
-        index += 1;
-    }
-    dir.ok_or_else(|| {
-        eprintln!("missing project directory");
-        ExitCode::from(2)
-    })
-}
-
 /// Parse one positional project directory plus an optional `--format` flag, for
 /// the `data` inspection commands. Reuses `check`'s `--format` grammar so the
 /// flag is uniform across the CLI; text is the default.
@@ -882,7 +852,7 @@ fn one_positional_with_format(
 
 /// Parse `data get`'s arguments: a project directory, a path string, and an
 /// optional `--format`. Two positionals in order, rejecting options and a wrong
-/// count, mirroring `one_positional`'s shape.
+/// count, mirroring `one_positional_with_format`'s shape.
 fn data_get_args(args: &[String]) -> Result<(String, String, CheckFormat), ExitCode> {
     let mut positionals = Vec::new();
     let mut format = CheckFormat::Text;
@@ -973,10 +943,11 @@ maintenance capability when implemented.
     }
 }
 
-/// `marrow data roots`: list the project's saved roots, one `^root` per line.
+/// `marrow data roots`: list the project's saved roots, one `^root` per line in
+/// text, or a `{ project, roots }` object with `--format json`.
 fn data_roots(args: &[String]) -> ExitCode {
-    let dir = match one_positional("data roots", args) {
-        Ok(dir) => dir,
+    let (dir, format) = match one_positional_with_format("data roots", args) {
+        Ok(parsed) => parsed,
         Err(code) => return code,
     };
     let config = match load_config(&dir) {
@@ -991,26 +962,36 @@ fn data_roots(args: &[String]) -> ExitCode {
         Some(store) => match store.roots() {
             Ok(roots) => roots,
             Err(error) => {
-                report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                report_simple_error(error.code(), &error.to_string(), format);
                 return ExitCode::FAILURE;
             }
         },
         None => Vec::new(),
     };
-    if roots.is_empty() {
-        println!("(no saved data)");
-    } else {
-        for root in roots {
-            println!("^{root}");
+    match format {
+        CheckFormat::Text => {
+            if roots.is_empty() {
+                println!("(no saved data)");
+            } else {
+                for root in roots {
+                    println!("^{root}");
+                }
+            }
+        }
+        // jsonl carries no streaming meaning for roots, so it emits the same
+        // single object as json, keeping one uniform `--format` flag.
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            write_json(json!({ "project": dir, "roots": roots }));
         }
     }
     ExitCode::SUCCESS
 }
 
-/// `marrow data stats`: report how many saved roots and records the store holds.
+/// `marrow data stats`: report how many saved roots and records the store holds,
+/// as text lines or a `{ project, roots, records }` object with `--format json`.
 fn data_stats(args: &[String]) -> ExitCode {
-    let dir = match one_positional("data stats", args) {
-        Ok(dir) => dir,
+    let (dir, format) = match one_positional_with_format("data stats", args) {
+        Ok(parsed) => parsed,
         Err(code) => return code,
     };
     let config = match load_config(&dir) {
@@ -1026,7 +1007,7 @@ fn data_stats(args: &[String]) -> ExitCode {
             let roots = match store.roots() {
                 Ok(roots) => roots.len(),
                 Err(error) => {
-                    report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                    report_simple_error(error.code(), &error.to_string(), format);
                     return ExitCode::FAILURE;
                 }
             };
@@ -1035,7 +1016,7 @@ fn data_stats(args: &[String]) -> ExitCode {
             let records = match store.scan(&[], usize::MAX) {
                 Ok(page) => page.entries.len(),
                 Err(error) => {
-                    report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                    report_simple_error(error.code(), &error.to_string(), format);
                     return ExitCode::FAILURE;
                 }
             };
@@ -1043,8 +1024,15 @@ fn data_stats(args: &[String]) -> ExitCode {
         }
         None => (0, 0),
     };
-    println!("roots: {roots}");
-    println!("records: {records}");
+    match format {
+        CheckFormat::Text => {
+            println!("roots: {roots}");
+            println!("records: {records}");
+        }
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            write_json(json!({ "project": dir, "roots": roots, "records": records }));
+        }
+    }
     ExitCode::SUCCESS
 }
 

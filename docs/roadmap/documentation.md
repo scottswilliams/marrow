@@ -25,8 +25,10 @@ developer-friendly reference page or a small update to an existing page.
 ## Tooling References
 
 - Add `docs/data-tools.md` or fold into `docs/cli.md`: define raw inspection,
-  stats, dump, diff, load, integrity checks, and the rule that inspection is
-  read-only by default.
+  stats, dump, integrity checks, and `get` (all implemented and read-only by
+  default), with the rule that inspection never creates the store. `diff` and
+  `load` remain deferred (they overlap restore's replace/merge/repair modes and
+  need typed source-fingerprinting); document them only once implemented.
 - Add `docs/serve-protocol.md`: document newline-delimited JSON requests and
   replies, path segment JSON, key JSON, base64 values, error replies, and
   paging limits for `saved_walk`.

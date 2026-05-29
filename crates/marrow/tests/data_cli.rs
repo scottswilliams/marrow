@@ -272,3 +272,79 @@ fn data_get_and_integrity_on_an_unseeded_project_create_nothing() {
     assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
     assert!(!created, "inspection must not create the store");
 }
+
+#[test]
+fn data_roots_format_json_emits_a_structured_envelope() {
+    let (project, dir) = seeded_project("data-roots-json");
+    let output = marrow(&["data", "roots", "--format", "json", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(value["project"], serde_json::json!(dir));
+    assert_eq!(value["roots"], serde_json::json!(["counter"]));
+}
+
+#[test]
+fn data_stats_format_json_emits_counts() {
+    let (project, dir) = seeded_project("data-stats-json");
+    let output = marrow(&["data", "stats", "--format", "json", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(value["roots"], serde_json::json!(1));
+    assert_eq!(value["records"], serde_json::json!(1));
+}
+
+#[test]
+fn data_dump_format_jsonl_emits_a_record_then_a_summary() {
+    let (project, dir) = seeded_project("data-dump-jsonl");
+    let output = marrow(&["data", "dump", "--format", "jsonl", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    let record: serde_json::Value = serde_json::from_str(lines[0]).expect("record json");
+    assert_eq!(record["path"], serde_json::json!("^counter(1).value"));
+    assert!(record["value_b64"].is_string(), "{record}");
+    let summary: serde_json::Value = serde_json::from_str(lines[1]).expect("summary json");
+    assert_eq!(summary["kind"], serde_json::json!("summary"));
+    assert_eq!(summary["records"], serde_json::json!(1));
+}
+
+#[test]
+fn data_integrity_format_json_problems_carry_a_tooling_kind() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_path};
+
+    let project = native_project("data-integrity-json");
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("orphan.mra");
+    let orphan_path = encode_path(&[
+        PathSegment::Root("ghosts".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("value".into()),
+    ]);
+    write_archive_with(&archive, &[(orphan_path, b"7".to_vec())]);
+    assert_eq!(
+        marrow(&["restore", &dir, archive.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let problem = &value["problems"][0];
+    assert_eq!(problem["code"], serde_json::json!("data.orphan"));
+    // `kind_for_code`'s default arm classifies `data.*` as tooling without edits.
+    assert_eq!(problem["kind"], serde_json::json!("tooling"));
+}
