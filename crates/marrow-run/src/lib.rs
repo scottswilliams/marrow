@@ -1811,7 +1811,7 @@ fn eval_append(
     let pos = pos.map_err(|error| write_fault(error, span, env))?;
     let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
         .map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(Value::Int(pos))
 }
@@ -2181,6 +2181,12 @@ struct Env<'p> {
     /// [`evaluate_function`] path and any module with no imports, making expansion
     /// a strict no-op there.
     aliases: HashMap<String, Vec<String>>,
+    /// How many user `transaction` blocks are open right now. Nonzero means a
+    /// managed write's own steps already ride an open savepoint, so [`WritePlan`]
+    /// applies them in place instead of wrapping them in a redundant
+    /// begin/commit ([`WritePlan::commit`]'s `in_txn`). Incremented on entering a
+    /// `transaction` block and decremented as it commits or rolls back.
+    transaction_depth: usize,
 }
 
 /// Why an assignment did not land.
@@ -2204,6 +2210,7 @@ impl<'p> Env<'p> {
             pending_throw: None,
             traversed_layers: Vec::new(),
             aliases,
+            transaction_depth: 0,
         }
     }
 
@@ -2469,7 +2476,14 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 .borrow_mut()
                 .begin()
                 .map_err(|error| store_error(error, *span))?;
-            match eval_block(body, env) {
+            // A managed write inside this block now rides the open savepoint, so it
+            // applies its steps in place rather than opening its own (see
+            // `WritePlan::commit`'s `in_txn`). The depth tracks nesting so an inner
+            // block still counts as "in a transaction".
+            env.transaction_depth += 1;
+            let result = eval_block(body, env);
+            env.transaction_depth -= 1;
+            match result {
                 // A throw escapes the transaction, so it rolls back like an error
                 // rather than committing.
                 Ok(Flow::Throw(value)) => {
@@ -3521,7 +3535,7 @@ fn write_saved_field(
         plan_field_write(resource, identity, field, &saved, &*store)
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3672,7 +3686,7 @@ fn write_nested_field(
         .collect();
     let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved)
         .map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3703,7 +3717,7 @@ fn eval_group_entry_write(
         let layer_keys = lower_layer_keys(keys, span, env)?;
         let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved)
             .map_err(|error| write_fault(error, span, env))?;
-        plan.commit(&mut *env.store.borrow_mut())
+        plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
             .map_err(|error| store_error(error, span))?;
         return Ok(());
     }
@@ -3719,7 +3733,7 @@ fn eval_group_entry_write(
     let value = resource_value_of(fields, span)?;
     let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value)
         .map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3773,7 +3787,7 @@ fn write_resource(
         plan_resource_write(resource, identity, &value, &*store)
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3815,7 +3829,7 @@ fn eval_resource_merge(
         plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store)
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3885,7 +3899,7 @@ fn eval_layer_merge(
         plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store)
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -3960,7 +3974,7 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
         plan_resource_delete(resource, &identity, &*store)
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }
@@ -4040,7 +4054,7 @@ fn eval_field_delete(
         plan_field_delete(resource, &identity, field, &*store)
     };
     let plan = plan.map_err(|error| write_fault(error, span, env))?;
-    plan.commit(&mut *env.store.borrow_mut())
+    plan.commit(&mut *env.store.borrow_mut(), env.transaction_depth > 0)
         .map_err(|error| store_error(error, span))?;
     Ok(())
 }

@@ -2,8 +2,9 @@
 //! into the store, and keep generated index entries coherent.
 
 use marrow_schema::{ResourceSchema, compile_resource};
-use marrow_store::mem::MemStore;
-use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_path};
+use marrow_store::backend::Backend;
+use marrow_store::mem::{MemStore, Presence, ScanPage, StoreError};
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, decode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
@@ -130,7 +131,7 @@ fn write(
 ) {
     plan_resource_write(schema, identity, &value, store)
         .expect("valid write")
-        .commit(store)
+        .commit(store, false)
         .expect("commit succeeds");
 }
 
@@ -144,7 +145,7 @@ fn write_field(
 ) {
     plan_field_write(schema, identity, field, &value, store)
         .expect("valid field write")
-        .commit(store)
+        .commit(store, false)
         .expect("commit succeeds");
 }
 
@@ -158,7 +159,7 @@ fn merge(
 ) {
     plan_resource_merge(schema, identity, &value, None, store)
         .expect("valid merge")
-        .commit(store)
+        .commit(store, false)
         .expect("commit succeeds");
 }
 
@@ -172,7 +173,7 @@ fn write_tag(store: &mut MemStore, schema: &ResourceSchema, id: i64, pos: i64, v
         &SavedValue::Str(value.into()),
     )
     .expect("valid keyed-leaf write")
-    .commit(store)
+    .commit(store, false)
     .expect("commit succeeds");
 }
 
@@ -206,7 +207,7 @@ fn write_note(store: &mut MemStore, schema: &ResourceSchema, id: i64, note: &str
         &SavedValue::Str(text.into()),
     )
     .expect("valid group-entry field write")
-    .commit(store)
+    .commit(store, false)
     .expect("commit succeeds");
 }
 
@@ -262,7 +263,7 @@ fn a_whole_group_entry_write_replaces_the_entry() {
         },
     )
     .expect("valid group write")
-    .commit(&mut store)
+    .commit(&mut store, false)
     .expect("commit");
     plan_layer_group_write(
         &book,
@@ -274,7 +275,7 @@ fn a_whole_group_entry_write_replaces_the_entry() {
         },
     )
     .expect("valid group write")
-    .commit(&mut store)
+    .commit(&mut store, false)
     .expect("commit");
 
     assert_eq!(
@@ -661,7 +662,7 @@ fn deleting_a_resource_removes_its_fields_and_index_entries() {
     );
 
     let plan = plan_resource_delete(&book, &[SavedKey::Int(42)], &store).expect("delete");
-    plan.commit(&mut store).expect("commit succeeds");
+    plan.commit(&mut store, false).expect("commit succeeds");
 
     assert_eq!(store.read(&field_path(42, "title")), None, "field removed");
     assert_eq!(
@@ -901,7 +902,7 @@ fn a_field_delete_removes_the_field_and_leaves_the_rest() {
 
     plan_field_delete(&book, &[SavedKey::Int(7)], "shelf", &store)
         .expect("valid field delete")
-        .commit(&mut store)
+        .commit(&mut store, false)
         .expect("commit succeeds");
 
     assert_eq!(store.read(&field_path(7, "shelf")), None, "field removed");
@@ -933,7 +934,7 @@ fn a_field_delete_tears_down_the_index_entry_it_feeds() {
 
     plan_field_delete(&book, &[SavedKey::Int(42)], "shelf", &store)
         .expect("valid field delete")
-        .commit(&mut store)
+        .commit(&mut store, false)
         .expect("commit succeeds");
 
     assert_eq!(store.read(&field_path(42, "shelf")), None, "field removed");
@@ -962,7 +963,7 @@ fn a_field_delete_of_a_field_with_no_index_stages_only_the_field_delete() {
     // `title` feeds no index, so deleting it leaves the byShelf entry in place.
     plan_field_delete(&book, &[SavedKey::Int(5)], "title", &store)
         .expect("valid field delete")
-        .commit(&mut store)
+        .commit(&mut store, false)
         .expect("commit succeeds");
 
     assert_eq!(store.read(&field_path(5, "title")), None, "field removed");
@@ -988,7 +989,7 @@ fn deleting_an_absent_field_is_a_successful_no_op() {
     // `shelf` was never populated, so there is no field and no index entry.
     plan_field_delete(&book, &[SavedKey::Int(9)], "shelf", &store)
         .expect("absent-field delete is a no-op plan")
-        .commit(&mut store)
+        .commit(&mut store, false)
         .expect("commit succeeds");
 
     assert_eq!(
@@ -1095,7 +1096,7 @@ fn re_writing_the_same_record_with_the_same_unique_key_is_not_a_conflict() {
         &store,
     )
     .expect("self re-write is not a conflict")
-    .commit(&mut store)
+    .commit(&mut store, false)
     .expect("commit succeeds");
     assert_owns(&store, &by_isbn_entry("X"), 1);
 }
@@ -1158,7 +1159,7 @@ fn deleting_a_resource_removes_its_unique_index_entry() {
     );
     plan_resource_delete(&book, &[SavedKey::Int(1)], &store)
         .expect("delete")
-        .commit(&mut store)
+        .commit(&mut store, false)
         .expect("commit succeeds");
     assert_eq!(
         store.read(&by_isbn_entry("X")),
@@ -1855,7 +1856,7 @@ fn a_group_entry_field_write_touches_only_that_member() {
         &SavedValue::Str("Mort".into()),
     )
     .expect("title write")
-    .commit(&mut store)
+    .commit(&mut store, false)
     .expect("commit succeeds");
     plan_layer_field_write(
         &book,
@@ -1866,7 +1867,7 @@ fn a_group_entry_field_write_touches_only_that_member() {
         &SavedValue::Str("fiction".into()),
     )
     .expect("shelf write")
-    .commit(&mut store)
+    .commit(&mut store, false)
     .expect("commit succeeds");
 
     assert_eq!(
@@ -2058,7 +2059,7 @@ fn a_nested_group_field_write_descends_the_layer_chain() {
         &SavedValue::Str("nice".into()),
     )
     .expect("nested field write")
-    .commit(&mut store)
+    .commit(&mut store, false)
     .expect("commit succeeds");
     assert_eq!(
         decode_value(
@@ -2144,7 +2145,7 @@ fn merge_tags(store: &mut MemStore, schema: &ResourceSchema, from: i64, to: i64)
         store,
     )
     .expect("valid layer merge")
-    .commit(store)
+    .commit(store, false)
     .expect("commit succeeds");
 }
 
@@ -2245,7 +2246,7 @@ fn merge_from(
 ) {
     plan_resource_merge(schema, target, &value, Some(source), store)
         .expect("valid tree-shaped merge")
-        .commit(store)
+        .commit(store, false)
         .expect("commit succeeds");
 }
 
@@ -2413,5 +2414,197 @@ fn a_tree_merge_copies_child_entries_and_leaves_no_stray_index_entries() {
         index_keys,
         vec![by_shelf_entry("fiction", 1), by_shelf_entry("fiction", 2)],
         "exactly one fiction entry per record, no stray or duplicate entries"
+    );
+}
+
+/// A backend that delegates to a real [`MemStore`] but fails a chosen mutation,
+/// so a multi-step plan can be made to fail partway through. Begin/commit/rollback
+/// delegate to the inner store's savepoint stack, so the atomic-commit wrap can
+/// actually roll the failed plan back.
+struct FailingBackend {
+    inner: MemStore,
+    /// 1-based index of the mutation (write or delete) to fail; later ones never
+    /// run because `WritePlan::commit` stops at the first error.
+    fail_on: usize,
+    seen: usize,
+}
+
+impl FailingBackend {
+    fn new(inner: MemStore, fail_on: usize) -> Self {
+        Self {
+            inner,
+            fail_on,
+            seen: 0,
+        }
+    }
+
+    /// Tick the mutation counter; return the injected error when this is the step
+    /// chosen to fail.
+    fn check(&mut self) -> Result<(), StoreError> {
+        self.seen += 1;
+        if self.seen == self.fail_on {
+            return Err(StoreError::Io {
+                op: "write",
+                message: "injected".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Backend for FailingBackend {
+    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Backend::read(&self.inner, path)
+    }
+
+    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        self.check()?;
+        Backend::write(&mut self.inner, path, value)
+    }
+
+    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+        self.check()?;
+        Backend::delete(&mut self.inner, path)
+    }
+
+    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
+        Backend::presence(&self.inner, path)
+    }
+
+    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        Backend::child_keys(&self.inner, path)
+    }
+
+    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan(&self.inner, path, limit)
+    }
+
+    fn roots(&self) -> Result<Vec<String>, StoreError> {
+        Backend::roots(&self.inner)
+    }
+
+    fn begin(&mut self) -> Result<(), StoreError> {
+        Backend::begin(&mut self.inner)
+    }
+
+    fn commit(&mut self) -> Result<(), StoreError> {
+        Backend::commit(&mut self.inner)
+    }
+
+    fn rollback(&mut self) -> Result<(), StoreError> {
+        Backend::rollback(&mut self.inner)
+    }
+}
+
+/// Snapshot the whole store as a sorted (path, value) list, so two stores can be
+/// compared byte-for-byte.
+fn snapshot(store: &dyn Backend) -> Vec<(Vec<u8>, Vec<u8>)> {
+    Backend::scan(store, &[], usize::MAX).expect("scan").entries
+}
+
+#[test]
+fn a_failing_plan_step_leaves_the_store_byte_for_byte_unchanged() {
+    // An indexed whole-resource write is a multi-step plan (field writes plus an
+    // index entry). Seed one record, snapshot, then plan a second write and make a
+    // later step fail: with the no-transaction atomic wrap, the half-applied plan
+    // must roll back to exactly the seeded state.
+    let book = schema(BOOK_INDEXED);
+    let mut seed = MemStore::new();
+    write(
+        &mut seed,
+        &book,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    let before = {
+        let backend: &dyn Backend = &seed;
+        snapshot(backend)
+    };
+
+    // Plan a second write that lowers to several steps, then run it through a
+    // backend that fails on the LAST mutation — so its earlier writes have already
+    // landed and a non-atomic commit would leave that half-written record behind.
+    let plan = plan_resource_write(
+        &book,
+        &[SavedKey::Int(2)],
+        &ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Reaper Man")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+        &seed,
+    )
+    .expect("valid write");
+    let steps = plan_step_count(&book);
+    assert!(steps >= 2, "this regression needs a multi-step plan");
+
+    let mut store = FailingBackend::new(seed, steps);
+    let result = plan.commit(&mut store, false);
+    assert!(
+        matches!(result, Err(StoreError::Io { .. })),
+        "the injected step failure surfaces"
+    );
+
+    assert_eq!(
+        snapshot(&store),
+        before,
+        "a partially-applied plan must roll back to the pre-commit state"
+    );
+}
+
+/// How many mutations the second-write plan lowers to, derived by counting the
+/// steps a successful commit performs against a throwaway counting backend.
+fn plan_step_count(book: &ResourceSchema) -> usize {
+    let plan = plan_resource_write(
+        book,
+        &[SavedKey::Int(99)],
+        &ResourceValue {
+            fields: vec![("title".into(), saved("x")), ("shelf".into(), saved("y"))],
+        },
+        &MemStore::new(),
+    )
+    .expect("valid write");
+    // fail_on past the end never trips, so every step runs and we read the count.
+    let mut store = FailingBackend::new(MemStore::new(), usize::MAX);
+    plan.commit(&mut store, false).expect("commit succeeds");
+    store.seen
+}
+
+#[test]
+fn the_no_transaction_batched_path_gives_the_same_final_state() {
+    // A successful plan committed with in_txn=false (wrapped in its own
+    // begin/commit) must land exactly the same bytes as one committed in place.
+    let book = schema(BOOK_INDEXED);
+    let value = ResourceValue {
+        fields: vec![
+            ("title".into(), saved("Mort")),
+            ("shelf".into(), saved("fiction")),
+        ],
+    };
+
+    let mut batched = MemStore::new();
+    plan_resource_write(&book, &[SavedKey::Int(1)], &value, &batched)
+        .expect("valid write")
+        .commit(&mut batched, false)
+        .expect("commit succeeds");
+
+    let mut in_place = MemStore::new();
+    plan_resource_write(&book, &[SavedKey::Int(1)], &value, &in_place)
+        .expect("valid write")
+        .commit(&mut in_place, true)
+        .expect("commit succeeds");
+
+    let batched_backend: &dyn Backend = &batched;
+    let in_place_backend: &dyn Backend = &in_place;
+    assert_eq!(
+        snapshot(batched_backend),
+        snapshot(in_place_backend),
+        "batched and in-place commits land identical state"
     );
 }

@@ -136,15 +136,45 @@ pub struct WritePlan {
 impl WritePlan {
     /// Apply the staged operations to `store`, in order. A backend write may fail
     /// (e.g. a persistent store meeting I/O), so this is fallible.
-    pub fn commit(self, store: &mut dyn Backend) -> Result<(), StoreError> {
-        for step in self.steps {
-            match step {
-                PlanStep::Write { path, value } => store.write(&path, value)?,
-                PlanStep::Delete { path } => store.delete(&path)?,
+    ///
+    /// `in_txn` says whether a user `transaction` is already open. When it is, the
+    /// plan's steps apply in place — they ride that transaction's savepoint, which
+    /// already makes the whole block atomic. When it is not, the steps are wrapped
+    /// in their own `begin`/`commit` so a multi-step plan lands all-or-nothing (and
+    /// as one batched transaction on a persistent backend): a failed step rolls the
+    /// plan's savepoint back, leaving the store byte-for-byte unchanged.
+    pub fn commit(self, store: &mut dyn Backend, in_txn: bool) -> Result<(), StoreError> {
+        // Inside a user transaction the open savepoint already makes the block
+        // atomic, so apply in place; a nested begin/commit here would only add a
+        // redundant savepoint. With no transaction open, wrap the plan in its own
+        // savepoint so a multi-step write lands all-or-nothing (one batched
+        // transaction on a persistent backend) and a mid-plan failure rolls back.
+        if in_txn {
+            return apply_steps(self.steps, store);
+        }
+        store.begin()?;
+        match apply_steps(self.steps, store) {
+            Ok(()) => store.commit(),
+            Err(error) => {
+                // Discard the half-applied plan, then surface the original cause.
+                // A rollback failure here would itself be a store-integrity error,
+                // but the contract has no infallible undo, so we keep the original.
+                let _ = store.rollback();
+                Err(error)
             }
         }
-        Ok(())
     }
+}
+
+/// Apply each staged step to `store`, in order, stopping at the first failure.
+fn apply_steps(steps: Vec<PlanStep>, store: &mut dyn Backend) -> Result<(), StoreError> {
+    for step in steps {
+        match step {
+            PlanStep::Write { path, value } => store.write(&path, value)?,
+            PlanStep::Delete { path } => store.delete(&path)?,
+        }
+    }
+    Ok(())
 }
 
 /// Plan a whole-resource write: replace the resource at `identity` with `value`.
