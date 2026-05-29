@@ -250,6 +250,104 @@ fn short_form_project_import_resolves() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
+/// A std helper's argument types are now checked: passing an `int` where
+/// `std::text::contains` expects a `string` reports `check.call_argument`.
+#[test]
+fn std_call_with_wrong_argument_type_is_flagged() {
+    let root = temp_project("program-std-argtype", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             pub fn bad(): bool\n\
+             \x20   return std::text::contains(1, \"x\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// A std helper's arity is now checked: `std::math::modulo` takes two ints, so a
+/// one-argument call reports `check.call_argument`.
+#[test]
+fn std_call_with_wrong_arity_is_flagged() {
+    let root = temp_project("program-std-arity", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             pub fn bad(): int\n\
+             \x20   return std::math::modulo(1)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// A well-typed std call checks clean: `std::clock::add(instant, duration)` with
+/// the right argument types reports nothing.
+#[test]
+fn well_typed_std_call_checks_clean() {
+    let root = temp_project("program-std-clean", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             pub fn good(): instant\n\
+             \x20   return std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), std::clock::parseDuration(\"PT1H\"))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// Short-form std calls are arg-checked identically to fully-qualified ones:
+/// `clock::add(int, ...)` (wrong first arg) under `use std::clock` is flagged.
+#[test]
+fn short_form_std_call_is_arg_checked() {
+    let root = temp_project("program-std-shortform-arg", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             use std::clock\n\
+             pub fn bad(): instant\n\
+             \x20   return clock::add(1, clock::parseDuration(\"PT1H\"))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 #[test]
 fn a_file_with_a_parse_error_contributes_no_module() {
     let root = temp_project("program-parse-error", |root| {

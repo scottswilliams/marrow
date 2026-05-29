@@ -1572,10 +1572,14 @@ fn check_call(
     {
         return check_next_id(program, args, span, file, diagnostics);
     }
-    // Builtins and std helpers dispatch before user functions, so their arguments
-    // are the runtime's responsibility — but a std helper's return type is known
-    // and feeds the surrounding type checks.
+    // Builtins dispatch before user functions. For std helpers the signatures are
+    // fixed (standard-library.md), so argument types and arity are checked here the
+    // same way user-function arguments are; other builtins leave their arguments to
+    // the runtime. A std helper's return type feeds the surrounding type checks.
     if is_builtin_call(segments) {
+        if let Some(params) = std_call_params(segments) {
+            check_args_against(&segments.join("::"), &params, arg_types, span, file, diagnostics);
+        }
         return std_call_return_type(segments)
             .or_else(|| conversion_return_type(segments))
             .or_else(|| builtin_return_type(segments, arg_types))
@@ -1644,40 +1648,84 @@ fn check_call(
         if let Some(param) = param
             && let Some(parameter) = as_primitive(&param.ty)
         {
-            match as_primitive(arg_type) {
-                Some(argument) if argument != parameter => {
-                    diagnostics.push(call_diagnostic(
-                        file,
-                        span,
-                        format!(
-                            "argument to `{}` expects `{}`, but found `{}`",
-                            segments.join("::"),
-                            primitive_name(parameter),
-                            primitive_name(argument),
-                        ),
-                    ));
-                }
-                // Strict typing: an argument with no known type for a concrete
-                // parameter must be converted first.
-                None if matches!(arg_type, MarrowType::Unknown) => {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNTYPED_VALUE,
-                        severity: Severity::Error,
-                        file: file.to_path_buf(),
-                        message: format!(
-                            "argument to `{}` has no known type, but `{}` is expected; convert it first",
-                            segments.join("::"),
-                            primitive_name(parameter),
-                        ),
-                        line: span.line,
-                        column: span.column,
-                    });
-                }
-                _ => {}
-            }
+            check_one_arg(&segments.join("::"), parameter, arg_type, span, file, diagnostics);
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+/// Check one positional/named argument's type against its parameter's primitive
+/// type: a known-but-different primitive is a `check.call_argument`; an `Unknown`
+/// argument for a concrete parameter is a `check.untyped_value` (strict typing —
+/// convert dynamic data before typed use). Shared by the user-function and std
+/// argument loops; `label` names the callee for the message.
+fn check_one_arg(
+    label: &str,
+    parameter: PrimitiveType,
+    arg_type: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    match as_primitive(arg_type) {
+        Some(argument) if argument != parameter => {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!(
+                    "argument to `{label}` expects `{}`, but found `{}`",
+                    primitive_name(parameter),
+                    primitive_name(argument),
+                ),
+            ));
+        }
+        None if matches!(arg_type, MarrowType::Unknown) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNTYPED_VALUE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "argument to `{label}` has no known type, but `{}` is expected; convert it first",
+                    primitive_name(parameter),
+                ),
+                line: span.line,
+                column: span.column,
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Check positional `args` against a fixed positional parameter list (the std
+/// helper signatures): an arity mismatch is a `check.call_argument`, and each
+/// argument with a known-required primitive parameter is checked by
+/// [`check_one_arg`]. A `None` parameter slot (e.g. a path argument) is not a
+/// primitive and is left alone. Std helpers are positional-only — named-argument
+/// matching stays user-function-only.
+fn check_args_against(
+    label: &str,
+    params: &[Option<PrimitiveType>],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if arg_types.len() != params.len() {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "`{label}` expects {} argument(s), but {} were given",
+                params.len(),
+                arg_types.len(),
+            ),
+        ));
+    }
+    for (parameter, arg_type) in params.iter().zip(arg_types) {
+        if let Some(parameter) = parameter {
+            check_one_arg(label, *parameter, arg_type, span, file, diagnostics);
+        }
+    }
 }
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root. A single-`int`
@@ -1920,6 +1968,53 @@ fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
         ("env", "get" | "require") => primitive(String),
         ("io", "readText") => primitive(String),
         ("io", "readBytes") => primitive(Bytes),
+        _ => None,
+    }
+}
+
+/// The positional parameter primitive types of a `std::module::op` helper, in
+/// order, per `docs/language/standard-library.md`. `Some(params)` for an
+/// enumerated helper (including void ones, whose arguments still need checking —
+/// hence a separate function from [`std_call_return_type`]); `None` for an unknown
+/// op, leaving its arguments to the runtime. A `None` slot inside the list marks a
+/// non-primitive argument (`assert::absent` takes a path), which is not checked.
+fn std_call_params(segments: &[String]) -> Option<Vec<Option<PrimitiveType>>> {
+    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Error, Instant, Int, String};
+    let [first, module, op] = segments else {
+        return None;
+    };
+    if first != "std" {
+        return None;
+    }
+    // Each `T` is a concrete primitive parameter; `[]` is a no-argument helper.
+    let p = |types: &[PrimitiveType]| Some(types.iter().map(|t| Some(*t)).collect());
+    match (module.as_str(), op.as_str()) {
+        ("text", "length" | "trim") => p(&[String]),
+        ("text", "contains" | "split") => p(&[String, String]),
+        ("bytes", "length" | "base64Encode") => p(&[Bytes]),
+        ("bytes", "base64Decode") => p(&[String]),
+        ("math", "absInt") => p(&[Int]),
+        ("math", "absDecimal") => p(&[Decimal]),
+        ("math", "floor") => p(&[Decimal]),
+        ("math", "modulo" | "remainder") => p(&[Int, Int]),
+        ("clock", "now" | "today") => p(&[]),
+        ("clock", "parseInstant" | "parseDate" | "parseDuration") => p(&[String]),
+        ("clock", "formatInstant") => p(&[Instant]),
+        ("clock", "formatDate") => p(&[Date]),
+        ("clock", "formatDuration") => p(&[Duration]),
+        ("clock", "add") => p(&[Instant, Duration]),
+        ("env", "exists" | "require") => p(&[String]),
+        ("env", "get") => p(&[String, String]),
+        ("io", "readText" | "readBytes") => p(&[String]),
+        ("io", "writeText") => p(&[String, String]),
+        ("io", "writeBytes") => p(&[String, Bytes]),
+        ("assert", "isTrue" | "isFalse") => p(&[Bool]),
+        // `absent(path)` takes a path expression, not a primitive — leave it
+        // unchecked, matching how the checker leaves other path arguments alone.
+        ("assert", "absent") => Some(vec![None]),
+        ("assert", "fail") => p(&[String]),
+        ("log", "info" | "warn") => p(&[String]),
+        ("log", "error") => p(&[Error]),
         _ => None,
     }
 }
