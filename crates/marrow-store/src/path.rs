@@ -63,6 +63,12 @@ const KEY_DURATION: u8 = 0x05;
 const KEY_STR: u8 = 0x07;
 const KEY_BYTES: u8 = 0x08;
 
+// The bounded int-key band uses `KEY_INT + 1` as its exclusive upper bound, which
+// is only a clean band edge while the next key-type tag immediately follows
+// `KEY_INT`. Guard that invariant at compile time so a future tag reorder fails
+// loudly here rather than silently mis-bounding `max_int_record_key`.
+const _: () = assert!(KEY_DATE == KEY_INT + 1);
+
 /// Encode a saved path to its ordered byte key.
 pub fn encode_path(segments: &[PathSegment]) -> Vec<u8> {
     let mut bytes = Vec::new();
