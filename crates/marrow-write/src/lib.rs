@@ -15,7 +15,7 @@ use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema};
 use marrow_store::backend::Backend;
 use marrow_store::mem::StoreError;
 use marrow_store::path::{
-    ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
+    PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
 };
 use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
 
@@ -808,19 +808,12 @@ pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, Writ
             ),
         });
     }
-    let children = store
-        .child_keys(&encode_path(&[PathSegment::Root(root.root.clone())]))
+    let highest = store
+        .max_int_record_key(&encode_path(&[PathSegment::Root(root.root.clone())]))
         .map_err(|_| WriteError {
             code: WRITE_STORE,
             message: format!("could not read records under `^{}`", root.root),
-        })?;
-    let highest = children
-        .iter()
-        .filter_map(|child| match child {
-            ChildSegment::Key(SavedKey::Int(value)) => Some(*value),
-            _ => None,
-        })
-        .max()
+        })?
         .unwrap_or(0);
     next_after(highest)
 }
@@ -871,19 +864,16 @@ pub fn next_layer_pos(
     }
     let mut prefix = identity_path(root, identity);
     prefix.push(PathSegment::ChildLayer(layer.into()));
-    let children = store
-        .child_keys(&encode_path(&prefix))
+    let highest = store
+        .max_int_index_key(&encode_path(&prefix))
         .map_err(|_| WriteError {
             code: WRITE_STORE,
             message: format!("could not read entries under keyed layer `{layer}`"),
-        })?;
-    let highest = children
-        .iter()
-        .filter_map(|child| match child {
-            ChildSegment::Key(SavedKey::Int(pos)) if *pos >= 1 => Some(*pos),
-            _ => None,
-        })
-        .max()
+        })?
+        // Appending fills no holes, so the policy reads only the highest
+        // positive position; any non-positive key (never an append result) is
+        // ignored, matching the prior positive-only filter.
+        .filter(|&pos| pos >= 1)
         .unwrap_or(0);
     next_after(highest)
 }

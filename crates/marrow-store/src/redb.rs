@@ -23,7 +23,10 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTran
 
 use crate::backend::Backend;
 use crate::mem::{Presence, ScanPage, StoreError};
-use crate::path::{ChildSegment, decode_child_segment, root_name, segment_len};
+use crate::path::{
+    ChildSegment, SavedKey, decode_child_segment, decode_key_value, int_index_key_band,
+    int_record_key_band, root_name, segment_len,
+};
 
 /// The single table holding every encoded (path, value) pair.
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
@@ -222,6 +225,33 @@ impl RedbStore {
             .expect("a journal while a transaction is open")
             .push(entry);
     }
+
+    /// The highest integer key in the half-open byte `band` of integer-keyed
+    /// children of `prefix`. The band is one contiguous numeric-ordered run, so
+    /// its last entry (redb ranges are double-ended) is the highest; the key
+    /// after `prefix` is the kind tag (one byte) then the integer key encoding,
+    /// so it decodes from `prefix.len() + 1`. `None` when the band is empty.
+    fn max_int_in_band(
+        &self,
+        prefix: &[u8],
+        (lo, hi): (Vec<u8>, Vec<u8>),
+    ) -> Result<Option<i64>, StoreError> {
+        read_view!(self, "max_int_key", |table| {
+            let Some(entry) = table
+                .range::<&[u8]>(lo.as_slice()..hi.as_slice())
+                .map_err(io("max_int_key"))?
+                .next_back()
+            else {
+                return Ok(None);
+            };
+            let (key, _) = entry.map_err(io("max_int_key"))?;
+            let key = key.value();
+            match decode_key_value(key.get(prefix.len() + 1..).unwrap_or(&[])) {
+                Some((SavedKey::Int(value), _)) => Ok(Some(value)),
+                _ => Err(corrupt(key)),
+            }
+        })
+    }
 }
 
 impl Backend for RedbStore {
@@ -367,6 +397,14 @@ impl Backend for RedbStore {
             }
             Ok(roots)
         })
+    }
+
+    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        self.max_int_in_band(prefix, int_record_key_band(prefix))
+    }
+
+    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        self.max_int_in_band(prefix, int_index_key_band(prefix))
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {

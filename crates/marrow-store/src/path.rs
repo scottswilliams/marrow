@@ -99,6 +99,40 @@ pub fn encode_key_value(key: &SavedKey) -> Vec<u8> {
     bytes
 }
 
+/// The half-open byte range `[lo, hi)` over the immediate integer record-key
+/// children of `prefix`. Integer record keys all share the `prefix`, the
+/// record-key kind tag, and the integer key-type tag, and their sign-flipped
+/// big-endian bodies sort in numeric order, so they form one contiguous band; a
+/// backend ranges over `lo..hi` and takes the last entry to find the highest
+/// integer record key without scanning every child. `path.rs` owns these bounds
+/// so the store never references the tag constants.
+pub fn int_record_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    int_key_band(prefix, KIND_RECORD_KEY)
+}
+
+/// The half-open byte range `[lo, hi)` over the immediate integer index-key
+/// children of `prefix` (the positions inside a keyed child layer). The layout
+/// matches [`int_record_key_band`] but with the index-key kind tag, so a backend
+/// finds the highest integer position under a layer the same bounded way it finds
+/// the highest record key under a root.
+pub fn int_index_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    int_key_band(prefix, KIND_INDEX_KEY)
+}
+
+/// Build the half-open `[lo, hi)` band over the immediate integer children of
+/// `prefix` carrying `kind`'s tag: the band starts at the lowest integer key
+/// (the integer key-type tag with an empty body) and ends just past the highest
+/// (the next type tag), so the run is exactly the integer keys of that kind.
+fn int_key_band(prefix: &[u8], kind: u8) -> (Vec<u8>, Vec<u8>) {
+    let mut lo = prefix.to_vec();
+    lo.push(kind);
+    lo.push(KEY_INT);
+    let mut hi = prefix.to_vec();
+    hi.push(kind);
+    hi.push(KEY_INT + 1);
+    (lo, hi)
+}
+
 /// Decode one scalar key from the front of `bytes`, returning the key and the
 /// number of bytes it consumed, or `None` if the front is not a well-formed
 /// key. The length lets a concatenation of encoded keys be walked in order.

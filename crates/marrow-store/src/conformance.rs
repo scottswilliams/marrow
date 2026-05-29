@@ -23,6 +23,10 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     delete_removes_the_subtree(&mut make());
     delete_of_an_absent_path_is_a_no_op(&mut make());
     child_keys_list_integer_records_in_order(&mut make());
+    max_int_record_key_returns_the_highest_integer_child(&mut make());
+    max_int_record_key_ignores_non_integer_and_named_children(&mut make());
+    max_int_record_key_handles_negative_keys(&mut make());
+    max_int_index_key_returns_the_highest_integer_position(&mut make());
     child_keys_dedup_records_with_multiple_descendants(&mut make());
     child_keys_list_field_names_in_order(&mut make());
     child_keys_round_trip_string_records(&mut make());
@@ -151,6 +155,122 @@ fn child_keys_list_integer_records_in_order(store: &mut dyn Backend) {
             ChildSegment::Key(SavedKey::Int(10)),
             ChildSegment::Key(SavedKey::Int(100)),
         ]
+    );
+}
+
+fn max_int_record_key_returns_the_highest_integer_child(store: &mut dyn Backend) {
+    // Empty: no integer record key under the root.
+    assert_eq!(
+        store.max_int_record_key(&root("seq")).unwrap(),
+        None,
+        "an empty root has no highest integer key"
+    );
+    for n in [10, 2, 100, 1] {
+        store
+            .write(&keyed_field("seq", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    assert_eq!(
+        store.max_int_record_key(&root("seq")).unwrap(),
+        Some(100),
+        "the highest integer record key, bounded"
+    );
+    // The bounded op must agree with the full child-key walk.
+    let from_walk = store
+        .child_keys(&root("seq"))
+        .unwrap()
+        .into_iter()
+        .filter_map(|child| match child {
+            ChildSegment::Key(SavedKey::Int(value)) => Some(value),
+            _ => None,
+        })
+        .max();
+    assert_eq!(
+        store.max_int_record_key(&root("seq")).unwrap(),
+        from_walk,
+        "the bounded op agrees with the full walk"
+    );
+}
+
+fn max_int_record_key_ignores_non_integer_and_named_children(store: &mut dyn Backend) {
+    // An integer record key and a string record key: only the integer counts.
+    store
+        .write(&keyed_field("mix", SavedKey::Int(5), "v"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(
+            &keyed_field("mix", SavedKey::Str("z".into()), "v"),
+            b"x".to_vec(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.max_int_record_key(&root("mix")).unwrap(),
+        Some(5),
+        "a string record key is ignored"
+    );
+    // A root with only a non-integer record key has no highest integer key.
+    store
+        .write(
+            &keyed_field("strs", SavedKey::Str("only".into()), "v"),
+            b"x".to_vec(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.max_int_record_key(&root("strs")).unwrap(),
+        None,
+        "only non-integer record keys yields None"
+    );
+}
+
+fn max_int_record_key_handles_negative_keys(store: &mut dyn Backend) {
+    // Negative integer record keys sort below positive ones; the highest wins.
+    for n in [-3, 2] {
+        store
+            .write(&keyed_field("neg", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    assert_eq!(
+        store.max_int_record_key(&root("neg")).unwrap(),
+        Some(2),
+        "the highest of a negative and a positive key"
+    );
+}
+
+fn max_int_index_key_returns_the_highest_integer_position(store: &mut dyn Backend) {
+    // Positions inside a keyed child layer are index keys, not record keys, so
+    // the highest-position op must read the index-key band. `^seq(1).items(pos)`.
+    let layer_prefix = encode_path(&[
+        PathSegment::Root("seq".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::ChildLayer("items".into()),
+    ]);
+    assert_eq!(
+        store.max_int_index_key(&layer_prefix).unwrap(),
+        None,
+        "an empty layer has no highest position"
+    );
+    for pos in [1, 3, 2] {
+        let entry = encode_path(&[
+            PathSegment::Root("seq".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::ChildLayer("items".into()),
+            PathSegment::IndexKey(SavedKey::Int(pos)),
+        ]);
+        store.write(&entry, b"x".to_vec()).unwrap();
+    }
+    assert_eq!(
+        store.max_int_index_key(&layer_prefix).unwrap(),
+        Some(3),
+        "the highest integer index position, bounded"
+    );
+    // A record key under the same record's root is not an index position and must
+    // not bleed into the layer's answer.
+    assert_eq!(
+        store
+            .max_int_index_key(&encode_path(&[PathSegment::Root("seq".into())]))
+            .unwrap(),
+        None,
+        "a root has record keys, not index positions"
     );
 }
 

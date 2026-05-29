@@ -32,6 +32,18 @@ pub trait Backend {
     /// The distinct saved root names, in Marrow order.
     fn roots(&self) -> Result<Vec<String>, StoreError>;
 
+    /// The highest integer record key among the immediate children of `prefix`,
+    /// or `None` when none decodes to an integer record key. Integer record keys
+    /// form one contiguous numeric-ordered band, so a backend answers this from
+    /// the band's last entry without materializing every child.
+    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError>;
+
+    /// The highest integer index key among the immediate children of `prefix`
+    /// (the positions inside a keyed child layer), or `None` when none decodes to
+    /// one. The index-key analogue of [`max_int_record_key`](Self::max_int_record_key),
+    /// answered the same bounded way.
+    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError>;
+
     /// Open a savepoint. Nested `begin`s stack; writes after it stay visible to
     /// reads (read-your-writes) until the matching `commit` or `rollback`.
     fn begin(&mut self) -> Result<(), StoreError>;

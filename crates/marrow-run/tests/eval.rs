@@ -2631,6 +2631,12 @@ impl Backend for FailingRollbackStore {
     fn roots(&self) -> Result<Vec<String>, StoreError> {
         Backend::roots(&self.inner)
     }
+    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        Backend::max_int_record_key(&self.inner, prefix)
+    }
+    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        Backend::max_int_index_key(&self.inner, prefix)
+    }
     fn begin(&mut self) -> Result<(), StoreError> {
         Backend::begin(&mut self.inner)
     }

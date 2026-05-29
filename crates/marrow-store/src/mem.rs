@@ -13,7 +13,10 @@
 use std::collections::BTreeMap;
 
 use crate::backend::Backend;
-use crate::path::{ChildSegment, decode_child_segment, root_name, segment_len};
+use crate::path::{
+    ChildSegment, SavedKey, decode_child_segment, decode_key_value, int_index_key_band,
+    int_record_key_band, root_name, segment_len,
+};
 
 /// What a saved path holds: a value, children, both, or neither. Mirrors the
 /// four presence states the backend contract reports.
@@ -213,6 +216,25 @@ impl MemStore {
             .map(|(key, _)| key)
             .take_while(move |key| key.starts_with(prefix))
     }
+
+    /// The highest integer key in the half-open byte `band` of integer-keyed
+    /// children of `prefix`. The band is one contiguous numeric-ordered run, so
+    /// its last entry is the highest; the key after `prefix` is the kind tag (one
+    /// byte) then the integer key encoding, so it decodes from `prefix.len() + 1`.
+    /// Returns `None` when the band is empty. O(log n), not a full child walk.
+    fn max_int_in_band(
+        &self,
+        prefix: &[u8],
+        (lo, hi): (Vec<u8>, Vec<u8>),
+    ) -> Result<Option<i64>, StoreError> {
+        match self.entries.range(lo..hi).next_back() {
+            Some((key, _)) => match decode_key_value(key.get(prefix.len() + 1..).unwrap_or(&[])) {
+                Some((SavedKey::Int(value), _)) => Ok(Some(value)),
+                _ => Err(corrupt(key)),
+            },
+            None => Ok(None),
+        }
+    }
 }
 
 /// The in-memory store serves the [`Backend`] contract by forwarding to its
@@ -248,6 +270,14 @@ impl Backend for MemStore {
 
     fn roots(&self) -> Result<Vec<String>, StoreError> {
         MemStore::roots(self)
+    }
+
+    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        self.max_int_in_band(prefix, int_record_key_band(prefix))
+    }
+
+    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        self.max_int_in_band(prefix, int_index_key_band(prefix))
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {
