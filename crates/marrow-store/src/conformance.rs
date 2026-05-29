@@ -35,6 +35,8 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     a_rolled_back_transaction_discards_its_writes(&mut make());
     an_unbalanced_commit_or_rollback_is_a_no_op(&mut make());
     nested_transactions_are_savepoints(&mut make());
+    an_inner_commit_then_outer_rollback_discards_everything(&mut make());
+    three_level_nesting_with_a_middle_commit_and_outer_rollback(&mut make());
     a_transaction_sees_its_writes_in_traversal(&mut make());
 }
 
@@ -354,6 +356,61 @@ fn nested_transactions_are_savepoints(store: &mut dyn Backend) {
     );
     store.commit().unwrap();
     assert_eq!(store.read(&book(1)).unwrap(), Some(b"outer".to_vec()));
+}
+
+fn an_inner_commit_then_outer_rollback_discards_everything(store: &mut dyn Backend) {
+    // An inner commit is not durable on its own: it merely closes the inner
+    // savepoint, leaving its writes riding the still-open outer transaction. So a
+    // write before the inner begin, a write committed by the inner savepoint, and
+    // a write after it must all vanish when the outer transaction rolls back.
+    store.begin().unwrap(); // outer
+    store.write(&book(1), b"A".to_vec()).unwrap();
+    store.begin().unwrap(); // inner
+    store.write(&book(2), b"B".to_vec()).unwrap();
+    store.commit().unwrap(); // inner commit: B rides the open outer transaction
+    store.write(&book(3), b"C".to_vec()).unwrap();
+    store.rollback().unwrap(); // outer rollback discards A, B, and C
+    assert_eq!(
+        store.read(&book(1)).unwrap(),
+        None,
+        "A before the inner begin"
+    );
+    assert_eq!(
+        store.read(&book(2)).unwrap(),
+        None,
+        "B committed by the inner savepoint"
+    );
+    assert_eq!(
+        store.read(&book(3)).unwrap(),
+        None,
+        "C after the inner commit"
+    );
+}
+
+fn three_level_nesting_with_a_middle_commit_and_outer_rollback(store: &mut dyn Backend) {
+    // Three stacked savepoints: committing the innermost two folds their writes
+    // outward, but the outermost rollback still discards the whole transaction, so
+    // every level's write disappears.
+    store.begin().unwrap(); // L1
+    store.write(&book(1), b"A".to_vec()).unwrap();
+    store.begin().unwrap(); // L2
+    store.write(&book(2), b"B".to_vec()).unwrap();
+    store.begin().unwrap(); // L3
+    store.write(&book(3), b"C".to_vec()).unwrap();
+    store.commit().unwrap(); // commit L3: C folds into L2
+    store.commit().unwrap(); // commit L2: B and C fold into L1
+    store.rollback().unwrap(); // rollback L1 discards A, B, and C
+    assert_eq!(store.read(&book(1)).unwrap(), None, "L1 write");
+    assert_eq!(
+        store.read(&book(2)).unwrap(),
+        None,
+        "L2 write committed into L1"
+    );
+    assert_eq!(
+        store.read(&book(3)).unwrap(),
+        None,
+        "L3 write committed into L1"
+    );
 }
 
 fn a_transaction_sees_its_writes_in_traversal(store: &mut dyn Backend) {
