@@ -74,6 +74,35 @@ fn searches_each_configured_source_root() {
 }
 
 #[test]
+fn overlapping_source_roots_discover_each_file_once() {
+    // Nested source roots ("src" and "src/sub") both reach src/sub/x.mw. Without
+    // dedup it is discovered twice — as `sub::x` under "src" and as `x` under
+    // "src/sub" — and the second relative path bogusly mismatches its own
+    // declaration. The first source root's relative path (and module name) wins.
+    let root = temp_project("overlapping-roots", |root| {
+        write(root, "src/sub/x.mw", "module sub::x\n");
+    });
+    let config =
+        parse_config(r#"{ "sourceRoots": ["src", "src/sub"] }"#).expect("config");
+
+    let modules = discover_modules(&root, &config).expect("discover");
+    let found: Vec<(PathBuf, Option<String>)> = modules
+        .iter()
+        .map(|m| (m.relative_path.clone(), m.module_name.clone()))
+        .collect();
+
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(modules.len(), 1, "{modules:#?}");
+    assert_eq!(
+        found[0],
+        (
+            PathBuf::from("sub").join("x.mw"),
+            Some("sub::x".to_string())
+        )
+    );
+}
+
+#[test]
 fn an_empty_source_root_yields_no_modules() {
     // A source root that exists but holds no `.mw` files is valid, not an error.
     let root = temp_project("empty-root", |root| {

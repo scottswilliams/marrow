@@ -198,6 +198,10 @@ pub fn discover_modules(
         collect_mw_files(&root, &root, &mut files)?;
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    // Overlapping source roots (e.g. "src" and "src/sub") reach the same file
+    // under two relative paths; keep the first source root's entry so a
+    // correctly-placed file is not also reported under a mismatching name.
+    files.dedup_by(|a, b| a.path == b.path);
     Ok(files)
 }
 
