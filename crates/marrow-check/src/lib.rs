@@ -1,9 +1,8 @@
 //! Resolve and check a Marrow project's source.
 //!
-//! This is the start of the checked-program pipeline: discover the project's
-//! `.mw` files, parse each one, and report parse diagnostics together with
-//! module/path resolution problems. Type, effect, and schema facts build on
-//! top of this in later work.
+//! Discover the project's `.mw` files, parse each one, and report parse
+//! diagnostics together with module/path resolution, type, and schema problems,
+//! producing a resolved [`CheckedProgram`] alongside the diagnostics.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -48,9 +47,7 @@ pub const CHECK_RETURN_TYPE: &str = "check.return_type";
 /// `const`/`var` initializer, or an assignment target).
 pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
 /// A value whose type cannot be resolved is stored into a concrete typed place.
-/// Under strict typing, dynamic data must be converted before typed use; this is
-/// the first position where an unresolved (`unknown`) value becomes an error
-/// rather than being skipped.
+/// Under strict typing, dynamic data must be converted before typed use.
 pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
 /// A bare name used as a value does not resolve to any binding in scope (a
 /// parameter, local, loop or catch binding, or module constant). Under strict
@@ -220,8 +217,7 @@ pub fn check_project(
                     } else {
                         declared.insert(expected.clone(), file.path.clone());
                         // The artifact takes a clean, path-matched, first-seen
-                        // library module. Skip any file that carries a parse
-                        // error this slice.
+                        // library module; a file carrying a parse error contributes none.
                         if !parsed.has_errors() {
                             program.modules.push(CheckedModule {
                                 name: module.name.clone(),
@@ -318,12 +314,11 @@ pub fn check_project(
 }
 
 /// Run the type-inference pass over one parsed file against the resolved
-/// `program`: unknown-type annotations, return-value placement, the full
+/// `program`: unknown-type annotations, return-value placement, the
 /// expression/statement type checks (operator/condition/assignment/call/argument
 /// types, std arity, the `nextId` single-`int` gate), and missing-return
 /// analysis. Library files (via [`check_project`]) and test scripts (via
-/// [`check_tests`]) share this pass so a test file's type errors are caught at
-/// check time, not only at run time. `project_resources` is the project-wide set
+/// [`check_tests`]) share this pass. `project_resources` is the project-wide set
 /// of resource names used to recognize type annotations.
 fn check_file_types(
     program: &CheckedProgram,
@@ -332,18 +327,9 @@ fn check_file_types(
     parsed: &marrow_syntax::ParsedSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // A module's top-level constants are in scope (bare) for its functions.
-    // An annotated constant carries its annotation; an unannotated one's type
-    // is inferred from its initializer (as a local `const` already is), so a
-    // typed use like `var x: int = M` resolves rather than false-positiving
-    // `check.untyped_value`. Built in source order so an earlier constant is
-    // in scope for a later one. This pass only builds the scope map; an
-    // initializer's own diagnostics (constant-expression validity and literal
-    // range) come from `check_const_value`, so inference diagnostics are
-    // discarded here.
     // Short→full import aliases for this file, used to expand short-form calls
-    // (`clock::now()` → `std::clock::now`) before resolution. Built once per
-    // file; the runtime rebuilds the same map from `CheckedModule::imports`.
+    // (`clock::now()` → `std::clock::now`) before resolution. The runtime
+    // rebuilds the same map from `CheckedModule::imports`.
     let aliases = build_alias_map(
         &parsed
             .file
@@ -352,6 +338,13 @@ fn check_file_types(
             .map(|use_decl| use_decl.name.clone())
             .collect::<Vec<_>>(),
     );
+    // A module's top-level constants are in scope (bare) for its functions, an
+    // annotated one carrying its annotation and an unannotated one its inferred
+    // type, so a typed use like `var x: int = M` resolves rather than
+    // false-positiving `check.untyped_value`. Built in source order so an earlier
+    // constant is in scope for a later one. Initializer diagnostics
+    // (constant-expression validity, literal range) come from `check_const_value`,
+    // so inference diagnostics are discarded here.
     let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
@@ -453,8 +446,7 @@ fn check_type_annotation(
 /// Flag each `return` whose value presence does not match the function's declared
 /// return type: a value-returning function must return a value, and a function
 /// with no return type must not return one. Recurses into nested blocks; `finally`
-/// is left to `check.finally_control_flow`, and the "every reachable path returns"
-/// rule is a later slice.
+/// is left to `check.finally_control_flow`.
 fn check_return_values(
     file: &Path,
     body: &marrow_syntax::Block,
@@ -514,8 +506,8 @@ fn check_return_values(
 /// Whether `block` definitely returns (or otherwise diverges) on every path —
 /// a sound under-approximation of "every reachable path returns" (spec). It is
 /// conservative: a function ending in a call or a loop may diverge, so it is not
-/// flagged; only a clearly falling-through end is. Avoids false positives at the
-/// cost of missing some genuine cases (a later slice can tighten it).
+/// flagged; only a clearly falling-through end is. This favors no false positives
+/// over catching every genuine case.
 fn block_returns(block: &marrow_syntax::Block) -> bool {
     block.statements.last().is_some_and(statement_returns)
 }
@@ -773,7 +765,7 @@ fn check_statement_types(
             let iterable_type = infer_type(program, iterable, scope, aliases, file, diagnostics);
             // The loop binding(s) are in scope for the body. Iterating a sequence
             // binds its single binding to the element type; other iterables (ranges,
-            // index keys) and the key/value form stay unknown for now.
+            // index keys) and the key/value form stay unknown.
             let first_type = match (&binding.second, &iterable_type) {
                 (None, MarrowType::Sequence(element)) => (**element).clone(),
                 _ => MarrowType::Unknown,
@@ -981,7 +973,7 @@ fn check_return_type(
 /// `check.assignment_type` mismatch; an `Unknown` value is a `check.untyped_value`
 /// error (strict typing: dynamic data must be converted before typed use). An
 /// untyped place (a local resource field, a whole resource, `unknown`) is left
-/// alone, as is a known non-primitive value (deferred to a later strict slice).
+/// alone, as is a known non-primitive value.
 fn check_assignment(
     file: &Path,
     span: SourceSpan,
@@ -1123,7 +1115,7 @@ fn infer_type(
                 .unwrap_or(MarrowType::Unknown)
         }
         // A multi-segment name, saved root, or undecomposed text has no known
-        // primitive type for this slice.
+        // primitive type.
         Expression::Name { .. } | Expression::SavedRoot { .. } | Expression::Unparsed { .. } => {
             MarrowType::Unknown
         }
@@ -1641,7 +1633,7 @@ fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
 /// name call that resolves to a declared function is checked; a builtin, std
 /// helper, `Error` constructor, out/inout call, key-lookup (non-name callee), or
 /// unresolved name is left alone — mirroring the runtime's dispatch order — so the
-/// check never fires on a non-function or a call this slice cannot resolve.
+/// check never fires on a non-function or a call the checker cannot resolve.
 ///
 /// It flags the argument count (every parameter is required), a named argument
 /// that names no parameter, and an argument whose type does not match its
