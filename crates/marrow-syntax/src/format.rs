@@ -1,6 +1,6 @@
 //! Render the syntax tree back to canonical Marrow `.mw` source.
 //!
-//! Canonical style follows `docs/language/`: binary operators are spaced
+//! Canonical style: binary operators are spaced
 //! (`a + b`), ranges are not (`1..10`), unary is `-x` / `not x`, calls are
 //! `f(a, b)`, dotted fields and `::` name paths have no surrounding spaces.
 //! The syntax tree does not record parentheses, so the formatter re-inserts

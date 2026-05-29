@@ -1385,7 +1385,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Report bare keywords used as field names. A `.` is always data field
-    /// access, and `field_name = identifier | string_lit` (grammar.md), so a
+    /// access, and a field name must be an identifier or string literal, so a
     /// reserved word immediately after `.` is never a valid field name and must
     /// be quoted (`."at"`). The structural parsers cannot build such a field and
     /// leave the line `Unparsed`, so the diagnostic is raised here from the
@@ -2158,7 +2158,7 @@ fn is_trivia(kind: TokenKind) -> bool {
 
 /// Recursive-descent parser for a single Marrow expression over a token slice
 /// with file-absolute spans. It covers the primary, postfix, unary, and binary
-/// precedence levels from `docs/language/grammar.md`, including calls and saved
+/// precedence levels, including calls and saved
 /// paths. Forms it does not yet handle (interpolation, quoted field segments)
 /// cause the whole value to be reported as `Expression::Unparsed`.
 struct ExprParser<'a> {
@@ -2856,7 +2856,7 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Parse `try ... [catch ...] [finally ...]`. The grammar requires at least
-    /// one of catch/finally, and the spec forbids `return`/`break`/`continue`
+    /// one of catch/finally, and `return`/`break`/`continue` are forbidden
     /// inside `finally`; both are semantic rules left to the checker, which has
     /// the loop/label scope needed to apply the `finally` rule correctly.
     fn try_stmt(&mut self) -> Statement {
@@ -3400,10 +3400,9 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
     }
 }
 
-/// Report positional arguments that follow a named argument. The grammar
-/// contract (grammar.md, modules-functions.md) is that "after the first named
-/// argument, remaining arguments must be named", because a positional argument
-/// after a named one would silently back-fill an earlier parameter. The
+/// Report positional arguments that follow a named argument. After the first
+/// named argument, every remaining argument must be named, because a positional
+/// argument after a named one would silently back-fill an earlier parameter. The
 /// argument list is parsed before its ordering matters, so the rule is checked
 /// here over the built tree, where every call's arguments and spans are known.
 fn report_positional_after_named(file: &SourceFile, diagnostics: &mut Vec<Diagnostic>) {

@@ -91,7 +91,7 @@ fn restore(store: &mut dyn Backend, source: &ScanPage) {
 
 #[test]
 fn dumps_round_trip_between_memory_and_native() {
-    // The dump is a backend-independent path/value stream (roadmap §9): a memory
+    // The dump is a backend-independent path/value stream: a memory
     // dump restores byte-for-byte into native storage, and back again.
     let dir = tempfile::tempdir().expect("create a temp dir");
 

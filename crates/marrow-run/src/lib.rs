@@ -1200,7 +1200,7 @@ fn eval_exists(
     Ok(Value::Bool(present))
 }
 
-/// Evaluate `count(path)` per builtins.md: the number of immediate children when
+/// Evaluate `count(path)`: the number of immediate children when
 /// the path has any, otherwise `1` for a present scalar value and `0` when the
 /// path is absent. A path with both a value and children counts only its
 /// children (its own value is `exists(path)` territory).
@@ -1548,8 +1548,8 @@ fn eval_bytes_conversion(
 }
 
 /// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
-/// `instant`/`duration`): coerce a dynamically-typed value to the named type per
-/// `docs/language/types.md`. `bool(...)` accepts the canonical boolean values
+/// `instant`/`duration`): coerce a dynamically-typed value to the named type.
+/// `bool(...)` accepts the canonical boolean values
 /// `{false, true, 0, 1}` from a bool, int, or string; `int(...)`/`decimal(...)`
 /// parse canonical numeric text from a string (and raise a typed numeric error on
 /// malformed input). The remaining conversions validate that the value already
@@ -1908,7 +1908,7 @@ fn eval_entries(
 /// record per child key for a primary root `^books`, or each entry's value for a
 /// keyed/sequence child layer `^books(id).tags`. Reuses [`enumerate_layer`] for
 /// the keys and the existing whole-record / layer-entry reads for the values.
-/// Index branches inspect identities only (builtins.md), so `values`/`entries`
+/// Index branches inspect identities only, so `values`/`entries`
 /// over one is rejected; iterate it or use `keys(...)` instead.
 fn materialize_layer(
     path: &Expression,
@@ -3576,8 +3576,7 @@ fn write_saved_field(
 
 /// Lower a quoted/raw record path `^root(key…)."segment"` to the encoded literal
 /// path and gate it on maintenance. Quoted segments are for existing raw data,
-/// import, export, migration, and repair (docs/language `resources-and-storage.md`,
-/// "Managed Saved Trees"); without maintenance they are rejected with
+/// import, export, migration, and repair; without maintenance they are rejected with
 /// `write.raw_requires_maintenance` — distinct from `write.unknown_field`, so a
 /// tool can tell raw syntax from a declared-field typo. The base must lower to a
 /// top-level record identity under a managed root; a raw segment names a literal
@@ -3870,8 +3869,8 @@ fn eval_resource_merge(
 
 /// Apply a merge into a local resource var `merge draft = source`: overlay each
 /// populated source field onto the local binding, leaving the local's other
-/// fields in place (docs/language `resources-and-storage.md` — a `merge`
-/// preserves fields the source does not supply). The local is ordinary program
+/// fields in place: a `merge` preserves fields the source does not supply. The
+/// local is ordinary program
 /// state, so this is a sequence of local-field writes, not a managed saved write.
 fn eval_local_merge(
     target: &str,
@@ -4690,8 +4689,8 @@ pub enum SavedPathClass {
     Orphan,
 }
 
-/// Classify a decoded saved path against the program's schemas
-/// (docs/implementation.md inspection). Named segments arrive uniformly as
+/// Classify a decoded saved path against the program's schemas.
+/// Named segments arrive uniformly as
 /// [`PathSegment::Field`] because the store cannot tell a field, layer, or index
 /// name apart from bytes — this resolves the ambiguity with the schema:
 ///
@@ -5013,8 +5012,8 @@ fn eval_binary(
             i64::checked_mul,
             Decimal::checked_mul,
         ),
-        // `/` always yields a decimal (docs/language/syntax.md), so integer
-        // operands divide as decimals too: `1 / 2` is `0.5`.
+        // `/` always yields a decimal, so integer operands divide as decimals
+        // too: `1 / 2` is `0.5`.
         BinaryOp::Divide => decimal_div(left, right, env, span),
         BinaryOp::Remainder => int_remainder_op(left, right, env, span),
         BinaryOp::Less => compare_values(left, right, env, span, |o| o == Ordering::Less),
@@ -5190,9 +5189,9 @@ fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
 }
 
 /// Surface a managed-write planning failure (`marrow_write::WriteError`) as a
-/// catchable fault: the spec treats a rejected managed write — a unique conflict,
+/// catchable fault: a rejected managed write — a unique conflict,
 /// a missing required field, a type or identity mismatch, a value-range error, or
-/// a store read error met while planning — as recoverable, so a `try`/`catch`
+/// a store read error met while planning — is recoverable, so a `try`/`catch`
 /// can bind it and a transaction can continue or roll back. The fault keeps the
 /// `write.*` (or value-codec) code so an uncaught one surfaces unchanged. Call
 /// after dropping any `env.store` borrow held while planning.

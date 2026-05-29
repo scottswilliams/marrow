@@ -60,7 +60,7 @@ pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// `nextId(^root)` names a root with no default integer allocation policy: a
 /// composite identity, a single non-integer identity key, or a keyless singleton.
 /// The default per-root policy is only available for a resource with one `int`
-/// identity key (builtins.md:180-183, types.md:262-263). The runtime backstops
+/// identity key. The runtime backstops
 /// this with `write.next_id_unsupported`; the checker catches it before a run.
 pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
 /// A numeric literal is provably outside its type's range: an integer literal
@@ -504,7 +504,7 @@ fn check_return_values(
 }
 
 /// Whether `block` definitely returns (or otherwise diverges) on every path —
-/// a sound under-approximation of "every reachable path returns" (spec). It is
+/// a sound under-approximation of "every reachable path returns". It is
 /// conservative: a function ending in a call or a loop may diverge, so it is not
 /// flagged; only a clearly falling-through end is. This favors no false positives
 /// over catching every genuine case.
@@ -548,8 +548,8 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
 /// each in-scope binding (parameters and `const`/`var` locals) and inferring the
 /// type of each expression. A check fires only when a type or signature is known
 /// to be wrong, so an unresolved value — a saved-data read, a cross-module value,
-/// an unresolved call — is never a false positive. The operator rules mirror
-/// `docs/language/syntax.md`: matching numeric operands for `+ - * /`, `int` for
+/// an unresolved call — is never a false positive. The operator rules are:
+/// matching numeric operands for `+ - * /`, `int` for
 /// `%`, `string` for `_`, ordered same-typed operands for comparisons, and `bool`
 /// for `and`/`or`/`not`.
 fn check_function_types(
@@ -881,8 +881,8 @@ fn bind(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
 }
 
 /// Type-check an `if`/`while` condition. Inferring it also operator-checks it;
-/// then a condition whose type is a known primitive other than `bool` is flagged
-/// (`docs/language/control-flow-and-effects.md`: "Conditions must be `bool`"). An
+/// then a condition whose type is a known primitive other than `bool` is flagged,
+/// since conditions must be `bool`. An
 /// unknown type — an unresolved call such as `exists(...)`, a saved-data read — is
 /// left alone, so the check never fires on an uncertain condition.
 fn check_condition(
@@ -1674,7 +1674,7 @@ fn check_call(
         return check_next_id(program, args, span, file, diagnostics);
     }
     // Builtins dispatch before user functions. For std helpers the signatures are
-    // fixed (standard-library.md), so argument types and arity are checked here the
+    // fixed, so argument types and arity are checked here the
     // same way user-function arguments are; other builtins leave their arguments to
     // the runtime. A std helper's return type feeds the surrounding type checks.
     if is_builtin_call(segments) {
@@ -1701,7 +1701,7 @@ fn check_call(
     }
     // A callee naming a declared resource is a constructor, not a function:
     // `Book(...)` builds the resource value and `Book::Id(...)` builds its
-    // identity (types.md:152-158, 276-297). Recognize it so a spec-valid
+    // identity. Recognize it so a valid
     // constructor is not a false `check.unresolved_call`.
     if let Some(ty) = resource_constructor_type(program, segments) {
         return ty;
@@ -1850,7 +1850,7 @@ fn check_args_against(
 }
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root. A single-`int`
-/// root types to `Resource::Id` (types.md:251, builtins.md:171-175); any other
+/// root types to `Resource::Id`; any other
 /// identity shape reports `check.next_id_requires_single_int`. A non-`^root` or
 /// wrong-arity argument is left to the runtime (matching how other builtins
 /// behave), and an undeclared root is already reported elsewhere (a `^bogus` read
@@ -1983,7 +1983,7 @@ fn resource_constructor_type(program: &CheckedProgram, segments: &[String]) -> O
 /// each dispatched before user functions at runtime, so never a program function.
 fn is_builtin_call(segments: &[String]) -> bool {
     match segments {
-        // The single-name builtins, grouped as in docs/language/builtins.md. Each
+        // The single-name builtins, grouped by purpose. Each
         // dispatches before user-function resolution at runtime, so none is ever a
         // declared program function.
         [name] => matches!(
@@ -2027,7 +2027,7 @@ fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<
 }
 
 /// The return type of a scalar conversion builtin (`int(x): int`, `string(x):
-/// string`, …), per docs/language/builtins.md. The conversion validates a
+/// string`, …). The conversion validates a
 /// dynamically-typed value and yields the named type.
 fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
     use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, ErrorCode, Instant, Int, String};
@@ -2049,8 +2049,8 @@ fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
     Some(MarrowType::Primitive(primitive))
 }
 
-/// The declared return type of a value-returning `std::module::op` helper, per
-/// `docs/language/standard-library.md`. Void helpers (`std::log`, `std::assert`,
+/// The declared return type of a value-returning `std::module::op` helper.
+/// Void helpers (`std::log`, `std::assert`,
 /// `std::io::write*`) and single-name builtins return `None`, leaving the call
 /// `Unknown` for the surrounding checks. Argument typing for std helpers stays the
 /// runtime's job; this only supplies the result type.
@@ -2094,7 +2094,7 @@ fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
 }
 
 /// The positional parameter primitive types of a `std::module::op` helper, in
-/// order, per `docs/language/standard-library.md`. `Some(params)` for an
+/// order. `Some(params)` for an
 /// enumerated helper (including void ones, whose arguments still need checking —
 /// hence a separate function from [`std_call_return_type`]); `None` for an unknown
 /// op, leaving its arguments to the runtime. A `None` slot inside the list marks a

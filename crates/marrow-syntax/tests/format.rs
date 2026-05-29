@@ -2,8 +2,8 @@ use marrow_syntax::{
     Declaration, format_block, format_declaration, format_expression, format_source, parse_source,
 };
 
-/// Read every `module`-starting `.mw` block from `docs/language` (the complete
-/// library files used as parser fixtures).
+/// Read every `module`-starting `.mw` block from the language reference (the
+/// complete library files used as parser fixtures).
 fn documented_module_files() -> Vec<String> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")

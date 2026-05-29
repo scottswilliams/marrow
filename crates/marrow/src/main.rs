@@ -210,8 +210,8 @@ fn report_project(target: &str, report: &marrow_check::CheckReport, format: Chec
     }
 }
 
-/// The broad `kind` category for a dotted error code (docs/error-codes.md),
-/// derived from the code's first segment. The prefix is not always the kind name
+/// The broad `kind` category for a dotted error code, derived from the code's
+/// first segment. The prefix is not always the kind name
 /// (`run.*` is `runtime`, `store.*` is `storage`), so the mapping is explicit.
 fn kind_for_code(code: &str) -> &'static str {
     match code.split('.').next().unwrap_or("") {

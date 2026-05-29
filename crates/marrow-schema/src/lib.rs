@@ -116,32 +116,30 @@ pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
 
 /// An index argument does not resolve to an identity key, a top-level field, or
 /// a nested field reached through unkeyed groups. Index arguments do not walk
-/// keyed child layers (resources-and-storage.md:197-199).
+/// keyed child layers.
 pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
 
-/// Two resource elements declare the same stable ID. Stable IDs must be unique
-/// (resources-and-storage.md:159-161).
+/// Two resource elements declare the same stable ID. Stable IDs must be unique.
 pub const SCHEMA_DUPLICATE_STABLE_ID: &str = "schema.duplicate_stable_id";
 
 /// A saved key (an identity key, a keyed-layer key parameter, or an index
 /// argument) has a type with no order-preserving key encoding — currently
-/// `decimal`. Saved keys use ordered key types (types.md:65-66); the store
-/// cannot encode a decimal as a key, so the write planner could never maintain
-/// such an entry. Reject it at compile time rather than commit data with an
-/// unmaintained index or key.
+/// `decimal`. Saved keys use ordered key types; the store cannot encode a
+/// decimal as a key, so the write planner could never maintain such an entry.
+/// Reject it at compile time rather than commit data with an unmaintained index
+/// or key.
 pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
 
 /// A non-unique index does not end with all identity keys in declaration order.
 /// A non-unique entry is a presence marker, so two records sharing the indexed
 /// values would collapse onto one entry unless the identity keys make each entry
-/// distinct (resources-and-storage.md:230-232, :254-256). A unique index is
-/// exempt: each populated entry already points to one identity.
+/// distinct. A unique index is exempt: each populated entry already points to one
+/// identity.
 pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_identity_keys";
 
 /// An index is declared on a resource with no keyed saved root. Declared indexes
 /// are members of keyed saved resources; a singleton (keyless) or local
-/// (non-saved) resource has no generated identity for an entry to point to
-/// (resources-and-storage.md:217-219).
+/// (non-saved) resource has no generated identity for an entry to point to.
 pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
 
 /// A required field is declared inside an unkeyed group. The write planner does
@@ -373,9 +371,8 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
 }
 
 /// The span of a top-level member named `name`, if one exists. Identity keys,
-/// fields, layers, and index names share the resource namespace
-/// (resources-and-storage.md:240-242), so an identity key may not reuse any of
-/// them.
+/// fields, layers, and index names share the resource namespace, so an identity
+/// key may not reuse any of them.
 fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<SourceSpan> {
     members.iter().find_map(|member| match member {
         ResourceMember::Field(field) if field.name == name => Some(field.span),
@@ -387,9 +384,9 @@ fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<Sourc
 
 /// Resolve each top-level index argument against the resource. Arguments may
 /// name an identity key, a top-level unkeyed field, or a nested scalar field
-/// reached through unkeyed groups; they do not walk keyed child layers
-/// (resources-and-storage.md:197-199). Each unresolved argument is reported at
-/// its index's span, in index then argument order.
+/// reached through unkeyed groups; they do not walk keyed child layers. Each
+/// unresolved argument is reported at its index's span, in index then argument
+/// order.
 ///
 /// An index also requires a keyed saved root: a singleton (keyless) or local
 /// (non-saved) resource has no identity for an entry to point to, which is
@@ -466,8 +463,7 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
 
 /// Does this index argument list end with all identity key names in declaration
 /// order? A non-unique entry is a presence marker, so without the trailing
-/// identity keys two records sharing the indexed values collapse onto one entry
-/// (resources-and-storage.md:230-232).
+/// identity keys two records sharing the indexed values collapse onto one entry.
 fn ends_with_identity_keys(args: &[String], keys: &[KeyParam]) -> bool {
     args.len() >= keys.len()
         && args[args.len() - keys.len()..]
@@ -517,9 +513,9 @@ fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> O
 }
 
 /// Report stable IDs that repeat within this resource. Stable IDs must be
-/// unique (resources-and-storage.md:159-161); the later element is the error.
-/// Elements are visited in source order, descending into each group before the
-/// next sibling, so the first occurrence wins deterministically.
+/// unique; the later element is the error. Elements are visited in source order,
+/// descending into each group before the next sibling, so the first occurrence
+/// wins deterministically.
 ///
 /// This covers the within-resource subset only; cross-resource uniqueness is
 /// deferred to a later project-wide pass.
@@ -566,7 +562,7 @@ fn collect_stable_ids(members: &[ResourceMember], ids: &mut Vec<(String, SourceS
 
 /// Does this saved type embed `unknown`? A type embeds `unknown` when it is
 /// `unknown` itself or a `sequence[...]` whose element type embeds it. Managed
-/// saved schemas reject `unknown` anywhere inside (docs/language/types.md).
+/// saved schemas reject `unknown` anywhere inside.
 fn embeds_unknown(ty: &TypeRef) -> bool {
     let mut text = ty.text.trim();
     while let Some(inner) = sequence_element(text) {
@@ -576,8 +572,7 @@ fn embeds_unknown(ty: &TypeRef) -> bool {
 }
 
 /// The element type spelling of a `sequence[T]`, or `None` for a non-sequence
-/// type. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree
-/// (resources-and-storage.md:388-400).
+/// type. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree.
 fn sequence_element(text: &str) -> Option<&str> {
     text.trim()
         .strip_prefix("sequence[")
@@ -598,9 +593,9 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
 
 /// Can this type be a saved key? Saved keys use ordered key types: scalars
 /// (except `decimal`, which has no order-preserving key encoding) and generated
-/// resource identity types (types.md:65-66). `decimal` is the one scalar the
-/// store cannot encode as a key, so it is rejected wherever a key is expected:
-/// identity keys, keyed-layer key parameters, and index arguments.
+/// resource identity types. `decimal` is the one scalar the store cannot encode
+/// as a key, so it is rejected wherever a key is expected: identity keys,
+/// keyed-layer key parameters, and index arguments.
 fn is_unorderable_key_type(ty: &TypeRef) -> bool {
     ty.text.trim() == "decimal"
 }
@@ -685,9 +680,9 @@ fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
 }
 
 /// Desugar `name: sequence[T]` into the keyed leaf `name(pos: int): T`. The
-/// implicit `pos: int` key matches the canonical sequence spelling
-/// (resources-and-storage.md:388-400), so the resulting layer is identical to
-/// the one `name(pos: int): T` produces and append/read/traverse work unchanged.
+/// implicit `pos: int` key matches the canonical sequence spelling, so the
+/// resulting layer is identical to the one `name(pos: int): T` produces and
+/// append/read/traverse work unchanged.
 fn keyed_leaf_from_sequence(field: &FieldDecl, element: &str) -> LayerSchema {
     LayerSchema {
         name: field.name.clone(),

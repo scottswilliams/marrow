@@ -1,7 +1,7 @@
 //! Schema compilation tests.
 //!
-//! The primary case is the `Book` resource from `docs/language/sample.md`,
-//! which exercises the saved root, required and sparse fields, a keyed-leaf
+//! The primary case is the canonical `Book` resource, which exercises the saved
+//! root, required and sparse fields, a keyed-leaf
 //! sequence, group and history layers, and an index. The remaining cases pin
 //! the structural errors the compiler reports.
 
@@ -47,7 +47,7 @@ fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a LayerSchema {
         .unwrap_or_else(|| panic!("layer `{name}` not found"))
 }
 
-/// The `Book` resource from `docs/language/sample.md`.
+/// The canonical `Book` resource.
 const BOOK: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -353,8 +353,8 @@ resource Book at ^books(id: int)
 
 #[test]
 fn keyed_leaf_key_param_typed_unknown_is_an_error() {
-    // `unknown` is rejected in saved keys (types.md:66-67), including a keyed
-    // layer's own key parameters, not only identity keys and value types.
+    // `unknown` is rejected in saved keys, including a keyed layer's own key
+    // parameters, not only identity keys and value types.
     let source = "\
 resource Book at ^books(id: int)
     tags(pos: unknown): string
@@ -434,8 +434,7 @@ resource Book at ^books(notes: int)
 #[test]
 fn identity_key_name_colliding_with_index_is_an_error() {
     // Identity keys, fields, layers, and index names share the resource
-    // namespace (resources-and-storage.md:240-242, :125-126), so a key may not
-    // reuse an index name.
+    // namespace, so a key may not reuse an index name.
     let source = "\
 resource Book at ^books(id: int)
     required title: string
@@ -448,8 +447,8 @@ resource Book at ^books(id: int)
 
 #[test]
 fn index_arg_naming_no_member_is_an_error() {
-    // Index arguments must resolve to an identity key, field, or nested field
-    // (resources-and-storage.md:197-199). `shelf` names nothing here.
+    // Index arguments must resolve to an identity key, field, or nested field.
+    // `shelf` names nothing here.
     let source = "\
 resource Book at ^books(id: int)
     required title: string
@@ -477,8 +476,7 @@ resource Book at ^books(id: int)
 
 #[test]
 fn index_arg_naming_keyed_leaf_is_an_error() {
-    // Index arguments do not walk keyed child layers
-    // (resources-and-storage.md:197-199); `tags` is a keyed leaf.
+    // Index arguments do not walk keyed child layers; `tags` is a keyed leaf.
     let source = "\
 resource Book at ^books(id: int)
     tags(pos: int): string
@@ -530,8 +528,8 @@ resource Reading at ^readings(at: decimal)
 #[test]
 fn non_unique_index_omitting_the_identity_key_is_an_error() {
     // A non-unique index must end with all identity keys so each entry is
-    // distinct (resources-and-storage.md:230-232). `byShelf(shelf)` collapses
-    // two books on the same shelf onto one entry.
+    // distinct. `byShelf(shelf)` collapses two books on the same shelf onto one
+    // entry.
     let source = "\
 resource Book at ^books(id: int)
     shelf: string
@@ -571,7 +569,7 @@ resource Book at ^books(id: int)
 #[test]
 fn non_unique_index_on_composite_identity_requires_all_keys_in_order() {
     // For a composite identity, a non-unique index must end with every identity
-    // key in declaration order (resources-and-storage.md:254-256).
+    // key in declaration order.
     let reversed = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
@@ -594,8 +592,7 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
 
 #[test]
 fn unique_index_may_omit_the_identity_key() {
-    // A unique index points to one identity, so it may omit the identity keys
-    // (resources-and-storage.md:247-248).
+    // A unique index points to one identity, so it may omit the identity keys.
     let source = "\
 resource Book at ^books(id: int)
     isbn: string
@@ -611,7 +608,7 @@ resource Book at ^books(id: int)
 #[test]
 fn index_on_a_singleton_resource_is_an_error() {
     // A singleton saved resource has no generated identity for an index entry to
-    // point to (resources-and-storage.md:217-219), so an index is rejected.
+    // point to, so an index is rejected.
     let source = "\
 resource Settings at ^settings
     theme: string
@@ -657,7 +654,7 @@ resource Patient at ^patients(id: string)
 #[test]
 fn required_field_inside_a_keyed_group_is_allowed() {
     // The rejection is specific to UNKEYED groups; a keyed group (a layer the
-    // planner does maintain) may hold required fields, per the existing Book
+    // planner does maintain) may hold required fields, as in the Book
     // `versions(version) { required title }` shape.
     let source = "\
 resource Book at ^books(id: int)
@@ -726,8 +723,8 @@ resource Book at ^books(id: int)
 
 #[test]
 fn duplicate_stable_id_within_resource_is_an_error() {
-    // Stable IDs must be unique (resources-and-storage.md:159-161); within one
-    // resource the later element is the error.
+    // Stable IDs must be unique; within one resource the later element is the
+    // error.
     let source = "\
 resource Book at ^books(id: int)
     @id(\"book.x\")
@@ -750,9 +747,9 @@ fn clean_book_has_no_new_errors() {
 
 #[test]
 fn one_shape_compiles_as_both_local_and_saved() {
-    // Step 5's promise: a resource's field and layer shape is checked through
-    // one schema whether it is a saved root or a local value. Only `saved_root`
-    // differs between the two compilations.
+    // A resource's field and layer shape is checked through one schema whether it
+    // is a saved root or a local value. Only `saved_root` differs between the two
+    // compilations.
     let saved = compile_ok(
         "\
 resource Book at ^books(id: int)

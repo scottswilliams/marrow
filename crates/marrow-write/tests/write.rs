@@ -446,7 +446,7 @@ fn next_id_allocates_after_the_highest_record() {
 }
 
 /// A composite-identity root has no default `nextId` policy: composite identities
-/// are application-provided (builtins.md:180-183). `next_id` rejects it rather
+/// are application-provided. `next_id` rejects it rather
 /// than scanning integer child keys and inventing a bogus `1`.
 #[test]
 fn next_id_over_a_composite_root_is_unsupported() {
@@ -473,7 +473,7 @@ fn next_id_over_a_string_keyed_root_is_unsupported() {
 }
 
 /// A keyless singleton root has no generated identity at all, so `nextId` is not
-/// available for it (types.md:262-263).
+/// available for it.
 #[test]
 fn next_id_over_a_singleton_root_is_unsupported() {
     let settings = schema("resource Settings at ^settings\n    required theme: string\n");

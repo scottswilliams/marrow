@@ -75,23 +75,21 @@ pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 /// whose identity is simply not auto-allocated.
 pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 /// Deleting a `required` field on its own is rejected: a required field can only
-/// go away when its surrounding keyed entry or whole resource is deleted
-/// (docs/language `resources-and-storage.md`). The runtime enforces this guard
+/// go away when its surrounding keyed entry or whole resource is deleted. The
+/// runtime enforces this guard
 /// before planning, since `plan_field_delete` itself only sees one field. The
 /// guard lifts under an explicit maintenance run, which may drop a required field.
 pub const WRITE_REQUIRED_FIELD: &str = "write.required_field";
 /// A maintenance-only managed operation — dropping a whole managed root
 /// (`delete ^books`) — was attempted without the maintenance capability.
 /// Deleting one identity is ordinary work; dropping the whole root is
-/// maintenance work that code must opt into (docs/language
-/// `resources-and-storage.md`, "Delete And Merge"). The runtime enforces this.
+/// maintenance work that code must opt into. The runtime enforces this.
 pub const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
 /// A quoted/raw path segment under a managed root (`^books(id)."old-title"`) was
 /// used outside maintenance. Quoted segments are for existing raw data, import,
 /// export, migration, and repair; they do not create undeclared fields. Without
 /// maintenance the runtime rejects them — distinct from `write.unknown_field`, so
-/// a tool can tell "you used raw syntax" from "you typo'd a declared field"
-/// (docs/language `resources-and-storage.md`, "Managed Saved Trees").
+/// a tool can tell "you used raw syntax" from "you typo'd a declared field".
 pub const WRITE_RAW_REQUIRES_MAINTENANCE: &str = "write.raw_requires_maintenance";
 
 /// Wrap a store error met while planning a write into a `write.store` failure.
@@ -279,7 +277,7 @@ pub fn plan_resource_delete(
 /// field is declared and that `value` matches its type, rejects a unique-index
 /// conflict, then stages the single field write and keeps any index the field
 /// participates in coherent (remove the entry for the currently-stored value,
-/// add the entry for the new value — docs/language `resources-and-storage.md`).
+/// add the entry for the new value).
 /// `store` is read, not written; apply the returned [`WritePlan`] with
 /// [`WritePlan::commit`]. Returns a [`WriteError`] if the field is unknown, the
 /// value is mistyped, or a unique key is already held by another resource.
@@ -353,9 +351,9 @@ pub fn plan_field_write(
 /// field feeds. Validates that the field is declared (`WRITE_UNKNOWN_FIELD`),
 /// then stages the field-path delete plus, for each index whose key the field is
 /// part of, a delete of the currently-stored index entry — removing the field
-/// makes that key incomplete, so the entry must go (docs/language
-/// `resources-and-storage.md`: an index entry exists only when every indexed
-/// value is populated). This is the delete half of [`plan_field_write`]'s index
+/// makes that key incomplete, so the entry must go: an index entry exists only
+/// when every indexed
+/// value is populated. This is the delete half of [`plan_field_write`]'s index
 /// reconciliation: teardown only, with no new entry to add. Deleting an already
 /// absent field is a successful no-op plan. `store` is read, not written.
 pub fn plan_field_delete(
@@ -396,8 +394,8 @@ pub fn plan_field_delete(
 
 /// Plan a managed merge: copy the supplied fields of `value` over the resource
 /// already stored at `identity`, leaving stored fields the merge does not supply
-/// untouched (a partial update, not a replace — docs/language
-/// `resources-and-storage.md`). An omitted or [`FieldValue::Absent`] field is
+/// untouched (a partial update, not a replace). An omitted or
+/// [`FieldValue::Absent`] field is
 /// left as stored; clearing a field is `delete`, not `merge`. Validates supplied
 /// field types and that every required field is populated AFTER the merge
 /// (supplied here or already stored), and rejects a unique conflict, before
@@ -504,7 +502,7 @@ pub fn plan_resource_merge(
 /// string`), `key` must match the layer's key arity, and `value` must match the
 /// leaf type. A keyed leaf holds a single value at one path, so this is a plain
 /// replace-in-place write with no index maintenance — generated indexes do not
-/// span keyed child layers (docs/language `resources-and-storage.md`). Returns a
+/// span keyed child layers. Returns a
 /// [`WriteError`] if the layer is unknown, is a group rather than a leaf, the key
 /// arity is wrong, or the value is mistyped.
 pub fn plan_layer_leaf_write(
@@ -551,8 +549,8 @@ pub fn plan_layer_leaf_write(
 /// layer (e.g. `versions(version: int)` or `notes(noteId: string)`), `key` must
 /// match the layer's key arity, `field` must be a scalar member of that group,
 /// and `value` must match the member's type. A group-entry field holds a single
-/// value at one path, and generated indexes do not span keyed child layers
-/// (docs/language `resources-and-storage.md`), so this is a plain replace-in-
+/// value at one path, and generated indexes do not span keyed child layers,
+/// so this is a plain replace-in-
 /// place write with no index maintenance; it leaves the entry's other members in
 /// place. Returns a [`WriteError`] if the layer is unknown, is a leaf rather than
 /// a group, the key arity is wrong, the field is not a scalar member, or the
@@ -682,8 +680,8 @@ pub fn plan_layer_group_write(
 
 /// Plan a keyed-layer merge: copy every entry of the source layer
 /// `^root(from).layer` over the target layer `^root(to).layer`, leaving target
-/// entries the source does not supply in place (an overlay, not a replace —
-/// docs/language `resources-and-storage.md`). Both records belong to the same
+/// entries the source does not supply in place (an overlay, not a replace).
+/// Both records belong to the same
 /// resource and layer; the source subtree is read from `store` before any target
 /// change. Generated indexes do not span keyed child layers, so there is no index
 /// maintenance. Returns a [`WriteError`] if the resource has no saved root, an
@@ -839,7 +837,7 @@ fn next_after(highest: i64) -> Result<i64, WriteError> {
 /// The next 1-based position for an `append` to a keyed layer: one greater than
 /// the highest populated positive integer key under `^root(identity).layer`, or
 /// `1` when the layer is empty. Appending writes after the highest key and never
-/// fills holes (docs/language `resources-and-storage.md`); non-integer and
+/// fills holes; non-integer and
 /// non-positive keys are ignored. This is the append policy for sequence-shaped
 /// (integer-keyed) layers, the analogue of [`next_id`] for a root.
 pub fn next_layer_pos(

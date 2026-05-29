@@ -1,7 +1,7 @@
 //! The saved-tree backend contract.
 //!
 //! Every backend serves the same ordered-tree operations over encoded saved
-//! paths (docs/implementation.md) — read, write, delete, presence, child keys,
+//! paths — read, write, delete, presence, child keys,
 //! bounded scan, and roots — plus transaction control modelled as a savepoint
 //! stack (`begin`/`commit`/`rollback`, with nested `begin`s as savepoints).
 //! [`MemStore`](crate::mem::MemStore) is the in-memory implementor; a persistent
