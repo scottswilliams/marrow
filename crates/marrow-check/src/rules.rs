@@ -7,7 +7,9 @@
 
 use std::path::Path;
 
-use marrow_syntax::{Block, CatchClause, Expression, InterpolationPart, Severity, Statement};
+use marrow_syntax::{
+    Block, CatchClause, Expression, InterpolationPart, Severity, Statement, format_expression,
+};
 
 use crate::CheckDiagnostic;
 
@@ -23,11 +25,16 @@ pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
 pub const CHECK_INVALID_ASSIGN_TARGET: &str = "check.invalid_assign_target";
 /// A `const` value is not a constant expression.
 pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
+/// A loop over a saved layer mutates that same layer (a direct write, delete,
+/// append, or merge whose target is the layer being traversed). Collect the keys
+/// into a local sequence first when a rewrite must change the traversed layer.
+pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = "check.loop_mutates_traversed_layer";
 
 /// Apply every structural statement rule to one function body.
 pub fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
     walk_block(file, body, out);
     walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
+    walk_loop_layer_mutations(file, body, &mut Vec::new(), out);
 }
 
 /// A `const` value must be a compile-time constant expression: literals and
@@ -325,6 +332,174 @@ fn loop_jump_unresolved(label: Option<&str>, loop_depth: usize, loop_labels: &[S
     match label {
         None => loop_depth == 0,
         Some(label) => !loop_labels.iter().any(|known| known == label),
+    }
+}
+
+/// Walk a block reporting a write/delete/append/merge that mutates the same saved
+/// layer an enclosing `for` loop is traversing (builtins.md: "Do not mutate the
+/// same tree layer a loop is traversing"). `traversed` holds the canonical text of
+/// each enclosing loop's traversed saved layer; a mutation whose affected layer
+/// matches one of them removes or adds keys from a layer being iterated.
+fn walk_loop_layer_mutations(
+    file: &Path,
+    block: &Block,
+    traversed: &mut Vec<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    for statement in &block.statements {
+        // Flag a mutation whose affected layer is one a loop is iterating.
+        if let Some(affected) = mutated_layer(statement)
+            && traversed.iter().any(|layer| layer == &affected)
+        {
+            out.push(diagnostic_at(
+                CHECK_LOOP_MUTATES_TRAVERSED_LAYER,
+                file,
+                statement,
+                "this write changes the saved layer the enclosing loop is traversing; \
+                 collect the keys into a local sequence first",
+            ));
+        }
+        match statement {
+            Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                walk_loop_layer_mutations(file, then_block, traversed, out);
+                for else_if in else_ifs {
+                    walk_loop_layer_mutations(file, &else_if.block, traversed, out);
+                }
+                if let Some(block) = else_block {
+                    walk_loop_layer_mutations(file, block, traversed, out);
+                }
+            }
+            Statement::For { iterable, body, .. } => {
+                let pushed = traversed_layer(iterable);
+                if let Some(layer) = &pushed {
+                    traversed.push(layer.clone());
+                }
+                walk_loop_layer_mutations(file, body, traversed, out);
+                if pushed.is_some() {
+                    traversed.pop();
+                }
+            }
+            Statement::While { body, .. }
+            | Statement::Transaction { body, .. }
+            | Statement::Lock { body, .. } => {
+                walk_loop_layer_mutations(file, body, traversed, out);
+            }
+            Statement::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                walk_loop_layer_mutations(file, body, traversed, out);
+                if let Some(catch) = catch {
+                    walk_loop_layer_mutations(file, &catch.block, traversed, out);
+                }
+                if let Some(finally) = finally {
+                    walk_loop_layer_mutations(file, finally, traversed, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The saved layer a `for` loop traverses, as canonical text, or `None` for a
+/// loop over a range or a local value. A loop traverses a saved layer only when
+/// its iterable is a saved path directly or wrapped in `keys`/`values`/`entries`;
+/// iterating a local (the "collect keys first" pattern) traverses no saved layer.
+fn traversed_layer(iterable: &Expression) -> Option<String> {
+    let path = traversal_argument(iterable).unwrap_or(iterable);
+    is_saved_path(path).then(|| format_expression(path))
+}
+
+/// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
+/// expression. These wrap a saved layer without changing which layer is traversed.
+fn traversal_argument(expr: &Expression) -> Option<&Expression> {
+    let Expression::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
+    };
+    if segments.len() != 1 || !matches!(segments[0].as_str(), "keys" | "values" | "entries") {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        _ => None,
+    }
+}
+
+/// The saved layer a statement adds keys to or removes keys from, as canonical
+/// text, or `None` when the statement does not change a saved layer's key set. A
+/// whole-record/keyed-entry write, `delete`, or whole-record `merge` of
+/// `^root(key…)` affects the parent layer (the callee). `append(path, v)` and a
+/// keyed-leaf/layer `merge` affect the named layer. A scalar field write or field
+/// delete keeps the layer's keys, so it is not reported here.
+fn mutated_layer(statement: &Statement) -> Option<String> {
+    match statement {
+        Statement::Assign { target, .. } => keyed_entry_parent(target),
+        Statement::Delete { path, .. } => keyed_entry_parent(path),
+        Statement::Merge { target, .. } => match target {
+            // A keyed-layer merge `merge ^root(key…).layer = …` overlays entries
+            // into that layer, so the layer itself is the affected key set.
+            Expression::Field { base, .. } if is_saved_path(base) => {
+                Some(format_expression(target))
+            }
+            other => keyed_entry_parent(other),
+        },
+        Statement::Expr {
+            value: Expression::Call { callee, args, .. },
+            ..
+        } => append_target(callee, args).map(format_expression),
+        _ => None,
+    }
+}
+
+/// The layer that gains or loses a key when `target` (a `^root(key…)` or
+/// `^root(key…).layer(key…)` place) is written, deleted, or merged whole: the
+/// callee with the final key step dropped. A scalar field place
+/// (`^root(key…).field`) is not a keyed entry, so it returns `None` — writing a
+/// field does not change the parent layer's keys.
+fn keyed_entry_parent(target: &Expression) -> Option<String> {
+    match target {
+        Expression::Call { callee, .. } if is_saved_path(callee) => Some(format_expression(callee)),
+        _ => None,
+    }
+}
+
+/// The saved layer argument of `append(path, value)`, or `None` for any other
+/// call. `append` adds a key to its first argument's layer.
+fn append_target<'a>(
+    callee: &Expression,
+    args: &'a [marrow_syntax::Argument],
+) -> Option<&'a Expression> {
+    let Expression::Name { segments, .. } = callee else {
+        return None;
+    };
+    if segments.len() != 1 || segments[0] != "append" {
+        return None;
+    }
+    match args {
+        [path, _] if path.mode.is_none() && path.name.is_none() && is_saved_path(&path.value) => {
+            Some(&path.value)
+        }
+        _ => None,
+    }
+}
+
+/// A saved-data path: a `^root`, a key lookup on a saved path, or a field of one.
+fn is_saved_path(expr: &Expression) -> bool {
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Field { base, .. } => is_saved_path(base),
+        Expression::Call { callee, .. } => is_saved_path(callee),
+        _ => false,
     }
 }
 

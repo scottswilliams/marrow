@@ -8,7 +8,7 @@ use std::rc::Rc;
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_run::{
     Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW,
+    RUN_NO_VALUE, RUN_OVERFLOW, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW,
     RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, evaluate_function, run_entry,
     run_entry_with_host,
 };
@@ -4031,6 +4031,74 @@ fn iterates_a_keyed_child_tree() {
     // Keys iterate in sorted key order (alice before bob).
     let outcome = run_entry(&program, &store, "test::players", &[]).expect("run");
     assert_eq!(outcome.output, "alice\nbob\n");
+}
+
+#[test]
+fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
+    // `for id in ^books` traverses the `^books` identity layer; deleting a record
+    // inside the loop changes that layer, which is a dynamic traversal fault even
+    // when the checker cannot prove it.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in ^books\n        delete ^books(id)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::clear", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for pos in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::grow", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn collecting_keys_first_then_deleting_is_allowed() {
+    // The documented safe pattern: snapshot the keys into a local, then iterate the
+    // local and delete. The loop traverses a local value, so no traversal fault.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\nfn remaining(): int\n    return count(^books)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    run_entry(&program, &store, "test::clear", &[]).expect("clear");
+    // Every record was removed.
+    assert_eq!(
+        run_entry(&program, &store, "test::remaining", &[])
+            .expect("count")
+            .value,
+        Some(Value::Int(0))
+    );
+}
+
+#[test]
+fn mutating_a_different_record_layer_while_traversing_is_allowed() {
+    // Traversing `^books(1).tags` and appending to `^books(2).tags` touches a
+    // different record's layer, so it is not a traversal fault.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn copy()\n    for pos in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\nfn tags2(): int\n    return count(^books(2).tags)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    run_entry(&program, &store, "test::copy", &[]).expect("copy");
+    assert_eq!(
+        run_entry(&program, &store, "test::tags2", &[])
+            .expect("count")
+            .value,
+        Some(Value::Int(1))
+    );
 }
 
 /// `count(path)` over the four presence shapes builtins.md defines: a scalar

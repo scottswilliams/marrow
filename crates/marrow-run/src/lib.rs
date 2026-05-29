@@ -121,6 +121,10 @@ pub const RUN_ASSERT: &str = "run.assertion";
 /// An `Error` raised by `throw` reached the top of a function with no `catch` to
 /// handle it. The fault message carries the error's own code and message.
 pub const RUN_UNCAUGHT_THROW: &str = "run.uncaught_error";
+/// A write, delete, append, or merge changed the saved layer a loop was actively
+/// traversing. The static rule `check.loop_mutates_traversed_layer` catches the
+/// obvious cases; this is the dynamic guard for a path the checker cannot prove.
+pub const RUN_TRAVERSAL: &str = "run.traversal";
 
 /// The host capabilities a run may use. Pure runs need none; host modules such
 /// as `std::clock` require the matching capability, and a call made without it
@@ -1614,6 +1618,8 @@ fn eval_append(
     let (root, identity) = lower_record_identity(base, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("appending under this saved root", span))?;
+    // Append adds a key to this layer's key set.
+    env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
     let saved = value_to_saved(eval_expr(&value.value, env)?)
         .ok_or_else(|| unsupported("appending a resource value", span))?;
     let pos = {
@@ -1990,6 +1996,10 @@ struct Env<'p> {
     /// every `try`/activation boundary that turns the result back into `Ok` clears
     /// it, so a stale throw can never be mistaken for a later fault.
     pending_throw: Option<Value>,
+    /// Encoded path prefixes of the saved layers loops are actively traversing,
+    /// innermost last. A write/delete/append/merge whose affected layer is in this
+    /// set mutates a layer being iterated, which is a [`RUN_TRAVERSAL`] fault.
+    traversed_layers: Vec<Vec<u8>>,
 }
 
 /// Why an assignment did not land.
@@ -2007,7 +2017,29 @@ impl<'p> Env<'p> {
             store: ctx.store,
             host: ctx.host,
             pending_throw: None,
+            traversed_layers: Vec::new(),
         }
+    }
+
+    /// Fault if `affected` (an encoded saved-layer prefix) is a layer a loop is
+    /// actively traversing. Called before a write/delete/append/merge commits, so
+    /// a self-mutating traversal stops before it changes the iterated key set.
+    fn guard_traversed_layer(
+        &self,
+        affected: &[PathSegment],
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        let affected = encode_path(affected);
+        if self.traversed_layers.iter().any(|layer| layer == &affected) {
+            return Err(RuntimeError {
+                code: RUN_TRAVERSAL,
+                message: "this write changes the saved layer a loop is traversing; \
+                          collect the keys into a local sequence first"
+                    .into(),
+                span,
+            });
+        }
+        Ok(())
     }
 
     fn push_scope(&mut self) {
@@ -2372,6 +2404,26 @@ fn eval_while(
     Ok(Flow::Normal)
 }
 
+/// Run `loop_body` with `prefix` marked as an actively-traversed saved layer (if
+/// any), popping it afterward whatever the body returns, so a self-mutating write
+/// inside the loop is caught by [`Env::guard_traversed_layer`] and the guard never
+/// outlives the loop.
+fn iterate_saved_layer(
+    prefix: Option<Vec<PathSegment>>,
+    env: &mut Env<'_>,
+    loop_body: impl FnOnce(&mut Env<'_>) -> Result<Flow, RuntimeError>,
+) -> Result<Flow, RuntimeError> {
+    let pushed = prefix.is_some();
+    if let Some(prefix) = prefix {
+        env.traversed_layers.push(encode_path(&prefix));
+    }
+    let result = loop_body(env);
+    if pushed {
+        env.traversed_layers.pop();
+    }
+    result
+}
+
 fn eval_for(
     label: &Option<String>,
     binding: &ForBinding,
@@ -2392,31 +2444,35 @@ fn eval_for(
         ) {
             return Err(unsupported("a two-name binding over a range", span));
         }
-        for entry in eval_collection(iterable, env)? {
-            let Value::Sequence(pair) = entry else {
-                return Err(unsupported(
-                    "a two-name binding over a non-pair iterable (use entries(...))",
-                    span,
-                ));
-            };
-            let [key, value] = <[Value; 2]>::try_from(pair).map_err(|_| {
-                unsupported(
-                    "a two-name binding over a non-pair iterable (use entries(...))",
-                    span,
-                )
-            })?;
-            env.push_scope();
-            env.bind(binding.first.clone(), key, false);
-            env.bind(second.clone(), value, false);
-            let flow = eval_block(body, env);
-            env.pop_scope();
-            match classify(flow?, label) {
-                LoopStep::Iterate => {}
-                LoopStep::Stop => break,
-                LoopStep::Propagate(flow) => return Ok(flow),
+        let entries = eval_collection(iterable, env)?;
+        let prefix = traversed_layer_prefix(iterable, env)?;
+        return iterate_saved_layer(prefix, env, |env| {
+            for entry in entries {
+                let Value::Sequence(pair) = entry else {
+                    return Err(unsupported(
+                        "a two-name binding over a non-pair iterable (use entries(...))",
+                        span,
+                    ));
+                };
+                let [key, value] = <[Value; 2]>::try_from(pair).map_err(|_| {
+                    unsupported(
+                        "a two-name binding over a non-pair iterable (use entries(...))",
+                        span,
+                    )
+                })?;
+                env.push_scope();
+                env.bind(binding.first.clone(), key, false);
+                env.bind(second.clone(), value, false);
+                let flow = eval_block(body, env);
+                env.pop_scope();
+                match classify(flow?, label) {
+                    LoopStep::Iterate => {}
+                    LoopStep::Stop => break,
+                    LoopStep::Propagate(flow) => return Ok(flow),
+                }
             }
-        }
-        return Ok(Flow::Normal);
+            Ok(Flow::Normal)
+        });
     }
     // A non-range iterable (e.g. `keys(^books.byShelf("x"))`) materializes to a
     // sequence of values, which the loop binds one at a time.
@@ -2427,18 +2483,22 @@ fn eval_for(
             ..
         }
     ) {
-        for value in eval_collection(iterable, env)? {
-            env.push_scope();
-            env.bind(binding.first.clone(), value, false);
-            let flow = eval_block(body, env);
-            env.pop_scope();
-            match classify(flow?, label) {
-                LoopStep::Iterate => {}
-                LoopStep::Stop => break,
-                LoopStep::Propagate(flow) => return Ok(flow),
+        let values = eval_collection(iterable, env)?;
+        let prefix = traversed_layer_prefix(iterable, env)?;
+        return iterate_saved_layer(prefix, env, |env| {
+            for value in values {
+                env.push_scope();
+                env.bind(binding.first.clone(), value, false);
+                let flow = eval_block(body, env);
+                env.pop_scope();
+                match classify(flow?, label) {
+                    LoopStep::Iterate => {}
+                    LoopStep::Stop => break,
+                    LoopStep::Propagate(flow) => return Ok(flow),
+                }
             }
-        }
-        return Ok(Flow::Normal);
+            Ok(Flow::Normal)
+        });
     }
     let (start, end, inclusive) = range_bounds(iterable, env)?;
     let mut current = start;
@@ -2504,6 +2564,83 @@ fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
         _ => Err(unsupported("iterating this value", iterable.span())),
+    }
+}
+
+/// The encoded path prefix of the saved layer a `for` iterable traverses, or
+/// `None` for a range or a local value (which traverse no saved layer). A saved
+/// layer is traversed only when the iterable is a saved path directly or wrapped
+/// in `keys`/`values`/`entries`; iterating a local — the "collect keys first"
+/// pattern — has no saved layer to guard. The prefix is the path whose child keys
+/// the loop walks: `[Root]` for a primary root, `[Root, Index, IndexKey…]` for an
+/// index branch, `[Root, RecordKey…, ChildLayer]` for a keyed/sequence layer. It
+/// matches the prefix [`enumerate_layer`] reads children under, so a mutation that
+/// changes that layer is caught by [`Env::guard_traversed_layer`].
+fn traversed_layer_prefix(
+    iterable: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
+    let path = traversal_argument(iterable).unwrap_or(iterable);
+    if !is_saved_path(path) {
+        return Ok(None);
+    }
+    match path {
+        Expression::SavedRoot { name, .. } => Ok(Some(vec![PathSegment::Root(name.clone())])),
+        // An index branch `^root.index(args…)`: the prefix is the root, index name,
+        // and the supplied index-key args (the levels below are reconstructed
+        // identities, so the traversed layer is the branch the args reach).
+        Expression::Call { callee, args, span } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) =>
+        {
+            let Expression::Field {
+                base, name: index, ..
+            } = callee.as_ref()
+            else {
+                return Ok(None);
+            };
+            let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+                return Ok(None);
+            };
+            let mut prefix = vec![
+                PathSegment::Root(root.clone()),
+                PathSegment::Index(index.clone()),
+            ];
+            for arg in args {
+                prefix.push(PathSegment::IndexKey(
+                    value_to_key(eval_expr(&arg.value, env)?)
+                        .ok_or_else(|| unsupported("an index key of this type", *span))?,
+                ));
+            }
+            Ok(Some(prefix))
+        }
+        // A keyed/sequence child layer `^root(id…).layer`.
+        Expression::Field {
+            base, name: layer, ..
+        } => {
+            let (root, identity) = lower_record_identity(base, env)?;
+            let mut prefix = vec![PathSegment::Root(root)];
+            prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
+            prefix.push(PathSegment::ChildLayer(layer.clone()));
+            Ok(Some(prefix))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
+/// expression. These wrap a saved layer without changing which layer is traversed.
+fn traversal_argument(expr: &Expression) -> Option<&Expression> {
+    let Expression::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
+    };
+    if segments.len() != 1 || !matches!(segments[0].as_str(), "keys" | "values" | "entries") {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        _ => None,
     }
 }
 
@@ -3227,6 +3364,8 @@ fn eval_group_entry_write(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let (root, identity) = lower_record_identity(record, env)?;
+    // A keyed-entry write adds/replaces a key in this layer's key set.
+    env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
     // A declared keyed LEAF (e.g. `tags(pos: int): string`) takes a scalar value
     // written at the keyed path, sharing marrow-write's keyed-leaf write path with
     // `append`. A keyed GROUP takes a whole-entry resource value.
@@ -3310,6 +3449,8 @@ fn write_resource(
             span,
         ));
     }
+    // A whole-record write adds/replaces a key in the root's identity layer.
+    env.guard_traversed_layer(&[PathSegment::Root(root.into())], span)?;
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
@@ -3339,6 +3480,8 @@ fn eval_resource_merge(
     };
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("merging this saved root", span))?;
+    // A whole-record merge can create a new identity in the root's identity layer.
+    env.guard_traversed_layer(&[PathSegment::Root(root.clone())], span)?;
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
@@ -3388,6 +3531,8 @@ fn eval_layer_merge(
     }
     let resource = find_resource(env.program, &to_root)
         .ok_or_else(|| unsupported("merging into this saved root", span))?;
+    // A layer merge overlays entries into the target layer's key set.
+    env.guard_traversed_layer(&layer_prefix(&to_root, &to_identity, layer), span)?;
     let plan = {
         let store = env.store.borrow();
         plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store).map_err(
@@ -3401,6 +3546,17 @@ fn eval_layer_merge(
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
+}
+
+/// The encoded-path prefix of a keyed child layer `^root(identity…).layer` — the
+/// layer whose child keys an entry write, append, or layer merge changes. Matches
+/// the prefix [`traversed_layer_prefix`] produces for a loop over that layer, so
+/// [`Env::guard_traversed_layer`] can compare them.
+fn layer_prefix(root: &str, identity: &[SavedKey], layer: &str) -> Vec<PathSegment> {
+    let mut prefix = vec![PathSegment::Root(root.into())];
+    prefix.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    prefix.push(PathSegment::ChildLayer(layer.into()));
+    prefix
 }
 
 /// Lower a materialized resource value's present fields to a `ResourceValue` for
@@ -3428,6 +3584,8 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
     let (root, identity) = lower_record_identity(path, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
+    // Deleting a record removes a key from the root's identity layer.
+    env.guard_traversed_layer(&[PathSegment::Root(root.clone())], span)?;
     let plan = {
         let store = env.store.borrow();
         plan_resource_delete(resource, &identity, &*store).map_err(|error| RuntimeError {

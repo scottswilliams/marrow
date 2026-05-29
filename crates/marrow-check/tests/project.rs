@@ -2138,3 +2138,86 @@ fn const_value_with_a_nested_saved_read_is_rejected() {
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
+
+#[test]
+fn deleting_the_root_a_loop_traverses_is_rejected() {
+    // `for id in ^books` traverses the `^books` identity layer; `delete ^books(id)`
+    // removes a key from that same layer, which the checker rejects (builtins.md).
+    let found = check_module(
+        "loop-delete-root",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    for id in ^books\n        delete ^books(id)\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].line, 7, "{:#?}", found[0]);
+}
+
+#[test]
+fn appending_to_the_sequence_a_loop_traverses_is_rejected() {
+    // `for pos in ^books(1).tags` traverses the `tags` layer; `append(...tags...)`
+    // adds a key to that same layer.
+    let found = check_module(
+        "loop-append-seq",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         fn f()\n    for pos in ^books(1).tags\n        append(^books(1).tags, \"x\")\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn writing_a_keyed_leaf_the_loop_traverses_is_rejected() {
+    let found = check_module(
+        "loop-write-leaf",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         fn f()\n    for pos in ^books(1).tags\n        ^books(1).tags(pos) = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn collecting_keys_first_then_mutating_is_allowed() {
+    // The documented safe pattern: snapshot the keys into a local, iterate the
+    // local, and mutate the layer. The loop traverses a local value, not the layer.
+    let found = check_module(
+        "loop-collect-first",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn mutating_a_different_record_in_a_layer_loop_is_allowed() {
+    // The loop traverses `^books(1).tags`; appending to `^books(2).tags` is a
+    // different record's layer, so it is safe.
+    let found = check_module(
+        "loop-other-record",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         fn f()\n    for pos in ^books(1).tags\n        append(^books(2).tags, \"x\")\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn writing_a_field_in_a_record_loop_is_allowed() {
+    // `for id in ^books` traverses the identity layer; writing a scalar field of a
+    // record does not change which keys the layer holds, so it is allowed.
+    let found = check_module(
+        "loop-field-write",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    for id in ^books\n        ^books(id).title = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
