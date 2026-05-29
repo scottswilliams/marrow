@@ -1852,6 +1852,22 @@ fn a_return_of_an_unresolved_value_into_an_identity_return_is_not_flagged() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
+#[test]
+fn a_unique_index_lookup_types_as_the_resource_identity() {
+    // `^books.byIsbn(isbn)` reads back the owning identity, so it types as
+    // `Book::Id` — not `Unknown`. Returned where `int` is expected, that is a
+    // typed value (a non-primitive identity), so strict untyped-value checking
+    // does not fire (resources-and-storage.md:248-252).
+    let found = check_module(
+        "unique-index-identity",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         fn f(isbn: string): int\n    return ^books.byIsbn(isbn)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,

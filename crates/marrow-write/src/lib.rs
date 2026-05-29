@@ -988,8 +988,9 @@ fn encode_identity(identity: &[SavedKey]) -> Vec<u8> {
 
 /// Decode a unique index entry's value back to the identity it points to, given
 /// the saved root's identity arity. Returns `None` unless the bytes are exactly
-/// that many well-formed keys with nothing left over.
-fn decode_identity(bytes: &[u8], root: &SavedRootSchema) -> Option<Vec<SavedKey>> {
+/// that many well-formed keys with nothing left over. The runtime reads it back
+/// when a unique-index lookup is used in value position.
+pub fn decode_identity(bytes: &[u8], root: &SavedRootSchema) -> Option<Vec<SavedKey>> {
     let mut keys = Vec::with_capacity(root.identity_keys.len());
     let mut rest = bytes;
     for _ in 0..root.identity_keys.len() {

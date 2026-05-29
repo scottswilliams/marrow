@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedParam, CheckedProgram, MarrowType, PrimitiveType};
-use marrow_schema::{LayerMember, ResourceSchema};
+use marrow_schema::{IndexSchema, LayerMember, ResourceSchema};
 use marrow_store::Decimal;
 use marrow_store::backend::Backend;
 use marrow_store::mem::{MemStore, Presence, StoreError};
@@ -31,9 +31,9 @@ use marrow_syntax::{
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    FieldValue, ResourceValue, next_id, next_layer_pos, plan_field_write, plan_layer_group_write,
-    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write, plan_resource_delete,
-    plan_resource_merge, plan_resource_write,
+    FieldValue, ResourceValue, decode_identity, next_id, next_layer_pos, plan_field_write,
+    plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
+    plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 pub mod base64;
@@ -762,6 +762,15 @@ fn eval_call(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
+    // A call whose callee names a declared index off a saved root
+    // (`^books.byIsbn(isbn)`) is an index lookup, not a keyed-layer read.
+    if let Expression::Field { base, name, .. } = callee
+        && let Expression::SavedRoot { name: root, .. } = base.as_ref()
+        && let Some(resource) = find_resource(env.program, root)
+        && let Some(index) = resource.indexes.iter().find(|index| &index.name == name)
+    {
+        return eval_index_lookup(resource, index, args, span, env).map(Some);
+    }
     // A call whose callee is a saved layer field is a keyed-layer read — a leaf
     // value `^books(id).tags(pos)` or a whole group entry `^books(id).versions(v)`.
     if let Expression::Field { .. } = callee {
@@ -2563,6 +2572,71 @@ fn read_nested_field(
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
             message: format!("stored value for `{field}` did not decode to a runtime value"),
+            span,
+        })
+}
+
+/// Read a resource identity from a declared index lookup `^root.index(args…)`.
+/// A unique index stores the owning identity at the lookup path, so reading it
+/// decodes back to a [`Value::Identity`]. A non-unique index has no single
+/// identity to yield in value position; iterate it with `keys(...)` instead.
+fn eval_index_lookup(
+    resource: &ResourceSchema,
+    index: &IndexSchema,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if !index.unique {
+        return Err(RuntimeError {
+            code: RUN_UNSUPPORTED,
+            message: format!(
+                "non-unique index `{}` has no single identity in value position; \
+                 iterate it with `keys(...)`",
+                index.name
+            ),
+            span,
+        });
+    }
+    // A unique index points to one resource, so `decode_identity` needs the
+    // resource's saved root to know the identity arity.
+    let root = resource
+        .saved_root
+        .as_ref()
+        .ok_or_else(|| unsupported("an index on a resource with no saved root", span))?;
+    let mut segments = vec![
+        PathSegment::Root(root.root.clone()),
+        PathSegment::Index(index.name.clone()),
+    ];
+    for arg in args {
+        if arg.mode.is_some() || arg.name.is_some() {
+            return Err(unsupported(
+                "an index lookup with named or out arguments",
+                span,
+            ));
+        }
+        segments.push(PathSegment::IndexKey(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("an index key of this type", span))?,
+        ));
+    }
+    let store = env.store.borrow();
+    let bytes = store
+        .read(&encode_path(&segments))
+        .map_err(|error| store_error(error, span))?
+        .ok_or_else(|| RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`{}` has no entry for that key", index.name),
+            span,
+        })?;
+    decode_identity(&bytes, root)
+        .map(Value::Identity)
+        .ok_or_else(|| RuntimeError {
+            code: RUN_TYPE,
+            message: format!(
+                "the `{}` index entry did not decode to an identity",
+                index.name
+            ),
             span,
         })
 }

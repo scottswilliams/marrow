@@ -971,6 +971,7 @@ fn infer_type(
             // record read `^root(key…)` types to its resource.
             if matches!(call_type, MarrowType::Unknown) {
                 saved_leaf_type(program, callee)
+                    .or_else(|| saved_index_identity_type(program, callee))
                     .or_else(|| saved_resource_type(program, callee))
                     .unwrap_or(MarrowType::Unknown)
             } else {
@@ -1054,6 +1055,28 @@ fn saved_resource_type(
     };
     let resource = find_resource_schema(program, root)?;
     Some(MarrowType::Resource(resource.name.clone()))
+}
+
+/// The identity type of a unique-index lookup `^root.uniqueIndex(args)`: the
+/// owning resource's `Resource::Id`. A unique index stores one resource identity
+/// at the lookup path, so reading it yields that identity (mirrors the runtime's
+/// `eval_index_lookup`). A non-unique index has no single identity in value
+/// position, so it is not typed here. `callee` is the `^root.index` field.
+fn saved_index_identity_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Field { base, name, .. } = callee else {
+        return None;
+    };
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return None;
+    };
+    let resource = find_resource_schema(program, root)?;
+    let index = resource.indexes.iter().find(|index| &index.name == name)?;
+    index
+        .unique
+        .then(|| MarrowType::Identity(resource.name.clone()))
 }
 
 /// Resolve a type annotation against the project's resource names, so a resource

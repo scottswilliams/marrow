@@ -3580,3 +3580,92 @@ fn an_absent_unkeyed_group_field_read_is_absent() {
     let error = run_entry(&program, &store, "test::firstOf", &[Value::Int(1)]).unwrap_err();
     assert_eq!(error.code, RUN_ABSENT, "{error:?}");
 }
+
+// --- Wave 1: unique-index identity reads (G05/G07) ---
+
+/// A book with a unique index on `isbn`. `register` stores the book, and
+/// `titleByIsbn` reads the identity back from the unique-index lookup path and
+/// uses it to address the record.
+const BOOK_ISBN: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    isbn: string
+
+    index byIsbn(isbn) unique
+
+fn register(id: int, t: string, isbn: string)
+    ^books(id).title = t
+    ^books(id).isbn = isbn
+
+fn titleByIsbn(isbn: string): string
+    const id: Book::Id = ^books.byIsbn(isbn)
+    return ^books(id).title
+";
+
+#[test]
+fn reads_an_identity_from_a_unique_index() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::register",
+        &[
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("register");
+    let value = run_entry(
+        &program,
+        &store,
+        "test::titleByIsbn",
+        &[Value::Str("978-0".into())],
+    )
+    .expect("titleByIsbn")
+    .value;
+    assert_eq!(value, Some(Value::Str("Mort".into())));
+}
+
+#[test]
+fn an_absent_unique_index_lookup_is_absent() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(
+        &program,
+        &store,
+        "test::titleByIsbn",
+        &[Value::Str("missing".into())],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_ABSENT, "{error:?}");
+}
+
+/// A non-unique index in value position has no single identity to yield; the
+/// runtime rejects it and points the reader at `keys(...)`.
+const BOOK_SHELF_VALUE: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+    index byShelf(shelf, id)
+
+fn firstOnShelf(shelf: string): Book::Id
+    return ^books.byShelf(shelf)
+";
+
+#[test]
+fn a_non_unique_index_in_value_position_is_rejected() {
+    let program = checked_program(BOOK_SHELF_VALUE);
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(
+        &program,
+        &store,
+        "test::firstOnShelf",
+        &[Value::Str("fiction".into())],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+    assert!(error.message.contains("keys("), "{error:?}");
+}
