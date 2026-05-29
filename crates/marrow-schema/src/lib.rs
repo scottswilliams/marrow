@@ -125,6 +125,14 @@ pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
 /// (resources-and-storage.md:159-161).
 pub const SCHEMA_DUPLICATE_STABLE_ID: &str = "schema.duplicate_stable_id";
 
+/// A saved key (an identity key, a keyed-layer key parameter, or an index
+/// argument) has a type with no order-preserving key encoding — currently
+/// `decimal`. Saved keys use ordered key types (types.md:65-66); the store
+/// cannot encode a decimal as a key, so the write planner could never maintain
+/// such an entry. Reject it at compile time rather than commit data with an
+/// unmaintained index or key.
+pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -219,6 +227,9 @@ fn check_saved_data(
         if embeds_unknown(&key.ty) {
             errors.push(unknown_error("identity key", &key.name, decl_span));
         }
+        if is_unorderable_key_type(&key.ty) {
+            errors.push(unorderable_key_error("identity key", &key.name, decl_span));
+        }
         if let Some(span) = top_level_member_span(members, &key.name) {
             errors.push(SchemaError {
                 code: SCHEMA_KEY_MEMBER_COLLISION,
@@ -235,6 +246,34 @@ fn check_saved_data(
 
     for member in members {
         check_member_unknown(member, errors);
+        check_member_keys(member, errors);
+    }
+}
+
+/// Reject a keyed-layer key parameter whose type has no key encoding (`decimal`),
+/// descending into groups. A keyed leaf and a keyed group both carry key
+/// parameters in `keys`; an unkeyed field or group has none. Identity keys are
+/// checked separately in [`check_saved_data`].
+fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
+    match member {
+        ResourceMember::Field(field) => {
+            for key in &field.keys {
+                if is_unorderable_key_type(&key.ty) {
+                    errors.push(unorderable_key_error("key", &key.name, field.span));
+                }
+            }
+        }
+        ResourceMember::Group(group) => {
+            for key in &group.keys {
+                if is_unorderable_key_type(&key.ty) {
+                    errors.push(unorderable_key_error("key", &key.name, group.span));
+                }
+            }
+            for nested in &group.members {
+                check_member_keys(nested, errors);
+            }
+        }
+        ResourceMember::Index(_) => {}
     }
 }
 
@@ -293,8 +332,8 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
             continue;
         };
         for arg in &index.args {
-            if !index_arg_resolves(arg, keys, &decl.members) {
-                errors.push(SchemaError {
+            match index_arg_type(arg, keys, &decl.members) {
+                None => errors.push(SchemaError {
                     code: SCHEMA_UNKNOWN_INDEX_ARG,
                     message: format!(
                         "index `{}` argument `{arg}` does not name an identity \
@@ -302,38 +341,59 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                         index.name
                     ),
                     span: index.span,
-                });
+                }),
+                Some(ty) if is_unorderable_key_type(ty) => errors.push(SchemaError {
+                    code: SCHEMA_UNORDERABLE_KEY,
+                    message: format!(
+                        "index `{}` argument `{arg}` is a `decimal`, which has no \
+                         key encoding; index arguments use ordered key types",
+                        index.name
+                    ),
+                    span: index.span,
+                }),
+                Some(_) => {}
             }
         }
     }
 }
 
-/// Does `arg` resolve to an indexable value in this resource? A single segment
-/// may name an identity key or a top-level unkeyed scalar field. A dotted path
-/// walks unkeyed groups (each non-final segment an unkeyed group, the final
-/// segment a scalar unkeyed field); identity keys are single-segment only.
-fn index_arg_resolves(arg: &str, keys: &[KeyParam], members: &[ResourceMember]) -> bool {
+/// The type `arg` resolves to in this resource, or `None` if it resolves to
+/// nothing. A single segment may name an identity key or a top-level unkeyed
+/// scalar field. A dotted path walks unkeyed groups (each non-final segment an
+/// unkeyed group, the final segment a scalar unkeyed field); identity keys are
+/// single-segment only.
+fn index_arg_type<'a>(
+    arg: &str,
+    keys: &'a [KeyParam],
+    members: &'a [ResourceMember],
+) -> Option<&'a TypeRef> {
     let segments: Vec<&str> = arg.split('.').collect();
-    if segments.len() == 1 && keys.iter().any(|key| key.name == segments[0]) {
-        return true;
+    if segments.len() == 1
+        && let Some(key) = keys.iter().find(|key| key.name == segments[0])
+    {
+        return Some(&key.ty);
     }
-    resolves_through_members(&segments, members)
+    resolve_field_type(&segments, members)
 }
 
-/// Resolve a non-empty field path against `members`. The final segment must be
-/// an unkeyed scalar field; every earlier segment must be an unkeyed group
-/// whose members resolve the rest. Keyed fields and groups are keyed layers
-/// that index arguments do not walk.
-fn resolves_through_members(segments: &[&str], members: &[ResourceMember]) -> bool {
+/// Resolve a non-empty field path against `members` to its field type. The final
+/// segment must be an unkeyed scalar field; every earlier segment must be an
+/// unkeyed group whose members resolve the rest. Keyed fields and groups are
+/// keyed layers that index arguments do not walk.
+fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> Option<&'a TypeRef> {
     let (name, rest) = segments.split_first().expect("non-empty field path");
-    members.iter().any(|member| match member {
-        ResourceMember::Field(field) if rest.is_empty() => {
-            field.name == *name && field.keys.is_empty()
+    members.iter().find_map(|member| match member {
+        ResourceMember::Field(field)
+            if rest.is_empty() && field.name == *name && field.keys.is_empty() =>
+        {
+            Some(&field.ty)
         }
-        ResourceMember::Group(group) if !rest.is_empty() && group.keys.is_empty() => {
-            group.name == *name && resolves_through_members(rest, &group.members)
+        ResourceMember::Group(group)
+            if !rest.is_empty() && group.keys.is_empty() && group.name == *name =>
+        {
+            resolve_field_type(rest, &group.members)
         }
-        _ => false,
+        _ => None,
     })
 }
 
@@ -405,6 +465,26 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
         message: format!(
             "saved {what} `{name}` cannot use `unknown`; managed saved \
              schemas use concrete types"
+        ),
+        span,
+    }
+}
+
+/// Can this type be a saved key? Saved keys use ordered key types: scalars
+/// (except `decimal`, which has no order-preserving key encoding) and generated
+/// resource identity types (types.md:65-66). `decimal` is the one scalar the
+/// store cannot encode as a key, so it is rejected wherever a key is expected:
+/// identity keys, keyed-layer key parameters, and index arguments.
+fn is_unorderable_key_type(ty: &TypeRef) -> bool {
+    ty.text.trim() == "decimal"
+}
+
+fn unorderable_key_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        code: SCHEMA_UNORDERABLE_KEY,
+        message: format!(
+            "saved {what} `{name}` cannot use `decimal`; saved keys use ordered \
+             key types and `decimal` has no key encoding"
         ),
         span,
     }

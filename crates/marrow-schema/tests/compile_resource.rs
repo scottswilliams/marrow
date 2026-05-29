@@ -8,7 +8,7 @@
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
     SCHEMA_INDEX_IN_GROUP, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED,
-    SCHEMA_UNKNOWN_INDEX_ARG, compile_resource,
+    SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -383,6 +383,58 @@ resource Book at ^books(id: int)
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
     assert!(errors[0].message.contains("tags"));
+}
+
+#[test]
+fn index_over_a_decimal_field_is_an_error() {
+    // `decimal` has no order-preserving key encoding, so the write planner could
+    // never maintain an index entry for it (review F12). Reject it at compile
+    // time rather than silently committing the data with no index.
+    let source = "\
+resource Book at ^books(id: int)
+    price: decimal
+    index byPrice(price, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("price"));
+}
+
+#[test]
+fn index_over_a_nested_decimal_field_is_an_error() {
+    // The same applies to a decimal reached through an unkeyed group.
+    let source = "\
+resource Book at ^books(id: int)
+    pricing
+        amount: decimal
+    index byAmount(pricing.amount, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("pricing.amount"));
+}
+
+#[test]
+fn keyed_leaf_with_a_decimal_key_param_is_an_error() {
+    // A keyed-layer key must be an ordered key type; `decimal` is not.
+    let source = "\
+resource Book at ^books(id: int)
+    samples(at: decimal): int
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("at"));
+}
+
+#[test]
+fn identity_key_typed_decimal_is_an_error() {
+    let source = "\
+resource Reading at ^readings(at: decimal)
+    required value: int
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("at"));
 }
 
 #[test]
