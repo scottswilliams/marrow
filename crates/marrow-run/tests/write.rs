@@ -1,13 +1,7 @@
 //! Managed whole-resource writes: validate against the schema, lower the fields
 //! into the store, and keep generated index entries coherent.
 
-use marrow_schema::{ResourceSchema, compile_resource};
-use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
-use marrow_store::mem::MemStore;
-use marrow_store::path::{ChildSegment, PathSegment, SavedKey, decode_key_value, encode_path};
-use marrow_store::value::{SavedValue, ValueType, decode_value};
-use marrow_syntax::{Declaration, parse_source};
-use marrow_write::{
+use marrow_run::write::{
     FieldValue, ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
     WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
     WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
@@ -16,6 +10,12 @@ use marrow_write::{
     plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
     plan_resource_write,
 };
+use marrow_schema::{ResourceSchema, compile_resource};
+use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
+use marrow_store::mem::MemStore;
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, decode_key_value, encode_path};
+use marrow_store::value::{SavedValue, ValueType, decode_value};
+use marrow_syntax::{Declaration, parse_source};
 
 /// Compile the single resource declared in `source`.
 fn schema(source: &str) -> ResourceSchema {

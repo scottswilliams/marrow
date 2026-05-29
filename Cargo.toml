@@ -8,7 +8,6 @@ members = [
     "crates/marrow-schema",
     "crates/marrow-store",
     "crates/marrow-syntax",
-    "crates/marrow-write",
 ]
 
 [workspace.package]

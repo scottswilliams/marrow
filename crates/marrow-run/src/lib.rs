@@ -32,7 +32,7 @@ use marrow_syntax::{
     ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
-use marrow_write::{
+use write::{
     FieldValue, ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
     WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity, next_id, next_layer_pos,
     plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
@@ -41,6 +41,7 @@ use marrow_write::{
 };
 
 pub mod base64;
+pub mod write;
 
 /// A runtime value: the scalars a pure function manipulates plus the in-memory
 /// and saved-tree shapes the data features produce (sequences, resource trees,
@@ -1819,8 +1820,8 @@ fn eval_next_id(
 }
 
 /// Evaluate `append(^root(key…).layer, value)`: write `value` at the next 1-based
-/// position of a keyed-leaf layer and return that position. Reuses marrow-write's
-/// `next_layer_pos` (over the live store) and `plan_layer_leaf_write`.
+/// position of a keyed-leaf layer and return that position. Reuses the write
+/// planner's `next_layer_pos` (over the live store) and `plan_layer_leaf_write`.
 fn eval_append(
     args: &[Argument],
     span: SourceSpan,
@@ -3589,7 +3590,7 @@ fn read_resource(
 }
 
 /// Apply a managed field write `^root(key…).field = value`. Lowers the identity,
-/// evaluates the value, and drives [`marrow_write::plan_field_write`] — which
+/// evaluates the value, and drives the write planner's `plan_field_write` — which
 /// validates the field and value and keeps generated indexes coherent — then
 /// commits the plan to the store. A planning failure surfaces with its `write.*`
 /// code. A group-entry target `^root(key…).layer(key…).field = value` is
@@ -3622,7 +3623,7 @@ fn eval_saved_field_write(
 }
 
 /// Apply a managed top-level field write from a pre-lowered identity and an
-/// already-evaluated value, driving [`marrow_write::plan_field_write`] and
+/// already-evaluated value, driving the write planner's `plan_field_write` and
 /// committing. Shared by [`eval_saved_field_write`] and `out`/`inout` write-back.
 fn write_saved_field(
     root: &str,
@@ -3752,7 +3753,7 @@ fn eval_raw_field_read(
 /// GROUP entry at any nesting depth (e.g. `^books(id).versions(v).comments(c).text`),
 /// leaving the entry's other members in place. `base` is the group-entry path; it
 /// is lowered to the record identity and the chain of layer levels, then drives
-/// [`marrow_write::plan_nested_field_write`] and commits. Generated indexes do not
+/// the write planner's `plan_nested_field_write` and commits. Generated indexes do not
 /// span keyed child layers, so there is no index interaction.
 fn eval_group_field_write(
     base: &Expression,
@@ -3794,7 +3795,7 @@ fn write_nested_field(
 
 /// Apply a whole keyed-group-entry write `^root(key…).layer(key…) = value`, where
 /// `value` is a materialized [`Value::Resource`]. Lowers its fields to a
-/// `ResourceValue` and drives [`marrow_write::plan_layer_group_write`] (replace
+/// `ResourceValue` and drives the write planner's `plan_layer_group_write` (replace
 /// semantics for the one entry), then commits. Groups carry no generated indexes.
 fn eval_group_entry_write(
     record: &Expression,
@@ -3808,7 +3809,7 @@ fn eval_group_entry_write(
     // A keyed-entry write adds/replaces a key in this layer's key set.
     env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
     // A declared keyed LEAF (e.g. `tags(pos: int): string`) takes a scalar value
-    // written at the keyed path, sharing marrow-write's keyed-leaf write path with
+    // written at the keyed path, sharing the write planner's keyed-leaf write path with
     // `append`. A keyed GROUP takes a whole-entry resource value.
     if resource_layer_leaf_type(env.program, &root, layer).is_some() {
         let saved = value_to_saved(eval_expr(value, env)?)
@@ -3837,7 +3838,7 @@ fn eval_group_entry_write(
 
 /// Apply a whole-resource write `^root(key…) = value`, where `value` is a
 /// materialized [`Value::Resource`]. Lowers its present fields to a
-/// `ResourceValue` and drives [`marrow_write::plan_resource_write`] (replace
+/// `ResourceValue` and drives the write planner's `plan_resource_write` (replace
 /// semantics, keeping generated indexes coherent), then commits.
 fn eval_resource_write(
     target: &Expression,
@@ -3852,7 +3853,7 @@ fn eval_resource_write(
 
 /// Apply a whole-resource write from a pre-lowered identity and an
 /// already-evaluated [`Value::Resource`], driving
-/// [`marrow_write::plan_resource_write`] (replace semantics) and committing.
+/// the write planner's `plan_resource_write` (replace semantics) and committing.
 /// Shared by [`eval_resource_write`] and `out`/`inout` write-back.
 fn write_resource(
     root: &str,
@@ -3888,7 +3889,7 @@ fn write_resource(
 }
 
 /// Apply a managed merge `merge ^root(key…) = value`: drives
-/// [`marrow_write::plan_resource_merge`] (copy supplied fields, keep absent ones)
+/// the write planner's `plan_resource_merge` (copy supplied fields, keep absent ones)
 /// and commits. When the source is another saved record of the same root
 /// (`merge ^root(to) = ^root(from)`), this is a tree-shaped merge: its child-layer
 /// subtrees are copied too, so the source identity is lowered and passed through.
@@ -3953,7 +3954,7 @@ fn eval_local_merge(
 /// Apply a keyed-layer merge `merge ^root(to).layer = ^root(from).layer`: copy
 /// the source layer's entries over the target layer (an overlay, leaving target
 /// entries the source does not cover in place). Both sides must name the same
-/// layer of the same saved root. Drives [`marrow_write::plan_layer_merge`], which
+/// layer of the same saved root. Drives the write planner's `plan_layer_merge`, which
 /// reads the source subtree, then commits.
 fn eval_layer_merge(
     target_record: &Expression,
@@ -4027,7 +4028,7 @@ fn resource_value_of(
 /// record deletes that field (tearing down any index it feeds, with a guard
 /// against deleting a top-level required field); a `.layer(key…)` deletes that
 /// keyed entry's subtree; a bare `^root(key…)` or singleton deletes the whole
-/// record via [`marrow_write::plan_resource_delete`] (removing the record and its
+/// record via the write planner's `plan_resource_delete` (removing the record and its
 /// index entries). All commit before returning.
 fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result<(), RuntimeError> {
     // Read the target shape to dispatch, mirroring the merge target-shape pattern:
@@ -4098,7 +4099,7 @@ fn eval_whole_root_delete(
 }
 
 /// Apply a managed field delete `delete ^root(key…).field`. A top-level field
-/// (`^books(id).subtitle`) drives [`marrow_write::plan_field_delete`] — removing
+/// (`^books(id).subtitle`) drives the write planner's `plan_field_delete` — removing
 /// the field path and tearing down any index it feeds — after the required-field
 /// guard. A group-entry field (`^books(id).versions(v).text`) is a plain subtree
 /// delete of that one path (groups carry no generated indexes, matching
@@ -5241,7 +5242,7 @@ fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
     }
 }
 
-/// Surface a managed-write planning failure (`marrow_write::WriteError`) as a
+/// Surface a managed-write planning failure (a `WriteError`) as a
 /// catchable fault: a rejected managed write — a unique conflict,
 /// a missing required field, a type or identity mismatch, a value-range error, or
 /// a store read error met while planning — is recoverable, so a `try`/`catch`

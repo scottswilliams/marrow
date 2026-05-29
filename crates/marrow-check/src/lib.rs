@@ -1894,15 +1894,15 @@ fn check_next_id(
 }
 
 /// Does this saved root qualify for the default `nextId` policy? Exactly one `int`
-/// identity key. This mirrors `marrow_write::single_int_root` — the one contract
-/// the runtime gate and the checker must agree on — duplicated only because this
-/// crate cannot depend on `marrow-write`; both key off `KeyDef.ty.text == "int"`.
+/// identity key. This mirrors the runtime's write-planner gate — the one contract
+/// the runtime gate and the checker must agree on — duplicated only because the
+/// checker cannot depend on the runtime; both key off `KeyDef.ty.text == "int"`.
 fn single_int_root(root: &marrow_schema::SavedRootSchema) -> bool {
     matches!(root.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
 }
 
 /// Name the identity shape that disqualifies a root from the default `nextId`
-/// policy, for the rejection message (mirrors `marrow_write`'s helper of the same
+/// policy, for the rejection message (mirrors the runtime's helper of the same
 /// name): a keyless singleton, a single non-`int` key, or a composite identity.
 fn next_id_shape(root: &marrow_schema::SavedRootSchema) -> String {
     match root.identity_keys.as_slice() {
