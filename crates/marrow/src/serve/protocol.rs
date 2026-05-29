@@ -11,6 +11,7 @@
 //! serves `saved_roots`; path-addressed reads (`saved_get`, `saved_children`,
 //! `saved_walk`) are later slices.
 
+use marrow_run::base64;
 use marrow_store::backend::Backend;
 use marrow_store::mem::Presence;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
@@ -81,7 +82,7 @@ fn op_saved_get(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolE
     let value = store.read(&path).map_err(store_error)?;
     Ok(json!({
         "presence": presence_name(presence),
-        "value": value.map(|bytes| base64_encode(&bytes)),
+        "value": value.map(|bytes| base64::encode(&bytes)),
     }))
 }
 
@@ -114,7 +115,7 @@ fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, Protocol
     let entries: Vec<Value> = page
         .entries
         .iter()
-        .map(|(path, value)| json!({ "path": base64_encode(path), "value": base64_encode(value) }))
+        .map(|(path, value)| json!({ "path": base64::encode(path), "value": base64::encode(value) }))
         .collect();
     Ok(json!({ "entries": entries, "truncated": page.truncated }))
 }
@@ -214,7 +215,7 @@ fn encode_key(key: &SavedKey) -> Value {
         SavedKey::Date(value) => json!({ "date": value }),
         SavedKey::Duration(value) => json!({ "duration": value.to_string() }),
         SavedKey::Instant(value) => json!({ "instant": value.to_string() }),
-        SavedKey::Bytes(value) => json!({ "bytes": base64_encode(value) }),
+        SavedKey::Bytes(value) => json!({ "bytes": base64::encode(value) }),
     }
 }
 
@@ -251,62 +252,7 @@ fn decode_base64_field(value: &Value, kind: &str) -> Result<Vec<u8>, ProtocolErr
     let text = value
         .as_str()
         .ok_or_else(|| bad_request(&format!("`{kind}` must be a base64 string")))?;
-    base64_decode(text).ok_or_else(|| bad_request(&format!("`{kind}` is not valid base64")))
-}
-
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// Standard base64 with padding (std-only; the protocol carries raw stored bytes).
-fn base64_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let group = ((chunk[0] as u32) << 16)
-            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
-            | (*chunk.get(2).unwrap_or(&0) as u32);
-        out.push(BASE64[(group >> 18 & 63) as usize] as char);
-        out.push(BASE64[(group >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            BASE64[(group >> 6 & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            BASE64[(group & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// Decode standard base64 (with or without padding), or `None` if it is invalid.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    fn sextet(byte: u8) -> Option<u32> {
-        match byte {
-            b'A'..=b'Z' => Some((byte - b'A') as u32),
-            b'a'..=b'z' => Some((byte - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((byte - b'0' + 52) as u32),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let trimmed = text.trim_end_matches('=');
-    let mut out = Vec::with_capacity(trimmed.len() / 4 * 3 + 2);
-    for chunk in trimmed.as_bytes().chunks(4) {
-        if chunk.len() == 1 {
-            return None;
-        }
-        let mut group = 0u32;
-        for &byte in chunk {
-            group = (group << 6) | sextet(byte)?;
-        }
-        group <<= 6 * (4 - chunk.len());
-        for index in 0..chunk.len() - 1 {
-            out.push((group >> (16 - 8 * index)) as u8);
-        }
-    }
-    Some(out)
+    base64::decode(text).ok_or_else(|| bad_request(&format!("`{kind}` is not valid base64")))
 }
 
 /// Build a `protocol.bad_request` error.
@@ -460,8 +406,34 @@ mod tests {
             b"Mort".to_vec(),
             vec![0, 255, 128, 64, 32],
         ] {
-            assert_eq!(base64_decode(&base64_encode(&bytes)), Some(bytes));
+            assert_eq!(base64::decode(&base64::encode(&bytes)), Some(bytes));
         }
+    }
+
+    /// The serve protocol decodes base64 through the one canonical codec, so it
+    /// rejects exactly the unpadded and over-padded inputs the runtime rejects
+    /// (F34): no second, laxer dialect on the serve surface.
+    #[test]
+    fn serve_base64_decode_rejects_non_canonical_padding() {
+        // These were accepted by the old padding-trimming serve decoder but
+        // rejected by the runtime; now both agree they are invalid.
+        for text in ["Zm8", "Zg", "Zm9vYg", "Zg===="] {
+            assert!(
+                decode_base64_field(&json!(text), "key").is_err(),
+                "non-canonical base64 {text:?} must be rejected"
+            );
+            // The shared codec backs the rejection.
+            assert_eq!(base64::decode(text), None, "{text:?}");
+        }
+        // The canonical, fully-padded forms decode.
+        assert_eq!(
+            decode_base64_field(&json!("Zm8="), "key").expect("padded"),
+            b"fo".to_vec()
+        );
+        assert_eq!(
+            decode_base64_field(&json!("Zm9vYg=="), "key").expect("padded"),
+            b"foob".to_vec()
+        );
     }
 
     /// A store holding two book titles, for paging.
