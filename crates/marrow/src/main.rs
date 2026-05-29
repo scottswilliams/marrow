@@ -360,8 +360,9 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>) -> ExitCode {
 }
 
 /// The project store's redb file path (native backend), or `Ok(None)` for the
-/// in-memory default. Pure — no filesystem side effects; reports and returns the
-/// exit code only when a native store omits its `dataDir`.
+/// in-memory default. Pure — no filesystem side effects. Infallible today;
+/// the `Result` is kept for [`resolve_store_path`], which can fail creating the
+/// directory.
 fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -376,14 +377,11 @@ fn native_store_path(
             backend: marrow_project::StoreBackend::Native,
             data_dir,
         }) => {
-            let Some(data_dir) = data_dir.as_deref() else {
-                report_simple_error(
-                    marrow_project::CONFIG_INVALID,
-                    "native store requires `store.dataDir`",
-                    CheckFormat::Text,
-                );
-                return Err(ExitCode::FAILURE);
-            };
+            // `parse_config` already rejected a native store with a missing or
+            // empty `dataDir` as `config.invalid`, so it is present here.
+            let data_dir = data_dir
+                .as_deref()
+                .expect("parse_config guarantees a native store has a dataDir");
             Ok(Some(Path::new(dir).join(data_dir).join("marrow.redb")))
         }
     }
