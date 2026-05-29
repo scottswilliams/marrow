@@ -106,3 +106,39 @@ fn reports_missing_marrow_json() {
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("io.read"), "{stderr}");
 }
+
+#[test]
+fn project_diagnostics_carry_the_documented_kind_envelope_field() {
+    // The error envelope's `kind` is a common field (docs/error-codes.md); the
+    // project diagnostic path must emit it just like the single-file path does.
+    let root = temp_project("proj-kind", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(root, "src/shelf/books.mw", "module shelf::other\n");
+    });
+    let output = run_check(&["--format", "json", root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let report: Value = serde_json::from_str(&stdout).expect("json report");
+    let diagnostic = &report["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "check.module_path");
+    assert_eq!(diagnostic["kind"], "check", "{diagnostic}");
+}
+
+#[test]
+fn a_simple_config_error_carries_the_documented_kind_envelope_field() {
+    // `report_simple_error` (config/project/runtime/store failures) must also
+    // emit `kind`; an invalid marrow.json yields a `config.*` code -> tooling.
+    let root = temp_project("proj-badconfig", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": [] }"#);
+    });
+    let output = run_check(&["--format", "json", root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let record: Value = serde_json::from_str(stdout.trim()).expect("json record");
+    assert_eq!(record["code"], "config.invalid");
+    assert_eq!(record["kind"], "tooling", "{record}");
+}

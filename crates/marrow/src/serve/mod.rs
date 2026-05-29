@@ -16,6 +16,7 @@ mod protocol;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpListener;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use marrow_store::backend::Backend;
 
@@ -34,6 +35,12 @@ printed on startup; `--port 0` (the default) lets the OS choose a free port.
 /// The largest request line accepted, so a client that never sends a newline
 /// cannot force an unbounded allocation.
 const MAX_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Per-connection read timeout. The server is single-threaded and accepts
+/// connections one at a time, so a client that connects and then stalls would
+/// otherwise wedge the server for every other client. A stalled read past this
+/// bound closes that connection and the accept loop moves on.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn run(args: &[String]) -> ExitCode {
     let mut port: u16 = 0;
@@ -119,10 +126,15 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 /// Accept connections one at a time and serve each to completion. A single
-/// connection's I/O error ends that connection, not the server.
+/// connection's I/O error ends that connection, not the server. Each connection
+/// carries a [`READ_TIMEOUT`] so a stalled client cannot wedge the accept loop.
 fn serve(listener: &TcpListener, store: &dyn Backend) -> io::Result<()> {
     for stream in listener.incoming() {
         let stream = stream?;
+        if let Err(error) = stream.set_read_timeout(Some(READ_TIMEOUT)) {
+            eprintln!("connection error: {error}");
+            continue;
+        }
         let mut reader = BufReader::new(&stream);
         let mut writer = BufWriter::new(&stream);
         if let Err(error) = serve_connection(&mut reader, &mut writer, store) {
@@ -132,6 +144,19 @@ fn serve(listener: &TcpListener, store: &dyn Backend) -> io::Result<()> {
     Ok(())
 }
 
+/// The outcome of reading one request line. A `Bad` line (non-UTF-8 or over the
+/// size limit) is recoverable — it earns a `protocol.malformed` reply and the
+/// connection continues — whereas a genuine socket failure stays an `io::Error`
+/// and ends the connection.
+enum Line {
+    /// A request line, with its trailing newline (if any) included.
+    Request(String),
+    /// A malformed line the client should be told about, with a reason.
+    Bad(String),
+    /// A clean EOF: the client hung up.
+    Eof,
+}
+
 /// Serve one connection: read newline-delimited request lines, reply to each with
 /// a newline-delimited JSON object, until the client hangs up (clean EOF).
 fn serve_connection(
@@ -139,44 +164,75 @@ fn serve_connection(
     writer: &mut impl Write,
     store: &dyn Backend,
 ) -> io::Result<()> {
-    while let Some(line) = read_line_bounded(reader)? {
+    loop {
+        let line = match read_line_bounded(reader)? {
+            Line::Eof => return Ok(()),
+            Line::Request(line) => line,
+            Line::Bad(reason) => {
+                // A non-UTF-8 or oversized line is not JSON, so it earns the same
+                // structured reply as malformed JSON; the connection stays open.
+                write_reply(writer, &malformed_reply(&reason))?;
+                continue;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
         let reply = match serde_json::from_str(&line) {
             Ok(request) => protocol::handle_request(store, &request),
-            Err(error) => serde_json::json!({
-                "id": serde_json::Value::Null,
-                "error": { "code": protocol::PROTOCOL_MALFORMED, "message": error.to_string() },
-            }),
+            Err(error) => malformed_reply(&error.to_string()),
         };
-        let mut bytes = serde_json::to_vec(&reply).expect("a reply serializes");
-        bytes.push(b'\n');
-        writer.write_all(&bytes)?;
-        writer.flush()?;
+        write_reply(writer, &reply)?;
     }
-    Ok(())
+}
+
+/// A `protocol.malformed` reply envelope with a null id (the request could not be
+/// parsed, so its id is unknown).
+fn malformed_reply(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": serde_json::Value::Null,
+        "error": { "code": protocol::PROTOCOL_MALFORMED, "message": message },
+    })
+}
+
+/// Write one newline-delimited JSON reply and flush it.
+fn write_reply(writer: &mut impl Write, reply: &serde_json::Value) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(reply).expect("a reply serializes");
+    bytes.push(b'\n');
+    writer.write_all(&bytes)?;
+    writer.flush()
 }
 
 /// Read one newline-terminated request line, bounded by [`MAX_REQUEST_BYTES`].
-/// `Ok(None)` on a clean EOF (the client hung up).
-fn read_line_bounded(reader: &mut impl BufRead) -> io::Result<Option<String>> {
+/// Returns [`Line::Eof`] on a clean hang-up and [`Line::Bad`] for a non-UTF-8 or
+/// oversized line; a genuine socket failure is an `io::Error`.
+fn read_line_bounded(reader: &mut impl BufRead) -> io::Result<Line> {
     let mut buf = Vec::new();
     let reader: &mut dyn BufRead = reader;
     let mut limited = reader.take(MAX_REQUEST_BYTES);
-    let read = limited.read_until(b'\n', &mut buf)?;
+    let read = match limited.read_until(b'\n', &mut buf) {
+        Ok(read) => read,
+        // A stalled client hits the per-connection read timeout; close the
+        // connection cleanly (like a hang-up) rather than reporting an error.
+        Err(error) if is_timeout(error.kind()) => return Ok(Line::Eof),
+        Err(error) => return Err(error),
+    };
     if read == 0 {
-        return Ok(None);
+        return Ok(Line::Eof);
     }
     if read as u64 == MAX_REQUEST_BYTES && !buf.ends_with(b"\n") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "request line exceeds the size limit",
-        ));
+        return Ok(Line::Bad("request line exceeds the size limit".to_string()));
     }
-    String::from_utf8(buf)
-        .map(Some)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    match String::from_utf8(buf) {
+        Ok(line) => Ok(Line::Request(line)),
+        Err(_) => Ok(Line::Bad("request line is not valid UTF-8".to_string())),
+    }
+}
+
+/// Whether a read error is a read-timeout expiry, which the platform reports as
+/// `WouldBlock` (Unix) or `TimedOut` (Windows).
+fn is_timeout(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
 }
 
 #[cfg(test)]
@@ -218,5 +274,64 @@ mod tests {
             replies[1]["error"]["code"],
             serde_json::json!(protocol::PROTOCOL_UNKNOWN_OP)
         );
+    }
+
+    /// A reader that always reports a read-timeout (`WouldBlock`), standing in for
+    /// a stalled client whose per-connection read timeout has expired.
+    struct TimingOutReader;
+
+    impl Read for TimingOutReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "timed out"))
+        }
+    }
+
+    impl BufRead for TimingOutReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "timed out"))
+        }
+        fn consume(&mut self, _amount: usize) {}
+    }
+
+    #[test]
+    fn a_read_timeout_closes_the_connection_cleanly() {
+        // A stalled read (the per-connection READ_TIMEOUT firing) ends the
+        // connection like a clean hang-up, so serve() moves on to the next client
+        // instead of the read propagating as a connection error.
+        assert!(matches!(
+            read_line_bounded(&mut TimingOutReader).expect("a timeout is not an error"),
+            Line::Eof
+        ));
+        let store = MemStore::new();
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection(&mut TimingOutReader, &mut output, &store).expect("serve returns cleanly");
+        assert!(output.is_empty(), "a timed-out connection sends no reply");
+    }
+
+    #[test]
+    fn a_non_utf8_line_gets_a_malformed_reply_and_the_connection_stays_open() {
+        let store = MemStore::new();
+        // A non-UTF-8 byte sequence on the first line (0xff is never valid UTF-8),
+        // then a well-formed request on the second.
+        let mut input: Vec<u8> = b"\xff\xfe\n".to_vec();
+        input.extend_from_slice(b"{\"id\":2,\"op\":\"saved_roots\"}\n");
+        let mut reader = Cursor::new(input);
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection(&mut reader, &mut output, &store).expect("serve");
+
+        let replies: Vec<serde_json::Value> = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("reply json"))
+            .collect();
+        // The bad line is answered with protocol.malformed, and the connection
+        // continued to serve the following valid request.
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(
+            replies[0]["error"]["code"],
+            serde_json::json!(protocol::PROTOCOL_MALFORMED)
+        );
+        assert_eq!(replies[1]["id"], serde_json::json!(2));
+        assert_eq!(replies[1]["ok"]["roots"], serde_json::json!([]));
     }
 }
