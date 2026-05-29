@@ -57,7 +57,7 @@ fn check_reports_parse_diagnostics() {
 fn check_reports_obsolete_operators_in_function_bodies() {
     let path = temp_source(
         "obsolete-op-body",
-        "module app\nfn main()\n    return a == b\n",
+        "module app\nfn main()\n    return a && b\n",
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
@@ -70,8 +70,8 @@ fn check_reports_obsolete_operators_in_function_bodies() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("`==`"), "{stderr}");
-    assert!(stderr.contains("Use `=` for equality"), "{stderr}");
+    assert!(stderr.contains("`&&`"), "{stderr}");
+    assert!(stderr.contains("Use `and` for boolean and"), "{stderr}");
 }
 
 #[test]

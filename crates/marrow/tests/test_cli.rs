@@ -41,7 +41,7 @@ fn runs_passing_tests_and_reports_a_summary() {
         write(
             root,
             "tests/app_test.mw",
-            "pub fn adds_numbers()\n    std::assert::isTrue(app::add(2, 3) = 5)\n",
+            "pub fn adds_numbers()\n    std::assert::isTrue(app::add(2, 3) == 5)\n",
         );
     });
     let output = run_test(&root);
@@ -67,7 +67,7 @@ fn a_failed_assertion_is_a_located_failure() {
         write(
             root,
             "tests/app_test.mw",
-            "pub fn wrong()\n    std::assert::isTrue(1 = 2)\n",
+            "pub fn wrong()\n    std::assert::isTrue(1 == 2)\n",
         );
     });
     let output = run_test(&root);

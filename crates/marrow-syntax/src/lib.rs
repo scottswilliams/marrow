@@ -619,6 +619,7 @@ pub enum TokenKind {
     DotDot,
     DotDotEqual,
     Equal,
+    EqualEqual,
     BangEqual,
     Less,
     LessEqual,
@@ -884,9 +885,7 @@ impl<'a> Lexer<'a> {
 
     fn reject_obsolete_operator(&mut self, line: Line<'a>, index: usize) -> Option<usize> {
         let tail = &self.source[index..line.end_byte];
-        let (consumed, message, help) = if tail.starts_with("==") {
-            (2, "`==` is not used in Marrow", "Use `=` for equality.")
-        } else if tail.starts_with("&&") {
+        let (consumed, message, help) = if tail.starts_with("&&") {
             (
                 2,
                 "`&&` is not used in Marrow",
@@ -1144,6 +1143,7 @@ impl<'a> Lexer<'a> {
             ("::", TokenKind::DoubleColon),
             ("..=", TokenKind::DotDotEqual),
             ("..", TokenKind::DotDot),
+            ("==", TokenKind::EqualEqual),
             ("!=", TokenKind::BangEqual),
             ("<=", TokenKind::LessEqual),
             (">=", TokenKind::GreaterEqual),
@@ -1491,7 +1491,7 @@ impl<'a> ExprParser<'a> {
     fn equality_expr(&mut self) -> Option<Expression> {
         let left = self.comparison_expr()?;
         let op = match self.peek() {
-            Some(TokenKind::Equal) => BinaryOp::Equal,
+            Some(TokenKind::EqualEqual) => BinaryOp::Equal,
             Some(TokenKind::BangEqual) => BinaryOp::NotEqual,
             _ => return Some(left),
         };
@@ -3692,8 +3692,9 @@ fn parse_assign_or_expr(
     }
 }
 
-/// Index of the first top-level `=` (assignment separator), skipping `=` nested
-/// inside parentheses or brackets where it means equality.
+/// Index of the first top-level `=` (assignment separator). Equality is `==`, so
+/// a depth-0 `=` is unambiguously the assignment in a statement; the depth-0
+/// restriction still keeps named-argument colons and nested forms from splitting.
 fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
     find_top_level(tokens, TokenKind::Equal)
 }

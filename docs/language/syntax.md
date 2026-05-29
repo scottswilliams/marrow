@@ -20,7 +20,7 @@ markers.
 Blocks are introduced by indentation:
 
 ```mw
-if status = "open"
+if status == "open"
     write("open")
 else
     write("not open")
@@ -147,23 +147,24 @@ reassigned.
 
 ## Equality And Assignment
 
-`=` means assignment only in statement position:
+`=` is assignment only. It binds a value to a target in statement position:
 
 ```mw
 book.title = "Small Gods"
 ```
 
-In expression and condition position, `=` means equality:
+Equality is `==` and inequality is `!=`. They read values; they never assign:
 
 ```mw
-if book.title = "Small Gods"
+if book.title == "Small Gods"
     write("found")
 
-const same: bool = (left = right)
+const same: bool = (left == right)
 ```
 
-Equality is non-associative. `a = b = c` is rejected; use parentheses if you
-need to compare boolean results.
+Equality is non-associative. `a == b == c` is rejected; use parentheses if you
+need to compare boolean results. A bare `=` in expression position is a parse
+error, so a comparison can never be mistaken for an assignment.
 
 ## Operators
 
@@ -178,7 +179,7 @@ From tightest to loosest precedence:
 | 5 | `_` | concatenate |
 | 6 | `..`, `..=` | exclusive and inclusive ranges |
 | 7 | `<`, `<=`, `>`, `>=` | comparison |
-| 8 | `=`, `!=` | equality, not equal |
+| 8 | `==`, `!=` | equality, not equal |
 | 9 | `and` | short-circuit and |
 | 10 | `or` | short-circuit or |
 

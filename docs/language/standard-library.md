@@ -152,7 +152,7 @@ std::assert::fail(message: string)
 Write equality assertions by passing a boolean condition:
 
 ```mw
-std::assert::isTrue(actual = expected)
+std::assert::isTrue(actual == expected)
 ```
 
 `absent(path)` is the testing counterpart to `exists(path)`. It does not hide

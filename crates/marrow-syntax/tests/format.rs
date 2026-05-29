@@ -108,7 +108,7 @@ fn formats_expressions_to_canonical_source() {
         "first _ last",
         "1..10",
         "1..=10",
-        "a = b",
+        "a == b",
         "a != b",
         "a <= b",
         "a % b",
@@ -149,7 +149,7 @@ fn formats_statement_blocks_with_indentation() {
          \x20   var seen(id: int): bool\n\
          \x20   if n < 0\n\
          \x20       print(\"neg\")\n\
-         \x20   else if n = 0\n\
+         \x20   else if n == 0\n\
          \x20       print(\"zero\")\n\
          \x20   else\n\
          \x20       total = total + n\n\
@@ -161,7 +161,7 @@ fn formats_statement_blocks_with_indentation() {
          \x20   var seen(id: int): bool\n\
          \x20   if n < 0\n\
          \x20       print(\"neg\")\n\
-         \x20   else if n = 0\n\
+         \x20   else if n == 0\n\
          \x20       print(\"zero\")\n\
          \x20   else\n\
          \x20       total = total + n\n\

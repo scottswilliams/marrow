@@ -443,7 +443,7 @@ fn checks_test_files_into_named_modules() {
         write(
             root,
             "tests/app_test.mw",
-            "pub fn add_returns_one()\n    std::assert::isTrue(app::add() = 1)\n",
+            "pub fn add_returns_one()\n    std::assert::isTrue(app::add() == 1)\n",
         );
     });
     let cfg =
@@ -507,7 +507,7 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
         write(
             root,
             "tests/app_test.mw",
-            "module app\n\npub fn calls_app()\n    std::assert::isTrue(app::add() = 1)\n",
+            "module app\n\npub fn calls_app()\n    std::assert::isTrue(app::add() == 1)\n",
         );
     });
     let cfg =
@@ -2003,7 +2003,7 @@ fn check_tests_leaves_a_clean_test_file_clean() {
     let report = check_tests_report(
         "check-tests-clean",
         "module app\n\npub fn add(): int\n    return 1\n",
-        "pub fn t()\n    std::assert::isTrue(app::add() = 1)\n    var n = std::text::length(\"hi\")\n",
+        "pub fn t()\n    std::assert::isTrue(app::add() == 1)\n    var n = std::text::length(\"hi\")\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }

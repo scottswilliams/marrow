@@ -327,7 +327,6 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
 #[test]
 fn rejects_obsolete_operators_with_marrow_guidance() {
     let cases: &[(&str, &str, &str, usize)] = &[
-        ("a == b", "`==`", "`=` for equality", 2),
         ("a && b", "`&&`", "`and`", 2),
         ("a || b", "`||`", "`or`", 2),
         ("not_done = !ready", "`!`", "`not`", 1),
@@ -380,6 +379,25 @@ fn keeps_valid_operators_after_obsolete_check() {
             .iter()
             .any(|token| token.kind == TokenKind::BangEqual),
         "expected a BangEqual token"
+    );
+}
+
+#[test]
+fn lexes_equality_operator() {
+    let source = "if a == b\n    write(\"eq\")\n";
+    let lexed = lex_source(source);
+
+    assert!(
+        !lexed.has_errors(),
+        "`==` should lex cleanly as the equality operator, got {:#?}",
+        lexed.diagnostics
+    );
+    assert!(
+        lexed
+            .tokens
+            .iter()
+            .any(|token| token.kind == TokenKind::EqualEqual),
+        "expected an EqualEqual token"
     );
 }
 

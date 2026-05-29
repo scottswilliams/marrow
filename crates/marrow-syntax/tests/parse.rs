@@ -351,7 +351,7 @@ fn parses_if_else_if_else_chain() {
          fn classify(n: int)\n\
          \x20   if n < 0\n\
          \x20       print(\"neg\")\n\
-         \x20   else if n = 0\n\
+         \x20   else if n == 0\n\
          \x20       print(\"zero\")\n\
          \x20   else\n\
          \x20       print(\"pos\")\n",
@@ -834,20 +834,20 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
 
 #[test]
 fn surfaces_lexer_diagnostics_for_function_body_tokens() {
-    let parsed = parse_source("module app\nfn main()\n    return a == b\n");
+    let parsed = parse_source("module app\nfn main()\n    return a && b\n");
 
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let obsolete = parsed
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("`==`"))
+        .find(|diagnostic| diagnostic.message.contains("`&&`"))
         .expect("expected obsolete operator diagnostic");
     assert_eq!(obsolete.code, "parse.syntax");
     assert_eq!(obsolete.kind, "parse");
     assert_eq!(obsolete.span.line, 3);
     assert_eq!(
         obsolete.help.as_deref(),
-        Some("Use `=` for equality."),
+        Some("Use `and` for boolean and."),
         "{:#?}",
         obsolete.help
     );
@@ -1871,10 +1871,64 @@ fn malformed_while_condition_reports_a_parse_error() {
     // A `while` header that does not parse as a complete expression is a parse
     // error (the A21 hole-close generalized): the grammar requires
     // `while_stmt = "while" expression NEWLINE block`.
-    let parsed = parse_source("fn f()\n    while a = b = c\n        return\n");
+    let parsed = parse_source("fn f()\n    while a == b == c\n        return\n");
     assert!(
         parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
         "expected a parse error for the malformed `while` condition: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn equality_and_inequality_parse_in_expression_position() {
+    // `==` is equality and `!=` is inequality; both parse as binary operators.
+    let eq = parse_source("fn f(a: int, b: int): bool\n    return a == b\n");
+    assert!(eq.diagnostics.is_empty(), "{:#?}", eq.diagnostics);
+    let Statement::Return {
+        value: Some(value), ..
+    } = &eq.file.function("f").expect("f").body.statements[0]
+    else {
+        panic!("expected a return statement");
+    };
+    assert!(
+        matches!(
+            value,
+            Expression::Binary {
+                op: BinaryOp::Equal,
+                ..
+            }
+        ),
+        "expected `==` to parse as equality: {value:?}"
+    );
+
+    let ne = parse_source("fn f(x: int, y: int): bool\n    return x != y\n");
+    assert!(ne.diagnostics.is_empty(), "{:#?}", ne.diagnostics);
+    let Statement::Return {
+        value: Some(value), ..
+    } = &ne.file.function("f").expect("f").body.statements[0]
+    else {
+        panic!("expected a return statement");
+    };
+    assert!(
+        matches!(
+            value,
+            Expression::Binary {
+                op: BinaryOp::NotEqual,
+                ..
+            }
+        ),
+        "expected `!=` to parse as inequality: {value:?}"
+    );
+}
+
+#[test]
+fn bare_equals_in_expression_position_is_a_parse_error() {
+    // `=` is assignment only; a `=` left over in expression position (here nested
+    // in a condition where it cannot be the statement assignment) does not parse.
+    let parsed = parse_source("fn f(a: int, b: int)\n    if (a = b)\n        return\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        "expected a parse error for a bare `=` in expression position: {:#?}",
         parsed.diagnostics
     );
 }

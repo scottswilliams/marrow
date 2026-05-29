@@ -229,7 +229,7 @@ use shelf::books
 pub fn addThenFind()
     const id = books::add(title: "Mort", author: "Terry Pratchett", shelf: "fiction")
     std::assert::isTrue(exists(^books(id)))
-    std::assert::isTrue(^books(id).title = "Mort")
+    std::assert::isTrue(^books(id).title == "Mort")
 ```
 
 `use shelf::books` imports the module so you can call `books::add`. Write

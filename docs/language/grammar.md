@@ -234,7 +234,8 @@ finally_clause   = "finally" NEWLINE block ;
 
 ## Expressions
 
-Assignment is not an expression. `=` in expression position is equality.
+Assignment is not an expression. Equality is `==` and inequality is `!=`; the
+single `=` is assignment only and is a parse error in expression position.
 
 ```ebnf
 expression      = or_expr ;
@@ -243,7 +244,7 @@ or_expr         = and_expr ("or" and_expr)* ;
 and_expr        = equality_expr ("and" equality_expr)* ;
 
 equality_expr   =
-    comparison_expr (("=" | "!=") comparison_expr)? ;
+    comparison_expr (("==" | "!=") comparison_expr)? ;
 
 comparison_expr = range_expr (("<" | "<=" | ">" | ">=") range_expr)? ;
 range_expr      = concat_expr ((".." | "..=") concat_expr)? ;
@@ -350,8 +351,9 @@ After the first named argument, remaining arguments must be named.
 
 These rules are part of the grammar contract:
 
-- At statement start, `target = expr` is assignment.
-- Inside expressions, `=` is equality.
+- At statement start, `target = expr` is assignment; the single `=` is always
+  assignment and never equality, so a `=` in expression position is a parse
+  error. Equality is `==` and inequality is `!=`.
 - Assignment cannot be nested inside calls, conditions, returns, or subscripts.
 - Expression statements must be effectful calls or call-shaped builtins such
   as `write(...)` and `print(...)`; useless pure expression statements are

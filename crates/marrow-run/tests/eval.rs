@@ -182,7 +182,7 @@ fn decimal_division_by_zero_is_a_runtime_error() {
 fn compares_decimal_values() {
     // Ordering and equality compare by value (1.50 equals 1.5).
     let program = checked_program(
-        "pub fn f(): string\n    return $\"{1.5 < 2.0} {1.50 = 1.5} {2.5 > 3.0}\"\n",
+        "pub fn f(): string\n    return $\"{1.5 < 2.0} {1.50 == 1.5} {2.5 > 3.0}\"\n",
     );
     assert_eq!(
         run(&program, "test::f", &[]).unwrap(),
@@ -216,8 +216,8 @@ fn decimal_round_trips_through_saved_data() {
 #[test]
 fn evaluates_bytes_literals_and_equality() {
     let program = checked_program(
-        "pub fn same(): bool\n    return b\"abc\" = b\"abc\"\n\n\
-         pub fn different(): bool\n    return b\"abc\" = b\"abd\"\n",
+        "pub fn same(): bool\n    return b\"abc\" == b\"abc\"\n\n\
+         pub fn different(): bool\n    return b\"abc\" == b\"abd\"\n",
     );
     assert_eq!(
         run(&program, "test::same", &[]).unwrap(),
@@ -255,7 +255,7 @@ fn bytes_round_trip_through_saved_data() {
          \x20   ^blobs(1).data = b\"xy\"\n\
          \n\
          pub fn matches(): bool\n\
-         \x20   return ^blobs(1).data = b\"xy\"\n",
+         \x20   return ^blobs(1).data == b\"xy\"\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
@@ -286,7 +286,7 @@ fn converts_string_to_bytes_and_measures_length() {
 
 #[test]
 fn bytes_conversion_equals_a_bytes_literal() {
-    let program = checked_program("pub fn f(): bool\n    return bytes(\"xy\") = b\"xy\"\n");
+    let program = checked_program("pub fn f(): bool\n    return bytes(\"xy\") == b\"xy\"\n");
     assert_eq!(
         run(&program, "test::f", &[]).unwrap(),
         Some(Value::Bool(true))
@@ -323,8 +323,8 @@ fn base64_encodes_with_padding() {
 #[test]
 fn base64_decodes_and_round_trips() {
     let program = checked_program(
-        "pub fn known(): bool\n    return std::bytes::base64Decode(\"aGVsbG8=\") = b\"hello\"\n\n\
-         pub fn round(): bool\n    return std::bytes::base64Decode(std::bytes::base64Encode(b\"hi there\")) = b\"hi there\"\n",
+        "pub fn known(): bool\n    return std::bytes::base64Decode(\"aGVsbG8=\") == b\"hello\"\n\n\
+         pub fn round(): bool\n    return std::bytes::base64Decode(std::bytes::base64Encode(b\"hi there\")) == b\"hi there\"\n",
     );
     assert_eq!(
         run(&program, "test::known", &[]).unwrap(),
@@ -500,7 +500,7 @@ fn temporal_values_order_and_equate() {
     // Dates, instants, and durations compare by their underlying counts, matching
     // the ordered/equatable types the checker already advertises.
     let program = checked_program(
-        "fn dateBefore(a: string, b: string): bool\n    return std::clock::parseDate(a) < std::clock::parseDate(b)\nfn dateSame(a: string, b: string): bool\n    return std::clock::parseDate(a) = std::clock::parseDate(b)\nfn instantBefore(a: string, b: string): bool\n    return std::clock::parseInstant(a) < std::clock::parseInstant(b)\nfn durationBefore(a: string, b: string): bool\n    return std::clock::parseDuration(a) < std::clock::parseDuration(b)\n",
+        "fn dateBefore(a: string, b: string): bool\n    return std::clock::parseDate(a) < std::clock::parseDate(b)\nfn dateSame(a: string, b: string): bool\n    return std::clock::parseDate(a) == std::clock::parseDate(b)\nfn instantBefore(a: string, b: string): bool\n    return std::clock::parseInstant(a) < std::clock::parseInstant(b)\nfn durationBefore(a: string, b: string): bool\n    return std::clock::parseDuration(a) < std::clock::parseDuration(b)\n",
     );
     let call = |entry: &str, a: &str, b: &str| {
         run(
@@ -730,10 +730,10 @@ fn evaluates_conditionals() {
 
 #[test]
 fn std_assert_is_true_passes_and_fails() {
-    let program = checked_program("pub fn ok()\n    std::assert::isTrue(1 = 1)\n");
+    let program = checked_program("pub fn ok()\n    std::assert::isTrue(1 == 1)\n");
     assert_eq!(run(&program, "test::ok", &[]), Ok(None));
 
-    let program = checked_program("pub fn bad()\n    std::assert::isTrue(1 = 2)\n");
+    let program = checked_program("pub fn bad()\n    std::assert::isTrue(1 == 2)\n");
     assert_eq!(
         run(&program, "test::bad", &[]).unwrap_err().code,
         RUN_ASSERT
@@ -742,10 +742,10 @@ fn std_assert_is_true_passes_and_fails() {
 
 #[test]
 fn std_assert_is_false_passes_and_fails() {
-    let program = checked_program("pub fn ok()\n    std::assert::isFalse(1 = 2)\n");
+    let program = checked_program("pub fn ok()\n    std::assert::isFalse(1 == 2)\n");
     assert_eq!(run(&program, "test::ok", &[]), Ok(None));
 
-    let program = checked_program("pub fn bad()\n    std::assert::isFalse(1 = 1)\n");
+    let program = checked_program("pub fn bad()\n    std::assert::isFalse(1 == 1)\n");
     assert_eq!(
         run(&program, "test::bad", &[]).unwrap_err().code,
         RUN_ASSERT
@@ -796,7 +796,7 @@ fn std_assert_rejects_misused_arguments() {
 fn a_passing_assert_lets_execution_continue() {
     // A passing assertion produces no value and falls through to later statements.
     let program =
-        checked_program("pub fn ok(): int\n    std::assert::isTrue(1 = 1)\n    return 7\n");
+        checked_program("pub fn ok(): int\n    std::assert::isTrue(1 == 1)\n    return 7\n");
     assert_eq!(run(&program, "test::ok", &[]), Ok(Some(Value::Int(7))));
 }
 
@@ -1605,9 +1605,9 @@ fn evaluates_boolean_logic() {
 
 #[test]
 fn equality_compares_values() {
-    // Marrow spells equality `=` (and inequality `!=`); assignment `=` is a
-    // statement, so this `=` in expression position is the equality operator.
-    let f = function("fn f(a: int, b: int): bool\n    return a = b\n");
+    // Marrow spells equality `==` (and inequality `!=`); assignment is the
+    // single `=`, so equality in expression position uses `==`.
+    let f = function("fn f(a: int, b: int): bool\n    return a == b\n");
     assert_eq!(
         evaluate_function(&f, &[Value::Int(5), Value::Int(5)]),
         Ok(Some(Value::Bool(true)))
@@ -1836,7 +1836,7 @@ fn break_exits_the_loop() {
 #[test]
 fn continue_skips_to_the_next_iteration() {
     let f = function(
-        "fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i = 1\n            continue\n        c = c + 1\n    return c\n",
+        "fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i == 1\n            continue\n        c = c + 1\n    return c\n",
     );
     // The first iteration is skipped; the rest count.
     assert_eq!(
@@ -1848,7 +1848,7 @@ fn continue_skips_to_the_next_iteration() {
 #[test]
 fn a_labeled_break_exits_the_outer_loop() {
     let f = function(
-        "fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j = 2\n                break outer\n            count = count + 1\n    return count\n",
+        "fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                break outer\n            count = count + 1\n    return count\n",
     );
     // i=1: j=1 counts (1), j=2 breaks the outer loop entirely.
     assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(1))));
@@ -1857,7 +1857,7 @@ fn a_labeled_break_exits_the_outer_loop() {
 #[test]
 fn an_unlabeled_break_exits_only_the_inner_loop() {
     let f = function(
-        "fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j = 2\n                break\n            count = count + 1\n    return count\n",
+        "fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j == 2\n                break\n            count = count + 1\n    return count\n",
     );
     // Each outer iteration counts j=1 then breaks the inner loop: 2 total.
     assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(2))));
@@ -1894,7 +1894,7 @@ fn concatenates_strings() {
 
 #[test]
 fn compares_strings_for_equality_and_order() {
-    let eq = function("fn eq(a: string, b: string): bool\n    return a = b\n");
+    let eq = function("fn eq(a: string, b: string): bool\n    return a == b\n");
     assert_eq!(
         evaluate_function(&eq, &[Value::Str("x".into()), Value::Str("x".into())]),
         Ok(Some(Value::Bool(true)))

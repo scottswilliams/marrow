@@ -1686,7 +1686,7 @@ fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
         BinaryOp::LessEqual => "<=",
         BinaryOp::Greater => ">",
         BinaryOp::GreaterEqual => ">=",
-        BinaryOp::Equal => "=",
+        BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",

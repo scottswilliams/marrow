@@ -5,9 +5,9 @@ Marrow control flow is structured and indentation-based.
 ## Conditionals
 
 ```mw
-if status = "open"
+if status == "open"
     write("open")
-else if status = "loaned"
+else if status == "loaned"
     write("loaned")
 else
     write("other")
