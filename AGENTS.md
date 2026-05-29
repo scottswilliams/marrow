@@ -126,6 +126,11 @@ belong together.
 - Prefer simple Rust and narrow abstractions.
 - Keep code concise and self-documenting. Prioritize readability and
   maintainability.
+- Write comments as a human engineer would: explain *why*, in plain prose. Do not
+  cite docs by filename or line, reference tickets, reviews, roadmap steps, or
+  wave/slice numbers, narrate edits ("previously", "now changed to"), or restate
+  what the code already says. State the rationale directly and trust the reader to
+  find the rest in `docs/`.
 - Follow the 80/20 rule: avoid large changes without proportionate impact.
 - Add tests near the behavior being changed.
 - Keep storage behavior behind the backend contract.
