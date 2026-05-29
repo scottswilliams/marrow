@@ -169,6 +169,30 @@ fn native_store_requires_a_data_dir() {
 }
 
 #[test]
+fn an_uncaught_throw_exits_one_with_the_thrown_code_on_stderr() {
+    // The headline runtime failure surface: a throw that propagates out of the
+    // entry surfaces as run.uncaught_error with the thrown dotted code embedded.
+    let root = temp_project("run-throw", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
+        );
+    });
+    let output = run_run(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("book.absent"), "{stderr}");
+}
+
+#[test]
 fn maps_an_unknown_entry_to_a_runtime_code() {
     let root = temp_project("run-unknown", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
