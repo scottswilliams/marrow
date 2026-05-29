@@ -19,13 +19,13 @@
 
 use std::path::Path;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{
+    AccessGuard, Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+};
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
-use crate::path::{
-    ChildSegment, SavedKey, decode_child_segment, decode_key_value, int_index_key_band,
-    int_record_key_band, root_name, segment_len,
-};
+use crate::path::{ChildSegment, int_index_key_band, int_record_key_band};
+use crate::traversal::{self, Entries};
 
 /// The single table holding every encoded (path, value) pair.
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
@@ -59,9 +59,51 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
     }
 }
 
-/// Build a [`StoreError::CorruptPath`] for a stored key that failed to decode.
-fn corrupt(key: &[u8]) -> StoreError {
-    StoreError::CorruptPath { path: key.to_vec() }
+/// One row's borrowed access guards, holding the encoded key and value alive so a
+/// borrow into them stays valid while the shared traversal handles the row.
+type Row<'t> = (
+    AccessGuard<'t, &'static [u8]>,
+    AccessGuard<'t, &'static [u8]>,
+);
+
+/// Collect the rows of the subtree at `prefix`, in Marrow order, as access guards.
+/// The guards (not the bytes) are materialized so a later borrow into them
+/// outlives a single iteration step; redb hands back a fresh guard per row, which
+/// a plain `Iterator` cannot lend across steps. Mapping these into [`entries`]
+/// gives the shared [`traversal`] functions their source.
+///
+/// Only the subtree is collected (the range stops at the first key past `prefix`),
+/// and `stop_at` caps it earlier still — a count past which the traversal cannot
+/// change its answer — so an early-exiting walk (presence, a bounded scan) does
+/// not materialize the whole subtree just to look at its first rows.
+fn collect_rows<'t, T>(
+    table: &'t T,
+    prefix: &[u8],
+    stop_at: impl Fn(usize) -> bool,
+    op: &'static str,
+) -> Result<Vec<Row<'t>>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut rows = Vec::new();
+    for entry in table.range::<&[u8]>(prefix..).map_err(io(op))? {
+        let (key, value) = entry.map_err(io(op))?;
+        if !key.value().starts_with(prefix) {
+            break; // past the subtree
+        }
+        if stop_at(rows.len()) {
+            break; // the traversal has already seen all it needs
+        }
+        rows.push((key, value));
+    }
+    Ok(rows)
+}
+
+/// Borrow each collected row as the shared `(key, value)` item shape. The borrows
+/// live as long as `rows`, so the traversal can read them across its whole walk.
+fn entries<'a>(rows: &'a [Row<'_>]) -> impl Entries<'a> {
+    rows.iter()
+        .map(|(key, value)| Ok((key.value(), value.value())))
 }
 
 /// The encoded keys of the subtree at `path` (the path's own entry and every
@@ -227,28 +269,22 @@ impl RedbStore {
 
     /// The highest integer key in the half-open byte `band` of integer-keyed
     /// children of `prefix`. The band is one contiguous numeric-ordered run, so
-    /// its last entry (redb ranges are double-ended) is the highest; the key
-    /// after `prefix` is the kind tag (one byte) then the integer key encoding,
-    /// so it decodes from `prefix.len() + 1`. `None` when the band is empty.
+    /// its last entry (redb ranges are double-ended) is the highest; the shared
+    /// decode reads the key just past the kind tag. `None` when the band is empty.
     fn max_int_in_band(
         &self,
         prefix: &[u8],
         (lo, hi): (Vec<u8>, Vec<u8>),
     ) -> Result<Option<i64>, StoreError> {
         read_view!(self, "max_int_key", |table| {
-            let Some(entry) = table
+            let last = table
                 .range::<&[u8]>(lo.as_slice()..hi.as_slice())
                 .map_err(io("max_int_key"))?
-                .next_back()
-            else {
-                return Ok(None);
-            };
-            let (key, _) = entry.map_err(io("max_int_key"))?;
-            let key = key.value();
-            match decode_key_value(key.get(prefix.len() + 1..).unwrap_or(&[])) {
-                Some((SavedKey::Int(value), _)) => Ok(Some(value)),
-                _ => Err(corrupt(key)),
-            }
+                .next_back();
+            // Keep the last row's guard alive so the borrow into it survives the
+            // shared decode below.
+            let last = last.transpose().map_err(io("max_int_key"))?;
+            traversal::max_int_key(last.as_ref().map(|(key, _)| Ok(key.value())), prefix)
         })
     }
 }
@@ -318,83 +354,35 @@ impl Backend for RedbStore {
     fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
         read_view!(self, "presence", |table| {
             let has_value = table.get(path).map_err(io("presence"))?.is_some();
-            let mut has_descendants = false;
-            for entry in table.range::<&[u8]>(path..).map_err(io("presence"))? {
-                let (key, _) = entry.map_err(io("presence"))?;
-                let key = key.value();
-                if !key.starts_with(path) {
-                    break;
-                }
-                if key.len() > path.len() {
-                    has_descendants = true;
-                    break;
-                }
-            }
-            Ok(match (has_value, has_descendants) {
-                (false, false) => Presence::Absent,
-                (true, false) => Presence::ValueOnly,
-                (false, true) => Presence::ChildrenOnly,
-                (true, true) => Presence::ValueAndChildren,
-            })
+            // The subtree's rows sort with `path`'s own entry (if any) first, so the
+            // first descendant — the only one presence needs — is among the first
+            // two rows. Stopping there avoids walking a large subtree to learn it
+            // merely has children.
+            let rows = collect_rows(&table, path, |seen| seen >= 2, "presence")?;
+            traversal::presence(has_value, entries(&rows), path)
         })
     }
 
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         read_view!(self, "child_keys", |table| {
-            let mut children = Vec::new();
-            let mut last: Option<Vec<u8>> = None;
-            for entry in table.range::<&[u8]>(path..).map_err(io("child_keys"))? {
-                let (key, _) = entry.map_err(io("child_keys"))?;
-                let key = key.value();
-                if !key.starts_with(path) {
-                    break;
-                }
-                if key.len() <= path.len() {
-                    continue; // the path's own entry, not a child
-                }
-                let rest = &key[path.len()..];
-                let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
-                let segment = &rest[..len];
-                if last.as_deref() == Some(segment) {
-                    continue; // same immediate child as the previous descendant
-                }
-                last = Some(segment.to_vec());
-                children.push(decode_child_segment(segment).ok_or_else(|| corrupt(key))?);
-            }
-            Ok(children)
+            let rows = collect_rows(&table, path, |_| false, "child_keys")?;
+            traversal::child_keys(entries(&rows), path)
         })
     }
 
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
         read_view!(self, "scan", |table| {
-            let mut page = ScanPage::default();
-            for entry in table.range::<&[u8]>(path..).map_err(io("scan"))? {
-                let (key, value) = entry.map_err(io("scan"))?;
-                let key = key.value();
-                if !key.starts_with(path) {
-                    break;
-                }
-                if page.entries.len() == limit {
-                    page.truncated = true;
-                    break;
-                }
-                page.entries.push((key.to_vec(), value.value().to_vec()));
-            }
-            Ok(page)
+            // One row past the limit is enough for the scan to report truncation.
+            let cap = limit.saturating_add(1);
+            let rows = collect_rows(&table, path, move |seen| seen >= cap, "scan")?;
+            traversal::scan(entries(&rows), path, limit)
         })
     }
 
     fn roots(&self) -> Result<Vec<String>, StoreError> {
         read_view!(self, "roots", |table| {
-            let mut roots: Vec<String> = Vec::new();
-            for entry in table.range::<&[u8]>(..).map_err(io("roots"))? {
-                let (key, _) = entry.map_err(io("roots"))?;
-                let name = root_name(key.value()).ok_or_else(|| corrupt(key.value()))?;
-                if roots.last() != Some(&name) {
-                    roots.push(name);
-                }
-            }
-            Ok(roots)
+            let rows = collect_rows(&table, &[], |_| false, "roots")?;
+            traversal::roots(entries(&rows))
         })
     }
 
