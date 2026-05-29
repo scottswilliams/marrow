@@ -10,8 +10,7 @@
 
 use std::io::{Read, Write};
 
-use crate::backend::Backend;
-use crate::mem::StoreError;
+use crate::backend::{Backend, StoreError};
 
 /// The archive magic, identifying the file and guarding against restoring
 /// arbitrary bytes.

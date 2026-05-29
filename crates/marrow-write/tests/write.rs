@@ -2,8 +2,8 @@
 //! into the store, and keep generated index entries coherent.
 
 use marrow_schema::{ResourceSchema, compile_resource};
-use marrow_store::backend::Backend;
-use marrow_store::mem::{MemStore, Presence, ScanPage, StoreError};
+use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
+use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, decode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};

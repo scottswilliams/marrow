@@ -1288,14 +1288,14 @@ fn data_get(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        None => marrow_store::mem::Presence::Absent,
+        None => marrow_store::backend::Presence::Absent,
     };
     match format {
         CheckFormat::Text => match &value {
             Some(bytes) => println!("{}", render_value_bytes(bytes)),
             // A valueless path with children is distinct from a truly absent one.
             None => match presence {
-                marrow_store::mem::Presence::ChildrenOnly => println!("(no value; has children)"),
+                marrow_store::backend::Presence::ChildrenOnly => println!("(no value; has children)"),
                 _ => println!("(absent)"),
             },
         },
@@ -1312,8 +1312,8 @@ fn data_get(args: &[String]) -> ExitCode {
 
 /// The presence-state name for the `get` JSON envelope, matching serve's
 /// `op_saved_get` spelling.
-fn presence_name(presence: marrow_store::mem::Presence) -> &'static str {
-    use marrow_store::mem::Presence;
+fn presence_name(presence: marrow_store::backend::Presence) -> &'static str {
+    use marrow_store::backend::Presence;
     match presence {
         Presence::Absent => "absent",
         Presence::ValueOnly => "value_only",

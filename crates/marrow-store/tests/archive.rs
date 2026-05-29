@@ -4,7 +4,8 @@
 use std::io::Cursor;
 
 use marrow_store::archive::{read_archive, write_archive};
-use marrow_store::mem::{MemStore, StoreError};
+use marrow_store::backend::StoreError;
+use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, encode_value};
 

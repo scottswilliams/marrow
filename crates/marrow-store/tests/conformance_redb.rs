@@ -2,9 +2,9 @@
 //! in-memory store — one contract, two backends.
 #![cfg(feature = "native")]
 
-use marrow_store::backend::Backend;
+use marrow_store::backend::{Backend, ScanPage};
 use marrow_store::conformance;
-use marrow_store::mem::{MemStore, ScanPage};
+use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
 

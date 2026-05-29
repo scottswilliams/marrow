@@ -11,8 +11,89 @@
 //! transaction guard, and every operation is fallible: a persistent store can
 //! meet I/O and corruption errors the in-memory store never does.
 
-use crate::mem::{Presence, ScanPage, StoreError};
 use crate::path::ChildSegment;
+
+/// What a saved path holds: a value, children, both, or neither. Mirrors the
+/// four presence states the backend contract reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    Absent,
+    ValueOnly,
+    ChildrenOnly,
+    ValueAndChildren,
+}
+
+/// An error from the store. The in-memory store can only fail by meeting a
+/// stored path it cannot decode; a persistent backend can also fail with the I/O,
+/// locking, format, corruption, and limit variants. Variants carry only owned
+/// data (never a backend-specific error) so the contract stays comparable.
+///
+/// Each variant maps to a stable dotted [`code`](StoreError::code) and renders a
+/// human message through [`Display`](std::fmt::Display), so every tool above the
+/// store reports storage failures the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    /// A stored key is not a well-formed sequence of path segments.
+    CorruptPath { path: Vec<u8> },
+    /// An I/O operation on a persistent backend failed.
+    Io { op: &'static str, message: String },
+    /// The store file is already held open by another writer.
+    Locked { data_dir: std::path::PathBuf },
+    /// The store's recorded format version is not the one this build supports.
+    FormatVersion { found: u32, supported: u32 },
+    /// The persistent store is corrupt and could not be opened or read.
+    Corruption { message: String },
+    /// An archive chunk exceeded the framing limit (a length above `u32::MAX`).
+    /// Backends enforce no key/value size limit, so archive framing is the sole
+    /// producer of this variant (`store.limit`).
+    LimitExceeded { limit: &'static str },
+}
+
+impl StoreError {
+    /// The stable dotted code a tool reports for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::CorruptPath { .. } => "store.corrupt_path",
+            Self::Io { .. } => "store.io",
+            Self::Locked { .. } => "store.locked",
+            Self::FormatVersion { .. } => "store.format_version",
+            Self::Corruption { .. } => "store.corruption",
+            Self::LimitExceeded { .. } => "store.limit",
+        }
+    }
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CorruptPath { path } => {
+                write!(f, "a stored path is malformed ({} bytes)", path.len())
+            }
+            Self::Io { op, message } => write!(f, "storage {op} failed: {message}"),
+            Self::Locked { data_dir } => write!(
+                f,
+                "the store is already open by another process: {}",
+                data_dir.display()
+            ),
+            Self::FormatVersion { found, supported } => write!(
+                f,
+                "store format version {found} is unsupported (this build uses {supported})"
+            ),
+            Self::Corruption { message } => write!(f, "the store is corrupt: {message}"),
+            Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+/// One page of a bounded scan: the entries found in Marrow order, and whether
+/// more remained past the limit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanPage {
+    pub entries: Vec<(Vec<u8>, Vec<u8>)>,
+    pub truncated: bool,
+}
 
 /// The operations every Marrow saved-tree store provides over encoded paths.
 pub trait Backend {

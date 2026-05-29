@@ -1,7 +1,8 @@
 //! In-memory store behavior: write/read round-trips, the four presence states,
 //! and subtree delete. These are the first store-conformance laws.
 
-use marrow_store::mem::{MemStore, Presence};
+use marrow_store::backend::Presence;
+use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 
 /// The encoded path `^books(id)`.
@@ -128,7 +129,7 @@ fn scan_is_bounded_by_the_limit() {
 
 #[test]
 fn a_corrupt_stored_path_is_a_typed_error() {
-    use marrow_store::mem::StoreError;
+    use marrow_store::backend::StoreError;
 
     // A key that is not a valid segment sequence: 0xFF is not a kind tag.
     let mut store = MemStore::new();
@@ -151,7 +152,7 @@ fn a_corrupt_stored_path_is_a_typed_error() {
 fn store_errors_expose_stable_codes_and_messages() {
     use std::path::PathBuf;
 
-    use marrow_store::mem::StoreError;
+    use marrow_store::backend::StoreError;
 
     let cases = [
         (

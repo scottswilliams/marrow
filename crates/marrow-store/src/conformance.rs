@@ -11,8 +11,7 @@
 //! The laws panic on the first violation (naming the law) so a single `#[test]`
 //! per backend reports failures with a clear message.
 
-use crate::backend::Backend;
-use crate::mem::{Presence, StoreError};
+use crate::backend::{Backend, Presence, StoreError};
 use crate::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 
 /// Run every conformance law against fresh stores produced by `make`. `make` is

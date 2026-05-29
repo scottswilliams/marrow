@@ -13,7 +13,7 @@
 
 use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema};
 use marrow_store::backend::Backend;
-use marrow_store::mem::StoreError;
+use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
 

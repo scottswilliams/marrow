@@ -13,8 +13,8 @@ use marrow_run::{
     classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::compile_resource;
-use marrow_store::backend::Backend;
-use marrow_store::mem::{MemStore, Presence, ScanPage, StoreError};
+use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
+use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
 use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};

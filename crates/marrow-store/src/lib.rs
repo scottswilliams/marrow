@@ -22,9 +22,8 @@ pub mod redb;
 pub mod value;
 
 /// The shared backend error, re-exported at the crate root: it is part of the
-/// [`Backend`](backend::Backend) contract, not specific to the in-memory store
-/// it is defined alongside.
-pub use mem::StoreError;
+/// [`Backend`](backend::Backend) contract.
+pub use backend::StoreError;
 
 /// Exact base-10 decimal arithmetic, re-exported at the crate root.
 pub use decimal::Decimal;

@@ -24,8 +24,8 @@ use marrow_check::{
 };
 use marrow_schema::{IndexSchema, LayerMember, ResourceSchema};
 use marrow_store::Decimal;
-use marrow_store::backend::Backend;
-use marrow_store::mem::{MemStore, Presence, StoreError};
+use marrow_store::backend::{Backend, Presence, StoreError};
+use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
 use marrow_syntax::{

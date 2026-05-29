@@ -13,7 +13,7 @@
 
 use marrow_run::base64;
 use marrow_store::backend::Backend;
-use marrow_store::mem::Presence;
+use marrow_store::backend::Presence;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use serde_json::{Value, json};
 

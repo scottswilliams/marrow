@@ -21,8 +21,7 @@ use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
 
-use crate::backend::Backend;
-use crate::mem::{Presence, ScanPage, StoreError};
+use crate::backend::{Backend, Presence, ScanPage, StoreError};
 use crate::path::{
     ChildSegment, SavedKey, decode_child_segment, decode_key_value, int_index_key_band,
     int_record_key_band, root_name, segment_len,
