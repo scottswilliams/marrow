@@ -1895,7 +1895,8 @@ fn compares_strings_for_equality_and_order() {
 
 #[test]
 fn string_escapes_are_not_yet_decoded() {
-    // The source string contains a backslash escape; decoding is a later slice.
+    // The source string contains a backslash escape, which the runtime does not
+    // yet decode.
     let f = function("fn f(): string\n    return \"a\\nb\"\n");
     let result = evaluate_function(&f, &[]);
     assert!(
@@ -3329,7 +3330,7 @@ fn copies_a_whole_resource() {
 /// A resource declaring an unkeyed nested group (`name`). A whole-resource read
 /// would silently omit the group's fields, and a whole-resource write would
 /// delete the group subtree while rewriting only top-level fields — so both
-/// must fail fast until group materialization lands (review F15, interim).
+/// must fail fast until group materialization lands.
 const PATIENT_WITH_GROUP: &str = "\
 resource Patient at ^patients(id: int)
     mrn: string
@@ -4156,7 +4157,7 @@ fn the_sample_update_functions_run() {
     assert_eq!(shelf("fiction"), "", "and left fiction");
 }
 
-// --- Wave 1: resource-identity values (G03) ---
+// --- Resource-identity values ---
 
 /// A single-key resource where code constructs an identity with `Book::Id(1)`,
 /// passes it to a saved read, and writes through it. The identity carries the
@@ -4322,7 +4323,7 @@ fn whole_resource_read_through_an_identity() {
     assert_eq!(value, Some(Value::Str("active".into())));
 }
 
-// --- Wave 1: singleton resources end-to-end (G01) ---
+// --- Singleton resources end-to-end ---
 
 /// A singleton resource (`Settings at ^settings`, no identity keys). Field
 /// read/write address the root directly, and whole read/write materialize and
@@ -4421,7 +4422,7 @@ fn singleton_whole_read_and_write_round_trip() {
     assert_eq!(value, Some(Value::Str("solar".into())));
 }
 
-// --- Wave 1: unkeyed-group field read/write through a saved path (G02) ---
+// --- Unkeyed-group field read/write through a saved path ---
 
 /// A resource with an unkeyed nested group (`name { first; last }`). Its fields
 /// are addressed `^patients(p).name.first` — a `.field` off a `.field` off the
@@ -4528,7 +4529,7 @@ fn an_absent_unkeyed_group_field_read_is_absent() {
     assert_eq!(error.code, RUN_ABSENT, "{error:?}");
 }
 
-// --- Wave 1: unique-index identity reads (G05/G07) ---
+// --- Unique-index identity reads ---
 
 /// A book with a unique index on `isbn`. `register` stores the book, and
 /// `titleByIsbn` reads the identity back from the unique-index lookup path and
@@ -4617,7 +4618,7 @@ fn a_non_unique_index_in_value_position_is_rejected() {
     assert!(error.message.contains("keys("), "{error:?}");
 }
 
-// --- Wave 1: composite-identity index traversal (G04/G08) ---
+// --- Composite-identity index traversal ---
 
 /// A composite-identity resource indexed by status. The non-unique index ends
 /// with both identity keys, so traversal must descend both levels per entry and
@@ -4664,7 +4665,7 @@ fn traverses_a_composite_identity_index() {
     assert_eq!(outcome.output, "active\nactive\n");
 }
 
-// --- Wave 2: unified saved-layer enumeration (G09/G11/G12/G13) ---
+// --- Unified saved-layer enumeration ---
 
 /// Iterating a primary keyed root yields its record identities. `^books` is a
 /// single-`int`-key root, so each identity is a bare `Value::Int` that re-addresses
@@ -5277,8 +5278,8 @@ resource Patient at ^patients(id: string)
 fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
     // Field delete descends unkeyed-group layers. A REQUIRED field inside an
     // unkeyed group cannot be declared today (schema.required_in_unkeyed_group
-    // rejects it at compile time), so the nested required-delete guard is deferred
-    // to the group-materialization wave that lifts that interim rejection.
+    // rejects it at compile time), so the nested required-delete guard waits on
+    // group materialization, which lifts that rejection.
     let program = checked_program(&format!(
         "{PATIENT_SPARSE_GROUP}\
          pub fn drop()\n\
@@ -5288,7 +5289,7 @@ fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
     run_entry(&program, &store, "test::drop", &[]).expect("sparse group-field delete is a no-op");
 }
 
-// --- Maintenance mode & managed-root protection (Wave 4) ---
+// --- Maintenance mode & managed-root protection ---
 
 /// A two-key books program with an index, reused by the maintenance tests below:
 /// it can seed records, drop the whole `^books` root, and count remaining records

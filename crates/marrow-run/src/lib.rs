@@ -7,11 +7,11 @@
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
 //! groups writes in a `transaction` (commit/rollback with read-your-writes),
 //! guards a block with `lock` (a scope released on every exit under the
-//! single-writer profile), and
-//! provides the `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
+//! single-writer profile), and provides the
+//! `print`/`write`/`exists`/`get`/`nextId`/`append` builtins, the
 //! `std::assert`/`std::text`/`std::math` library helpers, and the
-//! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes, `merge`, index
-//! traversal, and structured errors build on this spine.
+//! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes,
+//! `merge`, index traversal, and structured errors build on the same spine.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -42,9 +42,9 @@ use marrow_write::{
 
 pub mod base64;
 
-/// A runtime value. This models the scalar shapes a pure function needs; saved
-/// trees, identities, and error values arrive with the features that produce
-/// them.
+/// A runtime value: the scalars a pure function manipulates plus the in-memory
+/// and saved-tree shapes the data features produce (sequences, resource trees,
+/// identities).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Int(i64),
@@ -114,7 +114,7 @@ pub const RUN_NO_VALUE: &str = "run.no_value";
 pub const RUN_ABSENT: &str = "run.absent_element";
 /// The store reported an error (e.g. a corrupt stored path) during a read.
 pub const RUN_STORE: &str = "run.store";
-/// A construct this slice of the runtime does not yet evaluate.
+/// A construct the runtime does not yet evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 /// A host capability a builtin needs (e.g. the clock for `std::clock::now`) was
 /// not provided to this run.
@@ -2768,7 +2768,6 @@ fn eval_for(
     } else {
         current < end
     } {
-        // Each iteration binds the loop variable in a fresh scope.
         env.push_scope();
         env.bind(binding.first.clone(), Value::Int(current), false);
         let flow = eval_block(body, env);
@@ -2788,7 +2787,7 @@ fn eval_for(
 }
 
 /// The `(start, end, inclusive)` bounds of a range iterable. Only integer ranges
-/// (`a..b`, `a..=b`) are iterable in this slice; other iterables are unsupported.
+/// (`a..b`, `a..=b`) are iterable; other iterables are unsupported.
 fn range_bounds(
     iterable: &Expression,
     env: &mut Env<'_>,
@@ -3093,7 +3092,7 @@ fn saved_key_to_value(key: SavedKey) -> Option<Value> {
 }
 
 /// The single local name an assignment targets, or an "unsupported" error for a
-/// saved path or qualified name (those arrive with later slices).
+/// saved path or qualified name (those are dispatched before reaching here).
 fn local_target(target: &Expression, span: SourceSpan) -> Result<&str, RuntimeError> {
     match target {
         Expression::Name { segments, .. } if segments.len() == 1 => Ok(&segments[0]),
@@ -4111,8 +4110,8 @@ fn delete_nested_field(
         return Err(unsupported("deleting this group field", span));
     }
     // No required-field guard is needed here yet: a required field inside an unkeyed
-    // group is currently a compile error (`schema.required_in_unkeyed_group`). When
-    // that interim rejection is lifted (group materialization), add the guard that
+    // group is currently a compile error (`schema.required_in_unkeyed_group`). Once
+    // group materialization lifts that rejection, add the guard that
     // `eval_field_delete` applies to top-level required fields.
     let mut path = vec![PathSegment::Root(root.into())];
     path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
@@ -4316,7 +4315,8 @@ fn eval_identity_constructor(
 /// value owns but the runtime cannot yet materialize. A group layer has no key
 /// params (a keyed leaf or keyed group always does), so any such layer is an
 /// unkeyed group the whole-resource read would silently omit and the
-/// whole-resource write would silently delete (review F15, interim).
+/// whole-resource write would silently delete; both paths reject it until group
+/// materialization lands.
 fn declares_unkeyed_group(resource: &ResourceSchema) -> bool {
     resource
         .layers
@@ -4445,8 +4445,8 @@ fn write_local_field(
 }
 
 /// Convert a runtime value to the saved value a managed write stores. Total over
-/// the scalar values this slice supports; the write planner checks the value
-/// against the field's declared type.
+/// the scalar values; trees and identities have no scalar saved form. The write
+/// planner checks the value against the field's declared type.
 fn value_to_saved(value: Value) -> Option<SavedValue> {
     Some(match value {
         Value::Int(n) => SavedValue::Int(n),
@@ -4461,7 +4461,7 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
         },
         Value::Bytes(b) => SavedValue::Bytes(b),
         // A whole sequence or resource is a tree, not a scalar saved value; an
-        // identity is opaque and is not stored as a field value in this wave.
+        // identity is opaque and is not stored as a field value.
         Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => return None,
     })
 }
@@ -4821,7 +4821,7 @@ fn resource_group_members(
 }
 
 /// Convert a record-key value to a [`SavedKey`], or `None` for a type that is not
-/// a key (only int/bool/string are runtime values this slice can key on).
+/// a valid key (decimals, sequences, resources, and identities are not keys).
 fn value_to_key(value: Value) -> Option<SavedKey> {
     match value {
         Value::Int(n) => Some(SavedKey::Int(n)),
