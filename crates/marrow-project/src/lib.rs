@@ -188,12 +188,6 @@ pub fn expected_module_name(relative_path: &Path) -> Option<String> {
     Some(segments.join("::"))
 }
 
-/// Whether a library file at `relative_path` (relative to a source root) may
-/// declare `module_name`. The declaration must match the path exactly.
-pub fn module_matches_path(module_name: &str, relative_path: &Path) -> bool {
-    expected_module_name(relative_path).is_some_and(|expected| expected == module_name)
-}
-
 /// A `.mw` file discovered under a source root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleFile {
