@@ -269,7 +269,7 @@ fn format_comment(comment: &Comment) -> String {
 
 /// Format one statement (and any nested blocks) at `level`. The returned text
 /// has no trailing newline.
-pub fn format_statement(source: &str, statement: &Statement, level: usize) -> String {
+pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize) -> String {
     let pad = INDENT.repeat(level);
     match statement {
         Statement::Const {
