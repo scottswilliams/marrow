@@ -791,6 +791,13 @@ fn eval_call(
                 "int" | "decimal" | "string" | "bool" | "date" | "instant" | "duration" => {
                     return eval_conversion(name, args, span, env).map(Some);
                 }
+                // `count`/`values`/`entries` are documented core traversal builtins
+                // whose tree-scan slice is not built yet. Report them as a known but
+                // unsupported builtin rather than letting them fall through to a
+                // misleading `run.unknown_function`.
+                "count" | "values" | "entries" => {
+                    return Err(unsupported(&format!("the `{name}` builtin"), span));
+                }
                 _ => {}
             }
         }

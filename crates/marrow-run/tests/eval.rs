@@ -1908,6 +1908,23 @@ fn an_unknown_function_is_rejected() {
 }
 
 #[test]
+fn traversal_builtins_report_unsupported_not_unknown_function() {
+    // `count`/`values`/`entries` are documented core builtins whose runtime slice
+    // is not built yet. They must report `run.unsupported`, never masquerade as a
+    // missing user function (`run.unknown_function`).
+    let resource = "resource Book at ^books(id: int)\n    required title: string\n\n";
+    for builtin in ["count", "values", "entries"] {
+        let program =
+            checked_program(&format!("{resource}fn f()\n    {builtin}(^books)\n"));
+        let result = run(&program, "test::f", &[]);
+        assert!(
+            matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+            "{builtin}: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn print_writes_a_line_to_output() {
     let program = checked_program("fn main()\n    print($\"hello {1}\")\n");
     let outcome = run_full(&program, "test::main", &[]).expect("run");
