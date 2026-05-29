@@ -977,6 +977,24 @@ fn an_out_parameter_writes_back_to_a_local() {
 }
 
 #[test]
+fn an_uninitialized_scalar_var_starts_at_its_zero() {
+    // A typed `var` without an initializer is a writable place that starts at its
+    // type's default, so plain declaration-then-use works.
+    let program = checked_program("pub fn main(): int\n    var n: int\n    return n\n");
+    assert_eq!(run(&program, "test::main", &[]), Ok(Some(Value::Int(0))));
+}
+
+#[test]
+fn an_out_parameter_writes_back_to_an_uninitialized_var() {
+    // The documented `out` pattern declares the place without a value:
+    // `var n: int` then `give(out n)`.
+    let program = checked_program(
+        "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int\n    give(out n)\n    return n\n",
+    );
+    assert_eq!(run(&program, "test::main", &[]), Ok(Some(Value::Int(42))));
+}
+
+#[test]
 fn an_out_parameter_ignores_the_caller_value_and_overwrites_it() {
     // `out` does not read the caller's value; whatever the callee assigns wins.
     let program = checked_program(

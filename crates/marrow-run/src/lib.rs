@@ -674,6 +674,26 @@ fn zero_value(ty: &MarrowType) -> Value {
     }
 }
 
+/// The default value a typed `var` with no initializer starts at, by its declared
+/// type name. `None` for a type with no representable default (it stays
+/// unsupported). Resource types are handled by the caller (an empty resource).
+fn uninitialized_default(type_name: &str) -> Option<Value> {
+    if type_name.starts_with("sequence") {
+        return Some(Value::Sequence(Vec::new()));
+    }
+    Some(match type_name {
+        "int" => Value::Int(0),
+        "bool" => Value::Bool(false),
+        "string" => Value::Str(String::new()),
+        "bytes" => Value::Bytes(Vec::new()),
+        "date" => Value::Date(0),
+        "instant" => Value::Instant(0),
+        "duration" => Value::Duration(0),
+        "decimal" => Value::Decimal(Decimal::parse("0")?),
+        _ => return None,
+    })
+}
+
 /// Map an [`AssignError`] from a failed reassignment to a runtime fault.
 fn assign_error(name: &str, error: AssignError, span: SourceSpan) -> RuntimeError {
     match error {
@@ -1896,13 +1916,19 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             }
             let value = match value {
                 Some(expr) => eval_expr(expr, env)?,
-                // An uninitialized var of a resource type starts as an empty
-                // resource value, filled field by field before use.
+                // An uninitialized var starts at its type's default — an empty
+                // resource, an empty sequence, or a scalar zero — so a declared but
+                // unwritten place (e.g. an `out` argument target, the documented
+                // `var n: int` then `f(out n)` pattern) is usable before its first
+                // assignment.
                 None => match ty {
                     Some(ty) if is_resource_type(env.program, &ty.text) => {
                         Value::Resource(Vec::new())
                     }
-                    _ => return Err(unsupported("an uninitialized variable", *span)),
+                    Some(ty) => uninitialized_default(&ty.text).ok_or_else(|| {
+                        unsupported("an uninitialized variable of this type", *span)
+                    })?,
+                    None => return Err(unsupported("an uninitialized variable", *span)),
                 },
             };
             env.bind(name.clone(), value, true);
