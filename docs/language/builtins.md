@@ -114,7 +114,8 @@ for word in reversed(std::text::split(line, ","))
 
 Over a saved layer the reversal walks the stored entries from the high key
 downward — it is a true reverse, not a copy of the forward result reversed after
-the fact — so an early `break` stops without reading the rest of the layer. A
+the fact. It still reads the whole layer up front, so an early `break` only stops
+the loop body, not the store scan (`next`/`prev` are the lazy single-step seeks). A
 composite identity reverses at every key level, so `reversed(^enrollments)` is the
 exact reverse of `^enrollments`, not its outermost key flipped over a forward
 tail. Over a `sequence` the elements are reversed directly.
@@ -127,7 +128,7 @@ there is no cursor — and both skip gaps, returning the nearest entry that is
 actually stored rather than the next key value:
 
 ```mw
-const after = ^books(next(^books(id))).title
+const afterTitle = ^books(next(^books(id))).title
 ```
 
 The result is the neighbor's **identity**, addressed like any key, so fields are

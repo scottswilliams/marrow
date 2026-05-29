@@ -5394,6 +5394,55 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     assert_eq!(outcome.output, "active\ndropped\nactive\n");
 }
 
+/// A non-unique index branch, iterated forward and reversed: the entries enumerate
+/// in identity-key order, and `reversed(...)` walks the same branch backward.
+const BOOK_SHELF_NAV: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+    index byShelf(shelf, id)
+
+fn add(id: int, t: string, s: string)
+    ^books(id).title = t
+    ^books(id).shelf = s
+
+fn onShelfReversed(shelf: string)
+    for id in reversed(^books.byShelf(shelf))
+        print($\"{id}\")
+";
+
+#[test]
+fn reversed_over_an_index_branch_descends() {
+    // `reversed(^books.byShelf(\"x\"))` walks a declared index branch backward,
+    // yielding the matching identities in descending id order.
+    let program = checked_program(BOOK_SHELF_NAV);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, s: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str("t".into()), Value::Str(s.into())],
+        )
+        .expect("add");
+    };
+    add(1, "x");
+    add(2, "x");
+    add(3, "y");
+    add(4, "x");
+
+    // Only shelf-"x" ids (1, 2, 4) match, enumerated in descending key order.
+    let outcome = run_entry(
+        &program,
+        &store,
+        "test::onShelfReversed",
+        &[Value::Str("x".into())],
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "4\n2\n1\n");
+}
+
 /// `count(path)` over the four presence shapes: a scalar field, a child-bearing
 /// layer, and absent paths.
 const BOOK_COUNT: &str = "\
@@ -5781,6 +5830,22 @@ fn tagValues(id: int)
 fn tagEntries(id: int)
     for pos, tag in entries(^books(id).tags)
         print($\"{pos}={tag}\")
+
+fn titlesReversed()
+    for book in reversed(values(^books))
+        print(book.title)
+
+fn idsAndTitlesReversed()
+    for id, book in reversed(entries(^books))
+        print($\"{id}: {book.title}\")
+
+fn tagValuesReversed(id: int)
+    for tag in reversed(values(^books(id).tags))
+        print(tag)
+
+fn tagEntriesReversed(id: int)
+    for pos, tag in reversed(entries(^books(id).tags))
+        print($\"{pos}={tag}\")
 ";
 
 #[test]
@@ -5841,6 +5906,78 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     // `entries(...)` binds each 1-based position to its leaf value.
     let entries = run_entry(&program, &store, "test::tagEntries", &[Value::Int(1)]).expect("run");
     assert_eq!(entries.output, "1=fiction\n2=funny\n");
+}
+
+#[test]
+fn reversed_values_and_entries_bind_values_and_pairs_descending() {
+    // `for x in reversed(values(L))` must bind whole values descending — not the
+    // bare child keys. Likewise `for k, v in reversed(entries(L))` binds (key,
+    // value) pairs descending, not key-only segments (which would runtime-error).
+    let program = checked_program(BOOK_VALUES);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, t: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(t.into())],
+        )
+        .expect("add");
+    };
+    add(1, "Mort");
+    add(2, "Sourcery");
+
+    // `reversed(values(^books))` yields whole records in descending key order.
+    let titles = run_entry(&program, &store, "test::titlesReversed", &[]).expect("run");
+    assert_eq!(titles.output, "Sourcery\nMort\n");
+
+    // `reversed(entries(^books))` binds (identity, record) pairs descending.
+    let pairs = run_entry(&program, &store, "test::idsAndTitlesReversed", &[]).expect("run");
+    assert_eq!(pairs.output, "2: Sourcery\n1: Mort\n");
+}
+
+#[test]
+fn reversed_values_and_entries_over_a_keyed_layer_descend() {
+    // The same shaping over a keyed/sequence child layer: values and (pos, value)
+    // pairs descend by key, rather than collapsing to bare position keys.
+    let program = checked_program(BOOK_VALUES);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Int(1), Value::Str("Mort".into())],
+    )
+    .expect("add");
+    for tag in ["fiction", "funny", "fantasy"] {
+        run_entry(
+            &program,
+            &store,
+            "test::tag",
+            &[Value::Int(1), Value::Str(tag.into())],
+        )
+        .expect("tag");
+    }
+
+    // `reversed(values(^books(1).tags))` yields each leaf value in descending order.
+    let values = run_entry(
+        &program,
+        &store,
+        "test::tagValuesReversed",
+        &[Value::Int(1)],
+    )
+    .expect("run");
+    assert_eq!(values.output, "fantasy\nfunny\nfiction\n");
+
+    // `reversed(entries(...))` binds each position to its value, descending.
+    let entries = run_entry(
+        &program,
+        &store,
+        "test::tagEntriesReversed",
+        &[Value::Int(1)],
+    )
+    .expect("run");
+    assert_eq!(entries.output, "3=fantasy\n2=funny\n1=fiction\n");
 }
 
 const BOOK_ISBN_SAVE: &str = "\

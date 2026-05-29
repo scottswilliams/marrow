@@ -147,13 +147,17 @@ pub(crate) fn int_index_key_band(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 /// The half-open byte range `[lo, hi)` covering exactly the subtree at `prefix`:
 /// `prefix`'s own entry and every descendant, and nothing else. `lo` is `prefix`
-/// itself; `hi` is its least byte successor (the prefix with its final byte
-/// raised by one, or — if every trailing byte is `0xff`, which a well-formed
-/// encoded path never ends with — `None`, meaning the subtree runs to the end of
-/// the store). A reversed range needs this upper bound: an unbounded reverse
-/// range starts at the global maximum, where the first rows lie outside the
-/// subtree, so the bound keeps the walk inside it. `path.rs` owns this byte math
-/// so the store never hand-rolls it.
+/// itself; `hi` is its least byte successor — the prefix with its last byte below
+/// `0xff` raised by one, after dropping any trailing `0xff` bytes. Trailing `0xff`
+/// can occur in a well-formed path (`i64::MAX` and the maximum date/duration/
+/// instant encode to all-`0xff` bodies), so a composite-identity prefix may end in
+/// it; the byte before is then a lower key-type tag, which becomes the bound. When
+/// the prefix is empty (the whole store) or every byte is `0xff`, there is no
+/// successor and `hi` is `None`, meaning the subtree runs to the end of the store.
+/// A reversed range needs this upper bound: an unbounded reverse range starts at
+/// the global maximum, where the first rows lie outside the subtree, so the bound
+/// keeps the walk inside it. `path.rs` owns this byte math so the store never
+/// hand-rolls it.
 pub(crate) fn subtree_band(prefix: &[u8]) -> (Vec<u8>, Option<Vec<u8>>) {
     let mut hi = prefix.to_vec();
     while let Some(last) = hi.last_mut() {

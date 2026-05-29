@@ -66,6 +66,12 @@ pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// identity key. The runtime backstops
 /// this with `write.next_id_unsupported`; the checker catches it before a run.
 pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
+/// `next`/`prev` is applied to a shape it cannot navigate: a composite
+/// multi-key identity record (its identity spans several key levels, not the one
+/// `next`/`prev` step over) or an index branch (it inspects identities, with no
+/// single key position to seek). The runtime would reject these with an
+/// uncatchable `run.unsupported` fault; the checker catches it before a run.
+pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
@@ -2636,34 +2642,54 @@ fn check_next_id(
 }
 
 /// Type `next(<element>)` / `prev(<element>)`: the navigated neighbor's identity
-/// type. A primary keyed root `^root` or a record `^root(id…)` navigates among
-/// record identities, so the result is the owning resource's `Resource::Id` — the
-/// type that makes `^root(next(^root(id))).field` check. A keyed child-layer
+/// type. A primary keyed root `^root` or a single-key record `^root(id)` navigates
+/// among record identities, so the result is the owning resource's `Resource::Id` —
+/// the type that makes `^root(next(^root(id))).field` check. A keyed child-layer
 /// position `^root(id…).layer(k)` or a bare child layer `^root(id…).layer`
-/// navigates among that layer's keys, so the result is the layer's single key
-/// type. Any other shape (an index branch, a scalar field, a composite-identity
-/// record) is left `Unknown`; the runtime reports an unsupported navigation, and a
-/// surrounding `??` still types the default. `next`/`prev` are not type errors at
-/// check time — the edge fault is runtime and `??`-catchable.
+/// navigates among that layer's keys, so the result is the layer's single key type.
+/// A composite-identity record and an index branch are statically unsupported — the
+/// runtime would reject them with an uncatchable fault — so each is reported here as
+/// a clear compile error. Any other shape is left `Unknown`; the runtime reports an
+/// unsupported navigation, and a surrounding `??` still types the default. The edge
+/// fault (stepping off the first/last) stays a runtime, `??`-catchable concern.
 fn check_neighbor(
     program: &CheckedProgram,
-    _which: &str,
+    which: &str,
     args: &[marrow_syntax::Argument],
-    _span: SourceSpan,
-    _file: &Path,
-    _diagnostics: &mut [CheckDiagnostic],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
     let [arg] = args else {
         return MarrowType::Unknown;
     };
     match &arg.value {
-        // A bare primary keyed root `^root` or a keyed record `^root(id…)`: the
-        // neighbor is a record identity.
+        // A bare primary keyed root `^root`: its first/last record is sought, so a
+        // composite identity is fine here (no single key level is anchored).
         Expression::SavedRoot { name: root, .. } => record_identity_type(program, root),
         Expression::Call { callee, .. } => match callee.as_ref() {
-            // `^root(id…)`: a keyed record; its neighbor is another record identity.
-            Expression::SavedRoot { name: root, .. } => record_identity_type(program, root),
+            // `^root(id…)`: a keyed record. `next`/`prev` anchor at one key level, so
+            // a composite multi-key identity is out of scope — reject it statically.
+            Expression::SavedRoot { name: root, .. } => {
+                if composite_identity(program, root) {
+                    return neighbor_unsupported(
+                        which,
+                        "a composite-identity record (scope a single key level)",
+                        span,
+                        file,
+                        diagnostics,
+                    );
+                }
+                record_identity_type(program, root)
+            }
+            // `^root.index(args…)`: an index branch (the callee's base is the root
+            // itself). It inspects identities, with no single key position to seek.
+            Expression::Field { base, .. }
+                if matches!(base.as_ref(), Expression::SavedRoot { .. }) =>
+            {
+                neighbor_unsupported(which, "an index branch", span, file, diagnostics)
+            }
             // `^root(id…).layer(k)`: a keyed layer position; its neighbor is a key.
             Expression::Field { .. } => layer_key_type(program, callee.as_ref()),
             _ => MarrowType::Unknown,
@@ -2672,6 +2698,34 @@ fn check_neighbor(
         Expression::Field { .. } => layer_key_type(program, &arg.value),
         _ => MarrowType::Unknown,
     }
+}
+
+/// Whether the resource at saved root `root` has a composite (multi-key) identity.
+/// `next`/`prev` over a record anchor at one key level, so a composite identity is
+/// out of scope. A non-keyed root or an unknown root is not composite.
+fn composite_identity(program: &CheckedProgram, root: &str) -> bool {
+    find_resource_schema(program, root)
+        .and_then(|resource| resource.saved_root.as_ref())
+        .is_some_and(|saved_root| saved_root.identity_keys.len() > 1)
+}
+
+/// Report a `check.neighbor_unsupported` error for a statically-unnavigable
+/// `next`/`prev` shape and leave the result `Unknown`.
+fn neighbor_unsupported(
+    which: &str,
+    shape: &str,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_NEIGHBOR_UNSUPPORTED,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: format!("`{which}` cannot navigate {shape}"),
+        span,
+    });
+    MarrowType::Unknown
 }
 
 /// The `Resource::Id` identity type of the resource at saved root `root`, or

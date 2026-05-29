@@ -3117,12 +3117,14 @@ fn range_bounds(
 /// enumerate the layer's child keys through [`enumerate_layer`]. Every other
 /// iterable must evaluate to an in-memory sequence (e.g. `std::text::split(...)`).
 fn eval_collection(iterable: &Expression, env: &mut Env<'_>) -> Result<Vec<Value>, RuntimeError> {
-    // `for x in reversed(L)` walks the same layer in reverse key order. A
-    // `reversed(...)` over a saved layer (directly or wrapped in `keys`/`values`/
-    // `entries`) enumerates `Descending`; a `reversed(<sequence>)` falls through to
-    // the in-memory reversal `eval_reversed` returns.
+    // `for x in reversed(L)` walks the same layer in reverse key order. Only a bare
+    // saved path or a `keys(...)` wrapper yields child keys, so only those take the
+    // descending key-enumeration fast-path here. `reversed(values(L))` /
+    // `reversed(entries(L))` must materialize values/pairs — and a
+    // `reversed(<sequence>)` reverses in memory — so both fall through to
+    // `eval_expr`, which routes to `eval_reversed` and shapes the rows correctly.
     if let Some(inner) = reversed_argument(iterable)
-        && let Some(layer) = traversal_argument(inner).or(is_saved_path(inner).then_some(inner))
+        && let Some(layer) = keys_argument(inner).or(is_saved_path(inner).then_some(inner))
     {
         return enumerate_layer_dir(layer, Direction::Descending, env);
     }

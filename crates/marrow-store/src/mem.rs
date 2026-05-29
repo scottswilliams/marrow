@@ -112,13 +112,13 @@ impl MemStore {
     /// The first immediate child of the encoded `parent` in Marrow order, or
     /// `None` when it has none — the bare-layer entry point for `next`.
     pub fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        traversal::edge_child(self.range_from(parent), parent)
+        traversal::neighbor_child(self.range_from(parent), parent, b"")
     }
 
     /// The last immediate child of the encoded `parent` in Marrow order, or
     /// `None` when it has none — the bare-layer entry point for `prev`.
     pub fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        traversal::edge_child(self.range_band_rev(parent), parent)
+        traversal::neighbor_child(self.range_band_rev(parent), parent, b"")
     }
 
     /// Up to `limit` (encoded path, value) pairs in the subtree at the encoded

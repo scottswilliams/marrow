@@ -74,10 +74,13 @@ pub(crate) fn child_keys<'a>(
 
 /// The single immediate child of `parent_prefix` adjacent to the child segment
 /// `bound`, in the stream's direction, or `None` when `bound` is the edge child
-/// (no neighbor that way). `bound` is one encoded child segment (kind tag + key).
-/// The backend supplies a range bounded to `parent_prefix`'s subtree that begins
-/// at `parent_prefix ++ bound`: forward for the next sibling, reversed for the
-/// previous. The walk skips every row whose first post-prefix segment equals
+/// (no neighbor that way). `bound` is one encoded child segment (kind tag + key);
+/// pass `b""` to seek the parent's edge child instead — the first child forward, the
+/// last reversed — since an empty bound never equals a real kind-tagged segment, so
+/// no row is skipped and the first child is returned (the bare-layer `next`/`prev`
+/// entry point). The backend supplies a range bounded to `parent_prefix`'s subtree
+/// that begins at `parent_prefix ++ bound`: forward for the next sibling, reversed
+/// for the previous. The walk skips every row whose first post-prefix segment equals
 /// `bound` — those are `bound`'s own entry and its descendants, which arrive
 /// consecutively (the same consecutive-equal collapse [`child_keys`] uses) — and
 /// returns the first distinct child past them, so a child with its own deep
@@ -102,33 +105,6 @@ pub(crate) fn neighbor_child<'a>(
         if segment == bound {
             continue; // the bound child's own entry or one of its descendants
         }
-        return Ok(Some(
-            decode_child_segment(segment).ok_or_else(|| corrupt(key))?,
-        ));
-    }
-    Ok(None)
-}
-
-/// The edge immediate child of `parent_prefix` in the stream's direction — the
-/// first for a forward range, the last for a reversed one — or `None` when the
-/// parent has no children. The backend supplies a range bounded to the subtree.
-/// Used for `next`/`prev` of a bare layer: the first stored entry forward, the
-/// last reversed. The range is lazy, so only the first row is examined.
-pub(crate) fn edge_child<'a>(
-    entries: impl Entries<'a>,
-    parent_prefix: &[u8],
-) -> Result<Option<ChildSegment>, StoreError> {
-    for entry in entries {
-        let (key, _) = entry?;
-        if !key.starts_with(parent_prefix) {
-            break; // past the subtree
-        }
-        if key.len() <= parent_prefix.len() {
-            continue; // the parent's own entry, not a child
-        }
-        let rest = &key[parent_prefix.len()..];
-        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
-        let segment = &rest[..len];
         return Ok(Some(
             decode_child_segment(segment).ok_or_else(|| corrupt(key))?,
         ));

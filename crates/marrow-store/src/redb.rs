@@ -525,7 +525,7 @@ impl Backend for RedbStore {
             // The first stored row under `parent` is its first child (or its own
             // entry, which the shared seek skips); two rows always suffice.
             let rows = collect_rows(&table, parent, |seen| seen >= 2, "first_child")?;
-            traversal::edge_child(entries(&rows), parent)
+            traversal::neighbor_child(entries(&rows), parent, b"")
         })
     }
 
@@ -534,7 +534,7 @@ impl Backend for RedbStore {
             // Reversed, the first row is the last child's deepest descendant; one
             // row is enough for the shared edge seek to name its immediate child.
             let rows = collect_rows_rev(&table, parent, |seen| seen >= 1, "last_child")?;
-            traversal::edge_child(entries(&rows), parent)
+            traversal::neighbor_child(entries(&rows), parent, b"")
         })
     }
 

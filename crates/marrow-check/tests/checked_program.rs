@@ -294,6 +294,65 @@ fn next_of_a_layer_position_coalesces_to_the_key_type() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
+/// `next`/`prev` over a composite multi-key identity record is statically
+/// unsupported (the runtime rejects it with an uncatchable fault), so the checker
+/// reports `check.neighbor_unsupported` rather than mis-typing it as an identity.
+#[test]
+fn next_over_a_composite_identity_record_is_flagged() {
+    let root = temp_project("program-next-composite", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required grade: string\n\
+             fn step(s: string, c: string)\n\
+             \x20   const n = next(^enrollments(Enrollment::Id(studentId: s, courseId: c)))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `next`/`prev` over an index branch is statically unsupported the same way: an
+/// index branch inspects identities, with no single key position to seek.
+#[test]
+fn next_over_an_index_branch_is_flagged() {
+    let root = temp_project("program-next-index-branch", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   shelf: string\n\
+             \x20   index byShelf(shelf, id)\n\
+             fn step(s: string)\n\
+             \x20   const n = next(^books.byShelf(s))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 /// `use std::clock` lets a short-form `clock::now()` resolve and type to its
 /// declared result (`instant`), just as the fully-qualified form does.
 #[test]
