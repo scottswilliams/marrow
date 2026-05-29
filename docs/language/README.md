@@ -103,8 +103,8 @@ This shows the main shape:
 - [Control Flow](control-flow-and-effects.md) defines conditionals, loops,
   tree iteration, short-circuiting, labeled loops, and structured errors.
 - [Builtins](builtins.md) defines always-available helpers such as `exists`,
-  `get`, `keys`, `values`, `entries`, conversions, `append`, `nextId`,
-  output, and errors.
+  the `?.`/`??` presence operators, `keys`, `values`, `entries`, conversions,
+  `append`, `nextId`, output, and errors.
 - [Standard Library](standard-library.md) defines the `std::` modules
   for clock/instant, IO, env/config, strings, bytes, math, testing, and logging.
 - [Reference Sample](sample.md) gives one compact project that exercises
