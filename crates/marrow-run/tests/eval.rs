@@ -2243,6 +2243,188 @@ fn delete_removes_a_record() {
 }
 
 #[test]
+fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
+    // `delete ^books(id).subtitle` removes that field; a sibling field survives.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    subtitle: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).subtitle = \"A Discworld Novel\"\n\nfn drop_subtitle(id: int)\n    delete ^books(id).subtitle\n\nfn has_subtitle(id: int): bool\n    return exists(^books(id).subtitle)\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");
+    assert_eq!(
+        run_entry(&program, &store, "test::has_subtitle", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Bool(true))
+    );
+    run_entry(&program, &store, "test::drop_subtitle", &[Value::Int(1)]).expect("delete");
+    assert_eq!(
+        run_entry(&program, &store, "test::has_subtitle", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Bool(false)),
+        "the field is gone after delete"
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Str("Mort".into())),
+        "the sibling field survives"
+    );
+}
+
+#[test]
+fn deleting_an_indexed_field_removes_its_index_entry() {
+    // `delete ^books(id).shelf` where `shelf` feeds `byShelf` tears down the entry,
+    // so a later `keys(^books.byShelf(...))` no longer yields the record.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn drop_shelf(id: int)\n    delete ^books(id).shelf\n\nfn count_on(shelf: string): int\n    var c = 0\n    for id in keys(^books.byShelf(shelf))\n        c = c + 1\n    return c\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("fiction".into()),
+        ],
+    )
+    .expect("add");
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::count_on",
+            &[Value::Str("fiction".into())]
+        )
+        .expect("run")
+        .value,
+        Some(Value::Int(1))
+    );
+    run_entry(&program, &store, "test::drop_shelf", &[Value::Int(1)]).expect("delete");
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::count_on",
+            &[Value::Str("fiction".into())]
+        )
+        .expect("run")
+        .value,
+        Some(Value::Int(0)),
+        "the index entry the deleted field fed is gone"
+    );
+}
+
+#[test]
+fn deleting_a_required_field_is_rejected() {
+    // A required field can only go away when its entry/resource is deleted.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn drop_title(id: int)\n    delete ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");
+    let result = run_entry(&program, &store, "test::drop_title", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_field"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn deleting_a_layer_entry_leaves_other_entries() {
+    // `delete ^books(id).versions(v)` removes one group-entry subtree; siblings
+    // survive. Read each entry's `.title` to prove it: the deleted entry's title
+    // falls back to the `get` default, the survivor's stays intact.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\nfn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\nfn version_title(id: int, v: int): string\n    return get(^books(id).versions(v).title, \"<gone>\")\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::drop_version",
+        &[Value::Int(1), Value::Int(1)],
+    )
+    .expect("delete");
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::version_title",
+            &[Value::Int(1), Value::Int(1)]
+        )
+        .expect("run")
+        .value,
+        Some(Value::Str("<gone>".into())),
+        "the deleted version's subtree is gone"
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::version_title",
+            &[Value::Int(1), Value::Int(2)]
+        )
+        .expect("run")
+        .value,
+        Some(Value::Str("second".into())),
+        "the other version survives"
+    );
+}
+
+#[test]
+fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
+    // `delete ^books(id).tags(pos)` removes one keyed-leaf entry; siblings survive.
+    // `count(^books(id).tags)` counts the remaining entries; reading the deleted
+    // one is an absent-element error while the survivor reads back.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\nfn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\nfn tag_count(id: int): int\n    return count(^books(id).tags)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry(
+        &program,
+        &store,
+        "test::drop_tag",
+        &[Value::Int(1), Value::Int(1)],
+    )
+    .expect("delete");
+    assert_eq!(
+        run_entry(&program, &store, "test::tag_count", &[Value::Int(1)])
+            .expect("run")
+            .value,
+        Some(Value::Int(1)),
+        "one tag remains after deleting one of two"
+    );
+    let deleted = run_entry(
+        &program,
+        &store,
+        "test::tag_at",
+        &[Value::Int(1), Value::Int(1)],
+    );
+    assert!(
+        matches!(deleted, Err(ref error) if error.code == RUN_ABSENT),
+        "reading the deleted tag is an absent-element error: {deleted:?}"
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::tag_at",
+            &[Value::Int(1), Value::Int(2)]
+        )
+        .expect("run")
+        .value,
+        Some(Value::Str("funny".into())),
+        "the other tag survives"
+    );
+}
+
+#[test]
 fn a_transaction_commits_on_normal_exit() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int)\n    transaction\n        ^books(id).title = \"kept\"\n\nfn title_of(id: int): string\n    return ^books(id).title\n",

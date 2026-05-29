@@ -31,9 +31,10 @@ use marrow_syntax::{
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use marrow_write::{
-    FieldValue, ResourceValue, decode_identity, next_id, next_layer_pos, plan_field_write,
-    plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    FieldValue, ResourceValue, WRITE_REQUIRED_FIELD, decode_identity, next_id, next_layer_pos,
+    plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
+    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 
 pub mod base64;
@@ -3583,6 +3584,22 @@ fn resource_value_of(
 /// down its generated index entries) and committing it. Field and layer deletes
 /// are not yet supported.
 fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result<(), RuntimeError> {
+    // Read the target shape to dispatch, mirroring the merge target-shape pattern:
+    // a `.field` off a saved record is a field delete (top-level, or a group-entry
+    // field via `is_group_base`); a `.layer(key…)` call off a saved record is a
+    // keyed-entry subtree delete; anything else (`^root(key…)` or a singleton
+    // `^settings`) is the whole-record delete handled below.
+    if let Expression::Field { base, name, .. } = path
+        && is_saved_path(base)
+    {
+        return eval_field_delete(base, name, span, env);
+    }
+    if let Expression::Call { callee, args, .. } = path
+        && let Expression::Field { base, name, .. } = callee.as_ref()
+        && is_saved_path(base)
+    {
+        return eval_layer_entry_delete(base, name, args, span, env);
+    }
     let (root, identity) = lower_record_identity(path, env)?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
@@ -3599,6 +3616,159 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
+}
+
+/// Apply a managed field delete `delete ^root(key…).field`. A top-level field
+/// (`^books(id).subtitle`) drives [`marrow_write::plan_field_delete`] — removing
+/// the field path and tearing down any index it feeds — after the required-field
+/// guard. A group-entry field (`^books(id).versions(v).text`) is a plain subtree
+/// delete of that one path (groups carry no generated indexes, matching
+/// [`eval_group_field_write`]'s comment). A top-level field delete does not change
+/// any traversed layer's key set, so it is not guarded against the identity layer.
+fn eval_field_delete(
+    base: &Expression,
+    field: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    // A field reached through one or more group layers deletes inside that group
+    // entry, with no index interaction.
+    if is_group_base(base) {
+        let (root, identity, layers) = lower_layer_path(base, env)?;
+        return delete_nested_field(&root, &identity, &layers, field, span, env);
+    }
+    let (root, identity) = lower_record_identity(base, env)?;
+    let resource = find_resource(env.program, &root)
+        .ok_or_else(|| unsupported("deleting from this saved root", span))?;
+    // Deleting a required field on its own would leave the resource invalid; it is
+    // only allowed when the surrounding entry or whole resource is deleted.
+    if resource
+        .fields
+        .iter()
+        .any(|declared| declared.name == field && declared.required)
+    {
+        return Err(RuntimeError {
+            code: WRITE_REQUIRED_FIELD,
+            message: format!(
+                "cannot delete required field `{field}`; delete the whole record instead"
+            ),
+            span,
+        });
+    }
+    let plan = {
+        let store = env.store.borrow();
+        plan_field_delete(resource, &identity, field, &*store).map_err(|error| RuntimeError {
+            code: error.code,
+            message: error.message,
+            span,
+        })?
+    };
+    plan.commit(&mut *env.store.borrow_mut())
+        .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Delete a scalar field inside a (possibly nested) keyed group entry,
+/// `delete ^root(key…).layer(key…)….field`. Groups carry no generated indexes, so
+/// this is a plain subtree delete of the one field path. The innermost layer must
+/// declare `field` as a scalar member.
+fn delete_nested_field(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    field: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    if resource_nested_member_type(env.program, root, &layer_names, field).is_none() {
+        return Err(unsupported("deleting this group field", span));
+    }
+    let mut path = vec![PathSegment::Root(root.into())];
+    path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    for (layer, keys) in layers {
+        path.push(PathSegment::ChildLayer(layer.clone()));
+        path.extend(keys.iter().cloned().map(PathSegment::IndexKey));
+    }
+    path.push(PathSegment::Field(field.into()));
+    env.store
+        .borrow_mut()
+        .delete(&encode_path(&path))
+        .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Apply a keyed-entry subtree delete `delete ^root(key…).layer(entryKey…)`. The
+/// backend `delete` is a subtree delete, so one delete of the entry prefix removes
+/// the whole entry (a keyed leaf value, or a group entry with all its members and
+/// nested layers). Child layers feed no generated index, so there is no index
+/// maintenance. The guard fires against the layer prefix so a self-mutating
+/// traversal of that layer is still caught.
+fn eval_layer_entry_delete(
+    record: &Expression,
+    layer: &str,
+    keys: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let (root, identity, chain) = lower_layer_path(record, env)?;
+    let entry_keys = lower_layer_keys(keys, span, env)?;
+    // The full layer chain the delete targets must be declared on the resource.
+    let layer_names: Vec<&str> = chain
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .chain(std::iter::once(layer))
+        .collect();
+    if !resource_layer_chain_exists(env.program, &root, &layer_names) {
+        return Err(unsupported("deleting this layer entry", span));
+    }
+    // Deleting an entry changes the innermost layer's key set, so guard against
+    // that layer's prefix. A direct layer of the record (empty chain) uses the
+    // record-level prefix; a nested layer is not reachable by a top-level loop, so
+    // the guard there is moot.
+    if chain.is_empty() {
+        env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
+    }
+    let mut path = vec![PathSegment::Root(root.clone())];
+    path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+    for (name, level_keys) in &chain {
+        path.push(PathSegment::ChildLayer(name.clone()));
+        path.extend(level_keys.iter().cloned().map(PathSegment::IndexKey));
+    }
+    path.push(PathSegment::ChildLayer(layer.into()));
+    path.extend(entry_keys.into_iter().map(PathSegment::IndexKey));
+    env.store
+        .borrow_mut()
+        .delete(&encode_path(&path))
+        .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Whether the chain of layer names (outermost to innermost) is fully declared on
+/// the resource at `root`: the first is a direct layer of the resource, each
+/// deeper one a nested layer of the one before it. Used to reject a delete of an
+/// undeclared layer entry before touching the store.
+fn resource_layer_chain_exists(program: &CheckedProgram, root: &str, layers: &[&str]) -> bool {
+    let Some(resource) = find_resource(program, root) else {
+        return false;
+    };
+    let Some((first, rest)) = layers.split_first() else {
+        return false;
+    };
+    let Some(mut current) = resource.layers.iter().find(|layer| &layer.name == first) else {
+        return false;
+    };
+    for name in rest {
+        let next = current.members.iter().find_map(|member| match member {
+            LayerMember::Layer(layer) if &layer.name == name => Some(layer),
+            _ => None,
+        });
+        match next {
+            Some(layer) => current = layer,
+            None => return false,
+        }
+    }
+    true
 }
 
 /// The resource schema attached to a saved root, by root name.
