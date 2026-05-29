@@ -2280,9 +2280,12 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             // A dotted field off a saved record is a managed field write; a
             // `^root(key…)` or bare singleton `^root` target is a whole-resource
             // write; a bare name is a local reassignment.
-            if let Expression::Field { base, name, .. } = target {
+            if let Expression::Field {
+                base, name, quoted, ..
+            } = target
+            {
                 if is_saved_path(base) {
-                    eval_saved_field_write(base, name, value, *span, env)?;
+                    eval_saved_field_write(base, name, *quoted, value, *span, env)?;
                 } else {
                     eval_local_field_set(base, name, value, *span, env)?;
                 }
@@ -3032,9 +3035,18 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
 /// `^root(key…).layer(key…).field` is dispatched to [`eval_group_field_read`].
 /// An unpopulated element is an absent-element error.
 fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
-    let Expression::Field { base, name, .. } = expr else {
+    let Expression::Field {
+        base, name, quoted, ..
+    } = expr
+    else {
         return Err(unsupported("this read", expr.span()));
     };
+    // A quoted/raw segment under a managed root (`^books(id)."old-title"`) is raw
+    // access: gated to maintenance, reading the literal segment rather than a
+    // declared field. An unquoted field falls through to the declared-field path.
+    if *quoted {
+        return eval_raw_field_read(base, name, expr.span(), env);
+    }
     // A field reached through one or more group layers reads inside that group:
     // a keyed GROUP entry `^root(id…).layer(key…)….field` (a layer call whose
     // callee is a `.layer` access), or an unkeyed group `^root(id…).name.field`
@@ -3392,10 +3404,18 @@ fn read_resource(
 fn eval_saved_field_write(
     base: &Expression,
     field: &str,
+    quoted: bool,
     value: &Expression,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
+    // A quoted/raw segment under a managed root (`^books(id)."old-title" = v`) is
+    // raw access: gated to maintenance, writing the literal segment rather than a
+    // declared field. An unquoted undeclared field stays `write.unknown_field`.
+    if quoted {
+        let value = eval_expr(value, env)?;
+        return eval_raw_field_write(base, field, value, span, env);
+    }
     // A field reached through one or more group layers writes inside that group:
     // a keyed GROUP entry `^root(id…).layer(key…)….field = v`, or an unkeyed group
     // `^root(id…).name.field = v`. A plain `^root(id…).field` base is a top-level
@@ -3431,6 +3451,99 @@ fn write_saved_field(
     plan.commit(&mut *env.store.borrow_mut())
         .map_err(|error| store_error(error, span))?;
     Ok(())
+}
+
+/// Lower a quoted/raw record path `^root(key…)."segment"` to the encoded literal
+/// path and gate it on maintenance. Quoted segments are for existing raw data,
+/// import, export, migration, and repair (docs/language `resources-and-storage.md`,
+/// "Managed Saved Trees"); without maintenance they are rejected with
+/// `write.raw_requires_maintenance` — distinct from `write.unknown_field`, so a
+/// tool can tell raw syntax from a declared-field typo. The base must lower to a
+/// top-level record identity under a managed root; a raw segment names a literal
+/// `Field` directly under the record key, bypassing the resource schema.
+fn raw_segment_path(
+    base: &Expression,
+    segment: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<PathSegment>, RuntimeError> {
+    let (root, identity) = lower_record_identity(base, env)?;
+    if find_resource(env.program, &root).is_none() {
+        return Err(unsupported("a raw segment under this saved path", span));
+    }
+    env.require_maintenance(
+        WRITE_RAW_REQUIRES_MAINTENANCE,
+        format!(
+            "`\"{segment}\"` is a raw segment under managed root `^{root}`; \
+             declare the field, or run in maintenance mode for raw access"
+        ),
+        span,
+    )?;
+    let mut path = vec![PathSegment::Root(root)];
+    path.extend(identity.into_iter().map(PathSegment::RecordKey));
+    path.push(PathSegment::Field(segment.to_string()));
+    Ok(path)
+}
+
+/// Write a quoted/raw segment `^root(key…)."segment" = value` under maintenance:
+/// the value's canonical bytes are stored at the literal path, bypassing the
+/// schema's declared fields and index maintenance (raw data the schema does not
+/// model). Off maintenance, [`raw_segment_path`] rejects it.
+fn eval_raw_field_write(
+    base: &Expression,
+    segment: &str,
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let path = raw_segment_path(base, segment, span, env)?;
+    let saved = value_to_saved(value)
+        .ok_or_else(|| unsupported("writing a resource value to a raw segment", span))?;
+    let bytes = encode_value(&saved).map_err(|error| RuntimeError {
+        code: error.code(),
+        message: error.to_string(),
+        span,
+    })?;
+    env.store
+        .borrow_mut()
+        .write(&encode_path(&path), bytes)
+        .map_err(|error| store_error(error, span))?;
+    Ok(())
+}
+
+/// Read a quoted/raw segment `^root(key…)."segment"` under maintenance: the bytes
+/// at the literal path are returned as a string (raw segments hold untyped data
+/// the schema does not model, so they decode as their stored text). Off
+/// maintenance, [`raw_segment_path`] rejects it; an absent segment is a catchable
+/// absent-element read.
+fn eval_raw_field_read(
+    base: &Expression,
+    segment: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let path = raw_segment_path(base, segment, span, env)?;
+    let bytes = {
+        let store = env.store.borrow();
+        store
+            .read(&encode_path(&path))
+            .map_err(|error| store_error(error, span))?
+    };
+    let value = match bytes {
+        Some(bytes) => decode_value(&bytes, ValueType::Str)
+            .and_then(saved_value_to_value)
+            .ok_or_else(|| RuntimeError {
+                code: RUN_TYPE,
+                message: format!("raw segment `\"{segment}\"` did not decode as text"),
+                span,
+            }),
+        None => Err(RuntimeError {
+            code: RUN_ABSENT,
+            message: format!("`\"{segment}\"` is absent"),
+            span,
+        }),
+    };
+    catchable_read(value, env)
 }
 
 /// Apply a managed group-entry field write
