@@ -5554,3 +5554,109 @@ fn classify_saved_path_distinguishes_fields_layers_indexes_and_orphans() {
         SavedPathClass::Orphan
     );
 }
+
+// --- Saved-path lowering (the one `lower` pass) ---
+//
+// These pin the equivalence-risk corners of the unified lowering: the identity
+// splice versus raw keys, the keyed-root arity message, the unkeyed-group hop
+// versus keyed-layer distinction, and the index-branch terminal classification.
+
+/// An identity value (`Book::Id(1)`) splices in as the whole key, addressing the
+/// same record a bare int key does — the sole-argument identity-splice rule.
+#[test]
+fn an_identity_argument_splices_in_as_the_record_key() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn save()\n    const id = Book::Id(7)\n    ^books(id).title = \"a\"\n\n\
+         fn read(): string\n    return ^books(7).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[]).expect("save");
+    assert_eq!(
+        run_entry(&program, &store, "test::read", &[])
+            .expect("read")
+            .value,
+        Some(Value::Str("a".into()))
+    );
+}
+
+/// An identity cannot be one component among raw keys: `^books(id, 5)` mixing the
+/// spliced identity with a trailing raw key is rejected as unsupported.
+#[test]
+fn an_identity_mixed_with_a_raw_key_is_rejected() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn save()\n    const id = Book::Id(7)\n    ^books(id, 5).title = \"a\"\n",
+    );
+    let result = run(&program, "test::save", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+/// Addressing a keyed root without an identity is a type error naming the
+/// expected key count, not a silent read of the keyless path.
+#[test]
+fn a_keyed_root_without_an_identity_is_a_type_error() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn read(): string\n    return ^books.title\n",
+    );
+    let result = run(&program, "test::read", &[]);
+    let Err(error) = result else {
+        panic!("expected an error, got {result:?}");
+    };
+    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(
+        error.message,
+        "`^books` expects 1 identity key(s), got 0; address a record with `^books(id)`"
+    );
+}
+
+/// An unkeyed group hop (`^patients(id).name.first`) lowers `name` as a zero-key
+/// group layer, landing the field under a `ChildLayer`, not as a top-level field.
+#[test]
+fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
+    let program = checked_program(
+        "resource Patient at ^patients(id: int)\n    mrn: string\n    name\n        first: string\n\n\
+         fn save()\n    ^patients(1).name.first = \"Sam\"\n\n\
+         fn read(): string\n    return ^patients(1).name.first\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[]).expect("save");
+    assert_eq!(
+        run_entry(&program, &store, "test::read", &[])
+            .expect("read")
+            .value,
+        Some(Value::Str("Sam".into()))
+    );
+    // The field landed under the `name` group layer, not beside `mrn`.
+    let store = store.borrow();
+    let nested = store.read(&encode_path(&[
+        PathSegment::Root("patients".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::ChildLayer("name".into()),
+        PathSegment::Field("first".into()),
+    ]));
+    assert_eq!(
+        decode_value(nested.expect("present"), ScalarType::Str),
+        Some(SavedValue::Str("Sam".into()))
+    );
+}
+
+/// An index branch is not an assignable place: `out ^books.byShelf(s)` is
+/// rejected, the same unsupported-path classification the lowering gives it.
+#[test]
+fn an_index_branch_is_not_an_assignable_place() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+         fn give(out s: string)\n    s = \"x\"\n\n\
+         fn run_it()\n    give(out ^books.byShelf(\"a\"))\n",
+    );
+    let result = run(&program, "test::run_it", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}

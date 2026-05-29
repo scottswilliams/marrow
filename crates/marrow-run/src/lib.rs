@@ -712,8 +712,8 @@ fn resolve_place(
         Expression::Field { base, name, .. } if is_saved_path(base) => {
             // `^root(id…).field` is a top-level field; a deeper base
             // `^root(id…).layer(key…)….field` is a field inside a nested group
-            // entry. `lower_layer_path` yields the chain (empty for the top level).
-            let (root, identity, layers) = lower_layer_path(base, env)?;
+            // entry. Lowering the base yields the chain (empty for the top level).
+            let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
             if layers.is_empty() {
                 Ok(Place::SavedField {
                     root,
@@ -742,7 +742,7 @@ fn resolve_place(
             })
         }
         Expression::Call { .. } if is_saved_path(expr) => {
-            let (root, identity) = lower_record_identity(expr, env)?;
+            let (root, identity) = lower(expr, env)?.into_record(expr.span())?;
             Ok(Place::SavedResource { root, identity })
         }
         _ => Err(unsupported(
@@ -1933,7 +1933,7 @@ fn eval_append(
     else {
         return Err(unsupported("appending to this path", span));
     };
-    let (root, identity) = lower_record_identity(base, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("appending under this saved root", span))?;
     // Append adds a key to this layer's key set.
@@ -2037,7 +2037,7 @@ fn materialize_layer(
             base, name: layer, ..
         } => {
             let span = path.span();
-            let (root, identity) = lower_record_identity(base, env)?;
+            let (root, identity) = lower(base, env)?.into_record(base.span())?;
             keys.into_iter()
                 .map(|key| {
                     let layer_key = value_to_key(key.clone())
@@ -3007,7 +3007,7 @@ fn traversed_layer_prefix(
         Expression::Field {
             base, name: layer, ..
         } => {
-            let (root, identity) = lower_record_identity(base, env)?;
+            let (root, identity) = lower(base, env)?.into_record(base.span())?;
             let mut prefix = vec![PathSegment::Root(root)];
             prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
             prefix.push(PathSegment::ChildLayer(layer.clone()));
@@ -3146,7 +3146,7 @@ fn enumerate_child_layer(path: &Expression, env: &mut Env<'_>) -> Result<Vec<Val
         return Err(unsupported("iterating this saved path", path.span()));
     };
     let span = path.span();
-    let (root, identity) = lower_record_identity(base, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
     let mut prefix = vec![PathSegment::Root(root)];
     prefix.extend(identity.into_iter().map(PathSegment::RecordKey));
     prefix.push(PathSegment::ChildLayer(layer.clone()));
@@ -3307,7 +3307,7 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     if is_group_base(base) {
         return eval_group_field_read(base, name, expr.span(), env);
     }
-    let (root, identity) = lower_record_identity(base, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
     read_saved_field(
         &root,
         &identity,
@@ -3368,7 +3368,7 @@ fn eval_group_field_read(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let (root, identity, layers) = lower_layer_path(base, env)?;
+    let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
     read_nested_field(
         &root,
         &identity,
@@ -3511,8 +3511,8 @@ fn eval_saved_layer_read(
     else {
         return Err(unsupported("this read", span));
     };
-    let (root, identity) = lower_record_identity(base, env)?;
-    let layer_keys = lower_layer_keys(keys, span, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
+    let layer_keys = lower_keys(keys, span, false, env)?;
     read_layer_entry(
         &root,
         &identity,
@@ -3616,7 +3616,7 @@ fn eval_resource_read(
     let Expression::SavedRoot { name: root, .. } = callee else {
         return Err(unsupported("this read", span));
     };
-    let identity = lower_identity_args(args, span, env)?;
+    let identity = lower_keys(args, span, true, env)?;
     read_resource(root, &identity, span, env)
 }
 
@@ -3712,7 +3712,7 @@ fn eval_saved_field_write(
     if is_group_base(base) {
         return eval_group_field_write(base, field, value, span, env);
     }
-    let (root, identity) = lower_record_identity(base, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
     let value = eval_expr(value, env)?;
     write_saved_field(&root, &identity, field, value, span, env)
 }
@@ -3753,7 +3753,7 @@ fn raw_segment_path(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<PathSegment>, RuntimeError> {
-    let (root, identity) = lower_record_identity(base, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
     if find_resource(env.program, &root).is_none() {
         return Err(unsupported("a raw segment under this saved path", span));
     }
@@ -3857,7 +3857,7 @@ fn eval_group_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity, layers) = lower_layer_path(base, env)?;
+    let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
     let value = eval_expr(value, env)?;
     write_nested_field(&root, &identity, &layers, field, value, span, env)
 }
@@ -3900,7 +3900,7 @@ fn eval_group_entry_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity) = lower_record_identity(record, env)?;
+    let (root, identity) = lower(record, env)?.into_record(record.span())?;
     // A keyed-entry write adds/replaces a key in this layer's key set.
     env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
     // A declared keyed LEAF (e.g. `tags(pos: int): string`) takes a scalar value
@@ -3911,7 +3911,7 @@ fn eval_group_entry_write(
             .ok_or_else(|| unsupported("writing a resource value to a keyed leaf", span))?;
         let resource = find_resource(env.program, &root)
             .ok_or_else(|| unsupported("writing to this saved root", span))?;
-        let layer_keys = lower_layer_keys(keys, span, env)?;
+        let layer_keys = lower_keys(keys, span, false, env)?;
         let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved);
         env.apply_plan(plan, span)?;
         return Ok(());
@@ -3924,7 +3924,7 @@ fn eval_group_entry_write(
     };
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let layer_keys = lower_layer_keys(keys, span, env)?;
+    let layer_keys = lower_keys(keys, span, false, env)?;
     let value = resource_value_of(fields, span)?;
     let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value);
     env.apply_plan(plan, span)?;
@@ -3941,7 +3941,7 @@ fn eval_resource_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity) = lower_record_identity(target, env)?;
+    let (root, identity) = lower(target, env)?.into_record(target.span())?;
     let value = eval_expr(value, env)?;
     write_resource(&root, &identity, value, span, env)
 }
@@ -3995,11 +3995,11 @@ fn eval_resource_merge(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity) = lower_record_identity(target, env)?;
+    let (root, identity) = lower(target, env)?.into_record(target.span())?;
     // A saved-record source contributes its child-layer subtrees; lower its
     // identity (rejecting a cross-root merge) before reading its scalar fields.
     let source = if is_saved_path(value) {
-        let (source_root, source_identity) = lower_record_identity(value, env)?;
+        let (source_root, source_identity) = lower(value, env)?.into_record(value.span())?;
         if source_root != root {
             return Err(unsupported("merging across saved roots", span));
         }
@@ -4074,8 +4074,8 @@ fn eval_layer_merge(
             span,
         ));
     }
-    let (to_root, to_identity) = lower_record_identity(target_record, env)?;
-    let (from_root, from_identity) = lower_record_identity(source_record, env)?;
+    let (to_root, to_identity) = lower(target_record, env)?.into_record(target_record.span())?;
+    let (from_root, from_identity) = lower(source_record, env)?.into_record(source_record.span())?;
     if from_root != to_root {
         return Err(unsupported("merging a layer across saved roots", span));
     }
@@ -4151,7 +4151,7 @@ fn eval_delete(path: &Expression, span: SourceSpan, env: &mut Env<'_>) -> Result
     {
         return eval_whole_root_delete(name, span, env);
     }
-    let (root, identity) = lower_record_identity(path, env)?;
+    let (root, identity) = lower(path, env)?.into_record(path.span())?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
     // Deleting a record removes a key from the root's identity layer.
@@ -4209,10 +4209,10 @@ fn eval_field_delete(
     // A field reached through one or more group layers deletes inside that group
     // entry, with no index interaction.
     if is_group_base(base) {
-        let (root, identity, layers) = lower_layer_path(base, env)?;
+        let (root, identity, layers) = lower(base, env)?.into_layers(base.span())?;
         return delete_nested_field(&root, &identity, &layers, field, span, env);
     }
-    let (root, identity) = lower_record_identity(base, env)?;
+    let (root, identity) = lower(base, env)?.into_record(base.span())?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
     // Deleting a required field on its own would leave the resource invalid; it is
@@ -4289,8 +4289,8 @@ fn eval_layer_entry_delete(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity, chain) = lower_layer_path(record, env)?;
-    let entry_keys = lower_layer_keys(keys, span, env)?;
+    let (root, identity, chain) = lower(record, env)?.into_layers(record.span())?;
+    let entry_keys = lower_keys(keys, span, false, env)?;
     // The full layer chain the delete targets must be declared on the resource.
     let layer_names: Vec<&str> = chain
         .iter()
@@ -4592,19 +4592,114 @@ fn value_to_saved(value: Value) -> Option<SavedValue> {
     })
 }
 
-/// Lower a record path to its saved root name and identity key values: a keyed
-/// lookup `^root(key…)`, or a bare singleton root `^root` (a zero-key identity).
-fn lower_record_identity(
-    expr: &Expression,
-    env: &mut Env<'_>,
-) -> Result<(String, Vec<SavedKey>), RuntimeError> {
+/// A saved path lowered from its source expression: the saved root, the record
+/// identity keys, the chain of group/keyed-layer levels from outermost to
+/// innermost, and how the path terminates. One [`lower`] pass walks the call/field
+/// spine once and produces this; every saved record write, delete, merge, layer
+/// read, and traversal then consumes these fields directly.
+///
+/// Callers always peel the trailing scalar field off the spine before lowering its
+/// base, so `lower` is given a record, layer, or index path — never a trailing
+/// `.field`. Each `.name` off a saved path it walks is therefore a group/layer hop,
+/// and the only non-record terminal it produces is an index branch.
+struct SavedPath {
+    /// The `^root` name.
+    root: String,
+    /// The record identity keys (empty for a keyless singleton).
+    identity: Vec<SavedKey>,
+    /// The `(layer, key…)` levels, outermost first; keys are empty for an unkeyed
+    /// group hop (`^root(id).name`) and present for a keyed layer (`.layer(key…)`).
+    layers: Vec<(String, Vec<SavedKey>)>,
+    terminal: Terminal,
+}
+
+/// How a [`SavedPath`] terminates.
+enum Terminal {
+    /// The path stops at the record or group entry itself (`^root(id)`,
+    /// `^root(id).layer(k)`).
+    Record,
+    /// A declared index branch `^root.index(args…)`. It hangs directly off the root
+    /// with no record identity or layer chain.
+    Index,
+}
+
+impl SavedPath {
+    /// The saved root and identity of a path that must be a plain record address —
+    /// no layer chain and no index branch. Callers that only accept `^root` or
+    /// `^root(id…)` (a record write, delete, merge, or layer base) use this to keep
+    /// their "this saved path isn't supported here" rejection.
+    fn into_record(self, span: SourceSpan) -> Result<(String, Vec<SavedKey>), RuntimeError> {
+        if self.layers.is_empty() && matches!(self.terminal, Terminal::Record) {
+            Ok((self.root, self.identity))
+        } else {
+            Err(unsupported("this saved path", span))
+        }
+    }
+
+    /// The saved root, identity, and layer chain of a path that is not an index
+    /// branch. Callers that peel the terminal field/layer off the spine before
+    /// lowering the base (group-entry field reads/writes, layer-entry deletes) use
+    /// this; an unexpected index terminal is rejected as an unsupported path.
+    fn into_layers(self, span: SourceSpan) -> Result<LayerPath, RuntimeError> {
+        if matches!(self.terminal, Terminal::Record) {
+            Ok((self.root, self.identity, self.layers))
+        } else {
+            Err(unsupported("this saved path", span))
+        }
+    }
+}
+
+/// A lowered keyed group-entry path: the saved root name, the record identity
+/// keys, and the chain of `(layer, key…)` levels from outermost to innermost.
+type LayerPath = (String, Vec<SavedKey>, Vec<(String, Vec<SavedKey>)>);
+
+/// Lower a saved-path expression to a [`SavedPath`] by walking the call/field
+/// spine once. A bare `^root` or keyed lookup `^root(key…)` is the record base; a
+/// `^root.index(args…)` is an index-branch terminal; `….layer(key…)` and the
+/// unkeyed group hop `….name` each append one layer level.
+fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError> {
+    // An index branch `^root.index(args…)` hangs directly off the root: a call
+    // whose callee names a declared index off a saved root. It carries no record
+    // identity or layer chain, so classify it before the layer arm.
+    if let Expression::Call { callee, .. } = expr
+        && let Expression::Field { base, name, .. } = callee.as_ref()
+        && let Expression::SavedRoot { name: root, .. } = base.as_ref()
+        && find_resource(env.program, root)
+            .is_some_and(|resource| resource.indexes.iter().any(|index| &index.name == name))
+    {
+        return Ok(SavedPath {
+            root: root.clone(),
+            identity: Vec::new(),
+            layers: Vec::new(),
+            terminal: Terminal::Index,
+        });
+    }
+    // A keyed layer hop `….layer(key…)`: a call whose callee is a `.layer` access.
+    if let Expression::Call { callee, args, span } = expr
+        && let Expression::Field { base, name, .. } = callee.as_ref()
+    {
+        let mut path = lower(base, env)?;
+        path.layers
+            .push((name.clone(), lower_keys(args, *span, false, env)?));
+        return Ok(path);
+    }
+    // An unkeyed group hop `….name` (a `.field` off a saved path, not a call)
+    // appends a zero-key layer level, so `^patients(id).name` descends into the
+    // group `name`. The record base is handled by the terminal arms below.
+    if let Expression::Field { base, name, .. } = expr
+        && is_saved_path(base)
+    {
+        let mut path = lower(base, env)?;
+        path.layers.push((name.clone(), Vec::new()));
+        return Ok(path);
+    }
+    // The record base: a bare singleton `^root` or a keyed lookup `^root(key…)`.
     // A bare saved root is a whole-resource address only for a keyless singleton
-    // (`Settings at ^settings`). For a keyed root such as `^books` it is not a
-    // record — addressing or reading it without an identity is a type error, not
-    // a silent read of the identity-less path.
+    // (`Settings at ^settings`). For a keyed root such as `^books`, addressing it
+    // without an identity is a type error, not a silent read of the keyless path.
     if let Expression::SavedRoot { name, span } = expr {
         return match root_identity_arity(env.program, name) {
-            Some(0) => Ok((name.clone(), Vec::new())),
+            Some(0) => Ok(record_path(name.clone(), Vec::new())),
             Some(arity) => Err(type_error(
                 &format!(
                     "`^{name}` expects {arity} identity key(s), got 0; address a record with `^{name}(id)`"
@@ -4620,18 +4715,30 @@ fn lower_record_identity(
     let Expression::SavedRoot { name, .. } = callee.as_ref() else {
         return Err(unsupported("this saved path", *span));
     };
-    let keys = lower_identity_args(args, *span, env)?;
-    Ok((name.clone(), keys))
+    Ok(record_path(name.clone(), lower_keys(args, *span, true, env)?))
 }
 
-/// Evaluate a keyed lookup's arguments to identity key segments. A sole
+/// A record-base [`SavedPath`]: a root and identity with no layers and a record
+/// terminal.
+fn record_path(root: String, identity: Vec<SavedKey>) -> SavedPath {
+    SavedPath {
+        root,
+        identity,
+        layers: Vec::new(),
+        terminal: Terminal::Record,
+    }
+}
+
+/// Evaluate a keyed lookup's arguments to saved key segments, rejecting named/out
+/// arguments. When `allow_identity_splice` (the record-identity position), a sole
 /// identity-valued argument (`^root(id)` where `id: Resource::Id`) splices its
-/// lowered keys in as the full identity; otherwise each argument is one raw key
-/// (the `^root(17)`/`nextId` flow). Named/out arguments are rejected, and an
-/// identity argument cannot be mixed with raw keys.
-fn lower_identity_args(
+/// lowered keys in as the full key vector and an identity mixed with raw keys is
+/// rejected; otherwise (a keyed layer or index lookup) each argument is one raw
+/// key.
+fn lower_keys(
     args: &[Argument],
     span: SourceSpan,
+    allow_identity_splice: bool,
     env: &mut Env<'_>,
 ) -> Result<Vec<SavedKey>, RuntimeError> {
     if args
@@ -4646,72 +4753,17 @@ fn lower_identity_args(
     let mut keys = Vec::with_capacity(args.len());
     for arg in args {
         match eval_expr(&arg.value, env)? {
-            // An identity is the whole lookup key only as the sole argument; it
-            // cannot be one component among raw keys.
-            Value::Identity(identity) if args.len() == 1 => return Ok(identity),
-            Value::Identity(_) => {
+            // An identity is the whole lookup key only as the sole argument of a
+            // record lookup; it cannot be one component among raw keys.
+            Value::Identity(identity) if allow_identity_splice && args.len() == 1 => {
+                return Ok(identity);
+            }
+            Value::Identity(_) if allow_identity_splice => {
                 return Err(unsupported("an identity mixed with other keys", span));
             }
             value => keys
                 .push(value_to_key(value).ok_or_else(|| unsupported("a key of this type", span))?),
         }
-    }
-    Ok(keys)
-}
-
-/// A lowered keyed group-entry path: the saved root name, the record identity
-/// keys, and the chain of `(layer, key…)` levels from outermost to innermost.
-type LayerPath = (String, Vec<SavedKey>, Vec<(String, Vec<SavedKey>)>);
-
-/// Lower a (possibly nested) keyed group-entry path to its saved root, record
-/// identity, and the chain of `(layer, key…)` levels from outermost to innermost.
-/// `^root(id…)` lowers to an empty chain; each `….layer(key…)` wrapper appends one
-/// level, so `^books(id).versions(v).comments(c)` yields two chain entries.
-fn lower_layer_path(expr: &Expression, env: &mut Env<'_>) -> Result<LayerPath, RuntimeError> {
-    if let Expression::Call { callee, args, span } = expr
-        && let Expression::Field { base, name, .. } = callee.as_ref()
-    {
-        let (root, identity, mut chain) = lower_layer_path(base, env)?;
-        let keys = lower_layer_keys(args, *span, env)?;
-        chain.push((name.clone(), keys));
-        return Ok((root, identity, chain));
-    }
-    // An unkeyed group hop `….name` (a `.field` off a saved path, not a call)
-    // appends a zero-key layer level, so `^patients(id).name` descends into the
-    // group `name`. The record base is handled by the terminal arm below.
-    if let Expression::Field { base, name, .. } = expr
-        && is_saved_path(base)
-    {
-        let (root, identity, mut chain) = lower_layer_path(base, env)?;
-        chain.push((name.clone(), Vec::new()));
-        return Ok((root, identity, chain));
-    }
-    let (root, identity) = lower_record_identity(expr, env)?;
-    Ok((root, identity, Vec::new()))
-}
-
-/// Evaluate keyed-lookup arguments to saved keys, rejecting named/out arguments.
-/// Shared by keyed-leaf reads and group-entry field writes.
-fn lower_layer_keys(
-    args: &[Argument],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Vec<SavedKey>, RuntimeError> {
-    if args
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported(
-            "a keyed lookup with named or out arguments",
-            span,
-        ));
-    }
-    let mut keys = Vec::with_capacity(args.len());
-    for arg in args {
-        keys.push(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("a key of this type", span))?,
-        );
     }
     Ok(keys)
 }
@@ -4727,7 +4779,7 @@ fn lower_saved_path(
         Expression::SavedRoot { name, .. } => Ok(vec![PathSegment::Root(name.clone())]),
         Expression::Call { callee, args, span } => {
             let mut segments = lower_saved_path(callee, env)?;
-            let keys = lower_identity_args(args, *span, env)?;
+            let keys = lower_keys(args, *span, true, env)?;
             segments.extend(keys.into_iter().map(PathSegment::RecordKey));
             Ok(segments)
         }
