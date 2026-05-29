@@ -913,6 +913,16 @@ fn check_condition(
                 column: span.column,
             });
         }
+        // `Error` is a concrete (non-scalar) type, not an unknown one, so it cannot
+        // be `bool`: flag it just like a wrong scalar (not as an untyped value).
+        None if matches!(condition_type, MarrowType::Error) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_CONDITION_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: "condition must be `bool`, found `Error`".to_string(),
+            line: span.line,
+            column: span.column,
+        }),
         _ => {}
     }
 }
@@ -953,6 +963,19 @@ fn check_return_type(
             file: file.to_path_buf(),
             message: format!(
                 "this `return` value has no known type, but the function returns `{}`; convert it first",
+                expected.name(),
+            ),
+            line: span.line,
+            column: span.column,
+        }),
+        // `Error` is a concrete type, so returning it where a scalar is declared is
+        // a real type mismatch (not an untyped value).
+        None if matches!(value_type, MarrowType::Error) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_RETURN_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "function returns `{}`, but this value is `Error`",
                 expected.name(),
             ),
             line: span.line,
@@ -1000,6 +1023,16 @@ fn check_assignment(
                 "the value stored into `{}` has no known type; convert it before typed use",
                 place.name(),
             ),
+            line: span.line,
+            column: span.column,
+        }),
+        // `Error` is a concrete type, so storing it into a scalar place is a real
+        // type mismatch (not an untyped value).
+        None if matches!(value, MarrowType::Error) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_ASSIGNMENT_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!("expected `{}`, but the value is `Error`", place.name()),
             line: span.line,
             column: span.column,
         }),
@@ -1448,6 +1481,16 @@ fn check_unary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::UnaryOp;
+    // `Error` is a concrete type, not an untyped one: no unary operator applies to
+    // it, so flag it as an operator misuse rather than silently passing it through.
+    if matches!(operand, MarrowType::Error) {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!("operator `{}` cannot be applied to `Error`", unary_symbol(op)),
+        ));
+        return MarrowType::Unknown;
+    }
     let Some(operand) = as_primitive(operand) else {
         return MarrowType::Unknown;
     };
@@ -1537,9 +1580,10 @@ fn check_binary(
 }
 
 /// The scalar a type denotes, or `None` for any non-scalar (resource, identity,
-/// sequence, the checker-only `Error`, or unknown) type that no operator reasons
-/// about. `Error` returning `None` is what keeps it out of every operator,
-/// condition, return, and assignment check.
+/// sequence, the checker-only `Error`, or unknown) type. `Error` is concrete, not
+/// untyped: each scalar-requiring site (operator, condition, return, assignment,
+/// argument) handles a `None` from `Error` as a real mismatch, distinct from the
+/// untyped-value path taken for `Unknown`.
 fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
     match ty {
         MarrowType::Primitive(scalar) => Some(*scalar),
@@ -1787,7 +1831,10 @@ fn check_one_arg(
             line: span.line,
             column: span.column,
         });
-    } else if as_primitive(arg_type).is_some() {
+    } else if matches!(arg_type, MarrowType::Primitive(_) | MarrowType::Error) {
+        // A scalar or an `Error` value (both concrete) in a slot that expects a
+        // different concrete type is a real argument mismatch; non-scalar values
+        // (resources, identities, sequences) are left to the runtime.
         diagnostics.push(call_diagnostic(
             file,
             span,

@@ -152,8 +152,9 @@ impl ResourceSchema {
 
     /// Descend a non-empty chain of group layer names, following nested layer
     /// members, and return the innermost layer. `None` for an empty chain or an
-    /// unknown name.
-    fn descend_layers(&self, layers: &[&str]) -> Option<&LayerSchema> {
+    /// unknown name. Also used by the runtime to check that a layer chain is fully
+    /// declared before touching the store.
+    pub fn descend_layers(&self, layers: &[&str]) -> Option<&LayerSchema> {
         let (&first, rest) = layers.split_first()?;
         let mut current = self.layers.iter().find(|layer| layer.name == first)?;
         for &name in rest {

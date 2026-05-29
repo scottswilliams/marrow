@@ -384,3 +384,220 @@ fn a_file_with_a_parse_error_contributes_no_module() {
     assert!(report.has_errors(), "{:#?}", report.diagnostics);
     assert!(program.modules.is_empty(), "{program:#?}");
 }
+
+// --- `Error` in a scalar position (regression for A08) -------------------------
+//
+// `MarrowType::Error` is a concrete type with no storage form: it is *not* an
+// untyped value. A `catch e: Error` clause binds `e` as `Error`, so using `e`
+// where a scalar is required must report the same diagnostic a wrong scalar
+// would, never `check.untyped_value` and never nothing. (A08 split `Error` into
+// its own arm; before that `Error` was a primitive that simply failed to match,
+// which is the behavior these tests pin back in place.) The dual is preserved:
+// `Error` must still satisfy an `Error`-typed slot (`std::log::error`).
+
+/// Build a one-module project whose single function wraps `body` in a
+/// `try`/`catch e: Error`, so `e` is in scope as an `Error` value, and return its
+/// diagnostic codes. `signature` is the function header (e.g. `fn f()`).
+fn error_value_diagnostic_codes(signature: &str, body: &str) -> Vec<String> {
+    let root = temp_project("program-error-scalar", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            &format!(
+                "module shelf::t\n\
+                 {signature}\n\
+                 \x20   try\n\
+                 \x20       var x = 1\n\
+                 \x20   catch e: Error\n\
+                 {body}\n"
+            ),
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.to_string())
+        .collect()
+}
+
+/// `if e` over an `Error` condition reports `check.condition_type` (a condition
+/// must be `bool`), not `check.untyped_value`.
+#[test]
+fn error_condition_is_a_condition_type_error() {
+    let codes = error_value_diagnostic_codes("fn f()", "        if e\n            x = 1");
+    assert!(
+        codes.iter().any(|code| code == "check.condition_type"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+/// `return e` from a `: string` function reports `check.return_type`, not
+/// `check.untyped_value`.
+#[test]
+fn error_return_is_a_return_type_error() {
+    let codes = error_value_diagnostic_codes("fn f(): string", "        return e");
+    assert!(
+        codes.iter().any(|code| code == "check.return_type"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+/// `s = e` storing an `Error` into a `string` place reports
+/// `check.assignment_type`, not `check.untyped_value`.
+#[test]
+fn error_assignment_is_an_assignment_type_error() {
+    let codes = error_value_diagnostic_codes(
+        "fn f()",
+        "        var s: string = \"a\"\n        s = e",
+    );
+    assert!(
+        codes.iter().any(|code| code == "check.assignment_type"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+/// Passing `e` to a user function declared `f(s: string)` reports
+/// `check.call_argument`, not `check.untyped_value`.
+#[test]
+fn error_argument_to_user_function_is_a_call_argument_error() {
+    let root = temp_project("program-error-userfn-arg", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             fn takes(s: string)\n\
+             \x20   return\n\
+             fn f()\n\
+             \x20   try\n\
+             \x20       var x = 1\n\
+             \x20   catch e: Error\n\
+             \x20       takes(e)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.untyped_value"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// Passing `e` to `std::log::info` (which expects a `string`) reports
+/// `check.call_argument`, not `check.untyped_value`.
+#[test]
+fn error_argument_to_std_log_info_is_a_call_argument_error() {
+    let codes = error_value_diagnostic_codes("fn f()", "        std::log::info(e)");
+    assert!(
+        codes.iter().any(|code| code == "check.call_argument"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+/// `-e` negating an `Error` reports `check.operator_type` (no operator applies to
+/// an `Error`), not `check.untyped_value`.
+#[test]
+fn error_unary_negation_is_an_operator_type_error() {
+    let codes = error_value_diagnostic_codes("fn f()", "        y = -e");
+    assert!(
+        codes.iter().any(|code| code == "check.operator_type"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+// --- `Error` in the one slot that *expects* it (dual of the above) -------------
+
+/// `std::log::error(e)` accepts an `Error` value: the `Error`-typed slot is
+/// satisfied, so the call checks clean.
+#[test]
+fn error_argument_to_std_log_error_checks_clean() {
+    let codes = error_value_diagnostic_codes("fn f()", "        std::log::error(e)");
+    assert!(codes.is_empty(), "{codes:#?}");
+}
+
+/// A scalar passed to `std::log::error` (which expects an `Error`) reports
+/// `check.call_argument` — the scalar does not satisfy the `Error` slot.
+#[test]
+fn scalar_argument_to_std_log_error_is_a_call_argument_error() {
+    let root = temp_project("program-logerror-scalar", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             fn f()\n\
+             \x20   std::log::error(\"oops\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// An untyped value passed to `std::log::error` reports `check.untyped_value`:
+/// `Unknown` is still untyped (unchanged by the `Error` fix). An unbound name
+/// (`mystery`) has no known type.
+#[test]
+fn untyped_argument_to_std_log_error_is_an_untyped_value_error() {
+    let root = temp_project("program-logerror-untyped", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             fn f()\n\
+             \x20   std::log::error(mystery)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.untyped_value"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
