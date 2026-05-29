@@ -3,9 +3,9 @@
 //! It speaks JSON-RPC 2.0 with `Content-Length` framing, handles the
 //! `initialize`/`shutdown`/`exit` lifecycle, and tracks open documents with full
 //! text sync. On every `didOpen`/`didChange` it parses the buffer and publishes
-//! diagnostics (`textDocument/publishDiagnostics`). This first slice reports parse
-//! diagnostics from [`marrow_syntax::parse_source`]; hover, definition, and
-//! project-level (checked-fact) diagnostics are later slices.
+//! `textDocument/publishDiagnostics`. Today it reports only parse diagnostics from
+//! [`marrow_syntax::parse_source`]; hover, definition, and project-level checked
+//! diagnostics are not yet implemented.
 //!
 //! This is the editor language server, distinct from `marrow serve` (a data/IPC
 //! server with different framing and purpose).
@@ -155,10 +155,9 @@ fn lsp_diagnostic(diagnostic: &marrow_syntax::Diagnostic, text: &str) -> Value {
 }
 
 /// Convert a byte offset into a 0-based LSP `{line, character}`. `character`
-/// counts Unicode scalar values on the line; this matches UTF-16 code units for
-/// the basic multilingual plane (and exactly for ASCII source), which is correct
-/// for `.mw` in practice. Translating to UTF-16 for astral characters is a
-/// later refinement.
+/// counts Unicode scalar values on the line, which matches UTF-16 code units for
+/// the basic multilingual plane (exactly so for ASCII source). Astral characters
+/// are not yet translated to UTF-16 offsets.
 fn position(byte: usize, text: &str) -> Value {
     let byte = byte.min(text.len());
     let mut line = 0u32;

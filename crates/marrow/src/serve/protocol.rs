@@ -7,9 +7,9 @@
 //! `{"id": …, "error": {"code": …, "message": …}}` on failure, echoing the
 //! request's `id`.
 //!
-//! This is a read-only tooling surface: it never writes managed data. Slice A
-//! serves `saved_roots`; path-addressed reads (`saved_get`, `saved_children`,
-//! `saved_walk`) are later slices.
+//! This is a read-only tooling surface: it never writes managed data. It serves
+//! `saved_roots` and the path-addressed reads `saved_get`, `saved_children`, and
+//! `saved_walk`.
 
 use marrow_run::base64;
 use marrow_store::backend::Backend;
@@ -413,8 +413,8 @@ mod tests {
     }
 
     /// The serve protocol decodes base64 through the one canonical codec, so it
-    /// rejects exactly the unpadded and over-padded inputs the runtime rejects
-    /// (F34): no second, laxer dialect on the serve surface.
+    /// rejects exactly the unpadded and over-padded inputs the runtime rejects —
+    /// no second, laxer dialect on the serve surface.
     #[test]
     fn serve_base64_decode_rejects_non_canonical_padding() {
         // These were accepted by the old padding-trimming serve decoder but

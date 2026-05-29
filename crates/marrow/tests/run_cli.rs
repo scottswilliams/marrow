@@ -194,9 +194,9 @@ fn an_uncaught_throw_exits_one_with_the_thrown_code_on_stderr() {
 
 #[test]
 fn an_uncaught_unique_conflict_exits_one_with_its_write_code_on_stderr() {
-    // A managed-write fault that escapes the entry stays fatal and exits non-zero,
-    // and its `write.unique_conflict` dotted code still reaches stderr — the
-    // uncaught surface is unchanged now that the fault is also catchable.
+    // A managed-write fault that escapes the entry is fatal: it exits non-zero and
+    // its `write.unique_conflict` dotted code reaches stderr, even though the fault
+    // is also catchable from within the program.
     let root = temp_project("run-conflict", |root| {
         write(
             root,
