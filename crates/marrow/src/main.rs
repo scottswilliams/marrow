@@ -14,7 +14,7 @@ Marrow
 
 Usage:
   marrow check [--format text|json|jsonl] <file.mw>
-  marrow fmt [--check | --write] <file.mw>
+  marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run <projectdir>
   marrow test <projectdir>
   marrow backup <projectdir> <archive>
@@ -1344,7 +1344,7 @@ fn presence_name(presence: marrow_store::mem::Presence) -> &'static str {
 
 fn fmt(args: &[String]) -> ExitCode {
     let mut mode = FmtMode::Print;
-    let mut file = None;
+    let mut target = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1354,22 +1354,31 @@ fn fmt(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow fmt [--check | --write] <file.mw>
+  marrow fmt [--check | --write] <file.mw | projectdir>
 
-Format a Marrow source file. With no flag, print the formatted source to
-stdout. --check exits non-zero if the file is not already formatted. --write
-rewrites the file in place.
+Format Marrow source. With a single `.mw` file and no flag, print the formatted
+source to stdout. With a project directory (one that contains marrow.json),
+format every `.mw` file under its source roots; a directory requires --check or
+--write, since printing many files to stdout is meaningless. --check exits
+non-zero if any file is not already formatted; --write rewrites changed files in
+place. `marrow fmt` does not read from stdin.
 "
                 );
                 return ExitCode::SUCCESS;
+            }
+            // A stdin pipe has no path to --write and no project to discover, so
+            // reject it explicitly rather than mislabel `-` as an unknown option.
+            "-" => {
+                eprintln!("marrow fmt does not read from stdin; pass a file or project directory");
+                return ExitCode::from(2);
             }
             value if value.starts_with('-') => {
                 eprintln!("unknown fmt option: {value}");
                 return ExitCode::from(2);
             }
             value => {
-                if file.replace(value.to_string()).is_some() {
-                    eprintln!("marrow fmt accepts one source file");
+                if target.replace(value.to_string()).is_some() {
+                    eprintln!("marrow fmt accepts one source file or project directory");
                     return ExitCode::from(2);
                 }
             }
@@ -1377,48 +1386,116 @@ rewrites the file in place.
         index += 1;
     }
 
-    let Some(file) = file else {
-        eprintln!("missing source file");
+    let Some(target) = target else {
+        eprintln!("missing source file or project directory");
         return ExitCode::from(2);
     };
-    let source = match std::fs::read_to_string(&file) {
+    if Path::new(&target).is_dir() {
+        return fmt_project_dir(&target, mode);
+    }
+    let source = match std::fs::read_to_string(&target) {
         Ok(source) => source,
         Err(error) => {
-            report_io_error(&file, &error, CheckFormat::Text);
+            report_io_error(&target, &error, CheckFormat::Text);
             return ExitCode::FAILURE;
         }
     };
+    match fmt_one(&target, &source, mode) {
+        Ok(FmtOutcome::Formatted) | Ok(FmtOutcome::Unchanged) => ExitCode::SUCCESS,
+        Ok(FmtOutcome::NeedsFormatting) | Err(()) => ExitCode::FAILURE,
+    }
+}
 
+/// Format every `.mw` file under a project's source roots. A directory requires a
+/// mode: printing many files to stdout is meaningless, so bare `fmt <dir>` is a
+/// usage error. A missing/invalid `marrow.json` is a typed `config.*` error
+/// through `load_config`, not a raw OS "Is a directory".
+fn fmt_project_dir(dir: &str, mode: FmtMode) -> ExitCode {
+    if matches!(mode, FmtMode::Print) {
+        eprintln!("marrow fmt on a directory requires --check or --write");
+        return ExitCode::from(2);
+    }
+    let config = match load_config(dir) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    let modules = match marrow_project::discover_modules(Path::new(dir), &config) {
+        Ok(modules) => modules,
+        Err(error) => {
+            report_simple_error(error.code, &error.to_string(), CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut failed = false;
+    for module in &modules {
+        let path = module.path.display().to_string();
+        let source = match std::fs::read_to_string(&module.path) {
+            Ok(source) => source,
+            Err(error) => {
+                report_io_error(&path, &error, CheckFormat::Text);
+                failed = true;
+                continue;
+            }
+        };
+        match fmt_one(&path, &source, mode) {
+            // A whole-project run reports every problem, then fails overall, so
+            // the operator sees all unformatted or unparseable files at once.
+            Ok(FmtOutcome::Formatted) | Ok(FmtOutcome::Unchanged) => {}
+            Ok(FmtOutcome::NeedsFormatting) | Err(()) => failed = true,
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// The result of formatting one file in `--check`/`--write` mode.
+enum FmtOutcome {
+    /// `--write`: the file was rewritten with new formatting.
+    Formatted,
+    /// `--check`/`--write`: already formatted, nothing to do.
+    Unchanged,
+    /// `--check`: the file is not formatted (a finding, not an error).
+    NeedsFormatting,
+}
+
+/// Format one file's `source` in `mode`, reporting parse errors, `--check`
+/// findings, and `--write` I/O failures. Source that does not parse is left
+/// untouched and reported (`Err`). The `Print` mode writes to stdout (only valid
+/// for a single file).
+fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
     // Do not reformat source that does not parse; report its diagnostics and
     // leave the file untouched.
-    let parsed = marrow_syntax::parse_source(&source);
+    let parsed = marrow_syntax::parse_source(source);
     if parsed.has_errors() {
-        report_check(&file, &parsed, CheckFormat::Text);
-        return ExitCode::FAILURE;
+        report_check(file, &parsed, CheckFormat::Text);
+        return Err(());
     }
-
-    let formatted = marrow_syntax::format_source(&source);
+    let formatted = marrow_syntax::format_source(source);
     match mode {
         FmtMode::Print => {
             print!("{formatted}");
-            ExitCode::SUCCESS
+            Ok(FmtOutcome::Unchanged)
         }
         FmtMode::Check => {
             if source == formatted {
-                ExitCode::SUCCESS
+                Ok(FmtOutcome::Unchanged)
             } else {
                 eprintln!("{file}: not formatted");
-                ExitCode::FAILURE
+                Ok(FmtOutcome::NeedsFormatting)
             }
         }
         FmtMode::Write => {
-            if source != formatted
-                && let Err(error) = std::fs::write(&file, &formatted)
-            {
-                report_io_error(&file, &error, CheckFormat::Text);
-                return ExitCode::FAILURE;
+            if source == formatted {
+                Ok(FmtOutcome::Unchanged)
+            } else if let Err(error) = std::fs::write(file, &formatted) {
+                report_io_error(file, &error, CheckFormat::Text);
+                Err(())
+            } else {
+                Ok(FmtOutcome::Formatted)
             }
-            ExitCode::SUCCESS
         }
     }
 }
