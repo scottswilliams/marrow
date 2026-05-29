@@ -303,8 +303,9 @@ fn format_source_is_idempotent_and_reparses_cleanly() {
 }
 
 #[test]
-fn formatting_round_trips_through_the_parser() {
-    // Formatting then re-parsing yields the same canonical text.
+fn formatting_is_a_stable_fixed_point() {
+    // Formatting then re-parsing yields the same canonical text. This only
+    // checks stability (idempotency), not that structure is preserved.
     let inputs = [
         "60 * 60 + 1",
         "(1 + 2) * 3",
@@ -317,4 +318,58 @@ fn formatting_round_trips_through_the_parser() {
         let twice = format_const_value(&once);
         assert_eq!(once, twice, "formatting not stable for {input:?}");
     }
+}
+
+#[test]
+fn preserves_leading_standalone_and_trailing_comments() {
+    // A function body with a leading comment (own line before a statement), a
+    // trailing comment (after code on a statement line), and a standalone
+    // comment (own line with no following statement) must round-trip.
+    let source = "module app\n\
+         fn run()\n\
+         \x20   ; set up the total\n\
+         \x20   const total: int = 0\n\
+         \x20   print(total) ; show it\n\
+         \x20   ; nothing left to do\n";
+    let expected = "\
+         \x20   ; set up the total\n\
+         \x20   const total: int = 0\n\
+         \x20   print(total) ; show it\n\
+         \x20   ; nothing left to do";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn preserves_comments_in_nested_blocks() {
+    let source = "module app\n\
+         fn run(n: int)\n\
+         \x20   if n < 0\n\
+         \x20       ; negative branch\n\
+         \x20       print(\"neg\") ; report\n\
+         \x20   ; after the if\n\
+         \x20   return\n";
+    let expected = "\
+         \x20   if n < 0\n\
+         \x20       ; negative branch\n\
+         \x20       print(\"neg\") ; report\n\
+         \x20   ; after the if\n\
+         \x20   return";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn comment_preservation_round_trips_and_is_idempotent() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   ; leading\n\
+         \x20   const x: int = 1 ; trailing\n\
+         \x20   ; standalone\n";
+    let body = format_function_body(source);
+    // Reparsing the formatted body and reformatting yields identical text, and
+    // the comments are still present.
+    let reformatted = format_function_body(&format!("module app\nfn run()\n{body}\n"));
+    assert_eq!(body, reformatted, "comment formatting is not a fixed point");
+    assert!(body.contains("; leading"));
+    assert!(body.contains("; trailing"));
+    assert!(body.contains("; standalone"));
 }

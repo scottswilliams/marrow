@@ -274,7 +274,29 @@ pub struct FunctionDecl {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
     pub statements: Vec<Statement>,
+    /// Ordinary `;` comments inside this block, in source order. They are kept
+    /// as block-level trivia (not attached to statement nodes) so the formatter
+    /// can re-emit them and `parse -> format` round-trips comments losslessly.
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
+}
+
+/// An ordinary `;` comment retained as block trivia. `text` is the comment body
+/// with the leading `;` marker and surrounding whitespace removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub placement: CommentPlacement,
+    pub span: SourceSpan,
+}
+
+/// Where a retained comment sits relative to the statements of its block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentPlacement {
+    /// A comment occupying its own line (a leading or standalone comment).
+    OwnLine,
+    /// A comment following code on a statement's line.
+    Trailing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1662,12 +1684,17 @@ impl<'a> Parser<'a> {
         let Some(span) = span_for_lines(&self.lines, body_start, body_end) else {
             return Block {
                 statements: Vec::new(),
+                comments: Vec::new(),
                 span: header_span,
             };
         };
         let tokens = tokens_in_range(self.tokens, span.start_byte, span.end_byte);
-        let statements = StmtParser::new(self.source, tokens).parse_block();
-        Block { statements, span }
+        let (statements, comments) = StmtParser::new(self.source, tokens).parse_block();
+        Block {
+            statements,
+            comments,
+            span,
+        }
     }
 
     fn has_child_body(&self, parent_indent: usize) -> bool {
@@ -2534,28 +2561,48 @@ struct StmtParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     pos: usize,
+    /// Ordinary `;` comments for the block currently being parsed, in source
+    /// order. Each nested block swaps in a fresh accumulator (see
+    /// `parse_nested_block`) so a comment lands in the block it appears in.
+    comments: Vec<Comment>,
 }
 
 impl<'a> StmtParser<'a> {
     fn new(source: &'a str, tokens: &[Token]) -> Self {
+        // Doc comments are not yet attached to body statements, but ordinary
+        // `;` comments are retained as block trivia so the formatter can
+        // re-emit them; keep them in the stream and collect them while parsing.
         let tokens = tokens
             .iter()
             .copied()
-            .filter(|token| !matches!(token.kind, TokenKind::Comment | TokenKind::DocComment))
+            .filter(|token| token.kind != TokenKind::DocComment)
             .collect();
         Self {
             source,
             tokens,
             pos: 0,
+            comments: Vec::new(),
         }
     }
 
-    fn parse_block(mut self) -> Vec<Statement> {
+    fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>) {
         // A body opens with the INDENT that began it.
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.advance();
         }
-        self.statements()
+        let statements = self.statements();
+        (statements, std::mem::take(&mut self.comments))
+    }
+
+    /// Record an own-line comment token (a leading or standalone comment) for
+    /// the current block and consume its trailing `NEWLINE`.
+    fn take_own_line_comment(&mut self) {
+        let token = self.advance();
+        self.comments
+            .push(comment_from_token(self.source, token, CommentPlacement::OwnLine));
+        if matches!(self.peek(), Some(TokenKind::Newline)) {
+            self.advance();
+        }
     }
 
     fn statements(&mut self) -> Vec<Statement> {
@@ -2566,6 +2613,7 @@ impl<'a> StmtParser<'a> {
                 TokenKind::Newline => {
                     self.advance();
                 }
+                TokenKind::Comment => self.take_own_line_comment(),
                 TokenKind::Indent => {
                     // A stray nested block (e.g. under a compound statement we
                     // kept as Unparsed). Skip it rather than mis-parse.
@@ -2614,13 +2662,29 @@ impl<'a> StmtParser<'a> {
         }
 
         let newline = self.find_line_end();
-        let line = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let line = &self.tokens[self.pos..content_end];
         let statement =
             parse_simple_statement(self.source, line).unwrap_or_else(|| Statement::Unparsed {
                 span: line_span(line),
             });
         self.pos = (newline + 1).min(self.tokens.len());
         statement
+    }
+
+    /// If the token just before `line_end` is a trailing `;` comment, record it
+    /// as a `Trailing` comment for the current block and return the index that
+    /// excludes it; otherwise return `line_end` unchanged. `line_end` is the
+    /// index of the `NEWLINE`/`INDENT`/`DEDENT` that ends the current line.
+    fn split_trailing_comment(&mut self, line_end: usize) -> usize {
+        if line_end > self.pos && self.tokens[line_end - 1].kind == TokenKind::Comment {
+            let token = self.tokens[line_end - 1];
+            self.comments
+                .push(comment_from_token(self.source, token, CommentPlacement::Trailing));
+            line_end - 1
+        } else {
+            line_end
+        }
     }
 
     /// If the upcoming tokens are `identifier ":" ("while" | "for")`, consume
@@ -2664,7 +2728,8 @@ impl<'a> StmtParser<'a> {
         let keyword = self.advance(); // `for`
         let start = label_span.unwrap_or(keyword.span);
         let newline = self.find_line_end();
-        let header = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let header = &self.tokens[self.pos..content_end];
         let parsed = parse_for_header(self.source, header);
         self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
@@ -2722,7 +2787,8 @@ impl<'a> StmtParser<'a> {
     fn catch_clause(&mut self) -> CatchClause {
         self.advance(); // `catch`
         let newline = self.find_line_end();
-        let header = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let header = &self.tokens[self.pos..content_end];
         let (name, ty) = parse_catch_header(self.source, header);
         self.pos = (newline + 1).min(self.tokens.len());
         let block = self.block_body();
@@ -2788,7 +2854,8 @@ impl<'a> StmtParser<'a> {
     /// and including its `NEWLINE`.
     fn header_expression(&mut self) -> Expression {
         let newline = self.find_line_end();
-        let line = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let line = &self.tokens[self.pos..content_end];
         let expr =
             expr_of(self.source, line).unwrap_or_else(|| unparsed_expression(self.source, line));
         self.pos = (newline + 1).min(self.tokens.len());
@@ -2806,6 +2873,14 @@ impl<'a> StmtParser<'a> {
                     break;
                 }
                 TokenKind::Indent | TokenKind::Dedent => break,
+                TokenKind::Comment => {
+                    let token = self.advance();
+                    self.comments.push(comment_from_token(
+                        self.source,
+                        token,
+                        CommentPlacement::Trailing,
+                    ));
+                }
                 _ => {
                     self.advance();
                 }
@@ -2826,16 +2901,21 @@ impl<'a> StmtParser<'a> {
                 .unwrap_or_default();
             Block {
                 statements: Vec::new(),
+                comments: Vec::new(),
                 span,
             }
         }
     }
 
     /// Parse `INDENT statement* DEDENT`, tolerating a missing trailing `DEDENT`
-    /// at the end of the body token slice.
+    /// at the end of the body token slice. A fresh comment accumulator is swapped
+    /// in for the duration so this nested block's comments do not leak into the
+    /// parent block.
     fn parse_nested_block(&mut self) -> Block {
         let start = self.advance().span; // `INDENT`
+        let outer = std::mem::take(&mut self.comments);
         let statements = self.statements();
+        let comments = std::mem::replace(&mut self.comments, outer);
         let end = if matches!(self.peek(), Some(TokenKind::Dedent)) {
             self.advance().span
         } else {
@@ -2843,6 +2923,7 @@ impl<'a> StmtParser<'a> {
         };
         Block {
             statements,
+            comments,
             span: join_spans(start, end),
         }
     }
@@ -3365,6 +3446,21 @@ fn line_span(tokens: &[Token]) -> SourceSpan {
     match (tokens.first(), tokens.last()) {
         (Some(first), Some(last)) => join_spans(first.span, last.span),
         _ => SourceSpan::default(),
+    }
+}
+
+/// Build a `Comment` from a `;` comment token, stripping the leading marker and
+/// surrounding whitespace so the formatter renders a canonical `; text` line.
+fn comment_from_token(source: &str, token: Token, placement: CommentPlacement) -> Comment {
+    let text = token
+        .text(source)
+        .trim_start_matches(';')
+        .trim()
+        .to_string();
+    Comment {
+        text,
+        placement,
+        span: token.span,
     }
 }
 
