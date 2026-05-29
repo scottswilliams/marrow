@@ -284,22 +284,29 @@ pub fn check_project(
         .collect();
     for (file, parsed) in &parsed_files {
         // A module's top-level constants are in scope (bare) for its functions.
-        // Annotated constants carry their type; unannotated ones stay unknown.
-        let module_constants: HashMap<String, MarrowType> = parsed
-            .file
-            .declarations
-            .iter()
-            .filter_map(|declaration| match declaration {
-                marrow_syntax::Declaration::Const(constant) => Some((
-                    constant.name.clone(),
-                    constant
-                        .ty
-                        .as_ref()
-                        .map_or(MarrowType::Unknown, |ty| resolve_type(ty, &program)),
-                )),
-                _ => None,
-            })
-            .collect();
+        // An annotated constant carries its annotation; an unannotated one's type
+        // is inferred from its initializer (as a local `const` already is), so a
+        // typed use like `var x: int = M` resolves rather than false-positiving
+        // `check.untyped_value`. Built in source order so an earlier constant is
+        // in scope for a later one. Diagnostics from the initializers themselves
+        // are the function-body and `check_const_value` passes' job, so they are
+        // discarded here.
+        let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
+        for declaration in &parsed.file.declarations {
+            if let marrow_syntax::Declaration::Const(constant) = declaration {
+                let ty = match &constant.ty {
+                    Some(ty) => resolve_type(ty, &program),
+                    None => infer_type(
+                        &program,
+                        &constant.value,
+                        std::slice::from_ref(&module_constants),
+                        &file.path,
+                        &mut Vec::new(),
+                    ),
+                };
+                module_constants.insert(constant.name.clone(), ty);
+            }
+        }
         for declaration in &parsed.file.declarations {
             match declaration {
                 marrow_syntax::Declaration::Function(function) => {

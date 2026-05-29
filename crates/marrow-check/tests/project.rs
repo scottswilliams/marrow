@@ -1519,6 +1519,30 @@ fn correctly_typed_group_and_leaf_reads_are_not_flagged() {
 }
 
 #[test]
+fn an_unannotated_module_const_is_inferred_and_a_matching_use_is_not_flagged() {
+    // `const M = 5` has an inferable `int` type; using it in `var x: int = M`
+    // must not false-positive check.untyped_value.
+    let found = check_module(
+        "module-const-ok",
+        "module m\nconst M = 5\nfn f()\n    var x: int = M\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unannotated_module_const_mismatch_is_caught() {
+    // `const M = 5` is `int`; storing it into a `string` place is a real mismatch
+    // that was previously missed because the const typed to Unknown.
+    let found = check_module(
+        "module-const-mismatch",
+        "module m\nconst M = 5\nfn f()\n    var x: string = M\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn rejects_a_var_initializer_of_the_wrong_type() {
     // `x` is declared `int` but initialized with a string.
     let found = check_script(
