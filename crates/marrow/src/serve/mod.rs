@@ -132,6 +132,19 @@ fn serve(listener: &TcpListener, store: &dyn Backend) -> io::Result<()> {
     Ok(())
 }
 
+/// The outcome of reading one request line. A `Bad` line (non-UTF-8 or over the
+/// size limit) is recoverable — it earns a `protocol.malformed` reply and the
+/// connection continues — whereas a genuine socket failure stays an `io::Error`
+/// and ends the connection.
+enum Line {
+    /// A request line, with its trailing newline (if any) included.
+    Request(String),
+    /// A malformed line the client should be told about, with a reason.
+    Bad(String),
+    /// A clean EOF: the client hung up.
+    Eof,
+}
+
 /// Serve one connection: read newline-delimited request lines, reply to each with
 /// a newline-delimited JSON object, until the client hangs up (clean EOF).
 fn serve_connection(
@@ -139,44 +152,63 @@ fn serve_connection(
     writer: &mut impl Write,
     store: &dyn Backend,
 ) -> io::Result<()> {
-    while let Some(line) = read_line_bounded(reader)? {
+    loop {
+        let line = match read_line_bounded(reader)? {
+            Line::Eof => return Ok(()),
+            Line::Request(line) => line,
+            Line::Bad(reason) => {
+                // A non-UTF-8 or oversized line is not JSON, so it earns the same
+                // structured reply as malformed JSON; the connection stays open.
+                write_reply(writer, &malformed_reply(&reason))?;
+                continue;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
         let reply = match serde_json::from_str(&line) {
             Ok(request) => protocol::handle_request(store, &request),
-            Err(error) => serde_json::json!({
-                "id": serde_json::Value::Null,
-                "error": { "code": protocol::PROTOCOL_MALFORMED, "message": error.to_string() },
-            }),
+            Err(error) => malformed_reply(&error.to_string()),
         };
-        let mut bytes = serde_json::to_vec(&reply).expect("a reply serializes");
-        bytes.push(b'\n');
-        writer.write_all(&bytes)?;
-        writer.flush()?;
+        write_reply(writer, &reply)?;
     }
-    Ok(())
+}
+
+/// A `protocol.malformed` reply envelope with a null id (the request could not be
+/// parsed, so its id is unknown).
+fn malformed_reply(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": serde_json::Value::Null,
+        "error": { "code": protocol::PROTOCOL_MALFORMED, "message": message },
+    })
+}
+
+/// Write one newline-delimited JSON reply and flush it.
+fn write_reply(writer: &mut impl Write, reply: &serde_json::Value) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(reply).expect("a reply serializes");
+    bytes.push(b'\n');
+    writer.write_all(&bytes)?;
+    writer.flush()
 }
 
 /// Read one newline-terminated request line, bounded by [`MAX_REQUEST_BYTES`].
-/// `Ok(None)` on a clean EOF (the client hung up).
-fn read_line_bounded(reader: &mut impl BufRead) -> io::Result<Option<String>> {
+/// Returns [`Line::Eof`] on a clean hang-up and [`Line::Bad`] for a non-UTF-8 or
+/// oversized line; a genuine socket failure is an `io::Error`.
+fn read_line_bounded(reader: &mut impl BufRead) -> io::Result<Line> {
     let mut buf = Vec::new();
     let reader: &mut dyn BufRead = reader;
     let mut limited = reader.take(MAX_REQUEST_BYTES);
     let read = limited.read_until(b'\n', &mut buf)?;
     if read == 0 {
-        return Ok(None);
+        return Ok(Line::Eof);
     }
     if read as u64 == MAX_REQUEST_BYTES && !buf.ends_with(b"\n") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "request line exceeds the size limit",
-        ));
+        return Ok(Line::Bad("request line exceeds the size limit".to_string()));
     }
-    String::from_utf8(buf)
-        .map(Some)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    match String::from_utf8(buf) {
+        Ok(line) => Ok(Line::Request(line)),
+        Err(_) => Ok(Line::Bad("request line is not valid UTF-8".to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -218,5 +250,32 @@ mod tests {
             replies[1]["error"]["code"],
             serde_json::json!(protocol::PROTOCOL_UNKNOWN_OP)
         );
+    }
+
+    #[test]
+    fn a_non_utf8_line_gets_a_malformed_reply_and_the_connection_stays_open() {
+        let store = MemStore::new();
+        // A non-UTF-8 byte sequence on the first line (0xff is never valid UTF-8),
+        // then a well-formed request on the second.
+        let mut input: Vec<u8> = b"\xff\xfe\n".to_vec();
+        input.extend_from_slice(b"{\"id\":2,\"op\":\"saved_roots\"}\n");
+        let mut reader = Cursor::new(input);
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection(&mut reader, &mut output, &store).expect("serve");
+
+        let replies: Vec<serde_json::Value> = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("reply json"))
+            .collect();
+        // The bad line is answered with protocol.malformed, and the connection
+        // continued to serve the following valid request.
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(
+            replies[0]["error"]["code"],
+            serde_json::json!(protocol::PROTOCOL_MALFORMED)
+        );
+        assert_eq!(replies[1]["id"], serde_json::json!(2));
+        assert_eq!(replies[1]["ok"]["roots"], serde_json::json!([]));
     }
 }
