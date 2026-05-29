@@ -12,8 +12,10 @@
 
 use std::collections::BTreeMap;
 
+use std::ops::Bound;
+
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
-use crate::path::{ChildSegment, int_index_key_band, int_record_key_band};
+use crate::path::{ChildSegment, int_index_key_band, int_record_key_band, subtree_band};
 use crate::traversal;
 
 /// An in-memory map of encoded saved paths to encoded values. Transactions are a
@@ -63,6 +65,62 @@ impl MemStore {
         traversal::child_keys(self.range_from(path), path)
     }
 
+    /// The distinct immediate children directly below the encoded `path`, in
+    /// reverse Marrow order — the exact reverse of [`child_keys`](Self::child_keys).
+    /// A `BTreeMap` range is double-ended, so reversing it is `.rev()`, not a
+    /// forward walk reversed afterward; the shared collapse is direction-symmetric.
+    pub fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        traversal::child_keys(self.range_band_rev(path), path)
+    }
+
+    /// The immediate child of the encoded `parent` directly after `after` in
+    /// Marrow order, or `None` when `after` is the last child. `after` is one
+    /// encoded child segment. The range begins at `parent ++ after` (inclusive)
+    /// and the shared seek skips `after`'s own subtree to the first distinct child.
+    pub fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        let mut from = parent.to_vec();
+        from.extend_from_slice(after);
+        traversal::neighbor_child(self.range_from(&from), parent, after)
+    }
+
+    /// The immediate child of the encoded `parent` directly before `before`, or
+    /// `None` when `before` is the first child. The mirror of
+    /// [`next_sibling`](Self::next_sibling) over a reversed range ending at
+    /// `parent ++ before` (inclusive).
+    pub fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        let mut to = parent.to_vec();
+        to.extend_from_slice(before);
+        // Range `[parent, to]` reversed: the first reversed row at or below
+        // `before` is `before`'s deepest descendant, which the seek skips along
+        // with the rest of `before`'s subtree to the first distinct prior child.
+        let rev = self
+            .entries
+            .range((Bound::Included(parent.to_vec()), Bound::Included(to)))
+            .rev()
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())));
+        traversal::neighbor_child(rev, parent, before)
+    }
+
+    /// The first immediate child of the encoded `parent` in Marrow order, or
+    /// `None` when it has none — the bare-layer entry point for `next`.
+    pub fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        traversal::edge_child(self.range_from(parent), parent)
+    }
+
+    /// The last immediate child of the encoded `parent` in Marrow order, or
+    /// `None` when it has none — the bare-layer entry point for `prev`.
+    pub fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        traversal::edge_child(self.range_band_rev(parent), parent)
+    }
+
     /// Up to `limit` (encoded path, value) pairs in the subtree at the encoded
     /// `path`, in Marrow order, including the value at `path` itself when
     /// present. `truncated` is set when more remained past the limit.
@@ -88,6 +146,28 @@ impl MemStore {
     ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
         self.entries
             .range(prefix.to_vec()..)
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
+    }
+
+    /// The subtree at `prefix` walked in reverse, adapted to the shared item
+    /// shape. Reversing a `BTreeMap` range is free (`.rev()` on a double-ended
+    /// iterator), but the range must be bounded to the subtree first: an unbounded
+    /// reverse range starts at the global maximum, where the first rows lie
+    /// outside the subtree and the prefix break would fire at once. `subtree_band`
+    /// supplies the half-open `[prefix, successor)` bound; an open upper bound
+    /// (`None`) means the subtree runs to the end of the store.
+    fn range_band_rev<'a>(
+        &'a self,
+        prefix: &[u8],
+    ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
+        let (lo, hi) = subtree_band(prefix);
+        let upper = match hi {
+            Some(hi) => Bound::Excluded(hi),
+            None => Bound::Unbounded,
+        };
+        self.entries
+            .range((Bound::Included(lo), upper))
+            .rev()
             .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
 
@@ -134,6 +214,34 @@ impl Backend for MemStore {
 
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         MemStore::child_keys(self, path)
+    }
+
+    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        MemStore::child_keys_rev(self, path)
+    }
+
+    fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        MemStore::next_sibling(self, parent, after)
+    }
+
+    fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        MemStore::prev_sibling(self, parent, before)
+    }
+
+    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        MemStore::first_child(self, parent)
+    }
+
+    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        MemStore::last_child(self, parent)
     }
 
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {

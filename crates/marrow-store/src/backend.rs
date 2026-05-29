@@ -1,11 +1,18 @@
 //! The saved-tree backend contract.
 //!
 //! Every backend serves the same ordered-tree operations over encoded saved
-//! paths — read, write, delete, presence, child keys,
-//! bounded scan, and roots — plus transaction control modelled as a savepoint
-//! stack (`begin`/`commit`/`rollback`, with nested `begin`s as savepoints).
-//! [`MemStore`](crate::mem::MemStore) is the in-memory implementor; a persistent
-//! backend implements the same contract.
+//! paths — read, write, delete, presence, child keys (forward and reversed),
+//! ordered sibling and edge seeks, bounded scan, and roots — plus transaction
+//! control modelled as a savepoint stack (`begin`/`commit`/`rollback`, with
+//! nested `begin`s as savepoints). [`MemStore`](crate::mem::MemStore) is the
+//! in-memory implementor; a persistent backend implements the same contract.
+//!
+//! One iteration invariant holds across every ordered op — `child_keys`,
+//! `child_keys_rev`, `next_sibling`/`prev_sibling`, and `first_child`/
+//! `last_child`: each visits only **stored** entries, in Marrow key order, and
+//! skips holes. Deleting an entry removes it from every traversal; there are no
+//! placeholder positions to step onto. A backend that merely orders raw bytes
+//! inherits this for free, since the encoding makes byte order Marrow order.
 //!
 //! Reads return owned bytes so a persistent backend can serve them from a
 //! transaction guard, and every operation is fallible: a persistent store can
@@ -107,6 +114,45 @@ pub trait Backend {
     fn presence(&self, path: &[u8]) -> Result<Presence, StoreError>;
     /// The distinct immediate children directly below `path`, in Marrow order.
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>;
+    /// The distinct immediate children directly below `path`, in **reverse**
+    /// Marrow order — the exact reverse of [`child_keys`](Self::child_keys).
+    /// Backed by a double-ended range, so it is the same O(k) walk run backward,
+    /// not a forward walk reversed after the fact. Like every traversal op it
+    /// visits only stored entries and skips holes.
+    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>;
+
+    /// The immediate child of `parent` that directly follows `after` in Marrow
+    /// order, or `None` when `after` is the last child (`after` has no successor
+    /// under `parent`). `after` is one encoded child segment (a kind tag and the
+    /// key, as produced by [`encode_path`](crate::path::encode_path) for one
+    /// record- or index-key segment). The seek is O(k) over a double-ended range
+    /// from just past `after`, early-breaking at the first distinct child, and it
+    /// steps over the whole subtree of `after` (a child with its own descendants
+    /// is one stop, never a grandchild). Skips gaps: a deleted child is absent, so
+    /// the nearest *stored* successor is returned.
+    fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError>;
+    /// The immediate child of `parent` that directly precedes `before` in Marrow
+    /// order, or `None` when `before` is the first child. The mirror of
+    /// [`next_sibling`](Self::next_sibling) over a reversed range: same O(k),
+    /// early break, subtree-skipping, and gap-skipping guarantees.
+    fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError>;
+    /// The first (lowest in Marrow order) immediate child of `parent`, or `None`
+    /// when `parent` has no children. The bare-layer entry point for `next`: the
+    /// first stored position under a layer. O(k) over the subtree's forward range.
+    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError>;
+    /// The last (highest in Marrow order) immediate child of `parent`, or `None`
+    /// when `parent` has no children. The bare-layer entry point for `prev`: the
+    /// last stored position under a layer. O(k) over the subtree's reversed range.
+    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError>;
+
     /// Up to `limit` (path, value) pairs in the subtree at `path`, in Marrow
     /// order, including the value at `path` itself when present.
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError>;

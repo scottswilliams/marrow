@@ -2487,6 +2487,34 @@ impl Backend for FailingBackend {
         Backend::child_keys(&self.inner, path)
     }
 
+    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        Backend::child_keys_rev(&self.inner, path)
+    }
+
+    fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::next_sibling(&self.inner, parent, after)
+    }
+
+    fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::prev_sibling(&self.inner, parent, before)
+    }
+
+    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::first_child(&self.inner, parent)
+    }
+
+    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::last_child(&self.inner, parent)
+    }
+
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
         Backend::scan(&self.inner, path, limit)
     }

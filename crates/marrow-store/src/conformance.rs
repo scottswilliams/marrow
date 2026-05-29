@@ -29,6 +29,13 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     child_keys_dedup_records_with_multiple_descendants(&mut make());
     child_keys_list_field_names_in_order(&mut make());
     child_keys_round_trip_string_records(&mut make());
+    child_keys_rev_is_the_exact_reverse_of_child_keys(&mut make());
+    child_keys_rev_skips_a_deleted_hole(&mut make());
+    next_sibling_skips_gaps_and_subtrees(&mut make());
+    prev_sibling_mirrors_next_sibling(&mut make());
+    next_sibling_of_last_is_none_and_prev_of_first_is_none(&mut make());
+    first_child_and_last_child_match_the_edges(&mut make());
+    seeks_are_typed_across_key_types(&mut make());
     roots_are_ordered_and_deduped(&mut make());
     scan_returns_only_the_subtree_in_order(&mut make());
     scan_is_bounded_by_the_limit(&mut make());
@@ -72,6 +79,13 @@ fn keyed_field(root: &str, key: SavedKey, field: &str) -> Vec<u8> {
         PathSegment::RecordKey(key),
         PathSegment::Field(field.into()),
     ])
+}
+
+/// One encoded record-key child segment — the `after`/`before` shape the sibling
+/// seeks take: the kind tag and the key, exactly as `encode_path` lays a single
+/// `RecordKey` segment. (The runtime builds this from a terminal record key.)
+fn record_seg(key: SavedKey) -> Vec<u8> {
+    encode_path(&[PathSegment::RecordKey(key)])
 }
 
 fn values_round_trip(store: &mut dyn Backend) {
@@ -530,6 +544,276 @@ fn three_level_nesting_with_a_middle_commit_and_outer_rollback(store: &mut dyn B
         None,
         "L3 write committed into L1"
     );
+}
+
+fn child_keys_rev_is_the_exact_reverse_of_child_keys(store: &mut dyn Backend) {
+    // A mix of key types under one root (booleans, integers, dates, strings)
+    // exercises the typed key order in both directions. child_keys_rev must be the
+    // exact reverse of child_keys — not an independently ordered list.
+    for key in [
+        SavedKey::Bool(true),
+        SavedKey::Int(-3),
+        SavedKey::Int(7),
+        SavedKey::Date(19_000),
+        SavedKey::Str("a".into()),
+        SavedKey::Str("m".into()),
+    ] {
+        store
+            .write(&keyed_field("rev", key, "v"), b"x".to_vec())
+            .unwrap();
+    }
+    let forward = store.child_keys(&root("rev")).unwrap();
+    let mut expected = forward.clone();
+    expected.reverse();
+    assert_eq!(
+        store.child_keys_rev(&root("rev")).unwrap(),
+        expected,
+        "child_keys_rev is the exact reverse of child_keys"
+    );
+    // A record with several descendants still collapses to one child in reverse.
+    store
+        .write(&keyed_field("rev", SavedKey::Int(7), "w"), b"x".to_vec())
+        .unwrap();
+    let mut expected = store.child_keys(&root("rev")).unwrap();
+    expected.reverse();
+    assert_eq!(
+        store.child_keys_rev(&root("rev")).unwrap(),
+        expected,
+        "a multi-descendant record collapses to one child in reverse too"
+    );
+}
+
+fn child_keys_rev_skips_a_deleted_hole(store: &mut dyn Backend) {
+    // Stored keys 1, 2, 3; delete the middle one. Both orders omit the hole — the
+    // gap-skipping iteration invariant — and stay exact reverses of each other.
+    for n in [1, 2, 3] {
+        store
+            .write(&keyed_field("holes", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    store
+        .delete(&encode_path(&[
+            PathSegment::Root("holes".into()),
+            PathSegment::RecordKey(SavedKey::Int(2)),
+        ]))
+        .unwrap();
+    assert_eq!(
+        store.child_keys_rev(&root("holes")).unwrap(),
+        vec![
+            ChildSegment::Key(SavedKey::Int(3)),
+            ChildSegment::Key(SavedKey::Int(1)),
+        ],
+        "the deleted middle key is absent from the reverse walk"
+    );
+}
+
+fn next_sibling_skips_gaps_and_subtrees(store: &mut dyn Backend) {
+    // Children 1, 2, 5 where 5 carries its own descendants. After deleting 2, the
+    // next sibling of 1 is 5 (the hole at 2 is skipped) and the seek returns 5 the
+    // child, never one of 5's grandchildren (its subtree is stepped over).
+    for n in [1, 2] {
+        store
+            .write(&keyed_field("seq", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    // Give 5 a deep subtree: a field and a nested child-layer entry.
+    store
+        .write(&keyed_field("seq", SavedKey::Int(5), "v"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(
+            &encode_path(&[
+                PathSegment::Root("seq".into()),
+                PathSegment::RecordKey(SavedKey::Int(5)),
+                PathSegment::ChildLayer("items".into()),
+                PathSegment::IndexKey(SavedKey::Int(99)),
+                PathSegment::Field("v".into()),
+            ]),
+            b"x".to_vec(),
+        )
+        .unwrap();
+    store
+        .delete(&encode_path(&[
+            PathSegment::Root("seq".into()),
+            PathSegment::RecordKey(SavedKey::Int(2)),
+        ]))
+        .unwrap();
+    assert_eq!(
+        store
+            .next_sibling(&root("seq"), &record_seg(SavedKey::Int(1)))
+            .unwrap(),
+        Some(ChildSegment::Key(SavedKey::Int(5))),
+        "the next stored sibling, skipping the deleted 2 and 5's own subtree"
+    );
+    // The next sibling of 5 itself is none — 5 is now the last child.
+    assert_eq!(
+        store
+            .next_sibling(&root("seq"), &record_seg(SavedKey::Int(5)))
+            .unwrap(),
+        None,
+        "no sibling after the last child"
+    );
+}
+
+fn prev_sibling_mirrors_next_sibling(store: &mut dyn Backend) {
+    // Children 1, 2, 5 with 5 holding a subtree. The previous sibling of 5 is 2,
+    // and of 2 is 1; the previous sibling of 1 is none. Each prev_sibling result
+    // matches the next_sibling that points back at it.
+    for n in [1, 2] {
+        store
+            .write(&keyed_field("seq", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    store
+        .write(&keyed_field("seq", SavedKey::Int(5), "v"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(
+            &encode_path(&[
+                PathSegment::Root("seq".into()),
+                PathSegment::RecordKey(SavedKey::Int(5)),
+                PathSegment::Field("deep".into()),
+            ]),
+            b"x".to_vec(),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .prev_sibling(&root("seq"), &record_seg(SavedKey::Int(5)))
+            .unwrap(),
+        Some(ChildSegment::Key(SavedKey::Int(2))),
+        "the previous sibling of 5 is 2, stepping over nothing in between"
+    );
+    assert_eq!(
+        store
+            .prev_sibling(&root("seq"), &record_seg(SavedKey::Int(2)))
+            .unwrap(),
+        Some(ChildSegment::Key(SavedKey::Int(1))),
+        "the previous sibling of 2 is 1"
+    );
+    assert_eq!(
+        store
+            .prev_sibling(&root("seq"), &record_seg(SavedKey::Int(1)))
+            .unwrap(),
+        None,
+        "no sibling before the first child"
+    );
+    // next and prev are inverses: next of 2 is 5, prev of 5 is 2.
+    assert_eq!(
+        store
+            .next_sibling(&root("seq"), &record_seg(SavedKey::Int(2)))
+            .unwrap(),
+        Some(ChildSegment::Key(SavedKey::Int(5))),
+        "next of 2 is 5"
+    );
+}
+
+fn next_sibling_of_last_is_none_and_prev_of_first_is_none(store: &mut dyn Backend) {
+    // A single child has no sibling either way.
+    store
+        .write(&keyed_field("solo", SavedKey::Int(42), "v"), b"x".to_vec())
+        .unwrap();
+    assert_eq!(
+        store
+            .next_sibling(&root("solo"), &record_seg(SavedKey::Int(42)))
+            .unwrap(),
+        None,
+        "a lone child has no next sibling"
+    );
+    assert_eq!(
+        store
+            .prev_sibling(&root("solo"), &record_seg(SavedKey::Int(42)))
+            .unwrap(),
+        None,
+        "a lone child has no previous sibling"
+    );
+}
+
+fn first_child_and_last_child_match_the_edges(store: &mut dyn Backend) {
+    // Empty: no edges. Then a few children, where one carries a value and a child
+    // so first_child must skip the parent's own entry.
+    assert_eq!(
+        store.first_child(&root("edge")).unwrap(),
+        None,
+        "an empty parent has no first child"
+    );
+    assert_eq!(
+        store.last_child(&root("edge")).unwrap(),
+        None,
+        "an empty parent has no last child"
+    );
+    for n in [3, 1, 2] {
+        store
+            .write(&keyed_field("edge", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    let children = store.child_keys(&root("edge")).unwrap();
+    assert_eq!(
+        store.first_child(&root("edge")).unwrap().as_ref(),
+        children.first(),
+        "first_child is child_keys' first"
+    );
+    assert_eq!(
+        store.last_child(&root("edge")).unwrap().as_ref(),
+        children.last(),
+        "last_child is child_keys' last"
+    );
+    // A record that holds both a value at its own path and children: first_child
+    // of that record steps past its own entry to its first field.
+    store.write(&book(7), b"whole".to_vec()).unwrap();
+    store
+        .write(&book_field(7, "title"), b"x".to_vec())
+        .unwrap();
+    assert_eq!(
+        store.first_child(&book(7)).unwrap(),
+        Some(ChildSegment::Name("title".into())),
+        "first_child skips the record's own value entry"
+    );
+}
+
+fn seeks_are_typed_across_key_types(store: &mut dyn Backend) {
+    // Every order-preserving key type seeks correctly: each backend orders the raw
+    // encoded bytes, so the typed key order falls out for free. For each type write
+    // two adjacent keys and assert next/prev step between them.
+    let pairs: [(SavedKey, SavedKey); 5] = [
+        (SavedKey::Int(-5), SavedKey::Int(9)),
+        (SavedKey::Date(100), SavedKey::Date(20_000)),
+        (
+            SavedKey::Duration(1_000),
+            SavedKey::Duration(2_000_000_000),
+        ),
+        (
+            SavedKey::Instant(1_000),
+            SavedKey::Instant(1_700_000_000_000_000_000),
+        ),
+        (SavedKey::Bytes(vec![0x01]), SavedKey::Bytes(vec![0x01, 0x02])),
+    ];
+    for (lo, hi) in pairs {
+        // A fresh root per type so unrelated key types never share a parent.
+        let name = format!("typed-{}", lo.wire_tag());
+        store
+            .write(&keyed_field(&name, lo.clone(), "v"), b"x".to_vec())
+            .unwrap();
+        store
+            .write(&keyed_field(&name, hi.clone(), "v"), b"x".to_vec())
+            .unwrap();
+        assert_eq!(
+            store
+                .next_sibling(&root(&name), &record_seg(lo.clone()))
+                .unwrap(),
+            Some(ChildSegment::Key(hi.clone())),
+            "next steps from the lower {} key to the higher",
+            lo.wire_tag()
+        );
+        assert_eq!(
+            store
+                .prev_sibling(&root(&name), &record_seg(hi.clone()))
+                .unwrap(),
+            Some(ChildSegment::Key(lo.clone())),
+            "prev steps from the higher {} key to the lower",
+            lo.wire_tag()
+        );
+    }
 }
 
 fn a_transaction_sees_its_writes_in_traversal(store: &mut dyn Backend) {

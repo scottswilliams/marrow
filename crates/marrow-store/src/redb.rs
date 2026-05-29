@@ -24,7 +24,7 @@ use redb::{
 };
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
-use crate::path::{ChildSegment, int_index_key_band, int_record_key_band};
+use crate::path::{ChildSegment, int_index_key_band, int_record_key_band, segment_len, subtree_band};
 use crate::traversal::{self, Entries};
 
 /// The single table holding every encoded (path, value) pair.
@@ -99,11 +99,130 @@ where
     Ok(rows)
 }
 
+/// Collect the rows of the subtree at `prefix` in **reverse** Marrow order, as
+/// access guards. redb ranges are double-ended, so this ranges the subtree band
+/// `[prefix, successor)` and walks it backward with `.rev()`; the band's upper
+/// bound is what keeps a reverse walk inside the subtree (an unbounded reverse
+/// range starts at the global maximum). Mirrors [`collect_rows`] but descending,
+/// for [`child_keys_rev`](RedbStore::child_keys_rev) and the `prev`/`last` seeks.
+fn collect_rows_rev<'t, T>(
+    table: &'t T,
+    prefix: &[u8],
+    stop_at: impl Fn(usize) -> bool,
+    op: &'static str,
+) -> Result<Vec<Row<'t>>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let (lo, hi) = subtree_band(prefix);
+    let range = match &hi {
+        Some(hi) => table.range::<&[u8]>(lo.as_slice()..hi.as_slice()),
+        None => table.range::<&[u8]>(lo.as_slice()..),
+    }
+    .map_err(io(op))?;
+    let mut rows = Vec::new();
+    for entry in range.rev() {
+        let (key, value) = entry.map_err(io(op))?;
+        // The band already bounds the walk to the subtree, so no prefix check is
+        // needed; it cannot yield a key outside `[prefix, successor)`.
+        if stop_at(rows.len()) {
+            break;
+        }
+        rows.push((key, value));
+    }
+    Ok(rows)
+}
+
 /// Borrow each collected row as the shared `(key, value)` item shape. The borrows
 /// live as long as `rows`, so the traversal can read them across its whole walk.
 fn entries<'a>(rows: &'a [Row<'_>]) -> impl Entries<'a> {
     rows.iter()
         .map(|(key, value)| Ok((key.value(), value.value())))
+}
+
+/// Whether `key`'s first post-`parent` segment differs from `bound`. A sibling
+/// seek collects rows only up to and including the first such key: everything
+/// before it is `bound`'s own entry or a descendant — the consecutive run the
+/// shared seek skips — so this lets redb stop one row past the run rather than
+/// materialize a whole large subtree. A key not under `parent`, or one with a
+/// malformed segment, counts as differing so the seek ends (the shared walk
+/// reports any corruption).
+fn first_segment_differs(parent: &[u8], bound: &[u8], key: &[u8]) -> bool {
+    let Some(rest) = key.get(parent.len()..) else {
+        return true;
+    };
+    match segment_len(rest) {
+        Some(len) => &rest[..len] != bound,
+        None => true,
+    }
+}
+
+/// Collect the rows of `parent`'s subtree adjacent to the child segment `bound`,
+/// in `dir`'s direction, stopping at and including the first row whose segment
+/// differs from `bound`. The forward direction begins at `parent ++ bound`
+/// (inclusive) for [`next_sibling`](RedbStore::next_sibling); the reversed one
+/// walks down to it for [`prev_sibling`](RedbStore::prev_sibling). Either way the
+/// collected rows are exactly `bound`'s own run plus the one neighbor past it, so
+/// the shared [`traversal::neighbor_child`] reads the neighbor without redb
+/// materializing the rest of the subtree.
+fn collect_seek<'t, T>(
+    table: &'t T,
+    parent: &[u8],
+    bound: &[u8],
+    dir: SeekDir,
+    op: &'static str,
+) -> Result<Vec<Row<'t>>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut start = parent.to_vec();
+    start.extend_from_slice(bound);
+    let mut rows = Vec::new();
+    match dir {
+        // Forward from `parent ++ bound` (inclusive) to the end of the subtree.
+        SeekDir::Forward => {
+            for entry in table.range::<&[u8]>(start.as_slice()..).map_err(io(op))? {
+                let (key, value) = entry.map_err(io(op))?;
+                if !key.value().starts_with(parent) {
+                    break; // past the subtree (no neighbor that way)
+                }
+                let differs = first_segment_differs(parent, bound, key.value());
+                rows.push((key, value));
+                if differs {
+                    break; // the neighbor row; the shared seek reads it
+                }
+            }
+        }
+        // Reversed, down to `parent ++ bound` (inclusive): bound the band so the
+        // reverse walk starts at `bound`'s deepest descendant, not the global max.
+        SeekDir::Reverse => {
+            for entry in table
+                .range::<&[u8]>(parent..=start.as_slice())
+                .map_err(io(op))?
+                .rev()
+            {
+                let (key, value) = entry.map_err(io(op))?;
+                if key.value().len() <= parent.len() {
+                    break; // reached the parent's own entry; no prior child
+                }
+                let differs = first_segment_differs(parent, bound, key.value());
+                rows.push((key, value));
+                if differs {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Which way a sibling seek walks: forward for the next sibling, reversed for the
+/// previous. A private two-state direction, never the deferred per-component
+/// index direction.
+#[derive(Clone, Copy)]
+enum SeekDir {
+    Forward,
+    Reverse,
 }
 
 /// The encoded keys of the subtree at `path` (the path's own entry and every
@@ -367,6 +486,53 @@ impl Backend for RedbStore {
         read_view!(self, "child_keys", |table| {
             let rows = collect_rows(&table, path, |_| false, "child_keys")?;
             traversal::child_keys(entries(&rows), path)
+        })
+    }
+
+    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        read_view!(self, "child_keys_rev", |table| {
+            let rows = collect_rows_rev(&table, path, |_| false, "child_keys_rev")?;
+            traversal::child_keys(entries(&rows), path)
+        })
+    }
+
+    fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        read_view!(self, "next_sibling", |table| {
+            let rows = collect_seek(&table, parent, after, SeekDir::Forward, "next_sibling")?;
+            traversal::neighbor_child(entries(&rows), parent, after)
+        })
+    }
+
+    fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        read_view!(self, "prev_sibling", |table| {
+            let rows = collect_seek(&table, parent, before, SeekDir::Reverse, "prev_sibling")?;
+            traversal::neighbor_child(entries(&rows), parent, before)
+        })
+    }
+
+    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        read_view!(self, "first_child", |table| {
+            // The first stored row under `parent` is its first child (or its own
+            // entry, which the shared seek skips); two rows always suffice.
+            let rows = collect_rows(&table, parent, |seen| seen >= 2, "first_child")?;
+            traversal::edge_child(entries(&rows), parent)
+        })
+    }
+
+    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        read_view!(self, "last_child", |table| {
+            // Reversed, the first row is the last child's deepest descendant; one
+            // row is enough for the shared edge seek to name its immediate child.
+            let rows = collect_rows_rev(&table, parent, |seen| seen >= 1, "last_child")?;
+            traversal::edge_child(entries(&rows), parent)
         })
     }
 
