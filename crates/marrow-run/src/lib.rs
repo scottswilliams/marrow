@@ -291,9 +291,7 @@ pub fn evaluate_function(
     )? {
         (Completion::Returned(value), _) => Ok(value),
         (Completion::Threw(error), _) => Err(raise(error, function.span)),
-        (Completion::Faulted { error, code }, _) => {
-            Err(reraise_fault(error, code, function.span))
-        }
+        (Completion::Faulted { error, code }, _) => Err(reraise_fault(error, code, function.span)),
     }
 }
 
@@ -923,9 +921,11 @@ mod default_value_tests {
 /// Map an [`AssignError`] from a failed reassignment to a runtime fault.
 fn assign_error(name: &str, error: AssignError, span: SourceSpan) -> RuntimeError {
     match error {
-        AssignError::Immutable => {
-            RuntimeError::fault(RUN_TYPE, format!("cannot assign to immutable `{name}`"), span)
-        }
+        AssignError::Immutable => RuntimeError::fault(
+            RUN_TYPE,
+            format!("cannot assign to immutable `{name}`"),
+            span,
+        ),
         AssignError::Unbound => {
             RuntimeError::fault(RUN_UNBOUND_NAME, format!("`{name}` is not bound"), span)
         }
@@ -1087,10 +1087,7 @@ fn eval_call(
 /// yields its value; an uncaught throw or recoverable fault is re-raised as a
 /// catchable error riding the `Err` channel's `throw` value, consumed by the
 /// nearest `try` or this activation's [`invoke`].
-fn complete_call(
-    completion: Completion,
-    span: SourceSpan,
-) -> Result<Option<Value>, RuntimeError> {
+fn complete_call(completion: Completion, span: SourceSpan) -> Result<Option<Value>, RuntimeError> {
     match completion {
         Completion::Returned(value) => Ok(value),
         Completion::Threw(error) => Err(raise(error, span)),
@@ -3382,7 +3379,11 @@ fn read_layer_entry(
         .read(&encode_path(&entry))
         .map_err(|error| error.located(span))?;
     let Some(bytes) = bytes else {
-        return Err(absent_read(position, format!("`{layer}` entry is absent"), span));
+        return Err(absent_read(
+            position,
+            format!("`{layer}` entry is absent"),
+            span,
+        ));
     };
     decode_value(&bytes, leaf_type)
         .map(saved_value_to_value)
@@ -4297,7 +4298,11 @@ fn eval_local_field_get(
     };
     match fields.into_iter().find(|(name, _)| name == field) {
         Some((_, value)) => Ok(value),
-        None => Err(raise_fault(RUN_ABSENT, format!("`{field}` is absent"), span)),
+        None => Err(raise_fault(
+            RUN_ABSENT,
+            format!("`{field}` is absent"),
+            span,
+        )),
     }
 }
 
