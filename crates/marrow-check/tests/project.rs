@@ -1530,6 +1530,35 @@ fn a_singleton_whole_read_and_write_are_not_flagged() {
 }
 
 #[test]
+fn an_unkeyed_group_field_read_feeds_type_checks() {
+    // `^patients(1).name.first` reaches a scalar field through an unkeyed group
+    // (`name { first; last }`). It is `string` from the schema, not Unknown, so a
+    // typed mismatch (returning it from an `int` function) is caught.
+    let found = check_module(
+        "unkeyed-group-field",
+        "module m\n\
+         resource Patient at ^patients(id: int)\n\
+         \x20   name\n        first: string\n        last: string\n\n\
+         fn f(): int\n    return ^patients(1).name.first\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_correctly_typed_unkeyed_group_field_read_is_not_flagged() {
+    let found = check_module(
+        "unkeyed-group-field-ok",
+        "module m\n\
+         resource Patient at ^patients(id: int)\n\
+         \x20   name\n        first: string\n        last: string\n\n\
+         fn f(): string\n    return ^patients(1).name.first\n",
+        "check.return_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_keyed_leaf_read_feeds_type_checks() {
     // `^books(1).tags(2)` is `string` (the layer's leaf type), but `f` returns `int`.
     let found = check_module(

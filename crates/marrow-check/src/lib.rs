@@ -1096,18 +1096,16 @@ fn local_field_type(
     Some(MarrowType::resolve(&field.ty, &[]))
 }
 
-/// The declared type of a group-layer field read `^root(key…).layer(key…)….field`
-/// at any nesting depth. `base` is the keyed layer entry (a call whose callee is
-/// the layer field). Mirrors the runtime's `resource_nested_member_type`.
+/// The declared type of a group field read at any nesting depth, reached through
+/// keyed layers (`^root(key…).layer(key…)….field`) or unkeyed groups
+/// (`^root(key…).name.field`). `base` is the group entry — the part before the
+/// leaf field. Mirrors the runtime's `resource_nested_member_type`.
 fn saved_group_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
     field: &str,
 ) -> Option<MarrowType> {
-    let marrow_syntax::Expression::Call { callee, .. } = base else {
-        return None;
-    };
-    let (root, layers) = saved_layer_chain(callee.as_ref())?;
+    let (root, layers) = saved_group_chain(base)?;
     let resource = find_resource_schema(program, root)?;
     let layer = descend_layers(resource, &layers)?;
     let member = layer.members.iter().find_map(|member| match member {
@@ -1115,6 +1113,45 @@ fn saved_group_field_type(
         _ => None,
     })?;
     Some(MarrowType::resolve(&member.ty, &[]))
+}
+
+/// Extract `(root, [member…])` from a group entry — the base of a group field
+/// read — peeling each level outermost-last: a keyed layer `.layer(key…)` (a call
+/// whose callee is the layer field) or an unkeyed group hop `.name` (a field off a
+/// deeper saved path). The innermost base is the keyed record `^root(key…)` or the
+/// singleton root `^root`.
+fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str>)> {
+    use marrow_syntax::Expression;
+    // A keyed layer entry `….layer(key…)`: a call whose callee is the layer field.
+    if let Expression::Call { callee, .. } = expr {
+        return saved_layer_chain(callee.as_ref());
+    }
+    // An unkeyed group hop `….name`: a field off the record or a deeper group.
+    let Expression::Field { base, name, .. } = expr else {
+        return None;
+    };
+    match base.as_ref() {
+        // The record base: `^root(key…)` (a call on the saved root) or the
+        // singleton root `^root`. This `.name` is the first group member.
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            Expression::SavedRoot { name: root, .. } => Some((root, vec![name])),
+            // A keyed layer entry `Call{callee:Field}` is a deeper group; recurse.
+            Expression::Field { .. } => {
+                let (root, mut members) = saved_group_chain(base)?;
+                members.push(name);
+                Some((root, members))
+            }
+            _ => None,
+        },
+        Expression::SavedRoot { name: root, .. } => Some((root, vec![name])),
+        // A deeper unkeyed group `Field`: recurse and append this member.
+        Expression::Field { .. } => {
+            let (root, mut members) = saved_group_chain(base)?;
+            members.push(name);
+            Some((root, members))
+        }
+        _ => None,
+    }
 }
 
 /// The declared leaf type of a keyed-leaf read `^root(key…).layer(key…)…` at any

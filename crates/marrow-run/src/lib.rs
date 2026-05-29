@@ -2463,12 +2463,12 @@ fn eval_saved_field(expr: &Expression, env: &mut Env<'_>) -> Result<Value, Runti
     let Expression::Field { base, name, .. } = expr else {
         return Err(unsupported("this read", expr.span()));
     };
-    // `^root(id…).layer(key…)….field` reads a field inside a keyed GROUP entry, at
-    // any nesting depth: the base is a layer call whose callee is itself a `.layer`
-    // access. A plain `^root(id…).field` base is a top-level field read.
-    if let Expression::Call { callee, .. } = base.as_ref()
-        && matches!(callee.as_ref(), Expression::Field { .. })
-    {
+    // A field reached through one or more group layers reads inside that group:
+    // a keyed GROUP entry `^root(id…).layer(key…)….field` (a layer call whose
+    // callee is a `.layer` access), or an unkeyed group `^root(id…).name.field`
+    // (a `.field` off a `.field` of the record). A plain `^root(id…).field` base
+    // is a top-level field read.
+    if is_group_base(base) {
         return eval_group_field_read(base, name, expr.span(), env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
@@ -2726,12 +2726,11 @@ fn eval_saved_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    // `^root(id…).layer(key…)….field = v` writes a field inside a keyed GROUP
-    // entry, at any nesting depth: the base is a layer call whose callee is itself
-    // a `.layer` access. A plain `^root(id…).field` base is a top-level field write.
-    if let Expression::Call { callee, .. } = base
-        && matches!(callee.as_ref(), Expression::Field { .. })
-    {
+    // A field reached through one or more group layers writes inside that group:
+    // a keyed GROUP entry `^root(id…).layer(key…)….field = v`, or an unkeyed group
+    // `^root(id…).name.field = v`. A plain `^root(id…).field` base is a top-level
+    // field write.
+    if is_group_base(base) {
         return eval_group_field_write(base, field, value, span, env);
     }
     let (root, identity) = lower_record_identity(base, env)?;
@@ -3163,6 +3162,19 @@ fn is_saved_path(expr: &Expression) -> bool {
     }
 }
 
+/// Whether a field-read/write base reaches its field through a group layer (so the
+/// nested-field reader/writer handles it): a keyed GROUP entry `^root(id…).layer(key…)`
+/// (a layer call whose callee is a `.layer` access), or an unkeyed group hop
+/// `^root(id…).name` (a `.field` off a saved path). A plain record base
+/// `^root(id…)` or singleton `^root` is a top-level field, not a group base.
+fn is_group_base(base: &Expression) -> bool {
+    match base {
+        Expression::Call { callee, .. } => matches!(callee.as_ref(), Expression::Field { .. }),
+        Expression::Field { base, .. } => is_saved_path(base),
+        _ => false,
+    }
+}
+
 /// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated
 /// field is an absent-element error.
 fn eval_local_field_get(
@@ -3341,6 +3353,16 @@ fn lower_layer_path(expr: &Expression, env: &mut Env<'_>) -> Result<LayerPath, R
         let (root, identity, mut chain) = lower_layer_path(base, env)?;
         let keys = lower_layer_keys(args, *span, env)?;
         chain.push((name.clone(), keys));
+        return Ok((root, identity, chain));
+    }
+    // An unkeyed group hop `….name` (a `.field` off a saved path, not a call)
+    // appends a zero-key layer level, so `^patients(id).name` descends into the
+    // group `name`. The record base is handled by the terminal arm below.
+    if let Expression::Field { base, name, .. } = expr
+        && is_saved_path(base)
+    {
+        let (root, identity, mut chain) = lower_layer_path(base, env)?;
+        chain.push((name.clone(), Vec::new()));
         return Ok((root, identity, chain));
     }
     let (root, identity) = lower_record_identity(expr, env)?;

@@ -3511,3 +3511,72 @@ fn singleton_whole_read_and_write_round_trip() {
         .value;
     assert_eq!(value, Some(Value::Str("solar".into())));
 }
+
+// --- Wave 1: unkeyed-group field read/write through a saved path (G02) ---
+
+/// A resource with an unkeyed nested group (`name { first; last }`). Its fields
+/// are addressed `^patients(p).name.first` — a `.field` off a `.field` off the
+/// record, with no keyed layer in between.
+const PATIENT_UNKEYED_GROUP: &str = "\
+resource Patient at ^patients(id: int)
+    mrn: string
+    name
+        first: string
+        last: string
+
+fn setName(id: int, f: string, l: string)
+    ^patients(id).name.first = f
+    ^patients(id).name.last = l
+
+fn firstOf(id: int): string
+    return ^patients(id).name.first
+
+fn lastOf(id: int): string
+    return ^patients(id).name.last
+";
+
+#[test]
+fn unkeyed_group_field_write_then_read_round_trips() {
+    let program = checked_program(PATIENT_UNKEYED_GROUP);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::setName",
+        &[
+            Value::Int(7),
+            Value::Str("Terry".into()),
+            Value::Str("Pratchett".into()),
+        ],
+    )
+    .expect("setName");
+    let read = |entry: &str| {
+        run_entry(&program, &store, entry, &[Value::Int(7)])
+            .expect("read")
+            .value
+    };
+    assert_eq!(read("test::firstOf"), Some(Value::Str("Terry".into())));
+    assert_eq!(read("test::lastOf"), Some(Value::Str("Pratchett".into())));
+    // The field landed under the group layer `^patients(7).name.first`.
+    let store = store.borrow();
+    let bytes = store
+        .read(&encode_path(&[
+            PathSegment::Root("patients".into()),
+            PathSegment::RecordKey(SavedKey::Int(7)),
+            PathSegment::ChildLayer("name".into()),
+            PathSegment::Field("first".into()),
+        ]))
+        .expect("present");
+    assert_eq!(
+        decode_value(bytes, ValueType::Str),
+        Some(SavedValue::Str("Terry".into()))
+    );
+}
+
+#[test]
+fn an_absent_unkeyed_group_field_read_is_absent() {
+    let program = checked_program(PATIENT_UNKEYED_GROUP);
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(&program, &store, "test::firstOf", &[Value::Int(1)]).unwrap_err();
+    assert_eq!(error.code, RUN_ABSENT, "{error:?}");
+}
