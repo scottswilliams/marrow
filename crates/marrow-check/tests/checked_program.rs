@@ -69,6 +69,114 @@ fn builds_a_module_for_a_clean_library_file() {
     assert!(!add.body.statements.is_empty(), "{add:#?}");
 }
 
+/// `nextId(^books)` over a single-`int` root types to `Book::Id`, so a function
+/// returning it under a declared `Book::Id` return type checks clean. (`nextId`
+/// is a saved-data read, so it lives in a function body, not a module const.)
+/// Previously `nextId` typed to `Unknown`. The local-const annotation
+/// `const id: Book::Id = nextId(^books)` likewise checks clean.
+#[test]
+fn next_id_types_to_the_resource_identity() {
+    let root = temp_project("program-nextid-id", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn fresh(): Book::Id\n\
+             \x20   const id: Book::Id = nextId(^books)\n\
+             \x20   return id\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// `nextId` over a composite-identity root is rejected at check time with
+/// `check.next_id_requires_single_int`, so the misuse is caught before running.
+#[test]
+fn next_id_over_a_composite_root_is_flagged() {
+    let root = temp_project("program-nextid-composite", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required grade: string\n\
+             fn fresh()\n\
+             \x20   const id = nextId(^enrollments)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.next_id_requires_single_int"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `nextId` over a single non-integer (string) root is flagged the same way.
+#[test]
+fn next_id_over_a_string_keyed_root_is_flagged() {
+    let root = temp_project("program-nextid-string", |root| {
+        write(
+            root,
+            "src/shelf/tags.mw",
+            "module shelf::tags\n\
+             resource Tag at ^tags(slug: string)\n\
+             \x20   required name: string\n\
+             fn fresh()\n\
+             \x20   const id = nextId(^tags)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.next_id_requires_single_int"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `nextId` over a keyless singleton root is flagged: a singleton has no
+/// generated identity (types.md:262-263).
+#[test]
+fn next_id_over_a_singleton_root_is_flagged() {
+    let root = temp_project("program-nextid-singleton", |root| {
+        write(
+            root,
+            "src/shelf/settings.mw",
+            "module shelf::settings\n\
+             resource Settings at ^settings\n\
+             \x20   required theme: string\n\
+             fn fresh()\n\
+             \x20   const id = nextId(^settings)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.next_id_requires_single_int"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 #[test]
 fn a_file_with_a_parse_error_contributes_no_module() {
     let root = temp_project("program-parse-error", |root| {

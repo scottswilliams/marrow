@@ -60,6 +60,12 @@ pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// reported for calls in library modules of a fully parsed project, so a
 /// module-less script or a module excluded by a parse error never false-positives.
 pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
+/// `nextId(^root)` names a root with no default integer allocation policy: a
+/// composite identity, a single non-integer identity key, or a keyless singleton.
+/// The default per-root policy is only available for a resource with one `int`
+/// identity key (builtins.md:180-183, types.md:262-263). The runtime backstops
+/// this with `write.next_id_unsupported`; the checker catches it before a run.
+pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
@@ -1528,6 +1534,16 @@ fn check_call(
     if args.iter().any(|arg| arg.mode.is_some()) {
         return MarrowType::Unknown;
     }
+    // `nextId(^root)` needs the argument *expression* (the `^root`), not just its
+    // type, to know which resource is allocated — so it is handled here, before the
+    // generic builtin branch typed only from `arg_types`. It types to `Resource::Id`
+    // for a single-`int` root and reports `check.next_id_requires_single_int` for
+    // any other shape (composite/non-int/singleton).
+    if let [name] = segments.as_slice()
+        && name == "nextId"
+    {
+        return check_next_id(program, args, span, file, diagnostics);
+    }
     // Builtins and std helpers dispatch before user functions, so their arguments
     // are the runtime's responsibility — but a std helper's return type is known
     // and feeds the surrounding type checks.
@@ -1636,6 +1652,69 @@ fn check_call(
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
 }
 
+/// Type `nextId(^root)` and gate it on a single-`int` saved root. A single-`int`
+/// root types to `Resource::Id` (types.md:251, builtins.md:171-175); any other
+/// identity shape reports `check.next_id_requires_single_int`. A non-`^root` or
+/// wrong-arity argument is left to the runtime (matching how other builtins
+/// behave), and an undeclared root is already reported elsewhere (a `^bogus` read
+/// has no schema), so neither is double-reported here.
+fn check_next_id(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    let [arg] = args else {
+        return MarrowType::Unknown;
+    };
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = &arg.value else {
+        return MarrowType::Unknown;
+    };
+    let Some(resource) = find_resource_schema(program, root) else {
+        return MarrowType::Unknown;
+    };
+    let Some(saved_root) = &resource.saved_root else {
+        return MarrowType::Unknown;
+    };
+    if single_int_root(saved_root) {
+        return MarrowType::Identity(resource.name.clone());
+    }
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: format!(
+            "`nextId` requires a resource with one `int` identity key, but `^{root}` \
+             ({}) has no default allocation policy; composite and non-integer \
+             identities are application-provided",
+            next_id_shape(saved_root),
+        ),
+        line: span.line,
+        column: span.column,
+    });
+    MarrowType::Unknown
+}
+
+/// Does this saved root qualify for the default `nextId` policy? Exactly one `int`
+/// identity key. This mirrors `marrow_write::single_int_root` — the one contract
+/// the runtime gate and the checker must agree on — duplicated only because this
+/// crate cannot depend on `marrow-write`; both key off `KeyDef.ty.text == "int"`.
+fn single_int_root(root: &marrow_schema::SavedRootSchema) -> bool {
+    matches!(root.identity_keys.as_slice(), [key] if key.ty.text.trim() == "int")
+}
+
+/// Name the identity shape that disqualifies a root from the default `nextId`
+/// policy, for the rejection message (mirrors `marrow_write`'s helper of the same
+/// name): a keyless singleton, a single non-`int` key, or a composite identity.
+fn next_id_shape(root: &marrow_schema::SavedRootSchema) -> String {
+    match root.identity_keys.as_slice() {
+        [] => "a keyless singleton".into(),
+        [key] => format!("a single `{}` key", key.ty.text.trim()),
+        keys => format!("a composite identity of {} keys", keys.len()),
+    }
+}
+
 /// A `check.call_argument` diagnostic located at a call's span.
 fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
@@ -1736,8 +1815,8 @@ fn is_builtin_call(segments: &[String]) -> bool {
 
 /// The return type of a single-name data builtin: `exists(path): bool`,
 /// `append(layer, value): int`, and `get(path, default)`, which yields the saved
-/// leaf-or-default type (taken from the default argument). `nextId` returns a
-/// resource identity, deferred until identities participate in checks.
+/// leaf-or-default type (taken from the default argument). `nextId` is handled in
+/// [`check_next_id`], which has the `^root` argument it needs to type the identity.
 fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<MarrowType> {
     let [name] = segments else {
         return None;
