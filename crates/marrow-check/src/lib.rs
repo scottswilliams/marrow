@@ -1681,6 +1681,12 @@ fn check_call(
         return std_call_return_type(segments)
             .or_else(|| conversion_return_type(segments))
             .or_else(|| builtin_return_type(segments, arg_types))
+            // The `Error(...)` constructor builds a builtin Error value, so it types
+            // as `Error` (not `Unknown`) — e.g. `std::log::error(Error(...))` and
+            // `throw Error(...)` both expect an `Error`.
+            .or_else(|| {
+                (segments == ["Error"]).then_some(MarrowType::Primitive(PrimitiveType::Error))
+            })
             .unwrap_or(MarrowType::Unknown);
     }
     // A callee naming a declared resource is a constructor, not a function:

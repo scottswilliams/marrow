@@ -1868,6 +1868,23 @@ fn a_unique_index_lookup_types_as_the_resource_identity() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
+#[test]
+fn std_log_error_of_an_error_constructor_checks_clean() {
+    // std::log::error takes an Error; the Error(...) constructor must type AS Error
+    // (not Unknown), so the spec-canonical log::error(Error(...)) is not a false
+    // check.untyped_value / check.call_argument.
+    let src =
+        "module m\nuse std::log\nfn f()\n    log::error(Error(code: \"x.y\", message: \"m\"))\n";
+    assert!(
+        check_module("std-log-error-untyped", src, "check.untyped_value").is_empty(),
+        "Error(...) must type as Error, not Unknown"
+    );
+    assert!(
+        check_module("std-log-error-arg", src, "check.call_argument").is_empty(),
+        "log::error(Error(...)) is the spec-canonical call"
+    );
+}
+
 fn with_code<'a>(
     report: &'a marrow_check::CheckReport,
     code: &str,
