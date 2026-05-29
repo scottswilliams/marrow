@@ -937,50 +937,32 @@ fn eval_call(
                 _ => {}
             }
         }
-        // `std::clock::now()`/`today()` read the host clock capability; the rest of
-        // `std::clock` is pure (matched later via `eval_std`).
+        // `std::<module>::<op>` is a builtin module call. Each capability module
+        // routes to its own handler; the pure helpers share `eval_std`. An
+        // unrecognized module falls through to the program-function dispatch.
         if let [first, second, op] = segments.as_slice()
             && first == "std"
-            && second == "clock"
-            && (op == "now" || op == "today")
         {
-            return eval_clock_capability(op, args, span, env).map(Some);
-        }
-        // `std::env::*` reads the run's environment capability.
-        if let [first, second, op] = segments.as_slice()
-            && first == "std"
-            && second == "env"
-        {
-            return eval_env(op, args, span, env).map(Some);
-        }
-        // `std::log::*` writes to the run's log capability and yields nothing.
-        if let [first, second, op] = segments.as_slice()
-            && first == "std"
-            && second == "log"
-        {
-            return eval_log(op, args, span, env);
-        }
-        // `std::io::*` reads and writes files through the filesystem capability.
-        if let [first, second, op] = segments.as_slice()
-            && first == "std"
-            && second == "io"
-        {
-            return eval_io(op, args, span, env);
-        }
-        // `std::assert::*` testing builtins raise `run.assertion` on failure.
-        if let [first, second, op] = segments.as_slice()
-            && first == "std"
-            && second == "assert"
-        {
-            return eval_assert(op, args, span, env);
-        }
-        // Pure `std::text/math/bytes/clock` helpers. (`std::clock::now` is a host
-        // capability, matched above; the rest of `std::clock` is pure.)
-        if let [first, second, op] = segments.as_slice()
-            && first == "std"
-            && (second == "text" || second == "math" || second == "bytes" || second == "clock")
-        {
-            return eval_std(second, op, args, span, env).map(Some);
+            match second.as_str() {
+                // `now()`/`today()` read the host clock capability; the rest of
+                // `std::clock` is pure, handled with the other pure helpers below.
+                "clock" if op == "now" || op == "today" => {
+                    return eval_clock_capability(op, args, span, env).map(Some);
+                }
+                // The run's environment capability.
+                "env" => return eval_env(op, args, span, env).map(Some),
+                // The run's log capability; yields nothing.
+                "log" => return eval_log(op, args, span, env),
+                // The filesystem capability.
+                "io" => return eval_io(op, args, span, env),
+                // Testing builtins that raise `run.assertion` on failure.
+                "assert" => return eval_assert(op, args, span, env),
+                // Pure helpers, including `std::clock` ops other than now/today.
+                "text" | "math" | "bytes" | "clock" => {
+                    return eval_std(second, op, args, span, env).map(Some);
+                }
+                _ => {}
+            }
         }
     }
     let ctx = Context {
