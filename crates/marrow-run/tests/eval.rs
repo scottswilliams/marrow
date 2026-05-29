@@ -1561,6 +1561,26 @@ fn rejects_division_by_zero() {
 }
 
 #[test]
+fn integer_remainder_by_zero_reports_one_consistent_message() {
+    // The `%` operator and `std::math::remainder`/`modulo` are the same integer
+    // remainder, so a zero divisor must report the same divide-by-zero message.
+    let f = function("fn f(a: int): int\n    return a % 0\n");
+    let result = evaluate_function(&f, &[Value::Int(10)]);
+    let Err(error) = result else {
+        panic!("expected an error, got {result:?}");
+    };
+    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.message, "integer remainder by zero");
+
+    // std::math::modulo routes through the same integer-remainder path.
+    let program = checked_program("pub fn g(): int\n    return std::math::modulo(7, 0)\n");
+    assert_eq!(
+        run(&program, "test::g", &[]).unwrap_err().message,
+        "integer remainder by zero"
+    );
+}
+
+#[test]
 fn detects_integer_overflow() {
     let f = function("fn f(a: int): int\n    return a * a\n");
     let result = evaluate_function(&f, &[Value::Int(i64::MAX)]);

@@ -3634,7 +3634,7 @@ fn eval_binary(
         // `/` always yields a decimal (docs/language/syntax.md), so integer
         // operands divide as decimals too: `1 / 2` is `0.5`.
         BinaryOp::Divide => decimal_div(left, right, env, span),
-        BinaryOp::Remainder => int_div(left, right, env, span, i64::checked_rem),
+        BinaryOp::Remainder => int_remainder_op(left, right, env, span),
         BinaryOp::Less => compare_values(left, right, env, span, |o| o == Ordering::Less),
         BinaryOp::LessEqual => compare_values(left, right, env, span, |o| o != Ordering::Greater),
         BinaryOp::Greater => compare_values(left, right, env, span, |o| o == Ordering::Greater),
@@ -3708,25 +3708,19 @@ fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, RuntimeError> {
     }
 }
 
-/// Apply a checked integer remainder (`%`), rejecting a zero divisor and the
-/// `i64::MIN % -1` overflow. (`/` yields a decimal and uses `decimal_div`.)
-fn int_div(
+/// Evaluate the integer remainder operator (`%`) over two operands. The `/`
+/// operator yields a decimal and uses `decimal_div`, so `%` is the only integer
+/// division-family operator; it shares the one integer-remainder path (and its
+/// "integer remainder by zero" message) with `std::math::remainder`.
+fn int_remainder_op(
     left: &Expression,
     right: &Expression,
     env: &mut Env<'_>,
     span: SourceSpan,
-    op: fn(i64, i64) -> Option<i64>,
 ) -> Result<Value, RuntimeError> {
     let a = eval_int(left, env)?;
     let b = eval_int(right, env)?;
-    if b == 0 {
-        return Err(RuntimeError {
-            code: RUN_DIVIDE_BY_ZERO,
-            message: "integer division or remainder by zero".into(),
-            span,
-        });
-    }
-    op(a, b).map(Value::Int).ok_or_else(|| overflow(span))
+    int_remainder(a, b, span).map(Value::Int)
 }
 
 /// Compare two values of the same orderable type — integers or strings — and
