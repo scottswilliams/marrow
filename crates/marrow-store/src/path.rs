@@ -28,20 +28,6 @@ pub enum SavedKey {
 }
 
 impl SavedKey {
-    /// This key as a scalar value. Total: every key is a scalar (the orderable
-    /// subset), so this is the inverse of [`SavedValue::as_key`].
-    pub fn into_value(self) -> SavedValue {
-        match self {
-            SavedKey::Int(v) => SavedValue::Int(v),
-            SavedKey::Bool(v) => SavedValue::Bool(v),
-            SavedKey::Str(v) => SavedValue::Str(v),
-            SavedKey::Bytes(v) => SavedValue::Bytes(v),
-            SavedKey::Date(v) => SavedValue::Date(v),
-            SavedKey::Duration(v) => SavedValue::Duration(v),
-            SavedKey::Instant(v) => SavedValue::Instant(v),
-        }
-    }
-
     /// The stable wire tag for this key in the serve JSON codec. Six tags are
     /// sourced from the shared scalar-name table so they cannot drift; only `Str`
     /// diverges, spelling `str` on the wire rather than the source keyword
@@ -785,23 +771,36 @@ mod tests {
 
     #[test]
     fn keys_are_the_orderable_projection_of_scalars() {
-        // Every key round-trips through its scalar value, and its wire tag is the
-        // stable serve spelling (`str`, not the `string` source keyword).
-        for (key, tag) in [
-            (SavedKey::Int(-9), "int"),
-            (SavedKey::Bool(true), "bool"),
-            (SavedKey::Str("v".into()), "str"),
-            (SavedKey::Bytes(vec![0x01]), "bytes"),
-            (SavedKey::Date(19_000), "date"),
-            (SavedKey::Duration(1_500_000_000), "duration"),
-            (SavedKey::Instant(1_700_000_000_000_000_000), "instant"),
+        // A key is exactly the orderable projection of its scalar value, so the
+        // scalar maps back to the same key; its wire tag is the stable serve
+        // spelling (`str`, not the `string` source keyword).
+        for (value, key, tag) in [
+            (SavedValue::Int(-9), SavedKey::Int(-9), "int"),
+            (SavedValue::Bool(true), SavedKey::Bool(true), "bool"),
+            (
+                SavedValue::Str("v".into()),
+                SavedKey::Str("v".into()),
+                "str",
+            ),
+            (
+                SavedValue::Bytes(vec![0x01]),
+                SavedKey::Bytes(vec![0x01]),
+                "bytes",
+            ),
+            (SavedValue::Date(19_000), SavedKey::Date(19_000), "date"),
+            (
+                SavedValue::Duration(1_500_000_000),
+                SavedKey::Duration(1_500_000_000),
+                "duration",
+            ),
+            (
+                SavedValue::Instant(1_700_000_000_000_000_000),
+                SavedKey::Instant(1_700_000_000_000_000_000),
+                "instant",
+            ),
         ] {
+            assert_eq!(value.as_key(), Some(key.clone()), "{key:?}");
             assert_eq!(key.wire_tag(), tag, "{key:?}");
-            assert_eq!(
-                key.clone().into_value().as_key(),
-                Some(key.clone()),
-                "{key:?}"
-            );
         }
         // A decimal has no order-preserving key encoding.
         assert_eq!(SavedValue::Decimal(crate::Decimal::ZERO).as_key(), None);

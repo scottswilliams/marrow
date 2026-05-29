@@ -15,7 +15,7 @@ use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema, T
 use marrow_store::backend::Backend;
 use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
-use marrow_store::value::{SavedValue, ScalarType, ValueError, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ValueError, decode_value, encode_value};
 
 /// A resource value supplied to a write: its present top-level fields, by name.
 /// A field not listed here is simply not supplied (absent). Keyed layers are
@@ -956,7 +956,7 @@ fn index_keys(
             keys.push(identity[position].clone());
         } else {
             match value.fields.iter().find(|(name, _)| name == arg) {
-                Some((_, saved)) => keys.push(saved_value_to_key(saved)?),
+                Some((_, saved)) => keys.push(saved.as_key()?),
                 None => return None,
             }
         }
@@ -987,7 +987,7 @@ fn stored_arg_key(
     let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
         return Ok(None);
     };
-    Ok(decode_value(&bytes, value_type).and_then(|value| saved_value_to_key(&value)))
+    Ok(decode_value(&bytes, value_type).and_then(|value| value.as_key()))
 }
 
 /// Resolve an index's argument names to the key values currently STORED for this
@@ -1021,7 +1021,7 @@ fn field_write_index_keys(
     args.iter()
         .map(|arg| {
             if arg == field {
-                Ok(saved_value_to_key(value))
+                Ok(value.as_key())
             } else {
                 stored_arg_key(arg, root, identity, schema, store)
             }
@@ -1044,7 +1044,7 @@ fn effective_index_keys(
 ) -> Result<Option<Vec<SavedKey>>, StoreError> {
     args.iter()
         .map(|arg| match supplied_value(value, arg) {
-            Some(saved) => Ok(saved_value_to_key(saved)),
+            Some(saved) => Ok(saved.as_key()),
             None => stored_arg_key(arg, root, identity, schema, store),
         })
         .collect()
@@ -1132,43 +1132,14 @@ fn check_unique_conflict(
     }
 }
 
-/// The key form of a saved value, or `None` for a value with no order-preserving
-/// key encoding (a decimal).
-fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
-    Some(match value {
-        SavedValue::Int(value) => SavedKey::Int(*value),
-        SavedValue::Bool(value) => SavedKey::Bool(*value),
-        SavedValue::Str(value) => SavedKey::Str(value.clone()),
-        SavedValue::Bytes(value) => SavedKey::Bytes(value.clone()),
-        SavedValue::Date(value) => SavedKey::Date(*value),
-        SavedValue::Duration(value) => SavedKey::Duration(*value),
-        SavedValue::Instant(value) => SavedKey::Instant(*value),
-        SavedValue::Decimal { .. } => return None,
-    })
-}
-
 /// Check that `value` matches the field's declared scalar type name.
 fn check_type(field: &str, ty: &Type, value: &SavedValue) -> Result<(), WriteError> {
-    if ty.scalar() == Some(value_type_of(value)) {
+    if ty.scalar() == Some(value.ty()) {
         Ok(())
     } else {
         Err(WriteError {
             code: WRITE_TYPE_MISMATCH,
             message: format!("field `{field}` does not hold a `{ty}`"),
         })
-    }
-}
-
-/// The [`ScalarType`] of a saved value.
-fn value_type_of(value: &SavedValue) -> ScalarType {
-    match value {
-        SavedValue::Bool(_) => ScalarType::Bool,
-        SavedValue::Int(_) => ScalarType::Int,
-        SavedValue::Str(_) => ScalarType::Str,
-        SavedValue::Bytes(_) => ScalarType::Bytes,
-        SavedValue::Date(_) => ScalarType::Date,
-        SavedValue::Duration(_) => ScalarType::Duration,
-        SavedValue::Instant(_) => ScalarType::Instant,
-        SavedValue::Decimal { .. } => ScalarType::Decimal,
     }
 }

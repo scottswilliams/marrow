@@ -37,7 +37,7 @@ impl Scalar {
     /// This scalar as an order-preserving [`SavedKey`], or `None` for a decimal,
     /// which has no order-preserving key encoding. A [`SavedKey`] is exactly the
     /// orderable projection of a scalar, so this is the one place that mapping
-    /// lives; the inverse is [`SavedKey::into_value`].
+    /// lives.
     pub fn as_key(&self) -> Option<SavedKey> {
         Some(match self {
             Scalar::Int(v) => SavedKey::Int(*v),
