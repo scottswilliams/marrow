@@ -864,7 +864,9 @@ fn data_get_args(args: &[String]) -> Result<(String, String, CheckFormat), ExitC
                 format = parse_format_value(args.get(index))?;
             }
             "--help" | "-h" => {
-                print!("Usage:\n  marrow data get [--format text|json] <projectdir> <path>\n");
+                print!(
+                    "Usage:\n  marrow data get [--format text|json|jsonl] <projectdir> <path>\n"
+                );
                 return Err(ExitCode::SUCCESS);
             }
             value if value.starts_with('-') => {
@@ -916,11 +918,11 @@ fn data(args: &[String]) -> ExitCode {
             print!(
                 "\
 Usage:
-  marrow data roots [--format text|json] <projectdir>      list the saved roots
-  marrow data stats [--format text|json] <projectdir>      count roots and records
+  marrow data roots [--format text|json|jsonl] <projectdir> list the saved roots
+  marrow data stats [--format text|json|jsonl] <projectdir> count roots and records
   marrow data dump [--format text|json|jsonl] <projectdir> dump every (path, value)
   marrow data integrity [--format text|json|jsonl] <dir>   verify saved values decode
-  marrow data get [--format text|json] <projectdir> <path> read one path's value
+  marrow data get [--format text|json|jsonl] <projectdir> <path> read one path's value
 
 Read-only inspection of a project's saved data; it never creates or modifies the
 store. `diff` and `load` are deferred: they overlap restore's replace/merge/repair
@@ -1123,12 +1125,8 @@ fn data_integrity(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    let (_config, program) = match load_checked_project(&dir) {
+    let (config, program) = match load_checked_project(&dir) {
         Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let config = match load_config(&dir) {
-        Ok(config) => config,
         Err(code) => return code,
     };
     let store = match open_store_for_inspection(&dir, &config) {
@@ -1317,7 +1315,11 @@ fn data_get(args: &[String]) -> ExitCode {
     match format {
         CheckFormat::Text => match &value {
             Some(bytes) => println!("{}", render_value_bytes(bytes)),
-            None => println!("(absent)"),
+            // A valueless path with children is distinct from a truly absent one.
+            None => match presence {
+                marrow_store::mem::Presence::ChildrenOnly => println!("(no value; has children)"),
+                _ => println!("(absent)"),
+            },
         },
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({

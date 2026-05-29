@@ -253,6 +253,21 @@ fn data_get_reads_a_path_value_and_reports_absence() {
 }
 
 #[test]
+fn data_get_distinguishes_a_children_only_path_from_absent() {
+    // `^counter(1)` is a record identity node: it has a `.value` child but no
+    // direct value, so `get` must report it differently from a truly absent path.
+    let (project, dir) = seeded_project("data-get-children");
+    let children = marrow(&["data", "get", &dir, "^counter(1)"]);
+    fs::remove_dir_all(&project).ok();
+    assert_eq!(children.status.code(), Some(0), "{children:?}");
+    let out = String::from_utf8(children.stdout).unwrap();
+    assert!(
+        out.contains("has children"),
+        "children-only marker, got: {out}"
+    );
+}
+
+#[test]
 fn data_get_and_integrity_on_an_unseeded_project_create_nothing() {
     let project = native_project("data-readonly");
     let dir = project.to_str().unwrap().to_string();
