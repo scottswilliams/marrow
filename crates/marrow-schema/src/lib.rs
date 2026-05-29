@@ -146,6 +146,19 @@ pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_ident
 /// (resources-and-storage.md:217-219).
 pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
 
+/// A required field is declared inside an unkeyed group. The write planner does
+/// not yet materialize unkeyed groups (their fields live in `layers`, not
+/// `fields`), so it neither validates nor persists them on a whole-resource
+/// write. Until that slice lands, a required field there is a compile error
+/// rather than a silently unenforced constraint (review F14, interim).
+pub const SCHEMA_REQUIRED_IN_UNKEYED_GROUP: &str = "schema.required_in_unkeyed_group";
+
+/// An index argument names a field nested through an unkeyed group. The write
+/// planner matches index arguments by flat top-level name, so it would silently
+/// never maintain such an entry. Until nested index resolution lands, reject it
+/// (review F14, interim).
+pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -260,6 +273,42 @@ fn check_saved_data(
     for member in members {
         check_member_unknown(member, errors);
         check_member_keys(member, errors);
+        check_required_in_unkeyed_group(member, false, errors);
+    }
+}
+
+/// Reject a required field reachable only through an unkeyed group. The write
+/// planner does not yet materialize unkeyed groups, so a required field there is
+/// never validated or persisted (review F14, interim). `under_unkeyed` is true
+/// once an enclosing group has no key parameters; a keyed group resets nothing
+/// because a field already under an unkeyed group stays unreachable.
+fn check_required_in_unkeyed_group(
+    member: &ResourceMember,
+    under_unkeyed: bool,
+    errors: &mut Vec<SchemaError>,
+) {
+    match member {
+        ResourceMember::Field(field) if field.keys.is_empty() => {
+            if under_unkeyed && field.required {
+                errors.push(SchemaError {
+                    code: SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
+                    message: format!(
+                        "required field `{}` is inside an unkeyed group, which the \
+                         write planner does not yet maintain",
+                        field.name
+                    ),
+                    span: field.span,
+                });
+            }
+        }
+        ResourceMember::Group(group) => {
+            let under_unkeyed = under_unkeyed || group.keys.is_empty();
+            for nested in &group.members {
+                check_required_in_unkeyed_group(nested, under_unkeyed, errors);
+            }
+        }
+        // A keyed leaf carries a value, not a required-field tree to descend.
+        ResourceMember::Field(_) | ResourceMember::Index(_) => {}
     }
 }
 
@@ -371,6 +420,17 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                     message: format!(
                         "index `{}` argument `{arg}` does not name an identity \
                          key, a field, or a nested field through unkeyed groups",
+                        index.name
+                    ),
+                    span: index.span,
+                }),
+                // A dotted argument resolves through an unkeyed group, which the
+                // write planner does not yet maintain (review F14, interim).
+                Some(_) if arg.contains('.') => errors.push(SchemaError {
+                    code: SCHEMA_NESTED_INDEX_ARG,
+                    message: format!(
+                        "index `{}` argument `{arg}` names a field nested through an \
+                         unkeyed group, which the write planner does not yet maintain",
                         index.name
                     ),
                     span: index.span,

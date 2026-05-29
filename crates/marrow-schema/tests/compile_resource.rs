@@ -8,8 +8,8 @@
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
     SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
-    SCHEMA_UNORDERABLE_KEY, compile_resource,
+    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
+    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -444,20 +444,6 @@ resource Book at ^books(id: int)
 }
 
 #[test]
-fn index_over_a_nested_decimal_field_is_an_error() {
-    // The same applies to a decimal reached through an unkeyed group.
-    let source = "\
-resource Book at ^books(id: int)
-    pricing
-        amount: decimal
-    index byAmount(pricing.amount, id)
-";
-    let (_, errors) = compile_resource(&resource(source));
-    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
-    assert!(errors[0].message.contains("pricing.amount"));
-}
-
-#[test]
 fn keyed_leaf_with_a_decimal_key_param_is_an_error() {
     // A keyed-layer key must be an ordered key type; `decimal` is not.
     let source = "\
@@ -503,7 +489,10 @@ resource Book at ^books(id: int)
     index byShelf(shelf, id)
 ";
     let (_, errors) = compile_resource(&resource(source));
-    assert!(errors.is_empty(), "trailing identity key resolves: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "trailing identity key resolves: {errors:?}"
+    );
 }
 
 #[test]
@@ -536,7 +525,10 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
     index byStatus(status, studentId, courseId)
 ";
     let (_, errors) = compile_resource(&resource(in_order));
-    assert!(errors.is_empty(), "all identity keys in order resolve: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "all identity keys in order resolve: {errors:?}"
+    );
 }
 
 #[test]
@@ -549,7 +541,10 @@ resource Book at ^books(id: int)
     index byIsbn(isbn) unique
 ";
     let (_, errors) = compile_resource(&resource(source));
-    assert!(errors.is_empty(), "unique index needs no identity key: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "unique index needs no identity key: {errors:?}"
+    );
 }
 
 #[test]
@@ -578,6 +573,57 @@ resource Draft
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
     assert!(errors[0].message.contains("byTitle"));
+}
+
+#[test]
+fn required_field_inside_an_unkeyed_group_is_an_error() {
+    // The write planner does not yet materialize unkeyed groups: a whole-resource
+    // write neither validates nor persists their fields. Until that slice lands,
+    // a required field inside an unkeyed group is a compile error rather than a
+    // silently unenforced constraint (review F14, interim). The canonical Patient
+    // `name { required first; last }` shape exercises this.
+    let source = "\
+resource Patient at ^patients(id: string)
+    name
+        required first: string
+        last: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_REQUIRED_IN_UNKEYED_GROUP]);
+    assert!(errors[0].message.contains("first"));
+}
+
+#[test]
+fn required_field_inside_a_keyed_group_is_allowed() {
+    // The rejection is specific to UNKEYED groups; a keyed group (a layer the
+    // planner does maintain) may hold required fields, per the existing Book
+    // `versions(version) { required title }` shape.
+    let source = "\
+resource Book at ^books(id: int)
+    versions(version: int)
+        required title: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "keyed-group required fields are fine: {errors:?}"
+    );
+}
+
+#[test]
+fn index_over_a_nested_field_is_an_error() {
+    // The write planner matches index arguments by flat top-level name, so an
+    // index over a field nested in an unkeyed group is silently never maintained.
+    // Until nested index resolution lands, reject it (review F14, interim).
+    let source = "\
+resource Book at ^books(id: int)
+    pricing
+        amount: int
+    index byAmount(pricing.amount, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NESTED_INDEX_ARG]);
+    assert!(errors[0].message.contains("pricing.amount"));
 }
 
 #[test]
