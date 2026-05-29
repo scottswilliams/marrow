@@ -1326,10 +1326,13 @@ impl<'a> Parser<'a> {
                 docs.clear();
                 self.index += 1;
             } else if content.starts_with("const ") {
-                let declaration = self.parse_const(line, std::mem::take(&mut docs));
+                // A const value may span several physical lines inside open
+                // delimiters; consume the whole logical line, not just the first.
+                let end_index = self.logical_line_end(self.index);
+                let declaration = self.parse_const(line, end_index, std::mem::take(&mut docs));
                 file.declarations.push(Declaration::Const(declaration));
                 saw_top_level_item = true;
-                self.index += 1;
+                self.index = end_index;
             } else if content.starts_with("resource ") {
                 let resource = self.parse_resource(line, std::mem::take(&mut docs));
                 file.declarations.push(Declaration::Resource(resource));
@@ -1397,26 +1400,45 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_const(&mut self, line: Line<'a>, docs: Vec<String>) -> ConstDecl {
+    /// Parse a top-level `const` declaration that occupies the physical lines
+    /// `[self.index, end_index)`. The value may span several lines inside open
+    /// delimiters, so it is parsed from the file-wide token stream over the
+    /// whole byte range rather than only the first line's text.
+    fn parse_const(&mut self, line: Line<'a>, end_index: usize, docs: Vec<String>) -> ConstDecl {
         let prefix_len = "const ".len();
         let after_prefix = &line.content[prefix_len..];
         let equal_offset = after_prefix.find('=');
 
-        let (head, value_text, value_offset_in_content) = match equal_offset {
+        // The value's byte range runs from just after `=` on the first line to
+        // the end of the last physical line the const spans.
+        let value_end_byte = self.lines[end_index - 1].end_byte;
+
+        let (head, value_start_byte, value_column) = match equal_offset {
             Some(offset) => {
                 let head = after_prefix[..offset].trim();
                 let after_equal_offset = prefix_len + offset + 1;
                 let after_equal = &line.content[after_equal_offset..];
                 let leading = after_equal.len() - after_equal.trim_start().len();
-                let value = after_equal.trim();
-                if value.is_empty() {
+                let value_offset_in_content = after_equal_offset + leading;
+                let start_byte = line.start_byte + line.indent + value_offset_in_content;
+                if start_byte >= value_end_byte
+                    || self.source[start_byte..value_end_byte].trim().is_empty()
+                {
                     self.error(line, "const declarations require a value after `=`");
                 }
-                (head, value, after_equal_offset + leading)
+                (
+                    head,
+                    start_byte,
+                    (line.indent + value_offset_in_content + 1) as u32,
+                )
             }
             None => {
                 self.error(line, "const declarations require `=` and a value");
-                (after_prefix.trim(), "", line.content.len())
+                (
+                    after_prefix.trim(),
+                    value_end_byte,
+                    (line.indent + line.content.len() + 1) as u32,
+                )
             }
         };
 
@@ -1428,7 +1450,12 @@ impl<'a> Parser<'a> {
             self.error(line, "expected const type annotation");
         }
 
-        let value = self.parse_value_expression(line, value_text, value_offset_in_content);
+        let value = self.parse_value_expression(
+            value_start_byte,
+            value_end_byte,
+            line.number,
+            value_column,
+        );
 
         ConstDecl {
             docs,
@@ -1439,23 +1466,49 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse an expression that occupies a single-line value position, such as
-    /// a `const` value. Tokens come from the file-wide lex, so spans stay
+    /// Find the exclusive line index where the logical line starting at `start`
+    /// ends. Lines continue while delimiters are open, matching the lexer, which
+    /// suppresses `NEWLINE` inside `(...)` / `[...]`.
+    fn logical_line_end(&self, start: usize) -> usize {
+        let mut depth = 0usize;
+        let mut index = start;
+        while index < self.lines.len() {
+            let line = self.lines[index];
+            let tokens = tokens_in_range(self.tokens, line.start_byte, line.end_byte);
+            for token in tokens {
+                match token.kind {
+                    TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+                    TokenKind::RightParen | TokenKind::RightBracket => {
+                        depth = depth.saturating_sub(1)
+                    }
+                    _ => {}
+                }
+            }
+            index += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+        index
+    }
+
+    /// Parse an expression occupying a value position (such as a `const` value)
+    /// from the file-wide token stream over `[start_byte, end_byte)`. Spans stay
     /// absolute. Anything the expression grammar does not yet cover becomes
     /// `Expression::Unparsed`.
     fn parse_value_expression(
         &self,
-        line: Line<'a>,
-        value_text: &str,
-        value_offset_in_content: usize,
+        start_byte: usize,
+        end_byte: usize,
+        line: u32,
+        column: u32,
     ) -> Expression {
-        let start_byte = line.start_byte + line.indent + value_offset_in_content;
-        let end_byte = start_byte + value_text.len();
+        let value_text = self.source.get(start_byte..end_byte).unwrap_or_default();
         let fallback_span = SourceSpan {
             start_byte,
             end_byte,
-            line: line.number,
-            column: (line.indent + value_offset_in_content + 1) as u32,
+            line,
+            column,
         };
         let tokens = tokens_in_range(self.tokens, start_byte, end_byte);
         ExprParser::new(self.source, tokens).parse_value(fallback_span, value_text)

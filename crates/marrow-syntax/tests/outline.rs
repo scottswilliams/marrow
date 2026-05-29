@@ -872,6 +872,37 @@ fn parses_const_values_into_expression_nodes() {
 }
 
 #[test]
+fn parses_top_level_multi_line_const_value() {
+    // A column-0 `const` whose value spans several physical lines inside open
+    // delimiters must parse as one call, not break apart line by line.
+    let source = "const id = some::call(\n  a: 1,\n  b: 2,\n)\n";
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "multi-line const should parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        parsed.file.declarations.len(),
+        1,
+        "expected exactly one declaration, got {:#?}",
+        parsed.file.declarations
+    );
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    assert_eq!(decl.name, "id");
+    let Expression::Call { callee, args, .. } = &decl.value else {
+        panic!("expected a call value, got {:?}", decl.value);
+    };
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        panic!("expected a name callee, got {callee:?}");
+    };
+    assert_eq!(segments.as_slice(), &["some", "call"]);
+    assert_eq!(args.len(), 2, "expected two arguments");
+}
+
+#[test]
 fn parses_const_operator_expressions_with_precedence() {
     // 60 * 60 + 1 parses as (60 * 60) + 1.
     let parsed = parse_source("const Total: int = 60 * 60 + 1\n");
