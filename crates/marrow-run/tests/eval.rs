@@ -5034,8 +5034,14 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
     let store = RefCell::new(MemStore::new());
     let host = Host::new().with_maintenance();
     run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
-    run_entry_with_host(&program, &store, &host, "test::drop_title", &[Value::Int(1)])
-        .expect("maintenance lifts the required-field guard");
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::drop_title",
+        &[Value::Int(1)],
+    )
+    .expect("maintenance lifts the required-field guard");
     assert_eq!(
         run_entry_with_host(&program, &store, &host, "test::has_title", &[Value::Int(1)])
             .expect("read")
