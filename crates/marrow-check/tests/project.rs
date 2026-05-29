@@ -1516,6 +1516,20 @@ fn a_singleton_field_read_in_a_typed_place_is_not_an_untyped_value() {
 }
 
 #[test]
+fn a_singleton_whole_read_and_write_are_not_flagged() {
+    // `var s: Settings = ^settings` and `^settings = s` address the keyless
+    // root directly; neither should raise a false unresolved or type diagnostic.
+    let report = check_module_report(
+        "singleton-whole",
+        "module m\n\
+         resource Settings at ^settings\n    theme: string\n    required maxLoans: int\n\n\
+         fn snapshot(): Settings\n    return ^settings\n\n\
+         fn restore(s: Settings)\n    ^settings = s\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn a_keyed_leaf_read_feeds_type_checks() {
     // `^books(1).tags(2)` is `string` (the layer's leaf type), but `f` returns `int`.
     let found = check_module(
@@ -1837,6 +1851,15 @@ fn check_module(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDia
     let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     with_code(&report, code).into_iter().cloned().collect()
+}
+
+/// Check a single library module and return its whole report, for tests that
+/// assert a program is clean rather than filtering for one code.
+fn check_module_report(name: &str, src: &str) -> marrow_check::CheckReport {
+    let root = temp_project(name, |root| write(root, "src/m.mw", src));
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    report
 }
 
 #[test]

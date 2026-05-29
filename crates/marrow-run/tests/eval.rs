@@ -3412,3 +3412,102 @@ fn whole_resource_read_through_an_identity() {
     .value;
     assert_eq!(value, Some(Value::Str("active".into())));
 }
+
+// --- Wave 1: singleton resources end-to-end (G01) ---
+
+/// A singleton resource (`Settings at ^settings`, no identity keys). Field
+/// read/write address the root directly, and whole read/write materialize and
+/// replace the root as a resource value.
+const SETTINGS: &str = "\
+resource Settings at ^settings
+    theme: string
+    required maxLoans: int
+
+fn setTheme(t: string)
+    ^settings.theme = t
+
+fn theme(): string
+    return ^settings.theme
+
+fn snapshot(): Settings
+    return ^settings
+
+fn restore(s: Settings)
+    ^settings = s
+";
+
+#[test]
+fn singleton_field_read_and_write() {
+    let program = checked_program(SETTINGS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::setTheme",
+        &[Value::Str("dark".into())],
+    )
+    .expect("setTheme");
+    let value = run_entry(&program, &store, "test::theme", &[])
+        .expect("theme")
+        .value;
+    assert_eq!(value, Some(Value::Str("dark".into())));
+    // The field landed at `^settings.theme`, no record key in between.
+    let store = store.borrow();
+    let bytes = store
+        .read(&encode_path(&[
+            PathSegment::Root("settings".into()),
+            PathSegment::Field("theme".into()),
+        ]))
+        .expect("present");
+    assert_eq!(
+        decode_value(bytes, ValueType::Str),
+        Some(SavedValue::Str("dark".into()))
+    );
+}
+
+#[test]
+fn singleton_whole_read_and_write_round_trip() {
+    let program = checked_program(SETTINGS);
+    let store = RefCell::new(MemStore::new());
+    // Seed the singleton's fields directly.
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("settings".into()),
+            PathSegment::Field("theme".into()),
+        ]),
+        encode_value(&SavedValue::Str("light".into())).expect("encodes"),
+    );
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("settings".into()),
+            PathSegment::Field("maxLoans".into()),
+        ]),
+        encode_value(&SavedValue::Int(5)).expect("encodes"),
+    );
+    // A whole read materializes the singleton's present fields.
+    let snapshot = run_entry(&program, &store, "test::snapshot", &[])
+        .expect("snapshot")
+        .value;
+    assert_eq!(
+        snapshot,
+        Some(Value::Resource(vec![
+            ("theme".into(), Value::Str("light".into())),
+            ("maxLoans".into(), Value::Int(5)),
+        ]))
+    );
+    // A whole write replaces it; read it back via the field reader.
+    run_entry(
+        &program,
+        &store,
+        "test::restore",
+        &[Value::Resource(vec![
+            ("theme".into(), Value::Str("solar".into())),
+            ("maxLoans".into(), Value::Int(9)),
+        ])],
+    )
+    .expect("restore");
+    let value = run_entry(&program, &store, "test::theme", &[])
+        .expect("theme")
+        .value;
+    assert_eq!(value, Some(Value::Str("solar".into())));
+}

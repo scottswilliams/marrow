@@ -1955,14 +1955,16 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             span,
         } => {
             // A dotted field off a saved record is a managed field write; a
-            // `^root(key…)` target is a whole-resource write; a bare name is a
-            // local reassignment.
+            // `^root(key…)` or bare singleton `^root` target is a whole-resource
+            // write; a bare name is a local reassignment.
             if let Expression::Field { base, name, .. } = target {
                 if is_saved_path(base) {
                     eval_saved_field_write(base, name, value, *span, env)?;
                 } else {
                     eval_local_field_set(base, name, value, *span, env)?;
                 }
+            } else if let Expression::SavedRoot { .. } = target {
+                eval_resource_write(target, value, *span, env)?;
             } else if let Expression::Call { callee, args, .. } = target {
                 // `^root(key…).layer(key…) = v` (callee is a saved layer field) is a
                 // whole-group-entry write; `^root(key…) = v` (callee is the saved
@@ -2445,6 +2447,9 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
                 eval_local_field_get(base, name, *span, env)
             }
         }
+        // A bare saved root read (`^settings`) is a whole-resource read of a
+        // keyless singleton; a keyed root needs a `^root(key…)` call.
+        Expression::SavedRoot { name, span, .. } => read_resource(name, &[], *span, env),
         other => Err(unsupported("this expression", other.span())),
     }
 }
