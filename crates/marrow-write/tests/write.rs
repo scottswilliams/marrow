@@ -10,9 +10,9 @@ use marrow_write::{
     FieldValue, ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
     WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT,
     WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id,
-    next_layer_pos, plan_field_write, plan_layer_field_write, plan_layer_group_write,
-    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write, plan_resource_delete,
-    plan_resource_merge, plan_resource_write,
+    next_layer_pos, plan_field_delete, plan_field_write, plan_layer_field_write,
+    plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
+    plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -826,6 +826,134 @@ fn a_field_write_with_an_unchanged_value_keeps_the_index_entry() {
         store.read(&by_shelf_entry("fiction", 42)),
         Some(&b"1"[..]),
         "unchanged-value field write keeps the entry"
+    );
+}
+
+#[test]
+fn a_field_delete_removes_the_field_and_leaves_the_rest() {
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(7)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+
+    plan_field_delete(&book, &[SavedKey::Int(7)], "shelf", &store)
+        .expect("valid field delete")
+        .commit(&mut store)
+        .expect("commit succeeds");
+
+    assert_eq!(store.read(&field_path(7, "shelf")), None, "field removed");
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(7, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into())),
+        "the untouched field is left in place"
+    );
+}
+
+#[test]
+fn a_field_delete_tears_down_the_index_entry_it_feeds() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+
+    plan_field_delete(&book, &[SavedKey::Int(42)], "shelf", &store)
+        .expect("valid field delete")
+        .commit(&mut store)
+        .expect("commit succeeds");
+
+    assert_eq!(store.read(&field_path(42, "shelf")), None, "field removed");
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 42)),
+        None,
+        "the index entry the field fed is removed: the key is now incomplete"
+    );
+}
+
+#[test]
+fn a_field_delete_of_a_field_with_no_index_stages_only_the_field_delete() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(5)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("shelf".into(), saved("fiction")),
+            ],
+        },
+    );
+    // `title` feeds no index, so deleting it leaves the byShelf entry in place.
+    plan_field_delete(&book, &[SavedKey::Int(5)], "title", &store)
+        .expect("valid field delete")
+        .commit(&mut store)
+        .expect("commit succeeds");
+
+    assert_eq!(store.read(&field_path(5, "title")), None, "field removed");
+    assert_eq!(
+        store.read(&by_shelf_entry("fiction", 5)),
+        Some(&b"1"[..]),
+        "an index that does not name the deleted field is untouched"
+    );
+}
+
+#[test]
+fn deleting_an_absent_field_is_a_successful_no_op() {
+    let book = schema(BOOK_INDEXED);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(9)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+        },
+    );
+    // `shelf` was never populated, so there is no field and no index entry.
+    plan_field_delete(&book, &[SavedKey::Int(9)], "shelf", &store)
+        .expect("absent-field delete is a no-op plan")
+        .commit(&mut store)
+        .expect("commit succeeds");
+
+    assert_eq!(
+        decode_value(
+            store.read(&field_path(9, "title")).expect("title"),
+            ValueType::Str
+        ),
+        Some(SavedValue::Str("Mort".into())),
+        "the record is untouched"
+    );
+}
+
+#[test]
+fn a_field_delete_of_an_unknown_field_is_rejected() {
+    let book = schema(BOOK);
+    let result = plan_field_delete(&book, &[SavedKey::Int(3)], "publisher", &MemStore::new());
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_FIELD),
+        "{result:?}"
     );
 }
 

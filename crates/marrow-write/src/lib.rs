@@ -69,6 +69,11 @@ pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 /// The integer key space is exhausted: the highest existing key is `i64::MAX`,
 /// so no next identity or layer position can be allocated.
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
+/// Deleting a `required` field on its own is rejected: a required field can only
+/// go away when its surrounding keyed entry or whole resource is deleted
+/// (docs/language `resources-and-storage.md`). The runtime enforces this guard
+/// before planning, since `plan_field_delete` itself only sees one field.
+pub const WRITE_REQUIRED_FIELD: &str = "write.required_field";
 
 /// Wrap a store error met while planning a write into a `write.store` failure.
 fn store_failed(error: StoreError) -> WriteError {
@@ -291,6 +296,52 @@ pub fn plan_field_write(
             steps.push(PlanStep::Write {
                 path: encode_path(&index_path(root, &index.name, &new_keys)),
                 value: index_entry_value(index.unique, identity),
+            });
+        }
+    }
+    Ok(WritePlan { steps })
+}
+
+/// Plan a managed field delete: remove `field` of the resource at `identity`,
+/// leaving the resource's other fields in place, and tear down any index the
+/// field feeds. Validates that the field is declared (`WRITE_UNKNOWN_FIELD`),
+/// then stages the field-path delete plus, for each index whose key the field is
+/// part of, a delete of the currently-stored index entry — removing the field
+/// makes that key incomplete, so the entry must go (docs/language
+/// `resources-and-storage.md`: an index entry exists only when every indexed
+/// value is populated). This is the delete half of [`plan_field_write`]'s index
+/// reconciliation: teardown only, with no new entry to add. Deleting an already
+/// absent field is a successful no-op plan. `store` is read, not written.
+pub fn plan_field_delete(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    store: &dyn Backend,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    if !schema.fields.iter().any(|declared| declared.name == field) {
+        return Err(WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("resource `{}` has no field `{field}`", schema.name),
+        });
+    }
+
+    let mut steps = vec![PlanStep::Delete {
+        path: encode_path(&field_path(root, identity, field)),
+    }];
+
+    // Tear down every index entry the field feeds: with the field gone its key is
+    // incomplete, so the stored entry no longer corresponds to a populated key.
+    // There is no replacement entry — unlike a field write, a delete only removes.
+    for index in &schema.indexes {
+        if !index.args.iter().any(|arg| arg == field) {
+            continue;
+        }
+        if let Some(old_keys) =
+            stored_index_keys(&index.args, root, identity, schema, store).map_err(store_failed)?
+        {
+            steps.push(PlanStep::Delete {
+                path: encode_path(&index_path(root, &index.name, &old_keys)),
             });
         }
     }
