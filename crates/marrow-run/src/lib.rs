@@ -2306,8 +2306,8 @@ impl<'p> Env<'p> {
     /// Apply a planned managed write: surface a planning failure as a catchable
     /// `write.*` fault, then commit the plan's staged steps. `in_txn` is whether a
     /// user `transaction` is open, so the plan rides that savepoint instead of
-    /// opening its own. Centralizes the open-savepoint invariant every write/merge/
-    /// delete shares, and a store failure during commit is a runtime store error.
+    /// opening its own. A store failure during commit surfaces as a runtime store
+    /// error.
     fn apply_plan(
         &mut self,
         plan: Result<WritePlan, WriteError>,

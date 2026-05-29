@@ -20,9 +20,8 @@ pub mod path;
 pub mod redb;
 pub mod value;
 
-// The reusable backend conformance suite is test-only: it is how every backend
-// is held to one contract, not part of the published store surface. The
-// per-backend tests in mem.rs/redb.rs drive `conformance::run_all`.
+// The reusable backend conformance suite is test-only: it holds every backend to
+// one contract and is not part of the published store surface.
 #[cfg(test)]
 mod conformance;
 
