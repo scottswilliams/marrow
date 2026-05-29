@@ -4327,8 +4327,7 @@ fn eval_layer_entry_delete(
 /// deeper one a nested layer of the one before it. Used to reject a delete of an
 /// undeclared layer entry before touching the store.
 fn resource_layer_chain_exists(program: &CheckedProgram, root: &str, layers: &[&str]) -> bool {
-    find_resource(program, root)
-        .is_some_and(|resource| resource.descend_layers(layers).is_some())
+    find_resource(program, root).is_some_and(|resource| resource.descend_layers(layers).is_some())
 }
 
 /// The resource schema attached to a saved root, by root name.

@@ -456,10 +456,8 @@ fn error_return_is_a_return_type_error() {
 /// `check.assignment_type`, not `check.untyped_value`.
 #[test]
 fn error_assignment_is_an_assignment_type_error() {
-    let codes = error_value_diagnostic_codes(
-        "fn f()",
-        "        var s: string = \"a\"\n        s = e",
-    );
+    let codes =
+        error_value_diagnostic_codes("fn f()", "        var s: string = \"a\"\n        s = e");
     assert!(
         codes.iter().any(|code| code == "check.assignment_type"),
         "{codes:#?}"

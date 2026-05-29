@@ -1487,7 +1487,10 @@ fn check_unary(
         diagnostics.push(operator_diagnostic(
             file,
             span,
-            format!("operator `{}` cannot be applied to `Error`", unary_symbol(op)),
+            format!(
+                "operator `{}` cannot be applied to `Error`",
+                unary_symbol(op)
+            ),
         ));
         return MarrowType::Unknown;
     }
