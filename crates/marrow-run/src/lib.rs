@@ -572,7 +572,7 @@ fn bind_arguments_with_modes(
             Some(ArgMode::Out) => {
                 // `out` does not read the place, so it need not exist yet.
                 let place = resolve_place(&arg.value, span, env)?;
-                (zero_value(&param.ty), Some(place))
+                (out_seed(&param.ty), Some(place))
             }
         };
         place_argument(&mut slots, index, entry, params, span)?;
@@ -812,24 +812,11 @@ impl Place {
     }
 }
 
-/// A type's default value, used to seed an `out` parameter before the callee
-/// assigns it. A correct callee assigns it before returning (a checker rule to
-/// require this is still pending), so the placeholder is normally unobserved; a
-/// type without a simple zero starts as an empty resource.
-fn zero_value(ty: &MarrowType) -> Value {
-    match ty {
-        MarrowType::Primitive(ScalarType::Int) => Value::Int(0),
-        MarrowType::Primitive(ScalarType::Bool) => Value::Bool(false),
-        MarrowType::Primitive(ScalarType::Str) => Value::Str(String::new()),
-        MarrowType::Primitive(ScalarType::Bytes) => Value::Bytes(Vec::new()),
-        _ => Value::Resource(Vec::new()),
-    }
-}
-
-/// The default value a typed `var` with no initializer starts at, by its resolved
-/// type. `None` for a type with no representable default (it stays unsupported).
-/// Resource types are handled by the caller (an empty resource).
-fn uninitialized_default(ty: &Type) -> Option<Value> {
+/// The default value of a resolved type: the empty sequence, a scalar zero, or
+/// `None` for a type with no representable default (an identity, an unresolved
+/// name, or `unknown`). Resource types are handled by the caller (an empty
+/// resource), since the schema-blind [`Type`] places a resource as `Named`.
+fn default_value(ty: &Type) -> Option<Value> {
     Some(match ty {
         Type::Sequence(_) => Value::Sequence(Vec::new()),
         Type::Scalar(ScalarType::Int) => Value::Int(0),
@@ -840,11 +827,116 @@ fn uninitialized_default(ty: &Type) -> Option<Value> {
         Type::Scalar(ScalarType::Instant) => Value::Instant(0),
         Type::Scalar(ScalarType::Duration) => Value::Duration(0),
         Type::Scalar(ScalarType::Decimal) => Value::Decimal(Decimal::parse("0")?),
-        // Identities and unresolved names have no zero value.
-        Type::Identity(_) | Type::Named(_) | Type::Unknown => {
-            return None;
-        }
+        Type::Identity(_) | Type::Named(_) | Type::Unknown => return None,
     })
+}
+
+/// The value an `out` parameter is seeded with before the callee assigns it. A
+/// correct callee assigns it before returning (a checker rule to require this is
+/// still pending), so the placeholder is normally unobserved. Only the four
+/// scalars with a simple zero seed to that zero; any other type — a temporal or
+/// decimal scalar, a sequence, a resource, an identity — starts as an empty
+/// resource.
+fn out_seed(ty: &MarrowType) -> Value {
+    let zero = match ty {
+        MarrowType::Primitive(
+            scalar @ (ScalarType::Int | ScalarType::Bool | ScalarType::Str | ScalarType::Bytes),
+        ) => default_value(&Type::Scalar(*scalar)),
+        _ => None,
+    };
+    zero.unwrap_or_else(|| Value::Resource(Vec::new()))
+}
+
+#[cfg(test)]
+mod default_value_tests {
+    use super::*;
+
+    // Pin the `var` defaults exhaustively against the values the dedicated
+    // uninitialized-default table produced before it was folded into one fn.
+    #[test]
+    fn var_default_matches_the_old_table() {
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Int)),
+            Some(Value::Int(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Bool)),
+            Some(Value::Bool(false))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Str)),
+            Some(Value::Str(String::new()))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Bytes)),
+            Some(Value::Bytes(Vec::new()))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Date)),
+            Some(Value::Date(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Instant)),
+            Some(Value::Instant(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Duration)),
+            Some(Value::Duration(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Decimal)),
+            Some(Value::Decimal(Decimal::parse("0").unwrap()))
+        );
+        assert_eq!(
+            default_value(&Type::Sequence(Box::new(Type::Scalar(ScalarType::Int)))),
+            Some(Value::Sequence(Vec::new()))
+        );
+        assert_eq!(default_value(&Type::Identity("Book".into())), None);
+        assert_eq!(default_value(&Type::Named("Book".into())), None);
+        assert_eq!(default_value(&Type::Unknown), None);
+    }
+
+    // Pin the `out` seed exhaustively against the values the dedicated zero-value
+    // table produced: only Int/Bool/Str/Bytes seed to a scalar zero; every other
+    // type (temporal, decimal, sequence, resource, identity, unknown) is an empty
+    // resource. The fold must not widen the seed to the new scalar defaults.
+    #[test]
+    fn out_seed_matches_the_old_table() {
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Int)),
+            Value::Int(0)
+        );
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Bool)),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Str)),
+            Value::Str(String::new())
+        );
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Bytes)),
+            Value::Bytes(Vec::new())
+        );
+        let empty = Value::Resource(Vec::new());
+        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Date)), empty);
+        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Instant)), empty);
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Duration)),
+            empty
+        );
+        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Decimal)), empty);
+        assert_eq!(
+            out_seed(&MarrowType::Sequence(Box::new(MarrowType::Primitive(
+                ScalarType::Int
+            )))),
+            empty
+        );
+        assert_eq!(out_seed(&MarrowType::Resource("Book".into())), empty);
+        assert_eq!(out_seed(&MarrowType::Identity("Book".into())), empty);
+        assert_eq!(out_seed(&MarrowType::Error), empty);
+        assert_eq!(out_seed(&MarrowType::Unknown), empty);
+    }
 }
 
 /// Map an [`AssignError`] from a failed reassignment to a runtime fault.
@@ -2410,7 +2502,7 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                     Some(Type::Named(name)) if is_resource_type(env.program, &name) => {
                         Value::Resource(Vec::new())
                     }
-                    Some(ty) => uninitialized_default(&ty).ok_or_else(|| {
+                    Some(ty) => default_value(&ty).ok_or_else(|| {
                         unsupported("an uninitialized variable of this type", *span)
                     })?,
                     None => return Err(unsupported("an uninitialized variable", *span)),
