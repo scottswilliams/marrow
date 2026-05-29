@@ -194,6 +194,15 @@ impl Node {
     pub fn is_plain_field(&self) -> bool {
         self.key_params.is_empty() && matches!(self.element, Element::Slot { .. })
     }
+
+    /// The type of this node when it is a plain field, else `None`. Lets a caller
+    /// select plain fields and bind their type in one pass.
+    pub fn plain_field_type(&self) -> Option<&Type> {
+        match &self.element {
+            Element::Slot { ty, .. } if self.key_params.is_empty() => Some(ty),
+            _ => None,
+        }
+    }
 }
 
 /// The saved root a resource is attached to, with the identity keys that live

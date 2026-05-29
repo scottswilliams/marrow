@@ -3516,10 +3516,11 @@ fn read_resource(
     let mut fields = Vec::new();
     // Only plain top-level fields are materialized; keyed leaves and groups are
     // read through their own paths, not the whole-resource read.
-    for field in resource.members.iter().filter(|node| node.is_plain_field()) {
-        let Element::Slot { ty, .. } = &field.element else {
-            continue; // is_plain_field already guarantees a Slot
-        };
+    for (field, ty) in resource
+        .members
+        .iter()
+        .filter_map(|node| node.plain_field_type().map(|ty| (node, ty)))
+    {
         let mut segments = prefix.clone();
         segments.push(PathSegment::Field(field.name.clone()));
         let Some(bytes) = store
