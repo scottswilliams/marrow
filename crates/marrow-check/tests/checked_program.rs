@@ -537,6 +537,36 @@ fn error_unary_negation_is_an_operator_type_error() {
     );
 }
 
+/// `e + 1` with an `Error` operand reports `check.operator_type` (no operator
+/// applies to an `Error`), not `check.untyped_value` and never nothing.
+#[test]
+fn error_arithmetic_operand_is_an_operator_type_error() {
+    let codes = error_value_diagnostic_codes("fn f()", "        y = e + 1");
+    assert!(
+        codes.iter().any(|code| code == "check.operator_type"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+/// `e < 1` comparing an `Error` operand reports `check.operator_type`, not
+/// `check.untyped_value` and never nothing.
+#[test]
+fn error_comparison_operand_is_an_operator_type_error() {
+    let codes = error_value_diagnostic_codes("fn f()", "        y = e < 1");
+    assert!(
+        codes.iter().any(|code| code == "check.operator_type"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
 // --- `Error` in the one slot that *expects* it (dual of the above) -------------
 
 /// `std::log::error(e)` accepts an `Error` value: the `Error`-typed slot is

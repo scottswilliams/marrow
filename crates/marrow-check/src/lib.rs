@@ -1528,6 +1528,21 @@ fn check_binary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::BinaryOp;
+    // `Error` is a concrete type, not an untyped one: no binary operator applies to
+    // it, so flag it as an operator misuse rather than silently passing it through
+    // (matching the unary case). This must come before the `as_primitive` gate,
+    // which treats `Error` as a non-primitive `None` and would otherwise skip it.
+    if matches!(left, MarrowType::Error) || matches!(right, MarrowType::Error) {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!(
+                "operator `{}` cannot be applied to `Error`",
+                binary_symbol(op)
+            ),
+        ));
+        return MarrowType::Unknown;
+    }
     let (Some(left), Some(right)) = (as_primitive(left), as_primitive(right)) else {
         return MarrowType::Unknown;
     };
