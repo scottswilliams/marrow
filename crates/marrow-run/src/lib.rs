@@ -1603,16 +1603,29 @@ fn conversion_error(name: &str, span: SourceSpan) -> RuntimeError {
     type_error(&format!("cannot convert this value to {name}"), span)
 }
 
+/// Evaluate `arg` and pull out one expected value shape, or a type error naming
+/// the expectation. `extract` returns the typed payload when the value matches.
+fn eval_typed_arg<T>(
+    arg: &Argument,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+    expected: &str,
+    extract: impl FnOnce(Value) -> Option<T>,
+) -> Result<T, RuntimeError> {
+    extract(eval_expr(&arg.value, env)?)
+        .ok_or_else(|| type_error(&format!("expected {expected}"), span))
+}
+
 /// Evaluate `arg` to bytes, or a type error.
 fn eval_bytes_arg(
     arg: &Argument,
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<Vec<u8>, RuntimeError> {
-    match eval_expr(&arg.value, env)? {
-        Value::Bytes(bytes) => Ok(bytes),
-        _ => Err(type_error("expected bytes", span)),
-    }
+    eval_typed_arg(arg, env, span, "bytes", |value| match value {
+        Value::Bytes(bytes) => Some(bytes),
+        _ => None,
+    })
 }
 
 /// Evaluate `arg` to a decimal, or a type error.
@@ -1621,10 +1634,10 @@ fn eval_decimal_arg(
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<Decimal, RuntimeError> {
-    match eval_expr(&arg.value, env)? {
-        Value::Decimal(decimal) => Ok(decimal),
-        _ => Err(type_error("expected a decimal", span)),
-    }
+    eval_typed_arg(arg, env, span, "a decimal", |value| match value {
+        Value::Decimal(decimal) => Some(decimal),
+        _ => None,
+    })
 }
 
 /// Evaluate `arg` to an instant (UTC nanoseconds), or a type error.
@@ -1633,18 +1646,18 @@ fn eval_instant_arg(
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<i128, RuntimeError> {
-    match eval_expr(&arg.value, env)? {
-        Value::Instant(nanos) => Ok(nanos),
-        _ => Err(type_error("expected an instant", span)),
-    }
+    eval_typed_arg(arg, env, span, "an instant", |value| match value {
+        Value::Instant(nanos) => Some(nanos),
+        _ => None,
+    })
 }
 
 /// Evaluate `arg` to a date (days since the Unix epoch), or a type error.
 fn eval_date_arg(arg: &Argument, env: &mut Env<'_>, span: SourceSpan) -> Result<i32, RuntimeError> {
-    match eval_expr(&arg.value, env)? {
-        Value::Date(days) => Ok(days),
-        _ => Err(type_error("expected a date", span)),
-    }
+    eval_typed_arg(arg, env, span, "a date", |value| match value {
+        Value::Date(days) => Some(days),
+        _ => None,
+    })
 }
 
 /// Evaluate `arg` to a duration (signed nanoseconds), or a type error.
@@ -1653,10 +1666,10 @@ fn eval_duration_arg(
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<i128, RuntimeError> {
-    match eval_expr(&arg.value, env)? {
-        Value::Duration(nanos) => Ok(nanos),
-        _ => Err(type_error("expected a duration", span)),
-    }
+    eval_typed_arg(arg, env, span, "a duration", |value| match value {
+        Value::Duration(nanos) => Some(nanos),
+        _ => None,
+    })
 }
 
 /// The wrong-argument-count error for a `std::*` helper.
@@ -1669,10 +1682,10 @@ fn std_arity(module: &str, op: &str, span: SourceSpan) -> RuntimeError {
 
 /// Evaluate `arg` to a string, or a type error.
 fn eval_text(arg: &Argument, env: &mut Env<'_>, span: SourceSpan) -> Result<String, RuntimeError> {
-    match eval_expr(&arg.value, env)? {
-        Value::Str(text) => Ok(text),
-        _ => Err(type_error("expected a string", span)),
-    }
+    eval_typed_arg(arg, env, span, "a string", |value| match value {
+        Value::Str(text) => Some(text),
+        _ => None,
+    })
 }
 
 /// Truncated integer remainder (sign of the dividend), rejecting a zero divisor
