@@ -373,7 +373,7 @@ fn short_form_keyword_module_resolves() {
 fn a_file_with_a_parse_error_contributes_no_module() {
     let root = temp_project("program-parse-error", |root| {
         // A leading tab is a lexical error, so the file parses with errors and
-        // is excluded from the artifact this slice.
+        // is excluded from the artifact.
         write(
             root,
             "src/shelf/books.mw",

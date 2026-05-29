@@ -1,8 +1,7 @@
 //! The checked-program artifact built alongside a project's diagnostics.
 //!
-//! [`CheckedProgram`] is the first slice of the resolved program model (roadmap
-//! step 5). [`check_project`](crate::check_project) builds it best-effort: it
-//! includes a [`CheckedModule`] only for a library file that declared a module,
+//! [`check_project`](crate::check_project) builds [`CheckedProgram`] best-effort:
+//! it includes a [`CheckedModule`] only for a library file that declared a module,
 //! matched its path, is not a duplicate, and parsed without errors.
 //! [`check_tests`](crate::check_tests) adds a module per clean test file, named
 //! from its path (test files are scripts). Error-bearing files contribute no
@@ -37,7 +36,7 @@ pub struct CheckedModule {
 }
 
 /// A module-level constant. Its type is the resolved annotation when one was
-/// written; an unannotated constant leaves it `None` (inference is later work).
+/// written; an unannotated constant leaves it `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedConst {
     pub name: String,
@@ -69,7 +68,7 @@ pub struct CheckedParam {
     pub ty: MarrowType,
 }
 
-/// A resolved Marrow type, best-effort. Anything this slice cannot resolve
+/// A resolved Marrow type, best-effort. Anything the checker cannot resolve
 /// (including cross-module resource references) is [`MarrowType::Unknown`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarrowType {
