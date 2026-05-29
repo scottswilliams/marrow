@@ -7,12 +7,12 @@ use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 use marrow_write::{
-    FieldValue, ResourceValue, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY, WRITE_NO_SAVED_ROOT,
-    WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH,
-    WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos,
-    plan_field_write, plan_layer_field_write, plan_layer_group_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    FieldValue, ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
+    WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT,
+    WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id,
+    next_layer_pos, plan_field_write, plan_layer_field_write, plan_layer_group_write,
+    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write, plan_resource_delete,
+    plan_resource_merge, plan_resource_write,
 };
 
 /// Compile the single resource declared in `source`.
@@ -428,6 +428,28 @@ fn next_id_allocates_after_the_highest_record() {
         );
     }
     assert_eq!(next_id("books", &store), Ok(6));
+}
+
+#[test]
+fn next_id_at_the_key_space_boundary_is_a_typed_overflow() {
+    // A stored record keyed `i64::MAX` exhausts the key space: the next id would
+    // overflow `i64`, so `next_id` returns a typed error instead of panicking
+    // (debug) or wrapping to a negative id (release).
+    let book = schema(BOOK);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(i64::MAX)],
+        ResourceValue {
+            fields: vec![("title".into(), saved("t"))],
+        },
+    );
+    let result = next_id("books", &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_ID_OVERFLOW),
+        "{result:?}"
+    );
 }
 
 /// The encoded path `^books.byShelf(shelf, id)`.
@@ -1603,6 +1625,21 @@ fn next_layer_pos_for_an_unknown_layer_is_rejected() {
     let result = next_layer_pos(&book, &[SavedKey::Int(5)], "chapters", &store);
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_UNKNOWN_LAYER),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn next_layer_pos_at_the_key_space_boundary_is_a_typed_overflow() {
+    // A layer entry keyed `i64::MAX` exhausts the position space: the next
+    // position would overflow `i64`, so `next_layer_pos` returns a typed error
+    // instead of panicking (debug) or re-deriving an already-used low position.
+    let book = schema(BOOK_LAYERS);
+    let mut store = MemStore::new();
+    write_tag(&mut store, &book, 5, i64::MAX, "a");
+    let result = next_layer_pos(&book, &[SavedKey::Int(5)], "tags", &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_ID_OVERFLOW),
         "{result:?}"
     );
 }
