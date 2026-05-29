@@ -111,7 +111,7 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
         && ty.text != "Error"
     {
         out.push(CheckDiagnostic {
-            code: CHECK_CATCH_TYPE.to_string(),
+            code: CHECK_CATCH_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("catch type must be `Error`, found `{}`", ty.text),
@@ -236,7 +236,12 @@ fn walk_loop_control_flow(
                         }
                         None => "control flow statement is not inside a loop".to_string(),
                     };
-                    out.push(diagnostic_at(CHECK_LOOP_CONTROL_FLOW, file, statement, &message));
+                    out.push(diagnostic_at(
+                        CHECK_LOOP_CONTROL_FLOW,
+                        file,
+                        statement,
+                        &message,
+                    ));
                 }
             }
             Statement::If {
@@ -338,10 +343,15 @@ fn is_constant_expr(expr: &Expression) -> bool {
 }
 
 /// A diagnostic located at an expression's span.
-fn diagnostic(code: &str, file: &Path, expr: &Expression, message: &str) -> CheckDiagnostic {
+fn diagnostic(
+    code: &'static str,
+    file: &Path,
+    expr: &Expression,
+    message: &str,
+) -> CheckDiagnostic {
     let span = expr.span();
     CheckDiagnostic {
-        code: code.to_string(),
+        code,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: message.to_string(),
@@ -351,10 +361,15 @@ fn diagnostic(code: &str, file: &Path, expr: &Expression, message: &str) -> Chec
 }
 
 /// A diagnostic located at a statement's span.
-fn diagnostic_at(code: &str, file: &Path, statement: &Statement, message: &str) -> CheckDiagnostic {
+fn diagnostic_at(
+    code: &'static str,
+    file: &Path,
+    statement: &Statement,
+    message: &str,
+) -> CheckDiagnostic {
     let span = statement.span();
     CheckDiagnostic {
-        code: code.to_string(),
+        code,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: message.to_string(),

@@ -74,7 +74,7 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// A problem found while checking a project, located in a specific file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckDiagnostic {
-    pub code: String,
+    pub code: &'static str,
     pub severity: Severity,
     pub file: PathBuf,
     pub message: String,
@@ -149,7 +149,7 @@ pub fn check_project(
             if let Some(saved) = &schema.saved_root {
                 match root_owners.get(&saved.root) {
                     Some(first) => report.diagnostics.push(CheckDiagnostic {
-                        code: SCHEMA_DUPLICATE_ROOT_OWNER.to_string(),
+                        code: SCHEMA_DUPLICATE_ROOT_OWNER,
                         severity: Severity::Error,
                         file: file.path.clone(),
                         message: format!(
@@ -174,7 +174,7 @@ pub fn check_project(
                 }
                 match stable_id_owners.get(&id) {
                     Some(first) => report.diagnostics.push(CheckDiagnostic {
-                        code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID.to_string(),
+                        code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID,
                         severity: Severity::Error,
                         file: file.path.clone(),
                         message: format!(
@@ -201,7 +201,7 @@ pub fn check_project(
                 Some(expected) if expected == &module.name => {
                     if let Some(first) = declared.get(expected) {
                         report.diagnostics.push(CheckDiagnostic {
-                            code: CHECK_DUPLICATE_MODULE.to_string(),
+                            code: CHECK_DUPLICATE_MODULE,
                             severity: Severity::Error,
                             file: file.path.clone(),
                             message: format!(
@@ -265,7 +265,7 @@ pub fn check_project(
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, &declared) {
                 report.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_IMPORT.to_string(),
+                    code: CHECK_UNRESOLVED_IMPORT,
                     severity: Severity::Error,
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
@@ -347,7 +347,7 @@ pub fn check_project(
                     );
                     if function.return_type.is_some() && !block_returns(&function.body) {
                         report.diagnostics.push(CheckDiagnostic {
-                            code: CHECK_MISSING_RETURN.to_string(),
+                            code: CHECK_MISSING_RETURN,
                             severity: Severity::Error,
                             file: file.path.clone(),
                             message: format!(
@@ -402,7 +402,7 @@ fn check_type_annotation(
 ) {
     if !MarrowType::names_known_type(&ty.text, resources) {
         diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNKNOWN_TYPE.to_string(),
+            code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("unknown type `{}`", ty.text.trim()),
@@ -433,7 +433,7 @@ fn check_return_values(
                     _ => continue,
                 };
                 diagnostics.push(CheckDiagnostic {
-                    code: CHECK_RETURN_VALUE.to_string(),
+                    code: CHECK_RETURN_VALUE,
                     severity: Severity::Error,
                     file: file.to_path_buf(),
                     message: message.to_string(),
@@ -781,7 +781,7 @@ fn check_condition(
     let span = condition.span();
     match as_primitive(&condition_type) {
         Some(primitive) if primitive != PrimitiveType::Bool => diagnostics.push(CheckDiagnostic {
-            code: CHECK_CONDITION_TYPE.to_string(),
+            code: CHECK_CONDITION_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -795,7 +795,7 @@ fn check_condition(
         // to be `bool`.
         None if matches!(condition_type, MarrowType::Unknown) => {
             diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE.to_string(),
+                code: CHECK_UNTYPED_VALUE,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: "condition has no known type; it must be `bool`".to_string(),
@@ -824,7 +824,7 @@ fn check_return_type(
     };
     match as_primitive(value_type) {
         Some(actual) if actual != expected => diagnostics.push(CheckDiagnostic {
-            code: CHECK_RETURN_TYPE.to_string(),
+            code: CHECK_RETURN_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -838,7 +838,7 @@ fn check_return_type(
         // Strict typing: a value with no known type returned where a concrete type
         // is declared must be converted first.
         None if matches!(value_type, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE.to_string(),
+            code: CHECK_UNTYPED_VALUE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -870,7 +870,7 @@ fn check_assignment(
     };
     match as_primitive(value) {
         Some(value) if value != place => diagnostics.push(CheckDiagnostic {
-            code: CHECK_ASSIGNMENT_TYPE.to_string(),
+            code: CHECK_ASSIGNMENT_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -883,7 +883,7 @@ fn check_assignment(
         }),
         // A value the checker could not resolve, stored into a concrete place.
         None if matches!(value, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE.to_string(),
+            code: CHECK_UNTYPED_VALUE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
@@ -926,7 +926,7 @@ fn infer_type(
             let name = &segments[0];
             lookup_opt(scope, name).unwrap_or_else(|| {
                 diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_NAME.to_string(),
+                    code: CHECK_UNRESOLVED_NAME,
                     severity: Severity::Error,
                     file: file.to_path_buf(),
                     message: format!("`{name}` is not defined"),
@@ -1219,7 +1219,7 @@ fn check_literal_range(
             _ => "decimal",
         };
         diagnostics.push(CheckDiagnostic {
-            code: CHECK_LITERAL_RANGE.to_string(),
+            code: CHECK_LITERAL_RANGE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!("{type_name} literal `{text}` is out of range"),
@@ -1388,7 +1388,7 @@ fn is_ordered(primitive: PrimitiveType) -> bool {
 
 fn operator_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_OPERATOR_TYPE.to_string(),
+        code: CHECK_OPERATOR_TYPE,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
@@ -1491,7 +1491,7 @@ fn check_call(
         // missing definition may live in an excluded module).
         if file_in_program(program, file) {
             diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNRESOLVED_CALL.to_string(),
+                code: CHECK_UNRESOLVED_CALL,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!("function `{}` is not defined", segments.join("::")),
@@ -1556,7 +1556,7 @@ fn check_call(
                 // parameter must be converted first.
                 None if matches!(arg_type, MarrowType::Unknown) => {
                     diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNTYPED_VALUE.to_string(),
+                        code: CHECK_UNTYPED_VALUE,
                         severity: Severity::Error,
                         file: file.to_path_buf(),
                         message: format!(
@@ -1578,7 +1578,7 @@ fn check_call(
 /// A `check.call_argument` diagnostic located at a call's span.
 fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_CALL_ARGUMENT.to_string(),
+        code: CHECK_CALL_ARGUMENT,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
@@ -1822,7 +1822,7 @@ pub fn check_tests(
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, &resolvable) {
                 report.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_IMPORT.to_string(),
+                    code: CHECK_UNRESOLVED_IMPORT,
                     severity: Severity::Error,
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
@@ -1857,7 +1857,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
         Ok(source) => source,
         Err(error) => {
             diagnostics.push(CheckDiagnostic {
-                code: IO_READ.to_string(),
+                code: IO_READ,
                 severity: Severity::Error,
                 file: file_path.to_path_buf(),
                 message: format!("failed to read source: {error}"),
@@ -1871,7 +1871,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
     let parsed = parse_source(&source);
     for diagnostic in &parsed.diagnostics {
         diagnostics.push(CheckDiagnostic {
-            code: diagnostic.code.to_string(),
+            code: diagnostic.code,
             severity: diagnostic.severity,
             file: file_path.to_path_buf(),
             message: diagnostic.message.clone(),
@@ -1906,7 +1906,7 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
                 let (schema, errors) = marrow_schema::compile_resource(resource);
                 for error in errors {
                     diagnostics.push(CheckDiagnostic {
-                        code: error.code.to_string(),
+                        code: error.code,
                         severity: Severity::Error,
                         file: file_path.to_path_buf(),
                         message: error.message,
@@ -2074,7 +2074,7 @@ fn module_path_error(
     message: String,
 ) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_MODULE_PATH.to_string(),
+        code: CHECK_MODULE_PATH,
         severity: Severity::Error,
         file: file.path.clone(),
         message,
@@ -2119,7 +2119,7 @@ fn check_duplicate_declarations(
         }
         match first_seen.get(name) {
             Some(first) => diagnostics.push(CheckDiagnostic {
-                code: CHECK_DUPLICATE_DECLARATION.to_string(),
+                code: CHECK_DUPLICATE_DECLARATION,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!("`{name}` is already declared on line {}", first.line),
