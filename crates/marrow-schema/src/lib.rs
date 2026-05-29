@@ -250,25 +250,16 @@ fn check_saved_data(
     }
 }
 
-/// Reject a keyed-layer key parameter whose type has no key encoding (`decimal`),
-/// descending into groups. A keyed leaf and a keyed group both carry key
-/// parameters in `keys`; an unkeyed field or group has none. Identity keys are
-/// checked separately in [`check_saved_data`].
+/// Validate a keyed-layer's own key parameters, descending into groups. A keyed
+/// layer's key must be a saved key, so it may not embed `unknown` (F20) and may
+/// not be an unorderable type such as `decimal` (F12). A keyed leaf and a keyed
+/// group both carry their key parameters in `keys`; an unkeyed field or group
+/// has none. Identity keys are checked separately in [`check_saved_data`].
 fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
-        ResourceMember::Field(field) => {
-            for key in &field.keys {
-                if is_unorderable_key_type(&key.ty) {
-                    errors.push(unorderable_key_error("key", &key.name, field.span));
-                }
-            }
-        }
+        ResourceMember::Field(field) => check_key_params(&field.keys, field.span, errors),
         ResourceMember::Group(group) => {
-            for key in &group.keys {
-                if is_unorderable_key_type(&key.ty) {
-                    errors.push(unorderable_key_error("key", &key.name, group.span));
-                }
-            }
+            check_key_params(&group.keys, group.span, errors);
             for nested in &group.members {
                 check_member_keys(nested, errors);
             }
@@ -277,9 +268,22 @@ fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     }
 }
 
+/// Report each key parameter whose type cannot be a saved key. Key params have
+/// no span of their own, so errors point at the keyed layer's `span`.
+fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
+    for key in keys {
+        if embeds_unknown(&key.ty) {
+            errors.push(unknown_error("key", &key.name, span));
+        }
+        if is_unorderable_key_type(&key.ty) {
+            errors.push(unorderable_key_error("key", &key.name, span));
+        }
+    }
+}
+
 /// Reject `unknown` on the value type of a field or keyed leaf, descending into
-/// groups. Key types use ordered scalars or identity types and never `unknown`
-/// (see `docs/language/types.md`), so layer key parameters are not checked here.
+/// groups. A keyed layer's own key parameters are validated separately in
+/// [`check_member_keys`].
 fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {

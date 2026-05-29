@@ -290,6 +290,48 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn keyed_leaf_key_param_typed_unknown_is_an_error() {
+    // `unknown` is rejected in saved keys (types.md:66-67), including a keyed
+    // layer's own key parameters, not only identity keys and value types (F20).
+    let source = "\
+resource Book at ^books(id: int)
+    tags(pos: unknown): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("pos"));
+}
+
+#[test]
+fn nested_group_key_param_typed_unknown_is_an_error() {
+    // The check recurses into nested groups' key parameters.
+    let source = "\
+resource Book at ^books(id: int)
+    notes(noteId: string)
+        revisions(rev: unknown)
+            body: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("rev"));
+}
+
+#[test]
+fn local_keyed_leaf_key_param_typed_unknown_is_allowed() {
+    // The saved-key rule applies only to managed saved resources; a local
+    // resource (no store) may use `unknown` in a key parameter.
+    let source = "\
+resource Draft
+    tags(pos: unknown): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "local resources may use `unknown` in keys: {errors:?}"
+    );
+}
+
+#[test]
 fn local_field_typed_unknown_is_allowed() {
     let source = "\
 resource Draft
