@@ -172,21 +172,21 @@ ok: ./project integrity verified (1 records)
 
 It surfaces three findings:
 
-- **`data.decode`** — a stored value is not a canonical form of its declared
+- `data.decode` — a stored value is not a canonical form of its declared
   scalar type (e.g. a non-int byte sequence stored under an `int` field).
 
   ```
   ^note(1).body: data.decode: stored value is not a canonical int form
   ```
 
-- **`data.orphan`** — saved data lives under a root the schema does not declare,
+- `data.orphan` — saved data lives under a root the schema does not declare,
   or names a member the schema does not declare.
 
   ```
   ^counter(1).value: data.orphan: saved data under an unknown root or undeclared member
   ```
 
-- **`store.corrupt_path`** — a stored key is not a well-formed saved path. This
+- `store.corrupt_path` — a stored key is not a well-formed saved path. This
   is the store's own code, surfaced through integrity.
 
 Generated index entries are raw by design and are not flagged.
@@ -214,7 +214,7 @@ a fresh store. There is no in-place fix.
 
 ## Deferred: `diff` and `load`
 
-`marrow data diff` and `marrow data load` are **not implemented**. They overlap
+`marrow data diff` and `marrow data load` are not implemented. They overlap
 restore's replace/merge/repair modes and need typed source-fingerprinting; they
 will route through the maintenance capability when implemented. Until then, use
 `marrow backup` and `marrow restore` for bulk data movement.

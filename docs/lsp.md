@@ -19,14 +19,14 @@ framing and purpose.
 
 ## What It Does Today
 
-The current server is a focused first slice:
+The current server is a first slice:
 
-- **Lifecycle.** Handles `initialize`, `shutdown`, and `exit`. `initialized`
+- Lifecycle. Handles `initialize`, `shutdown`, and `exit`. `initialized`
   and other notifications are accepted and ignored.
-- **Document sync.** Tracks open documents with full text sync
+- Document sync. Tracks open documents with full text sync
   (`textDocumentSync: 1`). Each `textDocument/didChange` carries the whole new
   document; the server uses the last content change as the buffer's new text.
-- **Diagnostics.** On every `textDocument/didOpen` and `textDocument/didChange`,
+- Diagnostics. On every `textDocument/didOpen` and `textDocument/didChange`,
   it parses the buffer and publishes `textDocument/publishDiagnostics`. On
   `textDocument/didClose` it publishes an empty diagnostic list to clear what
   the editor was showing.
@@ -88,22 +88,22 @@ clears any prior squiggles for that file.
 
 ## Behavior and Edge Cases
 
-- **Unknown requests** (any message with an `id` whose method the server does
+- Unknown requests (any message with an `id` whose method the server does
   not handle, such as `textDocument/hover` today) get a JSON-RPC
   `method not found` error (code `-32601`). Unknown notifications (no `id`) are
   ignored.
-- **Clean shutdown** is `shutdown` followed by `exit`; the process exits `0`.
+- Clean shutdown is `shutdown` followed by `exit`; the process exits `0`.
   An `exit` without a preceding `shutdown`, or EOF on stdin, exits `1`.
-- **Message size** is bounded: a body larger than 64 MiB is rejected as invalid
+- Message size is bounded: a body larger than 64 MiB is rejected as invalid
   data rather than allocated, guarding against a corrupt `Content-Length`
   header.
-- **CLI usage.** `marrow lsp --help` (or `-h`) prints usage and exits `0`. Any
+- CLI usage. `marrow lsp --help` (or `-h`) prints usage and exits `0`. Any
   other option (anything starting with `-`) is rejected on stderr with exit
   code `2`, the standard Marrow usage-error code.
 
 ## Not Yet Implemented
 
-The server is a parse-diagnostics slice. The following are not provided today:
+The server is a parse-diagnostics slice. These are not provided today:
 
 - hover, go-to-definition, references, completion, rename, signature help, and
   document symbols;
@@ -122,17 +122,16 @@ The server is a parse-diagnostics slice. The following are not provided today:
 The intended progression mirrors the runtime build order: from source-only
 parse facts to facts derived from a checked project.
 
-1. **Parse diagnostics (today).** Per-buffer syntax errors and warnings with
+1. Parse diagnostics (today). Per-buffer syntax errors and warnings with
    stable spans and dotted codes.
-2. **Checked-project diagnostics.** Resolve `marrow.json` and source roots,
+2. Checked-project diagnostics. Resolve `marrow.json` and source roots,
    build the same checked-program artifact the runtime uses (modules, imports,
    schemas, type and effect facts, capability needs, source spans), and surface
    its diagnostics. This makes editor diagnostics match `marrow run` and
    `marrow test` semantics, not just the parser.
-3. **Navigation and hover.** Hover and go-to-definition driven by checked
+3. Navigation and hover. Hover and go-to-definition driven by checked
    facts, then broader services as the fact model proves out.
 
-Each step reports what it actually does; this page is updated as slices land.
-Until then, treat `marrow lsp` as a live parse checker for `.mw` files in your
-editor, and use [`marrow check`](cli.md#marrow-check) for the same diagnostics on
-the command line.
+Each step reports what it actually does. For now, `marrow lsp` is a live parse
+checker for `.mw` files in your editor; use [`marrow check`](cli.md#marrow-check)
+for the same diagnostics on the command line.
