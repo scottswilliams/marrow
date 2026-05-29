@@ -96,7 +96,7 @@ pub const WRITE_RAW_REQUIRES_MAINTENANCE: &str = "write.raw_requires_maintenance
 fn store_failed(error: StoreError) -> WriteError {
     WriteError {
         code: WRITE_STORE,
-        message: format!("the store could not be read while planning: {error:?}"),
+        message: format!("the store could not be read while planning: {error}"),
     }
 }
 

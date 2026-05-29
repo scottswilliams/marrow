@@ -5183,7 +5183,7 @@ fn eval_bool(expr: &Expression, env: &mut Env<'_>) -> Result<bool, RuntimeError>
 fn store_error(error: StoreError, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         code: RUN_STORE,
-        message: format!("a saved-data operation failed: {error:?}"),
+        message: format!("a saved-data operation failed: {error}"),
         span,
     }
 }
