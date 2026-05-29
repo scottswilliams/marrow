@@ -2571,7 +2571,14 @@ impl<'a> DeclParser<'a> {
                 .to_string(),
             None => String::new(),
         };
-        if !is_identifier(&name) {
+        // A reserved word is not an identifier (per the grammar), so it cannot name
+        // a const any more than it can name a param, member, or key.
+        if keyword(&name).is_some() {
+            self.error_span(
+                span,
+                format!("`{name}` is a keyword and cannot be used as a const name"),
+            );
+        } else if !is_identifier(&name) {
             self.error_span(span, "expected const name before type annotation");
         }
         let ty = match type_tokens {

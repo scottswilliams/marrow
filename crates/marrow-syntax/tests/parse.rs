@@ -1653,6 +1653,22 @@ const : int = 1
 }
 
 #[test]
+fn reserved_word_as_const_name_is_rejected() {
+    // syntax.md: "Reserved words are not identifiers." A const name is an
+    // `identifier`, so a reserved word (`at`) there is a parse error, matching
+    // the param/member/key name positions.
+    let parsed = parse_source("module app\nconst at = 5\n");
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("`at` is a keyword")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn rejects_malformed_type_annotations() {
     for source in [
         "module app\nconst Max: = 1\n",
