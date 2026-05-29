@@ -124,9 +124,8 @@ pub enum Expression {
         parts: Vec<InterpolationPart>,
         span: SourceSpan,
     },
-    /// Expression text the outline parser does not yet decompose, such as
-    /// quoted field segments. Carries the raw text so the formatter can re-emit
-    /// it verbatim.
+    /// Expression text the grammar does not structure into a node. Carries the
+    /// raw text so the formatter can re-emit it verbatim.
     Unparsed { text: String, span: SourceSpan },
 }
 
@@ -381,8 +380,9 @@ pub enum Statement {
         finally: Option<Block>,
         span: SourceSpan,
     },
-    /// A statement line the parser cannot yet structure, such as a quoted
-    /// field assignment target.
+    /// A statement line the grammar does not recognize. Parsing raises a
+    /// diagnostic and keeps this placeholder so the following statements still
+    /// parse.
     Unparsed {
         span: SourceSpan,
     },
@@ -1507,7 +1507,7 @@ impl<'a> Parser<'a> {
 
     /// Parse an expression occupying a value position (such as a `const` value)
     /// from the file-wide token stream over `[start_byte, end_byte)`. Spans stay
-    /// absolute. Anything the expression grammar does not yet cover becomes
+    /// absolute. Anything the expression grammar does not structure becomes
     /// `Expression::Unparsed`.
     fn parse_value_expression(
         &self,
@@ -1779,8 +1779,8 @@ impl<'a> Parser<'a> {
     }
 
     fn reject_tabs(&self, line: Line<'a>) -> bool {
-        // The lexer reports tabs with a dedicated diagnostic; the outline parser
-        // only needs to know whether to skip the line, since tabs corrupt
+        // The lexer reports tabs with a dedicated diagnostic; this parser only
+        // needs to know whether to skip the line, since tabs corrupt
         // indentation-based parsing.
         line.text.contains('\t')
     }
@@ -2158,9 +2158,8 @@ fn is_trivia(kind: TokenKind) -> bool {
 
 /// Recursive-descent parser for a single Marrow expression over a token slice
 /// with file-absolute spans. It covers the primary, postfix, unary, and binary
-/// precedence levels, including calls and saved
-/// paths. Forms it does not yet handle (interpolation, quoted field segments)
-/// cause the whole value to be reported as `Expression::Unparsed`.
+/// precedence levels, including calls and saved paths. A value it does not
+/// structure is reported whole as `Expression::Unparsed`.
 struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -2652,9 +2651,9 @@ struct StmtParser<'a> {
 
 impl<'a> StmtParser<'a> {
     fn new(source: &'a str, tokens: &[Token]) -> Self {
-        // Drop doc comments (not yet attached to body statements) but keep
-        // ordinary `;` comments in the stream: they are collected as block
-        // trivia during parsing so the formatter can re-emit them.
+        // Drop doc comments (they attach to declarations, not body statements)
+        // but keep ordinary `;` comments in the stream: they are collected as
+        // block trivia during parsing so the formatter can re-emit them.
         let tokens = tokens
             .iter()
             .copied()

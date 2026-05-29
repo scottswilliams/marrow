@@ -752,8 +752,8 @@ fn restore(args: &[String]) -> ExitCode {
         Ok(store) => store,
         Err(code) => return code,
     };
-    // A normal restore writes into an empty target; replace/merge/repair are
-    // explicit maintenance actions, deferred for now.
+    // A normal restore writes into an empty target; replace/merge/repair would
+    // be explicit maintenance actions, which this command does not offer.
     match store.roots() {
         Ok(roots) if !roots.is_empty() => {
             report_simple_error(

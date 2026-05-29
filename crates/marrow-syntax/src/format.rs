@@ -30,8 +30,8 @@ const INDENT: &str = "    ";
 /// stable fixed point: `format_source(format_source(s)) == format_source(s)`.
 /// Ordinary `;` comments inside function bodies are retained as block trivia
 /// and re-emitted (see `format_block`). A comment in the middle of a value that
-/// spans several lines inside open delimiters is the one position not yet
-/// carried through the expression parser.
+/// spans several lines inside open delimiters is the one position the
+/// expression parser does not carry through.
 pub fn format_source(source: &str) -> String {
     let parsed = crate::parse_source(source);
     let file = &parsed.file;

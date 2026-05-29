@@ -635,10 +635,10 @@ resource Draft
 
 #[test]
 fn required_field_inside_an_unkeyed_group_is_an_error() {
-    // The write planner does not yet materialize unkeyed groups: a whole-resource
-    // write neither validates nor persists their fields. Until that lands, a
-    // required field inside an unkeyed group is a compile error rather than a
-    // silently unenforced constraint. The canonical Patient
+    // The write planner does not materialize unkeyed groups: a whole-resource
+    // write neither validates nor persists their fields, so a required field
+    // inside an unkeyed group is a compile error rather than a silently
+    // unenforced constraint. The canonical Patient
     // `name { required first; last }` shape exercises this.
     let source = "\
 resource Patient at ^patients(id: string)

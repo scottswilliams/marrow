@@ -530,7 +530,7 @@ fn is_key_lookup_target(callee: &Expression) -> bool {
 /// A constant expression: a literal or a name (another constant) combined with
 /// field access, operators, or interpolation. A saved-data read or a call is
 /// never constant, so neither is any expression containing one. Text the parser
-/// has not yet decomposed is treated as constant to avoid false positives.
+/// did not structure is treated as constant to avoid false positives.
 fn is_constant_expr(expr: &Expression) -> bool {
     match expr {
         Expression::Literal { .. } | Expression::Name { .. } => true,

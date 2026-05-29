@@ -1893,9 +1893,9 @@ fn compares_strings_for_equality_and_order() {
 }
 
 #[test]
-fn string_escapes_are_not_yet_decoded() {
+fn string_escapes_are_not_decoded() {
     // The source string contains a backslash escape, which the runtime does not
-    // yet decode.
+    // decode.
     let f = function("fn f(): string\n    return \"a\\nb\"\n");
     let result = evaluate_function(&f, &[]);
     assert!(

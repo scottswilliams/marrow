@@ -114,7 +114,7 @@ pub const RUN_NO_VALUE: &str = "run.no_value";
 pub const RUN_ABSENT: &str = "run.absent_element";
 /// The store reported an error (e.g. a corrupt stored path) during a read.
 pub const RUN_STORE: &str = "run.store";
-/// A construct the runtime does not yet evaluate.
+/// A construct the runtime does not evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
 /// A host capability a builtin needs (e.g. the clock for `std::clock::now`) was
 /// not provided to this run.
@@ -2570,7 +2570,7 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
         Statement::Throw { value, span } => {
             let thrown = eval_expr(value, env)?;
             // `throw` requires an `Error` value (resource-shaped). The checker does
-            // not yet type-check throw operands, so guard here.
+            // not type-check throw operands, so guard here.
             if !matches!(thrown, Value::Resource(_)) {
                 return Err(type_error("`throw` requires an `Error` value", *span));
             }
@@ -3108,8 +3108,8 @@ fn collect_child_identities(
     Ok(values)
 }
 
-/// Convert a child key to a runtime value, or `None` for a key type the runtime
-/// does not yet represent.
+/// Convert a child key to a runtime value, or `None` for a key type this
+/// conversion does not produce (the temporal keys: date, duration, instant).
 fn saved_key_to_value(key: SavedKey) -> Option<Value> {
     match key {
         SavedKey::Int(n) => Some(Value::Int(n)),
@@ -4142,9 +4142,9 @@ fn delete_nested_field(
     if resource_nested_member_type(env.program, root, &layer_names, field).is_none() {
         return Err(unsupported("deleting this group field", span));
     }
-    // No required-field guard is needed here yet: a required field inside an unkeyed
-    // group is currently a compile error (`schema.required_in_unkeyed_group`). Once
-    // group materialization lifts that rejection, add the guard that
+    // No required-field guard is needed here: a required field inside an unkeyed
+    // group is a compile error (`schema.required_in_unkeyed_group`). If group
+    // materialization ever lifts that rejection, add the guard that
     // `eval_field_delete` applies to top-level required fields.
     let mut path = vec![PathSegment::Root(root.into())];
     path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
@@ -4345,11 +4345,10 @@ fn eval_identity_constructor(
 }
 
 /// Whether the resource declares an unkeyed nested group, which a whole-resource
-/// value owns but the runtime cannot yet materialize. A group layer has no key
+/// value owns but the runtime does not materialize. A group layer has no key
 /// params (a keyed leaf or keyed group always does), so any such layer is an
 /// unkeyed group the whole-resource read would silently omit and the
-/// whole-resource write would silently delete; both paths reject it until group
-/// materialization lands.
+/// whole-resource write would silently delete; both paths reject it instead.
 fn declares_unkeyed_group(resource: &ResourceSchema) -> bool {
     resource
         .layers
@@ -4871,8 +4870,8 @@ fn value_to_key(value: Value) -> Option<SavedKey> {
     }
 }
 
-/// Convert a decoded saved value to a runtime value, or `None` for a scalar type
-/// the runtime does not yet represent (date, decimal, and so on).
+/// Convert a decoded saved value to a runtime value, or `None` for a saved
+/// variant with no runtime value (the `ErrorCode` index marker).
 fn saved_value_to_value(value: SavedValue) -> Option<Value> {
     match value {
         SavedValue::Int(n) => Some(Value::Int(n)),
@@ -4901,7 +4900,7 @@ fn eval_interpolation(
     for part in parts {
         match part {
             InterpolationPart::Text { text, .. } => {
-                // Backslash escapes are not yet decoded (as for plain strings).
+                // Backslash escapes are not decoded (as for plain strings).
                 if text.contains('\\') {
                     return Err(unsupported("string escape sequences", span));
                 }
@@ -4964,7 +4963,7 @@ fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value
 }
 
 /// Decode a string literal's value. The literal `text` is the raw source,
-/// including the surrounding quotes; escape sequences are not yet decoded, so a
+/// including the surrounding quotes; escape sequences are not decoded, so a
 /// literal containing a backslash is reported as unsupported rather than guessed.
 fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let inner = text
@@ -4978,7 +4977,7 @@ fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeErr
 }
 
 /// Decode a bytes literal `b"..."` to its raw bytes (the content's UTF-8). Like
-/// string literals, escape sequences are not yet decoded.
+/// string literals, escape sequences are not decoded.
 fn eval_bytes_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let inner = text
         .strip_prefix("b\"")
@@ -5246,7 +5245,7 @@ fn value_error(error: ValueError, span: SourceSpan) -> RuntimeError {
 fn unsupported(what: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         code: RUN_UNSUPPORTED,
-        message: format!("the runtime does not yet evaluate {what}"),
+        message: format!("the runtime does not evaluate {what}"),
         span,
     }
 }

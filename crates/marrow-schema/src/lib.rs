@@ -1,7 +1,7 @@
 //! Compiles a parsed Marrow resource declaration into a typed-tree
 //! [`ResourceSchema`].
 //!
-//! It maps the resource outline produced by `marrow-syntax` onto the
+//! It maps the parsed resource declaration produced by `marrow-syntax` onto the
 //! saved/local tree shape: a saved root with identity keys, top-level fields,
 //! keyed layers (sequences, keyed trees, groups, and history), and declared
 //! indexes. Semantic validation beyond structure is deferred; see the notes on
@@ -143,10 +143,10 @@ pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_ident
 pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
 
 /// A required field is declared inside an unkeyed group. The write planner does
-/// not yet materialize unkeyed groups (their fields live in `layers`, not
-/// `fields`), so it neither validates nor persists them on a whole-resource
-/// write. Until that lands, a required field there is a compile error rather
-/// than a silently unenforced constraint.
+/// not materialize unkeyed groups (their fields live in `layers`, not `fields`),
+/// so it neither validates nor persists them on a whole-resource write. A
+/// required field there is a compile error rather than a silently unenforced
+/// constraint.
 pub const SCHEMA_REQUIRED_IN_UNKEYED_GROUP: &str = "schema.required_in_unkeyed_group";
 
 /// An index argument names a field nested through an unkeyed group. The write
@@ -279,7 +279,7 @@ fn check_saved_data(
 }
 
 /// Reject a required field reachable only through an unkeyed group. The write
-/// planner does not yet materialize unkeyed groups, so a required field there is
+/// planner does not materialize unkeyed groups, so a required field there is
 /// never validated or persisted. `under_unkeyed` is true once an enclosing group
 /// has no key parameters; a keyed group resets nothing, because a field already
 /// under an unkeyed group stays unreachable.
@@ -295,7 +295,7 @@ fn check_required_in_unkeyed_group(
                     code: SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
                     message: format!(
                         "required field `{}` is inside an unkeyed group, which the \
-                         write planner does not yet maintain",
+                         write planner does not maintain",
                         field.name
                     ),
                     span: field.span,
@@ -425,12 +425,12 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                     span: index.span,
                 }),
                 // A dotted argument resolves through an unkeyed group, which the
-                // write planner does not yet maintain.
+                // write planner does not maintain.
                 Some(_) if arg.contains('.') => errors.push(SchemaError {
                     code: SCHEMA_NESTED_INDEX_ARG,
                     message: format!(
                         "index `{}` argument `{arg}` names a field nested through an \
-                         unkeyed group, which the write planner does not yet maintain",
+                         unkeyed group, which the write planner does not maintain",
                         index.name
                     ),
                     span: index.span,

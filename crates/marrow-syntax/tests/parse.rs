@@ -702,7 +702,7 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
 }
 
 #[test]
-fn parses_reference_sample_outline() {
+fn parses_reference_sample_structure() {
     let parsed = parse_source(reference_sample());
 
     assert!(

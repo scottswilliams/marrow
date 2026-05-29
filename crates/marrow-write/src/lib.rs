@@ -1187,7 +1187,7 @@ fn check_unique_conflict(
 }
 
 /// The key form of a saved value, or `None` for a value with no order-preserving
-/// key encoding (decimal, for now).
+/// key encoding (a decimal).
 fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
     Some(match value {
         SavedValue::Int(value) => SavedKey::Int(*value),
