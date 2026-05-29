@@ -2547,6 +2547,54 @@ fn copies_a_whole_resource() {
     assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
 }
 
+/// A resource declaring an unkeyed nested group (`name`). A whole-resource read
+/// would silently omit the group's fields, and a whole-resource write would
+/// delete the group subtree while rewriting only top-level fields — so both
+/// must fail fast until group materialization lands (review F15, interim).
+const PATIENT_WITH_GROUP: &str = "\
+resource Patient at ^patients(id: int)
+    mrn: string
+    name
+        first: string
+        last: string
+
+fn read(id: int): Patient
+    return ^patients(id)
+
+fn copy(from: int, to: int)
+    ^patients(to) = ^patients(from)
+";
+
+#[test]
+fn whole_resource_read_with_unkeyed_group_fails_fast() {
+    let program = checked_program(PATIENT_WITH_GROUP);
+    let store = RefCell::new(MemStore::new());
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("patients".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::Field("mrn".into()),
+        ]),
+        encode_value(&SavedValue::Str("A1".into())).expect("in-range value encodes"),
+    );
+    let error = run_entry(&program, &store, "test::read", &[Value::Int(1)]).unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+}
+
+#[test]
+fn whole_resource_write_with_unkeyed_group_fails_fast() {
+    let program = checked_program(PATIENT_WITH_GROUP);
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(
+        &program,
+        &store,
+        "test::copy",
+        &[Value::Int(1), Value::Int(2)],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+}
+
 /// The sample's `add` shape: allocate an id, build a local resource field by
 /// field, and save it.
 const BOOK_ADD: &str = "\

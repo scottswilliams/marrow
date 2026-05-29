@@ -2674,6 +2674,13 @@ fn read_resource(
 ) -> Result<Value, RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("reading this saved root", span))?;
+    if declares_unkeyed_group(resource) {
+        return Err(unsupported(
+            "a whole-resource read of a resource with an unkeyed nested group \
+             (it would silently omit the group's fields)",
+            span,
+        ));
+    }
     let mut prefix = vec![PathSegment::Root(root.to_string())];
     prefix.extend(identity.iter().cloned().map(PathSegment::RecordKey));
 
@@ -2879,6 +2886,13 @@ fn write_resource(
     };
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing this saved root", span))?;
+    if declares_unkeyed_group(resource) {
+        return Err(unsupported(
+            "a whole-resource write of a resource with an unkeyed nested group \
+             (it would silently delete the group's data)",
+            span,
+        ));
+    }
     let value = resource_value_of(fields, span)?;
     let plan = {
         let store = env.store.borrow();
@@ -3022,6 +3036,18 @@ fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p Reso
                 .as_ref()
                 .is_some_and(|saved| saved.root == root)
         })
+}
+
+/// Whether the resource declares an unkeyed nested group, which a whole-resource
+/// value owns but the runtime cannot yet materialize. A group layer has no key
+/// params (a keyed leaf or keyed group always does), so any such layer is an
+/// unkeyed group the whole-resource read would silently omit and the
+/// whole-resource write would silently delete (review F15, interim).
+fn declares_unkeyed_group(resource: &ResourceSchema) -> bool {
+    resource
+        .layers
+        .iter()
+        .any(|layer| layer.key_params.is_empty())
 }
 
 /// Whether `name` is a resource type declared in the program (for an
