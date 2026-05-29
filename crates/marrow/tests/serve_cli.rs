@@ -136,6 +136,10 @@ fn serve_answers_path_addressed_reads_over_a_loopback_socket() {
         &address,
         &json!({ "id": 2, "op": "saved_children", "path": [{"root": "counter"}] }),
     );
+    let walk = request(
+        &address,
+        &json!({ "id": 3, "op": "saved_walk", "path": [{"root": "counter"}], "limit": 100 }),
+    );
     child.kill().ok();
     child.wait().ok();
     fs::remove_dir_all(&project).ok();
@@ -147,6 +151,13 @@ fn serve_answers_path_addressed_reads_over_a_loopback_socket() {
         children["ok"]["children"],
         json!([{ "key": { "int": 1 } }]),
         "{children}"
+    );
+    // The walk reaches the one stored field and is not truncated.
+    assert_eq!(walk["ok"]["truncated"], json!(false), "{walk}");
+    assert_eq!(
+        walk["ok"]["entries"].as_array().map(Vec::len),
+        Some(1),
+        "{walk}"
     );
 }
 

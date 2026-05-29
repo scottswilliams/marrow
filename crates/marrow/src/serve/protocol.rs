@@ -58,6 +58,7 @@ fn dispatch(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError
         "saved_roots" => op_saved_roots(store),
         "saved_get" => op_saved_get(store, request),
         "saved_children" => op_saved_children(store, request),
+        "saved_walk" => op_saved_walk(store, request),
         other => Err(ProtocolError {
             code: PROTOCOL_UNKNOWN_OP,
             message: format!("unknown operation `{other}`"),
@@ -92,6 +93,30 @@ fn op_saved_children(store: &dyn Backend, request: &Value) -> Result<Value, Prot
     let children = store.child_keys(&path).map_err(store_error)?;
     let children: Vec<Value> = children.iter().map(encode_child).collect();
     Ok(json!({ "children": children }))
+}
+
+/// The largest `saved_walk` page the server returns, so an unbounded request
+/// cannot force a huge scan. A client pages by walking deeper subtrees.
+const MAX_WALK: usize = 10_000;
+
+/// `saved_walk` → up to `limit` `(path, value)` entries in the subtree at a saved
+/// path, in Marrow order, plus whether the page was truncated. Each entry's path
+/// and value are base64 (the path bytes are opaque to the client in v1). The
+/// `limit` is required and clamped to [`MAX_WALK`].
+fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
+    let path = encode_path(&request_path(request)?);
+    let limit = request
+        .get("limit")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| bad_request("`saved_walk` requires an integer `limit`"))?;
+    let limit = limit.min(MAX_WALK as u64) as usize;
+    let page = store.scan(&path, limit).map_err(store_error)?;
+    let entries: Vec<Value> = page
+        .entries
+        .iter()
+        .map(|(path, value)| json!({ "path": base64_encode(path), "value": base64_encode(value) }))
+        .collect();
+    Ok(json!({ "entries": entries, "truncated": page.truncated }))
 }
 
 /// The decoded `path` of a request, or a `protocol.bad_request` error.
@@ -437,5 +462,51 @@ mod tests {
         ] {
             assert_eq!(base64_decode(&base64_encode(&bytes)), Some(bytes));
         }
+    }
+
+    /// A store holding two book titles, for paging.
+    fn store_with_two_books() -> MemStore {
+        let mut store = MemStore::new();
+        for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
+            let path = encode_path(&[
+                PathSegment::Root("books".into()),
+                PathSegment::RecordKey(SavedKey::Int(id)),
+                PathSegment::Field("title".into()),
+            ]);
+            store.write(&path, title.as_bytes().to_vec());
+        }
+        store
+    }
+
+    #[test]
+    fn saved_walk_truncates_at_the_limit() {
+        let store = store_with_two_books();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1 }),
+        );
+        assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 1);
+        assert_eq!(reply["ok"]["truncated"], json!(true));
+    }
+
+    #[test]
+    fn saved_walk_returns_the_whole_subtree_under_a_generous_limit() {
+        let store = store_with_two_books();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 100 }),
+        );
+        assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 2);
+        assert_eq!(reply["ok"]["truncated"], json!(false));
+    }
+
+    #[test]
+    fn saved_walk_without_a_limit_is_a_bad_request() {
+        let store = MemStore::new();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}] }),
+        );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
     }
 }
