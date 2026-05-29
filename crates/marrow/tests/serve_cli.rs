@@ -116,6 +116,41 @@ fn serve_answers_saved_roots_over_a_loopback_socket() {
 }
 
 #[test]
+fn serve_answers_path_addressed_reads_over_a_loopback_socket() {
+    let project = native_project("serve-reads");
+    let dir = project.to_str().unwrap().to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0)
+    );
+
+    let (mut child, address) = spawn_serve(&dir);
+    let get = request(
+        &address,
+        &json!({
+            "id": 1, "op": "saved_get",
+            "path": [{"root": "counter"}, {"key": {"int": 1}}, {"field": "value"}],
+        }),
+    );
+    let children = request(
+        &address,
+        &json!({ "id": 2, "op": "saved_children", "path": [{"root": "counter"}] }),
+    );
+    child.kill().ok();
+    child.wait().ok();
+    fs::remove_dir_all(&project).ok();
+
+    // The stored int 42 encodes canonically as "42", which is base64 "NDI=".
+    assert_eq!(get["ok"]["presence"], json!("value_only"), "{get}");
+    assert_eq!(get["ok"]["value"], json!("NDI="), "{get}");
+    assert_eq!(
+        children["ok"]["children"],
+        json!([{ "key": { "int": 1 } }]),
+        "{children}"
+    );
+}
+
+#[test]
 fn serving_an_unseeded_project_serves_empty_roots_and_creates_no_store() {
     let project = native_project("serve-empty");
     let dir = project.to_str().unwrap().to_string();
