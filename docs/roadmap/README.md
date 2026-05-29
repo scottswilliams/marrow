@@ -87,6 +87,10 @@ surface behind.
 
 Prefer one complete vertical path over several partial subsystems.
 
+Documentation work that supports this roadmap is tracked in
+[`documentation.md`](documentation.md). Keep those references concise,
+current, and aligned with the language model in `docs/language/`.
+
 ## 1. Bootstrap Spine
 
 - Keep the repository Apache-2.0 only.

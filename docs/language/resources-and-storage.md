@@ -156,9 +156,41 @@ resource Book at ^books(id: int)
 
 Documentation comments feed generated docs, editor hover, inspect output, and
 LSP help. Stable IDs let rename and migration tools track an element even if
-its source name changes. They are optional source metadata, not a database
-catalog. When present, stable IDs must be unique in the project. Add them to
-elements that need durable identity across rename or migration work.
+its source name changes.
+
+An `@id(...)` value names the resource element for tooling. It does not change
+the saved path, the field name, the runtime value, or the type of the element.
+In the example above, code still reads and writes `title`:
+
+```mw
+^books(id).title = "Small Gods"
+```
+
+If the source field is later renamed, the stable ID can stay the same:
+
+```mw
+resource Book at ^books(id: int)
+    ;; Display title shown in search and shelf views.
+    @id("book.title")
+    displayTitle: string
+```
+
+That gives rename and migration tools a durable way to understand that
+`displayTitle` is the same logical element that used to be spelled `title`.
+The migration still decides what saved data to move or rewrite; Marrow does not
+guess that from the ID alone.
+
+Stable IDs are optional source metadata, not a database catalog. When present,
+they must be unique in the project. Use stable dotted text that describes the
+logical element, not its current source spelling. Add IDs to elements that need
+durable identity across rename, migration, generated documentation, or external
+tooling. Leave them off short-lived private shapes where a source name is
+enough.
+
+`@id(...)` applies only to the next resource element at the same indentation
+level: a field, keyed field, group, keyed group, or index. It does not apply to
+the whole resource declaration, the saved root, or identity keys in the
+`at ^root(...)` clause.
 
 Adding a sparse element is a source change. Adding a required element requires
 a migration that populates existing saved resources before they validate.
