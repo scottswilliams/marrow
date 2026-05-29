@@ -190,9 +190,8 @@ $ echo $?
 1
 ```
 
-> Note: the implemented assertions are `std::assert::isTrue`, `isFalse`,
-> `absent`, and `fail`. `std::assert::eq` is not evaluated yet — a test that
-> calls it currently reports `ERROR … run.unsupported`.
+The implemented assertions are `std::assert::isTrue`, `isFalse`, `absent`, and
+`fail`.
 
 ---
 

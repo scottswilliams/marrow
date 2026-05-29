@@ -25,9 +25,10 @@ rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
 `get` against an unseeded project prints `(no saved data)` (or `(absent)` for
 `get`) and leaves the data directory untouched — no `marrow.redb` is written.
 
-There is no in-place repair command. To rewrite a store, use `marrow restore`
-with an archive (see [cli.md](cli.md)); restore's replace/merge/repair modes are
-the maintenance write path. `data` itself only reads.
+There is no in-place repair command. To rewrite a store, back it up, empty it,
+and `marrow restore` an archive into the empty store (see [cli.md](cli.md));
+`marrow restore` writes into an empty target only, and replace/merge/repair
+restores are deferred. `data` itself only reads.
 
 ## What needs source, what does not
 

@@ -2,11 +2,6 @@
 
 Marrow is a small typed language with built-in saved data.
 
-This repository is starting fresh from the reference documentation. It is not
-a fork of the old combined M/Marrow implementation. Implementation work should
-copy in existing Rust only when it clearly fits the `.mw` language and database
-model described here.
-
 ```mw
 module app::tasks
 
