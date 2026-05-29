@@ -203,7 +203,7 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
             }
             ResourceMember::Field(field) => {
                 names.check(&field.name, field.span, &mut errors);
-                layers.push(keyed_leaf(field));
+                layers.push(keyed_leaf(field, &mut errors));
             }
             ResourceMember::Group(group) => {
                 names.check(&group.name, group.span, &mut errors);
@@ -249,6 +249,7 @@ fn check_saved_data(
     decl_span: SourceSpan,
     errors: &mut Vec<SchemaError>,
 ) {
+    check_duplicate_key_params(&store.keys, decl_span, errors);
     for key in &store.keys {
         if embeds_unknown(&key.ty) {
             errors.push(unknown_error("identity key", &key.name, decl_span));
@@ -620,7 +621,7 @@ fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerM
             }
             ResourceMember::Field(field) => {
                 names.check(&field.name, field.span, errors);
-                members.push(LayerMember::Layer(keyed_leaf(field)));
+                members.push(LayerMember::Layer(keyed_leaf(field, errors)));
             }
             ResourceMember::Group(nested) => {
                 names.check(&nested.name, nested.span, errors);
@@ -655,7 +656,8 @@ fn field_schema(field: &FieldDecl) -> FieldSchema {
 
 /// A field with key parameters is a keyed leaf layer (a sequence or keyed
 /// tree), where the field type is the layer's leaf value type.
-fn keyed_leaf(field: &FieldDecl) -> LayerSchema {
+fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
+    check_duplicate_key_params(&field.keys, field.span, errors);
     LayerSchema {
         name: field.name.clone(),
         docs: field.docs.clone(),
@@ -667,6 +669,7 @@ fn keyed_leaf(field: &FieldDecl) -> LayerSchema {
 }
 
 fn group_layer(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
+    check_duplicate_key_params(&group.keys, group.span, errors);
     LayerSchema {
         name: group.name.clone(),
         docs: group.docs.clone(),
@@ -674,6 +677,29 @@ fn group_layer(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> LayerSchema 
         leaf_type: None,
         members: layer_members(group, errors),
         stable_id: group.stable_id.clone(),
+    }
+}
+
+/// Report a keyed layer's key parameters that repeat a name. Key params share a
+/// per-layer namespace; two keys of the same name are unaddressable (review
+/// F22). Key params have no span of their own, so errors point at the layer's
+/// `span`.
+fn check_duplicate_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
+    let mut seen: Vec<&str> = Vec::new();
+    for key in keys {
+        if seen.contains(&key.name.as_str()) {
+            errors.push(duplicate_key_error(&key.name, span));
+        } else {
+            seen.push(&key.name);
+        }
+    }
+}
+
+fn duplicate_key_error(name: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        code: SCHEMA_DUPLICATE_MEMBER,
+        message: format!("duplicate key `{name}`"),
+        span,
     }
 }
 

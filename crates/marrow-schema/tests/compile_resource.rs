@@ -627,6 +627,43 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn duplicate_identity_key_name_is_an_error() {
+    // Identity keys must have distinct names; two `studentId` keys are
+    // unaddressable (review F22).
+    let source = "\
+resource Enrollment at ^enrollments(studentId: string, studentId: string)
+    status: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
+    assert!(errors[0].message.contains("studentId"));
+}
+
+#[test]
+fn duplicate_keyed_leaf_key_param_name_is_an_error() {
+    // A keyed layer's key parameters must have distinct names.
+    let source = "\
+resource Book at ^books(id: int)
+    tags(pos: int, pos: int): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
+    assert!(errors[0].message.contains("pos"));
+}
+
+#[test]
+fn duplicate_group_key_param_name_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    revisions(rev: int, rev: int)
+        body: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
+    assert!(errors[0].message.contains("rev"));
+}
+
+#[test]
 fn duplicate_stable_id_within_resource_is_an_error() {
     // Stable IDs must be unique (resources-and-storage.md:159-161); within one
     // resource the later element is the error.
