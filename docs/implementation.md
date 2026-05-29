@@ -402,22 +402,24 @@ The server is useful when several local tools need one long-lived owner for a
 persistent backend, live reads, or local-session inspection.
 
 The server protocol is newline-delimited JSON over a loopback TCP connection
-(`127.0.0.1`); the bound address is printed on startup. It stays small:
+(`127.0.0.1`); the bound address is printed on startup. It is a small, read-only
+inspection surface. The operations are the saved-tree reads:
 
-- read an exact saved path with `saved_get`;
-- list child keys with `saved_children`;
 - list saved roots with `saved_roots`;
-- walk a bounded saved subtree with `saved_walk`;
-- evaluate one checked request in a session;
-- register a session for read-only local inspection;
-- inspect registered local roots and local trees.
+- list child keys with `saved_children`;
+- read an exact saved path with `saved_get`;
+- walk a bounded saved subtree with `saved_walk`.
 
-The first release serves the saved-tree read operations over a read-only store
-(`saved_roots`, then `saved_children`, `saved_get`, and `saved_walk`). Checked
-evaluation and session inspection are planned extensions.
+Two read-only extensions are planned for later, not in the first release:
+evaluating one checked, non-mutating query in a session and returning its typed
+result, and registering a session so a client can publish its own in-memory
+trees for read-only inspection. Neither would mutate saved data.
 
-The protocol does not expose arbitrary writes to managed roots. Data changes
-come from checked Marrow execution or explicit repair and migration commands.
+The protocol never writes managed roots: it is a read-only inspection surface.
+Managed data changes come only from checked Marrow execution — `marrow run` or an
+embedded runtime — and from explicit repair and migration commands, never from
+the serve protocol. That read-only guarantee is what lets serve be a long-lived
+shared owner of the store.
 
 Loopback TCP is available for clients that cannot use local IPC. Binding TCP
 beyond loopback is an explicit operator choice and requires authentication and
