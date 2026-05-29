@@ -981,21 +981,24 @@ fn infer_type(
     }
 }
 
-/// The declared type of a top-level saved field read `^root(key…).field`: `base`
-/// must be a keyed record access `^root(key…)` (a call whose callee is the saved
-/// root). Group-layer fields and keyed-leaf reads are not resolved yet, so they
-/// stay unknown. Mirrors the runtime's `resource_field_type`.
+/// The declared type of a top-level saved field read: `base` is either a keyed
+/// record access `^root(key…)` (a call whose callee is the saved root) or — for a
+/// keyless singleton resource (`Settings at ^settings`) addressed by its root —
+/// the saved root `^root` itself. Group-layer fields and keyed-leaf reads are not
+/// resolved here. Mirrors the runtime's `resource_field_type`.
 fn saved_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
     field: &str,
 ) -> Option<MarrowType> {
     use marrow_syntax::Expression;
-    let Expression::Call { callee, .. } = base else {
-        return None;
-    };
-    let Expression::SavedRoot { name: root, .. } = callee.as_ref() else {
-        return None;
+    let root = match base {
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            Expression::SavedRoot { name, .. } => name,
+            _ => return None,
+        },
+        Expression::SavedRoot { name, .. } => name,
+        _ => return None,
     };
     let resource = find_resource_schema(program, root)?;
     let field = resource

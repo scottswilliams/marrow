@@ -1460,6 +1460,36 @@ fn a_group_field_read_feeds_type_checks() {
 }
 
 #[test]
+fn a_singleton_field_read_feeds_type_checks() {
+    // `^settings.theme` on a keyless singleton resource (`Settings at ^settings`)
+    // is `string` from the schema, not Unknown — so a typed use never
+    // false-positives check.untyped_value, and a real mismatch (returning it
+    // from an `int` function) is caught.
+    let found = check_module(
+        "singleton-field",
+        "module m\n\
+         resource Settings at ^settings\n    theme: string\n\n\
+         fn f(): int\n    return ^settings.theme\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_singleton_field_read_in_a_typed_place_is_not_an_untyped_value() {
+    // The documented `const t: string = ^settings.theme` reads a singleton field
+    // into a matching place — no false check.untyped_value.
+    let found = check_module(
+        "singleton-field-ok",
+        "module m\n\
+         resource Settings at ^settings\n    theme: string\n\n\
+         fn f()\n    const t: string = ^settings.theme\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_keyed_leaf_read_feeds_type_checks() {
     // `^books(1).tags(2)` is `string` (the layer's leaf type), but `f` returns `int`.
     let found = check_module(
