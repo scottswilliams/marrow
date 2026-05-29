@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
 use marrow_schema::stdlib::{self, Capability};
-use marrow_schema::{IndexSchema, LayerMember, ResourceSchema, Type};
+use marrow_schema::{Element, IndexSchema, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
 use marrow_store::mem::MemStore;
@@ -3514,7 +3514,12 @@ fn read_resource(
 
     let store = env.store.borrow();
     let mut fields = Vec::new();
-    for field in &resource.fields {
+    // Only plain top-level fields are materialized; keyed leaves and groups are
+    // read through their own paths, not the whole-resource read.
+    for field in resource.members.iter().filter(|node| node.is_plain_field()) {
+        let Element::Slot { ty, .. } = &field.element else {
+            continue; // is_plain_field already guarantees a Slot
+        };
         let mut segments = prefix.clone();
         segments.push(PathSegment::Field(field.name.clone()));
         let Some(bytes) = store
@@ -3523,8 +3528,7 @@ fn read_resource(
         else {
             continue;
         };
-        let value_type = field
-            .ty
+        let value_type = ty
             .scalar()
             .ok_or_else(|| unsupported("reading this field type", span))?;
         let value = decode_value(&bytes, value_type)
@@ -4054,10 +4058,10 @@ fn eval_field_delete(
     // only allowed when the surrounding entry or whole resource is deleted, or
     // under an explicit maintenance run (repair may drop a required field).
     if !env.host.maintenance
-        && resource
-            .fields
-            .iter()
-            .any(|declared| declared.name == field && declared.required)
+        && resource.members.iter().any(|declared| {
+            declared.name == field
+                && matches!(declared.element, Element::Slot { required, .. } if required)
+        })
     {
         return Err(raise_fault(
             WRITE_REQUIRED_FIELD,
@@ -4272,10 +4276,12 @@ fn eval_identity_constructor(
 /// unkeyed group the whole-resource read would silently omit and the
 /// whole-resource write would silently delete; both paths reject it instead.
 fn declares_unkeyed_group(resource: &ResourceSchema) -> bool {
+    // A plain top-level field also has empty key params, so the group check must
+    // exclude it — only a `Group` with no key params is an unkeyed group.
     resource
-        .layers
+        .members
         .iter()
-        .any(|layer| layer.key_params.is_empty())
+        .any(|node| node.key_params.is_empty() && matches!(node.element, Element::Group))
 }
 
 /// Whether `name` is a resource type declared in the program (for an
@@ -5023,14 +5029,18 @@ fn resource_group_members(
 ) -> Option<Vec<(String, ScalarType)>> {
     let resource = find_resource(program, root)?;
     let layer = resource
-        .layers
+        .members
         .iter()
         .find(|declared| declared.name == layer)?;
+    // Only plain field members materialize into a group entry; a nested keyed
+    // leaf or group is read through its own path, not as a flat field.
     let members = layer
         .members
         .iter()
-        .filter_map(|member| match member {
-            LayerMember::Field(field) => Some((field.name.clone(), field.ty.scalar()?)),
+        .filter_map(|member| match &member.element {
+            Element::Slot { ty, .. } if member.is_plain_field() => {
+                Some((member.name.clone(), ty.scalar()?))
+            }
             _ => None,
         })
         .collect();

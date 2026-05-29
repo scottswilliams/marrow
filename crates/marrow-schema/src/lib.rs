@@ -104,16 +104,16 @@ impl fmt::Display for Type {
 
 /// The compiled tree shape of a resource declaration.
 ///
-/// Members are kept in source order in `Vec`s rather than maps: a resource has
-/// few members, lookups are linear, and order matches the declaration and
-/// inspect output.
+/// Members are kept in source order in one `Vec` rather than a map: a resource
+/// has few members, lookups are linear, and order matches the declaration and
+/// inspect output. Fields and keyed layers interleave as declared; consumers
+/// that want only one kind filter `members` by [`Element`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceSchema {
     pub name: String,
     pub docs: Vec<String>,
     pub saved_root: Option<SavedRootSchema>,
-    pub fields: Vec<FieldSchema>,
-    pub layers: Vec<LayerSchema>,
+    pub members: Vec<Node>,
     pub indexes: Vec<IndexSchema>,
 }
 
@@ -122,25 +122,22 @@ impl ResourceSchema {
     /// named segments after the identity, outermost first, where the last name is
     /// a scalar field and every earlier name is a group layer to descend into. A
     /// single-name chain reads a top-level field; a longer chain descends the
-    /// leading names as layers and reads the last name as a field of the innermost
-    /// layer. An empty chain, or any name the schema does not declare as that
+    /// leading names as groups and reads the last name as a field of the innermost
+    /// group. An empty chain, or any name the schema does not declare as that
     /// shape, resolves to `None`.
     ///
     /// A keyed-leaf layer read at the same position is [`Self::leaf_type`]; the two
-    /// differ only in whether the terminal name is a field or a keyed-leaf layer,
-    /// so both share the one layer-descent walk.
+    /// differ only in whether the terminal name is a field (a [`Element::Slot`]) or
+    /// a group (a [`Element::Group`]) to descend, so both share the one walk.
     pub fn field_type(&self, chain: &[&str]) -> Option<&Type> {
-        let (&leaf, layers) = chain.split_last()?;
-        if layers.is_empty() {
-            // A top-level field of the resource.
-            return self
-                .fields
-                .iter()
-                .find(|field| field.name == leaf)
-                .map(|field| &field.ty);
-        }
-        // A field of the innermost group layer.
-        field_member(&self.descend_layers(layers)?.members, leaf)
+        let (&leaf, groups) = chain.split_last()?;
+        // No lead names is a top-level field; otherwise descend the lead names as
+        // group layers and read the terminal as a field of the innermost group.
+        let members = match groups {
+            [] => &self.members,
+            _ => &self.descend_layers(groups)?.members,
+        };
+        plain_field(members, leaf)
     }
 
     /// The declared leaf value type of a keyed-leaf layer named by its chain of
@@ -149,16 +146,20 @@ impl ResourceSchema {
     /// for an empty chain, an unknown layer, or a group layer (which has members,
     /// not a leaf value).
     pub fn leaf_type(&self, layers: &[&str]) -> Option<&Type> {
-        self.descend_layers(layers)?.leaf_type.as_ref()
+        match &self.descend_layers(layers)?.element {
+            Element::Slot { ty, .. } => Some(ty),
+            Element::Group => None,
+        }
     }
 
-    /// Descend a non-empty chain of group layer names, following nested layer
-    /// members, and return the innermost layer. `None` for an empty chain or an
+    /// Descend a non-empty chain of group layer names, following nested layers,
+    /// and return the innermost layer node. `None` for an empty chain or an
     /// unknown name. Also used by the runtime to check that a layer chain is fully
-    /// declared before touching the store.
-    pub fn descend_layers(&self, layers: &[&str]) -> Option<&LayerSchema> {
+    /// declared before touching the store. A plain field (a `Slot` with no key
+    /// parameters) is not a layer, so a name resolving to one fails the descent.
+    pub fn descend_layers(&self, layers: &[&str]) -> Option<&Node> {
         let (&first, rest) = layers.split_first()?;
-        let mut current = self.layers.iter().find(|layer| layer.name == first)?;
+        let mut current = layer_member(&self.members, first)?;
         for &name in rest {
             current = layer_member(&current.members, name)?;
         }
@@ -166,20 +167,33 @@ impl ResourceSchema {
     }
 }
 
-/// The declared type of a group field member named `name`.
-fn field_member<'a>(members: &'a [LayerMember], name: &str) -> Option<&'a Type> {
-    members.iter().find_map(|member| match member {
-        LayerMember::Field(field) if field.name == name => Some(&field.ty),
+/// The value type of a *plain* field member named `name`: a `Slot` with no key
+/// parameters. A keyed leaf or a group of the same name is not a plain field, so
+/// it resolves to `None` — matching the old split where plain fields lived apart
+/// from keyed layers.
+fn plain_field<'a>(members: &'a [Node], name: &str) -> Option<&'a Type> {
+    members.iter().find_map(|node| match &node.element {
+        Element::Slot { ty, .. } if node.name == name && node.key_params.is_empty() => Some(ty),
         _ => None,
     })
 }
 
-/// The keyed-layer member named `name`.
-fn layer_member<'a>(members: &'a [LayerMember], name: &str) -> Option<&'a LayerSchema> {
-    members.iter().find_map(|member| match member {
-        LayerMember::Layer(layer) if layer.name == name => Some(layer),
-        _ => None,
-    })
+/// The layer node named `name`: a group or a keyed leaf — anything but a plain
+/// field (a `Slot` with no key parameters), which is not a layer to descend.
+fn layer_member<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
+    members
+        .iter()
+        .find(|node| node.name == name && !node.is_plain_field())
+}
+
+impl Node {
+    /// Whether this node is a plain top-level (or group-member) field: a `Slot`
+    /// carrying no key parameters. A keyed leaf (`Slot` with key parameters) and a
+    /// group are layers, not plain fields. The write planner and whole-resource
+    /// read use this to pick out the fields they materialize.
+    pub fn is_plain_field(&self) -> bool {
+        self.key_params.is_empty() && matches!(self.element, Element::Slot { .. })
+    }
 }
 
 /// The saved root a resource is attached to, with the identity keys that live
@@ -222,37 +236,34 @@ pub struct KeyDef {
     pub ty: Type,
 }
 
-/// A scalar field stored directly on a resource or inside an unkeyed group.
+/// One node of the resource tree: a top-level field, a keyed leaf, or a group,
+/// distinguished by its [`Element`]. The recursive `members` are filled only for
+/// a group; a keyed leaf carries `key_params` and an empty `members`; a
+/// top-level field carries neither key params nor members.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FieldSchema {
+pub struct Node {
     pub name: String,
     pub docs: Vec<String>,
-    pub required: bool,
-    pub ty: Type,
     pub stable_id: Option<String>,
-}
-
-/// A keyed layer: a sequence or keyed-tree leaf (`tags(pos: int): string`) or a
-/// group with nested members (`notes(noteId: string)` / `versions(version)`).
-///
-/// A keyed leaf sets `leaf_type` and leaves `members` empty. A group leaves
-/// `leaf_type` empty and fills `members`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayerSchema {
-    pub name: String,
-    pub docs: Vec<String>,
+    /// Empty for a top-level field; non-empty for any keyed leaf or keyed group.
     pub key_params: Vec<KeyDef>,
-    pub leaf_type: Option<Type>,
-    pub members: Vec<LayerMember>,
-    pub stable_id: Option<String>,
+    /// Empty for any [`Element::Slot`]; the nested nodes for an [`Element::Group`].
+    pub members: Vec<Node>,
+    pub element: Element,
 }
 
-/// A member nested inside a group layer: either a scalar field or a deeper
-/// keyed layer.
+/// What a [`Node`] holds: a scalar value (`Slot`) or nested members (`Group`).
+///
+/// A top-level field and a keyed-leaf layer are both `Slot`s — the keyed leaf is
+/// a `Slot` with non-empty `key_params`. A group (`notes(noteId: string)` /
+/// `versions(version)` / an unkeyed `name`) is a `Group` with nested `members`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LayerMember {
-    Field(FieldSchema),
-    Layer(LayerSchema),
+pub enum Element {
+    /// A scalar value: a top-level field or a keyed leaf. `required` varies only
+    /// on a top-level/group field; a keyed leaf never exposes it (always false).
+    Slot { ty: Type, required: bool },
+    /// A keyed or unkeyed group, whose value lives in the node's `members`.
+    Group,
 }
 
 /// A declared lookup index over identity keys and fields.
@@ -363,35 +374,19 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
         identity_keys: store.keys.iter().map(key_def).collect(),
     });
 
-    let mut fields = Vec::new();
-    let mut layers = Vec::new();
+    let mut members = Vec::new();
     let mut indexes = Vec::new();
     let mut names = Namespace::default();
 
     for member in &decl.members {
         match member {
-            ResourceMember::Field(field) if field.keys.is_empty() => {
-                names.check(&field.name, field.span, &mut errors);
-                // `name: sequence[T]` is sugar for the `name(pos: int): T` keyed
-                // leaf, so it joins the layers rather than the scalar fields.
-                match Type::resolve(&field.ty) {
-                    Type::Sequence(element) => {
-                        layers.push(keyed_leaf_from_sequence(field, *element))
-                    }
-                    ty => fields.push(field_schema(field, ty)),
-                }
-            }
-            ResourceMember::Field(field) => {
-                names.check(&field.name, field.span, &mut errors);
-                layers.push(keyed_leaf(field, &mut errors));
-            }
-            ResourceMember::Group(group) => {
-                names.check(&group.name, group.span, &mut errors);
-                layers.push(group_layer(group, &mut errors));
-            }
             ResourceMember::Index(index) => {
                 names.check(&index.name, index.span, &mut errors);
                 indexes.push(index_schema(index));
+            }
+            _ => {
+                names.check(member_name(member), member_span(member), &mut errors);
+                members.push(member_node(member, &mut errors));
             }
         }
     }
@@ -400,8 +395,7 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
         name: decl.name.clone(),
         docs: decl.docs.clone(),
         saved_root,
-        fields,
-        layers,
+        members,
         indexes,
     };
 
@@ -556,12 +550,10 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
 /// fields, layers, and index names share the resource namespace, so an identity
 /// key may not reuse any of them.
 fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<SourceSpan> {
-    members.iter().find_map(|member| match member {
-        ResourceMember::Field(field) if field.name == name => Some(field.span),
-        ResourceMember::Group(group) if group.name == name => Some(group.span),
-        ResourceMember::Index(index) if index.name == name => Some(index.span),
-        _ => None,
-    })
+    members
+        .iter()
+        .find(|member| member_name(member) == name)
+        .map(member_span)
 }
 
 /// Resolve each top-level index argument against the resource. Arguments may
@@ -785,43 +777,27 @@ fn unorderable_key_error(what: &str, name: &str, span: SourceSpan) -> SchemaErro
     }
 }
 
-/// Compile the members nested inside a group. Fields and groups recurse; an
-/// index here is an error, since indexes are direct members of the resource.
-fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerMember> {
+/// Compile the members nested inside a group into nodes. Fields and groups
+/// recurse; an index here is an error, since indexes are direct members of the
+/// resource.
+fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<Node> {
     let mut members = Vec::new();
     let mut names = Namespace::default();
 
     for member in &group.members {
         match member {
-            ResourceMember::Field(field) if field.keys.is_empty() => {
-                names.check(&field.name, field.span, errors);
-                // A nested `name: sequence[T]` desugars to the same `pos: int`
-                // keyed leaf as at the top level.
-                match Type::resolve(&field.ty) {
-                    Type::Sequence(element) => members.push(LayerMember::Layer(
-                        keyed_leaf_from_sequence(field, *element),
-                    )),
-                    ty => members.push(LayerMember::Field(field_schema(field, ty))),
-                }
-            }
-            ResourceMember::Field(field) => {
-                names.check(&field.name, field.span, errors);
-                members.push(LayerMember::Layer(keyed_leaf(field, errors)));
-            }
-            ResourceMember::Group(nested) => {
-                names.check(&nested.name, nested.span, errors);
-                members.push(LayerMember::Layer(group_layer(nested, errors)));
-            }
-            ResourceMember::Index(index) => {
-                errors.push(SchemaError {
-                    code: SCHEMA_INDEX_IN_GROUP,
-                    message: format!(
-                        "index `{}` cannot be declared inside group `{}`; \
-                         declare indexes as direct resource members",
-                        index.name, group.name
-                    ),
-                    span: index.span,
-                });
+            ResourceMember::Index(index) => errors.push(SchemaError {
+                code: SCHEMA_INDEX_IN_GROUP,
+                message: format!(
+                    "index `{}` cannot be declared inside group `{}`; \
+                     declare indexes as direct resource members",
+                    index.name, group.name
+                ),
+                span: index.span,
+            }),
+            _ => {
+                names.check(member_name(member), member_span(member), errors);
+                members.push(member_node(member, errors));
             }
         }
     }
@@ -829,58 +805,91 @@ fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerM
     members
 }
 
-fn field_schema(field: &FieldDecl, ty: Type) -> FieldSchema {
-    FieldSchema {
-        name: field.name.clone(),
-        docs: field.docs.clone(),
-        required: field.required,
-        ty,
-        stable_id: field.stable_id.clone(),
+/// The name of a non-index resource member.
+fn member_name(member: &ResourceMember) -> &str {
+    match member {
+        ResourceMember::Field(field) => &field.name,
+        ResourceMember::Group(group) => &group.name,
+        ResourceMember::Index(index) => &index.name,
     }
 }
 
-/// A field with key parameters is a keyed leaf layer (a sequence or keyed
-/// tree), where the field type is the layer's leaf value type.
-fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
-    check_duplicate_key_params(&field.keys, field.span, errors);
-    LayerSchema {
+/// The span of a resource member.
+fn member_span(member: &ResourceMember) -> SourceSpan {
+    match member {
+        ResourceMember::Field(field) => field.span,
+        ResourceMember::Group(group) => group.span,
+        ResourceMember::Index(index) => index.span,
+    }
+}
+
+/// Compile one non-index resource member (a field or a group) into a [`Node`]:
+/// an unkeyed plain field is a top-level `Slot`; a `sequence[T]` field and a
+/// keyed field are both keyed-leaf `Slot`s; a group is a `Group` with recursed
+/// members. An index is not a node and is handled by the caller.
+fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
+    match member {
+        ResourceMember::Field(field) if field.keys.is_empty() => {
+            // `name: sequence[T]` is sugar for the `name(pos: int): T` keyed leaf,
+            // so it becomes a keyed `Slot` rather than a plain top-level field.
+            match Type::resolve(&field.ty) {
+                Type::Sequence(element) => sequence_leaf(field, *element),
+                ty => slot_node(field, ty, vec![], field.required),
+            }
+        }
+        // A keyed field is a keyed-leaf layer; its declared type is the leaf type
+        // and a keyed leaf never exposes `required`.
+        ResourceMember::Field(field) => {
+            check_duplicate_key_params(&field.keys, field.span, errors);
+            slot_node(
+                field,
+                Type::resolve(&field.ty),
+                field.keys.iter().map(key_def).collect(),
+                false,
+            )
+        }
+        ResourceMember::Group(group) => {
+            check_duplicate_key_params(&group.keys, group.span, errors);
+            Node {
+                name: group.name.clone(),
+                docs: group.docs.clone(),
+                stable_id: group.stable_id.clone(),
+                key_params: group.keys.iter().map(key_def).collect(),
+                members: group_members(group, errors),
+                element: Element::Group,
+            }
+        }
+        ResourceMember::Index(_) => unreachable!("indexes are not compiled to nodes"),
+    }
+}
+
+/// A `Slot` node for `field`, carrying its value type, key parameters (empty for
+/// a plain field, the keyed-leaf keys otherwise), and required flag.
+fn slot_node(field: &FieldDecl, ty: Type, key_params: Vec<KeyDef>, required: bool) -> Node {
+    Node {
         name: field.name.clone(),
         docs: field.docs.clone(),
-        key_params: field.keys.iter().map(key_def).collect(),
-        leaf_type: Some(Type::resolve(&field.ty)),
-        members: Vec::new(),
         stable_id: field.stable_id.clone(),
+        key_params,
+        members: Vec::new(),
+        element: Element::Slot { ty, required },
     }
 }
 
 /// Desugar `name: sequence[T]` into the keyed leaf `name(pos: int): T`. The
 /// implicit `pos: int` key matches the canonical sequence spelling, so the
-/// resulting layer is identical to the one `name(pos: int): T` produces and
+/// resulting node is identical to the one `name(pos: int): T` produces and
 /// append/read/traverse work unchanged.
-fn keyed_leaf_from_sequence(field: &FieldDecl, element: Type) -> LayerSchema {
-    LayerSchema {
-        name: field.name.clone(),
-        docs: field.docs.clone(),
-        key_params: vec![KeyDef {
+fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
+    slot_node(
+        field,
+        element,
+        vec![KeyDef {
             name: "pos".to_string(),
             ty: Type::Scalar(ScalarType::Int),
         }],
-        leaf_type: Some(element),
-        members: Vec::new(),
-        stable_id: field.stable_id.clone(),
-    }
-}
-
-fn group_layer(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
-    check_duplicate_key_params(&group.keys, group.span, errors);
-    LayerSchema {
-        name: group.name.clone(),
-        docs: group.docs.clone(),
-        key_params: group.keys.iter().map(key_def).collect(),
-        leaf_type: None,
-        members: layer_members(group, errors),
-        stable_id: group.stable_id.clone(),
-    }
+        false,
+    )
 }
 
 /// Report a keyed layer's key parameters that repeat a name. Key params share a

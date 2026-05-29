@@ -11,7 +11,7 @@
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
-use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema, Type};
+use marrow_schema::{Element, Node, ResourceSchema, SavedRootSchema, Type};
 use marrow_store::backend::Backend;
 use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
@@ -186,14 +186,14 @@ pub fn plan_resource_write(
     // Validate every field and collect the ones to write, before staging any
     // step — a rejected write must leave no trace.
     let mut to_write = Vec::new();
-    for field in &schema.fields {
+    for (field, ty, required) in plain_fields(&schema.members) {
         match supplied_value(value, &field.name) {
             Some(saved) => {
-                check_type(&field.name, &field.ty, saved)?;
+                check_type(&field.name, ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
             None => {
-                if field.required {
+                if required {
                     return Err(WriteError {
                         code: WRITE_REQUIRED_ABSENT,
                         message: format!("required field `{}` is absent", field.name),
@@ -287,15 +287,11 @@ pub fn plan_field_write(
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
-    let declared = schema
-        .fields
-        .iter()
-        .find(|declared| declared.name == field)
-        .ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_FIELD,
-            message: format!("resource `{}` has no field `{field}`", schema.name),
-        })?;
-    check_type(field, &declared.ty, value)?;
+    let (_, ty, _) = field_slot(&schema.members, field).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_FIELD,
+        message: format!("resource `{}` has no field `{field}`", schema.name),
+    })?;
+    check_type(field, ty, value)?;
 
     // Reject a unique-index conflict on the written field before staging.
     for index in &schema.indexes {
@@ -353,7 +349,7 @@ pub fn plan_field_delete(
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
-    if !schema.fields.iter().any(|declared| declared.name == field) {
+    if field_slot(&schema.members, field).is_none() {
         return Err(WriteError {
             code: WRITE_UNKNOWN_FIELD,
             message: format!("resource `{}` has no field `{field}`", schema.name),
@@ -402,14 +398,14 @@ pub fn plan_resource_merge(
     // field the merge does not supply must already be stored — the resulting
     // resource must still satisfy required fields.
     let mut to_write = Vec::new();
-    for field in &schema.fields {
+    for (field, ty, required) in plain_fields(&schema.members) {
         match supplied_value(value, &field.name) {
             Some(saved) => {
-                check_type(&field.name, &field.ty, saved)?;
+                check_type(&field.name, ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
             None => {
-                if field.required
+                if required
                     && store
                         .read(&encode_path(&field_path(root, identity, &field.name)))?
                         .is_none()
@@ -472,7 +468,7 @@ pub fn plan_resource_merge(
     // overlay reads the source subtree at plan time, before any target change.
     // Generated indexes do not span child layers, so this needs no index work.
     if let Some(source) = source {
-        for layer in &schema.layers {
+        for layer in schema.members.iter().filter(|node| !node.is_plain_field()) {
             let layer_plan = plan_layer_merge(schema, source, identity, &layer.name, store)?;
             steps.extend(layer_plan.steps);
         }
@@ -496,18 +492,13 @@ pub fn plan_layer_leaf_write(
     value: &SavedValue,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
-    let declared = schema
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)
-        .ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_LAYER,
-            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
-        })?;
-    let leaf_type = declared.leaf_type.as_ref().ok_or_else(|| WriteError {
-        code: WRITE_NOT_A_LEAF_LAYER,
-        message: format!("keyed layer `{layer}` is a group, not a leaf"),
-    })?;
+    let declared = find_layer(schema, layer)?;
+    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+        return Err(WriteError {
+            code: WRITE_NOT_A_LEAF_LAYER,
+            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+        });
+    };
     if key.len() != declared.key_params.len() {
         return Err(WriteError {
             code: WRITE_LAYER_KEY_ARITY,
@@ -541,18 +532,11 @@ pub fn plan_nested_field_write(
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let innermost = descend_group_layers(schema, layers)?;
-    let member = innermost
-        .members
-        .iter()
-        .find_map(|member| match member {
-            LayerMember::Field(member) if member.name == field => Some(member),
-            _ => None,
-        })
-        .ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_FIELD,
-            message: format!("group layer `{}` has no field `{field}`", innermost.name),
-        })?;
-    check_type(field, &member.ty, value)?;
+    let (_, ty, _) = field_slot(&innermost.members, field).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_FIELD,
+        message: format!("group layer `{}` has no field `{field}`", innermost.name),
+    })?;
+    check_type(field, ty, value)?;
     let mut path = nested_layer_path(root, identity, layers);
     path.push(PathSegment::Field(field.into()));
     Ok(WritePlan {
@@ -578,15 +562,8 @@ pub fn plan_layer_group_write(
     value: &ResourceValue,
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
-    let declared = schema
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)
-        .ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_LAYER,
-            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
-        })?;
-    if declared.leaf_type.is_some() {
+    let declared = find_layer(schema, layer)?;
+    if matches!(declared.element, Element::Slot { .. }) {
         return Err(WriteError {
             code: WRITE_NOT_A_GROUP_LAYER,
             message: format!("keyed layer `{layer}` is a leaf, not a group"),
@@ -606,17 +583,14 @@ pub fn plan_layer_group_write(
     // Validate every group field and collect the ones to write before staging any
     // step — a rejected write must leave no trace.
     let mut to_write = Vec::new();
-    for member in &declared.members {
-        let LayerMember::Field(field) = member else {
-            continue;
-        };
+    for (field, ty, required) in plain_fields(&declared.members) {
         match supplied_value(value, &field.name) {
             Some(saved) => {
-                check_type(&field.name, &field.ty, saved)?;
+                check_type(&field.name, ty, saved)?;
                 to_write.push((field.name.as_str(), saved));
             }
             None => {
-                if field.required {
+                if required {
                     return Err(WriteError {
                         code: WRITE_REQUIRED_ABSENT,
                         message: format!("required field `{}` is absent", field.name),
@@ -666,12 +640,7 @@ pub fn plan_layer_merge(
             ),
         });
     }
-    if !schema.layers.iter().any(|declared| declared.name == layer) {
-        return Err(WriteError {
-            code: WRITE_UNKNOWN_LAYER,
-            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
-        });
-    }
+    find_layer(schema, layer)?;
     let mut source = identity_path(root, from);
     source.push(PathSegment::ChildLayer(layer.into()));
     let source = encode_path(&source);
@@ -783,12 +752,7 @@ pub fn next_layer_pos(
     store: &dyn Backend,
 ) -> Result<i64, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
-    if !schema.layers.iter().any(|declared| declared.name == layer) {
-        return Err(WriteError {
-            code: WRITE_UNKNOWN_LAYER,
-            message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
-        });
-    }
+    find_layer(schema, layer)?;
     let mut prefix = identity_path(root, identity);
     prefix.push(PathSegment::ChildLayer(layer.into()));
     let highest = store
@@ -811,6 +775,38 @@ fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a Saved
         .iter()
         .find(|(name, _)| name == field)
         .map(|(_, value)| value)
+}
+
+/// The plain field members of `members` (top-level or a group's), as
+/// `(node, value type, required)`. A keyed leaf and a group are layers, not plain
+/// fields the planner materializes, so they are skipped.
+fn plain_fields(members: &[Node]) -> impl Iterator<Item = (&Node, &Type, bool)> {
+    members.iter().filter_map(|node| match &node.element {
+        Element::Slot { ty, required } if node.is_plain_field() => Some((node, ty, *required)),
+        _ => None,
+    })
+}
+
+/// The plain field named `field` in `members`, as `(node, value type, required)`.
+fn field_slot<'a>(members: &'a [Node], field: &str) -> Option<(&'a Node, &'a Type, bool)> {
+    plain_fields(members).find(|(node, _, _)| node.name == field)
+}
+
+/// The top-level layer node (a group or keyed leaf) named `layer`, or
+/// `WRITE_UNKNOWN_LAYER`. A plain field is not a layer.
+fn find_layer<'a>(schema: &'a ResourceSchema, layer: &str) -> Result<&'a Node, WriteError> {
+    layer_in(&schema.members, layer).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_LAYER,
+        message: format!("resource `{}` has no keyed layer `{layer}`", schema.name),
+    })
+}
+
+/// The layer node named `name` in `members`: a group or keyed leaf, never a plain
+/// field.
+fn layer_in<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
+    members
+        .iter()
+        .find(|node| node.name == name && !node.is_plain_field())
 }
 
 /// The encoded-path segments for `^root(identity)`.
@@ -861,31 +857,17 @@ fn nested_layer_path(
 fn descend_group_layers<'a>(
     schema: &'a ResourceSchema,
     layers: &[(&str, &[SavedKey])],
-) -> Result<&'a LayerSchema, WriteError> {
-    let mut current: Option<&LayerSchema> = None;
+) -> Result<&'a Node, WriteError> {
+    let mut current: Option<&Node> = None;
     for (name, key) in layers {
         let declared = match current {
-            None => schema
-                .layers
-                .iter()
-                .find(|layer| &layer.name == name)
-                .ok_or_else(|| WriteError {
-                    code: WRITE_UNKNOWN_LAYER,
-                    message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
-                })?,
-            Some(parent) => parent
-                .members
-                .iter()
-                .find_map(|member| match member {
-                    LayerMember::Layer(layer) if &layer.name == name => Some(layer),
-                    _ => None,
-                })
-                .ok_or_else(|| WriteError {
-                    code: WRITE_UNKNOWN_LAYER,
-                    message: format!("keyed layer `{}` has no nested layer `{name}`", parent.name),
-                })?,
+            None => find_layer(schema, name)?,
+            Some(parent) => layer_in(&parent.members, name).ok_or_else(|| WriteError {
+                code: WRITE_UNKNOWN_LAYER,
+                message: format!("keyed layer `{}` has no nested layer `{name}`", parent.name),
+            })?,
         };
-        if declared.leaf_type.is_some() {
+        if matches!(declared.element, Element::Slot { .. }) {
             return Err(WriteError {
                 code: WRITE_NOT_A_GROUP_LAYER,
                 message: format!("keyed layer `{name}` is a leaf, not a group"),
@@ -968,10 +950,10 @@ fn stored_arg_key(
     if let Some(position) = root.identity_keys.iter().position(|key| key.name == arg) {
         return Ok(Some(identity[position].clone()));
     }
-    let Some(field) = schema.fields.iter().find(|field| field.name == arg) else {
+    let Some((_, ty, _)) = field_slot(&schema.members, arg) else {
         return Ok(None);
     };
-    let Some(value_type) = field.ty.scalar() else {
+    let Some(value_type) = ty.scalar() else {
         return Ok(None);
     };
     let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
