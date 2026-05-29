@@ -134,8 +134,8 @@ fn child_keys_round_trip_duration_records() {
 
 #[test]
 fn child_keys_round_trip_instant_records_in_order() {
-    use marrow_store::value::{SavedValue, ValueType, decode_value};
-    let at = |text: &str| match decode_value(text.as_bytes(), ValueType::Instant) {
+    use marrow_store::value::{SavedValue, ScalarType, decode_value};
+    let at = |text: &str| match decode_value(text.as_bytes(), ScalarType::Instant) {
         Some(SavedValue::Instant(nanos)) => nanos,
         other => panic!("expected an instant, got {other:?}"),
     };

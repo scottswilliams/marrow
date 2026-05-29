@@ -1168,7 +1168,7 @@ fn check_record(
                     path: display_path(path),
                     message: format!(
                         "stored value is not a canonical {} form",
-                        scalar_type_name(ty)
+                        ty.name()
                     ),
                 })
             }
@@ -1180,22 +1180,6 @@ fn check_record(
             path: display_path(path),
             message: "saved data under an unknown root or undeclared member".into(),
         }),
-    }
-}
-
-/// The schema type name for a [`ValueType`], for an integrity message.
-fn scalar_type_name(ty: marrow_store::value::ValueType) -> &'static str {
-    use marrow_store::value::ValueType;
-    match ty {
-        ValueType::Bool => "bool",
-        ValueType::Int => "int",
-        ValueType::Str => "string",
-        ValueType::Bytes => "bytes",
-        ValueType::ErrorCode => "ErrorCode",
-        ValueType::Date => "date",
-        ValueType::Duration => "duration",
-        ValueType::Instant => "instant",
-        ValueType::Decimal => "decimal",
     }
 }
 

@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
+use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
 pub mod program;
@@ -1584,18 +1585,7 @@ fn operator_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckD
 }
 
 fn primitive_name(primitive: PrimitiveType) -> &'static str {
-    match primitive {
-        PrimitiveType::Int => "int",
-        PrimitiveType::Decimal => "decimal",
-        PrimitiveType::Bool => "bool",
-        PrimitiveType::String => "string",
-        PrimitiveType::Bytes => "bytes",
-        PrimitiveType::Date => "date",
-        PrimitiveType::Instant => "instant",
-        PrimitiveType::Duration => "duration",
-        PrimitiveType::ErrorCode => "ErrorCode",
-        PrimitiveType::Error => "Error",
-    }
+    primitive.name()
 }
 
 fn unary_symbol(op: marrow_syntax::UnaryOp) -> &'static str {
@@ -1967,22 +1957,22 @@ fn is_builtin_call(segments: &[String]) -> bool {
         // The single-name builtins, grouped by purpose. Each
         // dispatches before user-function resolution at runtime, so none is ever a
         // declared program function.
-        [name] => matches!(
-            name.as_str(),
-            // presence and reads
-            "exists" | "get"
-            // tree traversal
-            | "keys" | "values" | "entries" | "count"
-            // sequence updates and id allocation
-            | "append" | "nextId"
-            // write and print
-            | "write" | "print"
-            // error constructor
-            | "Error"
-            // conversions
-            | "int" | "decimal" | "string" | "bool" | "bytes" | "ErrorCode"
-            | "date" | "instant" | "duration"
-        ),
+        [name] => {
+            matches!(
+                name.as_str(),
+                // presence and reads
+                "exists" | "get"
+                // tree traversal
+                | "keys" | "values" | "entries" | "count"
+                // sequence updates and id allocation
+                | "append" | "nextId"
+                // write and print
+                | "write" | "print"
+                // error constructor
+                | "Error"
+            // conversions: the nine storable scalars, by canonical name.
+            ) || ScalarType::from_scalar_name(name).is_some()
+        }
         // A `std::module::op` builtin must name a real std module, mirroring
         // import resolution (`is_std_module`/STD_MODULES); an unknown submodule is
         // not a builtin, so it is reported like a rejected `use std::bogus`.
@@ -2011,23 +2001,13 @@ fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<
 /// string`, …). The conversion validates a
 /// dynamically-typed value and yields the named type.
 fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
-    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, ErrorCode, Instant, Int, String};
     let [name] = segments else {
         return None;
     };
-    let primitive = match name.as_str() {
-        "int" => Int,
-        "decimal" => Decimal,
-        "string" => String,
-        "bool" => Bool,
-        "bytes" => Bytes,
-        "ErrorCode" => ErrorCode,
-        "date" => Date,
-        "instant" => Instant,
-        "duration" => Duration,
-        _ => return None,
-    };
-    Some(MarrowType::Primitive(primitive))
+    // The conversion builtins are exactly the nine storable scalars; each yields
+    // its named type.
+    ScalarType::from_scalar_name(name)
+        .map(|scalar| MarrowType::Primitive(PrimitiveType::from_scalar(scalar)))
 }
 
 /// The declared return type of a value-returning `std::module::op` helper.

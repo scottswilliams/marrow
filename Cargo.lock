@@ -148,6 +148,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-project",
  "marrow-schema",
+ "marrow-store",
  "marrow-syntax",
 ]
 
@@ -174,6 +175,7 @@ dependencies = [
 name = "marrow-schema"
 version = "0.1.0"
 dependencies = [
+ "marrow-store",
  "marrow-syntax",
 ]
 

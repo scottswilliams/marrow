@@ -69,7 +69,7 @@ impl std::error::Error for ValueError {}
 
 /// The type to decode saved bytes as. A typed read knows this from the schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueType {
+pub enum ScalarType {
     Bool,
     Int,
     Str,
@@ -81,23 +81,41 @@ pub enum ValueType {
     Decimal,
 }
 
-impl ValueType {
-    /// The [`ValueType`] a scalar type name denotes, or `None` for identity and
+/// The canonical scalar spelling: the source keyword, the store decode tag, and
+/// every downstream name probe read this one table, so a new scalar is one row
+/// here, not a hand-spelled copy in each crate. The source keyword is `string`
+/// while the variant is historically `Str`; that bridge lives only here.
+const SCALAR_NAMES: [(&str, ScalarType); 9] = [
+    ("bool", ScalarType::Bool),
+    ("int", ScalarType::Int),
+    ("string", ScalarType::Str),
+    ("bytes", ScalarType::Bytes),
+    ("ErrorCode", ScalarType::ErrorCode),
+    ("date", ScalarType::Date),
+    ("instant", ScalarType::Instant),
+    ("duration", ScalarType::Duration),
+    ("decimal", ScalarType::Decimal),
+];
+
+impl ScalarType {
+    /// The [`ScalarType`] a scalar type name denotes, or `None` for identity and
     /// other non-scalar types. This is the single source of truth for the
     /// scalar-name mapping shared by the runtime and the write planner.
-    pub fn from_scalar_name(name: &str) -> Option<ValueType> {
-        Some(match name {
-            "bool" => ValueType::Bool,
-            "int" => ValueType::Int,
-            "string" => ValueType::Str,
-            "bytes" => ValueType::Bytes,
-            "ErrorCode" => ValueType::ErrorCode,
-            "date" => ValueType::Date,
-            "instant" => ValueType::Instant,
-            "duration" => ValueType::Duration,
-            "decimal" => ValueType::Decimal,
-            _ => return None,
-        })
+    pub fn from_scalar_name(name: &str) -> Option<ScalarType> {
+        SCALAR_NAMES
+            .iter()
+            .find(|(spelling, _)| *spelling == name)
+            .map(|(_, ty)| *ty)
+    }
+
+    /// The canonical source spelling of this scalar (`bool`, `int`, `string`,
+    /// …), the reverse of [`from_scalar_name`](Self::from_scalar_name).
+    pub fn name(self) -> &'static str {
+        SCALAR_NAMES
+            .iter()
+            .find(|(_, ty)| *ty == self)
+            .map(|(spelling, _)| *spelling)
+            .expect("every scalar has a name-table row")
     }
 }
 
@@ -127,23 +145,23 @@ pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
 /// canonical form for that type. The check is strict, so non-canonical bytes
 /// (e.g. `+1`, `01`, or a non-`0`/`1` boolean) are rejected rather than
 /// silently normalized.
-pub fn decode_value(bytes: &[u8], ty: ValueType) -> Option<SavedValue> {
+pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
     match ty {
-        ValueType::Bool => match bytes {
+        ScalarType::Bool => match bytes {
             b"0" => Some(SavedValue::Bool(false)),
             b"1" => Some(SavedValue::Bool(true)),
             _ => None,
         },
-        ValueType::Int => Some(SavedValue::Int(parse_canonical_int(bytes)?)),
-        ValueType::Str => Some(SavedValue::Str(String::from_utf8(bytes.to_vec()).ok()?)),
-        ValueType::Bytes => Some(SavedValue::Bytes(bytes.to_vec())),
-        ValueType::ErrorCode => Some(SavedValue::ErrorCode(
+        ScalarType::Int => Some(SavedValue::Int(parse_canonical_int(bytes)?)),
+        ScalarType::Str => Some(SavedValue::Str(String::from_utf8(bytes.to_vec()).ok()?)),
+        ScalarType::Bytes => Some(SavedValue::Bytes(bytes.to_vec())),
+        ScalarType::ErrorCode => Some(SavedValue::ErrorCode(
             String::from_utf8(bytes.to_vec()).ok()?,
         )),
-        ValueType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
-        ValueType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
-        ValueType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
-        ValueType::Decimal => parse_decimal(bytes),
+        ScalarType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
+        ScalarType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
+        ScalarType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
+        ScalarType::Decimal => parse_decimal(bytes),
     }
 }
 

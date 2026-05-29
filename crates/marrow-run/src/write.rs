@@ -15,7 +15,7 @@ use marrow_schema::{LayerMember, LayerSchema, ResourceSchema, SavedRootSchema};
 use marrow_store::backend::Backend;
 use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
-use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ValueError, ScalarType, decode_value, encode_value};
 
 /// A field's value in a write: a saved value, or explicitly absent (omitted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1010,7 +1010,7 @@ fn stored_arg_key(
     let Some(field) = schema.fields.iter().find(|field| field.name == arg) else {
         return Ok(None);
     };
-    let Some(value_type) = ValueType::from_scalar_name(&field.ty.text) else {
+    let Some(value_type) = ScalarType::from_scalar_name(&field.ty.text) else {
         return Ok(None);
     };
     let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
@@ -1178,7 +1178,7 @@ fn saved_value_to_key(value: &SavedValue) -> Option<SavedKey> {
 
 /// Check that `value` matches the field's declared scalar type name.
 fn check_type(field: &str, type_name: &str, value: &SavedValue) -> Result<(), WriteError> {
-    if ValueType::from_scalar_name(type_name) == Some(value_type_of(value)) {
+    if ScalarType::from_scalar_name(type_name) == Some(value_type_of(value)) {
         Ok(())
     } else {
         Err(WriteError {
@@ -1188,17 +1188,17 @@ fn check_type(field: &str, type_name: &str, value: &SavedValue) -> Result<(), Wr
     }
 }
 
-/// The [`ValueType`] of a saved value.
-fn value_type_of(value: &SavedValue) -> ValueType {
+/// The [`ScalarType`] of a saved value.
+fn value_type_of(value: &SavedValue) -> ScalarType {
     match value {
-        SavedValue::Bool(_) => ValueType::Bool,
-        SavedValue::Int(_) => ValueType::Int,
-        SavedValue::Str(_) => ValueType::Str,
-        SavedValue::Bytes(_) => ValueType::Bytes,
-        SavedValue::ErrorCode(_) => ValueType::ErrorCode,
-        SavedValue::Date(_) => ValueType::Date,
-        SavedValue::Duration(_) => ValueType::Duration,
-        SavedValue::Instant(_) => ValueType::Instant,
-        SavedValue::Decimal { .. } => ValueType::Decimal,
+        SavedValue::Bool(_) => ScalarType::Bool,
+        SavedValue::Int(_) => ScalarType::Int,
+        SavedValue::Str(_) => ScalarType::Str,
+        SavedValue::Bytes(_) => ScalarType::Bytes,
+        SavedValue::ErrorCode(_) => ScalarType::ErrorCode,
+        SavedValue::Date(_) => ScalarType::Date,
+        SavedValue::Duration(_) => ScalarType::Duration,
+        SavedValue::Instant(_) => ScalarType::Instant,
+        SavedValue::Decimal { .. } => ScalarType::Decimal,
     }
 }

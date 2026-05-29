@@ -14,7 +14,7 @@ use marrow_schema::{ResourceSchema, compile_resource};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, decode_key_value, encode_path};
-use marrow_store::value::{SavedValue, ValueType, decode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 
 /// Compile the single resource declared in `source`.
@@ -281,7 +281,7 @@ fn a_whole_group_entry_write_replaces_the_entry() {
     assert_eq!(
         decode_value(
             store.read(&version_field(1, 2, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("v2-edited".into()))
     );
@@ -338,7 +338,7 @@ fn a_whole_resource_write_lowers_fields_into_the_store() {
             .read(&field_path(42, field))
             .unwrap_or_else(|| panic!("{field} present"));
         assert_eq!(
-            decode_value(bytes, ValueType::Str),
+            decode_value(bytes, ScalarType::Str),
             Some(SavedValue::Str(expected.into()))
         );
     }
@@ -418,7 +418,7 @@ fn a_whole_resource_write_replaces_the_previous_value() {
     assert_eq!(
         decode_value(
             store.read(&field_path(1, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("final".into()))
     );
@@ -698,14 +698,14 @@ fn a_field_write_updates_one_field_and_leaves_the_rest() {
     assert_eq!(
         decode_value(
             store.read(&field_path(3, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("final".into()))
     );
     assert_eq!(
         decode_value(
             store.read(&field_path(3, "shelf")).expect("shelf"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("fiction".into())),
         "the untouched field is left in place"
@@ -781,7 +781,7 @@ fn a_field_write_moves_the_index_entry_of_an_indexed_field() {
     assert_eq!(
         decode_value(
             store.read(&field_path(42, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into())),
         "the untouched field is left in place"
@@ -909,7 +909,7 @@ fn a_field_delete_removes_the_field_and_leaves_the_rest() {
     assert_eq!(
         decode_value(
             store.read(&field_path(7, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into())),
         "the untouched field is left in place"
@@ -995,7 +995,7 @@ fn deleting_an_absent_field_is_a_successful_no_op() {
     assert_eq!(
         decode_value(
             store.read(&field_path(9, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into())),
         "the record is untouched"
@@ -1329,7 +1329,7 @@ fn a_merge_overwrites_supplied_fields_and_leaves_the_rest() {
     let read = |field| {
         decode_value(
             store.read(&field_path(1, field)).expect(field),
-            ValueType::Str,
+            ScalarType::Str,
         )
     };
     assert_eq!(
@@ -1359,7 +1359,7 @@ fn a_merge_into_an_empty_identity_writes_supplied_fields() {
     assert_eq!(
         decode_value(
             store.read(&field_path(1, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into()))
     );
@@ -1397,7 +1397,7 @@ fn an_explicit_absent_in_a_merge_leaves_the_target_field() {
     assert_eq!(
         decode_value(
             store.read(&field_path(1, "shelf")).expect("shelf"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("fiction".into())),
         "merge does not clear a field"
@@ -1444,7 +1444,7 @@ fn a_merge_omitting_a_required_field_already_stored_succeeds() {
     assert_eq!(
         decode_value(
             store.read(&field_path(1, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into()))
     );
@@ -1624,7 +1624,7 @@ fn a_keyed_leaf_write_lowers_a_value_into_the_store() {
     assert_eq!(
         decode_value(
             store.read(&tag_entry(5, 1)).expect("tag entry"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("favorite".into()))
     );
@@ -1706,12 +1706,12 @@ fn a_keyed_leaf_write_replaces_only_that_entry() {
     write_tag(&mut store, &book, 5, 1, "c");
 
     assert_eq!(
-        decode_value(store.read(&tag_entry(5, 1)).expect("tag 1"), ValueType::Str),
+        decode_value(store.read(&tag_entry(5, 1)).expect("tag 1"), ScalarType::Str),
         Some(SavedValue::Str("c".into())),
         "the keyed entry is replaced in place"
     );
     assert_eq!(
-        decode_value(store.read(&tag_entry(5, 2)).expect("tag 2"), ValueType::Str),
+        decode_value(store.read(&tag_entry(5, 2)).expect("tag 2"), ScalarType::Str),
         Some(SavedValue::Str("b".into())),
         "a sibling entry is untouched"
     );
@@ -1734,7 +1734,7 @@ fn a_keyed_leaf_write_leaves_top_level_fields_untouched() {
     assert_eq!(
         decode_value(
             store.read(&field_path(5, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into())),
         "the top-level field is left in place"
@@ -1835,7 +1835,7 @@ fn a_group_entry_field_write_lowers_a_value_into_the_store() {
     assert_eq!(
         decode_value(
             store.read(&note_text_entry(5, "n1")).expect("note text"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("first thought".into()))
     );
@@ -1873,7 +1873,7 @@ fn a_group_entry_field_write_touches_only_that_member() {
     assert_eq!(
         decode_value(
             store.read(&version_field(5, 1, "title")).expect("title"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("Mort".into())),
         "the first member is kept"
@@ -1881,7 +1881,7 @@ fn a_group_entry_field_write_touches_only_that_member() {
     assert_eq!(
         decode_value(
             store.read(&version_field(5, 1, "shelf")).expect("shelf"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("fiction".into())),
         "the second member lands alongside it"
@@ -1898,7 +1898,7 @@ fn a_group_entry_field_write_replaces_only_that_entry() {
     assert_eq!(
         decode_value(
             store.read(&note_text_entry(5, "n1")).expect("note n1"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("c".into())),
         "the entry is replaced in place"
@@ -1906,7 +1906,7 @@ fn a_group_entry_field_write_replaces_only_that_entry() {
     assert_eq!(
         decode_value(
             store.read(&note_text_entry(5, "n2")).expect("note n2"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("b".into())),
         "a sibling entry is untouched"
@@ -2066,7 +2066,7 @@ fn a_nested_group_field_write_descends_the_layer_chain() {
             store
                 .read(&nested_comment_text(5, 1, 2))
                 .expect("nested text"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("nice".into())),
     );
@@ -2157,11 +2157,11 @@ fn a_layer_merge_copies_entries_to_the_target_record() {
     write_tag(&mut store, &book, 1, 2, "gift");
     merge_tags(&mut store, &book, 1, 2);
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ValueType::Str),
+        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ScalarType::Str),
         Some(SavedValue::Str("favorite".into()))
     );
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ValueType::Str),
+        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ScalarType::Str),
         Some(SavedValue::Str("gift".into()))
     );
 }
@@ -2176,12 +2176,12 @@ fn a_layer_merge_overlays_and_keeps_uncovered_target_entries() {
     write_tag(&mut store, &book, 2, 2, "kept");
     merge_tags(&mut store, &book, 1, 2);
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ValueType::Str),
+        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ScalarType::Str),
         Some(SavedValue::Str("from-source".into())),
         "an overlapping key is overwritten by the source"
     );
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ValueType::Str),
+        decode_value(store.read(&tag_entry(2, 2)).expect("tag 2"), ScalarType::Str),
         Some(SavedValue::Str("kept".into())),
         "a target entry the source does not cover is kept"
     );
@@ -2194,7 +2194,7 @@ fn a_layer_merge_from_an_empty_source_is_a_no_op() {
     write_tag(&mut store, &book, 2, 1, "kept"); // record 1 has no tags
     merge_tags(&mut store, &book, 1, 2);
     assert_eq!(
-        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ValueType::Str),
+        decode_value(store.read(&tag_entry(2, 1)).expect("tag 1"), ScalarType::Str),
         Some(SavedValue::Str("kept".into())),
         "merging an empty source changes nothing"
     );
@@ -2299,7 +2299,7 @@ fn a_whole_resource_merge_copies_child_layers_and_moves_the_index() {
     assert_eq!(
         decode_value(
             store.read(&tag_entry(2, 1)).expect("copied tag"),
-            ValueType::Str
+            ScalarType::Str
         ),
         Some(SavedValue::Str("favorite".into())),
         "the child-layer entry is copied onto the target"
@@ -2395,7 +2395,7 @@ fn a_tree_merge_copies_child_entries_and_leaves_no_stray_index_entries() {
     let tag_values: Vec<_> = tags
         .entries
         .iter()
-        .map(|(_, bytes)| decode_value(bytes, ValueType::Str))
+        .map(|(_, bytes)| decode_value(bytes, ScalarType::Str))
         .collect();
     assert_eq!(
         tag_values,

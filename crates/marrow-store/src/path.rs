@@ -8,7 +8,7 @@
 //! order. The byte layout is Marrow's own, so a backend that merely orders raw
 //! bytes yields Marrow order regardless of its locale or collation.
 
-use crate::value::{SavedValue, ValueType, decode_value, encode_value};
+use crate::value::{SavedValue, ScalarType, decode_value, encode_value};
 
 /// A scalar key value in a record-key or index-key position. Keys encode to
 /// order-preserving bytes, so byte order is Marrow key order.
@@ -427,15 +427,15 @@ impl PathTextParser<'_> {
         }
         // A temporal literal: decode it with the canonical value codec, which
         // accepts exactly the ISO forms `display_key` emits.
-        if let Some(SavedValue::Date(days)) = decode_value(text.as_bytes(), ValueType::Date) {
+        if let Some(SavedValue::Date(days)) = decode_value(text.as_bytes(), ScalarType::Date) {
             return Ok(SavedKey::Date(days));
         }
-        if let Some(SavedValue::Instant(nanos)) = decode_value(text.as_bytes(), ValueType::Instant)
+        if let Some(SavedValue::Instant(nanos)) = decode_value(text.as_bytes(), ScalarType::Instant)
         {
             return Ok(SavedKey::Instant(nanos));
         }
         if let Some(SavedValue::Duration(nanos)) =
-            decode_value(text.as_bytes(), ValueType::Duration)
+            decode_value(text.as_bytes(), ScalarType::Duration)
         {
             return Ok(SavedKey::Duration(nanos));
         }

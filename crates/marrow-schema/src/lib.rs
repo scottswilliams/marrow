@@ -14,6 +14,10 @@ use marrow_syntax::{
     TypeRef,
 };
 
+// The canonical scalar type lives in marrow-store; re-export it so resolution
+// and downstream crates share one import path for the storable scalars.
+pub use marrow_store::value::ScalarType;
+
 /// The compiled tree shape of a resource declaration.
 ///
 /// Members are kept in source order in `Vec`s rather than maps: a resource has

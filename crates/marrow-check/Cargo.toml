@@ -12,6 +12,8 @@ authors.workspace = true
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-project = { path = "../marrow-project" }
 marrow-schema = { path = "../marrow-schema" }
+# Default features only: the canonical scalar type, not the native backend.
+marrow-store = { path = "../marrow-store" }
 
 [lints]
 workspace = true

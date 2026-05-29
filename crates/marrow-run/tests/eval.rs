@@ -17,7 +17,7 @@ use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
-use marrow_store::value::{SavedValue, ValueType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
 
 /// Parse `source` and return the single function it declares.
@@ -3026,7 +3026,7 @@ fn append_writes_at_the_next_position() {
             PathSegment::ChildLayer("tags".into()),
             PathSegment::IndexKey(SavedKey::Int(pos)),
         ]))?;
-        decode_value(bytes, ValueType::Str)
+        decode_value(bytes, ScalarType::Str)
     };
     assert_eq!(tag(1), Some(SavedValue::Str("a".into())));
     assert_eq!(tag(2), Some(SavedValue::Str("b".into())));
@@ -3849,7 +3849,7 @@ fn a_group_entry_field_write_lands_in_saved_data() {
     assert_eq!(
         bytes
             .as_deref()
-            .and_then(|b| decode_value(b, ValueType::Str)),
+            .and_then(|b| decode_value(b, ScalarType::Str)),
         Some(SavedValue::Str("hello".into()))
     );
 }
@@ -3887,7 +3887,7 @@ fn group_entry_field_writes_compose_in_a_transaction() {
             .read(&group_field_path(1, "versions", SavedKey::Int(1), field))
             .map(<[u8]>::to_vec)
             .as_deref()
-            .and_then(|b| decode_value(b, ValueType::Str))
+            .and_then(|b| decode_value(b, ScalarType::Str))
     };
     assert_eq!(
         version_member("title"),
@@ -4192,7 +4192,7 @@ fn constructs_and_uses_a_single_key_identity() {
         ]))
         .expect("present");
     assert_eq!(
-        decode_value(bytes, ValueType::Str),
+        decode_value(bytes, ScalarType::Str),
         Some(SavedValue::Str("Mort".into()))
     );
 }
@@ -4266,7 +4266,7 @@ fn constructs_and_uses_a_composite_identity_round_trips() {
         ]))
         .expect("present");
     assert_eq!(
-        decode_value(bytes, ValueType::Str),
+        decode_value(bytes, ScalarType::Str),
         Some(SavedValue::Str("active".into()))
     );
 }
@@ -4289,7 +4289,7 @@ fn composite_identity_orders_keys_by_declaration_not_arguments() {
         ]))
         .expect("present");
     assert_eq!(
-        decode_value(bytes, ValueType::Str),
+        decode_value(bytes, ScalarType::Str),
         Some(SavedValue::Str("active".into()))
     );
 }
@@ -4368,7 +4368,7 @@ fn singleton_field_read_and_write() {
         ]))
         .expect("present");
     assert_eq!(
-        decode_value(bytes, ValueType::Str),
+        decode_value(bytes, ScalarType::Str),
         Some(SavedValue::Str("dark".into()))
     );
 }
@@ -4514,7 +4514,7 @@ fn unkeyed_group_field_write_then_read_round_trips() {
         ]))
         .expect("present");
     assert_eq!(
-        decode_value(bytes, ValueType::Str),
+        decode_value(bytes, ScalarType::Str),
         Some(SavedValue::Str("Terry".into()))
     );
 }
@@ -5495,7 +5495,7 @@ fn classify_saved_path_distinguishes_fields_layers_indexes_and_orphans() {
     ];
     assert_eq!(
         classify_saved_path(&program, &field),
-        SavedPathClass::Scalar(ValueType::Str)
+        SavedPathClass::Scalar(ScalarType::Str)
     );
 
     let leaf_layer = vec![
@@ -5506,7 +5506,7 @@ fn classify_saved_path_distinguishes_fields_layers_indexes_and_orphans() {
     ];
     assert_eq!(
         classify_saved_path(&program, &leaf_layer),
-        SavedPathClass::Scalar(ValueType::Str)
+        SavedPathClass::Scalar(ScalarType::Str)
     );
 
     let nested = vec![
@@ -5518,7 +5518,7 @@ fn classify_saved_path_distinguishes_fields_layers_indexes_and_orphans() {
     ];
     assert_eq!(
         classify_saved_path(&program, &nested),
-        SavedPathClass::Scalar(ValueType::Str)
+        SavedPathClass::Scalar(ScalarType::Str)
     );
 
     let index_marker = vec![

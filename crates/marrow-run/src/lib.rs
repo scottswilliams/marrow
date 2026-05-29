@@ -27,7 +27,7 @@ use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_store::value::{SavedValue, ValueError, ValueType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ValueError, ScalarType, decode_value, encode_value};
 use marrow_syntax::{
     ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
     LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
@@ -1470,7 +1470,7 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let text = eval_text(value, env, span)?;
-            match decode_value(text.as_bytes(), ValueType::Instant) {
+            match decode_value(text.as_bytes(), ScalarType::Instant) {
                 Some(SavedValue::Instant(nanos)) => Ok(Value::Instant(nanos)),
                 _ => Err(type_error("parseInstant: invalid instant text", span)),
             }
@@ -1492,7 +1492,7 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let text = eval_text(value, env, span)?;
-            match decode_value(text.as_bytes(), ValueType::Date) {
+            match decode_value(text.as_bytes(), ScalarType::Date) {
                 Some(SavedValue::Date(days)) => Ok(Value::Date(days)),
                 _ => Err(type_error("parseDate: invalid date text", span)),
             }
@@ -1513,7 +1513,7 @@ fn eval_std(
                 return Err(std_arity(module, op, span));
             };
             let text = eval_text(value, env, span)?;
-            match decode_value(text.as_bytes(), ValueType::Duration) {
+            match decode_value(text.as_bytes(), ScalarType::Duration) {
                 Some(SavedValue::Duration(nanos)) => Ok(Value::Duration(nanos)),
                 _ => Err(type_error("parseDuration: invalid duration text", span)),
             }
@@ -3575,7 +3575,7 @@ fn read_resource(
         else {
             continue;
         };
-        let value_type = ValueType::from_scalar_name(&field.ty.text)
+        let value_type = ScalarType::from_scalar_name(&field.ty.text)
             .ok_or_else(|| unsupported("reading this field type", span))?;
         let value = decode_value(&bytes, value_type)
             .and_then(saved_value_to_value)
@@ -3739,7 +3739,7 @@ fn eval_raw_field_read(
             env,
         ));
     };
-    decode_value(&bytes, ValueType::Str)
+    decode_value(&bytes, ScalarType::Str)
         .and_then(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             code: RUN_TYPE,
@@ -4669,7 +4669,7 @@ fn lower_saved_path(
 
 /// The declared scalar type of a saved root's top-level field, found by matching
 /// the root name against the program's resource schemas.
-fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Option<ValueType> {
+fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Option<ScalarType> {
     let resource = program
         .modules
         .iter()
@@ -4681,7 +4681,7 @@ fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Opt
                 .is_some_and(|saved| saved.root == root)
         })?;
     let field = resource.fields.iter().find(|field_| field_.name == field)?;
-    ValueType::from_scalar_name(&field.ty.text)
+    ScalarType::from_scalar_name(&field.ty.text)
 }
 
 /// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
@@ -4690,13 +4690,13 @@ fn resource_layer_leaf_type(
     program: &CheckedProgram,
     root: &str,
     layer: &str,
-) -> Option<ValueType> {
+) -> Option<ScalarType> {
     let resource = find_resource(program, root)?;
     let layer = resource
         .layers
         .iter()
         .find(|declared| declared.name == layer)?;
-    ValueType::from_scalar_name(&layer.leaf_type.as_ref()?.text)
+    ScalarType::from_scalar_name(&layer.leaf_type.as_ref()?.text)
 }
 
 /// The declared type of a scalar member field inside a saved root's GROUP layer,
@@ -4708,7 +4708,7 @@ fn resource_nested_member_type(
     root: &str,
     layers: &[&str],
     field: &str,
-) -> Option<ValueType> {
+) -> Option<ScalarType> {
     let resource = find_resource(program, root)?;
     let (first, rest) = layers.split_first()?;
     let mut current = resource.layers.iter().find(|layer| &layer.name == first)?;
@@ -4722,7 +4722,7 @@ fn resource_nested_member_type(
         LayerMember::Field(member) if member.name == field => Some(member),
         _ => None,
     })?;
-    ValueType::from_scalar_name(&member.ty.text)
+    ScalarType::from_scalar_name(&member.ty.text)
 }
 
 /// How a stored saved path relates to the project schema, for data-integrity
@@ -4733,7 +4733,7 @@ fn resource_nested_member_type(
 pub enum SavedPathClass {
     /// The path is a declared scalar leaf of the given type; its stored bytes
     /// should decode as a canonical form of that type.
-    Scalar(ValueType),
+    Scalar(ScalarType),
     /// The path is a generated index entry (`^root.index(keys…)`). Its value is a
     /// presence marker or a stored identity, raw-only by design — not a typed
     /// scalar, and a legal, expected store-level value.
@@ -4853,7 +4853,7 @@ fn resource_group_members(
     program: &CheckedProgram,
     root: &str,
     layer: &str,
-) -> Option<Vec<(String, ValueType)>> {
+) -> Option<Vec<(String, ScalarType)>> {
     let resource = find_resource(program, root)?;
     let layer = resource
         .layers
@@ -4865,7 +4865,7 @@ fn resource_group_members(
         .filter_map(|member| match member {
             LayerMember::Field(field) => Some((
                 field.name.clone(),
-                ValueType::from_scalar_name(&field.ty.text)?,
+                ScalarType::from_scalar_name(&field.ty.text)?,
             )),
             _ => None,
         })

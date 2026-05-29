@@ -3,29 +3,29 @@
 
 use marrow_store::Decimal;
 use marrow_store::value::{
-    SavedValue, ValueError, ValueType, date_days, decode_value, encode_value,
+    SavedValue, ValueError, ScalarType, date_days, decode_value, encode_value,
 };
 
-fn round_trips(value: SavedValue, ty: ValueType) {
+fn round_trips(value: SavedValue, ty: ScalarType) {
     let bytes = encode_value(&value).expect("in-range value encodes");
     assert_eq!(decode_value(&bytes, ty), Some(value), "round-trip failed");
 }
 
 #[test]
 fn values_round_trip_through_canonical_bytes() {
-    round_trips(SavedValue::Bool(true), ValueType::Bool);
-    round_trips(SavedValue::Bool(false), ValueType::Bool);
-    round_trips(SavedValue::Int(0), ValueType::Int);
-    round_trips(SavedValue::Int(-42), ValueType::Int);
-    round_trips(SavedValue::Int(i64::MIN), ValueType::Int);
-    round_trips(SavedValue::Int(i64::MAX), ValueType::Int);
-    round_trips(SavedValue::Str("Dune".into()), ValueType::Str);
-    round_trips(SavedValue::Str(String::new()), ValueType::Str);
+    round_trips(SavedValue::Bool(true), ScalarType::Bool);
+    round_trips(SavedValue::Bool(false), ScalarType::Bool);
+    round_trips(SavedValue::Int(0), ScalarType::Int);
+    round_trips(SavedValue::Int(-42), ScalarType::Int);
+    round_trips(SavedValue::Int(i64::MIN), ScalarType::Int);
+    round_trips(SavedValue::Int(i64::MAX), ScalarType::Int);
+    round_trips(SavedValue::Str("Dune".into()), ScalarType::Str);
+    round_trips(SavedValue::Str(String::new()), ScalarType::Str);
     round_trips(
         SavedValue::ErrorCode("store.limit_exceeded".into()),
-        ValueType::ErrorCode,
+        ScalarType::ErrorCode,
     );
-    round_trips(SavedValue::Bytes(vec![0x00, 0xFF, 0x01]), ValueType::Bytes);
+    round_trips(SavedValue::Bytes(vec![0x00, 0xFF, 0x01]), ScalarType::Bytes);
 }
 
 /// Encode a value known to be in range, unwrapping the canonical bytes.
@@ -44,25 +44,25 @@ fn canonical_forms_match_the_docs() {
 
 #[test]
 fn non_canonical_integers_are_rejected() {
-    assert_eq!(decode_value(b"+1", ValueType::Int), None);
-    assert_eq!(decode_value(b"01", ValueType::Int), None);
-    assert_eq!(decode_value(b"-0", ValueType::Int), None);
-    assert_eq!(decode_value(b" 1", ValueType::Int), None);
-    assert_eq!(decode_value(b"x", ValueType::Int), None);
+    assert_eq!(decode_value(b"+1", ScalarType::Int), None);
+    assert_eq!(decode_value(b"01", ScalarType::Int), None);
+    assert_eq!(decode_value(b"-0", ScalarType::Int), None);
+    assert_eq!(decode_value(b" 1", ScalarType::Int), None);
+    assert_eq!(decode_value(b"x", ScalarType::Int), None);
 }
 
 #[test]
 fn non_canonical_booleans_are_rejected() {
-    assert_eq!(decode_value(b"2", ValueType::Bool), None);
-    assert_eq!(decode_value(b"true", ValueType::Bool), None);
-    assert_eq!(decode_value(b"", ValueType::Bool), None);
+    assert_eq!(decode_value(b"2", ScalarType::Bool), None);
+    assert_eq!(decode_value(b"true", ScalarType::Bool), None);
+    assert_eq!(decode_value(b"", ScalarType::Bool), None);
 }
 
 #[test]
 fn invalid_utf8_is_rejected_for_text_but_kept_for_bytes() {
-    assert_eq!(decode_value(&[0xFF], ValueType::Str), None);
+    assert_eq!(decode_value(&[0xFF], ScalarType::Str), None);
     assert_eq!(
-        decode_value(&[0xFF], ValueType::Bytes),
+        decode_value(&[0xFF], ScalarType::Bytes),
         Some(SavedValue::Bytes(vec![0xFF]))
     );
 }
@@ -80,7 +80,7 @@ fn dates_round_trip_through_canonical_text() {
         let value = SavedValue::Date(date_days(year, month, day).expect("valid date"));
         let bytes = encoded(&value);
         assert_eq!(bytes, text.as_bytes(), "canonical form for {text}");
-        assert_eq!(decode_value(&bytes, ValueType::Date), Some(value));
+        assert_eq!(decode_value(&bytes, ScalarType::Date), Some(value));
     }
 }
 
@@ -97,11 +97,11 @@ fn impossible_and_non_canonical_dates_are_rejected() {
     assert_eq!(date_days(2021, 0, 1), None);
     assert_eq!(date_days(0, 1, 1), None); // year below 0001
     // Non-canonical text forms.
-    assert_eq!(decode_value(b"2021-02-29", ValueType::Date), None);
-    assert_eq!(decode_value(b"2021-2-3", ValueType::Date), None); // unpadded
-    assert_eq!(decode_value(b"2021-13-01", ValueType::Date), None);
-    assert_eq!(decode_value(b"2021/05/28", ValueType::Date), None); // wrong separator
-    assert_eq!(decode_value(b"20210528", ValueType::Date), None);
+    assert_eq!(decode_value(b"2021-02-29", ScalarType::Date), None);
+    assert_eq!(decode_value(b"2021-2-3", ScalarType::Date), None); // unpadded
+    assert_eq!(decode_value(b"2021-13-01", ScalarType::Date), None);
+    assert_eq!(decode_value(b"2021/05/28", ScalarType::Date), None); // wrong separator
+    assert_eq!(decode_value(b"20210528", ScalarType::Date), None);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn durations_round_trip_through_canonical_text() {
         let value = SavedValue::Duration(nanos);
         let bytes = encoded(&value);
         assert_eq!(bytes, text.as_bytes(), "canonical form for {nanos} ns");
-        assert_eq!(decode_value(&bytes, ValueType::Duration), Some(value));
+        assert_eq!(decode_value(&bytes, ScalarType::Duration), Some(value));
     }
 }
 
@@ -135,7 +135,7 @@ fn non_canonical_durations_are_rejected() {
         "PT1.5s",   // lowercase unit
     ] {
         assert_eq!(
-            decode_value(bad.as_bytes(), ValueType::Duration),
+            decode_value(bad.as_bytes(), ScalarType::Duration),
             None,
             "{bad}"
         );
@@ -153,7 +153,7 @@ fn instants_round_trip_through_canonical_text() {
         "0001-01-01T00:00:00Z",
         "9999-12-31T23:59:59.999999999Z",
     ] {
-        let value = decode_value(text.as_bytes(), ValueType::Instant).expect("valid instant");
+        let value = decode_value(text.as_bytes(), ScalarType::Instant).expect("valid instant");
         assert_eq!(encoded(&value), text.as_bytes(), "re-encode {text}");
     }
 }
@@ -161,7 +161,7 @@ fn instants_round_trip_through_canonical_text() {
 #[test]
 fn the_epoch_instant_is_zero_nanos() {
     assert_eq!(
-        decode_value(b"1970-01-01T00:00:00Z", ValueType::Instant),
+        decode_value(b"1970-01-01T00:00:00Z", ScalarType::Instant),
         Some(SavedValue::Instant(0))
     );
     assert_eq!(encoded(&SavedValue::Instant(0)), b"1970-01-01T00:00:00Z");
@@ -181,7 +181,7 @@ fn non_canonical_instants_are_rejected() {
         "2026-02-29T00:00:00Z",      // impossible date
     ] {
         assert_eq!(
-            decode_value(bad.as_bytes(), ValueType::Instant),
+            decode_value(bad.as_bytes(), ScalarType::Instant),
             None,
             "{bad}"
         );
@@ -193,7 +193,7 @@ fn decimals_round_trip_through_canonical_text() {
     for text in [
         "0", "5", "-5", "0.25", "1.5", "-1.5", "123.45", "0.025", "-0.5",
     ] {
-        let value = decode_value(text.as_bytes(), ValueType::Decimal).expect("valid decimal");
+        let value = decode_value(text.as_bytes(), ScalarType::Decimal).expect("valid decimal");
         assert_eq!(encoded(&value), text.as_bytes(), "re-encode {text}");
     }
 }
@@ -215,7 +215,7 @@ fn non_canonical_decimals_are_rejected() {
         "1.0", "1.50", "01", "-0", ".5", "1.", "+1", "1e3", "00", "0.0",
     ] {
         assert_eq!(
-            decode_value(bad.as_bytes(), ValueType::Decimal),
+            decode_value(bad.as_bytes(), ScalarType::Decimal),
             None,
             "{bad}"
         );
@@ -226,12 +226,12 @@ fn non_canonical_decimals_are_rejected() {
 fn decimals_outside_the_envelope_are_rejected() {
     // 35 significant digits exceeds the 34-digit envelope.
     assert_eq!(
-        decode_value("1".repeat(35).as_bytes(), ValueType::Decimal),
+        decode_value("1".repeat(35).as_bytes(), ScalarType::Decimal),
         None
     );
     // 35 fractional places exceeds the 34-place scale.
     let too_deep = format!("0.{}", "1".repeat(35));
-    assert_eq!(decode_value(too_deep.as_bytes(), ValueType::Decimal), None);
+    assert_eq!(decode_value(too_deep.as_bytes(), ScalarType::Decimal), None);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn date_encode_enforces_the_canonical_year_range() {
     ] {
         let value = SavedValue::Date(days);
         let bytes = encode_value(&value).expect("in-range date encodes");
-        assert_eq!(decode_value(&bytes, ValueType::Date), Some(value));
+        assert_eq!(decode_value(&bytes, ScalarType::Date), Some(value));
     }
     // A day just outside the range, and the i32 extremes, are a typed range error
     // rather than a 5-7 digit year that decode could never read back.
@@ -285,7 +285,7 @@ fn instant_encode_enforces_the_canonical_year_range() {
     const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;
     // The documented range encodes and round-trips at both ends.
     for text in ["0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999999999Z"] {
-        let value = decode_value(text.as_bytes(), ValueType::Instant).expect("valid instant");
+        let value = decode_value(text.as_bytes(), ScalarType::Instant).expect("valid instant");
         assert_eq!(encoded(&value), text.as_bytes());
     }
     // An instant whose calendar day falls outside year 0001-9999 is a typed range
@@ -310,7 +310,7 @@ fn instant_encode_enforces_the_canonical_year_range() {
 fn scalar_type_names_map_to_their_value_type() {
     // The mapping shared by the runtime and the write planner: every documented
     // scalar maps, and non-scalar names do not.
-    use ValueType::*;
+    use ScalarType::*;
     for (name, ty) in [
         ("bool", Bool),
         ("int", Int),
@@ -322,9 +322,10 @@ fn scalar_type_names_map_to_their_value_type() {
         ("duration", Duration),
         ("decimal", Decimal),
     ] {
-        assert_eq!(ValueType::from_scalar_name(name), Some(ty), "{name}");
+        assert_eq!(ScalarType::from_scalar_name(name), Some(ty), "{name}");
+        assert_eq!(ty.name(), name, "{name} round-trips");
     }
     for name in ["Book", "Book::Id", "unknown", "Int", ""] {
-        assert_eq!(ValueType::from_scalar_name(name), None, "{name}");
+        assert_eq!(ScalarType::from_scalar_name(name), None, "{name}");
     }
 }

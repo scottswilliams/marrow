@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use marrow_store::value::ScalarType;
 use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
 
 /// The resolved shape of a checked project: every clean library module, in the
@@ -152,22 +153,57 @@ impl MarrowType {
 }
 
 impl PrimitiveType {
-    /// Map a primitive type keyword to its [`PrimitiveType`], using the
-    /// canonical source spelling (`int`, `string`, `ErrorCode`, ...). Anything
-    /// that is not a primitive keyword returns `None`.
+    /// Map a primitive type keyword to its [`PrimitiveType`]. The nine storable
+    /// scalars come from the store's canonical name table; `Error` is the one
+    /// checker-only type the store does not have (it is a runtime error value,
+    /// not a storable scalar), so it is matched here.
     fn from_keyword(text: &str) -> Option<Self> {
-        Some(match text {
-            "int" => Self::Int,
-            "decimal" => Self::Decimal,
-            "bool" => Self::Bool,
-            "string" => Self::String,
-            "bytes" => Self::Bytes,
-            "date" => Self::Date,
-            "instant" => Self::Instant,
-            "duration" => Self::Duration,
-            "ErrorCode" => Self::ErrorCode,
-            "Error" => Self::Error,
-            _ => return None,
+        if text == "Error" {
+            return Some(Self::Error);
+        }
+        ScalarType::from_scalar_name(text).map(Self::from_scalar)
+    }
+
+    /// The [`PrimitiveType`] for a storable [`ScalarType`]. Total: every scalar
+    /// has a primitive counterpart (the checker adds `Error` on top).
+    pub(crate) fn from_scalar(scalar: ScalarType) -> Self {
+        match scalar {
+            ScalarType::Bool => Self::Bool,
+            ScalarType::Int => Self::Int,
+            ScalarType::Str => Self::String,
+            ScalarType::Bytes => Self::Bytes,
+            ScalarType::ErrorCode => Self::ErrorCode,
+            ScalarType::Date => Self::Date,
+            ScalarType::Duration => Self::Duration,
+            ScalarType::Instant => Self::Instant,
+            ScalarType::Decimal => Self::Decimal,
+        }
+    }
+
+    /// The storable [`ScalarType`] this primitive denotes, or `None` for `Error`,
+    /// which is a checker-only type with no storage form.
+    fn as_scalar(self) -> Option<ScalarType> {
+        Some(match self {
+            Self::Bool => ScalarType::Bool,
+            Self::Int => ScalarType::Int,
+            Self::String => ScalarType::Str,
+            Self::Bytes => ScalarType::Bytes,
+            Self::ErrorCode => ScalarType::ErrorCode,
+            Self::Date => ScalarType::Date,
+            Self::Duration => ScalarType::Duration,
+            Self::Instant => ScalarType::Instant,
+            Self::Decimal => ScalarType::Decimal,
+            Self::Error => return None,
         })
+    }
+
+    /// The canonical source spelling of this primitive (`int`, `string`,
+    /// `ErrorCode`, …). The nine scalars read the store's name table; `Error` is
+    /// the checker-only spelling.
+    pub(crate) fn name(self) -> &'static str {
+        match self.as_scalar() {
+            Some(scalar) => scalar.name(),
+            None => "Error",
+        }
     }
 }
