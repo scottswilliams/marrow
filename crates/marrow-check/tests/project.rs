@@ -50,6 +50,83 @@ fn the_reference_sample_checks_clean() {
 }
 
 #[test]
+fn analyze_project_uses_overlay_source_instead_of_disk() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    // The on-disk file is clean; an editor overlay supplies buffer text for the
+    // same path that introduces a checker error (`1 + true`). The overlay must
+    // win — proving analysis reads buffer text, not the disk file, for that path.
+    let root = temp_project("overlay-wins", |root| {
+        write(root, "src/m.mw", "module m\nfn f()\n    var x = 1\n");
+    });
+    let path = root.join("src/m.mw");
+    let sources = ProjectSources::new().with(&path, "module m\nfn f()\n    var x = 1 + true\n");
+
+    let overlaid = analyze_project(&root, &config(), &sources).expect("analyze");
+    let (clean, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        overlaid
+            .report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "check.operator_type"),
+        "overlay text should be analyzed: {:#?}",
+        overlaid.report.diagnostics
+    );
+    assert!(
+        !clean.has_errors(),
+        "disk source is clean: {:#?}",
+        clean.diagnostics
+    );
+}
+
+#[test]
+fn analysis_snapshot_retains_files_with_parse_errors() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    // A tab is a lexical error, so the file carries a parse diagnostic and
+    // contributes no module to the program. The snapshot must still retain the
+    // parsed file (with its parse diagnostic) so editor tooling can work on it.
+    let root = temp_project("snapshot-parse-error", |root| {
+        write(root, "src/bad.mw", "module bad\n\tconst X: int = 1\n");
+    });
+    let path = root.join("src/bad.mw");
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new()).expect("analyze");
+    fs::remove_dir_all(&root).ok();
+
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("snapshot retains the error file");
+    assert!(
+        analyzed.parsed.has_errors(),
+        "retained file carries its parse diagnostic: {:#?}",
+        analyzed.parsed.diagnostics
+    );
+    assert!(
+        analyzed
+            .parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "parse.syntax"),
+        "{:#?}",
+        analyzed.parsed.diagnostics
+    );
+    assert!(
+        !snapshot
+            .program
+            .modules
+            .iter()
+            .any(|module| module.source_file == path),
+        "the error file contributes no module to the program"
+    );
+}
+
+#[test]
 fn surfaces_resource_schema_errors() {
     let root = temp_project("schema-error", |root| {
         // An index is only valid as a direct member of a saved resource, not

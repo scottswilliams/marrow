@@ -112,6 +112,60 @@ impl CheckReport {
     }
 }
 
+/// An overlay of in-memory source text keyed by file path. Editor tooling fills
+/// it with unsaved buffer contents so analysis sees what the user is typing; a
+/// path with no overlay entry is read from disk as usual. An empty overlay means
+/// "read everything from disk", which is exactly [`check_project`]'s behavior.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectSources {
+    overlays: HashMap<PathBuf, String>,
+}
+
+impl ProjectSources {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Overlay `source` for `path`, replacing any existing entry, and return the
+    /// overlay so calls can be chained when building one up.
+    pub fn with(mut self, path: impl Into<PathBuf>, source: impl Into<String>) -> Self {
+        self.insert(path, source);
+        self
+    }
+
+    /// Overlay `source` for `path`, replacing any existing entry.
+    pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
+        self.overlays.insert(path.into(), source.into());
+    }
+
+    /// The overlaid text for `path`, or `None` when the path should be read from
+    /// disk.
+    pub fn get(&self, path: &Path) -> Option<&str> {
+        self.overlays.get(path).map(String::as_str)
+    }
+}
+
+/// An IDE-grade view of a checked project: the diagnostics and best-effort
+/// program [`check_project`] produces, plus every parsed file — including files
+/// with parse errors, which contribute no [`CheckedModule`] but are retained
+/// here so editor tooling can still work on them.
+#[derive(Debug, Clone)]
+pub struct AnalysisSnapshot {
+    pub report: CheckReport,
+    pub program: CheckedProgram,
+    pub files: Vec<AnalyzedFile>,
+}
+
+/// One parsed file in an [`AnalysisSnapshot`]: its path, the module name its
+/// path implies (`None` for a path that cannot name a module), and the parse —
+/// retained whether or not it carries errors.
+#[derive(Debug, Clone)]
+pub struct AnalyzedFile {
+    pub path: PathBuf,
+    pub module_name: Option<String>,
+    pub parsed: marrow_syntax::ParsedSource,
+}
+
 /// Discover, read, and parse every `.mw` file in the project, collecting parse
 /// diagnostics and module/path resolution problems. Fails only when a source
 /// root cannot be walked; per-file read errors become diagnostics.
@@ -119,6 +173,30 @@ pub fn check_project(
     project_root: &Path,
     config: &ProjectConfig,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
+    check_project_with_sources(project_root, config, &ProjectSources::new())
+}
+
+/// Like [`check_project`], but analyzing `sources` over disk: any path with an
+/// overlay entry is checked from that text instead of being re-read. An empty
+/// overlay is identical to [`check_project`].
+pub fn check_project_with_sources(
+    project_root: &Path,
+    config: &ProjectConfig,
+    sources: &ProjectSources,
+) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
+    analyze_project(project_root, config, sources)
+        .map(|snapshot| (snapshot.report, snapshot.program))
+}
+
+/// The IDE-grade analysis core shared by [`check_project`]: discover, read (from
+/// `sources` overlay or disk), parse, and check every `.mw` file, returning the
+/// diagnostics and best-effort program plus every parsed file (error files
+/// included). Fails only when a source root cannot be walked.
+pub fn analyze_project(
+    project_root: &Path,
+    config: &ProjectConfig,
+    sources: &ProjectSources,
+) -> Result<AnalysisSnapshot, DiscoverError> {
     let files = discover_modules(project_root, config)?;
     let mut report = CheckReport::default();
     let mut program = CheckedProgram::default();
@@ -140,15 +218,18 @@ pub fn check_project(
     // Pass 1: parse each file and collect per-file findings plus the project's
     // module set.
     for file in &files {
-        let Some(CheckedFile {
+        // Editor buffer text wins over disk for an overlaid path; a path with no
+        // overlay is read from disk, and a read failure drops the file (its
+        // `io.read` diagnostic is recorded) exactly as before.
+        let Some(source) = read_source(&file.path, sources, &mut report.diagnostics) else {
+            continue;
+        };
+        let CheckedFile {
             parsed,
             resources,
             functions,
             constants,
-        }) = check_file(&file.path, &mut report.diagnostics)
-        else {
-            continue;
-        };
+        } = check_file_source(&file.path, &source, &mut report.diagnostics);
 
         // Saved roots and stable IDs are owned project-wide. Walk the file's
         // resource declarations beside their compiled schemas (same order) to
@@ -291,7 +372,23 @@ pub fn check_project(
         &mut report,
     );
 
-    Ok((report, program))
+    // Move every parse — error files included — into the snapshot now that the
+    // shared tail has finished borrowing them. The path and module name are
+    // copied from each `ModuleFile`; the parse itself moves.
+    let analyzed = parsed_files
+        .into_iter()
+        .map(|(file, parsed)| AnalyzedFile {
+            path: file.path.clone(),
+            module_name: file.module_name.clone(),
+            parsed,
+        })
+        .collect();
+
+    Ok(AnalysisSnapshot {
+        report,
+        program,
+        files: analyzed,
+    })
 }
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
@@ -2320,16 +2417,29 @@ struct CheckedFile {
     constants: Vec<CheckedConst>,
 }
 
-/// Read, parse, and structurally check one source file: record its parse,
-/// duplicate-name, function-body, const-value, and resource-schema diagnostics,
-/// and collect the declaration lists for a checked module. Returns `None` if the
-/// file cannot be read (an `io.read` diagnostic is recorded). Cross-file checks —
-/// module-path matching, saved-root ownership, stable-id uniqueness, and import
-/// resolution — belong to the caller, since they span files and differ between
-/// library modules and test scripts.
+/// Read one source file from disk, then parse and structurally check it. Returns
+/// `None` if the file cannot be read (an `io.read` diagnostic is recorded). This
+/// is the disk path used by [`check_tests`]; [`analyze_project`] reads through an
+/// overlay instead.
 fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Option<CheckedFile> {
-    let source = match std::fs::read_to_string(file_path) {
-        Ok(source) => source,
+    let source = read_source(file_path, &ProjectSources::new(), diagnostics)?;
+    Some(check_file_source(file_path, &source, diagnostics))
+}
+
+/// Resolve a file's text: the overlay entry for `file_path` if `sources` carries
+/// one, otherwise the on-disk contents. A read failure records an `io.read`
+/// diagnostic and returns `None`, preserving the read-failure-drops-a-file
+/// invariant the project and test checkers rely on.
+fn read_source(
+    file_path: &Path,
+    sources: &ProjectSources,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<String> {
+    if let Some(overlay) = sources.get(file_path) {
+        return Some(overlay.to_string());
+    }
+    match std::fs::read_to_string(file_path) {
+        Ok(source) => Some(source),
         Err(error) => {
             diagnostics.push(CheckDiagnostic {
                 code: IO_READ,
@@ -2338,11 +2448,24 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
                 message: format!("failed to read source: {error}"),
                 span: SourceSpan::default(),
             });
-            return None;
+            None
         }
-    };
+    }
+}
 
-    let parsed = parse_source(&source);
+/// Parse and structurally check one source file's `source`: record its parse,
+/// duplicate-name, function-body, const-value, and resource-schema diagnostics,
+/// and collect the declaration lists for a checked module. Always returns a
+/// [`CheckedFile`] — a parse error yields one whose `parsed` carries the
+/// diagnostics. Cross-file checks — module-path matching, saved-root ownership,
+/// stable-id uniqueness, and import resolution — belong to the caller, since they
+/// span files and differ between library modules and test scripts.
+fn check_file_source(
+    file_path: &Path,
+    source: &str,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> CheckedFile {
+    let parsed = parse_source(source);
     for diagnostic in &parsed.diagnostics {
         diagnostics.push(CheckDiagnostic {
             code: diagnostic.code,
@@ -2404,12 +2527,12 @@ fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Optio
         }
     }
 
-    Some(CheckedFile {
+    CheckedFile {
         parsed,
         resources,
         functions,
         constants,
-    })
+    }
 }
 
 /// Resolve a function declaration for the checked-program artifact: its
