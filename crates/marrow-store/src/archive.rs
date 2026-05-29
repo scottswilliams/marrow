@@ -97,9 +97,7 @@ fn restore_records(
     Ok(())
 }
 
-/// Write a length-prefixed byte chunk (`u32` little-endian length, then bytes). A
-/// chunk longer than `u32::MAX` is a typed limit error rather than a silent
-/// truncation of the length.
+/// Write a length-prefixed byte chunk: `u32` little-endian length, then bytes.
 fn write_chunk(out: &mut dyn Write, bytes: &[u8]) -> Result<(), StoreError> {
     let len = chunk_len(bytes.len())?;
     out.write_all(&len.to_le_bytes()).map_err(io("backup"))?;
@@ -146,10 +144,9 @@ fn read_u32(input: &mut dyn Read) -> Result<u32, StoreError> {
 mod tests {
     use super::*;
 
-    /// Archive framing is the sole producer of `store.limit`: a chunk longer than
-    /// `u32::MAX` does not fit the length prefix, so it is a typed `LimitExceeded`.
-    /// (Faked length so the limit is exercised without a multi-gigabyte allocation;
-    /// `bytes.len()` cannot exceed `usize::MAX`, which equals `u32::MAX` on 32-bit.)
+    /// The limit is exercised with a faked length, not a real allocation;
+    /// `bytes.len()` cannot exceed `usize::MAX`, which equals `u32::MAX` on 32-bit,
+    /// so the over-length case only exists where the `checked_add` succeeds.
     #[test]
     fn an_over_length_chunk_is_a_limit_error() {
         if let Some(too_long) = (u32::MAX as usize).checked_add(1) {
