@@ -1751,6 +1751,60 @@ fn finally_labeled_break_to_inner_loop_is_allowed() {
 }
 
 #[test]
+fn break_outside_any_loop_is_rejected() {
+    // A `break` with no enclosing loop only fails late at runtime
+    // (RUN_NO_ENCLOSING_LOOP); the checker must reject it statically.
+    let found = check_script(
+        "break-no-loop",
+        "fn f()\n    break\n",
+        "check.loop_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].line, 2, "{:#?}", found[0]);
+}
+
+#[test]
+fn continue_outside_any_loop_is_rejected() {
+    let found = check_script(
+        "continue-no-loop",
+        "fn f()\n    continue\n",
+        "check.loop_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn labeled_break_naming_no_enclosing_loop_is_rejected() {
+    // The label names no enclosing loop, so the break can never resolve.
+    let found = check_script(
+        "break-bad-label",
+        "fn f()\n    while c\n        break outer\n",
+        "check.loop_control_flow",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn break_and_continue_inside_a_loop_are_allowed() {
+    let found = check_script(
+        "break-in-loop",
+        "fn f()\n    while c\n        break\n        continue\n",
+        "check.loop_control_flow",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn labeled_break_to_an_enclosing_loop_is_allowed() {
+    let found = check_script(
+        "break-good-label",
+        "fn f()\n    outer: while a\n        while b\n            break outer\n",
+        "check.loop_control_flow",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn catch_with_non_error_type_is_rejected() {
     let found = check_script(
         "catch-bad-type",

@@ -14,6 +14,9 @@ use crate::CheckDiagnostic;
 /// A `finally` block must not let control flow escape it via `return`, `break`,
 /// or `continue`.
 pub const CHECK_FINALLY_CONTROL_FLOW: &str = "check.finally_control_flow";
+/// A `break`/`continue` is outside any loop, or its label names no enclosing
+/// loop, so it could never resolve at runtime.
+pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
 /// A `catch` annotation must be `Error`.
 pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
 /// An assignment or merge target is not a writable place.
@@ -24,6 +27,7 @@ pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 /// Apply every structural statement rule to one function body.
 pub fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
     walk_block(file, body, out);
+    walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
 }
 
 /// A `const` value must be a compile-time constant expression: literals and
@@ -202,6 +206,88 @@ fn walk_finally(
 /// escapes when no enclosing loop is within the finally. A labeled jump escapes
 /// unless its target loop was introduced within the finally.
 fn finally_jump_escapes(label: Option<&str>, loop_depth: usize, loop_labels: &[String]) -> bool {
+    match label {
+        None => loop_depth == 0,
+        Some(label) => !loop_labels.iter().any(|known| known == label),
+    }
+}
+
+/// Walk a block reporting a `break`/`continue` that names no loop it can reach:
+/// an unlabeled jump with no enclosing loop (`loop_depth == 0`), or a labeled
+/// jump whose label names no enclosing loop (`loop_labels`). Mirrors the runtime,
+/// which otherwise only fails late with `run.no_enclosing_loop`. A `finally`
+/// block's own escaping jumps are the `walk_finally` rule's concern, but they
+/// still sit inside the function's loop nesting, so this walk descends into them
+/// with the surrounding loop context.
+fn walk_loop_control_flow(
+    file: &Path,
+    block: &Block,
+    loop_depth: usize,
+    loop_labels: &mut Vec<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    for statement in &block.statements {
+        match statement {
+            Statement::Break { label, .. } | Statement::Continue { label, .. } => {
+                if loop_jump_unresolved(label.as_deref(), loop_depth, loop_labels) {
+                    let message = match label {
+                        Some(label) => {
+                            format!("`{label}` names no enclosing loop")
+                        }
+                        None => "control flow statement is not inside a loop".to_string(),
+                    };
+                    out.push(diagnostic_at(CHECK_LOOP_CONTROL_FLOW, file, statement, &message));
+                }
+            }
+            Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                walk_loop_control_flow(file, then_block, loop_depth, loop_labels, out);
+                for else_if in else_ifs {
+                    walk_loop_control_flow(file, &else_if.block, loop_depth, loop_labels, out);
+                }
+                if let Some(block) = else_block {
+                    walk_loop_control_flow(file, block, loop_depth, loop_labels, out);
+                }
+            }
+            Statement::While { label, body, .. } | Statement::For { label, body, .. } => {
+                if let Some(label) = label {
+                    loop_labels.push(label.clone());
+                }
+                walk_loop_control_flow(file, body, loop_depth + 1, loop_labels, out);
+                if label.is_some() {
+                    loop_labels.pop();
+                }
+            }
+            Statement::Transaction { body, .. } | Statement::Lock { body, .. } => {
+                walk_loop_control_flow(file, body, loop_depth, loop_labels, out);
+            }
+            Statement::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                walk_loop_control_flow(file, body, loop_depth, loop_labels, out);
+                if let Some(catch) = catch {
+                    walk_loop_control_flow(file, &catch.block, loop_depth, loop_labels, out);
+                }
+                if let Some(finally) = finally {
+                    walk_loop_control_flow(file, finally, loop_depth, loop_labels, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Does a `break`/`continue` name no loop it can reach? An unlabeled jump is
+/// unresolved when no loop encloses it; a labeled jump is unresolved unless its
+/// label names an enclosing loop.
+fn loop_jump_unresolved(label: Option<&str>, loop_depth: usize, loop_labels: &[String]) -> bool {
     match label {
         None => loop_depth == 0,
         Some(label) => !loop_labels.iter().any(|known| known == label),
