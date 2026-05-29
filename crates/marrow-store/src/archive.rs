@@ -101,12 +101,21 @@ fn restore_records(
 /// chunk longer than `u32::MAX` is a typed limit error rather than a silent
 /// truncation of the length.
 fn write_chunk(out: &mut dyn Write, bytes: &[u8]) -> Result<(), StoreError> {
-    let len = u32::try_from(bytes.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "archive chunk length",
-    })?;
+    let len = chunk_len(bytes.len())?;
     out.write_all(&len.to_le_bytes()).map_err(io("backup"))?;
     out.write_all(bytes).map_err(io("backup"))?;
     Ok(())
+}
+
+/// The `u32` length prefix for a chunk of `len` bytes. Archive framing is the sole
+/// producer of [`StoreError::LimitExceeded`]: a chunk longer than `u32::MAX` would
+/// not fit the length prefix, so it is a typed limit error rather than a silent
+/// truncation. (No backend enforces a key/value size limit; this is the only path
+/// that yields `store.limit`.)
+fn chunk_len(len: usize) -> Result<u32, StoreError> {
+    u32::try_from(len).map_err(|_| StoreError::LimitExceeded {
+        limit: "archive chunk length",
+    })
 }
 
 /// Read a length-prefixed byte chunk written by [`write_chunk`]. The chunk is read
@@ -131,4 +140,29 @@ fn read_u32(input: &mut dyn Read) -> Result<u32, StoreError> {
     let mut bytes = [0u8; 4];
     input.read_exact(&mut bytes).map_err(io("restore"))?;
     Ok(u32::from_le_bytes(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Archive framing is the sole producer of `store.limit`: a chunk longer than
+    /// `u32::MAX` does not fit the length prefix, so it is a typed `LimitExceeded`.
+    /// (Faked length so the limit is exercised without a multi-gigabyte allocation;
+    /// `bytes.len()` cannot exceed `usize::MAX`, which equals `u32::MAX` on 32-bit.)
+    #[test]
+    fn an_over_length_chunk_is_a_limit_error() {
+        if let Some(too_long) = (u32::MAX as usize).checked_add(1) {
+            assert_eq!(
+                chunk_len(too_long),
+                Err(StoreError::LimitExceeded {
+                    limit: "archive chunk length"
+                })
+            );
+            assert_eq!(chunk_len(too_long).unwrap_err().code(), "store.limit");
+        }
+        // A length within the prefix succeeds.
+        assert_eq!(chunk_len(5), Ok(5));
+        assert_eq!(chunk_len(u32::MAX as usize), Ok(u32::MAX));
+    }
 }
