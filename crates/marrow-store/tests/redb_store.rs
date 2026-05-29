@@ -1,25 +1,13 @@
-//! The native (redb) store satisfies the same backend conformance suite as the
-//! in-memory store — one contract, two backends.
+//! Native (redb) store behavior beyond the shared backend contract: durable
+//! persistence, single-writer locking, read-only opens, and dumps that round
+//! trip between memory and native storage. The contract itself is exercised by
+//! the per-backend conformance tests inside the crate.
 #![cfg(feature = "native")]
 
 use marrow_store::backend::{Backend, ScanPage};
-use marrow_store::conformance;
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
-
-#[test]
-fn redb_store_passes_the_conformance_suite() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
-    let mut counter = 0;
-    conformance::run_all(|| {
-        // Each law gets a fresh redb file in the shared temp dir; the dir (and
-        // its files) outlives every store, dropping only when the test ends.
-        counter += 1;
-        let path = dir.path().join(format!("store-{counter}.redb"));
-        RedbStore::open(&path).expect("open a fresh redb store")
-    });
-}
 
 #[test]
 fn redb_persists_and_reopens() {

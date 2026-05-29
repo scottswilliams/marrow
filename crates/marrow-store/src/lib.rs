@@ -13,13 +13,18 @@
 
 pub mod archive;
 pub mod backend;
-pub mod conformance;
 pub mod decimal;
 pub mod mem;
 pub mod path;
 #[cfg(feature = "native")]
 pub mod redb;
 pub mod value;
+
+// The reusable backend conformance suite is test-only: it is how every backend
+// is held to one contract, not part of the published store surface. The
+// per-backend tests in mem.rs/redb.rs drive `conformance::run_all`.
+#[cfg(test)]
+mod conformance;
 
 /// The shared backend error, re-exported at the crate root: it is part of the
 /// [`Backend`](backend::Backend) contract.

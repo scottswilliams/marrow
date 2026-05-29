@@ -16,7 +16,7 @@ use crate::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 
 /// Run every conformance law against fresh stores produced by `make`. `make` is
 /// `FnMut` so a backend factory can vary state per store (e.g. a redb file name).
-pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
+pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     values_round_trip(&mut make());
     presence_reports_four_states(&mut make());
     delete_removes_the_subtree(&mut make());

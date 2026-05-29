@@ -224,3 +224,14 @@ impl Backend for MemStore {
 fn corrupt(key: &[u8]) -> StoreError {
     StoreError::CorruptPath { path: key.to_vec() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MemStore;
+    use crate::conformance;
+
+    #[test]
+    fn mem_store_passes_the_conformance_suite() {
+        conformance::run_all(MemStore::new);
+    }
+}
