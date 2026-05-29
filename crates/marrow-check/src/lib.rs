@@ -1796,8 +1796,13 @@ fn check_call(
             }
             None => function.params.get(index),
         };
+        // `Error` is a concrete user type (`from_resolved` maps `Type::Named("Error")`
+        // to `MarrowType::Error`), not a primitive, so `as_primitive` returns `None`
+        // for an `Error`-typed parameter. Gate on it explicitly alongside the scalars
+        // (mirroring the std argument path) so a mismatched argument against an
+        // `Error` parameter is still checked rather than silently accepted.
         if let Some(param) = param
-            && as_primitive(&param.ty).is_some()
+            && matches!(param.ty, MarrowType::Primitive(_) | MarrowType::Error)
         {
             check_one_arg(
                 &segments.join("::"),

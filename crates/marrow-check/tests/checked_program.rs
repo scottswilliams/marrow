@@ -397,9 +397,12 @@ fn a_file_with_a_parse_error_contributes_no_module() {
 
 /// Build a one-module project whose single function wraps `body` in a
 /// `try`/`catch e: Error`, so `e` is in scope as an `Error` value, and return its
-/// diagnostic codes. `signature` is the function header (e.g. `fn f()`).
-fn error_value_diagnostic_codes(signature: &str, body: &str) -> Vec<String> {
-    let root = temp_project("program-error-scalar", |root| {
+/// diagnostic codes. `signature` is the function header (e.g. `fn f()`). `slot`
+/// names the project directory: each caller passes a distinct `slot` so that two
+/// of these tests running concurrently under workspace parallelism never share a
+/// temp project (and so cannot delete each other's files mid-run).
+fn error_value_diagnostic_codes(slot: &str, signature: &str, body: &str) -> Vec<String> {
+    let root = temp_project(&format!("program-error-scalar-{slot}"), |root| {
         write(
             root,
             "src/shelf/t.mw",
@@ -426,7 +429,8 @@ fn error_value_diagnostic_codes(signature: &str, body: &str) -> Vec<String> {
 /// must be `bool`), not `check.untyped_value`.
 #[test]
 fn error_condition_is_a_condition_type_error() {
-    let codes = error_value_diagnostic_codes("fn f()", "        if e\n            x = 1");
+    let codes =
+        error_value_diagnostic_codes("condition", "fn f()", "        if e\n            x = 1");
     assert!(
         codes.iter().any(|code| code == "check.condition_type"),
         "{codes:#?}"
@@ -441,7 +445,7 @@ fn error_condition_is_a_condition_type_error() {
 /// `check.untyped_value`.
 #[test]
 fn error_return_is_a_return_type_error() {
-    let codes = error_value_diagnostic_codes("fn f(): string", "        return e");
+    let codes = error_value_diagnostic_codes("return", "fn f(): string", "        return e");
     assert!(
         codes.iter().any(|code| code == "check.return_type"),
         "{codes:#?}"
@@ -456,8 +460,11 @@ fn error_return_is_a_return_type_error() {
 /// `check.assignment_type`, not `check.untyped_value`.
 #[test]
 fn error_assignment_is_an_assignment_type_error() {
-    let codes =
-        error_value_diagnostic_codes("fn f()", "        var s: string = \"a\"\n        s = e");
+    let codes = error_value_diagnostic_codes(
+        "assignment",
+        "fn f()",
+        "        var s: string = \"a\"\n        s = e",
+    );
     assert!(
         codes.iter().any(|code| code == "check.assignment_type"),
         "{codes:#?}"
@@ -507,11 +514,83 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
     );
 }
 
+/// Build a project declaring `fn takes(e: Error)` and calling it with `arg` from
+/// inside a `try`/`catch e: Error` (so the name `e` is an `Error` value in scope),
+/// and return the diagnostic codes. An `Error`-typed parameter is a reachable user
+/// type (`names_known_type` accepts "Error"; `from_resolved` maps it to
+/// `MarrowType::Error`), so the argument loop must check it like a scalar.
+fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
+    let root = temp_project(&format!("program-error-param-{slot}"), |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            &format!(
+                "module shelf::t\n\
+                 fn takes(e: Error)\n\
+                 \x20   return\n\
+                 fn f()\n\
+                 \x20   try\n\
+                 \x20       var x = 1\n\
+                 \x20   catch e: Error\n\
+                 \x20       takes({arg})\n"
+            ),
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.to_string())
+        .collect()
+}
+
+/// Passing a `string` literal to a `takes(e: Error)` parameter reports
+/// `check.call_argument`: the scalar does not satisfy the concrete `Error` slot.
+/// (Before the fix the `as_primitive(&param.ty).is_some()` gate skipped any
+/// `Error`-typed parameter, silently accepting the mismatch.)
+#[test]
+fn scalar_argument_to_error_param_is_a_call_argument_error() {
+    let codes = error_param_call_diagnostic_codes("scalar", "\"oops\"");
+    assert!(
+        codes.iter().any(|code| code == "check.call_argument"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+}
+
+/// Passing an unbound name (an `Unknown` value) to a `takes(e: Error)` parameter
+/// reports `check.untyped_value`: strict typing still requires a known type for a
+/// concrete slot, even an `Error` one.
+#[test]
+fn untyped_argument_to_error_param_is_an_untyped_value_error() {
+    let codes = error_param_call_diagnostic_codes("untyped", "mystery");
+    assert!(
+        codes.iter().any(|code| code == "check.untyped_value"),
+        "{codes:#?}"
+    );
+    assert!(
+        !codes.iter().any(|code| code == "check.call_argument"),
+        "{codes:#?}"
+    );
+}
+
+/// Passing a catch-bound `Error` value to a `takes(e: Error)` parameter checks
+/// clean: the concrete `Error` slot is satisfied by an `Error` argument.
+#[test]
+fn error_argument_to_error_param_checks_clean() {
+    let codes = error_param_call_diagnostic_codes("clean", "e");
+    assert!(codes.is_empty(), "{codes:#?}");
+}
+
 /// Passing `e` to `std::log::info` (which expects a `string`) reports
 /// `check.call_argument`, not `check.untyped_value`.
 #[test]
 fn error_argument_to_std_log_info_is_a_call_argument_error() {
-    let codes = error_value_diagnostic_codes("fn f()", "        std::log::info(e)");
+    let codes = error_value_diagnostic_codes("log-info", "fn f()", "        std::log::info(e)");
     assert!(
         codes.iter().any(|code| code == "check.call_argument"),
         "{codes:#?}"
@@ -526,7 +605,7 @@ fn error_argument_to_std_log_info_is_a_call_argument_error() {
 /// an `Error`), not `check.untyped_value`.
 #[test]
 fn error_unary_negation_is_an_operator_type_error() {
-    let codes = error_value_diagnostic_codes("fn f()", "        y = -e");
+    let codes = error_value_diagnostic_codes("unary", "fn f()", "        y = -e");
     assert!(
         codes.iter().any(|code| code == "check.operator_type"),
         "{codes:#?}"
@@ -541,7 +620,7 @@ fn error_unary_negation_is_an_operator_type_error() {
 /// applies to an `Error`), not `check.untyped_value` and never nothing.
 #[test]
 fn error_arithmetic_operand_is_an_operator_type_error() {
-    let codes = error_value_diagnostic_codes("fn f()", "        y = e + 1");
+    let codes = error_value_diagnostic_codes("arithmetic", "fn f()", "        y = e + 1");
     assert!(
         codes.iter().any(|code| code == "check.operator_type"),
         "{codes:#?}"
@@ -556,7 +635,7 @@ fn error_arithmetic_operand_is_an_operator_type_error() {
 /// `check.untyped_value` and never nothing.
 #[test]
 fn error_comparison_operand_is_an_operator_type_error() {
-    let codes = error_value_diagnostic_codes("fn f()", "        y = e < 1");
+    let codes = error_value_diagnostic_codes("comparison", "fn f()", "        y = e < 1");
     assert!(
         codes.iter().any(|code| code == "check.operator_type"),
         "{codes:#?}"
@@ -573,7 +652,7 @@ fn error_comparison_operand_is_an_operator_type_error() {
 /// satisfied, so the call checks clean.
 #[test]
 fn error_argument_to_std_log_error_checks_clean() {
-    let codes = error_value_diagnostic_codes("fn f()", "        std::log::error(e)");
+    let codes = error_value_diagnostic_codes("log-error", "fn f()", "        std::log::error(e)");
     assert!(codes.is_empty(), "{codes:#?}");
 }
 
