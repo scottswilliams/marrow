@@ -23,6 +23,7 @@ pub fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     delete_removes_the_subtree(&mut make());
     delete_of_an_absent_path_is_a_no_op(&mut make());
     child_keys_list_integer_records_in_order(&mut make());
+    child_keys_dedup_records_with_multiple_descendants(&mut make());
     child_keys_list_field_names_in_order(&mut make());
     child_keys_round_trip_string_records(&mut make());
     roots_are_ordered_and_deduped(&mut make());
@@ -147,6 +148,30 @@ fn child_keys_list_integer_records_in_order(store: &mut dyn Backend) {
             ChildSegment::Key(SavedKey::Int(10)),
             ChildSegment::Key(SavedKey::Int(100)),
         ]
+    );
+}
+
+fn child_keys_dedup_records_with_multiple_descendants(store: &mut dyn Backend) {
+    // A record can have several descendants (^seq(1).a, ^seq(1).b); the parent's
+    // child_keys must collapse those to one entry per immediate child. With one
+    // descendant per record the dedup branch never fires, so this law gives ^seq(1)
+    // two fields before listing ^seq's children.
+    store
+        .write(&keyed_field("seq", SavedKey::Int(1), "a"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(&keyed_field("seq", SavedKey::Int(1), "b"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(&keyed_field("seq", SavedKey::Int(2), "a"), b"x".to_vec())
+        .unwrap();
+    assert_eq!(
+        store.child_keys(&root("seq")).unwrap(),
+        vec![
+            ChildSegment::Key(SavedKey::Int(1)),
+            ChildSegment::Key(SavedKey::Int(2)),
+        ],
+        "a record with multiple descendants appears once among its parent's children"
     );
 }
 
