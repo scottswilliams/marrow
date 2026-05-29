@@ -1724,13 +1724,15 @@ fn materialize_layer(
             .collect(),
         // A keyed/sequence child layer `^root(id…).layer`: each child key addresses
         // one entry, materialized by a layer-entry read.
-        Expression::Field { base, name: layer, .. } => {
+        Expression::Field {
+            base, name: layer, ..
+        } => {
             let span = path.span();
             let (root, identity) = lower_record_identity(base, env)?;
             keys.into_iter()
                 .map(|key| {
-                    let layer_key =
-                        value_to_key(key.clone()).ok_or_else(|| unsupported("a key of this type", span))?;
+                    let layer_key = value_to_key(key.clone())
+                        .ok_or_else(|| unsupported("a key of this type", span))?;
                     let value = read_layer_entry(&root, &identity, layer, &[layer_key], span, env)?;
                     Ok((key, value))
                 })
