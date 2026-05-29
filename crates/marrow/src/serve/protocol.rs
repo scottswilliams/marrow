@@ -175,50 +175,60 @@ fn segment_name(value: &Value, kind: &str) -> Result<String, ProtocolError> {
 }
 
 /// Decode a key value — a one-field object tagged by its type — into a [`SavedKey`].
-/// Wide integer keys (`duration`, `instant`) are strings because JSON numbers
-/// cannot hold an `i128`; `int` and `date` are JSON numbers; `bytes` is base64.
+/// The accepted tags are the [`SavedKey::wire_tag`] of each key kind, so they
+/// stay in lockstep with [`encode_key`] and the shared scalar-name table. Wide
+/// integer keys (`duration`, `instant`) are strings because JSON numbers cannot
+/// hold an `i128`; `int` and `date` are JSON numbers; `bytes` is base64.
 fn decode_key(value: &Value) -> Result<SavedKey, ProtocolError> {
     let (tag, inner) = one_field(value, "a key")?;
-    let key = match tag.as_str() {
-        "int" => SavedKey::Int(
+    let tag = tag.as_str();
+    let key = if tag == SavedKey::Int(0).wire_tag() {
+        SavedKey::Int(
             inner
                 .as_i64()
                 .ok_or_else(|| bad_request("`int` key must be an integer"))?,
-        ),
-        "bool" => SavedKey::Bool(
+        )
+    } else if tag == SavedKey::Bool(false).wire_tag() {
+        SavedKey::Bool(
             inner
                 .as_bool()
                 .ok_or_else(|| bad_request("`bool` key must be a boolean"))?,
-        ),
-        "str" => SavedKey::Str(segment_name(inner, "str")?),
-        "date" => {
-            let days = inner
-                .as_i64()
-                .ok_or_else(|| bad_request("`date` key must be an integer"))?;
-            SavedKey::Date(
-                i32::try_from(days).map_err(|_| bad_request("`date` key is out of range"))?,
-            )
-        }
-        "duration" => SavedKey::Duration(parse_i128(inner, "duration")?),
-        "instant" => SavedKey::Instant(parse_i128(inner, "instant")?),
-        "bytes" => SavedKey::Bytes(decode_base64_field(inner, "bytes")?),
-        other => return Err(bad_request(&format!("unknown key type `{other}`"))),
+        )
+    } else if tag == SavedKey::Str(String::new()).wire_tag() {
+        SavedKey::Str(segment_name(inner, "str")?)
+    } else if tag == SavedKey::Date(0).wire_tag() {
+        let days = inner
+            .as_i64()
+            .ok_or_else(|| bad_request("`date` key must be an integer"))?;
+        SavedKey::Date(i32::try_from(days).map_err(|_| bad_request("`date` key is out of range"))?)
+    } else if tag == SavedKey::Duration(0).wire_tag() {
+        SavedKey::Duration(parse_i128(inner, "duration")?)
+    } else if tag == SavedKey::Instant(0).wire_tag() {
+        SavedKey::Instant(parse_i128(inner, "instant")?)
+    } else if tag == SavedKey::Bytes(Vec::new()).wire_tag() {
+        SavedKey::Bytes(decode_base64_field(inner, "bytes")?)
+    } else {
+        return Err(bad_request(&format!("unknown key type `{tag}`")));
     };
     Ok(key)
 }
 
 /// Encode a [`SavedKey`] back to its one-field JSON form (the inverse of
-/// [`decode_key`]), used for `saved_children` output.
+/// [`decode_key`]), used for `saved_children` output. The tag comes from
+/// [`SavedKey::wire_tag`] (sourced from the shared scalar-name table) in the same
+/// match as the payload, so tag and value cannot disagree.
 fn encode_key(key: &SavedKey) -> Value {
-    match key {
-        SavedKey::Int(value) => json!({ "int": value }),
-        SavedKey::Bool(value) => json!({ "bool": value }),
-        SavedKey::Str(value) => json!({ "str": value }),
-        SavedKey::Date(value) => json!({ "date": value }),
-        SavedKey::Duration(value) => json!({ "duration": value.to_string() }),
-        SavedKey::Instant(value) => json!({ "instant": value.to_string() }),
-        SavedKey::Bytes(value) => json!({ "bytes": base64::encode(value) }),
-    }
+    let tag = key.wire_tag();
+    let payload = match key {
+        SavedKey::Int(value) => json!(value),
+        SavedKey::Bool(value) => json!(value),
+        SavedKey::Str(value) => json!(value),
+        SavedKey::Date(value) => json!(value),
+        SavedKey::Duration(value) => json!(value.to_string()),
+        SavedKey::Instant(value) => json!(value.to_string()),
+        SavedKey::Bytes(value) => json!(base64::encode(value)),
+    };
+    json!({ tag: payload })
 }
 
 /// Encode a child of a saved path: a key value or a member name.
