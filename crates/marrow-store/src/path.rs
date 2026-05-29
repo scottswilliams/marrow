@@ -27,6 +27,38 @@ pub enum SavedKey {
     Bytes(Vec<u8>),
 }
 
+impl SavedKey {
+    /// This key as a scalar value. Total: every key is a scalar (the orderable
+    /// subset), so this is the inverse of [`SavedValue::as_key`].
+    pub fn into_value(self) -> SavedValue {
+        match self {
+            SavedKey::Int(v) => SavedValue::Int(v),
+            SavedKey::Bool(v) => SavedValue::Bool(v),
+            SavedKey::Str(v) => SavedValue::Str(v),
+            SavedKey::Bytes(v) => SavedValue::Bytes(v),
+            SavedKey::Date(v) => SavedValue::Date(v),
+            SavedKey::Duration(v) => SavedValue::Duration(v),
+            SavedKey::Instant(v) => SavedValue::Instant(v),
+        }
+    }
+
+    /// The stable wire tag for this key in the serve JSON codec. Six tags are
+    /// sourced from the shared scalar-name table so they cannot drift; only `Str`
+    /// diverges, spelling `str` on the wire rather than the source keyword
+    /// `string`. Exhaustive, so a new key arm must pick its tag here.
+    pub fn wire_tag(&self) -> &'static str {
+        match self {
+            SavedKey::Str(_) => "str",
+            SavedKey::Bool(_) => ScalarType::Bool.name(),
+            SavedKey::Int(_) => ScalarType::Int.name(),
+            SavedKey::Bytes(_) => ScalarType::Bytes.name(),
+            SavedKey::Date(_) => ScalarType::Date.name(),
+            SavedKey::Duration(_) => ScalarType::Duration.name(),
+            SavedKey::Instant(_) => ScalarType::Instant.name(),
+        }
+    }
+}
+
 /// One segment of a saved path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathSegment {
@@ -749,5 +781,25 @@ mod tests {
     fn parse_path_rejects_a_bad_key_literal() {
         assert!(parse_path("^r(not-a-key)").is_err());
         assert!(parse_path("^r(1").is_err());
+    }
+
+    #[test]
+    fn keys_are_the_orderable_projection_of_scalars() {
+        // Every key round-trips through its scalar value, and its wire tag is the
+        // stable serve spelling (`str`, not the `string` source keyword).
+        for (key, tag) in [
+            (SavedKey::Int(-9), "int"),
+            (SavedKey::Bool(true), "bool"),
+            (SavedKey::Str("v".into()), "str"),
+            (SavedKey::Bytes(vec![0x01]), "bytes"),
+            (SavedKey::Date(19_000), "date"),
+            (SavedKey::Duration(1_500_000_000), "duration"),
+            (SavedKey::Instant(1_700_000_000_000_000_000), "instant"),
+        ] {
+            assert_eq!(key.wire_tag(), tag, "{key:?}");
+            assert_eq!(key.clone().into_value().as_key(), Some(key.clone()), "{key:?}");
+        }
+        // A decimal has no order-preserving key encoding.
+        assert_eq!(SavedValue::Decimal(crate::Decimal::ZERO).as_key(), None);
     }
 }

@@ -8,6 +8,7 @@
 //! from the schema at read time, so the bytes carry no type tag.
 
 use crate::Decimal;
+use crate::path::SavedKey;
 
 /// A scalar value in decoded form: the one type the store, the runtime, and the
 /// serve protocol all share for a stored leaf. The eight arms are exactly the
@@ -31,6 +32,25 @@ pub enum Scalar {
 /// The saved form of a scalar is the scalar itself; `SavedValue` is the name the
 /// store and the write planner read it under.
 pub type SavedValue = Scalar;
+
+impl Scalar {
+    /// This scalar as an order-preserving [`SavedKey`], or `None` for a decimal,
+    /// which has no order-preserving key encoding. A [`SavedKey`] is exactly the
+    /// orderable projection of a scalar, so this is the one place that mapping
+    /// lives; the inverse is [`SavedKey::into_value`].
+    pub fn as_key(&self) -> Option<SavedKey> {
+        Some(match self {
+            Scalar::Int(v) => SavedKey::Int(*v),
+            Scalar::Bool(v) => SavedKey::Bool(*v),
+            Scalar::Str(v) => SavedKey::Str(v.clone()),
+            Scalar::Bytes(v) => SavedKey::Bytes(v.clone()),
+            Scalar::Date(v) => SavedKey::Date(*v),
+            Scalar::Duration(v) => SavedKey::Duration(*v),
+            Scalar::Instant(v) => SavedKey::Instant(*v),
+            Scalar::Decimal(_) => return None,
+        })
+    }
+}
 
 /// A value that cannot be encoded to its canonical saved form. Today the only
 /// such case is a `date`/`instant` whose calendar year falls outside the
