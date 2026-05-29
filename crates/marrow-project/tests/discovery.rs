@@ -148,6 +148,31 @@ fn discovers_test_files_from_a_glob_pattern() {
 }
 
 #[test]
+fn single_star_test_glob_does_not_recurse() {
+    // `tests/*.mw` (single star) matches only the immediate directory; recursion
+    // is reserved for the `tests/**/*.mw` double-star form.
+    let root = temp_project("test-single-star", |root| {
+        write(root, "tests/top_test.mw", "pub fn ok()\n    return\n");
+        write(root, "tests/deep/nested_test.mw", "pub fn ok()\n    return\n");
+    });
+
+    let single = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/*.mw"] }"#)
+        .expect("config");
+    let modules = discover_test_modules(&root, &single).expect("discover tests");
+    let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
+    assert_eq!(modules.len(), 1, "{modules:#?}");
+    assert!(names.contains(&Some("tests::top_test".to_string())));
+    assert!(!names.contains(&Some("tests::deep::nested_test".to_string())));
+
+    // The double-star form still walks subdirectories.
+    let double = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#)
+        .expect("config");
+    let modules = discover_test_modules(&root, &double).expect("discover tests");
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(modules.len(), 2, "{modules:#?}");
+}
+
+#[test]
 fn test_patterns_accept_a_bare_directory_or_file() {
     let root = temp_project("test-bare", |root| {
         write(root, "checks/a_test.mw", "pub fn ok()\n    return\n");

@@ -254,22 +254,28 @@ pub fn discover_modules(
 /// names are relative to the project root (`tests/books_test.mw` →
 /// `tests::books_test`).
 ///
-/// Each pattern is the directory-walk subset of a glob: a trailing `/**/*.mw`,
-/// `/**`, or `/*.mw` is stripped to a base directory that is walked recursively
-/// for `.mw` files; a bare directory is walked; a bare `.mw` file is taken
-/// directly. A pattern that matches nothing is skipped (no tests), not an error.
-/// Results are sorted by path with duplicates removed.
+/// Each pattern is the directory-walk subset of a glob, honoring glob recursion
+/// convention: a trailing double-star (`/**/*.mw`, `/**`) walks the base
+/// directory recursively, while a single-star (`/*.mw`) matches only its
+/// immediate directory; a bare directory is walked recursively; a bare `.mw`
+/// file is taken directly. A pattern that matches nothing is skipped (no tests),
+/// not an error. Results are sorted by path with duplicates removed.
 pub fn discover_test_modules(
     project_root: &Path,
     config: &ProjectConfig,
 ) -> Result<Vec<ModuleFile>, DiscoverError> {
     let mut files = Vec::new();
     for pattern in &config.tests {
-        let target = project_root.join(test_pattern_base(pattern));
+        let (base, recursive) = test_pattern_base(pattern);
+        let target = project_root.join(base);
         if target.is_file() {
             files.push(module_file(project_root, target));
         } else if target.is_dir() {
-            collect_mw_files(project_root, &target, &mut files)?;
+            if recursive {
+                collect_mw_files(project_root, &target, &mut files)?;
+            } else {
+                collect_mw_files_shallow(project_root, &target, &mut files)?;
+            }
         }
         // A pattern that resolves to nothing on disk contributes no tests.
     }
@@ -278,22 +284,47 @@ pub fn discover_test_modules(
     Ok(files)
 }
 
-/// The base path of a `tests` pattern: the directory or file to walk, with a
-/// trailing glob tail removed. `tests/**/*.mw` → `tests`, `tests` → `tests`,
-/// `tests/smoke.mw` → `tests/smoke.mw`.
-fn test_pattern_base(pattern: &str) -> &str {
-    for suffix in ["/**/*.mw", "/**", "/*.mw"] {
+/// The base path of a `tests` pattern and whether its directory is walked
+/// recursively, with a trailing glob tail removed. Honoring glob convention, a
+/// double-star tail (`/**/*.mw`, `/**`) recurses while a single-star tail
+/// (`/*.mw`) matches only the immediate directory. A bare directory walks
+/// recursively; a bare `.mw` file is taken directly.
+///
+/// `tests/**/*.mw` → (`tests`, recursive), `tests/*.mw` → (`tests`, shallow),
+/// `tests` → (`tests`, recursive), `tests/smoke.mw` → (`tests/smoke.mw`, _).
+fn test_pattern_base(pattern: &str) -> (&str, bool) {
+    for (suffix, recursive) in [("/**/*.mw", true), ("/**", true), ("/*.mw", false)] {
         if let Some(base) = pattern.strip_suffix(suffix) {
-            return base;
+            return (base, recursive);
         }
     }
-    pattern
+    (pattern, true)
 }
 
+/// Walk `dir` only, collecting its immediate `.mw` files (no recursion). Backs
+/// the single-star (`/*.mw`) test pattern.
+fn collect_mw_files_shallow(
+    source_root: &Path,
+    dir: &Path,
+    out: &mut Vec<ModuleFile>,
+) -> Result<(), DiscoverError> {
+    walk_mw_files(source_root, dir, out, false)
+}
+
+/// Walk `dir` recursively, collecting every `.mw` file beneath it.
 fn collect_mw_files(
     source_root: &Path,
     dir: &Path,
     out: &mut Vec<ModuleFile>,
+) -> Result<(), DiscoverError> {
+    walk_mw_files(source_root, dir, out, true)
+}
+
+fn walk_mw_files(
+    source_root: &Path,
+    dir: &Path,
+    out: &mut Vec<ModuleFile>,
+    recursive: bool,
 ) -> Result<(), DiscoverError> {
     let entries = std::fs::read_dir(dir).map_err(|error| DiscoverError {
         code: "project.source_root",
@@ -314,7 +345,9 @@ fn collect_mw_files(
         };
         let path = entry.path();
         if file_type.is_dir() {
-            collect_mw_files(source_root, &path, out)?;
+            if recursive {
+                walk_mw_files(source_root, &path, out, true)?;
+            }
         } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("mw")
         {
             out.push(module_file(source_root, path));
