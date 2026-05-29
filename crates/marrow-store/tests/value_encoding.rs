@@ -1,6 +1,7 @@
 //! Saved values round-trip through their canonical byte form, and non-canonical
 //! bytes are rejected.
 
+use marrow_store::Decimal;
 use marrow_store::value::{SavedValue, ValueError, ValueType, date_days, decode_value, encode_value};
 
 fn round_trips(value: SavedValue, ty: ValueType) {
@@ -229,6 +230,25 @@ fn decimals_outside_the_envelope_are_rejected() {
     // 35 fractional places exceeds the 34-place scale.
     let too_deep = format!("0.{}", "1".repeat(35));
     assert_eq!(decode_value(too_deep.as_bytes(), ValueType::Decimal), None);
+}
+
+#[test]
+fn saved_decimal_encoding_matches_the_shared_decimal_codec() {
+    // SavedValue::Decimal and Decimal share one canonical form: encoding a saved
+    // decimal must match Decimal::to_text for the same value, including
+    // normalization of a trailing-zero scale.
+    for text in ["0", "1.5", "-0.25", "123.456", "1.50", "0.50", "100"] {
+        let decimal = Decimal::parse(text).expect("valid decimal");
+        let saved = SavedValue::Decimal {
+            coefficient: decimal.coefficient(),
+            scale: decimal.scale(),
+        };
+        assert_eq!(
+            encoded(&saved),
+            decimal.to_text().as_bytes(),
+            "saved encoding diverged from the shared codec for {text}"
+        );
+    }
 }
 
 // One day before year 0001-01-01 and one day after year 9999-12-31: the canonical

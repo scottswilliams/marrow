@@ -354,30 +354,15 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
     Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)
 }
 
-/// The decimal envelope: at most 34 significant digits and 34 fractional places
-/// (docs/language/types.md).
-const DECIMAL_MAX_DIGITS: u32 = 34;
-
-/// Format a decimal (`coefficient * 10^(-scale)`) as canonical decimal text:
-/// no leading zeros, no trailing-zero fraction, no exponent. Normalizes its
-/// input first, so any equal-valued (coefficient, scale) produces one spelling.
-fn format_decimal(mut coefficient: i128, mut scale: u32) -> String {
-    while scale > 0 && coefficient % 10 == 0 {
-        coefficient /= 10;
-        scale -= 1;
-    }
-    if coefficient == 0 {
-        return "0".to_string();
-    }
-    let sign = if coefficient < 0 { "-" } else { "" };
-    let digits = coefficient.unsigned_abs().to_string();
-    if scale == 0 {
-        return format!("{sign}{digits}");
-    }
-    let scale = scale as usize;
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let point = padded.len() - scale;
-    format!("{sign}{}.{}", &padded[..point], &padded[point..])
+/// Format a stored decimal (`coefficient * 10^(-scale)`) as canonical decimal
+/// text by routing through the shared [`Decimal`](crate::Decimal) codec, so the
+/// saved form and decimal arithmetic share one normalization and one spelling.
+/// A [`SavedValue::Decimal`] is only ever built from an in-envelope value (decoded
+/// via [`parse_decimal`] or from a `Decimal`), so the construction always succeeds.
+fn format_decimal(coefficient: i128, scale: u32) -> String {
+    crate::Decimal::from_parts(coefficient, scale)
+        .expect("a stored decimal is within the envelope")
+        .to_text()
 }
 
 /// Parse canonical decimal text to a value-canonical [`SavedValue::Decimal`].
@@ -417,18 +402,11 @@ fn parse_decimal(bytes: &[u8]) -> Option<SavedValue> {
     if negative && magnitude == 0 {
         return None; // `-0` is not canonical
     }
-    if significant_digits(magnitude) > DECIMAL_MAX_DIGITS || scale > DECIMAL_MAX_DIGITS {
+    if crate::decimal::significant_digits(magnitude) > crate::decimal::MAX_DIGITS
+        || scale > crate::decimal::MAX_DIGITS
+    {
         return None;
     }
     let coefficient = if negative { -magnitude } else { magnitude };
     Some(SavedValue::Decimal { coefficient, scale })
-}
-
-/// The number of significant digits in a non-negative magnitude; zero has none.
-fn significant_digits(magnitude: i128) -> u32 {
-    if magnitude == 0 {
-        0
-    } else {
-        magnitude.unsigned_abs().to_string().len() as u32
-    }
 }
