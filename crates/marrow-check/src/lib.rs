@@ -1585,10 +1585,9 @@ fn builtin_return_type(segments: &[String], arg_types: &[MarrowType]) -> Option<
 
 /// The return type of a scalar conversion builtin (`int(x): int`, `string(x):
 /// string`, …), per docs/language/builtins.md. The conversion validates a
-/// dynamically-typed value and yields the named type. (`ErrorCode` has no runtime
-/// value representation yet and is omitted.)
+/// dynamically-typed value and yields the named type.
 fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
-    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, String};
+    use PrimitiveType::{Bool, Bytes, Date, Decimal, Duration, ErrorCode, Instant, Int, String};
     let [name] = segments else {
         return None;
     };
@@ -1598,6 +1597,7 @@ fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
         "string" => String,
         "bool" => Bool,
         "bytes" => Bytes,
+        "ErrorCode" => ErrorCode,
         "date" => Date,
         "instant" => Instant,
         "duration" => Duration,

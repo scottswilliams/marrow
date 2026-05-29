@@ -1405,6 +1405,19 @@ fn a_conversion_into_a_matching_annotated_place_is_not_flagged() {
 }
 
 #[test]
+fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
+    // `ErrorCode(raw)` is `ErrorCode`, matching the declared `ErrorCode` place —
+    // the documented `const code: ErrorCode = ErrorCode(raw)` conversion checks
+    // clean (no false `check.untyped_value`).
+    let found = check_module(
+        "conv-error-code",
+        "module m\nfn f(raw: unknown)\n    const code: ErrorCode = ErrorCode(raw)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.
