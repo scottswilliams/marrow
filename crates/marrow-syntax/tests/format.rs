@@ -281,8 +281,27 @@ fn formats_whole_file_with_blank_line_policy() {
     assert_eq!(format_source(source), expected);
 }
 
+/// A span-independent structural fingerprint of a parsed file: the `Debug`
+/// rendering with every `SourceSpan { ... }` region removed. Two files compare
+/// equal exactly when their declarations match structurally (names, statements,
+/// nesting, retained comments), ignoring byte positions that formatting shifts.
+fn structural_fingerprint(source: &str) -> String {
+    let debug = format!("{:#?}", parse_source(source).file);
+    let mut out = String::with_capacity(debug.len());
+    let mut rest = debug.as_str();
+    while let Some(at) = rest.find("SourceSpan {") {
+        out.push_str(&rest[..at]);
+        // Skip past the matching closing brace of this `SourceSpan { ... }`.
+        let after = &rest[at + "SourceSpan {".len()..];
+        let close = after.find('}').expect("SourceSpan debug has a closing brace");
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[test]
-fn format_source_is_idempotent_and_reparses_cleanly() {
+fn format_source_preserves_structure_and_reparses_cleanly() {
     let files = documented_module_files();
     assert!(files.len() >= 5, "expected several module files");
     for source in files {
@@ -299,12 +318,21 @@ fn format_source_is_idempotent_and_reparses_cleanly() {
             "formatted output should re-parse cleanly:\n{once}\n{:#?}",
             reparsed.diagnostics
         );
+        // Formatting must not drop, reorder, or otherwise alter a declaration:
+        // the original and the reformatted source must parse to the same tree
+        // (modulo the byte positions that formatting necessarily shifts).
+        assert_eq!(
+            structural_fingerprint(&source),
+            structural_fingerprint(&once),
+            "formatting changed the declaration tree for:\n{source}\n--- formatted ---\n{once}"
+        );
     }
 }
 
 #[test]
-fn formatting_round_trips_through_the_parser() {
-    // Formatting then re-parsing yields the same canonical text.
+fn formatting_is_a_stable_fixed_point() {
+    // Formatting then re-parsing yields the same canonical text. This only
+    // checks stability (idempotency), not that structure is preserved.
     let inputs = [
         "60 * 60 + 1",
         "(1 + 2) * 3",
@@ -317,4 +345,58 @@ fn formatting_round_trips_through_the_parser() {
         let twice = format_const_value(&once);
         assert_eq!(once, twice, "formatting not stable for {input:?}");
     }
+}
+
+#[test]
+fn preserves_leading_standalone_and_trailing_comments() {
+    // A function body with a leading comment (own line before a statement), a
+    // trailing comment (after code on a statement line), and a standalone
+    // comment (own line with no following statement) must round-trip.
+    let source = "module app\n\
+         fn run()\n\
+         \x20   ; set up the total\n\
+         \x20   const total: int = 0\n\
+         \x20   print(total) ; show it\n\
+         \x20   ; nothing left to do\n";
+    let expected = "\
+         \x20   ; set up the total\n\
+         \x20   const total: int = 0\n\
+         \x20   print(total) ; show it\n\
+         \x20   ; nothing left to do";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn preserves_comments_in_nested_blocks() {
+    let source = "module app\n\
+         fn run(n: int)\n\
+         \x20   if n < 0\n\
+         \x20       ; negative branch\n\
+         \x20       print(\"neg\") ; report\n\
+         \x20   ; after the if\n\
+         \x20   return\n";
+    let expected = "\
+         \x20   if n < 0\n\
+         \x20       ; negative branch\n\
+         \x20       print(\"neg\") ; report\n\
+         \x20   ; after the if\n\
+         \x20   return";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn comment_preservation_round_trips_and_is_idempotent() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   ; leading\n\
+         \x20   const x: int = 1 ; trailing\n\
+         \x20   ; standalone\n";
+    let body = format_function_body(source);
+    // Reparsing the formatted body and reformatting yields identical text, and
+    // the comments are still present.
+    let reformatted = format_function_body(&format!("module app\nfn run()\n{body}\n"));
+    assert_eq!(body, reformatted, "comment formatting is not a fixed point");
+    assert!(body.contains("; leading"));
+    assert!(body.contains("; trailing"));
+    assert!(body.contains("; standalone"));
 }

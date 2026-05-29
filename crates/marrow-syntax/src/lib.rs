@@ -274,7 +274,29 @@ pub struct FunctionDecl {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
     pub statements: Vec<Statement>,
+    /// Ordinary `;` comments inside this block, in source order. They are kept
+    /// as block-level trivia (not attached to statement nodes) so the formatter
+    /// can re-emit them and `parse -> format` round-trips comments losslessly.
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
+}
+
+/// An ordinary `;` comment retained as block trivia. `text` is the comment body
+/// with the leading `;` marker and surrounding whitespace removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub placement: CommentPlacement,
+    pub span: SourceSpan,
+}
+
+/// Where a retained comment sits relative to the statements of its block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentPlacement {
+    /// A comment occupying its own line (a leading or standalone comment).
+    OwnLine,
+    /// A comment following code on a statement's line.
+    Trailing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1304,10 +1326,13 @@ impl<'a> Parser<'a> {
                 docs.clear();
                 self.index += 1;
             } else if content.starts_with("const ") {
-                let declaration = self.parse_const(line, std::mem::take(&mut docs));
+                // A const value may span several physical lines inside open
+                // delimiters; consume the whole logical line, not just the first.
+                let end_index = self.logical_line_end(self.index);
+                let declaration = self.parse_const(line, end_index, std::mem::take(&mut docs));
                 file.declarations.push(Declaration::Const(declaration));
                 saw_top_level_item = true;
-                self.index += 1;
+                self.index = end_index;
             } else if content.starts_with("resource ") {
                 let resource = self.parse_resource(line, std::mem::take(&mut docs));
                 file.declarations.push(Declaration::Resource(resource));
@@ -1340,10 +1365,25 @@ impl<'a> Parser<'a> {
 
         self.report_keyword_field_names();
         report_positional_after_named(&file, &mut self.diagnostics);
+        self.drop_redundant_statement_errors();
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
         }
+    }
+
+    /// Drop the generic "expected a statement" fallback on any line that already
+    /// carries a more specific diagnostic (e.g. a keyword used as a field name),
+    /// so a single malformed line reports once with the most useful message.
+    fn drop_redundant_statement_errors(&mut self) {
+        let specific_lines: std::collections::HashSet<u32> = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.message != "expected a statement")
+            .map(|d| d.line)
+            .collect();
+        self.diagnostics
+            .retain(|d| d.message != "expected a statement" || !specific_lines.contains(&d.line));
     }
 
     /// Report bare keywords used as field names. A `.` is always data field
@@ -1375,26 +1415,45 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_const(&mut self, line: Line<'a>, docs: Vec<String>) -> ConstDecl {
+    /// Parse a top-level `const` declaration that occupies the physical lines
+    /// `[self.index, end_index)`. The value may span several lines inside open
+    /// delimiters, so it is parsed from the file-wide token stream over the
+    /// whole byte range rather than only the first line's text.
+    fn parse_const(&mut self, line: Line<'a>, end_index: usize, docs: Vec<String>) -> ConstDecl {
         let prefix_len = "const ".len();
         let after_prefix = &line.content[prefix_len..];
         let equal_offset = after_prefix.find('=');
 
-        let (head, value_text, value_offset_in_content) = match equal_offset {
+        // The value's byte range runs from just after `=` on the first line to
+        // the end of the last physical line the const spans.
+        let value_end_byte = self.lines[end_index - 1].end_byte;
+
+        let (head, value_start_byte, value_column) = match equal_offset {
             Some(offset) => {
                 let head = after_prefix[..offset].trim();
                 let after_equal_offset = prefix_len + offset + 1;
                 let after_equal = &line.content[after_equal_offset..];
                 let leading = after_equal.len() - after_equal.trim_start().len();
-                let value = after_equal.trim();
-                if value.is_empty() {
+                let value_offset_in_content = after_equal_offset + leading;
+                let start_byte = line.start_byte + line.indent + value_offset_in_content;
+                if start_byte >= value_end_byte
+                    || self.source[start_byte..value_end_byte].trim().is_empty()
+                {
                     self.error(line, "const declarations require a value after `=`");
                 }
-                (head, value, after_equal_offset + leading)
+                (
+                    head,
+                    start_byte,
+                    (line.indent + value_offset_in_content + 1) as u32,
+                )
             }
             None => {
                 self.error(line, "const declarations require `=` and a value");
-                (after_prefix.trim(), "", line.content.len())
+                (
+                    after_prefix.trim(),
+                    value_end_byte,
+                    (line.indent + line.content.len() + 1) as u32,
+                )
             }
         };
 
@@ -1406,7 +1465,12 @@ impl<'a> Parser<'a> {
             self.error(line, "expected const type annotation");
         }
 
-        let value = self.parse_value_expression(line, value_text, value_offset_in_content);
+        let value = self.parse_value_expression(
+            value_start_byte,
+            value_end_byte,
+            line.number,
+            value_column,
+        );
 
         ConstDecl {
             docs,
@@ -1417,23 +1481,49 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse an expression that occupies a single-line value position, such as
-    /// a `const` value. Tokens come from the file-wide lex, so spans stay
+    /// Find the exclusive line index where the logical line starting at `start`
+    /// ends. Lines continue while delimiters are open, matching the lexer, which
+    /// suppresses `NEWLINE` inside `(...)` / `[...]`.
+    fn logical_line_end(&self, start: usize) -> usize {
+        let mut depth = 0usize;
+        let mut index = start;
+        while index < self.lines.len() {
+            let line = self.lines[index];
+            let tokens = tokens_in_range(self.tokens, line.start_byte, line.end_byte);
+            for token in tokens {
+                match token.kind {
+                    TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+                    TokenKind::RightParen | TokenKind::RightBracket => {
+                        depth = depth.saturating_sub(1)
+                    }
+                    _ => {}
+                }
+            }
+            index += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+        index
+    }
+
+    /// Parse an expression occupying a value position (such as a `const` value)
+    /// from the file-wide token stream over `[start_byte, end_byte)`. Spans stay
     /// absolute. Anything the expression grammar does not yet cover becomes
     /// `Expression::Unparsed`.
     fn parse_value_expression(
         &self,
-        line: Line<'a>,
-        value_text: &str,
-        value_offset_in_content: usize,
+        start_byte: usize,
+        end_byte: usize,
+        line: u32,
+        column: u32,
     ) -> Expression {
-        let start_byte = line.start_byte + line.indent + value_offset_in_content;
-        let end_byte = start_byte + value_text.len();
+        let value_text = self.source.get(start_byte..end_byte).unwrap_or_default();
         let fallback_span = SourceSpan {
             start_byte,
             end_byte,
-            line: line.number,
-            column: (line.indent + value_offset_in_content + 1) as u32,
+            line,
+            column,
         };
         let tokens = tokens_in_range(self.tokens, start_byte, end_byte);
         ExprParser::new(self.source, tokens).parse_value(fallback_span, value_text)
@@ -1654,7 +1744,7 @@ impl<'a> Parser<'a> {
     /// statements spanning several physical lines inside open delimiters stay
     /// together.
     fn parse_body_block(
-        &self,
+        &mut self,
         body_start: usize,
         body_end: usize,
         header_span: SourceSpan,
@@ -1662,12 +1752,19 @@ impl<'a> Parser<'a> {
         let Some(span) = span_for_lines(&self.lines, body_start, body_end) else {
             return Block {
                 statements: Vec::new(),
+                comments: Vec::new(),
                 span: header_span,
             };
         };
         let tokens = tokens_in_range(self.tokens, span.start_byte, span.end_byte);
-        let statements = StmtParser::new(self.source, tokens).parse_block();
-        Block { statements, span }
+        let (statements, comments, diagnostics) =
+            StmtParser::new(self.source, tokens).parse_block();
+        self.diagnostics.extend(diagnostics);
+        Block {
+            statements,
+            comments,
+            span,
+        }
     }
 
     fn has_child_body(&self, parent_indent: usize) -> bool {
@@ -2534,28 +2631,57 @@ struct StmtParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     pos: usize,
+    /// Ordinary `;` comments for the block currently being parsed, in source
+    /// order. Each nested block swaps in a fresh accumulator (see
+    /// `parse_nested_block`) so a comment lands in the block it appears in.
+    comments: Vec<Comment>,
+    /// Parse errors for statement lines the body parser cannot structure, so a
+    /// malformed statement becomes a deterministic diagnostic instead of a
+    /// silent `Statement::Unparsed`.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> StmtParser<'a> {
     fn new(source: &'a str, tokens: &[Token]) -> Self {
+        // Doc comments are not yet attached to body statements, but ordinary
+        // `;` comments are retained as block trivia so the formatter can
+        // re-emit them; keep them in the stream and collect them while parsing.
         let tokens = tokens
             .iter()
             .copied()
-            .filter(|token| !matches!(token.kind, TokenKind::Comment | TokenKind::DocComment))
+            .filter(|token| token.kind != TokenKind::DocComment)
             .collect();
         Self {
             source,
             tokens,
             pos: 0,
+            comments: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
-    fn parse_block(mut self) -> Vec<Statement> {
+    fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>, Vec<Diagnostic>) {
         // A body opens with the INDENT that began it.
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.advance();
         }
-        self.statements()
+        let statements = self.statements();
+        (
+            statements,
+            std::mem::take(&mut self.comments),
+            std::mem::take(&mut self.diagnostics),
+        )
+    }
+
+    /// Record an own-line comment token (a leading or standalone comment) for
+    /// the current block and consume its trailing `NEWLINE`.
+    fn take_own_line_comment(&mut self) {
+        let token = self.advance();
+        self.comments
+            .push(comment_from_token(self.source, token, CommentPlacement::OwnLine));
+        if matches!(self.peek(), Some(TokenKind::Newline)) {
+            self.advance();
+        }
     }
 
     fn statements(&mut self) -> Vec<Statement> {
@@ -2566,6 +2692,7 @@ impl<'a> StmtParser<'a> {
                 TokenKind::Newline => {
                     self.advance();
                 }
+                TokenKind::Comment => self.take_own_line_comment(),
                 TokenKind::Indent => {
                     // A stray nested block (e.g. under a compound statement we
                     // kept as Unparsed). Skip it rather than mis-parse.
@@ -2614,13 +2741,42 @@ impl<'a> StmtParser<'a> {
         }
 
         let newline = self.find_line_end();
-        let line = &self.tokens[self.pos..newline];
-        let statement =
-            parse_simple_statement(self.source, line).unwrap_or_else(|| Statement::Unparsed {
-                span: line_span(line),
-            });
+        let content_end = self.split_trailing_comment(newline);
+        let line = &self.tokens[self.pos..content_end];
+        let statement = match parse_simple_statement(self.source, line) {
+            Some(statement) => statement,
+            None => {
+                let span = line_span(line);
+                self.diagnostics.push(Diagnostic {
+                    code: PARSE_SYNTAX,
+                    kind: "parse",
+                    severity: Severity::Error,
+                    message: "expected a statement".to_string(),
+                    help: None,
+                    span,
+                    line: span.line,
+                    column: span.column,
+                });
+                Statement::Unparsed { span }
+            }
+        };
         self.pos = (newline + 1).min(self.tokens.len());
         statement
+    }
+
+    /// If the token just before `line_end` is a trailing `;` comment, record it
+    /// as a `Trailing` comment for the current block and return the index that
+    /// excludes it; otherwise return `line_end` unchanged. `line_end` is the
+    /// index of the `NEWLINE`/`INDENT`/`DEDENT` that ends the current line.
+    fn split_trailing_comment(&mut self, line_end: usize) -> usize {
+        if line_end > self.pos && self.tokens[line_end - 1].kind == TokenKind::Comment {
+            let token = self.tokens[line_end - 1];
+            self.comments
+                .push(comment_from_token(self.source, token, CommentPlacement::Trailing));
+            line_end - 1
+        } else {
+            line_end
+        }
     }
 
     /// If the upcoming tokens are `identifier ":" ("while" | "for")`, consume
@@ -2664,7 +2820,8 @@ impl<'a> StmtParser<'a> {
         let keyword = self.advance(); // `for`
         let start = label_span.unwrap_or(keyword.span);
         let newline = self.find_line_end();
-        let header = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let header = &self.tokens[self.pos..content_end];
         let parsed = parse_for_header(self.source, header);
         self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
@@ -2722,7 +2879,8 @@ impl<'a> StmtParser<'a> {
     fn catch_clause(&mut self) -> CatchClause {
         self.advance(); // `catch`
         let newline = self.find_line_end();
-        let header = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let header = &self.tokens[self.pos..content_end];
         let (name, ty) = parse_catch_header(self.source, header);
         self.pos = (newline + 1).min(self.tokens.len());
         let block = self.block_body();
@@ -2788,7 +2946,8 @@ impl<'a> StmtParser<'a> {
     /// and including its `NEWLINE`.
     fn header_expression(&mut self) -> Expression {
         let newline = self.find_line_end();
-        let line = &self.tokens[self.pos..newline];
+        let content_end = self.split_trailing_comment(newline);
+        let line = &self.tokens[self.pos..content_end];
         let expr =
             expr_of(self.source, line).unwrap_or_else(|| unparsed_expression(self.source, line));
         self.pos = (newline + 1).min(self.tokens.len());
@@ -2806,6 +2965,14 @@ impl<'a> StmtParser<'a> {
                     break;
                 }
                 TokenKind::Indent | TokenKind::Dedent => break,
+                TokenKind::Comment => {
+                    let token = self.advance();
+                    self.comments.push(comment_from_token(
+                        self.source,
+                        token,
+                        CommentPlacement::Trailing,
+                    ));
+                }
                 _ => {
                     self.advance();
                 }
@@ -2826,16 +2993,21 @@ impl<'a> StmtParser<'a> {
                 .unwrap_or_default();
             Block {
                 statements: Vec::new(),
+                comments: Vec::new(),
                 span,
             }
         }
     }
 
     /// Parse `INDENT statement* DEDENT`, tolerating a missing trailing `DEDENT`
-    /// at the end of the body token slice.
+    /// at the end of the body token slice. A fresh comment accumulator is swapped
+    /// in for the duration so this nested block's comments do not leak into the
+    /// parent block.
     fn parse_nested_block(&mut self) -> Block {
         let start = self.advance().span; // `INDENT`
+        let outer = std::mem::take(&mut self.comments);
         let statements = self.statements();
+        let comments = std::mem::replace(&mut self.comments, outer);
         let end = if matches!(self.peek(), Some(TokenKind::Dedent)) {
             self.advance().span
         } else {
@@ -2843,6 +3015,7 @@ impl<'a> StmtParser<'a> {
         };
         Block {
             statements,
+            comments,
             span: join_spans(start, end),
         }
     }
@@ -3365,6 +3538,21 @@ fn line_span(tokens: &[Token]) -> SourceSpan {
     match (tokens.first(), tokens.last()) {
         (Some(first), Some(last)) => join_spans(first.span, last.span),
         _ => SourceSpan::default(),
+    }
+}
+
+/// Build a `Comment` from a `;` comment token, stripping the leading marker and
+/// surrounding whitespace so the formatter renders a canonical `; text` line.
+fn comment_from_token(source: &str, token: Token, placement: CommentPlacement) -> Comment {
+    let text = token
+        .text(source)
+        .trim_start_matches(';')
+        .trim()
+        .to_string();
+    Comment {
+        text,
+        placement,
+        span: token.span,
     }
 }
 

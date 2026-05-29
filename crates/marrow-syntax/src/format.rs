@@ -7,9 +7,9 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    ArgMode, Argument, BinaryOp, Block, ConstDecl, Declaration, Expression, FunctionDecl,
-    InterpolationPart, KeyParam, ParamDecl, ParamMode, ResourceDecl, ResourceMember, SavedRoot,
-    Statement, TypeRef, UnaryOp,
+    ArgMode, Argument, BinaryOp, Block, Comment, CommentPlacement, ConstDecl, Declaration,
+    Expression, FunctionDecl, InterpolationPart, KeyParam, ParamDecl, ParamMode, ResourceDecl,
+    ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -28,7 +28,10 @@ const INDENT: &str = "    ";
 /// Formatting normalizes layout (indentation, blank lines, doc-comment
 /// spacing), so the output is not byte-identical to arbitrary input but is a
 /// stable fixed point: `format_source(format_source(s)) == format_source(s)`.
-/// Inline body comments are not in the syntax tree and are not preserved yet.
+/// Ordinary `;` comments inside function bodies are retained as block trivia
+/// and re-emitted (see `format_block`). A comment in the middle of a value that
+/// spans several lines inside open delimiters is the one position not yet
+/// carried through the expression parser.
 pub fn format_source(source: &str) -> String {
     let parsed = crate::parse_source(source);
     let file = &parsed.file;
@@ -201,13 +204,67 @@ fn format_docs(docs: &[String], level: usize) -> String {
 /// per line, joined by newlines (no trailing newline). Nested blocks indent one
 /// level deeper. `source` is needed to render `Statement::Unparsed`, which keeps
 /// only a span.
+///
+/// Ordinary `;` comments retained on the block are re-emitted so `parse ->
+/// format` round-trips them: own-line comments appear on their own line at the
+/// block indent, in source order between statements; a trailing comment is
+/// appended to the line of the statement it sits on.
 pub fn format_block(source: &str, block: &Block, level: usize) -> String {
-    block
-        .statements
-        .iter()
-        .map(|statement| format_statement(source, statement, level))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut lines: Vec<String> = Vec::new();
+    // Comments are kept in source order; walk them in step with the statements.
+    let mut comments = block.comments.iter().peekable();
+
+    for (i, statement) in block.statements.iter().enumerate() {
+        let stmt_span = statement.span();
+        // Own-line comments that precede this statement.
+        while let Some(comment) = comments.peek() {
+            if comment.placement == CommentPlacement::OwnLine
+                && comment.span.start_byte < stmt_span.start_byte
+            {
+                lines.push(format_comment(comments.next().expect("peeked")));
+            } else {
+                break;
+            }
+        }
+
+        let mut text = format_statement(source, statement, level);
+        // A trailing comment sits on this statement's line, so it appears after
+        // the statement starts and before the next statement does. Append it to
+        // the statement's last line.
+        let next_start = block
+            .statements
+            .get(i + 1)
+            .map_or(usize::MAX, |next| next.span().start_byte);
+        if let Some(comment) = comments.peek()
+            && comment.placement == CommentPlacement::Trailing
+            && comment.span.start_byte > stmt_span.start_byte
+            && comment.span.start_byte < next_start
+        {
+            text.push_str(&format!(" ; {}", comments.next().expect("peeked").text));
+        }
+        lines.push(text);
+    }
+
+    // Any remaining comments dangle after the last statement (or fill an
+    // otherwise statement-less block); emit them on their own lines.
+    for comment in comments {
+        lines.push(format_comment(comment));
+    }
+
+    lines.join("\n")
+}
+
+/// Render an own-line `;` comment as a `; text` line, preserving the comment's
+/// original indentation. Comments are indentation-exempt, so keeping the
+/// author's column round-trips an outdented comment exactly rather than
+/// re-indenting it to whichever block the lexer structurally attached it to.
+fn format_comment(comment: &Comment) -> String {
+    let pad = " ".repeat(comment.span.column.saturating_sub(1) as usize);
+    if comment.text.is_empty() {
+        format!("{pad};")
+    } else {
+        format!("{pad}; {}", comment.text)
+    }
 }
 
 /// Format one statement (and any nested blocks) at `level`. The returned text

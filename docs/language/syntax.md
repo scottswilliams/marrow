@@ -174,12 +174,13 @@ From tightest to loosest precedence:
 | 1 | calls, key subscripts, dotted fields | `f(x)`, `^books(id).title` |
 | 2 | unary `-`, `not` | negate, boolean not |
 | 3 | `*`, `/`, `%` | multiply, divide, remainder |
-| 4 | `+`, `-`, `_` | add, subtract, concatenate |
-| 5 | `..`, `..=` | exclusive and inclusive ranges |
-| 6 | `<`, `<=`, `>`, `>=` | comparison |
-| 7 | `=`, `!=` | equality, not equal |
-| 8 | `and` | short-circuit and |
-| 9 | `or` | short-circuit or |
+| 4 | `+`, `-` | add, subtract |
+| 5 | `_` | concatenate |
+| 6 | `..`, `..=` | exclusive and inclusive ranges |
+| 7 | `<`, `<=`, `>`, `>=` | comparison |
+| 8 | `=`, `!=` | equality, not equal |
+| 9 | `and` | short-circuit and |
+| 10 | `or` | short-circuit or |
 
 `%` is remainder. Use `std::math::modulo(...)` when code needs modulo
 behavior for negative operands.

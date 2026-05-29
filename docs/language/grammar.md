@@ -15,7 +15,7 @@ The grammar uses these conventions:
 ## Lexical Tokens
 
 ```ebnf
-identifier      = letter (letter | digit | "_")* ;
+identifier      = (letter | "_") (letter | digit | "_")* ;
 qualified_name  = identifier ("::" identifier)* ;
 
 integer_lit     = digit+ ;
