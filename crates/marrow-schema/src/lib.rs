@@ -125,6 +125,40 @@ pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
 /// (resources-and-storage.md:159-161).
 pub const SCHEMA_DUPLICATE_STABLE_ID: &str = "schema.duplicate_stable_id";
 
+/// A saved key (an identity key, a keyed-layer key parameter, or an index
+/// argument) has a type with no order-preserving key encoding — currently
+/// `decimal`. Saved keys use ordered key types (types.md:65-66); the store
+/// cannot encode a decimal as a key, so the write planner could never maintain
+/// such an entry. Reject it at compile time rather than commit data with an
+/// unmaintained index or key.
+pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
+
+/// A non-unique index does not end with all identity keys in declaration order.
+/// A non-unique entry is a presence marker, so two records sharing the indexed
+/// values would collapse onto one entry unless the identity keys make each entry
+/// distinct (resources-and-storage.md:230-232, :254-256). A unique index is
+/// exempt: each populated entry already points to one identity.
+pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_identity_keys";
+
+/// An index is declared on a resource with no keyed saved root. Declared indexes
+/// are members of keyed saved resources; a singleton (keyless) or local
+/// (non-saved) resource has no generated identity for an entry to point to
+/// (resources-and-storage.md:217-219).
+pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
+
+/// A required field is declared inside an unkeyed group. The write planner does
+/// not yet materialize unkeyed groups (their fields live in `layers`, not
+/// `fields`), so it neither validates nor persists them on a whole-resource
+/// write. Until that slice lands, a required field there is a compile error
+/// rather than a silently unenforced constraint (review F14, interim).
+pub const SCHEMA_REQUIRED_IN_UNKEYED_GROUP: &str = "schema.required_in_unkeyed_group";
+
+/// An index argument names a field nested through an unkeyed group. The write
+/// planner matches index arguments by flat top-level name, so it would silently
+/// never maintain such an entry. Until nested index resolution lands, reject it
+/// (review F14, interim).
+pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
+
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -169,7 +203,7 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
             }
             ResourceMember::Field(field) => {
                 names.check(&field.name, field.span, &mut errors);
-                layers.push(keyed_leaf(field));
+                layers.push(keyed_leaf(field, &mut errors));
             }
             ResourceMember::Group(group) => {
                 names.check(&group.name, group.span, &mut errors);
@@ -215,9 +249,13 @@ fn check_saved_data(
     decl_span: SourceSpan,
     errors: &mut Vec<SchemaError>,
 ) {
+    check_duplicate_key_params(&store.keys, decl_span, errors);
     for key in &store.keys {
         if embeds_unknown(&key.ty) {
             errors.push(unknown_error("identity key", &key.name, decl_span));
+        }
+        if is_unorderable_key_type(&key.ty) {
+            errors.push(unorderable_key_error("identity key", &key.name, decl_span));
         }
         if let Some(span) = top_level_member_span(members, &key.name) {
             errors.push(SchemaError {
@@ -235,12 +273,80 @@ fn check_saved_data(
 
     for member in members {
         check_member_unknown(member, errors);
+        check_member_keys(member, errors);
+        check_required_in_unkeyed_group(member, false, errors);
+    }
+}
+
+/// Reject a required field reachable only through an unkeyed group. The write
+/// planner does not yet materialize unkeyed groups, so a required field there is
+/// never validated or persisted (review F14, interim). `under_unkeyed` is true
+/// once an enclosing group has no key parameters; a keyed group resets nothing
+/// because a field already under an unkeyed group stays unreachable.
+fn check_required_in_unkeyed_group(
+    member: &ResourceMember,
+    under_unkeyed: bool,
+    errors: &mut Vec<SchemaError>,
+) {
+    match member {
+        ResourceMember::Field(field) if field.keys.is_empty() => {
+            if under_unkeyed && field.required {
+                errors.push(SchemaError {
+                    code: SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
+                    message: format!(
+                        "required field `{}` is inside an unkeyed group, which the \
+                         write planner does not yet maintain",
+                        field.name
+                    ),
+                    span: field.span,
+                });
+            }
+        }
+        ResourceMember::Group(group) => {
+            let under_unkeyed = under_unkeyed || group.keys.is_empty();
+            for nested in &group.members {
+                check_required_in_unkeyed_group(nested, under_unkeyed, errors);
+            }
+        }
+        // A keyed leaf carries a value, not a required-field tree to descend.
+        ResourceMember::Field(_) | ResourceMember::Index(_) => {}
+    }
+}
+
+/// Validate a keyed-layer's own key parameters, descending into groups. A keyed
+/// layer's key must be a saved key, so it may not embed `unknown` (F20) and may
+/// not be an unorderable type such as `decimal` (F12). A keyed leaf and a keyed
+/// group both carry their key parameters in `keys`; an unkeyed field or group
+/// has none. Identity keys are checked separately in [`check_saved_data`].
+fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
+    match member {
+        ResourceMember::Field(field) => check_key_params(&field.keys, field.span, errors),
+        ResourceMember::Group(group) => {
+            check_key_params(&group.keys, group.span, errors);
+            for nested in &group.members {
+                check_member_keys(nested, errors);
+            }
+        }
+        ResourceMember::Index(_) => {}
+    }
+}
+
+/// Report each key parameter whose type cannot be a saved key. Key params have
+/// no span of their own, so errors point at the keyed layer's `span`.
+fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
+    for key in keys {
+        if embeds_unknown(&key.ty) {
+            errors.push(unknown_error("key", &key.name, span));
+        }
+        if is_unorderable_key_type(&key.ty) {
+            errors.push(unorderable_key_error("key", &key.name, span));
+        }
     }
 }
 
 /// Reject `unknown` on the value type of a field or keyed leaf, descending into
-/// groups. Key types use ordered scalars or identity types and never `unknown`
-/// (see `docs/language/types.md`), so layer key parameters are not checked here.
+/// groups. A keyed layer's own key parameters are validated separately in
+/// [`check_member_keys`].
 fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
@@ -282,6 +388,10 @@ fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<Sourc
 /// reached through unkeyed groups; they do not walk keyed child layers
 /// (resources-and-storage.md:197-199). Each unresolved argument is reported at
 /// its index's span, in index then argument order.
+///
+/// An index also requires a keyed saved root: a singleton (keyless) or local
+/// (non-saved) resource has no identity for an entry to point to, which is
+/// reported once per index and short-circuits the per-argument checks.
 fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
     let keys = decl
         .store
@@ -292,9 +402,21 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
         let ResourceMember::Index(index) = member else {
             continue;
         };
+        if keys.is_empty() {
+            errors.push(SchemaError {
+                code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+                message: format!(
+                    "index `{}` requires a keyed saved root; a singleton or local \
+                     resource has no identity for an index entry to point to",
+                    index.name
+                ),
+                span: index.span,
+            });
+            continue;
+        }
         for arg in &index.args {
-            if !index_arg_resolves(arg, keys, &decl.members) {
-                errors.push(SchemaError {
+            match index_arg_type(arg, keys, &decl.members) {
+                None => errors.push(SchemaError {
                     code: SCHEMA_UNKNOWN_INDEX_ARG,
                     message: format!(
                         "index `{}` argument `{arg}` does not name an identity \
@@ -302,38 +424,93 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                         index.name
                     ),
                     span: index.span,
-                });
+                }),
+                // A dotted argument resolves through an unkeyed group, which the
+                // write planner does not yet maintain (review F14, interim).
+                Some(_) if arg.contains('.') => errors.push(SchemaError {
+                    code: SCHEMA_NESTED_INDEX_ARG,
+                    message: format!(
+                        "index `{}` argument `{arg}` names a field nested through an \
+                         unkeyed group, which the write planner does not yet maintain",
+                        index.name
+                    ),
+                    span: index.span,
+                }),
+                Some(ty) if is_unorderable_key_type(ty) => errors.push(SchemaError {
+                    code: SCHEMA_UNORDERABLE_KEY,
+                    message: format!(
+                        "index `{}` argument `{arg}` is a `decimal`, which has no \
+                         key encoding; index arguments use ordered key types",
+                        index.name
+                    ),
+                    span: index.span,
+                }),
+                Some(_) => {}
             }
         }
+        if !index.unique && !ends_with_identity_keys(&index.args, keys) {
+            errors.push(SchemaError {
+                code: SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
+                message: format!(
+                    "non-unique index `{}` must end with all identity key(s) in \
+                     declaration order so each entry is distinct",
+                    index.name
+                ),
+                span: index.span,
+            });
+        }
     }
 }
 
-/// Does `arg` resolve to an indexable value in this resource? A single segment
-/// may name an identity key or a top-level unkeyed scalar field. A dotted path
-/// walks unkeyed groups (each non-final segment an unkeyed group, the final
-/// segment a scalar unkeyed field); identity keys are single-segment only.
-fn index_arg_resolves(arg: &str, keys: &[KeyParam], members: &[ResourceMember]) -> bool {
+/// Does this index argument list end with all identity key names in declaration
+/// order? A non-unique entry is a presence marker, so without the trailing
+/// identity keys two records sharing the indexed values collapse onto one entry
+/// (resources-and-storage.md:230-232).
+fn ends_with_identity_keys(args: &[String], keys: &[KeyParam]) -> bool {
+    args.len() >= keys.len()
+        && args[args.len() - keys.len()..]
+            .iter()
+            .zip(keys)
+            .all(|(arg, key)| arg == &key.name)
+}
+
+/// The type `arg` resolves to in this resource, or `None` if it resolves to
+/// nothing. A single segment may name an identity key or a top-level unkeyed
+/// scalar field. A dotted path walks unkeyed groups (each non-final segment an
+/// unkeyed group, the final segment a scalar unkeyed field); identity keys are
+/// single-segment only.
+fn index_arg_type<'a>(
+    arg: &str,
+    keys: &'a [KeyParam],
+    members: &'a [ResourceMember],
+) -> Option<&'a TypeRef> {
     let segments: Vec<&str> = arg.split('.').collect();
-    if segments.len() == 1 && keys.iter().any(|key| key.name == segments[0]) {
-        return true;
+    if segments.len() == 1
+        && let Some(key) = keys.iter().find(|key| key.name == segments[0])
+    {
+        return Some(&key.ty);
     }
-    resolves_through_members(&segments, members)
+    resolve_field_type(&segments, members)
 }
 
-/// Resolve a non-empty field path against `members`. The final segment must be
-/// an unkeyed scalar field; every earlier segment must be an unkeyed group
-/// whose members resolve the rest. Keyed fields and groups are keyed layers
-/// that index arguments do not walk.
-fn resolves_through_members(segments: &[&str], members: &[ResourceMember]) -> bool {
+/// Resolve a non-empty field path against `members` to its field type. The final
+/// segment must be an unkeyed scalar field; every earlier segment must be an
+/// unkeyed group whose members resolve the rest. Keyed fields and groups are
+/// keyed layers that index arguments do not walk.
+fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> Option<&'a TypeRef> {
     let (name, rest) = segments.split_first().expect("non-empty field path");
-    members.iter().any(|member| match member {
-        ResourceMember::Field(field) if rest.is_empty() => {
-            field.name == *name && field.keys.is_empty()
+    members.iter().find_map(|member| match member {
+        ResourceMember::Field(field)
+            if rest.is_empty() && field.name == *name && field.keys.is_empty() =>
+        {
+            Some(&field.ty)
         }
-        ResourceMember::Group(group) if !rest.is_empty() && group.keys.is_empty() => {
-            group.name == *name && resolves_through_members(rest, &group.members)
+        ResourceMember::Group(group)
+            if !rest.is_empty() && group.keys.is_empty() && group.name == *name =>
+        {
+            resolve_field_type(rest, &group.members)
         }
-        _ => false,
+        _ => None,
     })
 }
 
@@ -410,6 +587,26 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
     }
 }
 
+/// Can this type be a saved key? Saved keys use ordered key types: scalars
+/// (except `decimal`, which has no order-preserving key encoding) and generated
+/// resource identity types (types.md:65-66). `decimal` is the one scalar the
+/// store cannot encode as a key, so it is rejected wherever a key is expected:
+/// identity keys, keyed-layer key parameters, and index arguments.
+fn is_unorderable_key_type(ty: &TypeRef) -> bool {
+    ty.text.trim() == "decimal"
+}
+
+fn unorderable_key_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        code: SCHEMA_UNORDERABLE_KEY,
+        message: format!(
+            "saved {what} `{name}` cannot use `decimal`; saved keys use ordered \
+             key types and `decimal` has no key encoding"
+        ),
+        span,
+    }
+}
+
 /// Compile the members nested inside a group. Fields and groups recurse; an
 /// index here is an error, since indexes are direct members of the resource.
 fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerMember> {
@@ -424,7 +621,7 @@ fn layer_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<LayerM
             }
             ResourceMember::Field(field) => {
                 names.check(&field.name, field.span, errors);
-                members.push(LayerMember::Layer(keyed_leaf(field)));
+                members.push(LayerMember::Layer(keyed_leaf(field, errors)));
             }
             ResourceMember::Group(nested) => {
                 names.check(&nested.name, nested.span, errors);
@@ -459,7 +656,8 @@ fn field_schema(field: &FieldDecl) -> FieldSchema {
 
 /// A field with key parameters is a keyed leaf layer (a sequence or keyed
 /// tree), where the field type is the layer's leaf value type.
-fn keyed_leaf(field: &FieldDecl) -> LayerSchema {
+fn keyed_leaf(field: &FieldDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
+    check_duplicate_key_params(&field.keys, field.span, errors);
     LayerSchema {
         name: field.name.clone(),
         docs: field.docs.clone(),
@@ -471,6 +669,7 @@ fn keyed_leaf(field: &FieldDecl) -> LayerSchema {
 }
 
 fn group_layer(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> LayerSchema {
+    check_duplicate_key_params(&group.keys, group.span, errors);
     LayerSchema {
         name: group.name.clone(),
         docs: group.docs.clone(),
@@ -478,6 +677,29 @@ fn group_layer(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> LayerSchema 
         leaf_type: None,
         members: layer_members(group, errors),
         stable_id: group.stable_id.clone(),
+    }
+}
+
+/// Report a keyed layer's key parameters that repeat a name. Key params share a
+/// per-layer namespace; two keys of the same name are unaddressable (review
+/// F22). Key params have no span of their own, so errors point at the layer's
+/// `span`.
+fn check_duplicate_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
+    let mut seen: Vec<&str> = Vec::new();
+    for key in keys {
+        if seen.contains(&key.name.as_str()) {
+            errors.push(duplicate_key_error(&key.name, span));
+        } else {
+            seen.push(&key.name);
+        }
+    }
+}
+
+fn duplicate_key_error(name: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        code: SCHEMA_DUPLICATE_MEMBER,
+        message: format!("duplicate key `{name}`"),
+        span,
     }
 }
 

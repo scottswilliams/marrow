@@ -66,6 +66,9 @@ pub const WRITE_NOT_A_LEAF_LAYER: &str = "write.not_a_leaf_layer";
 pub const WRITE_NOT_A_GROUP_LAYER: &str = "write.not_a_group_layer";
 /// A keyed-layer write supplies the wrong number of layer keys.
 pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
+/// The integer key space is exhausted: the highest existing key is `i64::MAX`,
+/// so no next identity or layer position can be allocated.
+pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 
 /// Wrap a store error met while planning a write into a `write.store` failure.
 fn store_failed(error: StoreError) -> WriteError {
@@ -655,7 +658,17 @@ pub fn next_id(root: &str, store: &dyn Backend) -> Result<i64, WriteError> {
         })
         .max()
         .unwrap_or(0);
-    Ok(highest + 1)
+    next_after(highest)
+}
+
+/// One greater than the highest existing integer key, or a typed overflow when
+/// the key space is exhausted (`highest == i64::MAX`). Shared by [`next_id`] and
+/// [`next_layer_pos`]; the rest of the runtime is uniformly `checked_*`.
+fn next_after(highest: i64) -> Result<i64, WriteError> {
+    highest.checked_add(1).ok_or_else(|| WriteError {
+        code: WRITE_ID_OVERFLOW,
+        message: "the integer key space is exhausted; the highest key is i64::MAX".into(),
+    })
 }
 
 /// The next 1-based position for an `append` to a keyed layer: one greater than
@@ -693,7 +706,7 @@ pub fn next_layer_pos(
         })
         .max()
         .unwrap_or(0);
-    Ok(highest + 1)
+    next_after(highest)
 }
 
 /// The supplied value for `field` in `value`, if any.

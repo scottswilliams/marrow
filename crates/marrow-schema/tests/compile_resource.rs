@@ -7,8 +7,9 @@
 
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
-    SCHEMA_INDEX_IN_GROUP, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_UNKNOWN_IN_SAVED,
-    SCHEMA_UNKNOWN_INDEX_ARG, compile_resource,
+    SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
+    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -290,6 +291,48 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn keyed_leaf_key_param_typed_unknown_is_an_error() {
+    // `unknown` is rejected in saved keys (types.md:66-67), including a keyed
+    // layer's own key parameters, not only identity keys and value types (F20).
+    let source = "\
+resource Book at ^books(id: int)
+    tags(pos: unknown): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("pos"));
+}
+
+#[test]
+fn nested_group_key_param_typed_unknown_is_an_error() {
+    // The check recurses into nested groups' key parameters.
+    let source = "\
+resource Book at ^books(id: int)
+    notes(noteId: string)
+        revisions(rev: unknown)
+            body: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("rev"));
+}
+
+#[test]
+fn local_keyed_leaf_key_param_typed_unknown_is_allowed() {
+    // The saved-key rule applies only to managed saved resources; a local
+    // resource (no store) may use `unknown` in a key parameter.
+    let source = "\
+resource Draft
+    tags(pos: unknown): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "local resources may use `unknown` in keys: {errors:?}"
+    );
+}
+
+#[test]
 fn local_field_typed_unknown_is_allowed() {
     let source = "\
 resource Draft
@@ -383,6 +426,241 @@ resource Book at ^books(id: int)
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
     assert!(errors[0].message.contains("tags"));
+}
+
+#[test]
+fn index_over_a_decimal_field_is_an_error() {
+    // `decimal` has no order-preserving key encoding, so the write planner could
+    // never maintain an index entry for it (review F12). Reject it at compile
+    // time rather than silently committing the data with no index.
+    let source = "\
+resource Book at ^books(id: int)
+    price: decimal
+    index byPrice(price, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("price"));
+}
+
+#[test]
+fn keyed_leaf_with_a_decimal_key_param_is_an_error() {
+    // A keyed-layer key must be an ordered key type; `decimal` is not.
+    let source = "\
+resource Book at ^books(id: int)
+    samples(at: decimal): int
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("at"));
+}
+
+#[test]
+fn identity_key_typed_decimal_is_an_error() {
+    let source = "\
+resource Reading at ^readings(at: decimal)
+    required value: int
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("at"));
+}
+
+#[test]
+fn non_unique_index_omitting_the_identity_key_is_an_error() {
+    // A non-unique index must end with all identity keys so each entry is
+    // distinct (resources-and-storage.md:230-232). `byShelf(shelf)` collapses
+    // two books on the same shelf onto one entry (review F13).
+    let source = "\
+resource Book at ^books(id: int)
+    shelf: string
+    index byShelf(shelf)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
+    assert!(errors[0].message.contains("byShelf"));
+}
+
+#[test]
+fn non_unique_index_ending_with_identity_key_is_allowed() {
+    let source = "\
+resource Book at ^books(id: int)
+    shelf: string
+    index byShelf(shelf, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "trailing identity key resolves: {errors:?}"
+    );
+}
+
+#[test]
+fn non_unique_index_with_identity_key_not_last_is_an_error() {
+    // The identity keys must be the trailing arguments, in declaration order.
+    let source = "\
+resource Book at ^books(id: int)
+    shelf: string
+    index byShelf(id, shelf)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
+}
+
+#[test]
+fn non_unique_index_on_composite_identity_requires_all_keys_in_order() {
+    // For a composite identity, a non-unique index must end with every identity
+    // key in declaration order (resources-and-storage.md:254-256).
+    let reversed = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+    index byStatus(status, courseId, studentId)
+";
+    let (_, errors) = compile_resource(&resource(reversed));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
+
+    let in_order = "\
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    status: string
+    index byStatus(status, studentId, courseId)
+";
+    let (_, errors) = compile_resource(&resource(in_order));
+    assert!(
+        errors.is_empty(),
+        "all identity keys in order resolve: {errors:?}"
+    );
+}
+
+#[test]
+fn unique_index_may_omit_the_identity_key() {
+    // A unique index points to one identity, so it may omit the identity keys
+    // (resources-and-storage.md:247-248).
+    let source = "\
+resource Book at ^books(id: int)
+    isbn: string
+    index byIsbn(isbn) unique
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "unique index needs no identity key: {errors:?}"
+    );
+}
+
+#[test]
+fn index_on_a_singleton_resource_is_an_error() {
+    // A singleton saved resource has no generated identity for an index entry to
+    // point to (resources-and-storage.md:217-219), so an index is rejected (F21).
+    let source = "\
+resource Settings at ^settings
+    theme: string
+    index byTheme(theme)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
+    assert!(errors[0].message.contains("byTheme"));
+}
+
+#[test]
+fn index_on_a_local_resource_is_an_error() {
+    // A local (non-saved) resource has no saved root at all, so it cannot carry a
+    // declared index.
+    let source = "\
+resource Draft
+    title: string
+    index byTitle(title)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
+    assert!(errors[0].message.contains("byTitle"));
+}
+
+#[test]
+fn required_field_inside_an_unkeyed_group_is_an_error() {
+    // The write planner does not yet materialize unkeyed groups: a whole-resource
+    // write neither validates nor persists their fields. Until that slice lands,
+    // a required field inside an unkeyed group is a compile error rather than a
+    // silently unenforced constraint (review F14, interim). The canonical Patient
+    // `name { required first; last }` shape exercises this.
+    let source = "\
+resource Patient at ^patients(id: string)
+    name
+        required first: string
+        last: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_REQUIRED_IN_UNKEYED_GROUP]);
+    assert!(errors[0].message.contains("first"));
+}
+
+#[test]
+fn required_field_inside_a_keyed_group_is_allowed() {
+    // The rejection is specific to UNKEYED groups; a keyed group (a layer the
+    // planner does maintain) may hold required fields, per the existing Book
+    // `versions(version) { required title }` shape.
+    let source = "\
+resource Book at ^books(id: int)
+    versions(version: int)
+        required title: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "keyed-group required fields are fine: {errors:?}"
+    );
+}
+
+#[test]
+fn index_over_a_nested_field_is_an_error() {
+    // The write planner matches index arguments by flat top-level name, so an
+    // index over a field nested in an unkeyed group is silently never maintained.
+    // Until nested index resolution lands, reject it (review F14, interim).
+    let source = "\
+resource Book at ^books(id: int)
+    pricing
+        amount: int
+    index byAmount(pricing.amount, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NESTED_INDEX_ARG]);
+    assert!(errors[0].message.contains("pricing.amount"));
+}
+
+#[test]
+fn duplicate_identity_key_name_is_an_error() {
+    // Identity keys must have distinct names; two `studentId` keys are
+    // unaddressable (review F22).
+    let source = "\
+resource Enrollment at ^enrollments(studentId: string, studentId: string)
+    status: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
+    assert!(errors[0].message.contains("studentId"));
+}
+
+#[test]
+fn duplicate_keyed_leaf_key_param_name_is_an_error() {
+    // A keyed layer's key parameters must have distinct names.
+    let source = "\
+resource Book at ^books(id: int)
+    tags(pos: int, pos: int): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
+    assert!(errors[0].message.contains("pos"));
+}
+
+#[test]
+fn duplicate_group_key_param_name_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    revisions(rev: int, rev: int)
+        body: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
+    assert!(errors[0].message.contains("rev"));
 }
 
 #[test]
