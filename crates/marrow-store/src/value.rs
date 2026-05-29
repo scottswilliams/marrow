@@ -7,9 +7,11 @@
 //! encoding optimizes for a clear canonical round-trip. A value's type comes
 //! from the schema at read time, so the bytes carry no type tag.
 
-/// A scalar saved value in decoded form.
+/// A scalar value in decoded form: the one type the store, the runtime, and the
+/// serve protocol all share for a stored leaf. The eight arms are exactly the
+/// storable scalars.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SavedValue {
+pub enum Scalar {
     Bool(bool),
     Int(i64),
     Str(String),
@@ -28,6 +30,10 @@ pub enum SavedValue {
         scale: u32,
     },
 }
+
+/// The saved form of a scalar is the scalar itself; `SavedValue` is the name the
+/// store and the write planner read it under.
+pub type SavedValue = Scalar;
 
 /// A value that cannot be encoded to its canonical saved form. Today the only
 /// such case is a `date`/`instant` whose calendar year falls outside the
