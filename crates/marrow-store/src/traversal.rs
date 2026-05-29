@@ -102,7 +102,9 @@ pub(crate) fn neighbor_child<'a>(
         if segment == bound {
             continue; // the bound child's own entry or one of its descendants
         }
-        return Ok(Some(decode_child_segment(segment).ok_or_else(|| corrupt(key))?));
+        return Ok(Some(
+            decode_child_segment(segment).ok_or_else(|| corrupt(key))?,
+        ));
     }
     Ok(None)
 }
@@ -127,7 +129,9 @@ pub(crate) fn edge_child<'a>(
         let rest = &key[parent_prefix.len()..];
         let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
         let segment = &rest[..len];
-        return Ok(Some(decode_child_segment(segment).ok_or_else(|| corrupt(key))?));
+        return Ok(Some(
+            decode_child_segment(segment).ok_or_else(|| corrupt(key))?,
+        ));
     }
     Ok(None)
 }

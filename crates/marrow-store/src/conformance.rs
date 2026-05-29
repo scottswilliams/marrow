@@ -761,9 +761,7 @@ fn first_child_and_last_child_match_the_edges(store: &mut dyn Backend) {
     // A record that holds both a value at its own path and children: first_child
     // of that record steps past its own entry to its first field.
     store.write(&book(7), b"whole".to_vec()).unwrap();
-    store
-        .write(&book_field(7, "title"), b"x".to_vec())
-        .unwrap();
+    store.write(&book_field(7, "title"), b"x".to_vec()).unwrap();
     assert_eq!(
         store.first_child(&book(7)).unwrap(),
         Some(ChildSegment::Name("title".into())),
@@ -778,15 +776,15 @@ fn seeks_are_typed_across_key_types(store: &mut dyn Backend) {
     let pairs: [(SavedKey, SavedKey); 5] = [
         (SavedKey::Int(-5), SavedKey::Int(9)),
         (SavedKey::Date(100), SavedKey::Date(20_000)),
-        (
-            SavedKey::Duration(1_000),
-            SavedKey::Duration(2_000_000_000),
-        ),
+        (SavedKey::Duration(1_000), SavedKey::Duration(2_000_000_000)),
         (
             SavedKey::Instant(1_000),
             SavedKey::Instant(1_700_000_000_000_000_000),
         ),
-        (SavedKey::Bytes(vec![0x01]), SavedKey::Bytes(vec![0x01, 0x02])),
+        (
+            SavedKey::Bytes(vec![0x01]),
+            SavedKey::Bytes(vec![0x01, 0x02]),
+        ),
     ];
     for (lo, hi) in pairs {
         // A fresh root per type so unrelated key types never share a parent.

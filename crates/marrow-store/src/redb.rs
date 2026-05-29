@@ -24,7 +24,9 @@ use redb::{
 };
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
-use crate::path::{ChildSegment, int_index_key_band, int_record_key_band, segment_len, subtree_band};
+use crate::path::{
+    ChildSegment, int_index_key_band, int_record_key_band, segment_len, subtree_band,
+};
 use crate::traversal::{self, Entries};
 
 /// The single table holding every encoded (path, value) pair.

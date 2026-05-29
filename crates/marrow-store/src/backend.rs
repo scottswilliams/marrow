@@ -130,11 +130,8 @@ pub trait Backend {
     /// steps over the whole subtree of `after` (a child with its own descendants
     /// is one stop, never a grandchild). Skips gaps: a deleted child is absent, so
     /// the nearest *stored* successor is returned.
-    fn next_sibling(
-        &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError>;
+    fn next_sibling(&self, parent: &[u8], after: &[u8])
+    -> Result<Option<ChildSegment>, StoreError>;
     /// The immediate child of `parent` that directly precedes `before` in Marrow
     /// order, or `None` when `before` is the first child. The mirror of
     /// [`next_sibling`](Self::next_sibling) over a reversed range: same O(k),
