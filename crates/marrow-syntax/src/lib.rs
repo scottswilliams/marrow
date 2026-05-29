@@ -2195,8 +2195,12 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
+        let before = self.diagnostics.len();
         let expr = expr_of(self.source, line, &mut self.diagnostics);
-        if expr.is_none() {
+        // The generic fallback only fires when nothing more specific was raised:
+        // a keyword field name or another inline syntax-rule diagnostic already
+        // explains the failure, so a single header reports once.
+        if expr.is_none() && self.diagnostics.len() == before {
             self.error_span(
                 line_span(&self.tokens[self.pos..content_end]),
                 "expected an expression",
@@ -2805,8 +2809,12 @@ impl<'a> DeclParser<'a> {
         if tokens.is_empty() {
             return None;
         }
+        let before = self.diagnostics.len();
         let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
-        if parsed.is_none() {
+        // The generic fallback only fires when nothing more specific was raised:
+        // a keyword field name or another inline syntax-rule diagnostic already
+        // explains the failure, so a single value reports once.
+        if parsed.is_none() && self.diagnostics.len() == before {
             self.error_span(value_span(tokens), "expected an expression");
         }
         parsed

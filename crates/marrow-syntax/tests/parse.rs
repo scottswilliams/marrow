@@ -1741,3 +1741,116 @@ fn normalize(title: string): string
         .collect::<Vec<_>>();
     assert_eq!(names, ["MaxLoans", "Book", "normalize"]);
 }
+
+// --- Wave 6 findings: single-report guard and grammar tightenings (A21/A23) ---
+
+#[test]
+fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
+    // `a.at` fails because `at` is a keyword used as a field name. The const
+    // value path drains that specific diagnostic, so the generic "expected an
+    // expression" fallback must not also fire: the line reports exactly once.
+    let parsed = parse_source("const Bad = a.at\n");
+    assert_eq!(
+        parsed.diagnostics.len(),
+        1,
+        "the keyword-field const value should report exactly once: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed.diagnostics[0].message.contains("field name"),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+}
+
+#[test]
+fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
+    // The same single-report guard applies to header expressions: an `if`
+    // condition that fails on a keyword field name carries only that diagnostic.
+    let parsed = parse_source("fn f()\n    if a.at\n        return\n");
+    let on_offending_line: Vec<_> = parsed.diagnostics.iter().filter(|d| d.line == 2).collect();
+    assert_eq!(
+        on_offending_line.len(),
+        1,
+        "the keyword-field `if` condition should report exactly once: {on_offending_line:#?}"
+    );
+    assert!(
+        on_offending_line[0].message.contains("field name"),
+        "{:#?}",
+        on_offending_line[0]
+    );
+}
+
+#[test]
+fn empty_const_value_reports_the_single_generic_diagnostic() {
+    // With no inner diagnostic drained (the value is truly empty), the generic
+    // fallback is the only diagnostic: a const with `=` and nothing after it
+    // reports once that it requires a value.
+    let parsed = parse_source("const Bad = \n");
+    assert_eq!(
+        parsed.diagnostics.len(),
+        1,
+        "an empty const value should report exactly once: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed.diagnostics[0].message.contains("require a value"),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+}
+
+#[test]
+fn reserved_word_as_parameter_name_is_rejected() {
+    // syntax.md: "Reserved words are not identifiers." A parameter name is an
+    // `identifier`, so a reserved word in that position is a parse error.
+    let parsed = parse_source("fn f(at: int)\n    return\n");
+    assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics[0]
+            .message
+            .contains("expected parameter name"),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+}
+
+#[test]
+fn reserved_word_as_resource_member_name_is_rejected() {
+    // A resource member name is an `identifier`; a reserved word (`at`) there is
+    // a parse error rather than a silently accepted member.
+    let parsed = parse_source("resource R at ^r\n    at: int\n");
+    assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics[0]
+            .message
+            .contains("expected resource member name"),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+}
+
+#[test]
+fn reserved_word_as_key_parameter_name_is_rejected() {
+    // A keyed member's key name is an `identifier`; a reserved word (`at`) in a
+    // key parameter list is a parse error.
+    let parsed = parse_source("resource R at ^r\n    e(at: string): int\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        "expected a parse error for the reserved-word key name: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn malformed_while_condition_reports_a_parse_error() {
+    // A `while` header that does not parse as a complete expression is a parse
+    // error (the A21 hole-close generalized): the grammar requires
+    // `while_stmt = "while" expression NEWLINE block`.
+    let parsed = parse_source("fn f()\n    while a = b = c\n        return\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        "expected a parse error for the malformed `while` condition: {:#?}",
+        parsed.diagnostics
+    );
+}
