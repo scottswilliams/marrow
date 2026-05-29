@@ -25,6 +25,30 @@ fn config() -> marrow_project::ProjectConfig {
     parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
 }
 
+/// The `.mw` code block from the reference sample (docs/language/sample.md).
+fn sample_source() -> String {
+    let doc = include_str!("../../../docs/language/sample.md");
+    doc.split("```mw")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("the sample document has an mw code block")
+        .to_string()
+}
+
+#[test]
+fn the_reference_sample_checks_clean() {
+    // The canonical sample (`module shelf::sample`) must check with no diagnostics
+    // — in particular no false `check.unresolved_call` on its builtins
+    // (keys/append/exists/nextId/...), which would mean `is_builtin_call` has
+    // drifted from docs/language/builtins.md.
+    let root = temp_project("sample-check", |root| {
+        write(root, "src/shelf/sample.mw", &sample_source());
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 #[test]
 fn surfaces_resource_schema_errors() {
     let root = temp_project("schema-error", |root| {
@@ -933,9 +957,9 @@ fn correct_calls_are_not_flagged() {
 }
 
 #[test]
-fn builtin_and_unresolved_calls_are_not_flagged() {
+fn a_builtin_call_is_not_arity_checked_and_an_unknown_call_is_not_a_mismatch() {
     // `print` is a builtin (dispatched before user functions) and `mystery` does
-    // not resolve to a declared function; neither is checked for arity.
+    // not resolve to a declared function; neither is an arity/argument mismatch.
     let found = check_module(
         "call-skip",
         "module m\n\
@@ -943,6 +967,83 @@ fn builtin_and_unresolved_calls_are_not_flagged() {
         "check.call_argument",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_call_to_an_undefined_function_is_flagged() {
+    // Strict typing, runtime parity (run.unknown_function): a call to a name that
+    // is neither a builtin nor a declared function is an unresolved call.
+    let found = check_module(
+        "call-unknown",
+        "module m\n\
+         fn caller()\n    mystery(1, 2)\n",
+        "check.unresolved_call",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_builtin_call_is_not_an_unresolved_call() {
+    // Builtins dispatch before user functions, so they never resolve to a program
+    // function — but they are defined, not unresolved.
+    let found = check_module(
+        "call-builtin",
+        "module m\n\
+         fn caller()\n    print(1, 2, 3)\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_call_to_a_defined_function_is_not_an_unresolved_call() {
+    let found = check_module(
+        "call-defined",
+        "module m\n\
+         fn helper(): int\n    return 1\n\n\
+         fn caller()\n    var x = helper()\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_call_in_a_module_less_script_is_not_flagged() {
+    // A module-less script's functions are not in the program (not runnable as a
+    // call target), so its calls are not resolution-checked — only library-module
+    // calls are.
+    let found = check_script(
+        "call-script",
+        "fn f()\n    mystery()\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn unresolved_calls_are_suppressed_when_a_module_fails_to_parse() {
+    // Module `a` has a lexical error (a leading tab), so it is excluded from the
+    // program; a call to `a::helper` in clean module `b` must not be reported as
+    // unresolved — the definition exists, the project just did not fully parse.
+    let root = temp_project("call-incomplete", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\tpub fn helper()\n    return\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\nfn caller()\n    a::helper()\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.unresolved_call").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

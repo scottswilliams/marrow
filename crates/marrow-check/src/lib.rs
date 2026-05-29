@@ -56,6 +56,10 @@ pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
 /// parameter, local, loop or catch binding, or module constant). Under strict
 /// typing every value name must be defined.
 pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
+/// A call names a function that is neither a builtin nor a declared function. Only
+/// reported for calls in library modules of a fully parsed project, so a
+/// module-less script or a module excluded by a parse error never false-positives.
+pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -358,6 +362,18 @@ pub fn check_project(
                 marrow_syntax::Declaration::Resource(_) => {}
             }
         }
+    }
+
+    // Unresolved-call reports are trustworthy only when the whole project parsed:
+    // a file that failed to parse or read is excluded from the program, so a call
+    // into it would look unresolved though its definition exists. Suppress them in
+    // that case — the parse or read errors are the real problem to fix first.
+    let fully_parsed = files.len() == parsed_files.len()
+        && parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
+    if !fully_parsed {
+        report
+            .diagnostics
+            .retain(|diagnostic| diagnostic.code != CHECK_UNRESOLVED_CALL);
     }
 
     Ok((report, program))
@@ -1385,6 +1401,21 @@ fn check_call(
             .unwrap_or(MarrowType::Unknown);
     }
     let Some(function) = resolve_function(program, segments) else {
+        // A non-builtin call that resolves to no declared function is unresolved.
+        // Only report it for calls in a library module of the program: a
+        // module-less script is not a call target, and a project that did not
+        // fully parse has its unresolved calls suppressed in `check_project` (the
+        // missing definition may live in an excluded module).
+        if file_in_program(program, file) {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNRESOLVED_CALL.to_string(),
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("function `{}` is not defined", segments.join("::")),
+                line: span.line,
+                column: span.column,
+            });
+        }
         return MarrowType::Unknown;
     };
     // Every parameter is required (no defaults), so the argument count must match.
@@ -1473,6 +1504,15 @@ fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagn
     }
 }
 
+/// Whether `file` is a library module included in the program. Calls in such a
+/// file are resolution-checked; a module-less script (not a call target) is not.
+fn file_in_program(program: &CheckedProgram, file: &Path) -> bool {
+    program
+        .modules
+        .iter()
+        .any(|module| module.source_file == file)
+}
+
 /// Resolve a call name to a declared function, mirroring the runtime: a bare name
 /// matches the first function of that name in any module; a qualified `mod::fn`
 /// name matches a function in exactly that module.
@@ -1503,23 +1543,24 @@ fn resolve_function<'p>(
 /// each dispatched before user functions at runtime, so never a program function.
 fn is_builtin_call(segments: &[String]) -> bool {
     match segments {
+        // The single-name builtins, grouped as in docs/language/builtins.md. Each
+        // dispatches before user-function resolution at runtime, so none is ever a
+        // declared program function.
         [name] => matches!(
             name.as_str(),
-            "Error"
-                | "print"
-                | "write"
-                | "exists"
-                | "get"
-                | "nextId"
-                | "append"
-                | "int"
-                | "decimal"
-                | "string"
-                | "bool"
-                | "bytes"
-                | "date"
-                | "instant"
-                | "duration"
+            // presence and reads
+            "exists" | "get"
+            // tree traversal
+            | "keys" | "values" | "entries" | "count"
+            // sequence updates and id allocation
+            | "append" | "nextId"
+            // write and print
+            | "write" | "print"
+            // error constructor
+            | "Error"
+            // conversions
+            | "int" | "decimal" | "string" | "bool" | "bytes" | "ErrorCode"
+            | "date" | "instant" | "duration"
         ),
         [first, _, _] => first == "std",
         _ => false,
