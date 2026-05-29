@@ -3227,6 +3227,26 @@ fn eval_group_entry_write(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let (root, identity) = lower_record_identity(record, env)?;
+    // A declared keyed LEAF (e.g. `tags(pos: int): string`) takes a scalar value
+    // written at the keyed path, sharing marrow-write's keyed-leaf write path with
+    // `append`. A keyed GROUP takes a whole-entry resource value.
+    if resource_layer_leaf_type(env.program, &root, layer).is_some() {
+        let saved = value_to_saved(eval_expr(value, env)?)
+            .ok_or_else(|| unsupported("writing a resource value to a keyed leaf", span))?;
+        let resource = find_resource(env.program, &root)
+            .ok_or_else(|| unsupported("writing to this saved root", span))?;
+        let layer_keys = lower_layer_keys(keys, span, env)?;
+        let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved).map_err(
+            |error| RuntimeError {
+                code: error.code,
+                message: error.message,
+                span,
+            },
+        )?;
+        plan.commit(&mut *env.store.borrow_mut())
+            .map_err(|error| store_error(error, span))?;
+        return Ok(());
+    }
     let Value::Resource(fields) = eval_expr(value, env)? else {
         return Err(unsupported(
             "assigning a non-resource value to a group entry",

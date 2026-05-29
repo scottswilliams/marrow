@@ -1970,8 +1970,9 @@ fn values_and_entries_over_an_index_branch_are_unsupported() {
     // index branch they report `run.unsupported`, never a missing user function.
     let resource = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n";
     for builtin in ["values", "entries"] {
-        let program =
-            checked_program(&format!("{resource}fn f()\n    {builtin}(^books.byShelf(\"x\"))\n"));
+        let program = checked_program(&format!(
+            "{resource}fn f()\n    {builtin}(^books.byShelf(\"x\"))\n"
+        ));
         let result = run(&program, "test::f", &[]);
         assert!(
             matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
@@ -2384,6 +2385,94 @@ fn appends_then_reads_back_keyed_leaf_entries() {
     assert!(
         matches!(missing, Err(ref error) if error.code == RUN_ABSENT),
         "{missing:?}"
+    );
+}
+
+#[test]
+fn explicit_keyed_leaf_write_then_reads_back() {
+    // `^books(id).tags(pos) = value` writes one keyed-leaf entry directly, and a
+    // string-keyed leaf `scores(key) = value` writes through the same path.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n    scores(key: string): int\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn set_score(id: int, key: string, n: int)\n    ^books(id).scores(key) = n\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos)\n\nfn score_at(id: int, key: string): int\n    return ^books(id).scores(key)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::set_tag",
+        &[Value::Int(5), Value::Int(3), Value::Str("fiction".into())],
+    )
+    .expect("explicit keyed-leaf write");
+    run_entry(
+        &program,
+        &store,
+        "test::set_score",
+        &[Value::Int(5), Value::Str("alice".into()), Value::Int(7)],
+    )
+    .expect("string-keyed leaf write");
+
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::tag_at",
+            &[Value::Int(5), Value::Int(3)],
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("fiction".into()))
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::score_at",
+            &[Value::Int(5), Value::Str("alice".into())],
+        )
+        .expect("read")
+        .value,
+        Some(Value::Int(7))
+    );
+}
+
+#[test]
+fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
+    // An explicit write past the dense range leaves a hole; append chooses one
+    // past the highest positive key, not the first gap (builtins.md).
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    // Write position 5 directly, leaving 1..=4 as holes.
+    run_entry(
+        &program,
+        &store,
+        "test::set_tag",
+        &[Value::Int(9), Value::Int(5), Value::Str("hi".into())],
+    )
+    .expect("explicit write");
+    // Append lands at 6 (one past the highest positive key), skipping the holes.
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::add_tag",
+            &[Value::Int(9), Value::Str("next".into())],
+        )
+        .expect("append")
+        .value,
+        Some(Value::Int(6))
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::tag_at",
+            &[Value::Int(9), Value::Int(6)],
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("next".into()))
     );
 }
 
@@ -3911,7 +4000,7 @@ fn iterates_a_sequence_child_layer() {
 }
 
 /// A keyed (non-sequence) child tree iterates its declared keys. (Seeded through
-/// the store directly; explicit keyed-leaf writes arrive in G-leafwrite.)
+/// the store directly to keep the focus on iteration order.)
 const PLAYER_SCORES: &str = "\
 resource Game at ^games(id: int)
     scores(playerId: string): int
@@ -4026,7 +4115,9 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
         );
     }
     assert_eq!(
-        run_entry(&program, &store, "test::n", &[]).expect("run").value,
+        run_entry(&program, &store, "test::n", &[])
+            .expect("run")
+            .value,
         Some(Value::Int(2)),
     );
 }
@@ -4067,8 +4158,13 @@ fn values_and_entries_materialize_whole_records_over_a_primary_root() {
     let program = checked_program(BOOK_VALUES);
     let store = RefCell::new(MemStore::new());
     let add = |id: i64, t: &str| {
-        run_entry(&program, &store, "test::add", &[Value::Int(id), Value::Str(t.into())])
-            .expect("add");
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(t.into())],
+        )
+        .expect("add");
     };
     add(2, "Sourcery");
     add(1, "Mort");
@@ -4086,12 +4182,27 @@ fn values_and_entries_materialize_whole_records_over_a_primary_root() {
 fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     let program = checked_program(BOOK_VALUES);
     let store = RefCell::new(MemStore::new());
-    run_entry(&program, &store, "test::add", &[Value::Int(1), Value::Str("Mort".into())])
-        .expect("add");
-    run_entry(&program, &store, "test::tag", &[Value::Int(1), Value::Str("fiction".into())])
-        .expect("tag");
-    run_entry(&program, &store, "test::tag", &[Value::Int(1), Value::Str("funny".into())])
-        .expect("tag");
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[Value::Int(1), Value::Str("Mort".into())],
+    )
+    .expect("add");
+    run_entry(
+        &program,
+        &store,
+        "test::tag",
+        &[Value::Int(1), Value::Str("fiction".into())],
+    )
+    .expect("tag");
+    run_entry(
+        &program,
+        &store,
+        "test::tag",
+        &[Value::Int(1), Value::Str("funny".into())],
+    )
+    .expect("tag");
 
     // `values(^books(1).tags)` yields each leaf value in key order.
     let values = run_entry(&program, &store, "test::tagValues", &[Value::Int(1)]).expect("run");
