@@ -62,6 +62,12 @@ in `data`; clients do not parse `message`. The store reports a `store.*` code:
 limit, so `store.limit` is produced only by archive framing, when a record's
 length exceeds the archive's `u32` chunk-length field.
 
+Managed-root protection raises `write.*` codes when code attempts maintenance
+work without the maintenance capability: `write.requires_maintenance` for a
+whole managed-root delete, and `write.raw_requires_maintenance` for a raw
+quoted-segment write or read under a managed root. The latter is distinct from
+`write.unknown_field` so a tool can tell raw syntax from a declared-field typo.
+
 The `marrow serve` data server reports a `protocol.*` code when a request is bad:
 `protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`, and
 `protocol.bad_request` (malformed operation arguments — a missing or bad `path`,

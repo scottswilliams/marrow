@@ -344,8 +344,11 @@ source, tools can still restore or inspect the raw tree.
 Normal backups include generated index trees. Typed restore can verify them
 against primary resources or rebuild them when source is available.
 
-Normal restore writes into an empty target. Replace, merge, and repair modes
-are explicit because they can cross managed-root boundaries.
+Normal restore writes into an empty target, and that is the only restore mode
+implemented today. Replace, merge, and repair restores are not implemented yet.
+When they land they will be explicit maintenance actions — they cross
+managed-root boundaries, so they will route through the maintenance capability
+rather than relaxing the empty-target guard.
 
 Backend-native files can support fast local snapshots, but they are not the
 portable archive format.
@@ -389,7 +392,10 @@ manifest (format magic, version, and record count; source fingerprints arrive
 with typed restore), not an engine file. `marrow restore <projectdir> <archive>`
 replays one into an empty store in a single transaction; a non-empty target fails
 with `restore.not_empty`, since restoring over existing data is an explicit
-maintenance action.
+maintenance action. Empty-target restore is the only mode implemented today;
+replace, merge, and repair restore (the non-empty cases) are deferred and would
+route through the maintenance capability when implemented, not loosen the
+empty-target guard.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and
