@@ -1120,7 +1120,7 @@ fn infer_type(
 /// record access `^root(key…)` (a call whose callee is the saved root) or — for a
 /// keyless singleton resource (`Settings at ^settings`) addressed by its root —
 /// the saved root `^root` itself. Group-layer fields and keyed-leaf reads are not
-/// resolved here. Mirrors the runtime's `resource_field_type`.
+/// resolved here.
 fn saved_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
@@ -1136,11 +1136,7 @@ fn saved_field_type(
         _ => return None,
     };
     let resource = find_resource_schema(program, root)?;
-    let field = resource
-        .fields
-        .iter()
-        .find(|declared| declared.name == field)?;
-    Some(MarrowType::from_resolved(field.ty.clone(), &[]))
+    field_member_type(resource, &[field])
 }
 
 /// The schema of the resource that owns saved root `^root`, if any. Mirrors the
@@ -1217,7 +1213,7 @@ fn resolve_type(ty: &marrow_syntax::TypeRef, program: &CheckedProgram) -> Marrow
 
 /// The declared type of a field read off a resource-typed value, e.g. `book.title`
 /// where `book: Book`. `base_type` must be a known resource type; the field is
-/// looked up in that resource's schema. Mirrors the runtime's local field read.
+/// looked up in that resource's schema.
 fn local_field_type(
     program: &CheckedProgram,
     base_type: &MarrowType,
@@ -1231,30 +1227,22 @@ fn local_field_type(
         .iter()
         .flat_map(|module| &module.resources)
         .find(|resource| &resource.name == name)?;
-    let field = resource
-        .fields
-        .iter()
-        .find(|declared| declared.name == field)?;
-    Some(MarrowType::from_resolved(field.ty.clone(), &[]))
+    field_member_type(resource, &[field])
 }
 
 /// The declared type of a group field read at any nesting depth, reached through
 /// keyed layers (`^root(key…).layer(key…)….field`) or unkeyed groups
 /// (`^root(key…).name.field`). `base` is the group entry — the part before the
-/// leaf field. Mirrors the runtime's `resource_nested_member_type`.
+/// leaf field.
 fn saved_group_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
     field: &str,
 ) -> Option<MarrowType> {
-    let (root, layers) = saved_group_chain(base)?;
+    let (root, mut chain) = saved_group_chain(base)?;
     let resource = find_resource_schema(program, root)?;
-    let layer = descend_layers(resource, &layers)?;
-    let member = layer.members.iter().find_map(|member| match member {
-        marrow_schema::LayerMember::Field(member) if member.name == field => Some(member),
-        _ => None,
-    })?;
-    Some(MarrowType::from_resolved(member.ty.clone(), &[]))
+    chain.push(field);
+    field_member_type(resource, &chain)
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -1297,16 +1285,14 @@ fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str
 }
 
 /// The declared leaf type of a keyed-leaf read `^root(key…).layer(key…)…` at any
-/// nesting depth. `callee` is the layer field `^root(key…)….layer`. Mirrors
-/// `resource_layer_leaf_type`.
+/// nesting depth. `callee` is the layer field `^root(key…)….layer`.
 fn saved_leaf_type(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
     let (root, layers) = saved_layer_chain(callee)?;
     let resource = find_resource_schema(program, root)?;
-    let layer = descend_layers(resource, &layers)?;
-    Some(MarrowType::from_resolved(layer.leaf_type.clone()?, &[]))
+    leaf_member_type(resource, &layers)
 }
 
 /// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
@@ -1335,21 +1321,31 @@ fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str
     }
 }
 
-/// Descend a non-empty chain of group layer names from a resource, following
-/// nested layer members, and return the innermost layer's schema.
-fn descend_layers<'a>(
-    resource: &'a marrow_schema::ResourceSchema,
+/// The checker type of a stored field read named by its saved-path chain — the
+/// named segments after the identity, outermost first, terminating in a scalar
+/// field. Resolves through the shared schema walk and lifts the result to the
+/// checker's lattice. A saved leaf is always a scalar, sequence, or identity, so
+/// it needs no module resource names to place a bare `Named`.
+fn field_member_type(
+    resource: &marrow_schema::ResourceSchema,
+    chain: &[&str],
+) -> Option<MarrowType> {
+    resource
+        .field_type(chain)
+        .map(|ty| MarrowType::from_resolved(ty.clone(), &[]))
+}
+
+/// The checker type of a keyed-leaf layer read named by its chain of layer names,
+/// outermost first. Resolves through the same shared schema walk as
+/// [`field_member_type`], differing only in that the terminal name is a keyed-leaf
+/// layer rather than a field.
+fn leaf_member_type(
+    resource: &marrow_schema::ResourceSchema,
     layers: &[&str],
-) -> Option<&'a marrow_schema::LayerSchema> {
-    let (first, rest) = layers.split_first()?;
-    let mut current = resource.layers.iter().find(|layer| &layer.name == first)?;
-    for name in rest {
-        current = current.members.iter().find_map(|member| match member {
-            marrow_schema::LayerMember::Layer(layer) if &layer.name == name => Some(layer),
-            _ => None,
-        })?;
-    }
-    Some(current)
+) -> Option<MarrowType> {
+    resource
+        .leaf_type(layers)
+        .map(|ty| MarrowType::from_resolved(ty.clone(), &[]))
 }
 
 /// Look up a name's binding, innermost scope frame first; `None` when unbound.

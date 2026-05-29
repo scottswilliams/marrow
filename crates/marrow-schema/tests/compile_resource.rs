@@ -763,3 +763,84 @@ resource Book
     assert_eq!(saved.layers, local.layers);
     assert_eq!(saved.indexes, local.indexes);
 }
+
+/// A resource nesting a keyed-leaf layer and a field inside a group, to pin the
+/// field/leaf resolvers on the cases that are not a single top-level lookup.
+const NESTED: &str = "\
+resource Catalog at ^catalog(id: int)
+    required title: string
+    tags(pos: int): string
+
+    versions(version: int)
+        required note: string
+        lines(pos: int): string
+
+        comments(commentId: string)
+            required body: string
+";
+
+#[test]
+fn field_type_resolves_top_level_and_nested_fields() {
+    let schema = compile_ok(NESTED);
+    // A single-name chain reads a top-level field.
+    assert_eq!(
+        schema.field_type(&["title"]),
+        Some(&Type::Scalar(ScalarType::Str))
+    );
+    // A field inside a group layer.
+    assert_eq!(
+        schema.field_type(&["versions", "note"]),
+        Some(&Type::Scalar(ScalarType::Str))
+    );
+    // A field two group layers deep.
+    assert_eq!(
+        schema.field_type(&["versions", "comments", "body"]),
+        Some(&Type::Scalar(ScalarType::Str))
+    );
+}
+
+#[test]
+fn field_type_does_not_resolve_a_keyed_leaf_layer() {
+    // A keyed-leaf layer is read as a leaf, not a field: `field_type` must not
+    // resolve a layer name, top-level or nested, so a bare layer read stays
+    // untyped exactly as the checker treated it before this walk was shared.
+    let schema = compile_ok(NESTED);
+    assert_eq!(schema.field_type(&["tags"]), None);
+    assert_eq!(schema.field_type(&["versions", "lines"]), None);
+}
+
+#[test]
+fn leaf_type_resolves_top_level_and_nested_keyed_leaves() {
+    let schema = compile_ok(NESTED);
+    // A top-level keyed-leaf layer of the resource.
+    assert_eq!(
+        schema.leaf_type(&["tags"]),
+        Some(&Type::Scalar(ScalarType::Str))
+    );
+    // A keyed-leaf layer nested inside a group layer.
+    assert_eq!(
+        schema.leaf_type(&["versions", "lines"]),
+        Some(&Type::Scalar(ScalarType::Str))
+    );
+}
+
+#[test]
+fn leaf_type_does_not_resolve_a_group_layer_or_field() {
+    let schema = compile_ok(NESTED);
+    // A group layer carries members, not a leaf value.
+    assert_eq!(schema.leaf_type(&["versions"]), None);
+    // A field is not a keyed-leaf layer.
+    assert_eq!(schema.leaf_type(&["versions", "note"]), None);
+}
+
+#[test]
+fn member_resolvers_reject_unknown_and_empty_chains() {
+    let schema = compile_ok(NESTED);
+    assert_eq!(schema.field_type(&[]), None, "an empty chain names nothing");
+    assert_eq!(schema.leaf_type(&[]), None);
+    assert_eq!(schema.field_type(&["missing"]), None);
+    // A name under an unknown layer.
+    assert_eq!(schema.field_type(&["missing", "note"]), None);
+    // A real layer but an undeclared member.
+    assert_eq!(schema.field_type(&["versions", "missing"]), None);
+}

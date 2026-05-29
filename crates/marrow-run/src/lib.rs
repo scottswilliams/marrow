@@ -4667,21 +4667,9 @@ fn lower_saved_path(
     }
 }
 
-/// The declared scalar type of a saved root's top-level field, found by matching
-/// the root name against the program's resource schemas.
+/// The declared scalar type of a saved root's top-level field.
 fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Option<ScalarType> {
-    let resource = program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| {
-            resource
-                .saved_root
-                .as_ref()
-                .is_some_and(|saved| saved.root == root)
-        })?;
-    let field = resource.fields.iter().find(|field_| field_.name == field)?;
-    field.ty.scalar()
+    find_resource(program, root)?.field_type(&[field])?.scalar()
 }
 
 /// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
@@ -4691,18 +4679,13 @@ fn resource_layer_leaf_type(
     root: &str,
     layer: &str,
 ) -> Option<ScalarType> {
-    let resource = find_resource(program, root)?;
-    let layer = resource
-        .layers
-        .iter()
-        .find(|declared| declared.name == layer)?;
-    layer.leaf_type.as_ref()?.scalar()
+    find_resource(program, root)?.leaf_type(&[layer])?.scalar()
 }
 
 /// The declared type of a scalar member field inside a saved root's GROUP layer,
 /// at any nesting depth (e.g. the `string` of
 /// `versions(version: int).comments(pos: int).text`). `layers` names the group
-/// layers from outermost to innermost; descending follows nested layer members.
+/// layers from outermost to innermost.
 fn resource_nested_member_type(
     program: &CheckedProgram,
     root: &str,
@@ -4710,19 +4693,9 @@ fn resource_nested_member_type(
     field: &str,
 ) -> Option<ScalarType> {
     let resource = find_resource(program, root)?;
-    let (first, rest) = layers.split_first()?;
-    let mut current = resource.layers.iter().find(|layer| &layer.name == first)?;
-    for name in rest {
-        current = current.members.iter().find_map(|member| match member {
-            LayerMember::Layer(layer) if &layer.name == name => Some(layer),
-            _ => None,
-        })?;
-    }
-    let member = current.members.iter().find_map(|member| match member {
-        LayerMember::Field(member) if member.name == field => Some(member),
-        _ => None,
-    })?;
-    member.ty.scalar()
+    let mut chain = layers.to_vec();
+    chain.push(field);
+    resource.field_type(&chain)?.scalar()
 }
 
 /// How a stored saved path relates to the project schema, for data-integrity

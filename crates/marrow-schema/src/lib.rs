@@ -115,6 +115,70 @@ pub struct ResourceSchema {
     pub indexes: Vec<IndexSchema>,
 }
 
+impl ResourceSchema {
+    /// The declared type of a stored field named by its saved-path chain — the
+    /// named segments after the identity, outermost first, where the last name is
+    /// a scalar field and every earlier name is a group layer to descend into. A
+    /// single-name chain reads a top-level field; a longer chain descends the
+    /// leading names as layers and reads the last name as a field of the innermost
+    /// layer. An empty chain, or any name the schema does not declare as that
+    /// shape, resolves to `None`.
+    ///
+    /// A keyed-leaf layer read at the same position is [`Self::leaf_type`]; the two
+    /// differ only in whether the terminal name is a field or a keyed-leaf layer,
+    /// so both share the one layer-descent walk.
+    pub fn field_type(&self, chain: &[&str]) -> Option<&Type> {
+        let (&leaf, layers) = chain.split_last()?;
+        if layers.is_empty() {
+            // A top-level field of the resource.
+            return self
+                .fields
+                .iter()
+                .find(|field| field.name == leaf)
+                .map(|field| &field.ty);
+        }
+        // A field of the innermost group layer.
+        field_member(&self.descend_layers(layers)?.members, leaf)
+    }
+
+    /// The declared leaf value type of a keyed-leaf layer named by its chain of
+    /// layer names, outermost first. The last name is the keyed-leaf layer being
+    /// read; earlier names are the groups to descend through. Resolves to `None`
+    /// for an empty chain, an unknown layer, or a group layer (which has members,
+    /// not a leaf value).
+    pub fn leaf_type(&self, layers: &[&str]) -> Option<&Type> {
+        self.descend_layers(layers)?.leaf_type.as_ref()
+    }
+
+    /// Descend a non-empty chain of group layer names, following nested layer
+    /// members, and return the innermost layer. `None` for an empty chain or an
+    /// unknown name.
+    fn descend_layers(&self, layers: &[&str]) -> Option<&LayerSchema> {
+        let (&first, rest) = layers.split_first()?;
+        let mut current = self.layers.iter().find(|layer| layer.name == first)?;
+        for &name in rest {
+            current = layer_member(&current.members, name)?;
+        }
+        Some(current)
+    }
+}
+
+/// The declared type of a group field member named `name`.
+fn field_member<'a>(members: &'a [LayerMember], name: &str) -> Option<&'a Type> {
+    members.iter().find_map(|member| match member {
+        LayerMember::Field(field) if field.name == name => Some(&field.ty),
+        _ => None,
+    })
+}
+
+/// The keyed-layer member named `name`.
+fn layer_member<'a>(members: &'a [LayerMember], name: &str) -> Option<&'a LayerSchema> {
+    members.iter().find_map(|member| match member {
+        LayerMember::Layer(layer) if layer.name == name => Some(layer),
+        _ => None,
+    })
+}
+
 /// The saved root a resource is attached to, with the identity keys that live
 /// in the saved path. Identity keys are not stored fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
