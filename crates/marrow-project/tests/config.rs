@@ -57,6 +57,23 @@ fn rejects_unknown_store_backend() {
 }
 
 #[test]
+fn rejects_native_store_without_data_dir() {
+    // The native backend cannot open without a data directory, so a native store
+    // missing (or with an empty) `dataDir` is invalid here, not later at open time.
+    let error = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "native" } }"#)
+        .expect_err("should reject");
+    assert_eq!(error.code, "config.invalid");
+    assert!(error.message.contains("dataDir"), "{}", error.message);
+
+    let error = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "" } }"#,
+    )
+    .expect_err("should reject");
+    assert_eq!(error.code, "config.invalid");
+    assert!(error.message.contains("dataDir"), "{}", error.message);
+}
+
+#[test]
 fn rejects_unknown_top_level_keys() {
     let error = parse_config(r#"{ "sourceRoots": ["src"], "globals": ["^x"] }"#)
         .expect_err("should reject unknown keys");
