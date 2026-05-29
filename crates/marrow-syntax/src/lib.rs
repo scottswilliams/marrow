@@ -1370,55 +1370,12 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.report_keyword_field_names();
+        report_keyword_field_names(self.source, self.tokens, &mut self.diagnostics);
         report_positional_after_named(&file, &mut self.diagnostics);
-        self.drop_redundant_statement_errors();
+        drop_redundant_statement_errors(&mut self.diagnostics);
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
-        }
-    }
-
-    /// Drop the generic "expected a statement" fallback on any line that already
-    /// carries a more specific diagnostic (e.g. a keyword used as a field name),
-    /// so a single malformed line reports once with the most useful message.
-    fn drop_redundant_statement_errors(&mut self) {
-        let specific_lines: std::collections::HashSet<u32> = self
-            .diagnostics
-            .iter()
-            .filter(|d| d.message != "expected a statement")
-            .map(|d| d.line)
-            .collect();
-        self.diagnostics
-            .retain(|d| d.message != "expected a statement" || !specific_lines.contains(&d.line));
-    }
-
-    /// Report bare keywords used as field names. A `.` is always data field
-    /// access, and a field name must be an identifier or string literal, so a
-    /// reserved word immediately after `.` is never a valid field name and must
-    /// be quoted (`."at"`). The structural parsers cannot build such a field and
-    /// leave the line `Unparsed`, so the diagnostic is raised here from the
-    /// token stream, where the `.` and the keyword are both visible.
-    fn report_keyword_field_names(&mut self) {
-        for pair in self.tokens.windows(2) {
-            let [dot, name] = pair else { continue };
-            if dot.kind != TokenKind::Dot || !matches!(name.kind, TokenKind::Keyword(_)) {
-                continue;
-            }
-            let keyword = name.text(self.source);
-            let span = join_spans(dot.span, name.span);
-            self.diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                kind: "parse",
-                severity: Severity::Error,
-                message: format!("`{keyword}` is a keyword and cannot be used as a field name"),
-                help: Some(format!(
-                    "quote the reserved word to use it as a data name: .\"{keyword}\""
-                )),
-                span,
-                line: span.line,
-                column: span.column,
-            });
         }
     }
 
@@ -3138,6 +3095,1115 @@ fn parse_simple_statement(source: &str, line: &[Token]) -> Option<Statement> {
     }
 }
 
+// The token-stream declaration parser is built here alongside the line-oriented
+// front end; nothing routes through it yet, so its items are unused until the
+// entry point is repointed at it.
+#[allow(dead_code)]
+mod decl_parser {
+    use super::*;
+
+    /// Recursive-descent parser for top-level declarations over the file-wide token
+    /// stream, the same stream `StmtParser`/`ExprParser` consume. It dispatches on
+    /// token shape rather than string prefixes, frames resource and function bodies
+    /// by `INDENT`/`DEDENT` tokens, and delegates statement and expression parsing
+    /// to the existing token parsers. Spans match the line-oriented front end: a
+    /// declaration spans its whole first physical line at column 1.
+    pub(crate) struct DeclParser<'a> {
+        source: &'a str,
+        tokens: &'a [Token],
+        pos: usize,
+        diagnostics: Vec<Diagnostic>,
+    }
+
+    impl<'a> DeclParser<'a> {
+        pub(crate) fn new(source: &'a str, tokens: &'a [Token]) -> Self {
+            Self {
+                source,
+                tokens,
+                pos: 0,
+                diagnostics: Vec::new(),
+            }
+        }
+
+        pub(crate) fn parse(mut self) -> ParsedSource {
+            let mut file = SourceFile::default();
+            let mut docs = Vec::new();
+            let mut saw_top_level_item = false;
+
+            while let Some(kind) = self.peek() {
+                match kind {
+                    TokenKind::Newline => {
+                        self.advance();
+                    }
+                    TokenKind::Comment => {
+                        self.advance();
+                    }
+                    TokenKind::DocComment => {
+                        let token = self.advance();
+                        docs.push(doc_comment_text(token.text(self.source)));
+                    }
+                    TokenKind::Eof => break,
+                    // Indentation where a top-level declaration was expected: report
+                    // each stray indented line, as the line-oriented parser did.
+                    TokenKind::Indent => {
+                        self.report_stray_indented_lines();
+                        saw_top_level_item = true;
+                    }
+                    TokenKind::Dedent => {
+                        self.advance();
+                    }
+                    // Each declaration keyword introduces its kind only when followed
+                    // by a space, mirroring the `"module "`/`"const "`/… string
+                    // prefixes of the line-oriented parser. A bare keyword (or one
+                    // glued to the next token, like `module::x`) is an unknown
+                    // top-level declaration.
+                    TokenKind::Keyword(Keyword::Module) if self.keyword_introduces_decl() => {
+                        self.parse_module(&mut file, &mut docs, saw_top_level_item);
+                        saw_top_level_item = true;
+                    }
+                    TokenKind::Keyword(Keyword::Use) if self.keyword_introduces_decl() => {
+                        self.parse_use(&mut file);
+                        docs.clear();
+                        saw_top_level_item = true;
+                    }
+                    TokenKind::Keyword(Keyword::Const) if self.keyword_introduces_decl() => {
+                        let decl = self.parse_const(std::mem::take(&mut docs));
+                        file.declarations.push(Declaration::Const(decl));
+                        saw_top_level_item = true;
+                    }
+                    TokenKind::Keyword(Keyword::Resource) if self.keyword_introduces_decl() => {
+                        let resource = self.parse_resource(std::mem::take(&mut docs));
+                        file.declarations.push(Declaration::Resource(resource));
+                        saw_top_level_item = true;
+                    }
+                    _ if self.starts_function_header() => {
+                        let function = self.parse_function(std::mem::take(&mut docs));
+                        file.declarations.push(Declaration::Function(function));
+                        saw_top_level_item = true;
+                    }
+                    // `type` is not a keyword in Marrow; it lexes as an identifier.
+                    TokenKind::Identifier
+                        if self.identifier_is(self.pos, "type")
+                            && self.keyword_introduces_decl() =>
+                    {
+                        self.error_header(
+                        "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
+                    );
+                        docs.clear();
+                        saw_top_level_item = true;
+                    }
+                    _ => {
+                        self.error_header(
+                            "expected module, use, const, resource, or fn declaration",
+                        );
+                        docs.clear();
+                        saw_top_level_item = true;
+                    }
+                }
+            }
+
+            report_keyword_field_names(self.source, self.tokens, &mut self.diagnostics);
+            report_positional_after_named(&file, &mut self.diagnostics);
+            drop_redundant_statement_errors(&mut self.diagnostics);
+            ParsedSource {
+                file,
+                diagnostics: self.diagnostics,
+            }
+        }
+
+        fn parse_module(
+            &mut self,
+            file: &mut SourceFile,
+            docs: &mut Vec<String>,
+            saw_top_level_item: bool,
+        ) {
+            let span = self.header_span();
+            let header = self.take_header_line();
+            let name = qualified_name(self.source, &header[1..]);
+            if saw_top_level_item {
+                self.error_span(
+                    span,
+                    "module declaration must appear once at the start of the file",
+                );
+            } else if let Some(name) = name {
+                file.module = Some(ModuleDecl { name, span });
+            } else {
+                self.error_span(span, "expected qualified module name");
+            }
+            docs.clear();
+        }
+
+        fn parse_use(&mut self, file: &mut SourceFile) {
+            let span = self.header_span();
+            let header = self.take_header_line();
+            if let Some(name) = qualified_name(self.source, &header[1..]) {
+                file.uses.push(UseDecl { name, span });
+            } else {
+                self.error_span(span, "expected qualified import name");
+            }
+        }
+
+        fn parse_const(&mut self, docs: Vec<String>) -> ConstDecl {
+            let span = self.header_span();
+            let header = self.take_header_line();
+            // `const Name [: type] = value`. The name is the identifier after the
+            // keyword; the type runs from `:` to `=`; the value is everything after.
+            let equal = find_top_level_equal(&header[1..]).map(|index| index + 1);
+            let line_start = span.start_byte;
+            let (name, ty, value) = match equal {
+                Some(equal) => {
+                    let head = &header[1..equal];
+                    let value_tokens = &header[equal + 1..];
+                    // The line-oriented parser reported a missing value before
+                    // checking the name and type, so match that diagnostic order.
+                    if value_tokens.is_empty() {
+                        self.error_span(span, "const declarations require a value after `=`");
+                    }
+                    let (name, ty) = self.const_name_type(span, head);
+                    // An absent value points just past `=`, on the header line.
+                    let after_equal = header[equal].span.end_byte;
+                    let fallback = SourceSpan {
+                        start_byte: after_equal,
+                        end_byte: span.end_byte,
+                        line: span.line,
+                        column: (after_equal - line_start + 1) as u32,
+                    };
+                    let value = self.value_expression(value_tokens, fallback);
+                    (name, ty, value)
+                }
+                None => {
+                    self.error_span(span, "const declarations require `=` and a value");
+                    let (name, ty) = self.const_name_type(span, &header[1..]);
+                    // An absent value points at end of the header line.
+                    let fallback = SourceSpan {
+                        start_byte: span.end_byte,
+                        end_byte: span.end_byte,
+                        line: span.line,
+                        column: (span.end_byte - line_start + 1) as u32,
+                    };
+                    let value = self.value_expression(&[], fallback);
+                    (name, ty, value)
+                }
+            };
+            ConstDecl {
+                docs,
+                name,
+                ty,
+                value,
+                span,
+            }
+        }
+
+        /// Split a const head (`Name` or `Name: type`) into the name and optional
+        /// type, reporting the same diagnostics as the line-oriented parser.
+        fn const_name_type(
+            &mut self,
+            span: SourceSpan,
+            head: &[Token],
+        ) -> (String, Option<TypeRef>) {
+            let colon = head.iter().position(|token| token.kind == TokenKind::Colon);
+            let (name_tokens, type_tokens) = match colon {
+                Some(index) => (&head[..index], Some(&head[index + 1..])),
+                None => (head, None),
+            };
+            // The name is the verbatim text before any `:`, kept even when invalid so
+            // the declaration still carries a name; only a non-identifier reports.
+            let name = match name_tokens.first().zip(name_tokens.last()) {
+                Some((first, last)) => self.source[first.span.start_byte..last.span.end_byte]
+                    .trim()
+                    .to_string(),
+                None => String::new(),
+            };
+            if !is_identifier(&name) {
+                self.error_span(span, "expected const name before type annotation");
+            }
+            let ty = match type_tokens {
+                Some(tokens) if !tokens.is_empty() => {
+                    let ty = type_ref_from_tokens(self.source, tokens);
+                    if !is_type_text(&ty.text) {
+                        self.error_span(span, "expected const type annotation");
+                        None
+                    } else {
+                        Some(ty)
+                    }
+                }
+                Some(_) => {
+                    self.error_span(span, "expected const type annotation");
+                    None
+                }
+                None => None,
+            };
+            (name, ty)
+        }
+
+        fn parse_resource(&mut self, docs: Vec<String>) -> ResourceDecl {
+            let span = self.header_span();
+            let header = self.take_header_line();
+            let (name, store) = match parse_resource_head(self.source, &header[1..]) {
+                Ok(parsed) => parsed,
+                Err(message) => {
+                    self.error_span(span, message);
+                    (String::new(), None)
+                }
+            };
+            let members = if matches!(self.peek(), Some(TokenKind::Indent)) {
+                self.parse_resource_members()
+            } else {
+                self.error_span(span, "expected an indented resource body");
+                Vec::new()
+            };
+            ResourceDecl {
+                docs,
+                name,
+                store,
+                members,
+                span,
+            }
+        }
+
+        /// Parse an `INDENT … DEDENT` block of resource members. Nested groups recurse
+        /// on their own child block. Each member's span is its whole header line.
+        fn parse_resource_members(&mut self) -> Vec<ResourceMember> {
+            let mut members = Vec::new();
+            let mut docs = Vec::new();
+            let mut stable_id = None;
+            self.advance(); // INDENT
+
+            while let Some(kind) = self.peek() {
+                match kind {
+                    TokenKind::Dedent => {
+                        self.advance();
+                        break;
+                    }
+                    TokenKind::Newline | TokenKind::Comment => {
+                        self.advance();
+                    }
+                    TokenKind::DocComment => {
+                        let token = self.advance();
+                        docs.push(doc_comment_text(token.text(self.source)));
+                    }
+                    // A deeper indent under a field (rather than a group) is stray:
+                    // report at the deeper line's content and skip the whole block.
+                    TokenKind::Indent => {
+                        self.advance(); // INDENT
+                        if self.peek().is_some_and(|kind| {
+                            !matches!(
+                                kind,
+                                TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
+                            )
+                        }) {
+                            let err = self.content_span();
+                            self.error_span(
+                            err,
+                            "unexpected indentation in resource body; only groups introduce nested resource members",
+                        );
+                        }
+                        self.skip_to_block_end();
+                    }
+                    _ => {
+                        // The node carries the whole-line span (column 1); a member
+                        // error points at the content after the indentation.
+                        let span = self.header_span();
+                        let err = self.content_span();
+                        if matches!(kind, TokenKind::At) {
+                            match parse_stable_id_tokens(self.source, &self.take_header_line()) {
+                                Some(id) => stable_id = Some(id),
+                                None => {
+                                    self.error_span(err, "expected @id(\"stable.id\")");
+                                }
+                            }
+                            continue;
+                        }
+                        if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
+                            let header = self.take_header_line();
+                            match parse_index_tokens(self.source, &header[1..]) {
+                                Ok(index) => members.push(ResourceMember::Index(IndexDecl {
+                                    docs: std::mem::take(&mut docs),
+                                    stable_id: stable_id.take(),
+                                    span,
+                                    ..index
+                                })),
+                                Err(message) => self.error_span(err, message),
+                            }
+                            continue;
+                        }
+                        let header = self.take_header_line();
+                        match parse_field_or_group_tokens(self.source, &header) {
+                            Ok(MemberHead::Field {
+                                required,
+                                name,
+                                keys,
+                                ty,
+                            }) => {
+                                if !is_type_text(&ty.text) {
+                                    self.error_span(err, "expected field type annotation");
+                                }
+                                members.push(ResourceMember::Field(FieldDecl {
+                                    docs: std::mem::take(&mut docs),
+                                    stable_id: stable_id.take(),
+                                    required,
+                                    name,
+                                    keys,
+                                    ty,
+                                    span,
+                                }));
+                            }
+                            Ok(MemberHead::Group { name, keys }) => {
+                                let children = if matches!(self.peek(), Some(TokenKind::Indent)) {
+                                    self.parse_resource_members()
+                                } else {
+                                    self.error_span(
+                                        err,
+                                        "expected an indented resource group body",
+                                    );
+                                    Vec::new()
+                                };
+                                members.push(ResourceMember::Group(GroupDecl {
+                                    docs: std::mem::take(&mut docs),
+                                    stable_id: stable_id.take(),
+                                    name,
+                                    keys,
+                                    members: children,
+                                    span,
+                                }));
+                            }
+                            Err(message) => self.error_span(err, message),
+                        }
+                    }
+                }
+            }
+            members
+        }
+
+        fn parse_function(&mut self, docs: Vec<String>) -> FunctionDecl {
+            let span = self.header_span();
+            let header = self.take_header_line();
+            let head = match parse_function_head(self.source, &header) {
+                Ok(head) => head,
+                Err(message) => {
+                    self.error_span(span, message);
+                    FunctionHead {
+                        public: false,
+                        name: String::new(),
+                        params: Vec::new(),
+                        return_type: None,
+                    }
+                }
+            };
+            let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
+                self.parse_function_body()
+            } else {
+                self.error_span(span, "expected an indented function body");
+                Block {
+                    statements: Vec::new(),
+                    comments: Vec::new(),
+                    span,
+                }
+            };
+            FunctionDecl {
+                docs,
+                public: head.public,
+                name: head.name,
+                params: head.params,
+                return_type: head.return_type,
+                body,
+                span,
+            }
+        }
+
+        /// Parse a function body from its `INDENT … DEDENT` run via the statement
+        /// parser. The body span runs from the first body line at column 1 to the end
+        /// of the last physical line of the body, matching the line-oriented parser.
+        fn parse_function_body(&mut self) -> Block {
+            let indent = self.tokens[self.pos];
+            let start = self.pos;
+            let end = self.consume_block();
+            // The block ends just before the line that closed it; that line is where
+            // the matching `DEDENT` sits (or end-of-file for the final body).
+            let closing = self.tokens[start..end]
+                .iter()
+                .rev()
+                .find(|token| token.kind == TokenKind::Dedent)
+                .map(|dedent| dedent.span.start_byte - (dedent.span.column as usize - 1))
+                .unwrap_or_else(|| self.source.len());
+            let span = SourceSpan {
+                start_byte: indent.span.start_byte,
+                end_byte: line_text_end_before(self.source, closing),
+                line: indent.span.line,
+                column: 1,
+            };
+            // Feed the statement parser the same byte-bounded slice the line-oriented
+            // parser fed it: tokens inside the body span, so a `DEDENT` emitted past
+            // the last body line (at end of file) is excluded, keeping nested-block
+            // spans identical.
+            let body_tokens = tokens_in_range(self.tokens, span.start_byte, span.end_byte);
+            let (statements, comments, diagnostics) =
+                StmtParser::new(self.source, body_tokens).parse_block();
+            self.diagnostics.extend(diagnostics);
+            Block {
+                statements,
+                comments,
+                span,
+            }
+        }
+
+        /// An expression in a value position. Anything the grammar does not structure
+        /// becomes `Expression::Unparsed`, matching the line-oriented const parser.
+        /// `fallback` is the span the `Unparsed` node carries when there are no value
+        /// tokens at all.
+        fn value_expression(&self, tokens: &[Token], fallback: SourceSpan) -> Expression {
+            let span = if tokens.is_empty() {
+                fallback
+            } else {
+                value_span(tokens)
+            };
+            let text = self
+                .source
+                .get(span.start_byte..span.end_byte)
+                .unwrap_or_default();
+            ExprParser::new(self.source, tokens).parse_value(span, text)
+        }
+
+        /// Collect the tokens of the current header line (up to the next
+        /// `NEWLINE`/`INDENT`/`DEDENT`/`EOF`) and advance past the closing `NEWLINE`.
+        /// A header line continues across newlines suppressed inside open delimiters,
+        /// so a multi-line const value stays one header line.
+        fn take_header_line(&mut self) -> Vec<Token> {
+            let end = self.header_end();
+            let line = self.tokens[self.pos..end].to_vec();
+            self.pos = end;
+            if matches!(self.peek(), Some(TokenKind::Newline)) {
+                self.advance();
+            }
+            line
+        }
+
+        fn header_end(&self) -> usize {
+            let mut index = self.pos;
+            while index < self.tokens.len()
+                && !matches!(
+                    self.tokens[index].kind,
+                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
+                )
+            {
+                index += 1;
+            }
+            index
+        }
+
+        /// The span of the current declaration's first physical line at column 1, the
+        /// same span `Line::span` produced for the line-oriented parser. The line
+        /// starts at column 1 (before any indentation), which a token's `column`
+        /// recovers as the byte offset from the line start. This is the span stored
+        /// on declaration and resource-member nodes.
+        fn header_span(&self) -> SourceSpan {
+            let token = self.tokens[self.pos];
+            let start_byte = token.span.start_byte - (token.span.column as usize - 1);
+            SourceSpan {
+                start_byte,
+                end_byte: first_line_end(self.source, start_byte),
+                line: token.span.line,
+                column: 1,
+            }
+        }
+
+        /// The span of the current line's content, starting after its indentation,
+        /// the span `Line::span_at_content` produced. Declaration and member error
+        /// diagnostics point here (at the first non-space column).
+        fn content_span(&self) -> SourceSpan {
+            let token = self.tokens[self.pos];
+            SourceSpan {
+                start_byte: token.span.start_byte,
+                end_byte: first_line_end(self.source, token.span.start_byte),
+                line: token.span.line,
+                column: token.span.column,
+            }
+        }
+
+        /// Consume a balanced `INDENT … DEDENT` run starting at the current `INDENT`,
+        /// returning the exclusive index just past the matching `DEDENT`.
+        fn consume_block(&mut self) -> usize {
+            let mut depth = 0usize;
+            while let Some(kind) = self.peek() {
+                match kind {
+                    TokenKind::Indent => {
+                        depth += 1;
+                        self.advance();
+                    }
+                    TokenKind::Dedent => {
+                        self.advance();
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => break,
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+            self.pos
+        }
+
+        /// Consume the rest of an indented block whose opening `INDENT` was already
+        /// advanced, stopping after its matching `DEDENT`.
+        fn skip_to_block_end(&mut self) {
+            let mut depth = 1usize;
+            while let Some(kind) = self.peek() {
+                match kind {
+                    TokenKind::Indent => {
+                        depth += 1;
+                        self.advance();
+                    }
+                    TokenKind::Dedent => {
+                        self.advance();
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => break,
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+        }
+
+        /// Report one "expected a top-level declaration" per content line of a stray
+        /// indented region at the top level, each at its content position. Blank and
+        /// comment-only lines produce no tokens and so raise nothing, matching the
+        /// line-oriented parser.
+        fn report_stray_indented_lines(&mut self) {
+            let start = self.pos;
+            let end = self.consume_block();
+            let mut index = start;
+            let mut at_line_start = true;
+            while index < end {
+                let token = self.tokens[index];
+                match token.kind {
+                    TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => {
+                        at_line_start = true
+                    }
+                    TokenKind::Comment | TokenKind::DocComment => at_line_start = false,
+                    _ => {
+                        if at_line_start {
+                            let line_start =
+                                token.span.start_byte - (token.span.column as usize - 1);
+                            let content_start = token.span.start_byte;
+                            let span = SourceSpan {
+                                start_byte: content_start,
+                                end_byte: first_line_end(self.source, line_start),
+                                line: token.span.line,
+                                column: token.span.column,
+                            };
+                            self.error_span(span, "expected a top-level declaration");
+                        }
+                        at_line_start = false;
+                    }
+                }
+                index += 1;
+            }
+        }
+
+        fn peek(&self) -> Option<TokenKind> {
+            self.tokens.get(self.pos).map(|token| token.kind)
+        }
+
+        fn advance(&mut self) -> Token {
+            let token = self.tokens[self.pos];
+            self.pos += 1;
+            token
+        }
+
+        fn identifier_is(&self, index: usize, text: &str) -> bool {
+            self.tokens.get(index).is_some_and(|token| {
+                token.kind == TokenKind::Identifier && token.text(self.source) == text
+            })
+        }
+
+        /// Whether the source byte immediately after `token` is a space. The
+        /// line-oriented parser dispatched on string prefixes ending in a space
+        /// (`"module "`, `"fn "`, …), so a keyword only introduces a declaration when
+        /// a space follows it.
+        fn space_after(&self, token: Token) -> bool {
+            self.source.as_bytes().get(token.span.end_byte) == Some(&b' ')
+        }
+
+        fn keyword_introduces_decl(&self) -> bool {
+            self.space_after(self.tokens[self.pos])
+        }
+
+        /// Whether the current line is a function header: `fn `, `pub fn `,
+        /// `internal fn `, or `private fn ` (the visibility words being plain
+        /// identifiers). The trailing-space rule applies to each word.
+        fn starts_function_header(&self) -> bool {
+            let lead = self.tokens[self.pos];
+            match lead.kind {
+                TokenKind::Keyword(Keyword::Fn) => self.space_after(lead),
+                TokenKind::Keyword(Keyword::Pub) => {
+                    self.space_after(lead) && self.followed_by_fn_space()
+                }
+                TokenKind::Identifier
+                    if lead.text(self.source) == "internal"
+                        || lead.text(self.source) == "private" =>
+                {
+                    self.space_after(lead) && self.followed_by_fn_space()
+                }
+                _ => false,
+            }
+        }
+
+        fn followed_by_fn_space(&self) -> bool {
+            self.tokens.get(self.pos + 1).is_some_and(|token| {
+                token.kind == TokenKind::Keyword(Keyword::Fn) && self.space_after(*token)
+            })
+        }
+
+        /// Report an error spanning the current header line.
+        fn error_header(&mut self, message: impl Into<String>) {
+            let span = self.header_span();
+            self.take_header_line();
+            self.error_span(span, message);
+        }
+
+        fn error_span(&mut self, span: SourceSpan, message: impl Into<String>) {
+            self.diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                kind: "parse",
+                severity: Severity::Error,
+                message: message.into(),
+                help: None,
+                span,
+                line: span.line,
+                column: span.column,
+            });
+        }
+    }
+
+    /// The end byte of the physical line containing `start`, excluding the trailing
+    /// `\r`/`\n`. This matches `Line::end_byte` for a declaration's first line.
+    fn first_line_end(source: &str, start: usize) -> usize {
+        let tail = &source[start..];
+        let break_at = tail
+            .find('\n')
+            .map(|index| {
+                if tail[..index].ends_with('\r') {
+                    index - 1
+                } else {
+                    index
+                }
+            })
+            .unwrap_or(tail.len());
+        start + break_at
+    }
+
+    /// Strip the `;;` doc-comment marker and surrounding whitespace, matching
+    /// `Line::doc_comment`.
+    fn doc_comment_text(text: &str) -> String {
+        text.strip_prefix(";;").unwrap_or(text).trim().to_string()
+    }
+
+    /// The end byte of the physical line that ends just before `pos`, excluding that
+    /// line's trailing `\r`/`\n`. Used to bound a function body at the end of its
+    /// last line, the line just above the line that closed the block.
+    fn line_text_end_before(source: &str, pos: usize) -> usize {
+        let before = &source[..pos.min(source.len())];
+        let before = before.strip_suffix('\n').unwrap_or(before);
+        let before = before.strip_suffix('\r').unwrap_or(before);
+        before.len()
+    }
+
+    /// The fallback span of a value-position expression: the byte range of its
+    /// tokens, or an empty span when there are none.
+    fn value_span(tokens: &[Token]) -> SourceSpan {
+        match (tokens.first(), tokens.last()) {
+            (Some(first), Some(last)) => join_spans(first.span, last.span),
+            _ => SourceSpan::default(),
+        }
+    }
+
+    /// Validate that every token is an identifier path segment, returning the joined
+    /// `::`-separated text. Used for `module`/`use` names.
+    fn qualified_name(source: &str, tokens: &[Token]) -> Option<String> {
+        if tokens.is_empty() {
+            return None;
+        }
+        let mut expect_segment = true;
+        for token in tokens {
+            if expect_segment {
+                if token.kind != TokenKind::Identifier {
+                    return None;
+                }
+            } else if token.kind != TokenKind::DoubleColon {
+                return None;
+            }
+            expect_segment = !expect_segment;
+        }
+        if expect_segment {
+            return None;
+        }
+        let start = tokens[0].span.start_byte;
+        let end = tokens[tokens.len() - 1].span.end_byte;
+        Some(source[start..end].to_string())
+    }
+
+    /// Parse a resource header's tokens after the `resource` keyword:
+    /// `Name [at ^root [(key: type, ...)]]`.
+    fn parse_resource_head(
+        source: &str,
+        tokens: &[Token],
+    ) -> Result<(String, Option<SavedRoot>), &'static str> {
+        let name = match tokens.first() {
+            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+            _ => return Err("expected resource name"),
+        };
+        let rest = &tokens[1..];
+        if rest.is_empty() {
+            return Ok((name, None));
+        }
+        // `at` is the saved-root keyword; the `@` symbol is a separate token used for
+        // `@id` member annotations.
+        if !matches!(
+            rest.first().map(|token| token.kind),
+            Some(TokenKind::Keyword(Keyword::At))
+        ) {
+            return Err("expected `at ^root` after resource name");
+        }
+        let rest = &rest[1..];
+        if !matches!(rest.first().map(|token| token.kind), Some(TokenKind::Caret)) {
+            return Err("expected saved root beginning with `^`");
+        }
+        let root = match rest.get(1) {
+            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+            _ => return Err("expected saved root name"),
+        };
+        let rest = &rest[2..];
+        let keys = if rest.is_empty() {
+            Vec::new()
+        } else {
+            parse_paren_key_params(source, rest)?
+        };
+        Ok((name, Some(SavedRoot { root, keys })))
+    }
+
+    /// Parse a parenthesized `(name: type, ...)` key parameter list spanning the
+    /// whole token slice. Requires the parentheses to be the only content.
+    fn parse_paren_key_params(
+        source: &str,
+        tokens: &[Token],
+    ) -> Result<Vec<KeyParam>, &'static str> {
+        if !matches!(
+            tokens.first().map(|token| token.kind),
+            Some(TokenKind::LeftParen)
+        ) {
+            return Err("expected key parameter list");
+        }
+        let close = match_paren(tokens).ok_or("expected key parameter list")?;
+        if close + 1 != tokens.len() {
+            return Err("unexpected text after key parameter list");
+        }
+        parse_key_params_tokens(source, &tokens[1..close])
+    }
+
+    /// Parse a comma-separated `name: type` key list. Requires at least one key.
+    fn parse_key_params_tokens(
+        source: &str,
+        inner: &[Token],
+    ) -> Result<Vec<KeyParam>, &'static str> {
+        if inner.is_empty() {
+            return Err("expected at least one key parameter");
+        }
+        let mut params = Vec::new();
+        for part in split_top_level_commas(inner) {
+            let name = match part.first() {
+                Some(token) if token.kind == TokenKind::Identifier => {
+                    token.text(source).to_string()
+                }
+                _ => return Err("expected key name"),
+            };
+            if part.get(1).map(|token| token.kind) != Some(TokenKind::Colon) || part.len() < 3 {
+                return Err("expected key type annotation");
+            }
+            let ty = type_ref_from_tokens(source, &part[2..]);
+            if !is_type_text(&ty.text) {
+                return Err("expected key type annotation");
+            }
+            params.push(KeyParam { name, ty });
+        }
+        Ok(params)
+    }
+
+    /// Parse a `@id("stable.id")` member annotation from its tokens.
+    fn parse_stable_id_tokens(source: &str, tokens: &[Token]) -> Option<String> {
+        // `@id ( "..." )`: At, Identifier(id), LeftParen, String, RightParen.
+        let [at, id, open, value, close] = tokens else {
+            return None;
+        };
+        if at.kind != TokenKind::At
+            || !(id.kind == TokenKind::Identifier && id.text(source) == "id")
+            || open.kind != TokenKind::LeftParen
+            || value.kind != TokenKind::String
+            || close.kind != TokenKind::RightParen
+        {
+            return None;
+        }
+        let text = value.text(source);
+        let body = text.strip_prefix('"')?.strip_suffix('"')?;
+        Some(body.to_string())
+    }
+
+    /// Parse an `index name(field, ...) [unique]` declaration from the tokens after
+    /// the `index` keyword. The span is filled in by the caller.
+    fn parse_index_tokens(source: &str, tokens: &[Token]) -> Result<IndexDecl, &'static str> {
+        let name = match tokens.first() {
+            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+            _ => return Err("expected index name"),
+        };
+        let rest = &tokens[1..];
+        if !matches!(
+            rest.first().map(|token| token.kind),
+            Some(TokenKind::LeftParen)
+        ) {
+            return Err("expected index argument list");
+        }
+        let close = match_paren(rest).ok_or("expected index argument list")?;
+        let inner = &rest[1..close];
+        if inner.is_empty() {
+            return Err("expected at least one index argument");
+        }
+        let mut args = Vec::new();
+        for part in split_top_level_commas(inner) {
+            args.push(field_path_text(source, part).ok_or("expected index field path")?);
+        }
+        let tail = &rest[close + 1..];
+        let unique = match tail {
+            [] => false,
+            [token] if token.kind == TokenKind::Keyword(Keyword::Unique) => true,
+            _ => return Err("expected `unique` or end of index declaration"),
+        };
+        Ok(IndexDecl {
+            docs: Vec::new(),
+            stable_id: None,
+            name,
+            args,
+            unique,
+            span: SourceSpan::default(),
+        })
+    }
+
+    /// Validate a dotted field path (`field` or `field.sub`) and return its text.
+    fn field_path_text(source: &str, tokens: &[Token]) -> Option<String> {
+        if tokens.is_empty() {
+            return None;
+        }
+        let mut expect_segment = true;
+        for token in tokens {
+            if expect_segment {
+                if token.kind != TokenKind::Identifier {
+                    return None;
+                }
+            } else if token.kind != TokenKind::Dot {
+                return None;
+            }
+            expect_segment = !expect_segment;
+        }
+        if expect_segment {
+            return None;
+        }
+        let start = tokens[0].span.start_byte;
+        let end = tokens[tokens.len() - 1].span.end_byte;
+        Some(source[start..end].to_string())
+    }
+
+    /// Parse a `required? name (keys)? (: type)?` resource member head into a field
+    /// or group, matching `parse_field_or_group_head`.
+    fn parse_field_or_group_tokens(
+        source: &str,
+        tokens: &[Token],
+    ) -> Result<MemberHead, &'static str> {
+        let (required, rest) = if matches!(
+            tokens.first().map(|token| token.kind),
+            Some(TokenKind::Keyword(Keyword::Required))
+        ) {
+            (true, &tokens[1..])
+        } else {
+            (false, tokens)
+        };
+        let name = match rest.first() {
+            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+            _ => return Err("expected resource member name"),
+        };
+        let mut rest = &rest[1..];
+        let keys = if matches!(
+            rest.first().map(|token| token.kind),
+            Some(TokenKind::LeftParen)
+        ) {
+            let close = match_paren(rest).ok_or("expected closing `)` in keyed resource member")?;
+            let inner = &rest[1..close];
+            let keys = parse_key_params_tokens(source, inner)?;
+            rest = &rest[close + 1..];
+            keys
+        } else {
+            Vec::new()
+        };
+        if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Colon)) {
+            let ty_tokens = &rest[1..];
+            if ty_tokens.is_empty() {
+                return Err("expected field type after `:`");
+            }
+            let ty = type_ref_from_tokens(source, ty_tokens);
+            if !is_type_text(&ty.text) {
+                return Err("expected field type after `:`");
+            }
+            return Ok(MemberHead::Field {
+                required,
+                name,
+                keys,
+                ty,
+            });
+        }
+        if required {
+            return Err("required resource members must declare a field type");
+        }
+        if rest.is_empty() {
+            return Ok(MemberHead::Group { name, keys });
+        }
+        Err("expected resource field, keyed field, group, or index")
+    }
+
+    /// Parse a function header's tokens: `pub? fn name(params) (: return)?`.
+    fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &'static str> {
+        let (public, rest) = if matches!(
+            tokens.first().map(|token| token.kind),
+            Some(TokenKind::Keyword(Keyword::Pub))
+        ) {
+            (true, &tokens[1..])
+        } else if matches!(
+            tokens.first().map(|token| token.kind),
+            Some(TokenKind::Identifier)
+        ) {
+            // `internal fn`/`private fn`: the visibility word lexes as an
+            // identifier; reject it the way the line-oriented parser did.
+            let word = tokens[0].text(source);
+            if word == "internal" {
+                return Err(
+                    "function visibility is only `pub` or module-private; remove `internal`",
+                );
+            }
+            if word == "private" {
+                return Err(
+                    "function visibility is only `pub` or module-private; remove `private`",
+                );
+            }
+            (false, tokens)
+        } else {
+            (false, tokens)
+        };
+        if !matches!(
+            rest.first().map(|token| token.kind),
+            Some(TokenKind::Keyword(Keyword::Fn))
+        ) {
+            return Err("expected fn declaration");
+        }
+        let rest = &rest[1..];
+        let name = match rest.first() {
+            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+            _ => return Err("expected function name"),
+        };
+        let rest = &rest[1..];
+        if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Less)) {
+            return Err("user-defined generics are not used in Marrow");
+        }
+        if !matches!(
+            rest.first().map(|token| token.kind),
+            Some(TokenKind::LeftParen)
+        ) {
+            return Err("expected function parameter list");
+        }
+        let close = match_paren(rest).ok_or("expected function parameter list")?;
+        let params = parse_params_tokens(source, &rest[1..close])?;
+        let after = &rest[close + 1..];
+        let return_type = if after.is_empty() {
+            None
+        } else {
+            if after[0].kind != TokenKind::Colon {
+                return Err("expected return type after `:`");
+            }
+            let ty_tokens = &after[1..];
+            if ty_tokens.is_empty() {
+                return Err("expected return type after `:`");
+            }
+            let ty = type_ref_from_tokens(source, ty_tokens);
+            if !is_type_text(&ty.text) {
+                return Err("expected return type annotation");
+            }
+            Some(ty)
+        };
+        Ok(FunctionHead {
+            public,
+            name,
+            params,
+            return_type,
+        })
+    }
+
+    /// Parse a comma-separated `(out|inout)? name: type` parameter list.
+    fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, &'static str> {
+        if inner.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        for part in split_top_level_commas(inner) {
+            let (mode, rest) = match part.first().map(|token| token.kind) {
+                Some(TokenKind::Keyword(Keyword::Out)) => (Some(ParamMode::Out), &part[1..]),
+                Some(TokenKind::Keyword(Keyword::InOut)) => (Some(ParamMode::InOut), &part[1..]),
+                _ => (None, part),
+            };
+            let name = match rest.first() {
+                Some(token) if token.kind == TokenKind::Identifier => {
+                    token.text(source).to_string()
+                }
+                _ => return Err("expected parameter name"),
+            };
+            if rest.get(1).map(|token| token.kind) != Some(TokenKind::Colon) || rest.len() < 3 {
+                return Err("expected parameter type annotation");
+            }
+            let ty_tokens = &rest[2..];
+            // A default value (`name: type = expr`) is rejected; an `=` here means a
+            // parameter default, which Marrow does not use.
+            if ty_tokens.iter().any(|token| token.kind == TokenKind::Equal) {
+                return Err("parameter defaults are not used in Marrow");
+            }
+            let ty = type_ref_from_tokens(source, ty_tokens);
+            if !is_type_text(&ty.text) {
+                return Err("expected parameter type annotation");
+            }
+            params.push(ParamDecl { mode, name, ty });
+        }
+        Ok(params)
+    }
+
+    /// Index of the `)` matching the leading `(` of `tokens`, if balanced.
+    fn match_paren(tokens: &[Token]) -> Option<usize> {
+        let mut depth = 0usize;
+        for (index, token) in tokens.iter().enumerate() {
+            match token.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+} // mod decl_parser
+
 fn parse_const_or_var(source: &str, line: &[Token], is_var: bool) -> Option<Statement> {
     let keyword = line[0];
     let name_token = line.get(1)?;
@@ -3405,6 +4471,48 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
             second: Some(ident(second)?),
         }),
         _ => None,
+    }
+}
+
+/// Drop the generic "expected a statement" fallback on any line that already
+/// carries a more specific diagnostic (e.g. a keyword used as a field name),
+/// so a single malformed line reports once with the most useful message.
+fn drop_redundant_statement_errors(diagnostics: &mut Vec<Diagnostic>) {
+    let specific_lines: std::collections::HashSet<u32> = diagnostics
+        .iter()
+        .filter(|d| d.message != "expected a statement")
+        .map(|d| d.line)
+        .collect();
+    diagnostics
+        .retain(|d| d.message != "expected a statement" || !specific_lines.contains(&d.line));
+}
+
+/// Report bare keywords used as field names. A `.` is always data field
+/// access, and a field name must be an identifier or string literal, so a
+/// reserved word immediately after `.` is never a valid field name and must
+/// be quoted (`."at"`). The structural parsers cannot build such a field and
+/// leave the line `Unparsed`, so the diagnostic is raised here from the
+/// token stream, where the `.` and the keyword are both visible.
+fn report_keyword_field_names(source: &str, tokens: &[Token], diagnostics: &mut Vec<Diagnostic>) {
+    for pair in tokens.windows(2) {
+        let [dot, name] = pair else { continue };
+        if dot.kind != TokenKind::Dot || !matches!(name.kind, TokenKind::Keyword(_)) {
+            continue;
+        }
+        let keyword = name.text(source);
+        let span = join_spans(dot.span, name.span);
+        diagnostics.push(Diagnostic {
+            code: PARSE_SYNTAX,
+            kind: "parse",
+            severity: Severity::Error,
+            message: format!("`{keyword}` is a keyword and cannot be used as a field name"),
+            help: Some(format!(
+                "quote the reserved word to use it as a data name: .\"{keyword}\""
+            )),
+            span,
+            line: span.line,
+            column: span.column,
+        });
     }
 }
 
@@ -3774,4 +4882,158 @@ fn span_for_lines(lines: &[Line<'_>], start: usize, end: usize) -> Option<Source
         line: first.number,
         column: 1,
     })
+}
+
+#[cfg(test)]
+mod decl_parser_equivalence {
+    use super::*;
+
+    /// Parse `source` through the new token-stream declaration parser, applying
+    /// the same diagnostic sort the public entry point applies, so its output is
+    /// directly comparable with `parse_source`.
+    fn parse_via_decl(source: &str) -> ParsedSource {
+        let lexed = lex_source(source);
+        let mut parsed = decl_parser::DeclParser::new(source, &lexed.tokens).parse();
+        let mut combined = lexed.diagnostics;
+        combined.append(&mut parsed.diagnostics);
+        combined.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
+        parsed.diagnostics = combined;
+        parsed
+    }
+
+    /// The token-stream parser must produce byte-for-byte the same AST and
+    /// diagnostics as the line-oriented front end for the same input.
+    fn assert_equivalent(source: &str) {
+        let old = parse_source(source);
+        let new = parse_via_decl(source);
+        assert_eq!(
+            new.file, old.file,
+            "AST mismatch for {source:?}\nnew: {:#?}\nold: {:#?}",
+            new.file, old.file
+        );
+        assert_eq!(
+            new.diagnostics, old.diagnostics,
+            "diagnostic mismatch for {source:?}\nnew: {:#?}\nold: {:#?}",
+            new.diagnostics, old.diagnostics
+        );
+    }
+
+    #[test]
+    fn matches_the_line_parser_on_documented_modules() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("language");
+        let mut entries = std::fs::read_dir(&dir)
+            .expect("read docs/language")
+            .map(|entry| entry.expect("language doc entry").path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        let mut module_blocks = 0usize;
+        for path in entries {
+            if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read language doc");
+            let mut in_block = false;
+            let mut source = String::new();
+            for line in text.lines() {
+                if line.trim() == "```mw" {
+                    in_block = true;
+                    source.clear();
+                    continue;
+                }
+                if line.trim() == "```" && in_block {
+                    if source.trim_start().starts_with("module ") {
+                        module_blocks += 1;
+                        assert_equivalent(&source);
+                    }
+                    in_block = false;
+                    continue;
+                }
+                if in_block {
+                    source.push_str(line);
+                    source.push('\n');
+                }
+            }
+        }
+        assert!(
+            module_blocks >= 5,
+            "expected several documented module files, found {module_blocks}"
+        );
+    }
+
+    #[test]
+    fn matches_the_line_parser_on_edge_cases() {
+        let cases = [
+            // module / use
+            "module app\n",
+            "module shelf::sample\n",
+            "module app\nmodule again\n",
+            "module 1bad\n",
+            "module\n",
+            "use std::math\nuse other\n",
+            "use 1bad\n",
+            "module app\nuse a::b\nconst X: int = 5\n",
+            // const, including multi-line and the unparsed/value paths
+            "const Max: int = 5\n",
+            "const Default = SomeName\n",
+            "const Pi2: decimal = std::math::PI\n",
+            "const Total: int = 60 * 60\n",
+            "const Bad = int\n",
+            "const Bad = @nope\n",
+            "const Bad: bool = a = b = c\n",
+            "const X = some::call(\n  a: 1,\n  b: 2,\n)\n",
+            "const X\n",
+            "const X: =\n",
+            "const X: notatype = 5\n",
+            "const 1: int = 5\n",
+            // resources, groups, indexes, @id, keyed roots
+            "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n",
+            "resource Tag\n    name: string\n",
+            "resource Book at ^books\n    @id(\"book.title\")\n    title: string\n    notes(noteId: string)\n        text: string\n    index byShelf(shelf, id)\n    index uniq(id) unique\n",
+            "resource Book at ^books()\n    title: string\n",
+            "resource Book at ^books\n",
+            "resource\n    title: string\n",
+            "resource Book at books\n    title: string\n",
+            "resource Book at ^books\n    required missing\n",
+            "resource Book at ^books\n    name: string\n        nested: int\n",
+            "resource Book at ^books\n    @id(nope)\n    title: string\n",
+            // functions and parameters
+            "pub fn add(a: int, b: int): int\n    return a\n",
+            "fn run()\n    return\n",
+            "internal fn main()\n    return\n",
+            "private fn main()\n    return\n",
+            "fn f<T>(x: T)\n    return\n",
+            "fn f(x: int = 5)\n    return\n",
+            "fn main(value:)\n    return\n",
+            "pub fn empty()\n",
+            "fn weird(out a: int, inout b: string)\n    return\n",
+            // top-level dispatch errors and stray indentation
+            "type Foo = int\n",
+            "wat\n",
+            "    indented\n",
+            "module app\n;; a doc comment\nfn main()\n    return\n",
+            ";; leading docs\nresource Tag\n    name: string\n",
+            // statement bodies that exercise StmtParser delegation
+            "fn main()\n    foo +\n",
+            "fn main()\n    const x: int\n",
+            "fn touch(id: int)\n    ^events(id).at = now\n",
+            "fn run()\n    log(level: 1, 2)\n",
+            "fn classify(n: int)\n    if n < 0\n        return\n    else if n > 0\n        return\n    else\n        return\n",
+            // interleaved blank lines and doc comments inside a resource body
+            "resource Book at ^books\n    ;; a field\n    @id(\"book.title\")\n    required title: string\n\n    @id(\"book.author\")\n    required author: string\n",
+            // trailing blank lines inside a function body before the next decl
+            "fn a()\n    return\n\nfn b()\n    return\n",
+            "fn a()\n    return\n\n\npub fn b(x: int)\n    return x\n",
+            // empty and whitespace-only inputs
+            "",
+            "\n\n",
+            ";; just docs\n",
+        ];
+        for source in cases {
+            assert_equivalent(source);
+        }
+    }
 }
