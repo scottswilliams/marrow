@@ -94,6 +94,12 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
             "`sourceRoots` must list at least one source directory",
         ));
     }
+    for source_root in &raw.source_roots {
+        check_under_root("sourceRoots entry", source_root)?;
+    }
+    for pattern in &raw.tests {
+        check_under_root("tests entry", pattern)?;
+    }
 
     let store = match raw.store {
         Some(store) => {
@@ -103,6 +109,17 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
                     store.backend
                 ))
             })?;
+            // The native backend opens against a directory, so it cannot run
+            // without one; reject the unrunnable config here rather than at open.
+            if backend == StoreBackend::Native && store.data_dir.as_deref().unwrap_or("").is_empty()
+            {
+                return Err(ConfigError::new(
+                    "the `native` store backend requires a non-empty `dataDir`",
+                ));
+            }
+            if let Some(data_dir) = &store.data_dir {
+                check_under_root("dataDir", data_dir)?;
+            }
             Some(StoreConfig {
                 backend,
                 data_dir: store.data_dir,
@@ -117,6 +134,31 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         store,
         tests: raw.tests,
     })
+}
+
+/// Reject a configured path that would not stay under the project root: every
+/// such value is joined onto the root, and `Path::join` discards the root for an
+/// absolute argument, while a `..` component walks above it. `label` names the
+/// field for the diagnostic.
+fn check_under_root(label: &str, value: &str) -> Result<(), ConfigError> {
+    if value.is_empty() {
+        return Err(ConfigError::new(format!("`{label}` must not be empty")));
+    }
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(ConfigError::new(format!(
+            "`{label}` `{value}` must be relative to the project root, not absolute"
+        )));
+    }
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(ConfigError::new(format!(
+            "`{label}` `{value}` must not contain a `..` component"
+        )));
+    }
+    Ok(())
 }
 
 /// The module name a library file must declare, derived from its path relative
@@ -143,12 +185,6 @@ pub fn expected_module_name(relative_path: &Path) -> Option<String> {
     }
     segments.push(relative_path.file_stem()?.to_str()?.to_string());
     Some(segments.join("::"))
-}
-
-/// Whether a library file at `relative_path` (relative to a source root) may
-/// declare `module_name`. The declaration must match the path exactly.
-pub fn module_matches_path(module_name: &str, relative_path: &Path) -> bool {
-    expected_module_name(relative_path).is_some_and(|expected| expected == module_name)
 }
 
 /// A `.mw` file discovered under a source root.
@@ -198,6 +234,10 @@ pub fn discover_modules(
         collect_mw_files(&root, &root, &mut files)?;
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    // Overlapping source roots (e.g. "src" and "src/sub") reach the same file
+    // under two relative paths; keep the first source root's entry so a
+    // correctly-placed file is not also reported under a mismatching name.
+    files.dedup_by(|a, b| a.path == b.path);
     Ok(files)
 }
 
@@ -207,22 +247,28 @@ pub fn discover_modules(
 /// names are relative to the project root (`tests/books_test.mw` →
 /// `tests::books_test`).
 ///
-/// Each pattern is the directory-walk subset of a glob: a trailing `/**/*.mw`,
-/// `/**`, or `/*.mw` is stripped to a base directory that is walked recursively
-/// for `.mw` files; a bare directory is walked; a bare `.mw` file is taken
-/// directly. A pattern that matches nothing is skipped (no tests), not an error.
-/// Results are sorted by path with duplicates removed.
+/// Each pattern is the directory-walk subset of a glob, honoring glob recursion
+/// convention: a trailing double-star (`/**/*.mw`, `/**`) walks the base
+/// directory recursively, while a single-star (`/*.mw`) matches only its
+/// immediate directory; a bare directory is walked recursively; a bare `.mw`
+/// file is taken directly. A pattern that matches nothing is skipped (no tests),
+/// not an error. Results are sorted by path with duplicates removed.
 pub fn discover_test_modules(
     project_root: &Path,
     config: &ProjectConfig,
 ) -> Result<Vec<ModuleFile>, DiscoverError> {
     let mut files = Vec::new();
     for pattern in &config.tests {
-        let target = project_root.join(test_pattern_base(pattern));
+        let (base, recursive) = test_pattern_base(pattern);
+        let target = project_root.join(base);
         if target.is_file() {
             files.push(module_file(project_root, target));
         } else if target.is_dir() {
-            collect_mw_files(project_root, &target, &mut files)?;
+            if recursive {
+                collect_mw_files(project_root, &target, &mut files)?;
+            } else {
+                collect_mw_files_shallow(project_root, &target, &mut files)?;
+            }
         }
         // A pattern that resolves to nothing on disk contributes no tests.
     }
@@ -231,22 +277,47 @@ pub fn discover_test_modules(
     Ok(files)
 }
 
-/// The base path of a `tests` pattern: the directory or file to walk, with a
-/// trailing glob tail removed. `tests/**/*.mw` → `tests`, `tests` → `tests`,
-/// `tests/smoke.mw` → `tests/smoke.mw`.
-fn test_pattern_base(pattern: &str) -> &str {
-    for suffix in ["/**/*.mw", "/**", "/*.mw"] {
+/// The base path of a `tests` pattern and whether its directory is walked
+/// recursively, with a trailing glob tail removed. Honoring glob convention, a
+/// double-star tail (`/**/*.mw`, `/**`) recurses while a single-star tail
+/// (`/*.mw`) matches only the immediate directory. A bare directory walks
+/// recursively; a bare `.mw` file is taken directly.
+///
+/// `tests/**/*.mw` → (`tests`, recursive), `tests/*.mw` → (`tests`, shallow),
+/// `tests` → (`tests`, recursive), `tests/smoke.mw` → (`tests/smoke.mw`, _).
+fn test_pattern_base(pattern: &str) -> (&str, bool) {
+    for (suffix, recursive) in [("/**/*.mw", true), ("/**", true), ("/*.mw", false)] {
         if let Some(base) = pattern.strip_suffix(suffix) {
-            return base;
+            return (base, recursive);
         }
     }
-    pattern
+    (pattern, true)
 }
 
+/// Walk `dir` only, collecting its immediate `.mw` files (no recursion). Backs
+/// the single-star (`/*.mw`) test pattern.
+fn collect_mw_files_shallow(
+    source_root: &Path,
+    dir: &Path,
+    out: &mut Vec<ModuleFile>,
+) -> Result<(), DiscoverError> {
+    walk_mw_files(source_root, dir, out, false)
+}
+
+/// Walk `dir` recursively, collecting every `.mw` file beneath it.
 fn collect_mw_files(
     source_root: &Path,
     dir: &Path,
     out: &mut Vec<ModuleFile>,
+) -> Result<(), DiscoverError> {
+    walk_mw_files(source_root, dir, out, true)
+}
+
+fn walk_mw_files(
+    source_root: &Path,
+    dir: &Path,
+    out: &mut Vec<ModuleFile>,
+    recursive: bool,
 ) -> Result<(), DiscoverError> {
     let entries = std::fs::read_dir(dir).map_err(|error| DiscoverError {
         code: "project.source_root",
@@ -267,7 +338,9 @@ fn collect_mw_files(
         };
         let path = entry.path();
         if file_type.is_dir() {
-            collect_mw_files(source_root, &path, out)?;
+            if recursive {
+                walk_mw_files(source_root, &path, out, true)?;
+            }
         } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("mw")
         {
             out.push(module_file(source_root, path));
@@ -279,9 +352,11 @@ fn collect_mw_files(
 /// Build a [`ModuleFile`] for `path`, deriving its path relative to `source_root`
 /// and the module name that relative path implies.
 fn module_file(source_root: &Path, path: PathBuf) -> ModuleFile {
+    // `path` is always discovered by walking down from `source_root`, so it is
+    // an under-root descendant and stripping the prefix cannot fail.
     let relative_path = path
         .strip_prefix(source_root)
-        .unwrap_or(&path)
+        .expect("discovered path is under its source root")
         .to_path_buf();
     let module_name = expected_module_name(&relative_path);
     ModuleFile {

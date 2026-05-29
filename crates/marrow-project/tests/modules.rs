@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use marrow_project::{expected_module_name, module_matches_path};
+use marrow_project::expected_module_name;
 
 #[test]
 fn derives_module_name_from_nested_path() {
@@ -50,17 +50,4 @@ fn dotted_stem_derives_a_name_that_can_never_match() {
         expected_module_name(Path::new("shelf/a.b.mw")).as_deref(),
         Some("shelf::a.b")
     );
-}
-
-#[test]
-fn matches_a_declaration_against_its_path() {
-    assert!(module_matches_path(
-        "shelf::books",
-        Path::new("shelf/books.mw")
-    ));
-    assert!(!module_matches_path(
-        "shelf::other",
-        Path::new("shelf/books.mw")
-    ));
-    assert!(!module_matches_path("books", Path::new("shelf/books.mw")));
 }
