@@ -3,7 +3,7 @@
 //! The primary case is the `Book` resource from `docs/language/sample.md`,
 //! which exercises the saved root, required and sparse fields, a keyed-leaf
 //! sequence, group and history layers, and an index. The remaining cases pin
-//! the structural errors this slice reports.
+//! the structural errors the compiler reports.
 
 use marrow_schema::{
     LayerMember, LayerSchema, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
@@ -354,7 +354,7 @@ resource Book at ^books(id: int)
 #[test]
 fn keyed_leaf_key_param_typed_unknown_is_an_error() {
     // `unknown` is rejected in saved keys (types.md:66-67), including a keyed
-    // layer's own key parameters, not only identity keys and value types (F20).
+    // layer's own key parameters, not only identity keys and value types.
     let source = "\
 resource Book at ^books(id: int)
     tags(pos: unknown): string
@@ -492,8 +492,8 @@ resource Book at ^books(id: int)
 #[test]
 fn index_over_a_decimal_field_is_an_error() {
     // `decimal` has no order-preserving key encoding, so the write planner could
-    // never maintain an index entry for it (review F12). Reject it at compile
-    // time rather than silently committing the data with no index.
+    // never maintain an index entry for it. Reject it at compile time rather than
+    // silently committing the data with no index.
     let source = "\
 resource Book at ^books(id: int)
     price: decimal
@@ -531,7 +531,7 @@ resource Reading at ^readings(at: decimal)
 fn non_unique_index_omitting_the_identity_key_is_an_error() {
     // A non-unique index must end with all identity keys so each entry is
     // distinct (resources-and-storage.md:230-232). `byShelf(shelf)` collapses
-    // two books on the same shelf onto one entry (review F13).
+    // two books on the same shelf onto one entry.
     let source = "\
 resource Book at ^books(id: int)
     shelf: string
@@ -611,7 +611,7 @@ resource Book at ^books(id: int)
 #[test]
 fn index_on_a_singleton_resource_is_an_error() {
     // A singleton saved resource has no generated identity for an index entry to
-    // point to (resources-and-storage.md:217-219), so an index is rejected (F21).
+    // point to (resources-and-storage.md:217-219), so an index is rejected.
     let source = "\
 resource Settings at ^settings
     theme: string
@@ -639,9 +639,9 @@ resource Draft
 #[test]
 fn required_field_inside_an_unkeyed_group_is_an_error() {
     // The write planner does not yet materialize unkeyed groups: a whole-resource
-    // write neither validates nor persists their fields. Until that slice lands,
-    // a required field inside an unkeyed group is a compile error rather than a
-    // silently unenforced constraint (review F14, interim). The canonical Patient
+    // write neither validates nor persists their fields. Until that lands, a
+    // required field inside an unkeyed group is a compile error rather than a
+    // silently unenforced constraint. The canonical Patient
     // `name { required first; last }` shape exercises this.
     let source = "\
 resource Patient at ^patients(id: string)
@@ -675,7 +675,7 @@ resource Book at ^books(id: int)
 fn index_over_a_nested_field_is_an_error() {
     // The write planner matches index arguments by flat top-level name, so an
     // index over a field nested in an unkeyed group is silently never maintained.
-    // Until nested index resolution lands, reject it (review F14, interim).
+    // Until nested index resolution lands, reject it.
     let source = "\
 resource Book at ^books(id: int)
     pricing
@@ -690,7 +690,7 @@ resource Book at ^books(id: int)
 #[test]
 fn duplicate_identity_key_name_is_an_error() {
     // Identity keys must have distinct names; two `studentId` keys are
-    // unaddressable (review F22).
+    // unaddressable.
     let source = "\
 resource Enrollment at ^enrollments(studentId: string, studentId: string)
     status: string

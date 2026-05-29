@@ -1,13 +1,11 @@
 //! Compiles a parsed Marrow resource declaration into a typed-tree
 //! [`ResourceSchema`].
 //!
-//! This is the first slice of the schema model (roadmap step 5). It maps the
-//! resource outline produced by `marrow-syntax` onto the saved/local tree
-//! shape: a saved root with identity keys, top-level fields, keyed layers
-//! (sequences, keyed trees, groups, and history), and declared indexes.
-//!
-//! Semantic validation beyond structure is deferred; see the `TODO(step 5+)`
-//! notes on [`compile_resource`].
+//! It maps the resource outline produced by `marrow-syntax` onto the
+//! saved/local tree shape: a saved root with identity keys, top-level fields,
+//! keyed layers (sequences, keyed trees, groups, and history), and declared
+//! indexes. Semantic validation beyond structure is deferred; see the notes on
+//! [`compile_resource`].
 
 use std::fmt;
 
@@ -149,14 +147,13 @@ pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_
 /// A required field is declared inside an unkeyed group. The write planner does
 /// not yet materialize unkeyed groups (their fields live in `layers`, not
 /// `fields`), so it neither validates nor persists them on a whole-resource
-/// write. Until that slice lands, a required field there is a compile error
-/// rather than a silently unenforced constraint (review F14, interim).
+/// write. Until that lands, a required field there is a compile error rather
+/// than a silently unenforced constraint.
 pub const SCHEMA_REQUIRED_IN_UNKEYED_GROUP: &str = "schema.required_in_unkeyed_group";
 
 /// An index argument names a field nested through an unkeyed group. The write
 /// planner matches index arguments by flat top-level name, so it would silently
-/// never maintain such an entry. Until nested index resolution lands, reject it
-/// (review F14, interim).
+/// never maintain such an entry. Until nested index resolution lands, reject it.
 pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
 
 impl fmt::Display for SchemaError {
@@ -174,14 +171,14 @@ impl std::error::Error for SchemaError {}
 /// Compile a parsed resource declaration into a [`ResourceSchema`].
 ///
 /// Always returns a best-effort schema together with any errors, so callers can
-/// keep checking. This slice maps structure and the single-resource rules the
-/// schema alone can decide: `unknown` is rejected in managed saved fields and
+/// keep checking. Maps structure and the single-resource rules the schema alone
+/// can decide: `unknown` is rejected in managed saved fields and
 /// keys, an identity key may not share a name with a top-level member, index
 /// arguments must resolve within the resource, and stable IDs are unique within
 /// the resource.
 ///
-// TODO(step 5+): full type validation, one-owner-per-root, and project-wide
-// (cross-resource) stable-ID uniqueness.
+/// Deferred: full type validation, one-owner-per-root, and project-wide
+/// (cross-resource) stable-ID uniqueness.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
 
@@ -285,9 +282,9 @@ fn check_saved_data(
 
 /// Reject a required field reachable only through an unkeyed group. The write
 /// planner does not yet materialize unkeyed groups, so a required field there is
-/// never validated or persisted (review F14, interim). `under_unkeyed` is true
-/// once an enclosing group has no key parameters; a keyed group resets nothing
-/// because a field already under an unkeyed group stays unreachable.
+/// never validated or persisted. `under_unkeyed` is true once an enclosing group
+/// has no key parameters; a keyed group resets nothing, because a field already
+/// under an unkeyed group stays unreachable.
 fn check_required_in_unkeyed_group(
     member: &ResourceMember,
     under_unkeyed: bool,
@@ -319,10 +316,10 @@ fn check_required_in_unkeyed_group(
 }
 
 /// Validate a keyed-layer's own key parameters, descending into groups. A keyed
-/// layer's key must be a saved key, so it may not embed `unknown` (F20) and may
-/// not be an unorderable type such as `decimal` (F12). A keyed leaf and a keyed
-/// group both carry their key parameters in `keys`; an unkeyed field or group
-/// has none. Identity keys are checked separately in [`check_saved_data`].
+/// layer's key must be a saved key, so it may not embed `unknown` and may not be
+/// an unorderable type such as `decimal`. A keyed leaf and a keyed group both
+/// carry their key parameters in `keys`; an unkeyed field or group has none.
+/// Identity keys are checked separately in [`check_saved_data`].
 fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => check_key_params(&field.keys, field.span, errors),
@@ -431,7 +428,7 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                     span: index.span,
                 }),
                 // A dotted argument resolves through an unkeyed group, which the
-                // write planner does not yet maintain (review F14, interim).
+                // write planner does not yet maintain.
                 Some(_) if arg.contains('.') => errors.push(SchemaError {
                     code: SCHEMA_NESTED_INDEX_ARG,
                     message: format!(
@@ -722,9 +719,8 @@ fn group_layer(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> LayerSchema 
 }
 
 /// Report a keyed layer's key parameters that repeat a name. Key params share a
-/// per-layer namespace; two keys of the same name are unaddressable (review
-/// F22). Key params have no span of their own, so errors point at the layer's
-/// `span`.
+/// per-layer namespace; two keys of the same name are unaddressable. Key params
+/// have no span of their own, so errors point at the layer's `span`.
 fn check_duplicate_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
     let mut seen: Vec<&str> = Vec::new();
     for key in keys {
