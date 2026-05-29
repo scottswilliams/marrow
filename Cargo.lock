@@ -167,7 +167,6 @@ dependencies = [
  "marrow-schema",
  "marrow-store",
  "marrow-syntax",
- "marrow-write",
  "tempfile",
 ]
 
@@ -189,15 +188,6 @@ dependencies = [
 [[package]]
 name = "marrow-syntax"
 version = "0.1.0"
-
-[[package]]
-name = "marrow-write"
-version = "0.1.0"
-dependencies = [
- "marrow-schema",
- "marrow-store",
- "marrow-syntax",
-]
 
 [[package]]
 name = "memchr"

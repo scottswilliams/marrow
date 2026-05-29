@@ -13,7 +13,6 @@ marrow-check = { path = "../marrow-check" }
 marrow-schema = { path = "../marrow-schema" }
 marrow-store = { path = "../marrow-store" }
 marrow-syntax = { path = "../marrow-syntax" }
-marrow-write = { path = "../marrow-write" }
 
 [dev-dependencies]
 # Tests run the reference sample against the native (redb) backend too.
