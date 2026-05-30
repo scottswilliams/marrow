@@ -5,7 +5,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
+use marrow_check::{
+    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
+};
 use marrow_run::{
     Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
     RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
@@ -6660,6 +6662,7 @@ impl StepHook for Recorder {
                 message: "debugger terminate".into(),
                 span,
                 throw: None,
+                origin: None,
             });
         }
         Ok(())
@@ -6910,7 +6913,9 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
                 .collect();
             CheckedModule {
                 name: (*name).to_string(),
-                source_file: std::path::PathBuf::new(),
+                // A distinct file per module so a fault's origin resolves to a
+                // path the cross-module locating tests can tell apart.
+                source_file: std::path::PathBuf::from(format!("src/{name}.mw")),
                 span: Default::default(),
                 imports: Vec::new(),
                 constants: Vec::new(),
@@ -7107,4 +7112,83 @@ fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
         run(&program, "test::label", &[Value::Int(0)]).unwrap(),
         Some(Value::Int(2))
     );
+}
+
+#[test]
+fn fatal_fault_in_entry_module_carries_its_file_id() {
+    // A divide-by-zero raised in the entry module's own body stamps that
+    // module's file id (index 0), so a renderer can name the file it lives in.
+    let program = multi_module_program(&[("a", "pub fn boom(): int\n    return 1 / 0\n")]);
+    let error = run(&program, "a::boom", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.origin, Some(FileId(0)));
+    assert_eq!(
+        program.file_path(FileId(0)),
+        Some(std::path::Path::new("src/a.mw"))
+    );
+}
+
+#[test]
+fn fatal_fault_in_cross_module_callee_carries_the_callee_file_id() {
+    // The entry `a::run` calls `b::boom`, which divides by zero. The fault is
+    // fatal, so it bubbles through every frame unchanged — its origin must be
+    // `b`'s file (index 1), the frame that raised it, not the entry's `a`.
+    let program = multi_module_program(&[
+        ("a", "pub fn run(): int\n    return b::boom()\n"),
+        ("b", "pub fn boom(): int\n    return 1 / 0\n"),
+    ]);
+    let error = run(&program, "a::run", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.origin, Some(FileId(1)));
+    assert_eq!(
+        program.file_path(FileId(1)),
+        Some(std::path::Path::new("src/b.mw"))
+    );
+}
+
+#[test]
+fn uncaught_throw_from_cross_module_callee_carries_the_raising_frame_file_id() {
+    // A language `throw` is catchable, so it re-spans at each call boundary on its
+    // way out — the same path catchable faults take. Thrown in callee `b` and
+    // never caught, its origin must stay `b`'s file (index 1), the frame that
+    // first raised it, not the entry `a` it surfaces through.
+    let program = multi_module_program(&[
+        ("a", "pub fn run(): int\n    return b::boom()\n"),
+        (
+            "b",
+            "pub fn boom(): int\n    throw Error(code: \"x.y\", message: \"bad\")\n",
+        ),
+    ]);
+    let error = run(&program, "a::run", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+    assert_eq!(error.origin, Some(FileId(1)));
+}
+
+#[test]
+fn bare_program_fault_leaves_origin_none() {
+    // `evaluate_function` runs a single function with no project module, so a
+    // fault it raises has no file to name — origin stays `None` rather than a
+    // spurious id.
+    let f = function("fn f(): int\n    return 1 / 0\n");
+    let error = evaluate_function(&f, &[]).unwrap_err();
+    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.origin, None);
+}
+
+#[test]
+fn outer_frame_does_not_overwrite_inner_origin() {
+    // `a::outer` calls `a::mid` calls `b::boom`. The fatal fault crosses three
+    // frames in two modules; the deepest (`b`, index 1) wins and the outer `a`
+    // frames must not overwrite it.
+    let program = multi_module_program(&[
+        (
+            "a",
+            "pub fn outer(): int\n    return mid()\n\n\
+             fn mid(): int\n    return b::boom()\n",
+        ),
+        ("b", "pub fn boom(): int\n    return 1 / 0\n"),
+    ]);
+    let error = run(&program, "a::outer", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.origin, Some(FileId(1)));
 }

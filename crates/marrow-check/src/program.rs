@@ -9,16 +9,44 @@
 //! same parse the checker already produced.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
 use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
+
+/// Identifies one source file in a [`CheckedProgram`] by the index of the module
+/// that came from it. A program's modules are 1:1 with their files, so the index
+/// is the file's stable id and the program needs no separate file table. A
+/// runtime fault stamps the id of the module it was raised in, and a renderer maps
+/// it back to a path with [`CheckedProgram::file_path`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(pub u32);
 
 /// The resolved shape of a checked project: every clean library module, in the
 /// order their files were discovered.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CheckedProgram {
     pub modules: Vec<CheckedModule>,
+}
+
+impl CheckedProgram {
+    /// The source file the given file id names, or `None` if the id is out of
+    /// range (an id from a different program, or a fault with no project file).
+    pub fn file_path(&self, id: FileId) -> Option<&Path> {
+        self.modules
+            .get(id.0 as usize)
+            .map(|module| module.source_file.as_path())
+    }
+
+    /// The file id of `module`, identifying it by pointer within this program's
+    /// own `modules`. Runs only on the cold path where a fault is leaving the
+    /// frame that raised it, so the linear scan is off the hot path.
+    pub fn file_id_of(&self, module: &CheckedModule) -> Option<FileId> {
+        self.modules
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, module))
+            .map(|index| FileId(index as u32))
+    }
 }
 
 /// One library module: its qualified name, the file it came from, and the

@@ -21,7 +21,7 @@ mod rules;
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
 use program::TypeNames;
 pub use program::{
-    CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
+    CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 

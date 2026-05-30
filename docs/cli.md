@@ -147,7 +147,9 @@ rejects. An operator must type it; the default run and `run.defaultEntry` can
 never inject it. Use it deliberately.
 
 Exits `0` on success, `1` if the project does not check, the store cannot be
-opened, there is no entry, or the run raises an error.
+opened, there is no entry, or the run raises an error. An uncaught runtime fault
+is reported on stderr located at the source it was raised in,
+`file:line:col: code: message`, the same form `check` and `test` use.
 
 ```console
 $ marrow run ./proj

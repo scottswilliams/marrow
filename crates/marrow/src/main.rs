@@ -403,6 +403,25 @@ fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
     }
 }
 
+/// Report an uncaught runtime fault on stderr. When the fault carries an origin
+/// file, it renders located — `file:line:col: code: message`, the same shape
+/// `check` and `test` already print. A fault with no origin (the bare-program
+/// path, or an entry that never reached a project file) falls back to the bare
+/// `code: message`, so nothing gains a spurious `:0:0:` location.
+fn report_runtime_fault(program: &marrow_check::CheckedProgram, error: &marrow_run::RuntimeError) {
+    match error.origin.and_then(|id| program.file_path(id)) {
+        Some(path) => eprintln!(
+            "{}:{}:{}: {}: {}",
+            path.display(),
+            error.span.line,
+            error.span.column,
+            error.code,
+            error.message
+        ),
+        None => report_simple_error(error.code, &error.message, CheckFormat::Text),
+    }
+}
+
 /// Run a project's entry function. Unlike `check`, `run` has no `--format`: its
 /// output is the program's own `print`/`write` stream, which has no JSON envelope;
 /// failures still report a dotted error code on stderr.
@@ -614,7 +633,7 @@ fn execute(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            report_simple_error(error.code, &error.message, CheckFormat::Text);
+            report_runtime_fault(program, &error);
             ExitCode::FAILURE
         }
     }
@@ -776,29 +795,31 @@ fn test_project_dir(dir: &str) -> ExitCode {
                 println!("ok    {name}");
                 passed += 1;
             }
-            Err(error) if error.code == marrow_run::RUN_ASSERT => {
-                println!("FAIL  {name}");
-                println!(
-                    "      {}:{}:{}: {}: {}",
-                    source_file.display(),
-                    error.span.line,
-                    error.span.column,
-                    error.code,
-                    error.message
-                );
-                failed += 1;
-            }
             Err(error) => {
-                println!("ERROR {name}");
+                // The fault's own origin names the file it was raised in, which
+                // differs from the entry's `source_file` for a cross-module fault.
+                // The entry file is the fallback when a fault carries no origin.
+                let file = error
+                    .origin
+                    .and_then(|id| program.file_path(id))
+                    .unwrap_or(source_file.as_path());
+                // An assertion is a test FAIL; any other fault is an ERROR. The
+                // labels are column-aligned with the `ok` line.
+                let (label, counter) = if error.code == marrow_run::RUN_ASSERT {
+                    ("FAIL ", &mut failed)
+                } else {
+                    ("ERROR", &mut errored)
+                };
+                println!("{label} {name}");
                 println!(
                     "      {}:{}:{}: {}: {}",
-                    source_file.display(),
+                    file.display(),
                     error.span.line,
                     error.span.column,
                     error.code,
                     error.message
                 );
-                errored += 1;
+                *counter += 1;
             }
         }
     }

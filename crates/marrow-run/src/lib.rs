@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{
-    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, MarrowType,
+    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, FileId, MarrowType,
     Resolution, ResolvableKind, resolve,
 };
 use marrow_schema::stdlib::{self, Capability};
@@ -163,7 +163,17 @@ pub struct RuntimeError {
     pub code: &'static str,
     pub message: String,
     pub span: SourceSpan,
-    pub throw: Option<Value>,
+    /// The `Error` value a catchable fault carries so a surrounding `try`/`catch`
+    /// can bind it; `None` for a fatal fault. Boxed because it is set on only a
+    /// few faults yet would otherwise dominate this error's size on every cold
+    /// `Err` the runtime threads through its `Result`s.
+    pub throw: Option<Box<Value>>,
+    /// The file the fault was raised in, as a [`FileId`] into the running
+    /// [`CheckedProgram`]. The `span`'s byte offsets are per-file, so this
+    /// supplies the file identity they lack. It is `None` until the fault leaves
+    /// the activation that raised it (where [`invoke`] stamps it) and stays
+    /// `None` for the bare-program path, which has no project file.
+    pub origin: Option<FileId>,
 }
 
 impl RuntimeError {
@@ -174,7 +184,23 @@ impl RuntimeError {
             message,
             span,
             throw: None,
+            origin: None,
         }
+    }
+
+    /// Stamp `module`'s file id as this fault's origin, but only if it has none
+    /// yet, so the deepest frame — the one that actually raised the fault — wins
+    /// as the fault unwinds through outer frames. With no module (the bare
+    /// program) or an unrecognized one, the origin is left as it was.
+    fn with_origin_from(
+        mut self,
+        program: &CheckedProgram,
+        module: Option<&CheckedModule>,
+    ) -> Self {
+        if self.origin.is_none() {
+            self.origin = module.and_then(|module| program.file_id_of(module));
+        }
+        self
     }
 }
 
@@ -412,8 +438,15 @@ pub fn evaluate_function(
         1,
     )? {
         (Completion::Returned(value), ..) => Ok(value),
-        (Completion::Threw(error), ..) => Err(raise(error, function.span)),
-        (Completion::Faulted { error, code }, ..) => Err(reraise_fault(error, code, function.span)),
+        (Completion::Threw { error, origin }, ..) => Err(raise(error, function.span, origin)),
+        (
+            Completion::Faulted {
+                error,
+                code,
+                origin,
+            },
+            ..,
+        ) => Err(reraise_fault(error, code, function.span, origin)),
     }
 }
 
@@ -518,9 +551,18 @@ fn run_entry_impl<'p>(
         1,
     )? {
         (Completion::Returned(value), ..) => value,
-        (Completion::Threw(error), ..) => return Err(raise(error, function.span)),
-        (Completion::Faulted { error, code }, ..) => {
-            return Err(reraise_fault(error, code, function.span));
+        (Completion::Threw { error, origin }, ..) => {
+            return Err(raise(error, function.span, origin));
+        }
+        (
+            Completion::Faulted {
+                error,
+                code,
+                origin,
+            },
+            ..,
+        ) => {
+            return Err(reraise_fault(error, code, function.span, origin));
         }
     };
     Ok(RunOutput {
@@ -535,7 +577,13 @@ fn run_entry_impl<'p>(
 /// runtime fault.
 enum Completion {
     Returned(Option<Value>),
-    Threw(Value),
+    Threw {
+        error: Value,
+        /// The file the throw was first raised in. A catchable error is rebuilt
+        /// at each call boundary it crosses, so this rides the completion to keep
+        /// the deepest (raising) file rather than re-deriving it at each frame.
+        origin: Option<FileId>,
+    },
     /// A recoverable fault (e.g. `write.unique_conflict`, `run.absent_element`)
     /// that escaped a called function uncaught. It crosses the call boundary as a
     /// catchable error like a throw, but keeps its own dotted `code` so an
@@ -543,6 +591,7 @@ enum Completion {
     Faulted {
         error: Value,
         code: &'static str,
+        origin: Option<FileId>,
     },
 }
 
@@ -613,33 +662,51 @@ fn invoke<'p>(
         _ => vec![None; param_names.len()],
     };
     env.pop_scope();
+    // The file every fault leaving this activation belongs to if it has not
+    // already been stamped by a deeper frame. Resolved once on the cold path.
+    let here = || module.and_then(|module| env.program.file_id_of(module));
     let completion = match outcome {
         Ok(Flow::Return(value)) => Completion::Returned(value),
         Ok(Flow::Normal) => Completion::Returned(None),
-        Ok(Flow::Throw(value)) => Completion::Threw(value),
+        // A `throw` raised directly in this body originates in this file.
+        Ok(Flow::Throw(value)) => Completion::Threw {
+            error: value,
+            origin: here(),
+        },
         // A catchable error escaped a function this body called: its thrown `Error`
         // rides the `Err` channel's `throw` field. Surface it as this activation's
         // own outcome so the caller's `try` can bind it — a language throw
         // (`run.uncaught_error`) as `Threw`, a recoverable fault as `Faulted` with
         // its own dotted code preserved. A fault with no `throw` value is fatal and
-        // passes straight through.
+        // passes straight through. The origin a deeper frame already recorded is
+        // kept; only an unstamped one takes this frame's file.
         Err(RuntimeError {
             throw: Some(error),
             code: RUN_UNCAUGHT_THROW,
+            origin,
             ..
-        }) => Completion::Threw(error),
+        }) => Completion::Threw {
+            error: *error,
+            origin: origin.or_else(here),
+        },
         Err(RuntimeError {
             throw: Some(error),
             code,
+            origin,
             ..
-        }) => Completion::Faulted { error, code },
-        Err(fatal) => return Err(fatal),
+        }) => Completion::Faulted {
+            error: *error,
+            code,
+            origin: origin.or_else(here),
+        },
+        Err(fatal) => return Err(fatal.with_origin_from(env.program, module)),
         Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
             return Err(RuntimeError::fault(
                 RUN_NO_ENCLOSING_LOOP,
                 "`break` or `continue` outside a loop".into(),
                 span,
-            ));
+            )
+            .with_origin_from(env.program, module));
         }
     };
     // Hand the debugger hook back to the caller so it can keep stepping after this
@@ -655,14 +722,17 @@ fn invoke<'p>(
 /// `Error`'s own fields. Assumes a well-formed Error (string `code`/`message`);
 /// a malformed one renders blank, which the constructor and the throw guard make
 /// unreachable in practice.
-fn raise(error: Value, span: SourceSpan) -> RuntimeError {
+fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> RuntimeError {
     let code = error_field(&error, "code").unwrap_or_default();
     let message = error_field(&error, "message").unwrap_or_default();
     RuntimeError {
         code: RUN_UNCAUGHT_THROW,
         message: format!("uncaught error [{code}]: {message}"),
         span,
-        throw: Some(error),
+        throw: Some(Box::new(error)),
+        // The completion carries the file the throw was first raised in; this
+        // caller-frame re-span keeps it rather than re-deriving a shallower one.
+        origin,
     }
 }
 
@@ -670,6 +740,7 @@ fn raise(error: Value, span: SourceSpan) -> RuntimeError {
 fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
+        origin: None,
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{name}`"),
         span,
@@ -695,12 +766,14 @@ fn resolve_program_function<'p>(
         }) => Ok((module, function)),
         Resolution::NotVisible(name) => Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_PRIVATE_FUNCTION,
             message: format!("function `{name}` is private to its module"),
             span,
         }),
         _ => Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_UNKNOWN_FUNCTION,
             message: format!("the program has no function `{}`", segments.join("::")),
             span,
@@ -934,6 +1007,7 @@ impl Place {
         match self {
             Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_UNBOUND_NAME,
                 message: format!("`{name}` is not bound"),
                 span,
@@ -1262,8 +1336,12 @@ fn eval_call(
 fn complete_call(completion: Completion, span: SourceSpan) -> Result<Option<Value>, RuntimeError> {
     match completion {
         Completion::Returned(value) => Ok(value),
-        Completion::Threw(error) => Err(raise(error, span)),
-        Completion::Faulted { error, code } => Err(reraise_fault(error, code, span)),
+        Completion::Threw { error, origin } => Err(raise(error, span, origin)),
+        Completion::Faulted {
+            error,
+            code,
+            origin,
+        } => Err(reraise_fault(error, code, span, origin)),
     }
 }
 
@@ -1271,12 +1349,20 @@ fn complete_call(completion: Completion, span: SourceSpan) -> Result<Option<Valu
 /// `try` can bind it: the `Error` value rides the `throw` field while the
 /// [`RuntimeError`] keeps the fault's own dotted `code`, so an uncaught one
 /// surfaces unchanged (mirrors [`raise`] for language throws).
-fn reraise_fault(error: Value, code: &'static str, span: SourceSpan) -> RuntimeError {
+fn reraise_fault(
+    error: Value,
+    code: &'static str,
+    span: SourceSpan,
+    origin: Option<FileId>,
+) -> RuntimeError {
     RuntimeError {
         code,
         message: error_field(&error, "message").unwrap_or_default(),
         span,
-        throw: Some(error),
+        throw: Some(Box::new(error)),
+        // Kept from the completion so the file the fault was raised in survives
+        // this caller-frame re-span.
+        origin,
     }
 }
 
@@ -1295,7 +1381,8 @@ fn raise_fault(code: &'static str, message: String, span: SourceSpan) -> Runtime
         code,
         message,
         span,
-        throw: Some(error),
+        throw: Some(Box::new(error)),
+        origin: None,
     }
 }
 
@@ -1396,6 +1483,7 @@ fn eval_output(
     let [arg] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: format!("`{name}` takes one argument"),
             span,
@@ -1419,6 +1507,7 @@ fn eval_exists(
     let [arg] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`exists` takes one argument".into(),
             span,
@@ -1439,6 +1528,7 @@ fn eval_count(
     let [arg] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`count` takes one argument".into(),
             span,
@@ -1505,6 +1595,7 @@ fn eval_assert(
             let [arg] = args else {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_TYPE,
                     message: format!("`std::assert::{op}` takes one boolean"),
                     span,
@@ -1513,6 +1604,7 @@ fn eval_assert(
             let Value::Bool(actual) = eval_expr(&arg.value, env)? else {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_TYPE,
                     message: format!("`std::assert::{op}` takes a boolean"),
                     span,
@@ -1521,6 +1613,7 @@ fn eval_assert(
             if actual != (op == "isTrue") {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_ASSERT,
                     message: format!("assertion failed: {op}({actual})"),
                     span,
@@ -1532,6 +1625,7 @@ fn eval_assert(
             let [arg] = args else {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_TYPE,
                     message: "`std::assert::absent` takes one path".into(),
                     span,
@@ -1540,6 +1634,7 @@ fn eval_assert(
             if saved_path_present(&arg.value, span, env)? {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_ASSERT,
                     message: "assertion failed: expected the path to be absent".into(),
                     span,
@@ -1551,6 +1646,7 @@ fn eval_assert(
             let [arg] = args else {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_TYPE,
                     message: "`std::assert::fail` takes one message".into(),
                     span,
@@ -1559,6 +1655,7 @@ fn eval_assert(
             let Value::Str(message) = eval_expr(&arg.value, env)? else {
                 return Err(RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_TYPE,
                     message: "`std::assert::fail` takes a string message".into(),
                     span,
@@ -1566,6 +1663,7 @@ fn eval_assert(
             };
             Err(RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_ASSERT,
                 message,
                 span,
@@ -1943,6 +2041,7 @@ fn int_remainder(a: i64, b: i64, span: SourceSpan) -> Result<i64, RuntimeError> 
     if b == 0 {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_DIVIDE_BY_ZERO,
             message: "integer remainder by zero".into(),
             span,
@@ -2022,6 +2121,7 @@ fn eval_next_id(
     let [arg] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`nextId` takes one argument".into(),
             span,
@@ -2056,6 +2156,7 @@ fn eval_append(
     let [target, value] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`append` takes a layer path and a value".into(),
             span,
@@ -2094,6 +2195,7 @@ fn eval_keys(
     let [path] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`keys` takes one argument".into(),
             span,
@@ -2112,6 +2214,7 @@ fn eval_values(
     let [path] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`values` takes one argument".into(),
             span,
@@ -2135,6 +2238,7 @@ fn eval_entries(
     let [path] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`entries` takes one argument".into(),
             span,
@@ -2162,6 +2266,7 @@ fn eval_reversed(
     let [arg] = args else {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: "`reversed` takes one argument".into(),
             span,
@@ -2259,6 +2364,7 @@ fn eval_neighbor(
         };
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: format!("`{which}` takes one argument"),
             span,
@@ -2278,6 +2384,7 @@ fn eval_neighbor(
         };
         result.map_err(|_| RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_STORE,
             message: "could not seek the neighbor at this path".into(),
             span,
@@ -2466,6 +2573,7 @@ fn eval_clock_capability(
     }
     let nanos = env.host.clock.ok_or_else(|| RuntimeError {
         throw: None,
+        origin: None,
         code: RUN_CAPABILITY,
         message: format!("this run provides no clock capability for `std::clock::{op}`"),
         span,
@@ -2498,6 +2606,7 @@ fn eval_env(
         .collect::<Result<_, _>>()?;
     let variables = env.host.environment.as_ref().ok_or_else(|| RuntimeError {
         throw: None,
+        origin: None,
         code: RUN_CAPABILITY,
         message: format!("this run provides no environment capability for `std::env::{op}`"),
         span,
@@ -2541,6 +2650,7 @@ fn eval_log(
         .collect::<Result<_, _>>()?;
     let sink = env.host.log.as_ref().ok_or_else(|| RuntimeError {
         throw: None,
+        origin: None,
         code: RUN_CAPABILITY,
         message: format!("this run provides no log capability for `std::log::{op}`"),
         span,
@@ -2585,23 +2695,25 @@ fn eval_io(
             span,
         ));
     }
+    // A failed `std::io` call raises in this frame, so it carries no deeper
+    // origin; the `invoke` boundary stamps this frame's file as it leaves.
     match (op, values.as_slice()) {
         ("readText", [Value::Str(path)]) => match std::fs::read_to_string(path) {
             Ok(text) => Ok(Some(Value::Str(text))),
-            Err(error) => Err(raise(io_error("io.read", op, path, &error), span)),
+            Err(error) => Err(raise(io_error("io.read", op, path, &error), span, None)),
         },
         ("writeText", [Value::Str(path), Value::Str(text)]) => match std::fs::write(path, text) {
             Ok(()) => Ok(None),
-            Err(error) => Err(raise(io_error("io.write", op, path, &error), span)),
+            Err(error) => Err(raise(io_error("io.write", op, path, &error), span, None)),
         },
         ("readBytes", [Value::Str(path)]) => match std::fs::read(path) {
             Ok(bytes) => Ok(Some(Value::Bytes(bytes))),
-            Err(error) => Err(raise(io_error("io.read", op, path, &error), span)),
+            Err(error) => Err(raise(io_error("io.read", op, path, &error), span, None)),
         },
         ("writeBytes", [Value::Str(path), Value::Bytes(data)]) => {
             match std::fs::write(path, data) {
                 Ok(()) => Ok(None),
-                Err(error) => Err(raise(io_error("io.write", op, path, &error), span)),
+                Err(error) => Err(raise(io_error("io.write", op, path, &error), span, None)),
             }
         }
         ("readText" | "writeText" | "readBytes" | "writeBytes", _) => Err(type_error(
@@ -2762,6 +2874,7 @@ impl<'p> Env<'p> {
         if self.traversed_layers.iter().any(|layer| layer == &affected) {
             return Err(RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_TRAVERSAL,
                 message: "this write changes the saved layer a loop is traversing; \
                           collect the keys into a local sequence first"
@@ -3113,7 +3226,7 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             // and other control flow pass through unchanged.
             let thrown = match &outcome {
                 Ok(Flow::Throw(value)) => Some(value.clone()),
-                Err(error) => error.throw.clone(),
+                Err(error) => error.throw.as_deref().cloned(),
                 _ => None,
             };
             let handled = match (thrown, catch) {
@@ -3670,6 +3783,7 @@ fn collect_child_identities(
         }
         .map_err(|_| RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_STORE,
             message: "could not read the keys at this path".into(),
             span,
@@ -3771,6 +3885,7 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
                 .cloned()
                 .ok_or_else(|| RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_UNBOUND_NAME,
                     message: format!("`{}` is not bound", segments[0]),
                     span: *span,
@@ -3787,6 +3902,7 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
             Some(value) => Ok(value),
             None => Err(RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_NO_VALUE,
                 message: "a call to a function that returns no value cannot be used as a value"
                     .into(),
@@ -3895,6 +4011,7 @@ fn eval_index_lookup(
     if !index.unique {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_UNSUPPORTED,
             message: format!(
                 "non-unique index `{}` has no single identity in value position; \
@@ -3942,6 +4059,7 @@ fn eval_index_lookup(
         .map(Value::Identity)
         .ok_or_else(|| RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: format!(
                 "the `{}` index entry did not decode to an identity",
@@ -4021,6 +4139,7 @@ fn read_layer_entry(
         .map(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: format!("stored value in `{layer}` did not decode to a runtime value"),
             span,
@@ -4055,6 +4174,7 @@ fn read_group_entry(
             .map(saved_value_to_value)
             .ok_or_else(|| RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_TYPE,
                 message: format!("stored value for `{name}` did not decode to a runtime value"),
                 span,
@@ -4141,6 +4261,7 @@ fn read_resource(
             .map(saved_value_to_value)
             .ok_or_else(|| RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_TYPE,
                 message: format!("stored value for `{}` did not decode", field.name),
                 span,
@@ -4260,6 +4381,7 @@ fn eval_raw_field_write(
         .ok_or_else(|| unsupported("writing a resource value to a raw segment", span))?;
     let bytes = encode_value(&saved).map_err(|error| RuntimeError {
         throw: None,
+        origin: None,
         code: error.code(),
         message: error.to_string(),
         span,
@@ -4300,6 +4422,7 @@ fn eval_raw_field_read(
         .map(saved_value_to_value)
         .ok_or_else(|| RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_TYPE,
             message: format!("raw segment `\"{segment}\"` did not decode as text"),
             span,
@@ -5028,6 +5151,7 @@ fn read_local_field(
         .map(|(_, value)| value.clone())
         .ok_or_else(|| RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_ABSENT,
             message: format!("`{field}` is absent"),
             span,
@@ -5586,6 +5710,7 @@ fn check_spliced_identity(
 fn key_type_fault(expected: ScalarType, found: ScalarType, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
+        origin: None,
         code: RUN_TYPE,
         message: format!(
             "a key of type `{}` was given where `{}` is declared",
@@ -5948,6 +6073,7 @@ fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value
             .map(Value::Int)
             .map_err(|_| RuntimeError {
                 throw: None,
+                origin: None,
                 code: RUN_OVERFLOW,
                 message: format!("integer literal `{text}` is out of range"),
                 span,
@@ -5959,6 +6085,7 @@ fn eval_literal(kind: LiteralKind, text: &str, span: SourceSpan) -> Result<Value
                 .map(Value::Decimal)
                 .ok_or_else(|| RuntimeError {
                     throw: None,
+                    origin: None,
                     code: RUN_OVERFLOW,
                     message: format!("decimal literal `{text}` is out of range"),
                     span,
@@ -6108,6 +6235,7 @@ fn decimal_div(
     if divisor.is_zero() {
         return Err(RuntimeError {
             throw: None,
+            origin: None,
             code: RUN_DIVIDE_BY_ZERO,
             message: "division by zero".into(),
             span,

@@ -106,6 +106,9 @@ fn a_runtime_fault_is_reported_as_an_error() {
         "{stdout}"
     );
     assert!(stdout.contains("run.divide_by_zero"), "{stdout}");
+    // The fault's origin and the test file agree for a same-file fault, so the
+    // located ERROR line still names the test file at its line:col.
+    assert!(stdout.contains("app_test.mw:3:"), "{stdout}");
     assert!(stdout.contains("0 passed, 0 failed, 1 errored"), "{stdout}");
 }
 
