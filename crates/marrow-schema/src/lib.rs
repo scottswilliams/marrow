@@ -581,14 +581,12 @@ pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
 pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = "schema.non_enum_named_field";
 
 /// A saved key (an identity key, a keyed-layer key parameter, or an index
-/// argument) is typed as a non-scalar name or a sequence. A key must be an
-/// orderable scalar, because the store projects a key from its scalar value and
-/// the key guard cannot tell a member ordinal from a raw string or int written
-/// into a non-scalar position. Every bare or qualified name — a local enum, a
-/// cross-module enum, a resource, or a typo — and every sequence is rejected
+/// argument) is typed as a non-scalar. A key must be an orderable scalar, because
+/// the store projects a key from its scalar value and the key guard cannot tell
+/// a member ordinal from a raw string or int written into a non-scalar position.
+/// Every bare or qualified name — a local enum, a cross-module enum, a resource,
+/// or a typo — every sequence, and every resource identity is rejected
 /// structurally, since the rule asks only whether the type is an orderable scalar.
-/// A resource identity (`Book::Id`) is exempt: it is the deferred typed-references
-/// surface, which faults loudly at runtime rather than corrupting the keyspace.
 pub const SCHEMA_NONSCALAR_KEY: &str = "schema.nonscalar_key";
 
 impl fmt::Display for SchemaError {
@@ -1118,28 +1116,27 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
 /// project from an orderable scalar value, so the rule is an allowlist: every
 /// scalar except `decimal` is a key; everything else is rejected. The verdict
 /// needs no knowledge of what a name refers to, so a local enum, a cross-module
-/// enum, a resource, and a typo are all the same `NonScalar` case, caught
-/// structurally without an enum or resource list.
+/// enum, a resource, a typo, and a resource identity are all the same
+/// `NonScalar` case, caught structurally without an enum or resource list.
 enum KeyTypeVerdict {
     Ok,
     /// `decimal` — a scalar, but the one with no order-preserving key encoding.
     Decimal,
-    /// A name or a sequence, neither of which projects to an orderable scalar.
+    /// An identity, a name, or a sequence, none of which projects to an
+    /// orderable scalar key.
     NonScalar,
-    /// A resource identity (`Book::Id`). The deferred typed-references surface;
-    /// left to fault at runtime rather than rejected here.
-    Identity,
 }
 
 /// Classify a key type. `decimal` is the one scalar the store cannot encode as a
-/// key; every other scalar is orderable. A resource identity is exempt as the
-/// deferred typed-references feature; a name or a sequence is a non-scalar key.
+/// key; every other scalar is orderable. A resource identity, name, or sequence
+/// is a non-scalar key.
 fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
     match ty {
         Type::Scalar(ScalarType::Decimal) => KeyTypeVerdict::Decimal,
         Type::Scalar(_) => KeyTypeVerdict::Ok,
-        Type::Identity(_) => KeyTypeVerdict::Identity,
-        Type::Named(_) | Type::Sequence(_) | Type::Unknown => KeyTypeVerdict::NonScalar,
+        Type::Identity(_) | Type::Named(_) | Type::Sequence(_) | Type::Unknown => {
+            KeyTypeVerdict::NonScalar
+        }
     }
 }
 
@@ -1149,7 +1146,7 @@ fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
 /// is reported separately by the caller, so it does not reach here.
 fn key_type_error(what: &str, name: &str, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
     match classify_key_type(ty) {
-        KeyTypeVerdict::Ok | KeyTypeVerdict::Identity => None,
+        KeyTypeVerdict::Ok => None,
         KeyTypeVerdict::Decimal => Some(SchemaError {
             code: SCHEMA_UNORDERABLE_KEY,
             message: format!(
@@ -1172,8 +1169,8 @@ fn key_type_error(what: &str, name: &str, ty: &Type, span: SourceSpan) -> Option
 /// valid index key. An index entry keys on the argument's *stored* scalar, so the
 /// orderability rule reads that projection: an enum field stores its ordinal as an
 /// orderable `int` and indexes fine, while a `decimal` (no key encoding) and a
-/// `sequence` (no single scalar) cannot. A resource identity is exempt as the
-/// deferred typed-references surface.
+/// `sequence` (no single scalar) cannot. A resource identity has no supported
+/// index-key projection yet, so it is rejected with the other non-scalars.
 fn index_arg_key_error(
     index: &str,
     arg: &str,
@@ -1191,9 +1188,6 @@ fn index_arg_key_error(
             span,
         }),
         Some(_) => None,
-        // A resource identity carries no stored scalar, but it is the deferred
-        // typed-references surface, left to fault at runtime rather than rejected.
-        None if matches!(resolved, Type::Identity(_)) => None,
         None => Some(SchemaError {
             code: SCHEMA_NONSCALAR_KEY,
             message: format!(

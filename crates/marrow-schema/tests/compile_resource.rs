@@ -626,6 +626,18 @@ resource Order at ^orders(id: int)
 }
 
 #[test]
+fn an_identity_field_index_argument_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    authorId: Author::Id
+    index byAuthor(authorId, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("authorId"));
+}
+
+#[test]
 fn an_enum_field_index_argument_is_clean() {
     // An enum field stores its member ordinal as an orderable `int`, so an index
     // keys on that ordinal. This is the staged enum-field-index behavior: the index
@@ -658,22 +670,27 @@ resource Order at ^orders(id: int)
 }
 
 #[test]
-fn an_identity_typed_key_is_left_unchanged() {
-    // `Book::Id` as a key is the deferred typed-references feature. Its current
-    // behavior is to compile without a schema error (it faults loudly at runtime),
-    // which the allowlist must not change. This pins that behavior so a future
-    // typed-refs change is the thing that flips it.
+fn an_identity_typed_key_is_an_error() {
+    // A saved key must be an orderable scalar. An identity value has no supported
+    // saved-key encoding yet, so reject it statically instead of deferring it.
     let source = "\
-resource Loan at ^loans(book: Book::Id)
+resource Edge at ^edges(from: Node::Id)
     required note: string
 ";
     let (_, errors) = compile_resource(&resource(source));
-    assert!(
-        codes(&errors)
-            .iter()
-            .all(|code| *code != SCHEMA_NONSCALAR_KEY),
-        "an identity-typed key is the deferred typed-refs surface, not rejected here: {errors:?}"
-    );
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("Node::Id"));
+}
+
+#[test]
+fn a_keyed_layer_key_param_typed_as_an_identity_is_an_error() {
+    let source = "\
+resource Edge at ^edges(id: int)
+    byNode(from: Node::Id): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("Node::Id"));
 }
 
 #[test]
