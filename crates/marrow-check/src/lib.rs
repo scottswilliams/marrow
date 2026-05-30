@@ -36,6 +36,7 @@ pub(crate) use enums::{
     normalize_program_enum_types_against, resolve_enum, resolve_type,
 };
 pub(crate) use infer::*;
+pub use marrow_schema::{IndexSchema, ResourceSchema};
 use program::TypeNames;
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,

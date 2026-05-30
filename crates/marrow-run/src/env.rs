@@ -168,6 +168,14 @@ impl<'p> Env<'p> {
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
         let plan = plan.map_err(|error| write_fault(error, span))?;
+        // Offer each staged operation to an installed write observer before it
+        // lands, in commit order. An ordinary run has no hook, so this is a single
+        // `is_some` check; only an opt-in debugger pays the per-step iteration.
+        if let Some(hook) = self.hook.as_deref_mut() {
+            for (op, path, value) in plan.steps() {
+                hook.before_write(op, path, value, self.depth);
+            }
+        }
         plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth > 0)
             .map_err(|error| error.located(span))
     }

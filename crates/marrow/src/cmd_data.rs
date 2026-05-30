@@ -303,8 +303,9 @@ fn dump_record((path, value): &(Vec<u8>, Vec<u8>)) -> serde_json::Value {
 /// Render stored value bytes for raw text inspection: as a UTF-8 string when
 /// valid (the common case, since canonical forms are ASCII text), else as
 /// `0x<hex>`. This shows the canonical stored bytes honestly, never guessing a
-/// type — dump and get work without source.
-fn render_value_bytes(bytes: &[u8]) -> String {
+/// type — dump and get work without source, and the trace and dry-run reports
+/// render planned values the same way.
+pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
         Err(_) => {

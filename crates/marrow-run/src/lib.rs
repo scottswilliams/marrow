@@ -93,3 +93,4 @@ pub use error::{
 pub use host::{Frame, Host, StepHook};
 pub use schema_query::{SavedPathClass, classify_saved_path};
 pub use value::{RunOutput, Value};
+pub use write::WriteOp;

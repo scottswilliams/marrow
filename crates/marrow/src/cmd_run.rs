@@ -4,15 +4,32 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 
 use crate::cmd_check::report_runtime_fault;
+use crate::dry_run::{self, DryRunHook};
+use crate::trace::TraceHook;
 use crate::{CheckFormat, load_checked_project, report_simple_error, resolve_store_path};
 
-/// Run a project's entry function. Unlike `check`, `run` has no `--format`: its
-/// output is the program's own `print`/`write` stream, which has no JSON envelope;
-/// failures still report a dotted error code on stderr.
+/// How a run observes itself: a plain run, an execution `--trace`, a `--dry-run`
+/// that rolls its writes back, or both composed (trace the run, then discard).
+#[derive(Clone, Copy)]
+struct Observe {
+    trace: bool,
+    dry_run: bool,
+    /// The report format for `--trace`/`--dry-run` output; ignored by a plain run,
+    /// whose only output is the program's own `print`/`write` stream.
+    format: CheckFormat,
+}
+
+/// Run a project's entry function. A plain run's only output is the program's own
+/// `print`/`write` stream, which carries no envelope; `--trace` and `--dry-run`
+/// are tooling reports that take `--format` and report separately from that stream.
+/// Failures report a dotted error code on stderr.
 pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut entry = None;
     let mut dir = None;
     let mut maintenance = false;
+    let mut trace = false;
+    let mut dry_run = false;
+    let mut format = CheckFormat::Text;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -28,11 +45,29 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             // delete, raw quoted-segment access). An operator must type it; the
             // default run and `run.defaultEntry` can never inject it.
             "--maintenance" => maintenance = true,
+            // Report each statement and managed write as the run executes.
+            "--trace" => trace = true,
+            // Run the entry, report the saved-data writes it would commit, then roll
+            // them back so the store is left byte-for-byte unchanged.
+            "--dry-run" => dry_run = true,
+            "--format" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --format");
+                    return ExitCode::from(2);
+                };
+                let Some(parsed) = CheckFormat::parse(value) else {
+                    eprintln!("unknown format: {value}");
+                    return ExitCode::from(2);
+                };
+                format = parsed;
+            }
             "--help" | "-h" => {
                 print!(
                     "\
 Usage:
-  marrow run [--entry <module::function>] [--maintenance] <projectdir>
+  marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
+[--format text|json|jsonl] <projectdir>
 
 Check a Marrow project, then run an entry function over the store its
 `marrow.json` selects (an in-memory store when none is configured). The entry
@@ -43,6 +78,13 @@ with `print`/`write` goes to stdout.
                  and restore tooling. It permits whole managed-root deletes,
                  required-field deletes, and raw quoted-segment access that the
                  default run rejects. Use it deliberately.
+  --trace        Report each statement (file:line, call depth, visible locals)
+                 and each managed write as the run executes, in execution order.
+  --dry-run      Run the entry, report the saved-data writes it would commit,
+                 then roll them back: the store is left byte-for-byte unchanged.
+                 Side effects outside saved data are not rewound.
+  --format       The report format for --trace/--dry-run (default text). A plain
+                 run's stdout is the program's own output and takes no --format.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -65,13 +107,23 @@ with `print`/`write` goes to stdout.
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    run_project_dir(&dir, entry.as_deref(), maintenance)
+    let observe = Observe {
+        trace,
+        dry_run,
+        format,
+    };
+    run_project_dir(&dir, entry.as_deref(), maintenance, observe)
 }
 
 /// Load and check `<dir>/marrow.json`'s project, then run its entry (the
 /// `--entry` override, else `run.defaultEntry`) over the configured store. A
 /// project must check cleanly before it runs.
-fn run_project_dir(dir: &str, entry_override: Option<&str>, maintenance: bool) -> ExitCode {
+fn run_project_dir(
+    dir: &str,
+    entry_override: Option<&str>,
+    maintenance: bool,
+    observe: Observe,
+) -> ExitCode {
     let (config, program) = match load_checked_project(dir) {
         Ok(checked) => checked,
         Err(code) => return code,
@@ -90,10 +142,10 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>, maintenance: bool) -
         Err(code) => code,
         Ok(None) => {
             let store = RefCell::new(marrow_store::mem::MemStore::new());
-            execute(&program, &store, entry, maintenance)
+            execute(&program, &store, entry, maintenance, observe)
         }
         Ok(Some(path)) => match marrow_store::redb::RedbStore::open(&path) {
-            Ok(store) => execute(&program, &RefCell::new(store), entry, maintenance),
+            Ok(store) => execute(&program, &RefCell::new(store), entry, maintenance, observe),
             Err(error) => {
                 report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
                 ExitCode::FAILURE
@@ -105,12 +157,14 @@ fn run_project_dir(dir: &str, entry_override: Option<&str>, maintenance: bool) -
 /// Run `entry` from a checked `program` over `store`, printing its output. The run
 /// gets the real system clock, environment, and filesystem, and sends `std::log`
 /// output to standard error. `maintenance` grants the maintenance capability only
-/// when the operator passed `--maintenance`.
+/// when the operator passed `--maintenance`. `observe` selects a plain run, a
+/// traced run, a dry run (run-then-rollback), or both composed.
 fn execute(
     program: &marrow_check::CheckedProgram,
     store: &RefCell<dyn marrow_store::backend::Backend>,
     entry: &str,
     maintenance: bool,
+    observe: Observe,
 ) -> ExitCode {
     let log = std::rc::Rc::new(RefCell::new(String::new()));
     let mut host = marrow_run::Host::new()
@@ -121,18 +175,75 @@ fn execute(
     if maintenance {
         host = host.with_maintenance();
     }
-    let result = marrow_run::run_entry_with_host(program, store, &host, entry, &[]);
+
+    // A dry run brackets the whole run in one outer savepoint it always rolls back,
+    // so saved data is left byte-for-byte unchanged; it observes every managed
+    // write through the same hook the trace uses. A `--trace` (with or without
+    // `--dry-run`) installs the trace hook; a plain run installs none.
+    let result = if observe.dry_run {
+        let trace = observe.trace.then(|| TraceHook::new(observe.format, ""));
+        let mut hook = DryRunHook::new(trace);
+        if let Err(error) = store.borrow_mut().begin() {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+        let result =
+            marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, entry, &[]);
+        // Discard everything the run staged, whatever its outcome.
+        if let Err(error) = store.borrow_mut().rollback() {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+        let (planned, trace) = hook.into_report();
+        result.map(|outcome| (outcome, Report::Dry { planned, trace }))
+    } else if observe.trace {
+        let mut hook = TraceHook::new(observe.format, "");
+        let result =
+            marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, entry, &[]);
+        result.map(|outcome| (outcome, Report::Trace(hook)))
+    } else {
+        marrow_run::run_entry_with_host(program, store, &host, entry, &[])
+            .map(|outcome| (outcome, Report::None))
+    };
+
     // Log output is collected even on a failing run; it goes to stderr, off the
     // program's own stdout stream.
     eprint!("{}", log.borrow());
     match result {
-        Ok(outcome) => {
+        Ok((outcome, report)) => {
             print!("{}", outcome.output);
+            report.emit(observe.format);
             ExitCode::SUCCESS
         }
         Err(error) => {
             report_runtime_fault(program, &error);
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The tooling report a run produced alongside the program's own output, emitted
+/// after the run's stdout so the program output and the report do not interleave.
+enum Report {
+    None,
+    Trace(TraceHook),
+    Dry {
+        planned: Vec<dry_run::PlannedWrite>,
+        trace: Option<TraceHook>,
+    },
+}
+
+impl Report {
+    fn emit(self, format: CheckFormat) {
+        match self {
+            Report::None => {}
+            Report::Trace(mut hook) => hook.flush(),
+            Report::Dry { planned, trace } => {
+                if let Some(mut trace) = trace {
+                    trace.flush();
+                }
+                dry_run::report(&planned, format);
+            }
         }
     }
 }

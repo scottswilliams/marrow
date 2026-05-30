@@ -4,23 +4,44 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::trace::TraceHook;
 use crate::{CheckFormat, load_checked_project, report_project, report_simple_error};
 
-/// Run a project's tests: `marrow test <projectdir>`.
+/// Run a project's tests: `marrow test [--trace] <projectdir>`.
 pub(crate) fn test(args: &[String]) -> ExitCode {
     let mut dir = None;
+    let mut trace = false;
+    let mut format = CheckFormat::Text;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            // Report each statement and managed write of every test as it runs,
+            // attributed to the test by name.
+            "--trace" => trace = true,
+            "--format" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --format");
+                    return ExitCode::from(2);
+                };
+                let Some(parsed) = CheckFormat::parse(value) else {
+                    eprintln!("unknown format: {value}");
+                    return ExitCode::from(2);
+                };
+                format = parsed;
+            }
             "--help" | "-h" => {
                 print!(
                     "\
 Usage:
-  marrow test <projectdir>
+  marrow test [--trace] [--format text|json|jsonl] <projectdir>
 
 Check a Marrow project, then run its tests: every `pub fn` with no parameters in
 a test file (the `tests` patterns in marrow.json). Each test runs against a fresh
 in-memory store; a `std::assert::*` failure is a located test failure.
+
+  --trace   Report each statement and managed write of every test as it runs,
+            attributed to the test by name. Takes --format for the trace output.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -43,13 +64,14 @@ in-memory store; a `std::assert::*` failure is a located test failure.
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    test_project_dir(&dir)
+    test_project_dir(&dir, trace, format)
 }
 
 /// Check `<dir>`'s project and its test files, then run each test over a fresh
 /// in-memory store. Reports each result and a summary; exits non-zero if any test
-/// fails or errors, if the project does not check, or if no tests are found.
-fn test_project_dir(dir: &str) -> ExitCode {
+/// fails or errors, if the project does not check, or if no tests are found. With
+/// `trace`, each test runs under an execution trace attributed to it by name.
+fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let (config, src_program) = match load_checked_project(dir) {
         Ok(checked) => checked,
         Err(code) => return code,
@@ -114,7 +136,19 @@ fn test_project_dir(dir: &str) -> ExitCode {
     let mut errored = 0usize;
     for (name, source_file) in &tests {
         let store = RefCell::new(marrow_store::mem::MemStore::new());
-        match marrow_run::run_entry_with_host(&program, &store, &host, name, &[]) {
+        // A traced test runs under the debugger entry with a hook labelled by the
+        // test name, so its statements and writes are attributed to it; an untraced
+        // test runs through the plain entry and pays nothing.
+        let result = if trace {
+            let mut hook = TraceHook::new(format, name.clone());
+            let result =
+                marrow_run::run_entry_with_debugger(&program, &store, &host, &mut hook, name, &[]);
+            hook.flush();
+            result
+        } else {
+            marrow_run::run_entry_with_host(&program, &store, &host, name, &[])
+        };
+        match result {
             Ok(_) => {
                 println!("ok    {name}");
                 passed += 1;

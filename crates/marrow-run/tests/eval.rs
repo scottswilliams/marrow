@@ -6859,6 +6859,110 @@ fn hook_error_aborts_the_run() {
     assert_eq!(lines, vec![2, 3]);
 }
 
+/// A hook recording each managed write it is offered: its operation, the human
+/// path, whether a value was present, and the activation depth. Statement events
+/// are ignored, so the recorded sequence is exactly the run's managed writes in
+/// commit order.
+#[derive(Default)]
+struct WriteRecorder {
+    writes: Vec<(marrow_run::WriteOp, String, bool, usize)>,
+}
+
+impl StepHook for WriteRecorder {
+    fn before_statement(
+        &mut self,
+        _span: SourceSpan,
+        _frame: Frame<'_, '_>,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn before_write(
+        &mut self,
+        op: marrow_run::WriteOp,
+        path: &[u8],
+        value: Option<&[u8]>,
+        depth: usize,
+    ) {
+        self.writes.push((
+            op,
+            marrow_store::path::display_path(path),
+            value.is_some(),
+            depth,
+        ));
+    }
+}
+
+#[test]
+fn hook_observes_each_managed_write_in_commit_order() {
+    // A field write, then a whole-record delete: the field write stages one
+    // `Write` (the field). `delete ^books(1)` clears the record's subtree with one
+    // `Delete` of the identity path. The hook sees each `PlanStep` as a
+    // `before_write` event, in commit order, at the statement's activation depth.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20title: string\n\
+         \n\
+         fn seed(): int\n\
+         \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+         \x20\x20\x20\x20delete ^books(1)\n\
+         \x20\x20\x20\x20return 0\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let mut hook = WriteRecorder::default();
+    run_entry_with_debugger(&program, &store, &Host::new(), &mut hook, "test::seed", &[])
+        .expect("debugged run completes");
+
+    assert_eq!(
+        hook.writes,
+        vec![
+            (
+                marrow_run::WriteOp::Write,
+                "^books(1).title".to_string(),
+                true,
+                1
+            ),
+            (
+                marrow_run::WriteOp::Delete,
+                "^books(1)".to_string(),
+                false,
+                1
+            ),
+        ],
+    );
+}
+
+#[test]
+fn no_hook_run_pays_no_write_observation() {
+    // Regression: a write with no hook installed runs through the non-debugged
+    // entry exactly as before. The default `before_write` is never reached, so the
+    // managed write still lands and the run completes.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20title: string\n\
+         \n\
+         fn seed(): int\n\
+         \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+         \x20\x20\x20\x20return 0\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry_with_host(&program, &store, &Host::new(), "test::seed", &[]).expect("run completes");
+    let raw = Backend::read(
+        &*store.borrow(),
+        &encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::Field("title".into()),
+        ]),
+    )
+    .expect("store read");
+    let title = raw.and_then(|bytes| match decode_value(&bytes, ScalarType::Str) {
+        Some(SavedValue::Str(s)) => Some(s),
+        _ => None,
+    });
+    assert_eq!(title, Some("Mort".to_string()));
+}
+
 #[test]
 fn display_debug_renders_scalars_and_structured_previews() {
     // Scalars render like the normal renderer.

@@ -18,6 +18,17 @@ pub trait StepHook {
         span: SourceSpan,
         frame: Frame<'_, '_>,
     ) -> Result<(), RuntimeError>;
+
+    /// Called just before each managed write or delete lands, once per staged
+    /// operation in commit order, at the activation `depth` of the statement that
+    /// produced it. `value` is `Some` for a write, `None` for a delete; `path` is
+    /// the encoded saved path. The default is a no-op, so a statement-only hook is
+    /// unaffected and an ordinary run that installs no hook pays nothing. Unlike
+    /// [`StepHook::before_statement`], it is purely observational and cannot abort
+    /// the run — the write proceeds regardless.
+    fn before_write(&mut self, op: WriteOp, path: &[u8], value: Option<&[u8]>, depth: usize) {
+        let _ = (op, path, value, depth);
+    }
 }
 
 /// A read-only view of the current activation handed to a [`StepHook`]. It
@@ -55,6 +66,19 @@ impl<'e, 'p> Frame<'e, 'p> {
     /// step-out.
     pub fn depth(&self) -> usize {
         self.env.depth
+    }
+
+    /// The source file this activation runs in, so a trace can render a statement
+    /// as `file:line`. `None` for the bare-program path, which has no module and
+    /// thus no source file. Found by the activation's module name, since a span
+    /// carries only its line and column, not its file.
+    pub fn file(&self) -> Option<&std::path::Path> {
+        self.env
+            .program
+            .modules
+            .iter()
+            .find(|module| module.name == self.env.module)
+            .map(|module| module.source_file.as_path())
     }
 }
 

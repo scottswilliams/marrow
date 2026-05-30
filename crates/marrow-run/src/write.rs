@@ -115,6 +115,14 @@ enum PlanStep {
     Delete { path: Vec<u8> },
 }
 
+/// Which kind of store operation a [`WritePlan`] step performs, surfaced to a
+/// write observer without exposing the plan's internal step representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOp {
+    Write,
+    Delete,
+}
+
 /// A staged, validated set of store operations. Apply it with
 /// [`WritePlan::commit`]; drop it to abandon the write with no effect.
 ///
@@ -153,6 +161,19 @@ impl WritePlan {
                 Err(error)
             }
         }
+    }
+
+    /// The staged operations, in commit order, as `(op, path, value)` — the value
+    /// is `Some` for a write, `None` for a delete. A read-only view for a write
+    /// observer (dry-run report, execution trace) that must read the planned
+    /// writes without coupling to the plan's internal step enum.
+    pub fn steps(&self) -> impl Iterator<Item = (WriteOp, &[u8], Option<&[u8]>)> {
+        self.steps.iter().map(|step| match step {
+            PlanStep::Write { path, value } => {
+                (WriteOp::Write, path.as_slice(), Some(value.as_slice()))
+            }
+            PlanStep::Delete { path } => (WriteOp::Delete, path.as_slice(), None),
+        })
     }
 }
 

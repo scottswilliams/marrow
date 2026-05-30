@@ -7,11 +7,14 @@ use serde_json::json;
 mod cmd_backup;
 mod cmd_check;
 mod cmd_data;
+mod cmd_explain;
 mod cmd_fmt;
 mod cmd_run;
 mod cmd_test;
+mod dry_run;
 mod lsp;
 mod serve;
+mod trace;
 
 const HELP: &str = "\
 Marrow
@@ -25,6 +28,7 @@ Usage:
   marrow restore <projectdir> <archive>
   marrow data <roots|stats|dump|integrity> <projectdir>
   marrow data get <projectdir> <path>
+  marrow explain [--format text|json|jsonl] <projectdir> <target>
   marrow lsp
   marrow serve [--port <port>] <projectdir>
   marrow --version
@@ -45,6 +49,7 @@ fn main() -> ExitCode {
         "backup" => cmd_backup::backup(rest),
         "restore" => cmd_backup::restore(rest),
         "data" => cmd_data::data(rest),
+        "explain" => cmd_explain::explain(rest),
         "lsp" => lsp::run(rest),
         "serve" => serve::run(rest),
         "--help" | "-h" | "help" => {
