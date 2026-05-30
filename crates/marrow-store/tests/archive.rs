@@ -87,6 +87,39 @@ fn an_unsupported_version_is_rejected() {
 }
 
 #[test]
+fn a_truncated_restore_rolls_the_target_back_whole() {
+    // A two-record archive cut off mid-second-record is the worst case for a
+    // restore: the first record's write already landed before the truncation is
+    // hit. Restore runs the replay in one transaction, so the target must end
+    // exactly as it began — all-or-nothing, not half-written.
+    let mut source = MemStore::new();
+    source.write(&book_title(1), encoded(&SavedValue::Str("Dune".into())));
+    source.write(&book_title(2), encoded(&SavedValue::Str("Sand".into())));
+    let mut archive = Vec::new();
+    assert_eq!(write_archive(&source, &mut archive).expect("write"), 2);
+    // Drop the final byte so the second record's value chunk ends mid-read; the
+    // header and first record stay intact, so the replay writes record one and
+    // only then meets the corruption.
+    archive.pop();
+
+    // A non-empty target whose prior contents must survive the failed restore.
+    let mut target = MemStore::new();
+    target.write(&book_title(9), encoded(&SavedValue::Str("Keep".into())));
+    let before = target.scan(&[], usize::MAX);
+
+    let result = read_archive(&mut Cursor::new(&archive), &mut target);
+    assert!(
+        matches!(result, Err(StoreError::Corruption { .. })),
+        "a truncated archive is a typed corruption error: {result:?}"
+    );
+    assert_eq!(
+        target.scan(&[], usize::MAX),
+        before,
+        "the target is rolled back to its prior state, with no half-written record"
+    );
+}
+
+#[test]
 fn equal_data_produces_identical_archives() {
     // The archive is the store's ordered stream behind a fixed header, so equal
     // data always serializes to identical bytes.

@@ -293,9 +293,11 @@ The native store stays small:
 - bounded scans and typed limit errors;
 - a recorded format version.
 
-A native data directory may contain files such as `marrow.redb` and
-`marrow.lock`. Those files are local engine format, not the portable archive
-format.
+A native data directory holds a single `marrow.redb` file in the local engine
+format, not the portable archive format. There is no separate lock file: the
+engine takes an advisory lock on `marrow.redb` itself, so a second writer for the
+same directory surfaces as a `store.locked` error rather than leaving a sidecar
+behind.
 
 ## Capability Profiles
 

@@ -599,13 +599,18 @@ fn decode_name(bytes: &[u8]) -> Option<String> {
     String::from_utf8(bytes[1..1 + terminator].to_vec()).ok()
 }
 
-/// The byte length of a key encoding: its type tag plus the typed bytes.
+/// The byte length of a key encoding: its type tag plus the typed bytes, or
+/// `None` if the key is not a known tag or its fixed-width body is truncated. A
+/// torn write can leave a tag without its full body, so a fixed-width length is
+/// reported only when those bytes are actually present; callers slice by this
+/// length, so an over-long answer would read past the end.
 fn key_len(bytes: &[u8]) -> Option<usize> {
+    let fixed = |len: usize| (bytes.len() >= len).then_some(len);
     match *bytes.first()? {
-        KEY_BOOL => Some(2),
-        KEY_INT => Some(9),
-        KEY_DATE => Some(5),
-        KEY_DURATION | KEY_INSTANT => Some(17),
+        KEY_BOOL => fixed(2),
+        KEY_INT => fixed(9),
+        KEY_DATE => fixed(5),
+        KEY_DURATION | KEY_INSTANT => fixed(17),
         KEY_STR | KEY_BYTES => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
         _ => None,
     }
@@ -733,6 +738,62 @@ mod tests {
     fn decode_path_rejects_a_malformed_key() {
         // A record-key tag followed by an unknown key-type tag is not decodable.
         assert_eq!(decode_path(&[KIND_RECORD_KEY, 0xfe]), None);
+    }
+
+    #[test]
+    fn decode_path_rejects_a_truncated_segment() {
+        // A torn write can leave a known tag with a too-short body. Each of these is
+        // a valid tag whose declared body is cut off, which must reject rather than
+        // read past the end or decode a partial key.
+        //
+        // An integer key is a tag plus eight bytes; a two-byte body is short.
+        assert_eq!(decode_path(&[KIND_RECORD_KEY, KEY_INT, 0x00, 0x00]), None);
+        // A string key body runs to a `00 00` terminator; without it the run is
+        // unterminated and the segment cannot be delimited.
+        assert_eq!(
+            decode_path(&[KIND_RECORD_KEY, KEY_STR, b'a', b'b']),
+            None,
+            "an unterminated string key is rejected"
+        );
+        // A root name runs to a `00` terminator; a name with none is unterminated.
+        assert_eq!(
+            decode_path(&[KIND_ROOT, b'r', b'o', b'o', b't']),
+            None,
+            "an unterminated root name is rejected"
+        );
+    }
+
+    #[test]
+    fn subtree_band_handles_a_trailing_max_int_key() {
+        // A composite prefix ending in an i64::MAX record key has an all-0xff key
+        // body, so the successor cannot simply bump the last byte. `subtree_band`
+        // must drop the trailing 0xff bytes and raise the key-type tag, yielding a
+        // strict successor that still bounds the subtree.
+        let prefix = encode_path(&[
+            PathSegment::Root("r".into()),
+            PathSegment::RecordKey(SavedKey::Int(i64::MAX)),
+        ]);
+        let (lo, hi) = subtree_band(&prefix);
+        assert_eq!(lo, prefix, "lo is the prefix itself");
+        let hi = hi.expect("a non-empty prefix has a byte successor");
+        assert!(hi > prefix, "hi is a strict successor of the prefix");
+        // A descendant of the prefix (a field under that record) sorts inside the
+        // band: at or after lo and strictly before hi.
+        let descendant = encode_path(&[
+            PathSegment::Root("r".into()),
+            PathSegment::RecordKey(SavedKey::Int(i64::MAX)),
+            PathSegment::Field("title".into()),
+        ]);
+        assert!(
+            descendant >= lo && descendant < hi,
+            "a descendant is in the band"
+        );
+
+        // An all-0xff prefix has no byte successor: the subtree runs to the end of
+        // the store, so `hi` is `None`.
+        assert_eq!(subtree_band(&[0xff, 0xff]).1, None);
+        // The empty prefix (the whole store) likewise has no successor.
+        assert_eq!(subtree_band(&[]).1, None);
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     max_int_record_key_returns_the_highest_integer_child(&mut make());
     max_int_record_key_ignores_non_integer_and_named_children(&mut make());
     max_int_record_key_handles_negative_keys(&mut make());
+    max_int_record_key_handles_i64_extremes(&mut make());
     max_int_index_key_returns_the_highest_integer_position(&mut make());
     child_keys_dedup_records_with_multiple_descendants(&mut make());
     child_keys_list_field_names_in_order(&mut make());
@@ -247,6 +248,36 @@ fn max_int_record_key_handles_negative_keys(store: &mut dyn Backend) {
         store.max_int_record_key(&root("neg")).unwrap(),
         Some(2),
         "the highest of a negative and a positive key"
+    );
+}
+
+fn max_int_record_key_handles_i64_extremes(store: &mut dyn Backend) {
+    // The full signed band, including both extremes: i64::MAX must win and decode
+    // back exactly, not wrap or saturate. The sign-flipped big-endian key bodies
+    // span all-zero (i64::MIN) to all-one (i64::MAX), so the bounded band lookup
+    // must read the whole width to land on the right end.
+    for n in [i64::MIN, -1, 0, 1, i64::MAX] {
+        store
+            .write(&keyed_field("ext", SavedKey::Int(n), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    assert_eq!(
+        store.max_int_record_key(&root("ext")).unwrap(),
+        Some(i64::MAX),
+        "the highest integer record key is i64::MAX, decoded without wrap"
+    );
+    // A root holding only i64::MIN must report it, not None or a wrapped value:
+    // its all-zero body is the band's low edge and the lone entry.
+    store
+        .write(
+            &keyed_field("floor", SavedKey::Int(i64::MIN), "v"),
+            b"x".to_vec(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.max_int_record_key(&root("floor")).unwrap(),
+        Some(i64::MIN),
+        "a lone i64::MIN record key is itself the highest"
     );
 }
 

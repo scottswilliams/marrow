@@ -60,6 +60,11 @@ can report I/O and corruption the in-memory store never meets).
 | `delete(path)` | — | Remove the value at `path` and every value below it (the whole subtree). Deleting an absent path is a no-op. |
 | `presence(path)` | `Presence` | Whether `path` holds a value, children, both, or neither (see below). |
 | `child_keys(path)` | `Vec<ChildSegment>` | The distinct immediate children directly below `path`, in Marrow order. |
+| `child_keys_rev(path)` | `Vec<ChildSegment>` | The same children in reverse Marrow order — the exact reverse of `child_keys`, run backward over a double-ended range, not reversed after the fact. |
+| `next_sibling(parent, after)` | `Option<ChildSegment>` | The immediate key child of `parent` directly following the child segment `after`, or `None` when `after` is the last key child. Skips gaps and steps over `after`'s whole subtree. |
+| `prev_sibling(parent, before)` | `Option<ChildSegment>` | The mirror of `next_sibling`: the immediate key child directly preceding `before`, or `None` when `before` is the first key child. |
+| `first_child(parent)` | `Option<ChildSegment>` | The lowest immediate key child of `parent`, or `None` when it has none. The bare-layer entry point for forward navigation. |
+| `last_child(parent)` | `Option<ChildSegment>` | The highest immediate key child of `parent`, or `None` when it has none. The bare-layer entry point for reverse navigation. |
 | `scan(path, limit)` | `ScanPage` | Up to `limit` `(path, value)` pairs in the subtree at `path`, in Marrow order, including the value at `path` itself when present. |
 | `roots()` | `Vec<String>` | The distinct saved root names, in Marrow order. |
 | `max_int_record_key(prefix)` | `Option<i64>` | The highest integer record key among the immediate children of `prefix`, or `None` when none decodes to one. |
@@ -90,6 +95,21 @@ a single entry — `^seq(1).a` and `^seq(1).b` make `^seq` report `1` once. The
 result interleaves keys and names in their encoded order, so record keys come
 before named members at that level, integer keys are numeric-ordered, and names
 are UTF-8 ordered.
+
+### Ordered navigation
+
+`child_keys_rev`, `next_sibling`, `prev_sibling`, `first_child`, and `last_child`
+serve the runtime's ordered navigation (`reversed(...)`, `next()`, `prev()`).
+They navigate one *key* level: each returns key children — record keys under a
+keyed root, index keys under a keyed layer — and skips any named member (a
+declared index, field, or child layer), which sorts after the key children. So
+stepping past the last key child reports `None`, the catchable edge, rather than
+landing on a trailing index name. The sibling seeks step over the bound child's
+whole subtree in one stop (a child with its own descendants is never returned as
+a grandchild) and skip deleted holes, returning the nearest stored key neighbor.
+Each runs as an `O(k)` walk over a double-ended range — `child_keys_rev` and the
+reverse seeks run it backward — so a backend reads only as far as the answer
+needs, not the whole subtree.
 
 ### Bounded `max` lookups
 
@@ -157,6 +177,10 @@ The laws cover:
 - the four presence states;
 - subtree delete, and delete of an absent path as a no-op;
 - child-key ordering and dedup, for integer, string, field, and mixed children;
+- ordered navigation — `child_keys_rev` as the exact reverse of `child_keys`,
+  and `next_sibling`, `prev_sibling`, `first_child`, `last_child` returning the
+  adjacent or edge *key* child while skipping gaps, stepping over subtrees, and
+  passing over trailing named members (a declared index) to the catchable edge;
 - `max_int_record_key` / `max_int_index_key` returning the highest integer key,
   ignoring non-integer and named children, handling negatives, agreeing with the
   full child walk, and keeping record keys separate from index positions;
