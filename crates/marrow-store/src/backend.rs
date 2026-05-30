@@ -160,6 +160,9 @@ pub trait Backend {
     /// Up to `limit` (path, value) pairs in the subtree at `path`, in Marrow
     /// order, including the value at `path` itself when present.
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError>;
+    /// Up to `limit` (path, value) pairs in the subtree at `path`, strictly after
+    /// `cursor`, in Marrow order.
+    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError>;
     /// The distinct saved root names, in Marrow order.
     fn roots(&self) -> Result<Vec<String>, StoreError>;
 

@@ -150,18 +150,22 @@ REPLY {"id":6,"ok":{"presence":"absent","value":null}}
 ### `saved_walk`
 
 Up to `limit` `(path, value)` entries in the subtree at `path`, in Marrow order,
-plus whether the page was truncated.
+plus whether the page was truncated and an optional cursor for the next page.
 
 ```
 REQ   {"id": 7, "op": "saved_walk", "path": [{"root": "books"}], "limit": 1}
-REPLY {"id":7,"ok":{"entries":[{"path":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB","value":"ZmF2b3JpdGU="}],"truncated":true}}
+REPLY {"id":7,"ok":{"entries":[{"path":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB","value":"ZmF2b3JpdGU="}],"truncated":true,"nextCursor":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB"}}
 
-REQ   {"id": 8, "op": "saved_walk", "path": [{"root": "books"}], "limit": 100}
-REPLY {"id":8,"ok":{"entries":[
+REQ   {"id": 8, "op": "saved_walk", "path": [{"root": "books"}], "limit": 1,
+       "cursor": "AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB"}
+REPLY {"id":8,"ok":{"entries":[{"path":"AWJvb2tzAAICgAAAAAAAAAEDdGl0bGUA","value":"TW9ydA=="}],"truncated":true,"nextCursor":"AWJvb2tzAAICgAAAAAAAAAEDdGl0bGUA"}}
+
+REQ   {"id": 9, "op": "saved_walk", "path": [{"root": "books"}], "limit": 100}
+REPLY {"id":9,"ok":{"entries":[
          {"path":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB","value":"ZmF2b3JpdGU="},
          {"path":"AWJvb2tzAAICgAAAAAAAAAEDdGl0bGUA","value":"TW9ydA=="},
          {"path":"AWJvb2tzAAICgAAAAAAAAAIDdGl0bGUA","value":"U291cmNlcnk="}],
-       "truncated":false}}
+       "truncated":false,"nextCursor":null}}
 ```
 
 In a `saved_walk` entry, both `path` and `value` are base64. Unlike a request
@@ -171,13 +175,17 @@ in v1 the client does not decode them. They serve to order, compare, and resume.
 
 Paging:
 
-- `limit` is required and must be a JSON integer; omitting it is a
-  `protocol.bad_request`.
+- `limit` is required and must be a positive JSON integer; omitting it or
+  passing `0` is a `protocol.bad_request`.
 - `limit` is clamped to a server maximum of 10000; a larger request is silently
   capped, not rejected, so an unbounded request cannot force a huge scan.
-- `truncated` is `true` when more entries remained past the limit. There is no
-  cursor token in v1: a client pages by walking deeper subtrees (issue
-  `saved_walk` against narrower paths) rather than by an offset.
+- `truncated` is `true` when more entries remained past the limit.
+- `nextCursor` is the last returned encoded path when the page is truncated, or
+  `null` otherwise. Send it back as `cursor` with the same `path` to resume
+  strictly after that entry.
+- `cursor` is a base64 encoded internal key previously returned as
+  `nextCursor`. A malformed cursor, or one outside the requested `path`, is a
+  `protocol.bad_request`.
 
 ## Path encoding
 
@@ -239,7 +247,7 @@ of the contract. The protocol-level codes:
 |------------------------|----------------------------------------------------------------------|
 | `protocol.malformed`   | the line is not JSON, the request is not an object, or it has no string `op` |
 | `protocol.unknown_op`  | a known envelope but an `op` the server does not implement           |
-| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, or a `saved_walk` without an integer `limit` |
+| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive or missing `saved_walk` limit, or a malformed/out-of-subtree `saved_walk` cursor |
 
 A request that parses but cannot be answered by the store carries the store's own
 `store.*` code through unchanged (for example `store.corrupt_path` on an
@@ -291,8 +299,7 @@ What works today: the four read operations (`saved_roots`, `saved_children`,
 `saved_get`, `saved_walk`) over loopback TCP, with the path/key/base64 encodings
 and `protocol.*` / `store.*` error replies described above.
 
-Designed read extensions that are not yet implemented — a resumable cursor for
-`saved_walk`, local IPC over Unix sockets or Windows named pipes, and two
-read-only session extensions — are described in
-[future/serve-protocol.md](future/serve-protocol.md). None would write managed
-data.
+Designed read extensions that are not yet implemented — local IPC over Unix
+sockets or Windows named pipes, and two read-only session extensions — are
+described in [future/serve-protocol.md](future/serve-protocol.md). None would
+write managed data.

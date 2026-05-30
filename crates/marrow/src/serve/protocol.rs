@@ -14,7 +14,9 @@
 use marrow_run::base64;
 use marrow_store::backend::Backend;
 use marrow_store::backend::Presence;
-use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+use marrow_store::path::{
+    ChildSegment, PathSegment, SavedKey, decode_path as decode_store_path, encode_path,
+};
 use serde_json::{Value, json};
 
 /// A request was malformed — not an object, or missing a string `op`.
@@ -97,21 +99,40 @@ fn op_saved_children(store: &dyn Backend, request: &Value) -> Result<Value, Prot
 }
 
 /// The largest `saved_walk` page the server returns, so an unbounded request
-/// cannot force a huge scan. A client pages by walking deeper subtrees.
+/// cannot force a huge scan. A client pages by resubmitting returned cursors.
 const MAX_WALK: usize = 10_000;
 
 /// `saved_walk` → up to `limit` `(path, value)` entries in the subtree at a saved
 /// path, in Marrow order, plus whether the page was truncated. Each entry's path
-/// and value are base64 (the path bytes are opaque to the client in v1). The
-/// `limit` is required and clamped to [`MAX_WALK`].
+/// and value are base64 (the path bytes are opaque to the client in v1). A
+/// truncated page returns `nextCursor`, which can be sent as `cursor` to resume
+/// after the last returned entry. The `limit` is required and clamped to
+/// [`MAX_WALK`].
 fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
     let path = encode_path(&request_path(request)?);
     let limit = request
         .get("limit")
         .and_then(Value::as_u64)
         .ok_or_else(|| bad_request("`saved_walk` requires an integer `limit`"))?;
+    if limit == 0 {
+        return Err(bad_request("`saved_walk` requires a positive `limit`"));
+    }
     let limit = limit.min(MAX_WALK as u64) as usize;
-    let page = store.scan(&path, limit).map_err(store_error)?;
+    let cursor = request
+        .get("cursor")
+        .map(|value| decode_cursor(value, &path))
+        .transpose()?;
+    let page = if let Some(cursor) = &cursor {
+        store
+            .scan_after(&path, cursor, limit)
+            .map_err(store_error)?
+    } else {
+        store.scan(&path, limit).map_err(store_error)?
+    };
+    let next_cursor = page
+        .truncated
+        .then(|| page.entries.last().map(|(path, _)| base64::encode(path)))
+        .flatten();
     let entries: Vec<Value> = page
         .entries
         .iter()
@@ -119,7 +140,7 @@ fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, Protocol
             |(path, value)| json!({ "path": base64::encode(path), "value": base64::encode(value) }),
         )
         .collect();
-    Ok(json!({ "entries": entries, "truncated": page.truncated }))
+    Ok(json!({ "entries": entries, "truncated": page.truncated, "nextCursor": next_cursor }))
 }
 
 /// The decoded `path` of a request, or a `protocol.bad_request` error.
@@ -265,6 +286,17 @@ fn decode_base64_field(value: &Value, kind: &str) -> Result<Vec<u8>, ProtocolErr
         .as_str()
         .ok_or_else(|| bad_request(&format!("`{kind}` must be a base64 string")))?;
     base64::decode(text).ok_or_else(|| bad_request(&format!("`{kind}` is not valid base64")))
+}
+
+fn decode_cursor(value: &Value, path: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+    let cursor = decode_base64_field(value, "cursor")?;
+    if decode_store_path(&cursor).is_none() {
+        return Err(bad_request("`cursor` is not a valid saved path"));
+    }
+    if !cursor.starts_with(path) {
+        return Err(bad_request("`cursor` is outside the requested path"));
+    }
+    Ok(cursor)
 }
 
 /// Build a `protocol.bad_request` error.
@@ -474,6 +506,32 @@ mod tests {
     }
 
     #[test]
+    fn saved_walk_cursor_resumes_after_the_previous_page() {
+        let store = store_with_two_books();
+        let first = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1 }),
+        );
+        let cursor = first["ok"]["nextCursor"]
+            .as_str()
+            .expect("a truncated page returns a cursor");
+
+        let second = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+        );
+
+        let first_entry = &first["ok"]["entries"][0];
+        let second_entry = &second["ok"]["entries"][0];
+        assert_ne!(
+            first_entry["path"], second_entry["path"],
+            "the cursor should advance past the prior page"
+        );
+        assert_eq!(second["ok"]["truncated"], json!(false), "{second}");
+        assert_eq!(second["ok"]["nextCursor"], Value::Null, "{second}");
+    }
+
+    #[test]
     fn saved_walk_returns_the_whole_subtree_under_a_generous_limit() {
         let store = store_with_two_books();
         let reply = handle_request(
@@ -491,6 +549,31 @@ mod tests {
             &store,
             &json!({ "op": "saved_walk", "path": [{"root": "books"}] }),
         );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    }
+
+    #[test]
+    fn saved_walk_rejects_a_zero_limit() {
+        let store = store_with_a_book();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 0 }),
+        );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    }
+
+    #[test]
+    fn saved_walk_rejects_a_malformed_cursor_inside_the_path_prefix() {
+        let store = store_with_a_book();
+        let mut cursor = encode_path(&[PathSegment::Root("books".into())]);
+        cursor.push(0xff);
+        let cursor = base64::encode(&cursor);
+
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+        );
+
         assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
     }
 

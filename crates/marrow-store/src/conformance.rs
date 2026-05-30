@@ -41,6 +41,7 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     roots_are_ordered_and_deduped(&mut make());
     scan_returns_only_the_subtree_in_order(&mut make());
     scan_is_bounded_by_the_limit(&mut make());
+    scan_after_resumes_inside_the_subtree(&mut make());
     dump_and_restore_reproduce_the_store(&mut make);
     a_corrupt_path_is_a_typed_error(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
@@ -418,6 +419,27 @@ fn scan_is_bounded_by_the_limit(store: &mut dyn Backend) {
     let page = store.scan(&[], 5).unwrap();
     assert_eq!(page.entries.len(), 5);
     assert!(!page.truncated, "a limit at the total does not");
+}
+
+fn scan_after_resumes_inside_the_subtree(store: &mut dyn Backend) {
+    store
+        .write(&book_field(1, "author"), b"x".to_vec())
+        .unwrap();
+    store.write(&book_field(1, "title"), b"x".to_vec()).unwrap();
+    store.write(&book(2), b"outside".to_vec()).unwrap();
+
+    let first = store.scan(&book(1), 1).unwrap();
+    assert_eq!(first.entries.len(), 1);
+    assert!(first.truncated);
+    let cursor = first.entries[0].0.clone();
+
+    let second = store.scan_after(&book(1), &cursor, 1).unwrap();
+    assert_eq!(
+        second.entries,
+        vec![(book_field(1, "title"), b"x".to_vec())],
+        "resume stays inside the requested subtree"
+    );
+    assert!(!second.truncated);
 }
 
 fn dump_and_restore_reproduce_the_store<B: Backend>(make: &mut impl FnMut() -> B) {

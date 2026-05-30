@@ -60,6 +60,10 @@ impl MemStore {
         traversal::scan(self.range_from(path), path, limit).expect("in-memory scan never faults")
     }
 
+    pub fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> ScanPage {
+        traversal::scan(self.range_after(cursor), path, limit).expect("in-memory scan never faults")
+    }
+
     /// The stored entries from `prefix` onward, in Marrow order, adapted to the
     /// shared [`traversal`] item shape. The in-memory range is infallible, so each
     /// pair is wrapped as `Ok`; the prefix bound is applied by the traversal
@@ -70,6 +74,15 @@ impl MemStore {
     ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
         self.entries
             .range(prefix.to_vec()..)
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
+    }
+
+    fn range_after<'a>(
+        &'a self,
+        cursor: &[u8],
+    ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
+        self.entries
+            .range((Bound::Excluded(cursor.to_vec()), Bound::Unbounded))
             .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
 
@@ -206,6 +219,10 @@ impl Backend for MemStore {
 
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
         Ok(MemStore::scan(self, path, limit))
+    }
+
+    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Ok(MemStore::scan_after(self, path, cursor, limit))
     }
 
     /// The distinct saved root names, in Marrow order. Returns

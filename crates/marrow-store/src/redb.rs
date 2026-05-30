@@ -17,6 +17,7 @@
 //! transaction, and the outermost `rollback` aborts it. Outside a transaction
 //! each write is its own short, immediately durable redb transaction.
 
+use std::ops::Bound;
 use std::path::Path;
 
 use redb::{
@@ -97,6 +98,31 @@ where
         }
         if stop_at(&rows) {
             break; // the traversal has already seen all it needs
+        }
+        rows.push((key, value));
+    }
+    Ok(rows)
+}
+
+fn collect_rows_after<'t, T>(
+    table: &'t T,
+    prefix: &[u8],
+    cursor: &[u8],
+    stop_at: impl Fn(&[Row<'t>]) -> bool,
+    op: &'static str,
+) -> Result<Vec<Row<'t>>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut rows = Vec::new();
+    let range = (Bound::Excluded(cursor), Bound::Unbounded);
+    for entry in table.range::<&[u8]>(range).map_err(io(op))? {
+        let (key, value) = entry.map_err(io(op))?;
+        if !key.value().starts_with(prefix) {
+            break;
+        }
+        if stop_at(&rows) {
+            break;
         }
         rows.push((key, value));
     }
@@ -575,6 +601,20 @@ impl Backend for RedbStore {
             // One row past the limit is enough for the scan to report truncation.
             let cap = limit.saturating_add(1);
             let rows = collect_rows(&table, path, move |rows| rows.len() >= cap, "scan")?;
+            traversal::scan(entries(&rows), path, limit)
+        })
+    }
+
+    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        read_view!(self, "scan_after", |table| {
+            let cap = limit.saturating_add(1);
+            let rows = collect_rows_after(
+                &table,
+                path,
+                cursor,
+                move |rows| rows.len() >= cap,
+                "scan_after",
+            )?;
             traversal::scan(entries(&rows), path, limit)
         })
     }
