@@ -6485,6 +6485,250 @@ fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Opt-in statement debugger hook (`StepHook` / `Frame` / `run_entry_with_debugger`).
+// ---------------------------------------------------------------------------
+
+use marrow_run::{Frame, RuntimeError, StepHook, run_entry_with_debugger};
+use marrow_syntax::SourceSpan;
+
+/// A test hook that records, for each statement it is offered, the statement's
+/// line and the sorted `name=display_debug` of its visible locals plus the
+/// activation depth. Optionally aborts at a given line to exercise the
+/// terminate-by-Err contract.
+#[derive(Default)]
+struct Recorder {
+    steps: Vec<(u32, Vec<String>, usize)>,
+    abort_at_line: Option<u32>,
+}
+
+impl StepHook for Recorder {
+    fn before_statement(
+        &mut self,
+        span: SourceSpan,
+        frame: Frame<'_, '_>,
+    ) -> Result<(), RuntimeError> {
+        let mut locals: Vec<String> = frame
+            .locals()
+            .map(|(name, value)| format!("{name}={}", value.display_debug()))
+            .collect();
+        locals.sort();
+        self.steps.push((span.line, locals, frame.depth()));
+        if self.abort_at_line == Some(span.line) {
+            return Err(RuntimeError {
+                code: marrow_run::RUN_UNSUPPORTED,
+                message: "debugger terminate".into(),
+                span,
+                throw: None,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn hook_observes_each_statement_with_its_locals_and_depth() {
+    // Three statements on consecutive lines, each adding one local; the hook is
+    // offered each before it runs, so it sees the locals bound by earlier ones.
+    let program = checked_program(
+        "fn compute(a: int): int\n\
+         \x20\x20\x20\x20const b = a + 1\n\
+         \x20\x20\x20\x20var c = b * 2\n\
+         \x20\x20\x20\x20return c\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let mut hook = Recorder::default();
+    let outcome = run_entry_with_debugger(
+        &program,
+        &store,
+        &Host::new(),
+        &mut hook,
+        "test::compute",
+        &[Value::Int(10)],
+    )
+    .expect("debugged run completes");
+    assert_eq!(outcome.value, Some(Value::Int(22)));
+
+    // `compute` is on line 1, its body statements on lines 2..=4.
+    assert_eq!(
+        hook.steps,
+        vec![
+            (2, vec!["a=10".to_string()], 1),
+            (3, vec!["a=10".to_string(), "b=11".to_string()], 1),
+            (
+                4,
+                vec!["a=10".to_string(), "b=11".to_string(), "c=22".to_string()],
+                1,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn hook_depth_tracks_nested_activations() {
+    // A call deepens the activation; the callee's statements report a greater
+    // depth than the caller's, so step-over/step-out can be expressed by depth.
+    let program = checked_program(
+        "fn inner(): int\n\
+         \x20\x20\x20\x20return 1\n\
+         \n\
+         fn outer(): int\n\
+         \x20\x20\x20\x20const x = inner()\n\
+         \x20\x20\x20\x20return x\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let mut hook = Recorder::default();
+    run_entry_with_debugger(
+        &program,
+        &store,
+        &Host::new(),
+        &mut hook,
+        "test::outer",
+        &[],
+    )
+    .expect("debugged run completes");
+
+    let depths: Vec<usize> = hook.steps.iter().map(|(_, _, depth)| *depth).collect();
+    // outer's `const x = inner()` (depth 1), inner's `return 1` (depth 2 during
+    // the nested call), then outer's `return x` (back at depth 1).
+    assert_eq!(depths, vec![1, 2, 1]);
+}
+
+#[test]
+fn hook_store_handle_sees_prior_writes() {
+    // `Frame::store()` is the live handle, so a write made by an earlier statement
+    // is visible to the hook when it inspects a later one (read-your-writes).
+    let program = checked_program(
+        "resource Account at ^accts(id: int)\n\
+         \x20\x20\x20\x20balance: int\n\
+         \n\
+         fn seed(): int\n\
+         \x20\x20\x20\x20^accts(1).balance = 7\n\
+         \x20\x20\x20\x20return 0\n",
+    );
+    let store = RefCell::new(MemStore::new());
+
+    struct StorePeeker {
+        balance_seen_at_return: Option<i64>,
+    }
+    impl StepHook for StorePeeker {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            // The `return 0` is the second body statement (line 6). By then the
+            // first statement has written the balance, so the live store reflects it.
+            if span.line == 6 {
+                let raw = frame
+                    .store()
+                    .borrow()
+                    .read(&encode_path(&[
+                        PathSegment::Root("accts".into()),
+                        PathSegment::RecordKey(SavedKey::Int(1)),
+                        PathSegment::Field("balance".into()),
+                    ]))
+                    .expect("store read");
+                self.balance_seen_at_return =
+                    raw.and_then(|bytes| match decode_value(&bytes, ScalarType::Int) {
+                        Some(SavedValue::Int(n)) => Some(n),
+                        _ => None,
+                    });
+            }
+            Ok(())
+        }
+    }
+
+    let mut hook = StorePeeker {
+        balance_seen_at_return: None,
+    };
+    run_entry_with_debugger(&program, &store, &Host::new(), &mut hook, "test::seed", &[])
+        .expect("debugged run completes");
+    assert_eq!(hook.balance_seen_at_return, Some(7));
+}
+
+#[test]
+fn hook_error_aborts_the_run() {
+    // Returning Err from `before_statement` terminates the run; the error
+    // surfaces and later statements never execute.
+    let program = checked_program(
+        "fn compute(): int\n\
+         \x20\x20\x20\x20const a = 1\n\
+         \x20\x20\x20\x20const b = 2\n\
+         \x20\x20\x20\x20return a + b\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let mut hook = Recorder {
+        steps: Vec::new(),
+        abort_at_line: Some(3),
+    };
+    let error = run_entry_with_debugger(
+        &program,
+        &store,
+        &Host::new(),
+        &mut hook,
+        "test::compute",
+        &[],
+    )
+    .expect_err("the hook aborts the run");
+    assert_eq!(error.code, marrow_run::RUN_UNSUPPORTED);
+    assert_eq!(error.message, "debugger terminate");
+    // Only the statements up to and including the aborting one were offered.
+    let lines: Vec<u32> = hook.steps.iter().map(|(line, _, _)| *line).collect();
+    assert_eq!(lines, vec![2, 3]);
+}
+
+#[test]
+fn display_debug_renders_scalars_and_structured_previews() {
+    // Scalars render like the normal renderer.
+    assert_eq!(Value::Int(42).display_debug(), "42");
+    assert_eq!(Value::Bool(true).display_debug(), "true");
+    assert_eq!(Value::Str("hi".into()).display_debug(), "hi");
+
+    // Bytes and a sequence get a total, never-faulting preview (the normal
+    // renderer refuses these).
+    assert_eq!(Value::Bytes(vec![1, 2, 3]).display_debug(), "bytes[3]");
+    assert_eq!(
+        Value::Sequence(vec![Value::Int(1), Value::Int(2)]).display_debug(),
+        "sequence[2]"
+    );
+
+    // A resource previews its present field names; an identity previews its keys.
+    assert_eq!(
+        Value::Resource(vec![
+            ("title".into(), Value::Str("v2".into())),
+            ("pages".into(), Value::Int(3)),
+        ])
+        .display_debug(),
+        "resource{title, pages}"
+    );
+    assert_eq!(
+        Value::Identity(vec![SavedKey::Int(17)]).display_debug(),
+        "identity(17)"
+    );
+}
+
+#[test]
+fn an_ordinary_run_with_host_is_unchanged_by_the_hook_machinery() {
+    // Sanity: the same program through the non-debugged entry behaves exactly as
+    // before — no hook installed, no behavior change.
+    let program = checked_program(
+        "fn compute(a: int): int\n\
+         \x20\x20\x20\x20const b = a + 1\n\
+         \x20\x20\x20\x20return b\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome = run_entry_with_host(
+        &program,
+        &store,
+        &Host::new(),
+        "test::compute",
+        &[Value::Int(4)],
+    )
+    .expect("run completes");
+    assert_eq!(outcome.value, Some(Value::Int(5)));
+}
+
 /// An index branch is not an assignable place: `out ^books.byShelf(s)` is
 /// rejected, the same unsupported-path classification the lowering gives it.
 #[test]

@@ -81,6 +81,52 @@ pub enum Value {
     Identity(Vec<SavedKey>),
 }
 
+impl Value {
+    /// A total, never-faulting one-line rendering for a debugger's Variables view.
+    /// Scalars render exactly as the normal text renderer does (so a debugged
+    /// value reads like a printed one); the shapes the normal renderer refuses
+    /// (bytes, sequences, resources, identities) get a compact structural preview
+    /// instead of a fault, since the debugger must display every local. This is a
+    /// preview, not a re-parseable form.
+    pub fn display_debug(&self) -> String {
+        match self {
+            Value::Int(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Str(s) => s.clone(),
+            Value::Decimal(d) => d.to_text(),
+            Value::Instant(n) => format!("instant({n})"),
+            Value::Date(d) => format!("date({d})"),
+            Value::Duration(n) => format!("duration({n})"),
+            Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+            Value::Sequence(items) => format!("sequence[{}]", items.len()),
+            // Preview the present field names, in schema order, without recursing
+            // into their values (which could be large or nested resources).
+            Value::Resource(fields) => {
+                let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
+                format!("resource{{{}}}", names.join(", "))
+            }
+            // Preview the identity's lowered key segments.
+            Value::Identity(keys) => {
+                let rendered: Vec<String> = keys.iter().map(saved_key_preview).collect();
+                format!("identity({})", rendered.join(", "))
+            }
+        }
+    }
+}
+
+/// A compact preview of one identity key segment for [`Value::display_debug`].
+fn saved_key_preview(key: &SavedKey) -> String {
+    match key {
+        SavedKey::Int(n) => n.to_string(),
+        SavedKey::Bool(b) => b.to_string(),
+        SavedKey::Str(s) => s.clone(),
+        SavedKey::Date(d) => format!("date({d})"),
+        SavedKey::Duration(n) => format!("duration({n})"),
+        SavedKey::Instant(n) => format!("instant({n})"),
+        SavedKey::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+    }
+}
+
 /// The result of running an entry function: its returned value (if any) and
 /// everything it wrote to the output stream via `print`/`write`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +173,62 @@ impl marrow_syntax::Diagnose for RuntimeError {
     }
     fn message(&self) -> &str {
         &self.message
+    }
+}
+
+/// An opt-in debugger hook: the runtime calls [`StepHook::before_statement`]
+/// once for each statement it is about to evaluate, in program order, so an
+/// adapter (e.g. marrow-dap) can step statement-by-statement and inspect the
+/// activation. A hook is installed only by [`run_entry_with_debugger`]; an
+/// ordinary run installs none and pays at most one `if let Some` per statement.
+///
+/// Returning `Err` aborts the run with that error (a debugger 'terminate'),
+/// surfacing it the way any runtime fault would.
+pub trait StepHook {
+    /// Called just before the statement at `span` runs, with a read-only view of
+    /// the current activation. Returning `Err` terminates the run.
+    fn before_statement(
+        &mut self,
+        span: SourceSpan,
+        frame: Frame<'_, '_>,
+    ) -> Result<(), RuntimeError>;
+}
+
+/// A read-only view of the current activation handed to a [`StepHook`]. It
+/// borrows the live environment, so locals reflect the bindings in scope and the
+/// store handle reads the run's own writes (read-your-writes). It exposes only
+/// already-public types ([`Value`], [`Backend`]); the environment itself stays
+/// private. The two lifetimes are the borrow (`'e`) and the run's borrowed state
+/// (`'p`); they differ because `'p` is invariant (the env holds a `&'p mut`
+/// hook), so a single shared lifetime would not unify.
+pub struct Frame<'e, 'p> {
+    env: &'e Env<'p>,
+}
+
+impl<'e, 'p> Frame<'e, 'p> {
+    /// The locals visible at this point, innermost scope last and, within a
+    /// scope, in binding order. A name rebound in an inner scope therefore appears
+    /// after the outer one it shadows, so a consumer keeping the last occurrence
+    /// per name observes shadowing correctly.
+    pub fn locals(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.env
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.iter())
+            .map(|(name, binding)| (name.as_str(), &binding.value))
+    }
+
+    /// The live saved-data store handle — the same one the run reads and writes,
+    /// so a hook sees the activation's own pending writes.
+    pub fn store(&self) -> &RefCell<dyn Backend> {
+        self.env.store
+    }
+
+    /// The activation depth: 1 for the entry function, one more per nested call.
+    /// A debugger compares depths across statements to express step-over and
+    /// step-out.
+    pub fn depth(&self) -> usize {
+        self.env.depth
     }
 }
 
@@ -289,10 +391,13 @@ pub fn evaluate_function(
         function.span,
         args,
         &[],
+        // No debugger; the entry activation is depth 1.
+        None,
+        1,
     )? {
-        (Completion::Returned(value), _) => Ok(value),
-        (Completion::Threw(error), _) => Err(raise(error, function.span)),
-        (Completion::Faulted { error, code }, _) => Err(reraise_fault(error, code, function.span)),
+        (Completion::Returned(value), ..) => Ok(value),
+        (Completion::Threw(error), ..) => Err(raise(error, function.span)),
+        (Completion::Faulted { error, code }, ..) => Err(reraise_fault(error, code, function.span)),
     }
 }
 
@@ -318,6 +423,44 @@ pub fn run_entry_with_host(
     host: &Host,
     entry: &str,
     args: &[Value],
+) -> Result<RunOutput, RuntimeError> {
+    // An ordinary run installs no debugger hook.
+    run_entry_impl(program, store, host, entry, args, None)
+}
+
+/// Like [`run_entry_with_host`], but installs an opt-in statement debugger: the
+/// `hook` is called before each statement the run evaluates (see [`StepHook`]),
+/// so a debug adapter can step and inspect [`Frame`]s. The only behavioral
+/// difference from a plain run is those hook calls; returning `Err` from the hook
+/// terminates the run with that error.
+pub fn run_entry_with_debugger(
+    program: &CheckedProgram,
+    store: &RefCell<dyn Backend>,
+    host: &Host,
+    hook: &mut dyn StepHook,
+    entry: &str,
+    args: &[Value],
+) -> Result<RunOutput, RuntimeError> {
+    run_entry_impl(program, store, host, entry, args, Some(hook))
+}
+
+/// The shared entry path for [`run_entry_with_host`] and
+/// [`run_entry_with_debugger`]: resolve `entry`, bind its parameters, and run its
+/// body as the depth-1 activation, optionally threading a debugger `hook`. With
+/// `hook` `None` this is exactly the former pre-debugger behavior.
+//
+// The borrowed run state and the hook share one lifetime `'p`: [`invoke`] stores
+// the hook in the `Env<'p>` alongside the `'p`-borrowed context, and the `&mut`
+// in the hook is invariant, so the compiler cannot shrink the state's lifetime to
+// fit the hook's. Binding both to `'p` is sound — the caller's borrows all outlive
+// this call.
+fn run_entry_impl<'p>(
+    program: &'p CheckedProgram,
+    store: &'p RefCell<dyn Backend>,
+    host: &'p Host,
+    entry: &str,
+    args: &[Value],
+    hook: Option<&'p mut dyn StepHook>,
 ) -> Result<RunOutput, RuntimeError> {
     let segments: Vec<String> = entry.split("::").map(str::to_string).collect();
     let function = resolve_function(program, &segments).ok_or_else(|| {
@@ -347,10 +490,12 @@ pub fn run_entry_with_host(
         function.span,
         args,
         &[],
+        hook,
+        1,
     )? {
-        (Completion::Returned(value), _) => value,
-        (Completion::Threw(error), _) => return Err(raise(error, function.span)),
-        (Completion::Faulted { error, code }, _) => {
+        (Completion::Returned(value), ..) => value,
+        (Completion::Threw(error), ..) => return Err(raise(error, function.span)),
+        (Completion::Faulted { error, code }, ..) => {
             return Err(reraise_fault(error, code, function.span));
         }
     };
@@ -377,18 +522,28 @@ enum Completion {
     },
 }
 
-/// Bind `args` to `param_names`, evaluate `body` in a fresh activation, and
-/// surface how it finished plus, for each `out`/`inout` parameter named in
-/// `writeback`, its final value (param-order-aligned, `Some` only when the body
-/// returned normally — a throw or fault skips write-back). Shared by
+/// What an activation hands back: how it finished, each `out`/`inout` final
+/// value, and the debugger hook moved back out so the caller keeps stepping.
+type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut dyn StepHook>);
+
+/// Bind `args` to `param_names`, evaluate `body` in a fresh activation at call
+/// `depth`, and surface how it finished plus, for each `out`/`inout` parameter
+/// named in `writeback`, its final value (param-order-aligned, `Some` only when
+/// the body returned normally — a throw or fault skips write-back). Shared by
 /// [`evaluate_function`], [`run_entry`], and call evaluation; non-`out`/`inout`
 /// calls pass an empty `writeback`.
+///
+/// The optional `hook` is the opt-in debugger; it is moved into this activation
+/// and, on every non-fatal outcome, moved back out in the returned tuple so the
+/// caller can keep stepping after the call returns. A fatal `Err` aborts the run
+/// and drops the borrow with it. Moving the `&mut` (rather than reborrowing)
+/// preserves its `'p` lifetime exactly, so no `unsafe` is needed.
 // The activation's inputs are independent (context, output, the frame's import
-// aliases, parameter names, body, span, args, write-back set); bundling them
-// would not aid clarity.
+// aliases, parameter names, body, span, args, write-back set, debugger hook,
+// call depth); bundling them would not aid clarity.
 #[allow(clippy::too_many_arguments)]
-fn invoke(
-    ctx: Context<'_>,
+fn invoke<'p>(
+    ctx: Context<'p>,
     output: Rc<RefCell<String>>,
     aliases: HashMap<String, Vec<String>>,
     param_names: &[&str],
@@ -396,7 +551,9 @@ fn invoke(
     span: SourceSpan,
     args: &[Value],
     writeback: &[&str],
-) -> Result<(Completion, Vec<Option<Value>>), RuntimeError> {
+    hook: Option<&'p mut dyn StepHook>,
+    depth: usize,
+) -> Result<Activation<'p>, RuntimeError> {
     if args.len() != param_names.len() {
         return Err(RuntimeError::fault(
             RUN_TYPE,
@@ -408,7 +565,7 @@ fn invoke(
             span,
         ));
     }
-    let mut env = Env::new(ctx, output, aliases);
+    let mut env = Env::new(ctx, output, aliases, hook, depth);
     env.push_scope();
     for (name, arg) in param_names.iter().zip(args) {
         // `out`/`inout` parameters are reassignable inside the callee; plain
@@ -461,7 +618,9 @@ fn invoke(
             ));
         }
     };
-    Ok((completion, finals))
+    // Hand the debugger hook back to the caller so it can keep stepping after this
+    // activation. It is `None` for an ordinary run.
+    Ok((completion, finals, env.hook.take()))
 }
 
 /// Raise `error` as a catchable language throw on the `Err` channel: the value
@@ -1075,7 +1234,10 @@ fn eval_call(
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    let (completion, _) = invoke(
+    // Move the debugger hook into the callee and the depth one deeper, then move
+    // the hook back so the caller keeps stepping after the call returns.
+    let depth = env.depth;
+    let (completion, _, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
         frame_aliases(ctx.program, &segments),
@@ -1084,7 +1246,10 @@ fn eval_call(
         function.span,
         &values,
         &[],
+        env.hook.take(),
+        depth + 1,
     )?;
+    env.hook = hook;
     complete_call(completion, span)
 }
 
@@ -1191,7 +1356,10 @@ fn eval_call_with_modes(
         store: env.store,
         host: env.host,
     };
-    let (completion, finals) = invoke(
+    // Move the debugger hook into the callee and the depth one deeper, then move
+    // the hook back so the caller keeps stepping after the call returns.
+    let depth = env.depth;
+    let (completion, finals, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
         frame_aliases(ctx.program, segments),
@@ -1200,7 +1368,10 @@ fn eval_call_with_modes(
         function.span,
         &values,
         &writeback,
+        env.hook.take(),
+        depth + 1,
     )?;
+    env.hook = hook;
     // Write each out/inout parameter's final value back to its place. On a throw
     // or fault `finals` is all `None`, so nothing is written.
     for (place, final_value) in places.into_iter().zip(finals) {
@@ -2520,6 +2691,18 @@ struct Env<'p> {
     /// begin/commit ([`WritePlan::commit`]'s `in_txn`). Incremented on entering a
     /// `transaction` block and decremented as it commits or rolls back.
     transaction_depth: usize,
+    /// The opt-in statement debugger, installed only by
+    /// [`run_entry_with_debugger`]; `None` for every ordinary run, where the
+    /// per-statement check is a single `Option::is_none`. The hook is moved
+    /// (`Option::take`) out before each call so it cannot alias the `&Env` that
+    /// the [`Frame`] borrows, then moved back — threading the borrow with no
+    /// `unsafe`. It rides each nested activation by being moved into the callee's
+    /// [`invoke`] and returned to the caller afterward.
+    hook: Option<&'p mut dyn StepHook>,
+    /// This activation's call depth: 1 for the entry function, one more per
+    /// nested call. Exposed via [`Frame::depth`] so a debugger can express
+    /// step-over and step-out by comparing depths across statements.
+    depth: usize,
 }
 
 /// Why an assignment did not land.
@@ -2533,6 +2716,8 @@ impl<'p> Env<'p> {
         ctx: Context<'p>,
         output: Rc<RefCell<String>>,
         aliases: HashMap<String, Vec<String>>,
+        hook: Option<&'p mut dyn StepHook>,
+        depth: usize,
     ) -> Self {
         Self {
             scopes: Vec::new(),
@@ -2543,6 +2728,8 @@ impl<'p> Env<'p> {
             traversed_layers: Vec::new(),
             aliases,
             transaction_depth: 0,
+            hook,
+            depth,
         }
     }
 
@@ -2664,6 +2851,20 @@ fn eval_statements(statements: &[Statement], env: &mut Env<'_>) -> Result<Flow, 
 }
 
 fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
+    // Opt-in debugger step: offer this statement to an installed hook before it
+    // runs. An ordinary run has no hook, so this is a single `is_some` check.
+    // Taking the hook out of `env` frees the `&mut Env` to be reborrowed as the
+    // `&Env` the read-only [`Frame`] needs, with no aliasing and no `unsafe`; it
+    // is put back whether the call succeeds or aborts the run.
+    if env.hook.is_some() {
+        let mut hook = env.hook.take();
+        let result = hook
+            .as_deref_mut()
+            .expect("hook is Some")
+            .before_statement(statement.span(), Frame { env });
+        env.hook = hook;
+        result?;
+    }
     match statement {
         Statement::Const { name, value, .. } => {
             let value = eval_expr(value, env)?;
