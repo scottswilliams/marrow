@@ -502,6 +502,10 @@ impl Statement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamDecl {
+    /// The run of `;;` doc lines written directly above this parameter, one
+    /// entry per line in source order. Empty for a single-line list, where
+    /// parameter docs are not written.
+    pub docs: Vec<String>,
     pub mode: Option<ParamMode>,
     pub name: String,
     pub ty: TypeRef,
@@ -3762,17 +3766,31 @@ fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &
     })
 }
 
-/// Parse a comma-separated `(out|inout)? name: type` parameter list.
+/// Parse a `(out|inout)? name: type` parameter list. Parameters are separated by
+/// commas, and in a multi-line list a line break separates one from the next just
+/// as a comma does, so the list reads cleanly written with commas, without them,
+/// or mixed. A run of `;;` doc lines directly above a parameter is its
+/// documentation, captured in source order.
 fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, &'static str> {
     if inner.is_empty() {
         return Ok(Vec::new());
     }
     let mut params = Vec::new();
-    for part in split_top_level_commas(inner) {
-        let (mode, rest) = match part.first().map(|token| token.kind) {
-            Some(TokenKind::Keyword(Keyword::Out)) => (Some(ParamMode::Out), &part[1..]),
-            Some(TokenKind::Keyword(Keyword::InOut)) => (Some(ParamMode::InOut), &part[1..]),
-            _ => (None, part),
+    for group in split_param_groups(inner) {
+        // A doc run with no parameter after it documents nothing; report the
+        // misplaced doc rather than dropping it.
+        if group.body.is_empty() {
+            return Err("a doc comment must precede a parameter");
+        }
+        let docs = group
+            .docs
+            .iter()
+            .map(|token| doc_comment_text(token.text(source)))
+            .collect();
+        let (mode, rest) = match group.body.first().map(|token| token.kind) {
+            Some(TokenKind::Keyword(Keyword::Out)) => (Some(ParamMode::Out), &group.body[1..]),
+            Some(TokenKind::Keyword(Keyword::InOut)) => (Some(ParamMode::InOut), &group.body[1..]),
+            _ => (None, group.body),
         };
         let name = match rest.first() {
             Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
@@ -3791,9 +3809,108 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, 
         if !is_type_text(&ty.text) {
             return Err("expected parameter type annotation");
         }
-        params.push(ParamDecl { mode, name, ty });
+        params.push(ParamDecl {
+            docs,
+            mode,
+            name,
+            ty,
+        });
     }
     Ok(params)
+}
+
+/// One parameter's tokens: its leading `;;` doc-comment run and the body tokens
+/// that spell `(out|inout)? name: type`.
+struct ParamGroup<'a> {
+    docs: Vec<&'a Token>,
+    body: &'a [Token],
+}
+
+/// Split a parameter list's inner tokens into per-parameter groups. A top-level
+/// comma ends a parameter, and so does a line break in a multi-line list: a body
+/// token that opens on a later source line than the parameter in progress starts
+/// the next one. Newlines are suppressed inside the parentheses, so the line
+/// boundary is read from token spans rather than a separator token. A leading run
+/// of `;;` doc comments attaches to the parameter it precedes.
+fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
+    let mut groups = Vec::new();
+    let mut docs: Vec<&Token> = Vec::new();
+    let mut body_start: Option<usize> = None;
+    let mut depth = 0usize;
+
+    let mut index = 0;
+    while index < inner.len() {
+        let token = &inner[index];
+        // The depth before this token's own bracket is what places the token: a
+        // closing `]` or `)` still belongs to the type it closes, so it reads at
+        // the deeper level even though it drops the depth back afterwards.
+        let depth_before = depth;
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+
+        if depth == 0 && token.kind == TokenKind::Comma {
+            if let Some(start) = body_start.take() {
+                groups.push(ParamGroup {
+                    docs: std::mem::take(&mut docs),
+                    body: &inner[start..index],
+                });
+            }
+            index += 1;
+            continue;
+        }
+
+        if token.kind == TokenKind::DocComment {
+            // A doc comment that opens a new parameter's documentation follows a
+            // completed parameter body, so close that body before collecting it.
+            if let Some(start) = body_start.take() {
+                groups.push(ParamGroup {
+                    docs: std::mem::take(&mut docs),
+                    body: &inner[start..index],
+                });
+            }
+            docs.push(token);
+            index += 1;
+            continue;
+        }
+
+        match body_start {
+            None => body_start = Some(index),
+            // A body token on a later source line than the parameter in progress
+            // begins the next parameter, so a line break separates parameters the
+            // same way a comma does. Only a top-level line break ends a parameter;
+            // a parameter occupies one logical line, and its type may still wrap
+            // across physical lines inside `(` or `[`, where the deeper depth keeps
+            // the wrap from splitting the parameter.
+            Some(start) if depth_before == 0 && token.span.line > inner[start].span.line => {
+                groups.push(ParamGroup {
+                    docs: std::mem::take(&mut docs),
+                    body: &inner[start..index],
+                });
+                body_start = Some(index);
+            }
+            Some(_) => {}
+        }
+        index += 1;
+    }
+
+    match body_start {
+        Some(start) => groups.push(ParamGroup {
+            docs,
+            body: &inner[start..],
+        }),
+        // A `;;` run with no parameter after it documents nothing. Surface it as a
+        // body-less group so the caller can report the misplaced doc rather than
+        // drop it.
+        None if !docs.is_empty() => groups.push(ParamGroup {
+            docs,
+            body: &inner[inner.len()..],
+        }),
+        None => {}
+    }
+    groups
 }
 
 /// Index of the `)` matching the leading `(` of `tokens`, if balanced.
@@ -4117,9 +4234,15 @@ fn expr_of(
 fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
     let start = tokens[0].span.start_byte;
     let end = tokens[tokens.len() - 1].span.end_byte;
-    TypeRef {
-        text: source[start..end].trim().to_string(),
-    }
+    // A type is a qualified name, optionally wrapped in `sequence[...]`, so no
+    // interior whitespace is significant. A type that wraps across physical lines
+    // inside its brackets is stored by its canonical single-line spelling, with
+    // the wrap whitespace removed, so the formatter emits one line.
+    let text = source[start..end]
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    TypeRef { text }
 }
 
 fn line_span(tokens: &[Token]) -> SourceSpan {

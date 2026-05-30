@@ -35,12 +35,14 @@ lines, the same multi-line form those comments already take elsewhere; rendering
 follows the same convention, so a soft-wrapped doc reads as one paragraph. A
 single-line parameter list carries no parameter docs.
 
-A single-line parameter list separates parameters with commas, the same as a
-call's arguments. In a multi-line list the comma is optional: a line break
-separates one parameter from the next just as a comma does, so the list reads
-cleanly with or without them. A parameter is documented by the run of `;;` lines
-directly above it, so adding, removing, or reordering a parameter never edits
-the line before it.
+A single-line parameter list is comma-separated. In a multi-line list a line
+break separates one parameter from the next, so the comma is optional and a
+parameter is documented by placing its `;;` comment on the line above it; the
+formatter writes a comma after every parameter, including the last, so adding a
+parameter never edits the line before it. A parameter occupies one logical line.
+Its type may span several physical lines only inside brackets — a wrapped
+`sequence[...]`, for example — where the brackets hold the type together; a bare
+`name:` and `type` split across lines at the top level is not a valid layout.
 
 Parameter docs and resource field docs document different things and compose. A
 resource documents the meaning of each field once, at its declaration; a

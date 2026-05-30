@@ -169,15 +169,10 @@ fn format_member_meta(docs: &[String], stable_id: &Option<String>, level: usize)
 fn format_function(source: &str, decl: &FunctionDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
-    let params = decl
-        .params
-        .iter()
-        .map(format_param)
-        .collect::<Vec<_>>()
-        .join(", ");
     out.push_str(&format!(
-        "{visibility}fn {}({params}){}",
+        "{visibility}fn {}({}){}",
         decl.name,
+        format_params(&decl.params),
         format_return_type(&decl.return_type)
     ));
     let body = format_block(source, &decl.body, 1);
@@ -186,6 +181,28 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         out.push_str(&body);
     }
     out
+}
+
+/// Render a parameter list. A list whose parameters carry documentation prints
+/// one parameter per line so each doc sits on the line above its parameter, with
+/// a trailing comma after the last so adding a parameter never edits the line
+/// before it; any other list stays on the single `name: type, ...` line.
+fn format_params(params: &[ParamDecl]) -> String {
+    if params.iter().any(|param| !param.docs.is_empty()) {
+        let mut out = String::from("\n");
+        for param in params {
+            out.push_str(&format_docs(&param.docs, 1));
+            out.push_str(INDENT);
+            out.push_str(&format_param(param));
+            out.push_str(",\n");
+        }
+        return out;
+    }
+    params
+        .iter()
+        .map(format_param)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_param(param: &ParamDecl) -> String {

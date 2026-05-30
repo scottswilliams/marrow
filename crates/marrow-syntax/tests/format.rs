@@ -419,3 +419,48 @@ fn comment_preservation_round_trips_and_is_idempotent() {
     assert!(body.contains("; trailing"));
     assert!(body.contains("; standalone"));
 }
+
+#[test]
+fn documented_parameters_format_one_per_line() {
+    let source = "module app\n\
+         fn f(\n\
+         \x20   ;; the book to file\n\
+         \x20   book: int,\n\
+         \x20   ;; shelf it is filed under\n\
+         \x20   shelf: string,\n\
+         )\n\
+         \x20   return\n";
+    let decl = format_decl(source, 0);
+    let expected = "fn f(\n\
+         \x20   ;; the book to file\n\
+         \x20   book: int,\n\
+         \x20   ;; shelf it is filed under\n\
+         \x20   shelf: string,\n\
+         )\n\
+         \x20   return";
+    assert_eq!(decl, expected);
+}
+
+#[test]
+fn documented_parameter_signature_round_trips() {
+    // A signature with parameter docs survives parse -> format and is a fixed
+    // point: reformatting the output yields identical text and the docs persist.
+    let source = "module app\n\
+         fn f(\n\
+         \x20   ;; first line\n\
+         \x20   ;; second line\n\
+         \x20   book: int,\n\
+         \x20   shelf: string,\n\
+         )\n\
+         \x20   return\n";
+    let once = format_source(source);
+    let twice = format_source(&once);
+    assert_eq!(
+        once, twice,
+        "documented signature formatting is not a fixed point"
+    );
+    assert!(once.contains(";; first line"));
+    assert!(once.contains(";; second line"));
+    assert!(once.contains("book: int,"));
+    assert!(once.contains("shelf: string,"));
+}

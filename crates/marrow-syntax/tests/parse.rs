@@ -2137,3 +2137,156 @@ fn rejects_a_match_arm_that_is_not_a_bare_member() {
         parsed.diagnostics
     );
 }
+
+/// `(name, ty, docs)` triples for every parameter of a single function, for
+/// comparing parameter lists across the comma, newline, and mixed surfaces.
+fn param_shape(source: &str) -> Vec<(String, String, Vec<String>)> {
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    parsed
+        .file
+        .function("f")
+        .expect("function f")
+        .params
+        .iter()
+        .map(|param| {
+            (
+                param.name.clone(),
+                param.ty.text.clone(),
+                param.docs.clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn single_line_parameter_list_parses_unchanged() {
+    assert_eq!(
+        param_shape("module app\nfn f(a: int, b: string)\n    return\n"),
+        vec![
+            ("a".to_string(), "int".to_string(), Vec::new()),
+            ("b".to_string(), "string".to_string(), Vec::new()),
+        ]
+    );
+}
+
+#[test]
+fn multi_line_parameter_list_without_commas_matches_single_line() {
+    let newline_separated = "module app\nfn f(\n    a: int\n    b: string\n)\n    return\n";
+    assert_eq!(
+        param_shape(newline_separated),
+        param_shape("module app\nfn f(a: int, b: string)\n    return\n")
+    );
+}
+
+#[test]
+fn multi_line_parameter_list_with_trailing_commas_matches_single_line() {
+    let comma_separated = "module app\nfn f(\n    a: int,\n    b: string,\n)\n    return\n";
+    assert_eq!(
+        param_shape(comma_separated),
+        param_shape("module app\nfn f(a: int, b: string)\n    return\n")
+    );
+}
+
+#[test]
+fn mixed_comma_and_newline_separators_parse_identically() {
+    let mixed = "module app\nfn f(\n    a: int,\n    b: string\n    c: bool,\n)\n    return\n";
+    assert_eq!(
+        param_shape(mixed),
+        vec![
+            ("a".to_string(), "int".to_string(), Vec::new()),
+            ("b".to_string(), "string".to_string(), Vec::new()),
+            ("c".to_string(), "bool".to_string(), Vec::new()),
+        ]
+    );
+}
+
+#[test]
+fn single_doc_line_above_a_parameter_is_captured() {
+    let source = "module app\nfn f(\n    ;; the book to file\n    book: int,\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![(
+            "book".to_string(),
+            "int".to_string(),
+            vec!["the book to file".to_string()],
+        )]
+    );
+}
+
+#[test]
+fn stacked_doc_lines_are_captured_in_order() {
+    let source =
+        "module app\nfn f(\n    ;; first line\n    ;; second line\n    book: int,\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![(
+            "book".to_string(),
+            "int".to_string(),
+            vec!["first line".to_string(), "second line".to_string()],
+        )]
+    );
+}
+
+#[test]
+fn a_parameter_without_a_doc_has_empty_docs() {
+    let source =
+        "module app\nfn f(\n    ;; documented\n    a: int,\n    b: string,\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![
+            (
+                "a".to_string(),
+                "int".to_string(),
+                vec!["documented".to_string()]
+            ),
+            ("b".to_string(), "string".to_string(), Vec::new()),
+        ]
+    );
+}
+
+#[test]
+fn multi_line_call_arguments_still_parse() {
+    // A multi-line call-argument list is governed by the same delimiter-newline
+    // suppression; documenting parameters must not regress it.
+    let parsed =
+        parse_source("module app\nfn f()\n    print(\n        1,\n        2,\n        3,\n    )\n");
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn parameter_type_wrapped_inside_brackets_stays_one_parameter() {
+    // A type may span physical lines inside its brackets; the line break sits at
+    // a depth above the parameter list, so it must not split the parameter.
+    let source = "module app\nfn f(\n    rows: sequence[\n        Book\n    ]\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![("rows".to_string(), "sequence[Book]".to_string(), Vec::new(),)]
+    );
+}
+
+#[test]
+fn parameter_with_wrapped_bracketed_type_and_a_following_parameter_parses_both() {
+    let source = "module app\nfn f(\n    rows: sequence[\n        Book\n    ]\n    shelf: string\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![
+            ("rows".to_string(), "sequence[Book]".to_string(), Vec::new(),),
+            ("shelf".to_string(), "string".to_string(), Vec::new()),
+        ]
+    );
+}
+
+#[test]
+fn trailing_doc_with_no_following_parameter_is_reported() {
+    // A dangling `;;` run after the last parameter documents nothing; it must be
+    // reported rather than silently dropped.
+    let source = "module app\nfn f(\n    a: int,\n    ;; orphaned doc\n)\n    return\n";
+    let parsed = parse_source(source);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("doc comment must precede a parameter"))
+        .expect("a diagnostic for the orphaned doc comment");
+    assert_eq!(diagnostic.code, "parse.syntax");
+}
