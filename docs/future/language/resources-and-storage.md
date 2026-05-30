@@ -114,3 +114,27 @@ reached through paths. A local or scratch `map` or `set` has no portable saved
 form, so an implementation may choose memory-optimized structures for it; code
 still depends on Marrow's typed tree behavior, not on a particular in-memory
 data structure.
+
+## Local Tree Writes
+
+Local sequence and keyed-tree variables support the same path-shaped reads and
+writes as saved trees, without saved lifetime or backend capability checks:
+
+```mw
+var tags: sequence[string]
+const first = append(tags, "fiction")
+tags(first + 1) = "paperback"
+
+var scores(playerId: string): int
+scores(playerId) = (scores(playerId) ?? 0) + 1
+```
+
+A local subscript such as `scores(playerId)` is a typed path. It can be read,
+assigned, defaulted with `??`, tested with `exists(...)`, deleted, traversed,
+or merged according to the same presence and type rules as any other tree path.
+The checker rejects keys whose static type does not match the declared layer.
+
+`append(localSequence, value)` writes one greater than the highest populated
+positive integer key in that local tree and returns the key it wrote. It skips
+holes for the same reason saved sequence append skips holes: sequence positions
+are stable tree keys, not dense array indexes.
