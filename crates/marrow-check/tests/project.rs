@@ -1363,10 +1363,9 @@ fn a_correctly_typed_local_resource_field_is_not_flagged() {
 }
 
 #[test]
-fn passing_a_resource_to_a_mismatched_resource_parameter_is_not_flagged() {
-    // Resources are not primitives, so a resource-typed argument is never flagged
-    // against a different resource-typed parameter — resource-name resolution must
-    // not turn this sound omission into a false positive.
+fn passing_a_resource_to_a_mismatched_resource_parameter_is_flagged() {
+    // Resources are nominally typed: a `Book` argument to a `Shelf` parameter names
+    // a different resource and is a real argument mismatch.
     let found = check_module(
         "resource-arg",
         "module m\n\
@@ -1374,6 +1373,21 @@ fn passing_a_resource_to_a_mismatched_resource_parameter_is_not_flagged() {
          resource Shelf at ^shelves(id: int)\n    name: string\n\n\
          fn useShelf(s: Shelf): bool\n    return true\n\n\
          fn f()\n    var book: Book\n    var ok = useShelf(book)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn passing_a_resource_to_a_matching_resource_parameter_is_not_flagged() {
+    // A `Book` argument to a `Book` parameter is the same resource, so it checks
+    // clean — nominal typing accepts the matching resource.
+    let found = check_module(
+        "resource-arg-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn useBook(b: Book): bool\n    return true\n\n\
+         fn f()\n    var book: Book\n    var ok = useBook(book)\n",
         "check.call_argument",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -1517,12 +1531,24 @@ fn a_correctly_typed_std_call_return_is_not_flagged() {
 }
 
 #[test]
-fn a_sequence_returning_std_call_is_not_flagged() {
-    // `std::text::split` returns `sequence[string]` (non-primitive), so the checks
-    // — which gate on primitives — never flag it, even against an `int` return.
+fn a_sequence_returning_std_call_against_a_scalar_return_is_flagged() {
+    // `std::text::split` returns `sequence[string]`; returning it from an `int`
+    // function is a real type mismatch — a sequence is not a scalar.
     let found = check_module(
         "std-return-seq",
         "module m\nfn f(): int\n    return std::text::split(\"a,b\", \",\")\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_sequence_returning_std_call_against_a_matching_return_is_not_flagged() {
+    // Returning `sequence[string]` from a `sequence[string]` function recurses into
+    // the element type and checks clean.
+    let found = check_module(
+        "std-return-seq-ok",
+        "module m\nfn f(): sequence[string]\n    return std::text::split(\"a,b\", \",\")\n",
         "check.return_type",
     );
     assert!(found.is_empty(), "{found:#?}");

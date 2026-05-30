@@ -90,15 +90,15 @@ fn walk_block(file: &Path, block: &Block, out: &mut Vec<CheckDiagnostic>) {
 
 fn walk_statement(file: &Path, statement: &Statement, out: &mut Vec<CheckDiagnostic>) {
     match statement {
-        Statement::Assign { target, .. } | Statement::Merge { target, .. } => {
-            if !is_assignable(target) {
-                out.push(diagnostic(
-                    CHECK_INVALID_ASSIGN_TARGET,
-                    file,
-                    target,
-                    "assignment target is not a writable place",
-                ));
-            }
+        Statement::Assign { target, .. } | Statement::Merge { target, .. }
+            if !is_assignable(target) =>
+        {
+            out.push(diagnostic(
+                CHECK_INVALID_ASSIGN_TARGET,
+                file,
+                target,
+                "assignment target is not a writable place",
+            ));
         }
         Statement::If {
             then_block,
@@ -177,15 +177,15 @@ fn walk_finally(
                 statement,
                 "`return` is not allowed in a `finally` block",
             )),
-            Statement::Break { label, .. } | Statement::Continue { label, .. } => {
-                if finally_jump_escapes(label.as_deref(), loop_depth, loop_labels) {
-                    out.push(diagnostic_at(
-                        CHECK_FINALLY_CONTROL_FLOW,
-                        file,
-                        statement,
-                        "control flow may not leave a `finally` block",
-                    ));
-                }
+            Statement::Break { label, .. } | Statement::Continue { label, .. }
+                if finally_jump_escapes(label.as_deref(), loop_depth, loop_labels) =>
+            {
+                out.push(diagnostic_at(
+                    CHECK_FINALLY_CONTROL_FLOW,
+                    file,
+                    statement,
+                    "control flow may not leave a `finally` block",
+                ));
             }
             Statement::If {
                 then_block,
@@ -262,21 +262,21 @@ fn walk_loop_control_flow(
 ) {
     for statement in &block.statements {
         match statement {
-            Statement::Break { label, .. } | Statement::Continue { label, .. } => {
-                if loop_jump_unresolved(label.as_deref(), loop_depth, loop_labels) {
-                    let message = match label {
-                        Some(label) => {
-                            format!("`{label}` names no enclosing loop")
-                        }
-                        None => "control flow statement is not inside a loop".to_string(),
-                    };
-                    out.push(diagnostic_at(
-                        CHECK_LOOP_CONTROL_FLOW,
-                        file,
-                        statement,
-                        &message,
-                    ));
-                }
+            Statement::Break { label, .. } | Statement::Continue { label, .. }
+                if loop_jump_unresolved(label.as_deref(), loop_depth, loop_labels) =>
+            {
+                let message = match label {
+                    Some(label) => {
+                        format!("`{label}` names no enclosing loop")
+                    }
+                    None => "control flow statement is not inside a loop".to_string(),
+                };
+                out.push(diagnostic_at(
+                    CHECK_LOOP_CONTROL_FLOW,
+                    file,
+                    statement,
+                    &message,
+                ));
             }
             Statement::If {
                 then_block,

@@ -141,6 +141,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.return_type` | A `return` value's type does not match the function's declared return type. |
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
+| `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign resource spliced into a keyspace. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |
 | `check.unresolved_call` | A call names a function that is neither a builtin nor a declared function. |
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
@@ -283,6 +284,7 @@ project schema. Read-only; it never modifies the store.
 | Code | Meaning |
 |---|---|
 | `data.decode` | A stored value is not a canonical form of its declared type. |
+| `data.key_type` | A stored record or index key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
 | `data.orphan` | Saved data lives under an unknown root or names a member the schema does not declare. |
 
 (An undecodable stored *key* met during integrity verification is surfaced with

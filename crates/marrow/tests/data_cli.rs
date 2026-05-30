@@ -227,6 +227,37 @@ fn data_integrity_reports_orphan_data_under_an_unknown_root() {
 }
 
 #[test]
+fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_path};
+
+    // `^counter` declares an `int` identity, but this hand-built key is a string.
+    // The member chain still resolves, so this is a key-type mismatch — not an
+    // orphan — and integrity must flag it as data the schema cannot trust.
+    let project = native_project("data-integrity-key-type");
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("badkey.mra");
+    let bad_path = encode_path(&[
+        PathSegment::Root("counter".into()),
+        PathSegment::RecordKey(SavedKey::Str("oops".into())),
+        PathSegment::Field("value".into()),
+    ]);
+    write_archive_with(&archive, &[(bad_path, b"7".to_vec())]);
+    assert_eq!(
+        marrow(&["restore", &dir, archive.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.key_type"), "{stderr}");
+}
+
+#[test]
 fn data_get_reads_a_path_value_and_reports_absence() {
     let (project, dir) = seeded_project("data-get");
     let present = marrow(&["data", "get", &dir, "^counter(1).value"]);

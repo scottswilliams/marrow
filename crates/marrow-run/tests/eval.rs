@@ -6395,6 +6395,31 @@ fn classify_saved_path_distinguishes_fields_layers_indexes_and_orphans() {
     );
 }
 
+/// A record key of the wrong scalar kind under a typed root is a key-type
+/// mismatch, not an orphan: the member chain resolves, but the on-disk key does
+/// not match the declared identity type. This catches already-corrupt keys the
+/// runtime guard would now reject on write.
+#[test]
+fn classify_saved_path_flags_a_wrong_typed_record_key() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20title: string\n",
+    );
+    let bad_key = vec![
+        PathSegment::Root("books".into()),
+        // A string record key under an `int` identity root.
+        PathSegment::RecordKey(SavedKey::Str("oops".into())),
+        PathSegment::Field("title".into()),
+    ];
+    assert_eq!(
+        classify_saved_path(&program, &bad_key),
+        SavedPathClass::KeyTypeMismatch {
+            expected: ScalarType::Int,
+            found: ScalarType::Str,
+        }
+    );
+}
+
 // --- Saved-path lowering (the one `lower` pass) ---
 //
 // These pin the equivalence-risk corners of the unified lowering: the identity
@@ -6417,6 +6442,77 @@ fn an_identity_argument_splices_in_as_the_record_key() {
             .expect("read")
             .value,
         Some(Value::Str("a".into()))
+    );
+}
+
+/// A string key written into an `int` identity root faults at lowering rather
+/// than corrupting the keyspace. The checker's static net does not see it here
+/// (the parameter type is `Unknown` in this harness), so the runtime key-type
+/// guard is the only thing standing between a wrong-typed key and a silent
+/// string-in-an-int-keyspace write. The store must stay untouched.
+#[test]
+fn a_wrong_typed_key_faults_at_lowering_and_does_not_write() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn save(bad: string)\n    ^books(bad).title = \"a\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(&program, &store, "test::save", &[Value::Str("oops".into())])
+        .expect_err("a string key into an int root must fault");
+    assert_eq!(error.code, RUN_TYPE);
+    // Nothing was written: the keyspace is not polluted with a string key.
+    assert!(
+        store.borrow().scan(&[], usize::MAX).entries.is_empty(),
+        "a faulted write leaves the store empty"
+    );
+}
+
+/// A spliced identity whose key scalar does not match the target keyspace faults
+/// at lowering, exactly as a raw wrong-typed key does. A `Magazine::Id("issn")` is
+/// a single-`string` identity; splicing it into `^books(id: int)` would write a
+/// string key into an int keyspace, so it must fault with `RUN_TYPE` and leave the
+/// store empty. The constructor's own resource is the wrong scalar shape here, so
+/// the splice guard rejects it on scalar kind alone, independent of resource name.
+#[test]
+fn a_wrong_scalar_spliced_identity_faults_and_does_not_write() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Magazine at ^magazines(issn: string)\n    required title: string\n\n\
+         fn save()\n    const id = Magazine::Id(\"issn\")\n    ^books(id).title = \"a\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let error = run_entry(&program, &store, "test::save", &[])
+        .expect_err("a string-scalar identity into an int root must fault");
+    assert_eq!(error.code, RUN_TYPE);
+    assert!(
+        store.borrow().scan(&[], usize::MAX).entries.is_empty(),
+        "a faulted splice leaves the store empty"
+    );
+}
+
+/// A spliced identity whose key scalar matches the target keyspace still succeeds:
+/// the splice guard checks scalar kind and arity, so a same-scalar splice is not a
+/// false positive. `Magazine::Id(7)` is single-`int`, matching `^books(id: int)`.
+#[test]
+fn a_matching_scalar_spliced_identity_still_writes() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Magazine at ^magazines(id: int)\n    required title: string\n\n\
+         fn save()\n    const id = Magazine::Id(7)\n    ^books(id).title = \"a\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[]).expect("a same-scalar splice writes");
+    let store = store.borrow();
+    let bytes = store
+        .read(&encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(7)),
+            PathSegment::Field("title".into()),
+        ]))
+        .expect("present");
+    assert_eq!(
+        decode_value(bytes, ScalarType::Str),
+        Some(SavedValue::Str("a".into()))
     );
 }
 

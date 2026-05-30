@@ -43,6 +43,22 @@ impl SavedKey {
             SavedKey::Instant(_) => ScalarType::Instant.name(),
         }
     }
+
+    /// The scalar kind this key projects. A key is the orderable projection of a
+    /// scalar, so its kind is the scalar's own — letting a caller compare a key
+    /// against a declared key type. Decimals are not keys, so this is total over
+    /// the seven key arms.
+    pub fn scalar_type(&self) -> ScalarType {
+        match self {
+            SavedKey::Bool(_) => ScalarType::Bool,
+            SavedKey::Int(_) => ScalarType::Int,
+            SavedKey::Str(_) => ScalarType::Str,
+            SavedKey::Bytes(_) => ScalarType::Bytes,
+            SavedKey::Date(_) => ScalarType::Date,
+            SavedKey::Duration(_) => ScalarType::Duration,
+            SavedKey::Instant(_) => ScalarType::Instant,
+        }
+    }
 }
 
 /// One segment of a saved path.
@@ -531,7 +547,7 @@ fn unescape_string(inner: &str) -> String {
 
 /// Decode an even-length lowercase/uppercase hex string to bytes, or `None`.
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::with_capacity(text.len() / 2);
@@ -906,6 +922,9 @@ mod tests {
         ] {
             assert_eq!(value.as_key(), Some(key.clone()), "{key:?}");
             assert_eq!(key.wire_tag(), tag, "{key:?}");
+            // A key carries the scalar kind of the value it projects, so the key
+            // guard can compare a written key's kind against a declared key type.
+            assert_eq!(key.scalar_type(), value.ty(), "{key:?}");
         }
         // A decimal has no order-preserving key encoding.
         assert_eq!(SavedValue::Decimal(crate::Decimal::ZERO).as_key(), None);

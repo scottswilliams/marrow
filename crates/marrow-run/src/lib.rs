@@ -25,7 +25,7 @@ use marrow_check::{
     Resolution, ResolvableKind, resolve,
 };
 use marrow_schema::stdlib::{self, Capability};
-use marrow_schema::{Element, IndexSchema, ResourceSchema, Type};
+use marrow_schema::{Element, IndexSchema, KeyDef, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
 use marrow_store::mem::MemStore;
@@ -81,6 +81,14 @@ pub enum Value {
     /// key segments in declared identity-key order. Produced by an identity
     /// constructor and spliced back into the saved path at a keyed lookup. It is
     /// opaque — not a saved field value, not rendered, not iterated.
+    ///
+    /// The owning resource is not carried here: two identities with the same key
+    /// scalars are byte-identical, so `Book::Id(1)` and `Magazine::Id(1)` are one
+    /// value. Nominal identity is enforced statically by the checker and again at
+    /// lowering against the declared key types, which covers well-typed programs;
+    /// the residual — a value that already lost its nominal resource through
+    /// dynamic code — waits on unifying the type IR so the value can name its
+    /// resource.
     Identity(Vec<SavedKey>),
 }
 
@@ -3879,7 +3887,8 @@ fn eval_saved_layer_read(
         return Err(unsupported("this read", span));
     };
     let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    let layer_keys = lower_keys(keys, span, false, env)?;
+    let expected = layer_key_params(env.program, &root, &[layer]);
+    let layer_keys = lower_keys(keys, span, false, expected, env)?;
     read_layer_entry(
         &root,
         &identity,
@@ -3986,7 +3995,8 @@ fn eval_resource_read(
     let Expression::SavedRoot { name: root, .. } = callee else {
         return Err(unsupported("this read", span));
     };
-    let identity = lower_keys(args, span, true, env)?;
+    let expected = root_identity_keys(env.program, root);
+    let identity = lower_keys(args, span, true, expected, env)?;
     read_resource(root, &identity, span, env)
 }
 
@@ -4267,7 +4277,8 @@ fn eval_group_entry_write(
             .ok_or_else(|| unsupported("writing a resource value to a keyed leaf", span))?;
         let resource = find_resource(env.program, &root)
             .ok_or_else(|| unsupported("writing to this saved root", span))?;
-        let layer_keys = lower_keys(keys, span, false, env)?;
+        let expected = layer_key_params(env.program, &root, &[layer]);
+        let layer_keys = lower_keys(keys, span, false, expected, env)?;
         let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved);
         env.apply_plan(plan, span)?;
         return Ok(());
@@ -4280,7 +4291,8 @@ fn eval_group_entry_write(
     };
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let layer_keys = lower_keys(keys, span, false, env)?;
+    let expected = layer_key_params(env.program, &root, &[layer]);
+    let layer_keys = lower_keys(keys, span, false, expected, env)?;
     let value = resource_value_of(fields, span)?;
     let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value);
     env.apply_plan(plan, span)?;
@@ -4637,13 +4649,14 @@ fn eval_layer_entry_delete(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let (root, identity, chain) = lower(record, env)?.into_layers(record.span())?;
-    let entry_keys = lower_keys(keys, span, false, env)?;
     // The full layer chain the delete targets must be declared on the resource.
     let layer_names: Vec<&str> = chain
         .iter()
         .map(|(name, _)| name.as_str())
         .chain(std::iter::once(layer))
         .collect();
+    let expected = layer_key_params(env.program, &root, &layer_names);
+    let entry_keys = lower_keys(keys, span, false, expected, env)?;
     if !resource_layer_chain_exists(env.program, &root, &layer_names) {
         return Err(unsupported("deleting this layer entry", span));
     }
@@ -4690,6 +4703,24 @@ fn root_identity_arity(program: &CheckedProgram, name: &str) -> Option<usize> {
     find_resource(program, name)
         .and_then(|resource| resource.saved_root.as_ref())
         .map(|root| root.identity_keys.len())
+}
+
+/// The declared identity key parameters of the resource at saved root `name`, or
+/// an empty slice when the root is unresolved or keyless — the key-type guard
+/// reads these to reject a wrong-typed record key.
+fn root_identity_keys<'p>(program: &'p CheckedProgram, name: &str) -> &'p [KeyDef] {
+    find_resource(program, name)
+        .and_then(|resource| resource.saved_root.as_ref())
+        .map_or(&[], |root| root.identity_keys.as_slice())
+}
+
+/// The declared key parameters of a keyed layer named by its chain (outermost
+/// first), or an empty slice when the chain does not resolve — the key-type guard
+/// reads these to reject a wrong-typed index key.
+fn layer_key_params<'p>(program: &'p CheckedProgram, root: &str, chain: &[&str]) -> &'p [KeyDef] {
+    find_resource(program, root)
+        .and_then(|resource| resource.descend_layers(chain))
+        .map_or(&[], |node| node.key_params.as_slice())
 }
 
 /// The resource schema declared with `name`, for an identity constructor
@@ -5158,8 +5189,17 @@ fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError
         && let Expression::Field { base, name, .. } = callee.as_ref()
     {
         let mut path = lower(base, env)?;
-        path.layers
-            .push((name.clone(), lower_keys(args, *span, false, env)?));
+        // The chain to this layer is the layers lowered so far plus its own name,
+        // which resolves the key parameters the new keys are guarded against.
+        let chain: Vec<&str> = path
+            .layers
+            .iter()
+            .map(|(layer, _)| layer.as_str())
+            .chain(std::iter::once(name.as_str()))
+            .collect();
+        let expected = layer_key_params(env.program, &path.root, &chain);
+        let keys = lower_keys(args, *span, false, expected, env)?;
+        path.layers.push((name.clone(), keys));
         return Ok(path);
     }
     // An unkeyed group hop `….name` (a `.field`/`?.field` off a saved path, not a
@@ -5197,9 +5237,10 @@ fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError
     let Expression::SavedRoot { name, .. } = callee.as_ref() else {
         return Err(unsupported("this saved path", *span));
     };
+    let expected = root_identity_keys(env.program, name);
     Ok(record_path(
         name.clone(),
-        lower_keys(args, *span, true, env)?,
+        lower_keys(args, *span, true, expected, env)?,
     ))
 }
 
@@ -5344,6 +5385,7 @@ fn lower_keys(
     args: &[Argument],
     span: SourceSpan,
     allow_identity_splice: bool,
+    expected: &[KeyDef],
     env: &mut Env<'_>,
 ) -> Result<Vec<SavedKey>, RuntimeError> {
     if args
@@ -5356,21 +5398,90 @@ fn lower_keys(
         ));
     }
     let mut keys = Vec::with_capacity(args.len());
-    for arg in args {
+    for (position, arg) in args.iter().enumerate() {
         match eval_expr(&arg.value, env)? {
             // An identity is the whole lookup key only as the sole argument of a
-            // record lookup; it cannot be one component among raw keys.
+            // record lookup; it cannot be one component among raw keys. The
+            // identity carries no resource name, so a foreign one laundered through
+            // a dynamic value can reach here; its key scalars are guarded against
+            // the declared key types just like raw keys, so a wrong-scalar splice
+            // faults before any store write rather than corrupting the keyspace.
             Value::Identity(identity) if allow_identity_splice && args.len() == 1 => {
+                check_spliced_identity(&identity, expected, span)?;
                 return Ok(identity);
             }
             Value::Identity(_) if allow_identity_splice => {
                 return Err(unsupported("an identity mixed with other keys", span));
             }
-            value => keys
-                .push(value_to_key(value).ok_or_else(|| unsupported("a key of this type", span))?),
+            value => {
+                let key =
+                    value_to_key(value).ok_or_else(|| unsupported("a key of this type", span))?;
+                // Guard the key's scalar kind against the declared key type, so a
+                // wrong-typed key faults here rather than corrupting the keyspace.
+                // An unresolved schema passes no expectations, so the guard skips
+                // and arity faults still fire downstream.
+                if let Some(def) = expected.get(position)
+                    && let Some(declared) = def.ty.scalar()
+                    && declared != key.scalar_type()
+                {
+                    return Err(key_type_fault(declared, key.scalar_type(), span));
+                }
+                keys.push(key);
+            }
         }
     }
     Ok(keys)
+}
+
+/// Guard a spliced identity's keys against the target keyspace, the same scalar
+/// and arity check raw keys pass. A `Value::Identity` carries no resource name, so
+/// a foreign identity laundered through a dynamic value can be spliced into the
+/// wrong root; this catches the byte-incompatible cases (a different key count, or
+/// a key whose scalar kind the declared key position does not allow) before any
+/// store write. An unresolved schema passes no expectations and the guard skips,
+/// matching the raw-key path.
+fn check_spliced_identity(
+    identity: &[SavedKey],
+    expected: &[KeyDef],
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    if expected.is_empty() {
+        return Ok(());
+    }
+    if identity.len() != expected.len() {
+        return Err(type_error(
+            &format!(
+                "an identity with {} key(s) was spliced where {} is declared",
+                identity.len(),
+                expected.len()
+            ),
+            span,
+        ));
+    }
+    for (key, def) in identity.iter().zip(expected) {
+        if let Some(declared) = def.ty.scalar()
+            && declared != key.scalar_type()
+        {
+            return Err(key_type_fault(declared, key.scalar_type(), span));
+        }
+    }
+    Ok(())
+}
+
+/// A runtime fault for a key whose scalar kind does not match the declared key
+/// type. The keyspace is typed, so writing a wrong-typed key would corrupt it;
+/// this stops the write before it reaches the store.
+fn key_type_fault(expected: ScalarType, found: ScalarType, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        throw: None,
+        code: RUN_TYPE,
+        message: format!(
+            "a key of type `{}` was given where `{}` is declared",
+            found.name(),
+            expected.name()
+        ),
+        span,
+    }
 }
 
 /// The declared scalar type of a saved root's top-level field.
@@ -5417,6 +5528,14 @@ pub enum SavedPathClass {
     /// presence marker or a stored identity, raw-only by design — not a typed
     /// scalar, and a legal, expected store-level value.
     IndexMarker,
+    /// The path's member chain resolves, but a record or index key has a scalar
+    /// kind the schema does not declare for that key position — a key written
+    /// (or restored) at the wrong type. The keyspace is corrupt even though the
+    /// member is real, so this is distinct from an orphan.
+    KeyTypeMismatch {
+        expected: ScalarType,
+        found: ScalarType,
+    },
     /// The path is under no declared root, or names a member the schema does not
     /// declare — stale or foreign data the schema cannot account for.
     Orphan,
@@ -5471,7 +5590,48 @@ pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -
     if identity_keys != arity {
         return SavedPathClass::Orphan;
     }
+    // The identity is the right length; each record key must also be the declared
+    // scalar kind, or the keyspace is corrupt at the wrong type.
+    if let Some(resource) = find_resource(program, root)
+        && let Some(saved) = resource.saved_root.as_ref()
+        && let Some(mismatch) = key_type_mismatch(
+            &saved.identity_keys,
+            rest[..identity_keys].iter().filter_map(record_key),
+        )
+    {
+        return mismatch;
+    }
     classify_member(program, root, after_identity)
+}
+
+/// The record key carried by a segment, or `None` for any other segment kind.
+fn record_key(segment: &PathSegment) -> Option<&SavedKey> {
+    match segment {
+        PathSegment::RecordKey(key) => Some(key),
+        _ => None,
+    }
+}
+
+/// The first key-type mismatch between a layer's declared key parameters and the
+/// keys addressing it, or `None` when every key matches its declared scalar kind.
+/// An arity mismatch is the caller's to flag, so a shorter key run simply ends
+/// the comparison; a key under a non-scalar (defer) declaration is left alone.
+fn key_type_mismatch<'a>(
+    declared: &[KeyDef],
+    found: impl Iterator<Item = &'a SavedKey>,
+) -> Option<SavedPathClass> {
+    declared
+        .iter()
+        .zip(found)
+        .find_map(|(def, key)| match def.ty.scalar() {
+            Some(expected) if expected != key.scalar_type() => {
+                Some(SavedPathClass::KeyTypeMismatch {
+                    expected,
+                    found: key.scalar_type(),
+                })
+            }
+            _ => None,
+        })
 }
 
 /// Classify the member chain of a record path (everything after the identity
@@ -5485,15 +5645,20 @@ fn classify_member(
     root: &str,
     members: &[PathSegment],
 ) -> SavedPathClass {
-    // Split the chain into its named segments and reject any stray structure (a
-    // record key in member position, etc.). A bare identity path has no member
-    // and carries no scalar leaf, so a value stored there is an orphan.
-    let mut names = Vec::new();
+    // Split the chain into its named segments, each carrying the index keys that
+    // immediately follow it, and reject any stray structure (a record key in
+    // member position, etc.). A bare identity path has no member and carries no
+    // scalar leaf, so a value stored there is an orphan.
+    let mut named: Vec<(&str, Vec<&SavedKey>)> = Vec::new();
     for segment in members {
         match segment {
-            PathSegment::Field(name) => names.push(name.as_str()),
-            // Index keys position the preceding layer; they carry no new name.
-            PathSegment::IndexKey(_) => {}
+            PathSegment::Field(name) => named.push((name.as_str(), Vec::new())),
+            // Index keys position the preceding layer, so they belong to the most
+            // recent named segment; one before any name is malformed.
+            PathSegment::IndexKey(key) => match named.last_mut() {
+                Some((_, keys)) => keys.push(key),
+                None => return SavedPathClass::Orphan,
+            },
             // A record key or root in member position is malformed for a record.
             PathSegment::RecordKey(_)
             | PathSegment::Root(_)
@@ -5501,9 +5666,33 @@ fn classify_member(
             | PathSegment::Index(_) => return SavedPathClass::Orphan,
         }
     }
+    let names: Vec<&str> = named.iter().map(|(name, _)| *name).collect();
     let Some((&last, layers)) = names.split_last() else {
         return SavedPathClass::Orphan;
     };
+
+    // Every layer name that carries index keys must address its layer with keys of
+    // the declared scalar kinds; a wrong-typed index key is a corrupt keyspace, not
+    // an orphan. The terminal name is a leaf, whose own keys (a keyed-leaf entry)
+    // are the keys of the layer it names, so it is checked alongside the rest.
+    if let Some(resource) = find_resource(program, root) {
+        for (depth, (name, keys)) in named.iter().enumerate() {
+            if keys.is_empty() {
+                continue;
+            }
+            let chain: Vec<&str> = names[..depth]
+                .iter()
+                .copied()
+                .chain(std::iter::once(*name))
+                .collect();
+            let Some(node) = resource.descend_layers(&chain) else {
+                continue;
+            };
+            if let Some(mismatch) = key_type_mismatch(&node.key_params, keys.iter().copied()) {
+                return mismatch;
+            }
+        }
+    }
 
     // No leading layers: either a top-level field `^root(id).field` or a single
     // keyed-leaf layer entry `^root(id).layer(keys…)`.

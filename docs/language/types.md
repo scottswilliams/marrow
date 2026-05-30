@@ -259,6 +259,24 @@ integers from being accidentally passed as book identifiers, and it keeps IDs
 from becoming meaningful business counters. Convert explicitly at boundaries
 such as URLs, command arguments, or host IO.
 
+Identity types are nominal: `Book::Id` and `Magazine::Id` are distinct even
+when their stored keys share a shape, so a `Magazine::Id` is rejected wherever a
+`Book::Id` is expected. Saved key arguments are type-checked statically the same
+way — both a raw scalar of the wrong type (`^books("oops")`) and a foreign
+identity spliced into a keyspace (`^books(magazineId)`) are reported as
+`check.key_type`.
+
+At run time the key scalar type and arity are enforced before any store write: a
+key whose scalar kind or count does not match the declared keyspace faults
+(`run.type`) rather than reaching the store, and `marrow data integrity` reports
+an already-stored key of the wrong scalar type as `data.key_type`. One case is
+not distinguished at run time: an identity reused through a dynamically typed
+(`unknown`) value that has the same scalar shape as the target keyspace — for
+example a `Magazine::Id` whose key is a single `int`, the same shape `^books`
+uses. The value level does not carry the resource an identity belongs to, so a
+same-shape foreign identity passes the runtime scalar check. This is caught
+statically whenever the identity is statically typed.
+
 Marrow provides default `nextId` allocation for a single `int` identity key.
 Other identity shapes are application-provided.
 

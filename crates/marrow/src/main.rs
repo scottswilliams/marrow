@@ -1329,6 +1329,15 @@ fn check_record(
         }
         // Generated index entries are raw-only by design; they are legal.
         marrow_run::SavedPathClass::IndexMarker => None,
+        marrow_run::SavedPathClass::KeyTypeMismatch { expected, found } => Some(IntegrityProblem {
+            code: "data.key_type",
+            path: display_path(path),
+            message: format!(
+                "stored key is a {} where the schema declares {}",
+                found.name(),
+                expected.name()
+            ),
+        }),
         marrow_run::SavedPathClass::Orphan => Some(IntegrityProblem {
             code: "data.orphan",
             path: display_path(path),

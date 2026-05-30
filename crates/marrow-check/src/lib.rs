@@ -54,6 +54,12 @@ pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
 /// A value whose type cannot be resolved is stored into a concrete typed place.
 /// Under strict typing, dynamic data must be converted before typed use.
 pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
+/// A saved key or identity argument's type does not match the key it addresses: a
+/// scalar of the wrong type in a keyed lookup, or an identity of a foreign
+/// resource spliced into a keyspace. Saved keys are nominally typed, so a
+/// key-compatible foreign identity is still rejected. The static counterpart of a
+/// key-type fault at lowering.
+pub const CHECK_KEY_TYPE: &str = "check.key_type";
 /// A bare name used as a value does not resolve to any binding in scope (a
 /// parameter, local, loop or catch binding, or module constant). Under strict
 /// typing every value name must be defined.
@@ -1545,6 +1551,18 @@ fn check_condition(
             message: "condition must be `bool`, found `Error`".to_string(),
             span,
         }),
+        // A concrete non-scalar — an identity, whole record, or sequence — is not
+        // `bool`, so it is flagged like a wrong scalar rather than swallowed.
+        None if is_concrete_nonscalar(&condition_type) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_CONDITION_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "condition must be `bool`, found `{}`",
+                marrow_type_name(&condition_type)
+            ),
+            span,
+        }),
         _ => {}
     }
 }
@@ -1561,46 +1579,36 @@ fn check_return_type(
     value_type: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let Some(expected) = as_primitive(return_type) else {
-        return;
-    };
-    match as_primitive(value_type) {
-        Some(actual) if actual != expected => diagnostics.push(CheckDiagnostic {
+    match type_compatible(return_type, value_type) {
+        Some(true) => {}
+        Some(false) => diagnostics.push(CheckDiagnostic {
             code: CHECK_RETURN_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
                 "function returns `{}`, but this value is `{}`",
-                expected.name(),
-                actual.name(),
+                marrow_type_name(return_type),
+                marrow_type_name(value_type),
             ),
             span,
         }),
-        // Strict typing: a value with no known type returned where a concrete type
-        // is declared must be converted first.
-        None if matches!(value_type, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "this `return` value has no known type, but the function returns `{}`; convert it first",
-                expected.name(),
-            ),
-            span,
-        }),
-        // `Error` is a concrete type, so returning it where a scalar is declared is
-        // a real type mismatch (not an untyped value).
-        None if matches!(value_type, MarrowType::Error) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_RETURN_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "function returns `{}`, but this value is `Error`",
-                expected.name(),
-            ),
-            span,
-        }),
-        _ => {}
+        // Strict typing: a value with no known type returned where a convertible type
+        // is declared must be converted first. A void function (unknown return type),
+        // or one returning a resource/identity/sequence (no conversion boundary),
+        // places no such constraint and is left alone.
+        None if matches!(value_type, MarrowType::Unknown) && expects_conversion(return_type) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNTYPED_VALUE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "this `return` value has no known type, but the function returns `{}`; convert it first",
+                    marrow_type_name(return_type),
+                ),
+                span,
+            });
+        }
+        None => {}
     }
 }
 
@@ -1617,42 +1625,35 @@ fn check_assignment(
     value: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let Some(place) = as_primitive(place) else {
-        return;
-    };
-    match as_primitive(value) {
-        Some(value) if value != place => diagnostics.push(CheckDiagnostic {
+    match type_compatible(place, value) {
+        Some(true) => {}
+        Some(false) => diagnostics.push(CheckDiagnostic {
             code: CHECK_ASSIGNMENT_TYPE,
             severity: Severity::Error,
             file: file.to_path_buf(),
             message: format!(
                 "expected `{}`, but the value is `{}`",
-                place.name(),
-                value.name(),
+                marrow_type_name(place),
+                marrow_type_name(value),
             ),
             span,
         }),
-        // A value the checker could not resolve, stored into a concrete place.
-        None if matches!(value, MarrowType::Unknown) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "the value stored into `{}` has no known type; convert it before typed use",
-                place.name(),
-            ),
-            span,
-        }),
-        // `Error` is a concrete type, so storing it into a scalar place is a real
-        // type mismatch (not an untyped value).
-        None if matches!(value, MarrowType::Error) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_ASSIGNMENT_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!("expected `{}`, but the value is `Error`", place.name()),
-            span,
-        }),
-        _ => {}
+        // A value the checker could not resolve, stored into a convertible place. An
+        // untyped place (a whole resource, an identity, a sequence, `unknown`) has no
+        // conversion boundary and is left alone.
+        None if matches!(value, MarrowType::Unknown) && expects_conversion(place) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNTYPED_VALUE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "the value stored into `{}` has no known type; convert it before typed use",
+                    marrow_type_name(place),
+                ),
+                span,
+            });
+        }
+        None => {}
     }
 }
 
@@ -1739,6 +1740,11 @@ fn infer_type(
                 file,
                 diagnostics,
             );
+            // A saved access `^root(key…)` or `^root(key…).layer(key…)` carries key
+            // arguments the function-call path does not type. Check them against the
+            // root's identity keys or the layer's key parameters here, where the
+            // saved-path helpers live.
+            check_saved_key_args(program, callee, &arg_types, *span, file, diagnostics);
             // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
@@ -1817,6 +1823,119 @@ fn saved_resource_type(
     };
     let resource = find_resource_schema(program, root)?;
     Some(MarrowType::Resource(resource.name.clone()))
+}
+
+/// Type-check the key arguments of a saved access against the keys it addresses.
+/// A record lookup `^root(key…)` is checked against the root's identity keys; a
+/// keyed-layer access `^root(key…).layer(key…)` against that layer's key
+/// parameters. A foreign identity spliced into a keyspace, or a scalar of the
+/// wrong type, is a `check.key_type`. Non-saved callees (a function call, an index
+/// lookup) and unresolved roots are left alone.
+fn check_saved_key_args(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Expression;
+    // A whole-record lookup `^root(key…)`: the sole identity argument may be the
+    // resource's own identity value (a splice), checked nominally; otherwise the
+    // per-key scalars are checked against the declared identity keys.
+    if let Expression::SavedRoot { name: root, .. } = callee {
+        let Some(resource) = find_resource_schema(program, root) else {
+            return;
+        };
+        let Some(saved_root) = &resource.saved_root else {
+            return;
+        };
+        if let [MarrowType::Identity(spliced)] = arg_types {
+            // A bare identity names a resource in the accessor's own module and is
+            // matched nominally against the root. A qualified identity imported from
+            // another module keeps its module path, which cannot be placed against
+            // the root's bare resource name without the unified type IR, so it
+            // defers to the runtime key guard rather than being rejected here.
+            if !spliced.contains("::") && spliced != &resource.name {
+                diagnostics.push(key_type_diagnostic(
+                    file,
+                    span,
+                    format!(
+                        "`^{root}` is addressed by `{}::Id`, but this value is `{spliced}::Id`",
+                        resource.name,
+                    ),
+                ));
+            }
+            return;
+        }
+        check_keys_against(
+            &saved_root.identity_keys,
+            arg_types,
+            span,
+            file,
+            diagnostics,
+        );
+        return;
+    }
+    // A keyed-layer access `^root(key…).layer(key…)`: check this layer's key
+    // parameters. The layer chain peels the named layers from the accessor.
+    if let Some((root, layers)) = saved_layer_chain(callee)
+        && let Some(resource) = find_resource_schema(program, root)
+        && let Some(node) = resource.descend_layers(&layers)
+    {
+        check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
+    }
+}
+
+/// Compare a saved access's argument types against the declared key parameters
+/// they fill. A count mismatch is reported once (the per-key mapping is then
+/// undefined); otherwise each argument is checked nominally against its key's
+/// type, with an `unknown` argument deferred to the runtime.
+fn check_keys_against(
+    keys: &[marrow_schema::KeyDef],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if keys.len() != arg_types.len() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "this keyed access expects {} key argument(s), but {} were given",
+                keys.len(),
+                arg_types.len(),
+            ),
+        ));
+        return;
+    }
+    for (key, arg_type) in keys.iter().zip(arg_types) {
+        let expected = MarrowType::from_resolved(key.ty.clone(), &[]);
+        if type_compatible(&expected, arg_type) == Some(false) {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "key `{}` expects `{}`, but this value is `{}`",
+                    key.name,
+                    marrow_type_name(&expected),
+                    marrow_type_name(arg_type),
+                ),
+            ));
+        }
+    }
+}
+
+/// A `check.key_type` diagnostic located at a saved access's span.
+fn key_type_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+    CheckDiagnostic {
+        code: CHECK_KEY_TYPE,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message,
+        span,
+    }
 }
 
 /// The identity type of a unique-index lookup `^root.uniqueIndex(args)`: the
@@ -2090,15 +2209,19 @@ fn check_unary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::UnaryOp;
-    // `Error` is a concrete type, not an untyped one: no unary operator applies to
-    // it, so flag it as an operator misuse rather than silently passing it through.
-    if matches!(operand, MarrowType::Error) {
+    // A concrete non-scalar operand — an identity, record, sequence, or the
+    // checker-only `Error` — has no unary operator, so flag it as an operator
+    // misuse rather than silently passing it through. This must precede the
+    // `as_primitive` gate, which treats every non-primitive as `None` and would
+    // otherwise drop these to `Unknown`.
+    if matches!(operand, MarrowType::Error) || is_concrete_nonscalar(operand) {
         diagnostics.push(operator_diagnostic(
             file,
             span,
             format!(
-                "operator `{}` cannot be applied to `Error`",
-                unary_symbol(op)
+                "operator `{}` cannot be applied to `{}`",
+                unary_symbol(op),
+                marrow_type_name(operand),
             ),
         ));
         return MarrowType::Unknown;
@@ -2148,6 +2271,34 @@ fn check_binary(
             format!(
                 "operator `{}` cannot be applied to `Error`",
                 binary_symbol(op)
+            ),
+        ));
+        return MarrowType::Unknown;
+    }
+    // Equality is decided over concrete non-scalar types before the `as_primitive`
+    // gate, which would otherwise drop them to `Unknown`. Whole records and
+    // sequences have no equality; identities compare nominally, so same-resource
+    // identities are equatable (`bool`) while a cross-resource pair, or an identity
+    // against a scalar, is a category error. An `Unknown` operand defers to the
+    // scalar path, where untyped values are handled.
+    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+        && let Some(result) = check_equality(op, left, right, span, file, diagnostics)
+    {
+        return result;
+    }
+    // No non-equality operator applies to a concrete non-scalar operand — an
+    // identity, whole record, or sequence. Flag it as an operator misuse rather than
+    // letting the scalar gate below drop it to `Unknown`. An `Unknown` operand still
+    // defers there, where untyped values are handled.
+    if is_concrete_nonscalar(left) || is_concrete_nonscalar(right) {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!(
+                "operator `{}` cannot be applied to `{}` and `{}`",
+                binary_symbol(op),
+                marrow_type_name(left),
+                marrow_type_name(right),
             ),
         ));
         return MarrowType::Unknown;
@@ -2209,6 +2360,60 @@ fn check_binary(
     result
 }
 
+/// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`
+/// once a verdict is reached and `None` to defer to the scalar path. Whole records
+/// and sequences are not equatable; identities compare nominally, so a
+/// same-resource pair is `bool` and any other identity pairing is a category error.
+/// An `Unknown` operand defers (the untyped-value path owns it); a scalar pair
+/// defers to the ordinary scalar-equality check. A diagnostic is pushed on the
+/// rejected cases, which still yield `bool` so a surrounding expression sees the
+/// natural result type of a comparison.
+fn check_equality(
+    op: marrow_syntax::BinaryOp,
+    left: &MarrowType,
+    right: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<MarrowType> {
+    let reject = |diagnostics: &mut Vec<CheckDiagnostic>| {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!(
+                "operator `{}` cannot compare `{}` and `{}`",
+                binary_symbol(op),
+                marrow_type_name(left),
+                marrow_type_name(right),
+            ),
+        ));
+        Some(MarrowType::Primitive(ScalarType::Bool))
+    };
+    match (left, right) {
+        // An untyped operand defers: the scalar path handles untyped values.
+        (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
+        // Whole records and sequences have no equality at all.
+        (MarrowType::Resource(_) | MarrowType::Sequence(_), _)
+        | (_, MarrowType::Resource(_) | MarrowType::Sequence(_)) => reject(diagnostics),
+        // Identities compare nominally: equatable only against the same resource.
+        (MarrowType::Identity(a), MarrowType::Identity(b)) => {
+            if a == b {
+                Some(MarrowType::Primitive(ScalarType::Bool))
+            } else {
+                reject(diagnostics)
+            }
+        }
+        // An identity against a scalar or `Error` is a category error.
+        (MarrowType::Identity(_), _) | (_, MarrowType::Identity(_)) => reject(diagnostics),
+        // Two scalars (or `Error`, which the caller already rejected) defer to the
+        // ordinary scalar-equality path.
+        (
+            MarrowType::Primitive(_) | MarrowType::Error,
+            MarrowType::Primitive(_) | MarrowType::Error,
+        ) => None,
+    }
+}
+
 /// Type-check `path ?? default`. The result is the leaf type of the path read on
 /// the left (a populated read yields that value; an absent one yields the
 /// default), so the default must be the same scalar type. A non-path left operand
@@ -2228,6 +2433,30 @@ fn check_coalesce(
             "operator `??` applies only to a path read or `?.` chain".to_string(),
         ));
         return MarrowType::Unknown;
+    }
+    // A concrete non-scalar leaf (an identity, record, or sequence read) defaults
+    // only with a value of the same nominal type, so a `Book::Id` leaf cannot take
+    // a `Magazine::Id` default, and a non-scalar paired with a scalar is a category
+    // error either way. The scalar path below would drop the non-scalar to `Unknown`
+    // and silently accept the mismatch, so resolve any pairing with a non-scalar
+    // side here; an `Unknown` operand still defers there.
+    if is_concrete_nonscalar(left_type) || is_concrete_nonscalar(right_type) {
+        return match type_compatible(left_type, right_type) {
+            Some(true) => left_type.clone(),
+            Some(false) => {
+                diagnostics.push(operator_diagnostic(
+                    file,
+                    span,
+                    format!(
+                        "operator `??` cannot default `{}` with `{}`",
+                        marrow_type_name(left_type),
+                        marrow_type_name(right_type),
+                    ),
+                ));
+                MarrowType::Unknown
+            }
+            None => left_type.clone(),
+        };
     }
     // Both sides must be the same scalar, like the other value operators. When
     // either is still untyped, defer rather than guess, yielding the known side
@@ -2276,6 +2505,56 @@ fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
         MarrowType::Primitive(scalar) => Some(*scalar),
         _ => None,
     }
+}
+
+/// Whether a type is a concrete non-scalar value type: an identity, a whole
+/// record, or a sequence. These compare nominally, so an operator that defaults or
+/// equates them resolves by [`type_compatible`] rather than by scalar shape. The
+/// checker-only `Error` and the untyped `Unknown` are excluded: `Error` has its own
+/// operator handling and `Unknown` defers.
+fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
+    matches!(
+        ty,
+        MarrowType::Identity(_) | MarrowType::Resource(_) | MarrowType::Sequence(_)
+    )
+}
+
+/// Whether a value of type `actual` may stand where `expected` is required.
+/// `Some(true)`/`Some(false)` is a verdict; `None` defers — the value's type is
+/// `unknown` (the untyped-value path owns that case) or `expected` itself places
+/// no constraint. Identities and resources compare nominally: same resource name
+/// or nothing, so a key-compatible foreign identity is still a mismatch. A
+/// cross-module identity the checker could not place is `Unknown` and defers,
+/// permissive until the type IR is unified across modules.
+fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
+    if matches!(actual, MarrowType::Unknown) {
+        return None;
+    }
+    match expected {
+        MarrowType::Primitive(p) => Some(matches!(actual, MarrowType::Primitive(q) if q == p)),
+        MarrowType::Identity(resource) => {
+            Some(matches!(actual, MarrowType::Identity(other) if other == resource))
+        }
+        MarrowType::Resource(resource) => {
+            Some(matches!(actual, MarrowType::Resource(other) if other == resource))
+        }
+        MarrowType::Sequence(element) => match actual {
+            MarrowType::Sequence(other) => type_compatible(element, other),
+            _ => Some(false),
+        },
+        MarrowType::Error => Some(matches!(actual, MarrowType::Error)),
+        MarrowType::Unknown => None,
+    }
+}
+
+/// Whether an expected type has a value-conversion boundary, so an `unknown` value
+/// against it is a `check.untyped_value` ("convert it first") rather than a
+/// deferral. Scalars and the checker-only `Error` are reached by the conversion
+/// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor); a
+/// resource, identity, or sequence has no such conversion, so an `unknown` value
+/// there is left to the runtime.
+fn expects_conversion(ty: &MarrowType) -> bool {
+    matches!(ty, MarrowType::Primitive(_) | MarrowType::Error)
 }
 
 fn is_numeric(scalar: ScalarType) -> bool {
@@ -2534,14 +2813,10 @@ fn check_call(
             }
             None => function.params.get(index),
         };
-        // `Error` is a concrete user type (`from_resolved` maps `Type::Named("Error")`
-        // to `MarrowType::Error`), not a primitive, so `as_primitive` returns `None`
-        // for an `Error`-typed parameter. Gate on it explicitly alongside the scalars
-        // (mirroring the std argument path) so a mismatched argument against an
-        // `Error` parameter is still checked rather than silently accepted.
-        if let Some(param) = param
-            && matches!(param.ty, MarrowType::Primitive(_) | MarrowType::Error)
-        {
+        // Every concrete parameter type — scalar, identity, resource, sequence, or
+        // the checker-only `Error` — is checked nominally; an `unknown` parameter
+        // places no constraint and is left to the runtime.
+        if let Some(param) = param {
             check_one_arg(
                 &segments.join("::"),
                 &param.ty,
@@ -2569,33 +2844,12 @@ fn check_one_arg(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // An argument matches when it is the same scalar, or `Error` for the `Error`
-    // expectation; resources, identities, and sequences are non-scalar values no
-    // operator reasons about and are left to the runtime, as before.
-    let matched = match parameter {
-        MarrowType::Primitive(p) => as_primitive(arg_type) == Some(*p),
-        MarrowType::Error => !matches!(arg_type, MarrowType::Primitive(_) | MarrowType::Unknown),
-        _ => true,
-    };
-    if matched {
-        return;
-    }
-    if matches!(arg_type, MarrowType::Unknown) {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNTYPED_VALUE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "argument to `{label}` has no known type, but `{}` is expected; convert it first",
-                marrow_type_name(parameter),
-            ),
-            span,
-        });
-    } else if matches!(arg_type, MarrowType::Primitive(_) | MarrowType::Error) {
-        // A scalar or an `Error` value (both concrete) in a slot that expects a
-        // different concrete type is a real argument mismatch; non-scalar values
-        // (resources, identities, sequences) are left to the runtime.
-        diagnostics.push(call_diagnostic(
+    match type_compatible(parameter, arg_type) {
+        Some(true) => {}
+        // A known type the parameter does not accept — a different scalar, a foreign
+        // identity, a resource, a sequence, or an `Error` — is a real argument
+        // mismatch.
+        Some(false) => diagnostics.push(call_diagnostic(
             file,
             span,
             format!(
@@ -2603,17 +2857,38 @@ fn check_one_arg(
                 marrow_type_name(parameter),
                 marrow_type_name(arg_type),
             ),
-        ));
+        )),
+        // The parameter places no constraint, or the argument is `unknown`. Only an
+        // `unknown` argument against a convertible parameter is reported, under
+        // strict typing: dynamic data must be converted before typed use.
+        None if matches!(arg_type, MarrowType::Unknown) && expects_conversion(parameter) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNTYPED_VALUE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "argument to `{label}` has no known type, but `{}` is expected; convert it first",
+                    marrow_type_name(parameter),
+                ),
+                span,
+            });
+        }
+        None => {}
     }
 }
 
-/// The source spelling of a scalar or the checker-only `Error` type, for argument
-/// diagnostics. Only ever called on a scalar or `Error` expectation/argument.
-fn marrow_type_name(ty: &MarrowType) -> &'static str {
+/// The source spelling of a type for a diagnostic message: a scalar by name, an
+/// identity as `Resource::Id`, a resource by its name, a sequence as
+/// `sequence[element]`, the checker-only `Error`, or `value` for a type with no
+/// surface spelling.
+fn marrow_type_name(ty: &MarrowType) -> String {
     match ty {
-        MarrowType::Primitive(scalar) => scalar.name(),
-        MarrowType::Error => "Error",
-        _ => "value",
+        MarrowType::Primitive(scalar) => scalar.name().to_string(),
+        MarrowType::Error => "Error".to_string(),
+        MarrowType::Identity(resource) => format!("{resource}::Id"),
+        MarrowType::Resource(resource) => resource.clone(),
+        MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
+        MarrowType::Unknown => "value".to_string(),
     }
 }
 
