@@ -23,7 +23,7 @@
 
 use marrow_schema::ResourceSchema;
 
-use crate::program::{CheckedConst, CheckedFunction, CheckedModule, CheckedProgram};
+use crate::program::{CheckedFunction, CheckedModule, CheckedProgram};
 use crate::{build_alias_map, expand_alias};
 
 /// What a name is being resolved *as*. The runtime dispatches builtins, then
@@ -35,8 +35,6 @@ pub enum ResolvableKind {
     Function,
     Resource,
     ResourceIdentity,
-    Const,
-    Type,
 }
 
 /// The declaration a resolved name denotes, borrowed from the program: the
@@ -51,13 +49,12 @@ pub struct Def<'p> {
 }
 
 /// The concrete declaration behind a [`Def`]. A resource resolved as a constructor
-/// or as a type/identity both carry the [`ResourceSchema`]; the [`Def::kind`]
+/// or as an identity both carry the [`ResourceSchema`]; the [`Def::kind`]
 /// distinguishes how it was reached.
 #[derive(Debug, Clone, Copy)]
 pub enum DefItem<'p> {
     Function(&'p CheckedFunction),
     Resource(&'p ResourceSchema),
-    Const(&'p CheckedConst),
 }
 
 /// The outcome of resolving a name against the program from one module.
@@ -258,7 +255,7 @@ pub fn resolve_resource_by_name_any<'p>(
 }
 
 /// Look up `leaf` in `module` for `kind`, returning the matching declaration.
-/// Constants/types/functions/resources each live in their own table.
+/// Functions and resources each live in their own table.
 fn lookup_in_module<'p>(
     module: &'p CheckedModule,
     leaf: &str,
@@ -270,29 +267,22 @@ fn lookup_in_module<'p>(
             .iter()
             .find(|function| function.name == leaf)
             .map(DefItem::Function),
-        ResolvableKind::Resource | ResolvableKind::ResourceIdentity | ResolvableKind::Type => {
-            module
-                .resources
-                .iter()
-                .find(|resource| resource.name == leaf)
-                .map(DefItem::Resource)
-        }
-        ResolvableKind::Const => module
-            .constants
+        ResolvableKind::Resource | ResolvableKind::ResourceIdentity => module
+            .resources
             .iter()
-            .find(|constant| constant.name == leaf)
-            .map(DefItem::Const),
+            .find(|resource| resource.name == leaf)
+            .map(DefItem::Resource),
     }
 }
 
 /// Whether a resolved item is callable/usable across a module boundary. Functions
-/// carry `pub`; resources and constants are not yet visibility-gated (a resource
-/// belongs to its module but its name is project-visible; a constant is treated
-/// as visible by name), so they are visible when reached by a qualified path.
+/// carry `pub`; a resource is not yet visibility-gated (it belongs to its module
+/// but its name is project-visible), so it is visible when reached by a qualified
+/// path.
 fn is_public(item: &DefItem<'_>) -> bool {
     match item {
         DefItem::Function(function) => function.public,
-        DefItem::Resource(_) | DefItem::Const(_) => true,
+        DefItem::Resource(_) => true,
     }
 }
 

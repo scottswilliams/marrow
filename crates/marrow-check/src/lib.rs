@@ -1869,11 +1869,7 @@ fn local_field_type(
     let MarrowType::Resource(name) = base_type else {
         return None;
     };
-    let resource = program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| &resource.name == name)?;
+    let resource = resolve::resolve_resource_by_name_any(program, name)?;
     field_member_type(resource, &[field])
 }
 
@@ -2865,8 +2861,8 @@ fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> &'p str {
         .map_or("", |module| module.name.as_str())
 }
 
-/// Like [`resolve_function`], but also yielding the [`CheckedModule`] that owns
-/// the function, so the binding index can locate the definition's source file. A
+/// Resolve a call's `segments` to a function, also yielding the [`CheckedModule`]
+/// that owns it so the binding index can locate the definition's source file. A
 /// thin shim over the unified [`resolve`]: a bare name resolves in `from_module`,
 /// a qualified name in the named module — so a bare cross-module call no longer
 /// first-matches a foreign function. Used by the LSP binding index, which carries
