@@ -5443,6 +5443,85 @@ fn reversed_over_an_index_branch_descends() {
     assert_eq!(outcome.output, "4\n2\n1\n");
 }
 
+/// `next`/`prev` over a keyed root that *also* declares an index. The index is
+/// stored as a named child of the root, sorting after the record-key children, so
+/// the edge seek must skip it: stepping off the last record raises the catchable
+/// `run.absent_element`, never an uncatchable `run.unsupported`, and `prev(^books)`
+/// returns the last *record*, not the index.
+const BOOK_SHELF_NEIGHBOR: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+    index byShelf(shelf, id)
+
+fn add(id: int, t: string, s: string)
+    ^books(id).title = t
+    ^books(id).shelf = s
+
+fn nextOrDefault(id: int): int
+    return next(^books(id)) ?? -1
+
+fn nextOrSelf(id: int): int
+    return next(^books(id)) ?? id
+
+fn lastId(): int
+    return prev(^books)
+";
+
+#[test]
+fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
+    // The declared `index byShelf` is a named child of `^books`, stored after the
+    // record-key children. The edge seek must skip it: `next` past the last record
+    // is a catchable absent-element (so `??` recovers), and `prev(^books)` lands on
+    // the last record, not the index name. Both must hold on MemStore and redb.
+    let program = checked_program(BOOK_SHELF_NEIGHBOR);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mem = RefCell::new(MemStore::new());
+    let redb = RefCell::new(RedbStore::open(&dir.path().join("nav.redb")).expect("open redb"));
+    let stores: [&RefCell<dyn marrow_store::backend::Backend>; 2] = [&mem, &redb];
+
+    for store in stores {
+        let add = |id: i64, s: &str| {
+            run_entry(
+                &program,
+                store,
+                "test::add",
+                &[Value::Int(id), Value::Str("t".into()), Value::Str(s.into())],
+            )
+            .expect("add");
+        };
+        add(1, "x");
+        add(2, "x");
+        add(3, "y");
+        add(4, "x");
+
+        // `next(^books(4)) ?? -1`: 4 is the last record, so `next` steps off the
+        // edge with a catchable absent-element that `?? -1` recovers — it must not
+        // abort with `run.unsupported` by landing on the `byShelf` index name.
+        assert_eq!(
+            run_entry(&program, store, "test::nextOrDefault", &[Value::Int(4)])
+                .expect("next ?? -1")
+                .value,
+            Some(Value::Int(-1))
+        );
+        // The same edge with a different default proves `??` is reached, not bypassed.
+        assert_eq!(
+            run_entry(&program, store, "test::nextOrSelf", &[Value::Int(4)])
+                .expect("next ?? id")
+                .value,
+            Some(Value::Int(4))
+        );
+        // `prev(^books)` is the last *record* (4), not the trailing index name.
+        assert_eq!(
+            run_entry(&program, store, "test::lastId", &[])
+                .expect("prev")
+                .value,
+            Some(Value::Int(4))
+        );
+    }
+}
+
 /// `count(path)` over the four presence shapes: a scalar field, a child-bearing
 /// layer, and absent paths.
 const BOOK_COUNT: &str = "\

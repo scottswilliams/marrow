@@ -73,10 +73,11 @@ impl MemStore {
         traversal::child_keys(self.range_band_rev(path), path)
     }
 
-    /// The immediate child of the encoded `parent` directly after `after` in
-    /// Marrow order, or `None` when `after` is the last child. `after` is one
-    /// encoded child segment. The range begins at `parent ++ after` (inclusive)
-    /// and the shared seek skips `after`'s own subtree to the first distinct child.
+    /// The immediate *key* child of the encoded `parent` directly after `after` in
+    /// Marrow order, or `None` when `after` is the last key child. `after` is one
+    /// encoded child segment. The range begins at `parent ++ after` (inclusive) and
+    /// the shared seek skips `after`'s own subtree, and any named member, to the
+    /// first distinct key child.
     pub fn next_sibling(
         &self,
         parent: &[u8],
@@ -87,8 +88,8 @@ impl MemStore {
         traversal::neighbor_child(self.range_from(&from), parent, after)
     }
 
-    /// The immediate child of the encoded `parent` directly before `before`, or
-    /// `None` when `before` is the first child. The mirror of
+    /// The immediate *key* child of the encoded `parent` directly before `before`,
+    /// or `None` when `before` is the first key child. The mirror of
     /// [`next_sibling`](Self::next_sibling) over a reversed range ending at
     /// `parent ++ before` (inclusive).
     pub fn prev_sibling(
@@ -109,14 +110,16 @@ impl MemStore {
         traversal::neighbor_child(rev, parent, before)
     }
 
-    /// The first immediate child of the encoded `parent` in Marrow order, or
-    /// `None` when it has none — the bare-layer entry point for `next`.
+    /// The first immediate *key* child of the encoded `parent` in Marrow order, or
+    /// `None` when it has none — the bare-layer entry point for `next`. Named
+    /// members are skipped, as the shared seek navigates key positions only.
     pub fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
         traversal::neighbor_child(self.range_from(parent), parent, b"")
     }
 
-    /// The last immediate child of the encoded `parent` in Marrow order, or
-    /// `None` when it has none — the bare-layer entry point for `prev`.
+    /// The last immediate *key* child of the encoded `parent` in Marrow order, or
+    /// `None` when it has none — the bare-layer entry point for `prev`. Named
+    /// members, which sort after the key children, are skipped.
     pub fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
         traversal::neighbor_child(self.range_band_rev(parent), parent, b"")
     }

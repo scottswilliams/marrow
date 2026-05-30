@@ -25,7 +25,8 @@ use redb::{
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
 use crate::path::{
-    ChildSegment, int_index_key_band, int_record_key_band, segment_len, subtree_band,
+    ChildSegment, int_index_key_band, int_record_key_band, is_key_child_segment, segment_len,
+    subtree_band,
 };
 use crate::traversal::{self, Entries};
 
@@ -75,13 +76,14 @@ type Row<'t> = (
 /// gives the shared [`traversal`] functions their source.
 ///
 /// Only the subtree is collected (the range stops at the first key past `prefix`),
-/// and `stop_at` caps it earlier still — a count past which the traversal cannot
-/// change its answer — so an early-exiting walk (presence, a bounded scan) does
-/// not materialize the whole subtree just to look at its first rows.
+/// and `stop_at` caps it earlier still — given the rows gathered so far, it returns
+/// whether the traversal can no longer change its answer — so an early-exiting walk
+/// (presence, a bounded scan, an edge seek) does not materialize the whole subtree
+/// just to look at the rows it needs.
 fn collect_rows<'t, T>(
     table: &'t T,
     prefix: &[u8],
-    stop_at: impl Fn(usize) -> bool,
+    stop_at: impl Fn(&[Row<'t>]) -> bool,
     op: &'static str,
 ) -> Result<Vec<Row<'t>>, StoreError>
 where
@@ -93,7 +95,7 @@ where
         if !key.value().starts_with(prefix) {
             break; // past the subtree
         }
-        if stop_at(rows.len()) {
+        if stop_at(&rows) {
             break; // the traversal has already seen all it needs
         }
         rows.push((key, value));
@@ -110,7 +112,7 @@ where
 fn collect_rows_rev<'t, T>(
     table: &'t T,
     prefix: &[u8],
-    stop_at: impl Fn(usize) -> bool,
+    stop_at: impl Fn(&[Row<'t>]) -> bool,
     op: &'static str,
 ) -> Result<Vec<Row<'t>>, StoreError>
 where
@@ -127,7 +129,7 @@ where
         let (key, value) = entry.map_err(io(op))?;
         // The band already bounds the walk to the subtree, so no prefix check is
         // needed; it cannot yield a key outside `[prefix, successor)`.
-        if stop_at(rows.len()) {
+        if stop_at(&rows) {
             break;
         }
         rows.push((key, value));
@@ -140,6 +142,25 @@ where
 fn entries<'a>(rows: &'a [Row<'_>]) -> impl Entries<'a> {
     rows.iter()
         .map(|(key, value)| Ok((key.value(), value.value())))
+}
+
+/// Whether the already-collected `rows` include an immediate *key* child of
+/// `parent` — the edge `first_child`/`last_child` seek target. Named members (a
+/// declared index, field, or child layer) sort to one end of the child range, so a
+/// `last_child` reverse walk meets them first and a forward `first_child` may skip
+/// past them; either way the seek must keep collecting until a navigable key child
+/// is in hand. Checking the last collected row suffices: once one key-child row is
+/// present the collection can stop. A row above `parent` (the parent's own entry)
+/// or with a malformed segment is not a key child, so the walk continues.
+fn edge_key_child_seen(parent: &[u8], rows: &[Row<'_>]) -> bool {
+    let Some((key, _)) = rows.last() else {
+        return false;
+    };
+    let key = key.value();
+    let Some(rest) = key.get(parent.len()..) else {
+        return false;
+    };
+    segment_len(rest).is_some_and(|len| is_key_child_segment(&rest[..len]))
 }
 
 /// Whether `key`'s first post-`parent` segment differs from `bound`. A sibling
@@ -479,7 +500,7 @@ impl Backend for RedbStore {
             // first descendant — the only one presence needs — is among the first
             // two rows. Stopping there avoids walking a large subtree to learn it
             // merely has children.
-            let rows = collect_rows(&table, path, |seen| seen >= 2, "presence")?;
+            let rows = collect_rows(&table, path, |rows| rows.len() >= 2, "presence")?;
             traversal::presence(has_value, entries(&rows), path)
         })
     }
@@ -522,18 +543,30 @@ impl Backend for RedbStore {
 
     fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
         read_view!(self, "first_child", |table| {
-            // The first stored row under `parent` is its first child (or its own
-            // entry, which the shared seek skips); two rows always suffice.
-            let rows = collect_rows(&table, parent, |seen| seen >= 2, "first_child")?;
+            // The first key child sorts before any named member, so it is among the
+            // leading rows; collect until one is in hand (or the subtree is spent).
+            let rows = collect_rows(
+                &table,
+                parent,
+                |rows| edge_key_child_seen(parent, rows),
+                "first_child",
+            )?;
             traversal::neighbor_child(entries(&rows), parent, b"")
         })
     }
 
     fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
         read_view!(self, "last_child", |table| {
-            // Reversed, the first row is the last child's deepest descendant; one
-            // row is enough for the shared edge seek to name its immediate child.
-            let rows = collect_rows_rev(&table, parent, |seen| seen >= 1, "last_child")?;
+            // Reversed, the trailing rows are the named members (a declared index,
+            // field, or layer) that sort after the key children; `next`/`prev`
+            // navigate keys only, so collect until the first key child surfaces past
+            // them (or the subtree is spent), then name it.
+            let rows = collect_rows_rev(
+                &table,
+                parent,
+                |rows| edge_key_child_seen(parent, rows),
+                "last_child",
+            )?;
             traversal::neighbor_child(entries(&rows), parent, b"")
         })
     }
@@ -542,7 +575,7 @@ impl Backend for RedbStore {
         read_view!(self, "scan", |table| {
             // One row past the limit is enough for the scan to report truncation.
             let cap = limit.saturating_add(1);
-            let rows = collect_rows(&table, path, move |seen| seen >= cap, "scan")?;
+            let rows = collect_rows(&table, path, move |rows| rows.len() >= cap, "scan")?;
             traversal::scan(entries(&rows), path, limit)
         })
     }

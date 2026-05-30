@@ -72,20 +72,28 @@ pub(crate) fn child_keys<'a>(
     Ok(children)
 }
 
-/// The single immediate child of `parent_prefix` adjacent to the child segment
-/// `bound`, in the stream's direction, or `None` when `bound` is the edge child
-/// (no neighbor that way). `bound` is one encoded child segment (kind tag + key);
-/// pass `b""` to seek the parent's edge child instead — the first child forward, the
-/// last reversed — since an empty bound never equals a real kind-tagged segment, so
-/// no row is skipped and the first child is returned (the bare-layer `next`/`prev`
-/// entry point). The backend supplies a range bounded to `parent_prefix`'s subtree
-/// that begins at `parent_prefix ++ bound`: forward for the next sibling, reversed
-/// for the previous. The walk skips every row whose first post-prefix segment equals
-/// `bound` — those are `bound`'s own entry and its descendants, which arrive
-/// consecutively (the same consecutive-equal collapse [`child_keys`] uses) — and
-/// returns the first distinct child past them, so a child with its own deep
-/// subtree is stepped over in one go. The range is lazy, so a backend stops at
-/// that first differing row rather than materializing the whole subtree.
+/// The single immediate *key* child of `parent_prefix` adjacent to the child
+/// segment `bound`, in the stream's direction, or `None` when `bound` is the edge
+/// key child (no key neighbor that way). `bound` is one encoded child segment (kind
+/// tag + key); pass `b""` to seek the parent's edge key child instead — the first
+/// forward, the last reversed — since an empty bound never equals a real
+/// kind-tagged segment, so no row is skipped and the first key child is returned
+/// (the bare-layer `next`/`prev` entry point). The backend supplies a range bounded
+/// to `parent_prefix`'s subtree that begins at `parent_prefix ++ bound`: forward for
+/// the next sibling, reversed for the previous.
+///
+/// `next`/`prev` navigate one key level — record keys under a keyed root, index
+/// keys under a keyed layer — so this skips any non-key child (a named member such
+/// as a declared `index`, field, or child layer), mirroring the key-only filter the
+/// forward enumeration applies. A named child sorts after the key children, so
+/// without this skip a `next` past the last record would land on a trailing index
+/// name; instead it walks past every named row and reports true exhaustion as
+/// `None`, the catchable edge the caller turns into `run.absent_element`. The walk
+/// also skips every row whose first post-prefix segment equals `bound` — those are
+/// `bound`'s own entry and its descendants, which arrive consecutively (the same
+/// consecutive-equal collapse [`child_keys`] uses) — so a child with its own deep
+/// subtree is stepped over in one go. The range is lazy, so a backend stops at the
+/// first key child past `bound` rather than materializing the whole subtree.
 pub(crate) fn neighbor_child<'a>(
     entries: impl Entries<'a>,
     parent_prefix: &[u8],
@@ -105,9 +113,12 @@ pub(crate) fn neighbor_child<'a>(
         if segment == bound {
             continue; // the bound child's own entry or one of its descendants
         }
-        return Ok(Some(
-            decode_child_segment(segment).ok_or_else(|| corrupt(key))?,
-        ));
+        match decode_child_segment(segment).ok_or_else(|| corrupt(key))? {
+            // A named member is not a navigable key position; skip it (and its
+            // subtree) and keep seeking the adjacent key child.
+            ChildSegment::Name(_) => continue,
+            key @ ChildSegment::Key(_) => return Ok(Some(key)),
+        }
     }
     Ok(None)
 }

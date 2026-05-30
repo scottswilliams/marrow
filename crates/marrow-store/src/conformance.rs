@@ -35,6 +35,7 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     prev_sibling_mirrors_next_sibling(&mut make());
     next_sibling_of_last_is_none_and_prev_of_first_is_none(&mut make());
     first_child_and_last_child_match_the_edges(&mut make());
+    edge_seeks_skip_a_trailing_named_child(&mut make());
     seeks_are_typed_across_key_types(&mut make());
     roots_are_ordered_and_deduped(&mut make());
     scan_returns_only_the_subtree_in_order(&mut make());
@@ -730,8 +731,9 @@ fn next_sibling_of_last_is_none_and_prev_of_first_is_none(store: &mut dyn Backen
 }
 
 fn first_child_and_last_child_match_the_edges(store: &mut dyn Backend) {
-    // Empty: no edges. Then a few children, where one carries a value and a child
-    // so first_child must skip the parent's own entry.
+    // The edge seeks serve `next`/`prev`, which navigate key positions, so they
+    // report the first/last *key* child. Empty: no edges. Then key children, all of
+    // which are key positions, so the edges match `child_keys`' ends.
     assert_eq!(
         store.first_child(&root("edge")).unwrap(),
         None,
@@ -758,14 +760,62 @@ fn first_child_and_last_child_match_the_edges(store: &mut dyn Backend) {
         children.last(),
         "last_child is child_keys' last"
     );
-    // A record that holds both a value at its own path and children: first_child
-    // of that record steps past its own entry to its first field.
+    // A record whose children are all named fields has no navigable key child, so
+    // the edge seeks skip past its own value entry and its fields alike to `None` —
+    // `next`/`prev` never address a field position.
     store.write(&book(7), b"whole".to_vec()).unwrap();
     store.write(&book_field(7, "title"), b"x".to_vec()).unwrap();
     assert_eq!(
         store.first_child(&book(7)).unwrap(),
-        Some(ChildSegment::Name("title".into())),
-        "first_child skips the record's own value entry"
+        None,
+        "first_child skips the record's value entry and its named fields"
+    );
+    assert_eq!(
+        store.last_child(&book(7)).unwrap(),
+        None,
+        "last_child likewise finds no key child among named fields"
+    );
+}
+
+fn edge_seeks_skip_a_trailing_named_child(store: &mut dyn Backend) {
+    // A keyed root that also declares an index stores the index as a *named* child
+    // sorting after the record-key children. `next`/`prev` navigate key positions
+    // only, so the edge seeks must skip the index: stepping past the last record key
+    // is `None` (the catchable edge), `last_child` is that last record key — not the
+    // index name — and `first_child` is the first record key.
+    for id in [1, 2, 4] {
+        store
+            .write(&keyed_field("idx", SavedKey::Int(id), "v"), b"x".to_vec())
+            .unwrap();
+    }
+    // The trailing named child: `^idx.byShelf("a")` with its own key subtree, the
+    // exact shape a declared index lays down after the record keys.
+    let index_entry = encode_path(&[
+        PathSegment::Root("idx".into()),
+        PathSegment::Index("byShelf".into()),
+        PathSegment::IndexKey(SavedKey::Str("a".into())),
+    ]);
+    store.write(&index_entry, b"x".to_vec()).unwrap();
+
+    // `next` past the last record key (4) is the catchable edge, not the index name.
+    assert_eq!(
+        store
+            .next_sibling(&root("idx"), &record_seg(SavedKey::Int(4)))
+            .unwrap(),
+        None,
+        "next past the last record skips the trailing index name"
+    );
+    // `last_child` is the last record key, stepping back over the index name.
+    assert_eq!(
+        store.last_child(&root("idx")).unwrap(),
+        Some(ChildSegment::Key(SavedKey::Int(4))),
+        "last_child is the last record key, not the index name"
+    );
+    // `first_child` is the first record key (it sorts before the index name).
+    assert_eq!(
+        store.first_child(&root("idx")).unwrap(),
+        Some(ChildSegment::Key(SavedKey::Int(1))),
+        "first_child is the first record key"
     );
 }
 

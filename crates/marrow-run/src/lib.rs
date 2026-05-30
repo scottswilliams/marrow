@@ -2114,8 +2114,9 @@ fn eval_neighbor(
         Some(ChildSegment::Key(key)) => {
             saved_key_to_value(key).ok_or_else(|| unsupported("a neighbor key of this type", span))
         }
-        // A named member is not a key-level position, so `next`/`prev` never land
-        // on one; a corrupt store row would be the only source.
+        // The store's neighbor seek navigates key positions only — it skips named
+        // members (a declared index, field, or child layer), so a name here can come
+        // only from a corrupt store row, not from stepping onto an index branch.
         Some(ChildSegment::Name(_)) => Err(unsupported("a neighbor at this path", span)),
         None => {
             let edge = if dir == Direction::Ascending {

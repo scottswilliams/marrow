@@ -121,33 +121,40 @@ pub trait Backend {
     /// visits only stored entries and skips holes.
     fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>;
 
-    /// The immediate child of `parent` that directly follows `after` in Marrow
-    /// order, or `None` when `after` is the last child (`after` has no successor
-    /// under `parent`). `after` is one encoded child segment (a kind tag and the
-    /// key, as produced by [`encode_path`](crate::path::encode_path) for one
-    /// record- or index-key segment). The seek is O(k) over a double-ended range
-    /// from just past `after`, early-breaking at the first distinct child, and it
-    /// steps over the whole subtree of `after` (a child with its own descendants
-    /// is one stop, never a grandchild). Skips gaps: a deleted child is absent, so
-    /// the nearest *stored* successor is returned.
+    /// The immediate *key* child of `parent` that directly follows `after` in
+    /// Marrow order, or `None` when `after` is the last key child (`after` has no
+    /// key successor under `parent`). `after` is one encoded child segment (a kind
+    /// tag and the key, as produced by [`encode_path`](crate::path::encode_path)
+    /// for one record- or index-key segment). The seek is O(k) over a double-ended
+    /// range from just past `after`, early-breaking at the first distinct key
+    /// child, and it steps over the whole subtree of `after` (a child with its own
+    /// descendants is one stop, never a grandchild). It serves `next`/`prev`, which
+    /// navigate one key level, so it skips any named member (a declared index,
+    /// field, or child layer) that sorts past the key children rather than landing
+    /// on one. Skips gaps too: a deleted child is absent, so the nearest *stored*
+    /// key successor is returned.
     fn next_sibling(&self, parent: &[u8], after: &[u8])
     -> Result<Option<ChildSegment>, StoreError>;
-    /// The immediate child of `parent` that directly precedes `before` in Marrow
-    /// order, or `None` when `before` is the first child. The mirror of
-    /// [`next_sibling`](Self::next_sibling) over a reversed range: same O(k),
-    /// early break, subtree-skipping, and gap-skipping guarantees.
+    /// The immediate *key* child of `parent` that directly precedes `before` in
+    /// Marrow order, or `None` when `before` is the first key child. The mirror of
+    /// [`next_sibling`](Self::next_sibling) over a reversed range: same O(k), early
+    /// break, subtree-skipping, named-member-skipping, and gap-skipping guarantees.
     fn prev_sibling(
         &self,
         parent: &[u8],
         before: &[u8],
     ) -> Result<Option<ChildSegment>, StoreError>;
-    /// The first (lowest in Marrow order) immediate child of `parent`, or `None`
-    /// when `parent` has no children. The bare-layer entry point for `next`: the
-    /// first stored position under a layer. O(k) over the subtree's forward range.
+    /// The first (lowest in Marrow order) immediate *key* child of `parent`, or
+    /// `None` when `parent` has no key child. The bare-layer entry point for
+    /// `next`: the first stored key position under a layer. Like the sibling seeks
+    /// it navigates key positions only, skipping any named member. O(k) over the
+    /// subtree's forward range.
     fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError>;
-    /// The last (highest in Marrow order) immediate child of `parent`, or `None`
-    /// when `parent` has no children. The bare-layer entry point for `prev`: the
-    /// last stored position under a layer. O(k) over the subtree's reversed range.
+    /// The last (highest in Marrow order) immediate *key* child of `parent`, or
+    /// `None` when `parent` has no key child. The bare-layer entry point for
+    /// `prev`: the last stored key position under a layer. Skips named members,
+    /// which sort after the key children, to land on the last key. O(k) over the
+    /// subtree's reversed range.
     fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError>;
 
     /// Up to `limit` (path, value) pairs in the subtree at `path`, in Marrow

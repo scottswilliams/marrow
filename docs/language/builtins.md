@@ -98,8 +98,10 @@ String and byte lengths use `std::text::length(text)` and
 ### Reverse Iteration
 
 `reversed(iterable)` yields the same elements as the iterable in reverse key
-order. It works over keys, values, and entries of any layer or index branch, and
-over an in-memory `sequence`:
+order. It works over a layer or index branch directly, over `keys(...)` of either,
+over `values(...)` and `entries(...)` where those apply (resource roots and
+ordinary keyed layers, not index branches — see above), and over an in-memory
+`sequence`:
 
 ```mw
 for id in reversed(^books)
