@@ -169,8 +169,7 @@ impl ResourceSchema {
 
 /// The value type of a *plain* field member named `name`: a `Slot` with no key
 /// parameters. A keyed leaf or a group of the same name is not a plain field, so
-/// it resolves to `None` — matching the old split where plain fields lived apart
-/// from keyed layers.
+/// it resolves to `None`.
 fn plain_field<'a>(members: &'a [Node], name: &str) -> Option<&'a Type> {
     members.iter().find_map(|node| match &node.element {
         Element::Slot { ty, .. } if node.name == name && node.key_params.is_empty() => Some(ty),

@@ -225,8 +225,7 @@ if loanCount < 5
 ```
 
 `status` exists only in the block. Redeclaring the same name in the same
-block is an error. Shadowing from inner blocks is allowed, and the linter
-warns when it makes code unclear.
+block is an error. Shadowing from inner blocks is allowed.
 
 ## Name Resolution
 
@@ -243,8 +242,7 @@ Names resolve in this order:
 
 Module-level functions, constants, resources, and imported short module names
 cannot redefine builtin names such as `exists`, `keys`, `Error`, `write`, or
-`int`. Local variables also avoid builtin names; the linter warns on
-shadowing.
+`int`. Local variables may shadow builtin names.
 
 ## Host Boundaries
 

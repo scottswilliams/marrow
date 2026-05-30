@@ -1,7 +1,7 @@
 //! In-memory store behavior: write/read round-trips, the four presence states,
 //! and subtree delete. These are the first store-conformance laws.
 
-use marrow_store::backend::Presence;
+use marrow_store::backend::{Backend, Presence};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 

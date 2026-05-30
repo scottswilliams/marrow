@@ -151,6 +151,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.invalid_assign_target` | An assignment or `merge` target is not a writable place. |
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
+| `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
 
 ### `schema.*` — kind `check`
 

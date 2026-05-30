@@ -50,13 +50,6 @@ impl StoreBackend {
             _ => None,
         }
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Memory => "memory",
-            Self::Native => "native",
-        }
-    }
 }
 
 /// An invalid `marrow.json`: malformed JSON, an unknown key, a missing required

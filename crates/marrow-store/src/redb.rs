@@ -240,8 +240,7 @@ where
 }
 
 /// Which way a sibling seek walks: forward for the next sibling, reversed for the
-/// previous. A private two-state direction, never the deferred per-component
-/// index direction.
+/// previous. A private two-state direction.
 #[derive(Clone, Copy)]
 enum SeekDir {
     Forward,

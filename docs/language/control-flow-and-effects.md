@@ -94,11 +94,6 @@ resource Error
     required message: string
     help: string
     data: unknown
-
-    stack(frame: int)
-        file: string
-        line: int
-        function: string
 ```
 
 Raise an error with `throw`:

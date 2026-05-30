@@ -45,83 +45,11 @@ impl MemStore {
         self.entries.get(path).map(Vec::as_slice)
     }
 
-    /// Whether the encoded `path` holds a value, children, both, or neither.
-    pub fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        traversal::presence(self.entries.contains_key(path), self.range_from(path), path)
-    }
-
     /// Remove the value at the encoded `path` and every value below it. Deleting
     /// an absent path is a no-op.
     pub fn delete(&mut self, path: &[u8]) {
         self.entries
             .retain(|key, _| key.as_slice() != path && !key.starts_with(path));
-    }
-
-    /// The distinct immediate children directly below the encoded `path`, in
-    /// Marrow order (descendants sharing an immediate child collapse to one).
-    /// Returns [`StoreError::CorruptPath`] if a stored descendant key cannot be
-    /// decoded.
-    pub fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        traversal::child_keys(self.range_from(path), path)
-    }
-
-    /// The distinct immediate children directly below the encoded `path`, in
-    /// reverse Marrow order — the exact reverse of [`child_keys`](Self::child_keys).
-    /// A `BTreeMap` range is double-ended, so reversing it is `.rev()`, not a
-    /// forward walk reversed afterward; the shared collapse is direction-symmetric.
-    pub fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        traversal::child_keys(self.range_band_rev(path), path)
-    }
-
-    /// The immediate *key* child of the encoded `parent` directly after `after` in
-    /// Marrow order, or `None` when `after` is the last key child. `after` is one
-    /// encoded child segment. The range begins at `parent ++ after` (inclusive) and
-    /// the shared seek skips `after`'s own subtree, and any named member, to the
-    /// first distinct key child.
-    pub fn next_sibling(
-        &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        let mut from = parent.to_vec();
-        from.extend_from_slice(after);
-        traversal::neighbor_child(self.range_from(&from), parent, after)
-    }
-
-    /// The immediate *key* child of the encoded `parent` directly before `before`,
-    /// or `None` when `before` is the first key child. The mirror of
-    /// [`next_sibling`](Self::next_sibling) over a reversed range ending at
-    /// `parent ++ before` (inclusive).
-    pub fn prev_sibling(
-        &self,
-        parent: &[u8],
-        before: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        let mut to = parent.to_vec();
-        to.extend_from_slice(before);
-        // Range `[parent, to]` reversed: the first reversed row at or below
-        // `before` is `before`'s deepest descendant, which the seek skips along
-        // with the rest of `before`'s subtree to the first distinct prior child.
-        let rev = self
-            .entries
-            .range((Bound::Included(parent.to_vec()), Bound::Included(to)))
-            .rev()
-            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())));
-        traversal::neighbor_child(rev, parent, before)
-    }
-
-    /// The first immediate *key* child of the encoded `parent` in Marrow order, or
-    /// `None` when it has none — the bare-layer entry point for `next`. Named
-    /// members are skipped, as the shared seek navigates key positions only.
-    pub fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        traversal::neighbor_child(self.range_from(parent), parent, b"")
-    }
-
-    /// The last immediate *key* child of the encoded `parent` in Marrow order, or
-    /// `None` when it has none — the bare-layer entry point for `prev`. Named
-    /// members, which sort after the key children, are skipped.
-    pub fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        traversal::neighbor_child(self.range_band_rev(parent), parent, b"")
     }
 
     /// Up to `limit` (encoded path, value) pairs in the subtree at the encoded
@@ -130,13 +58,6 @@ impl MemStore {
     pub fn scan(&self, path: &[u8], limit: usize) -> ScanPage {
         // The in-memory range never faults, so the shared scan cannot error here.
         traversal::scan(self.range_from(path), path, limit).expect("in-memory scan never faults")
-    }
-
-    /// The distinct saved root names, in Marrow order. Returns
-    /// [`StoreError::CorruptPath`] if a stored key does not begin with a valid
-    /// root segment.
-    pub fn roots(&self) -> Result<Vec<String>, StoreError> {
-        traversal::roots(self.range_from(&[]))
     }
 
     /// The stored entries from `prefix` onward, in Marrow order, adapted to the
@@ -192,10 +113,10 @@ impl MemStore {
     }
 }
 
-/// The in-memory store serves the [`Backend`] contract by forwarding to its
-/// inherent methods (reads return owned copies), and models transactions as a
-/// stack of whole-map savepoints. The inherent methods stay available for direct
-/// callers; the trait is how a generic consumer reaches any backend.
+/// The in-memory store serves the [`Backend`] contract directly; the few inherent
+/// methods with a more convenient shape (`read` borrows, `write`/`delete` are
+/// infallible, `scan` cannot fault) forward here. Transactions are a stack of
+/// whole-map savepoints. The trait is how a generic consumer reaches any backend.
 impl Backend for MemStore {
     fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(MemStore::read(self, path).map(<[u8]>::to_vec))
@@ -211,48 +132,87 @@ impl Backend for MemStore {
         Ok(())
     }
 
+    /// Whether the encoded `path` holds a value, children, both, or neither.
     fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        MemStore::presence(self, path)
+        traversal::presence(self.entries.contains_key(path), self.range_from(path), path)
     }
 
+    /// The distinct immediate children directly below the encoded `path`, in
+    /// Marrow order (descendants sharing an immediate child collapse to one).
+    /// Returns [`StoreError::CorruptPath`] if a stored descendant key cannot be
+    /// decoded.
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        MemStore::child_keys(self, path)
+        traversal::child_keys(self.range_from(path), path)
     }
 
+    /// The distinct immediate children directly below the encoded `path`, in
+    /// reverse Marrow order — the exact reverse of [`child_keys`](Self::child_keys).
+    /// A `BTreeMap` range is double-ended, so reversing it is `.rev()`, not a
+    /// forward walk reversed afterward; the shared collapse is direction-symmetric.
     fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        MemStore::child_keys_rev(self, path)
+        traversal::child_keys(self.range_band_rev(path), path)
     }
 
+    /// The immediate *key* child of the encoded `parent` directly after `after` in
+    /// Marrow order, or `None` when `after` is the last key child. `after` is one
+    /// encoded child segment. The range begins at `parent ++ after` (inclusive) and
+    /// the shared seek skips `after`'s own subtree, and any named member, to the
+    /// first distinct key child.
     fn next_sibling(
         &self,
         parent: &[u8],
         after: &[u8],
     ) -> Result<Option<ChildSegment>, StoreError> {
-        MemStore::next_sibling(self, parent, after)
+        let mut from = parent.to_vec();
+        from.extend_from_slice(after);
+        traversal::neighbor_child(self.range_from(&from), parent, after)
     }
 
+    /// The immediate *key* child of the encoded `parent` directly before `before`,
+    /// or `None` when `before` is the first key child. The mirror of
+    /// [`next_sibling`](Self::next_sibling) over a reversed range ending at
+    /// `parent ++ before` (inclusive).
     fn prev_sibling(
         &self,
         parent: &[u8],
         before: &[u8],
     ) -> Result<Option<ChildSegment>, StoreError> {
-        MemStore::prev_sibling(self, parent, before)
+        let mut to = parent.to_vec();
+        to.extend_from_slice(before);
+        // Range `[parent, to]` reversed: the first reversed row at or below
+        // `before` is `before`'s deepest descendant, which the seek skips along
+        // with the rest of `before`'s subtree to the first distinct prior child.
+        let rev = self
+            .entries
+            .range((Bound::Included(parent.to_vec()), Bound::Included(to)))
+            .rev()
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())));
+        traversal::neighbor_child(rev, parent, before)
     }
 
+    /// The first immediate *key* child of the encoded `parent` in Marrow order, or
+    /// `None` when it has none — the bare-layer entry point for `next`. Named
+    /// members are skipped, as the shared seek navigates key positions only.
     fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        MemStore::first_child(self, parent)
+        traversal::neighbor_child(self.range_from(parent), parent, b"")
     }
 
+    /// The last immediate *key* child of the encoded `parent` in Marrow order, or
+    /// `None` when it has none — the bare-layer entry point for `prev`. Named
+    /// members, which sort after the key children, are skipped.
     fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        MemStore::last_child(self, parent)
+        traversal::neighbor_child(self.range_band_rev(parent), parent, b"")
     }
 
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
         Ok(MemStore::scan(self, path, limit))
     }
 
+    /// The distinct saved root names, in Marrow order. Returns
+    /// [`StoreError::CorruptPath`] if a stored key does not begin with a valid
+    /// root segment.
     fn roots(&self) -> Result<Vec<String>, StoreError> {
-        MemStore::roots(self)
+        traversal::roots(self.range_from(&[]))
     }
 
     fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {

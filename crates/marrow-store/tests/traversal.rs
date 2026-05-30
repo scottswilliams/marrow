@@ -2,6 +2,7 @@
 //! order regardless of insertion order. The store takes encoded paths, so each
 //! call encodes its logical path first.
 
+use marrow_store::backend::Backend;
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 

@@ -121,7 +121,7 @@ pub enum ScalarType {
 /// The canonical scalar spelling: the source keyword, the store decode tag, and
 /// every downstream name probe read this one table, so a new scalar is one row
 /// here, not a hand-spelled copy in each crate. The source keyword is `string`
-/// while the variant is historically `Str`; that bridge lives only here.
+/// while the variant is spelled `Str`; that bridge lives only here.
 ///
 /// `ErrorCode` is a language-level spelling whose storage form is a plain string,
 /// so it maps to `Str`; it sits after the `string` row so the reverse `name()`

@@ -64,7 +64,7 @@ pub fn format_source(source: &str) -> String {
 /// Format a top-level declaration (const, resource, or function) as canonical
 /// Marrow source, including its documentation comments. The returned text has
 /// no trailing newline.
-pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
+fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(decl),
@@ -208,7 +208,7 @@ fn format_docs(docs: &[String], level: usize) -> String {
 /// format` round-trips them: own-line comments appear on their own line at the
 /// block indent, in source order between statements; a trailing comment is
 /// appended to the line of the statement it sits on.
-pub fn format_block(source: &str, block: &Block, level: usize) -> String {
+pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String {
     let mut lines: Vec<String> = Vec::new();
     // Comments are kept in source order; walk them in step with the statements.
     let mut comments = block.comments.iter().peekable();

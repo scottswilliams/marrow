@@ -285,6 +285,15 @@ pub fn decode_path(bytes: &[u8]) -> Option<Vec<PathSegment>> {
     Some(segments)
 }
 
+/// Append the lowercase two-digit hex of each byte to `out`, writing in place so
+/// no per-byte heap allocation is needed.
+fn push_hex(out: &mut String, bytes: &[u8]) {
+    use std::fmt::Write;
+    for byte in bytes {
+        write!(out, "{byte:02x}").unwrap();
+    }
+}
+
 /// Render an encoded key as canonical Marrow path text for raw inspection, e.g.
 /// `^books(1).versions("v2").title`. Uses the stable encoded segment order. Never
 /// fails: a key that does not decode renders as `?<hex>` so a corrupt key is
@@ -292,9 +301,7 @@ pub fn decode_path(bytes: &[u8]) -> Option<Vec<PathSegment>> {
 pub fn display_path(bytes: &[u8]) -> String {
     let Some(segments) = decode_path(bytes) else {
         let mut text = String::from("?");
-        for byte in bytes {
-            text.push_str(&format!("{byte:02x}"));
-        }
+        push_hex(&mut text, bytes);
         return text;
     };
     let mut text = String::new();
@@ -368,9 +375,7 @@ fn display_key(key: &SavedKey) -> String {
         SavedKey::Str(value) => format!("{value:?}"),
         SavedKey::Bytes(value) => {
             let mut text = String::from("0x");
-            for byte in value {
-                text.push_str(&format!("{byte:02x}"));
-            }
+            push_hex(&mut text, value);
             text
         }
         // Date/instant/duration keys reuse the canonical value codec so a path
@@ -675,9 +680,8 @@ fn read_escaped_str(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
 mod tests {
     use super::*;
 
-    /// One path of every segment and key kind, mirroring serve's
-    /// `keys_of_every_type_round_trip`: a root, an integer record key, a named
-    /// field, a child layer with a string index key, and the temporal/bytes/bool
+    /// One path of every segment and key kind: a root, an integer record key, a
+    /// named field, a child layer with a string index key, and the temporal/bytes/bool
     /// keys. After encode→decode every kind survives, with named members
     /// collapsing to `Field` as documented.
     fn every_kind() -> Vec<PathSegment> {

@@ -1,6 +1,4 @@
-use marrow_syntax::{
-    Declaration, format_block, format_declaration, format_expression, format_source, parse_source,
-};
+use marrow_syntax::{Declaration, format_expression, format_source, parse_source};
 
 /// Read every `module`-starting `.mw` block from the language reference (the
 /// complete library files used as parser fixtures).
@@ -44,29 +42,30 @@ fn documented_module_files() -> Vec<String> {
     files
 }
 
-/// Parse a module and format the declaration at `index`.
+/// Format a single-declaration `module app` source through `format_source` and
+/// return just that declaration's canonical text. `format_source` wraps the file
+/// as `module app\n\n<decl>\n`, so stripping that frame exercises the same
+/// declaration-formatting path the public entry point uses.
 fn format_decl(source: &str, index: usize) -> String {
-    let parsed = parse_source(source);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "source should parse cleanly: {:#?}",
-        parsed.diagnostics
-    );
-    format_declaration(source, &parsed.file.declarations[index])
+    assert_eq!(index, 0, "helper only supports a single declaration");
+    let formatted = format_source(source);
+    formatted
+        .strip_prefix("module app\n\n")
+        .and_then(|rest| rest.strip_suffix('\n'))
+        .expect("format_source frames a single declaration as module app\\n\\n<decl>\\n")
+        .to_string()
 }
 
-/// Parse a single-function module and format its body block at indent level 1.
+/// Format a single-function `module app` source through `format_source` and
+/// return just the function body (the indented statements under the `fn` header),
+/// matching what the old block-level helper produced.
 fn format_function_body(source: &str) -> String {
-    let parsed = parse_source(source);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "source should parse cleanly: {:#?}",
-        parsed.diagnostics
-    );
-    let Declaration::Function(function) = &parsed.file.declarations[0] else {
-        panic!("expected a function declaration");
-    };
-    format_block(source, &function.body, 1)
+    let decl = format_decl(source, 0);
+    // `format_decl` yields `fn run(...)\n<body>`; drop the header line to leave
+    // the body block the test asserts on.
+    decl.split_once('\n')
+        .map(|(_, body)| body.to_string())
+        .expect("a function declaration has a header line and a body")
 }
 
 /// Parse `source` as a const value and return its expression formatted back to
