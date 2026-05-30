@@ -2,6 +2,24 @@
 
 use crate::*;
 
+/// Is `module` a standard-library module, derived once from the shared stdlib
+/// table ([`marrow_schema::stdlib::all`])? A module is known iff the table has a
+/// row for it, so a new `std::<module>::op` row extends recognition with no
+/// hand-kept list to drift — the same single source of truth the checker reads.
+pub(crate) fn is_std_module(module: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static STD_MODULES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    STD_MODULES
+        .get_or_init(|| {
+            marrow_schema::stdlib::all()
+                .iter()
+                .map(|op| op.module)
+                .collect()
+        })
+        .contains(module)
+}
+
 /// Evaluate a `print`/`write` output builtin: render the single argument to text
 /// and append it to the output stream (`print` adds a trailing newline). Neither
 /// produces a value.
@@ -788,5 +806,65 @@ pub(crate) fn eval_io(
             span,
         )),
         _ => Err(unsupported(&format!("std::io::{op}"), span)),
+    }
+}
+
+#[cfg(test)]
+mod stdlib_table_tests {
+    use super::*;
+    use marrow_schema::stdlib::Capability;
+
+    // Every descriptor row must reach a live runtime handler. A row that the
+    // checker would type-check but no handler recognizes faults only at run time
+    // with `run.unsupported` from a dispatch's missing-op arm; this guard turns
+    // that drift into a build-time failure. Each row is dispatched exactly as
+    // `eval_call` routes it — by capability for the host families, through
+    // `eval_std` for the pure ones. With no arguments a recognized op stops at its
+    // arity or capability check (never the missing-op arm), so a live handler
+    // never answers `run.unsupported`; only a row with no handler does. Empty
+    // arguments also keep every handler short of its side-effecting branch (no
+    // filesystem touch, no assertion against the store), so the guard runs pure.
+    #[test]
+    fn every_table_row_reaches_a_live_handler() {
+        let program = CheckedProgram::default();
+        let store = RefCell::new(MemStore::new());
+        // Grant every capability so a host family reaches its op match rather than
+        // stopping at an absent-capability fault, which a recognized op shares with
+        // an unrecognized one and so would mask a missing arm.
+        let host = Host::new()
+            .with_clock(0)
+            .with_environment(HashMap::new())
+            .with_log_sink(Rc::new(RefCell::new(String::new())))
+            .with_filesystem();
+        let span = SourceSpan::default();
+        let no_args: &[Argument] = &[];
+
+        for entry in marrow_schema::stdlib::all() {
+            let ctx = Context {
+                program: &program,
+                store: &store,
+                host: &host,
+            };
+            let mut env = Env::new(ctx, Rc::new(RefCell::new(String::new())), None, None, 1);
+            let result = match entry.capability {
+                Capability::Clock => {
+                    eval_clock_capability(entry.op, no_args, span, &mut env).map(Some)
+                }
+                Capability::Env => eval_env(entry.op, no_args, span, &mut env).map(Some),
+                Capability::Log => eval_log(entry.op, no_args, span, &mut env),
+                Capability::Io => eval_io(entry.op, no_args, span, &mut env),
+                Capability::Assert => eval_assert(entry.op, no_args, span, &mut env),
+                Capability::Pure => {
+                    eval_std(entry.module, entry.op, no_args, span, &mut env).map(Some)
+                }
+            };
+            if let Err(error) = result {
+                assert_ne!(
+                    error.code, RUN_UNSUPPORTED,
+                    "std::{}::{} has a descriptor row but no runtime handler",
+                    entry.module, entry.op
+                );
+            }
+        }
     }
 }

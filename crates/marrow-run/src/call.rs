@@ -745,14 +745,18 @@ pub(crate) fn eval_call(
                 Some(Capability::Assert) => return eval_assert(op, args, span, env),
                 Some(Capability::Pure) => return eval_std(second, op, args, span, env).map(Some),
                 // An unrecognized op keeps the by-module routing so its handler
-                // (or the `text|math|bytes|clock` pure dispatch) reports the same
-                // error; an unknown module falls through to function dispatch.
+                // reports the same error: the capability modules first check the
+                // host capability, so an unknown op under them faults the same way
+                // a recognized one would; every other known module is pure and
+                // routes to `eval_std`. Knownness comes from the shared table, so
+                // there is no hand-kept module list to drift from it. An unknown
+                // module falls through to function dispatch.
                 None => match second.as_str() {
                     "env" => return eval_env(op, args, span, env).map(Some),
                     "log" => return eval_log(op, args, span, env),
                     "io" => return eval_io(op, args, span, env),
                     "assert" => return eval_assert(op, args, span, env),
-                    "text" | "math" | "bytes" | "clock" => {
+                    other if is_std_module(other) => {
                         return eval_std(second, op, args, span, env).map(Some);
                     }
                     _ => {}
