@@ -14,12 +14,13 @@
 //! Spans. A *use* of a single-segment name (a local, parameter, module constant,
 //! or unqualified function) is recorded at the identifier itself, because the
 //! parser gives a single-segment [`Expression::Name`] a span covering exactly that
-//! token. A qualified use (`shelf::books::add`, `books::add`) is recorded at the
-//! whole path span — the leaf identifier is not separated by the parser. A
-//! *definition* is recorded at its declaration node's span; a parameter, loop, or
-//! catch binding has no node span of its own in the AST, so its definition is
-//! recorded at the enclosing declaration. Consumers that need a tighter range can
-//! narrow within these spans using the source text.
+//! token. A qualified call (`shelf::books::add`, `books::add`) is recorded at the
+//! whole path span, while an enum member literal (`Cat::tiger::bengal`) is split
+//! so the enum segment and each written member-path segment resolve
+//! independently. A *definition* is recorded at its declaration node's span; a
+//! parameter, loop, or catch binding has no node span of its own in the AST, so
+//! its definition is recorded at the enclosing declaration. Consumers that need a
+//! tighter range can narrow within these spans using the source text.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,9 +31,11 @@ use marrow_syntax::{
 };
 
 use crate::MarrowType;
+use crate::enums::resolve_enum;
 use crate::{
-    AnalysisSnapshot, CheckedProgram, file_prelude, find_resource_schema, for_frame, infer_only,
-    local_binding, resolve_enum_member_path, resolve_function_in_module, resolve_type,
+    AnalysisSnapshot, CheckedProgram, expand_module_alias, file_prelude, find_resource_schema,
+    for_frame, infer_only, local_binding, resolve_enum_member_path, resolve_function_in_module,
+    resolve_type,
 };
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
@@ -130,7 +133,7 @@ pub fn build_binding_index(snapshot: &AnalysisSnapshot) -> BindingIndex {
     }
     // Uses are resolved against the definitions, so collect them in a second pass.
     for file in &snapshot.files {
-        builder.collect_uses(&file.path, &file.parsed);
+        builder.collect_uses(&file.path, &file.parsed, &file.source);
     }
     builder.finish()
 }
@@ -200,6 +203,12 @@ impl BindingIndex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DefId(usize);
 
+struct ResolvedEnumMemberUse {
+    enum_def: DefId,
+    enum_index: usize,
+    member_defs: Vec<(usize, DefId)>,
+}
+
 /// Accumulates definitions and the uses attributed to them. Resolution reuses the
 /// checker's helpers; this only tracks identity and spans.
 struct IndexBuilder<'p> {
@@ -224,6 +233,8 @@ struct ModuleScope {
     identities: HashMap<String, DefId>,
     /// `(module name, function name) -> DefId`, the function's definition.
     functions: HashMap<(String, String), DefId>,
+    /// `(module name, enum name) -> DefId`, the enum's definition.
+    enums: HashMap<(String, String), DefId>,
     /// `(module name, enum name, member path) -> DefId` for enum members.
     enum_members: HashMap<(String, String, Vec<String>), DefId>,
     /// `(file, saved root, member chain) -> DefId` for saved members, so a saved
@@ -324,7 +335,7 @@ impl<'p> IndexBuilder<'p> {
                     self.collect_resource(file, resource);
                 }
                 Declaration::Enum(enum_decl) => {
-                    self.define(
+                    let id = self.define(
                         SymbolRef {
                             file: file.to_path_buf(),
                             span: enum_decl.span,
@@ -332,6 +343,9 @@ impl<'p> IndexBuilder<'p> {
                         },
                         RenameSafety::SourceOnly,
                     );
+                    self.module_scope
+                        .enums
+                        .insert((module.clone(), enum_decl.name.clone()), id);
                     self.collect_enum_members(
                         file,
                         &module,
@@ -487,7 +501,7 @@ impl<'p> IndexBuilder<'p> {
     /// Collect the uses in a file: the `use` alias references, the saved-path reads
     /// in every function body, and the bare-name/call uses resolved against
     /// reconstructed lexical scope.
-    fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource) {
+    fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource, source: &str) {
         let module = Self::module_name(parsed);
 
         for declaration in &parsed.file.declarations {
@@ -517,6 +531,7 @@ impl<'p> IndexBuilder<'p> {
                 let mut walker = UseWalker {
                     builder: self,
                     file,
+                    source,
                     module: &module,
                     aliases: &prelude.aliases,
                 };
@@ -540,6 +555,7 @@ impl<'p> IndexBuilder<'p> {
 struct UseWalker<'a, 'p> {
     builder: &'a mut IndexBuilder<'p>,
     file: &'a Path,
+    source: &'a str,
     module: &'a str,
     aliases: &'a HashMap<String, Vec<String>>,
 }
@@ -829,13 +845,30 @@ impl UseWalker<'_, '_> {
                 .use_of(def, self.file, span, SymbolKind::ResourceIdentity);
             return;
         }
-        if let Some(def) = self.resolve_enum_member(segments) {
-            self.builder
-                .use_of(def, self.file, span, SymbolKind::EnumMember);
+        if let Some(resolved) = self.resolve_enum_member(segments) {
+            let segment_spans = qualified_segment_spans(self.source, span, segments);
+            if let Some(enum_span) = segment_spans
+                .as_ref()
+                .and_then(|spans| spans.get(resolved.enum_index))
+                .copied()
+            {
+                self.builder
+                    .use_of(resolved.enum_def, self.file, enum_span, SymbolKind::Enum);
+            }
+            for (member_index, member_def) in resolved.member_defs {
+                if let Some(member_span) = segment_spans
+                    .as_ref()
+                    .and_then(|spans| spans.get(member_index))
+                    .copied()
+                {
+                    self.builder
+                        .use_of(member_def, self.file, member_span, SymbolKind::EnumMember);
+                }
+            }
         }
     }
 
-    fn resolve_enum_member(&self, segments: &[String]) -> Option<DefId> {
+    fn resolve_enum_member(&self, segments: &[String]) -> Option<ResolvedEnumMemberUse> {
         let expr = Expression::Name {
             segments: segments.to_vec(),
             span: SourceSpan::default(),
@@ -845,16 +878,87 @@ impl UseWalker<'_, '_> {
         let marrow_schema::MemberPathResolution::Found(ordinal) = resolved.member else {
             return None;
         };
-        let path = resolved
+        let canonical_path = resolved
             .schema
             .member_path(ordinal)
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>();
+        let enum_index =
+            self.resolved_enum_index(segments, &resolved.module, &resolved.enum_name)?;
+        let enum_def = self
+            .builder
+            .module_scope
+            .enums
+            .get(&(resolved.module.clone(), resolved.enum_name.clone()))
+            .copied()?;
+        let mut member_defs = Vec::new();
+        let member_start = enum_index + 1;
+        let written_members = &segments[member_start..];
+        let written_is_canonical = written_members.len() == canonical_path.len()
+            && written_members
+                .iter()
+                .map(String::as_str)
+                .eq(canonical_path.iter().map(String::as_str));
+
+        if written_is_canonical {
+            for prefix_len in 1..=canonical_path.len() {
+                let member_index = member_start + prefix_len - 1;
+                if let Some(def) = self.enum_member_def(
+                    &resolved.module,
+                    &resolved.enum_name,
+                    &canonical_path[..prefix_len],
+                ) {
+                    member_defs.push((member_index, def));
+                }
+            }
+        } else if let Some(def) =
+            self.enum_member_def(&resolved.module, &resolved.enum_name, &canonical_path)
+        {
+            member_defs.push((segments.len() - 1, def));
+        }
+        if member_defs.is_empty() {
+            return None;
+        }
+        Some(ResolvedEnumMemberUse {
+            enum_def,
+            enum_index,
+            member_defs,
+        })
+    }
+
+    fn resolved_enum_index(
+        &self,
+        segments: &[String],
+        resolved_module: &str,
+        resolved_enum: &str,
+    ) -> Option<usize> {
+        if segments.first()? == resolved_enum
+            && resolve_enum(self.builder.program, Some(self.module), &segments[0])
+                .is_some_and(|(module, _)| module == resolved_module)
+        {
+            return Some(0);
+        }
+
+        for enum_index in (1..segments.len().saturating_sub(1)).rev() {
+            if segments[enum_index] != resolved_enum {
+                continue;
+            }
+            let module = expand_module_alias(&segments[..enum_index].join("::"), self.aliases);
+            if module == resolved_module
+                && self.enum_schema(&module, &segments[enum_index]).is_some()
+            {
+                return Some(enum_index);
+            }
+        }
+        None
+    }
+
+    fn enum_member_def(&self, module: &str, enum_name: &str, path: &[String]) -> Option<DefId> {
         self.builder
             .module_scope
             .enum_members
-            .get(&(resolved.module, resolved.enum_name, path))
+            .get(&(module.to_string(), enum_name.to_string(), path.to_vec()))
             .copied()
     }
 
@@ -1022,6 +1126,42 @@ fn bind(scope: &mut [HashMap<String, DefId>], name: &str, id: DefId) {
 fn bind_type(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
     if let Some(frame) = scope.last_mut() {
         frame.insert(name.to_string(), ty);
+    }
+}
+
+fn qualified_segment_spans(
+    source: &str,
+    span: SourceSpan,
+    segments: &[String],
+) -> Option<Vec<SourceSpan>> {
+    let end_byte = span.end_byte.min(source.len());
+    if span.start_byte > end_byte {
+        return None;
+    }
+    let mut search_start = span.start_byte;
+    let mut spans = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let text = source.get(search_start..end_byte)?;
+        let offset = text.find(segment)?;
+        let start_byte = search_start + offset;
+        let end_byte = start_byte + segment.len();
+        spans.push(source_span_at(source, start_byte, end_byte));
+        search_start = end_byte;
+    }
+    Some(spans)
+}
+
+fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpan {
+    let prefix = &source.as_bytes()[..start_byte.min(source.len())];
+    let line_start = prefix
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |index| index + 1);
+    SourceSpan {
+        start_byte,
+        end_byte,
+        line: prefix.iter().filter(|&&byte| byte == b'\n').count() as u32 + 1,
+        column: start_byte.saturating_sub(line_start) as u32 + 1,
     }
 }
 

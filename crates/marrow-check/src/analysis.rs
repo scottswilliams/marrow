@@ -21,6 +21,7 @@ pub struct AnalysisSnapshot {
 pub struct AnalyzedFile {
     pub path: PathBuf,
     pub module_name: Option<String>,
+    pub source: String,
     pub parsed: marrow_syntax::ParsedSource,
 }
 
@@ -57,6 +58,7 @@ pub fn analyze_project(
     // full project module set without re-reading files.
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
         Vec::new();
+    let mut parsed_sources: HashMap<PathBuf, String> = HashMap::new();
     // Module-less parse-clean files, deferred until the whole project is seen. A
     // project may hold at most one such single-file script; it joins `program`
     // under the empty module name. Two or more would share that name, so a bare
@@ -224,6 +226,7 @@ pub fn analyze_project(
             });
         }
 
+        parsed_sources.insert(file.path.clone(), source);
         parsed_files.push((file, parsed));
     }
 
@@ -299,6 +302,7 @@ pub fn analyze_project(
         .map(|(file, parsed)| AnalyzedFile {
             path: file.path.clone(),
             module_name: file.module_name.clone(),
+            source: parsed_sources.remove(&file.path).unwrap_or_default(),
             parsed,
         })
         .collect();
