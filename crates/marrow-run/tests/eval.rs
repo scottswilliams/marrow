@@ -136,6 +136,70 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
     }
 }
 
+fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
+    let mut modules = Vec::new();
+    for source in sources {
+        let parsed = parse_source(source);
+        assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
+        let mut functions = Vec::new();
+        let mut resources = Vec::new();
+        let mut enums = Vec::new();
+        for declaration in parsed.file.declarations {
+            match declaration {
+                Declaration::Function(function) => functions.push(CheckedFunction {
+                    name: function.name.clone(),
+                    public: function.public,
+                    params: function
+                        .params
+                        .iter()
+                        .map(|param| CheckedParam {
+                            name: param.name.clone(),
+                            mode: param.mode,
+                            ty: MarrowType::Unknown,
+                        })
+                        .collect(),
+                    return_type: None,
+                    span: function.span,
+                    touches_saved_data: false,
+                    body: function.body,
+                }),
+                Declaration::Resource(resource) => {
+                    let (schema, errors) = compile_resource(&resource);
+                    assert!(errors.is_empty(), "{errors:?}");
+                    resources.push(schema);
+                }
+                Declaration::Enum(decl) => {
+                    let (schema, errors) = compile_enum(&decl);
+                    assert!(errors.is_empty(), "{errors:?}");
+                    enums.push(schema);
+                }
+                _ => {}
+            }
+        }
+        modules.push(CheckedModule {
+            name: parsed
+                .file
+                .module
+                .as_ref()
+                .map_or("test", |module| module.name.as_str())
+                .to_string(),
+            source_file: std::path::PathBuf::new(),
+            span: Default::default(),
+            imports: parsed
+                .file
+                .uses
+                .iter()
+                .map(|use_| use_.name.clone())
+                .collect(),
+            constants: Vec::new(),
+            functions,
+            resources,
+            enums,
+        });
+    }
+    CheckedProgram { modules }
+}
+
 /// Run an entry function against an empty store, returning only its value.
 fn run(
     program: &CheckedProgram,
@@ -3646,6 +3710,65 @@ fn reads_a_whole_resource() {
             ("title".into(), Value::Str("Mort".into())),
             ("shelf".into(), Value::Str("fiction".into())),
         ]))
+    );
+}
+
+#[test]
+fn constructs_a_resource_value() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20shelf: string\n\n\
+         fn draft(): Book\n\
+         \x20\x20\x20\x20return Book(title: \"Mort\", shelf: \"fiction\")\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome = run_entry(&program, &store, "test::draft", &[]).expect("draft");
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![
+            ("title".into(), Value::Str("Mort".into())),
+            ("shelf".into(), Value::Str("fiction".into())),
+        ]))
+    );
+}
+
+#[test]
+fn constructs_a_resource_value_with_a_local_resource_field() {
+    let program = checked_program(
+        "resource Address\n\
+         \x20\x20\x20\x20city: string\n\n\
+         resource Person\n\
+         \x20\x20\x20\x20required name: string\n\
+         \x20\x20\x20\x20address: Address\n\n\
+         fn city(): string\n\
+         \x20\x20\x20\x20const person = Person(name: \"Sam\", address: Address(city: \"Paris\"))\n\
+         \x20\x20\x20\x20return person.address.city\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let outcome = run_entry(&program, &store, "test::city", &[]).expect("city");
+    assert_eq!(outcome.value, Some(Value::Str("Paris".into())));
+}
+
+#[test]
+fn constructs_a_qualified_resource_value() {
+    let program = checked_program_modules(&[
+        "module library\n\
+         resource Book\n\
+         \x20\x20\x20\x20title: string\n",
+        "module app\n\
+         use library\n\
+         fn draft(): unknown\n\
+         \x20\x20\x20\x20return library::Book(title: \"Mort\")\n",
+    ]);
+    let store = RefCell::new(MemStore::new());
+    let outcome = run_entry(&program, &store, "app::draft", &[]).expect("draft");
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![(
+            "title".into(),
+            Value::Str("Mort".into())
+        )]))
     );
 }
 

@@ -492,6 +492,222 @@ pub(crate) fn collect_arguments<T>(
         .collect()
 }
 
+fn resolve_resource_value_constructor<'p>(
+    program: &'p CheckedProgram,
+    from_module: &str,
+    segments: &[String],
+) -> Option<(&'p CheckedModule, &'p ResourceSchema)> {
+    match resolve(program, from_module, segments, ResolvableKind::Resource) {
+        Resolution::Found(Def {
+            module,
+            item: DefItem::Resource(resource),
+            ..
+        }) => Some((module, resource)),
+        _ => None,
+    }
+}
+
+fn eval_resource_constructor(
+    module: &CheckedModule,
+    resource: &ResourceSchema,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let fields: Vec<&Node> = resource
+        .members
+        .iter()
+        .filter(|node| node.is_plain_field())
+        .collect();
+    let mut slots: Vec<Option<Value>> = vec![None; fields.len()];
+
+    for arg in args {
+        if arg.mode.is_some() {
+            return Err(type_error(
+                &format!("`{}(...)` fields cannot be out arguments", resource.name),
+                span,
+            ));
+        }
+        let Some(name) = &arg.name else {
+            return Err(type_error(
+                &format!("`{}(...)` takes named fields", resource.name),
+                span,
+            ));
+        };
+        let index = fields
+            .iter()
+            .position(|field| &field.name == name)
+            .ok_or_else(|| {
+                type_error(&format!("`{}` has no field `{name}`", resource.name), span)
+            })?;
+        if slots[index].is_some() {
+            return Err(type_error(
+                &format!("field `{name}` is supplied more than once"),
+                span,
+            ));
+        }
+        let value = eval_expr(&arg.value, env)?;
+        check_resource_constructor_value(
+            env.program,
+            module,
+            resource,
+            fields[index],
+            &value,
+            span,
+        )?;
+        slots[index] = Some(value);
+    }
+
+    for (field, slot) in fields.iter().zip(&slots) {
+        if slot.is_none()
+            && let Element::Slot { required: true, .. } = field.element
+        {
+            return Err(type_error(
+                &format!("`{}` requires `{}`", resource.name, field.name),
+                span,
+            ));
+        }
+    }
+
+    Ok(Value::Resource(
+        fields
+            .into_iter()
+            .zip(slots)
+            .filter_map(|(field, value)| value.map(|value| (field.name.clone(), value)))
+            .collect(),
+    ))
+}
+
+fn check_resource_constructor_value(
+    program: &CheckedProgram,
+    module: &CheckedModule,
+    resource: &ResourceSchema,
+    field: &Node,
+    value: &Value,
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    let ty = field.plain_field_type().ok_or_else(|| {
+        type_error(
+            &format!("`{}` has no field `{}`", resource.name, field.name),
+            span,
+        )
+    })?;
+    let expected = runtime_type_from_schema(module, ty);
+    let accepted = value_matches_type(program, &expected, value);
+    if accepted {
+        Ok(())
+    } else {
+        Err(type_error(
+            &format!("field `{}` has the wrong type", field.name),
+            span,
+        ))
+    }
+}
+
+fn runtime_type_from_schema(module: &CheckedModule, ty: &Type) -> MarrowType {
+    match ty {
+        Type::Scalar(scalar) => MarrowType::Primitive(*scalar),
+        Type::Sequence(element) => {
+            MarrowType::Sequence(Box::new(runtime_type_from_schema(module, element)))
+        }
+        Type::Identity(resource) => MarrowType::Identity(resource.clone()),
+        Type::Unknown => MarrowType::Unknown,
+        Type::Named(name) if name == "Error" => MarrowType::Error,
+        Type::Named(name)
+            if module
+                .resources
+                .iter()
+                .any(|resource| &resource.name == name) =>
+        {
+            MarrowType::Resource(name.clone())
+        }
+        Type::Named(name) if module.enums.iter().any(|enum_| &enum_.name == name) => {
+            MarrowType::Enum {
+                module: module.name.clone(),
+                name: name.clone(),
+            }
+        }
+        Type::Named(_) => MarrowType::Unknown,
+    }
+}
+
+fn value_matches_type(program: &CheckedProgram, expected: &MarrowType, value: &Value) -> bool {
+    match expected {
+        MarrowType::Primitive(scalar) => value_scalar_type(value) == Some(*scalar),
+        MarrowType::Identity(resource) => {
+            let arity = find_resource_by_name(program, resource)
+                .and_then(|resource| resource.saved_root.as_ref())
+                .map_or(0, |root| root.identity_keys.len());
+            identity_value_matches(program, resource, arity, value)
+        }
+        MarrowType::Resource(_) => matches!(value, Value::Resource(_)),
+        MarrowType::Enum { module, name } => {
+            let Value::Int(ordinal) = value else {
+                return false;
+            };
+            let Ok(ordinal) = usize::try_from(*ordinal) else {
+                return false;
+            };
+            enum_in(program, module, name)
+                .and_then(|schema| schema.members.get(ordinal))
+                .is_some_and(|member| !member.category)
+        }
+        MarrowType::Sequence(element) => match value {
+            Value::Sequence(items) => items
+                .iter()
+                .all(|item| value_matches_type(program, element, item)),
+            _ => false,
+        },
+        MarrowType::Error => matches!(value, Value::Resource(_)),
+        MarrowType::Unknown => true,
+    }
+}
+
+fn value_scalar_type(value: &Value) -> Option<ScalarType> {
+    match value {
+        Value::Int(_) => Some(ScalarType::Int),
+        Value::Bool(_) => Some(ScalarType::Bool),
+        Value::Str(_) => Some(ScalarType::Str),
+        Value::Instant(_) => Some(ScalarType::Instant),
+        Value::Date(_) => Some(ScalarType::Date),
+        Value::Duration(_) => Some(ScalarType::Duration),
+        Value::Decimal(_) => Some(ScalarType::Decimal),
+        Value::Bytes(_) => Some(ScalarType::Bytes),
+        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
+    }
+}
+
+fn identity_value_matches(
+    program: &CheckedProgram,
+    resource: &str,
+    arity: usize,
+    value: &Value,
+) -> bool {
+    let Some(identity_keys) = find_resource_by_name(program, resource)
+        .and_then(|resource| resource.saved_root.as_ref())
+        .map(|root| root.identity_keys.as_slice())
+    else {
+        return false;
+    };
+    match value {
+        Value::Identity(keys) => identity_keys_match(identity_keys, keys),
+        other if arity == 1 => value_to_key(other.clone())
+            .is_some_and(|key| identity_keys_match(identity_keys, &[key])),
+        _ => false,
+    }
+}
+
+fn identity_keys_match(declared: &[KeyDef], keys: &[SavedKey]) -> bool {
+    declared.len() == keys.len()
+        && declared
+            .iter()
+            .zip(keys)
+            .all(|(declared, key)| match declared.ty.scalar() {
+                Some(expected) => expected == key.scalar_type(),
+                None => true,
+            })
+}
+
 /// Whether an argument's mode matches a parameter's: both plain, both `out`, or
 /// both `inout`.
 pub(crate) fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
@@ -690,6 +906,11 @@ pub(crate) fn eval_call(
         && let Some(resource) = find_resource_by_name(env.program, name)
     {
         return eval_identity_constructor(resource, args, span, env).map(Some);
+    }
+    if let Some((module, resource)) =
+        resolve_resource_value_constructor(env.program, env.module, &segments)
+    {
+        return eval_resource_constructor(module, resource, args, span, env).map(Some);
     }
     // Builtins and the host capability take positional arguments only; a call
     // carrying named arguments is a program-function call, handled last.

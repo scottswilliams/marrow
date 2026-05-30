@@ -1823,16 +1823,12 @@ pub(crate) fn check_call(
     // qualifier and the target must be `pub`). A module-less script contributes the
     // empty module, so its bare calls resolve against its own functions.
     let from_module = module_of_file(program, file).unwrap_or_default();
-    // A callee naming a declared resource is a constructor, not a function:
-    // `Book(...)` builds the resource value and `Book::Id(...)` builds its
-    // identity. Recognize it so a valid
-    // constructor is not a false `check.unresolved_call`.
-    if let Some(ty) = resource_constructor_type(program, from_module, segments) {
-        // An identity constructor `Name::Id(key…)` builds into a typed keyspace, so
-        // each key argument is checked against the referenced resource's declared
-        // identity key types — the same `check.key_type` a record lookup
-        // `^root(key…)` reports. Without this a wrong-scalar or a non-key value
-        // (another identity) would settle silently into a typed keyslot.
+    // `Book::Id(...)` is the identity constructor even if `Book::Id` could also
+    // spell a qualified resource name. Keep the checker aligned with runtime
+    // dispatch, where identity constructors run before resource values.
+    if let Some(ty @ MarrowType::Identity(_)) =
+        resource_constructor_type(program, from_module, segments)
+    {
         if let [name, id] = segments
             && id == "Id"
             && let Some(resource) = resolve::resolve_resource_by_name_any(program, name)
@@ -1848,6 +1844,41 @@ pub(crate) fn check_call(
             );
         }
         return ty;
+    }
+    // A callee naming a declared resource is a value constructor, not a function:
+    // `Book(...)` and `module::Book(...)` build resource values. Recognize it so
+    // a valid constructor is not a false `check.unresolved_call`.
+    if let Resolution::Found(Def {
+        module,
+        item: DefItem::Resource(resource),
+        ..
+    }) = resolve(program, from_module, segments, ResolvableKind::Resource)
+    {
+        let resource_names: Vec<String> = module
+            .resources
+            .iter()
+            .map(|resource| resource.name.clone())
+            .collect();
+        let enum_names: Vec<String> = module
+            .enums
+            .iter()
+            .map(|enum_| enum_.name.clone())
+            .collect();
+        check_resource_constructor_args(
+            &resource.name,
+            resource,
+            TypeNames {
+                module: &module.name,
+                resources: &resource_names,
+                enums: &enum_names,
+            },
+            args,
+            arg_types,
+            span,
+            file,
+            diagnostics,
+        );
+        return MarrowType::Resource(resource.name.clone());
     }
     // Resolving as a `Function` can only ever Find a function, so the other arms
     // never carry a non-function item. Only calls in a file that is part of the
@@ -1963,6 +1994,72 @@ pub(crate) fn check_call(
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_resource_constructor_args(
+    label: &str,
+    resource: &ResourceSchema,
+    names: TypeNames<'_>,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let fields: Vec<&marrow_schema::Node> = resource
+        .members
+        .iter()
+        .filter(|node| node.is_plain_field())
+        .collect();
+    let mut supplied = vec![false; fields.len()];
+
+    for (arg, arg_type) in args.iter().zip(arg_types) {
+        let Some(name) = &arg.name else {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` constructor takes named fields"),
+            ));
+            continue;
+        };
+        let Some(index) = fields.iter().position(|field| &field.name == name) else {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` has no field `{name}`"),
+            ));
+            continue;
+        };
+        if supplied[index] {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("field `{name}` is supplied more than once"),
+            ));
+            continue;
+        }
+        supplied[index] = true;
+        if let Some(ty) = fields[index].plain_field_type() {
+            let expected = MarrowType::from_resolved(ty.clone(), names);
+            check_one_arg(label, &expected, arg_type, span, file, diagnostics);
+        }
+    }
+
+    for (field, supplied) in fields.iter().zip(supplied) {
+        if !supplied
+            && matches!(
+                &field.element,
+                marrow_schema::Element::Slot { required: true, .. }
+            )
+        {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` requires `{}`", field.name),
+            ));
+        }
+    }
 }
 
 /// Check one positional/named argument against the type its parameter expects: a

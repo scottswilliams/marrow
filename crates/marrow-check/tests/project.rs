@@ -1736,6 +1736,88 @@ fn an_identity_constructor_is_not_an_unresolved_call() {
 }
 
 #[test]
+fn a_resource_constructor_checks_field_arguments() {
+    let found = check_module(
+        "ctor-field-type",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n\
+         fn caller()\n    var b = Book(title: 1, shelf: \"fiction\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_resource_constructor_rejects_unknown_fields() {
+    let found = check_module(
+        "ctor-unknown-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn caller()\n    var b = Book(title: \"a\", pages: 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_resource_constructor_requires_required_fields() {
+    let found = check_module(
+        "ctor-required-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n\
+         fn caller()\n    var b = Book(shelf: \"fiction\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_qualified_resource_constructor_is_not_an_unresolved_call() {
+    let root = temp_project("qualified-resource-constructor", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\nresource Book\n    title: string\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse library\nfn caller()\n    var b = library::Book(title: \"Mort\")\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.unresolved_call").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_identity_constructor_keeps_precedence_over_a_qualified_resource_name() {
+    let root = temp_project("identity-constructor-precedence", |root| {
+        write(
+            root,
+            "src/Book.mw",
+            "module Book\nresource Id\n    title: string\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nresource Book at ^books(id: int)\n    title: string\nfn caller()\n    var id = Book::Id(1)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn an_unknown_call_in_a_module_less_script_is_flagged() {
     // A module-less script joins the program under the empty module name, so its
     // own calls resolve against it: a call naming a function the script does not
