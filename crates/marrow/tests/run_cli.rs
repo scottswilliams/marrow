@@ -660,3 +660,28 @@ fn a_cross_module_same_named_enum_mismatch_names_both_modules() {
         "expected both modules named, got: {stderr}"
     );
 }
+
+#[test]
+fn runs_a_module_less_script_bare_entry() {
+    // A module-less script is self-resolvable: its `pub fn main` lives in the
+    // empty module, so the bare entry `main` resolves to it and runs. This is the
+    // legitimate path the construction restores — no `run.no_entry`.
+    let root = temp_project("run-module-less-script", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "pub fn main()\n    print(\"from a script\")\n",
+        );
+    });
+    let output = run_run(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "from a script\n");
+}

@@ -1297,16 +1297,16 @@ fn an_identity_constructor_is_not_an_unresolved_call() {
 }
 
 #[test]
-fn an_unknown_call_in_a_module_less_script_is_not_flagged() {
-    // A module-less script's functions are not in the program (not runnable as a
-    // call target), so its calls are not resolution-checked — only library-module
-    // calls are.
+fn an_unknown_call_in_a_module_less_script_is_flagged() {
+    // A module-less script joins the program under the empty module name, so its
+    // own calls resolve against it: a call naming a function the script does not
+    // declare is `check.unresolved_call`, not a silently-accepted reference.
     let found = check_script(
         "call-script",
         "fn f()\n    mystery()\n",
         "check.unresolved_call",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -3658,6 +3658,205 @@ fn passing_the_matching_nested_module_enum_checks_clean() {
     assert!(
         !report.has_errors(),
         "a matching nested-module enum argument must check clean: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_module_less_script_string_into_an_int_field_is_a_check_error() {
+    // A file with no `module` line is a single-file script. Its own `^orders`
+    // resource must still be nominally checked: storing a `string` into the
+    // `int` field `count` is a type mismatch, not a silently-accepted write.
+    let found = check_script(
+        "script-string-into-int",
+        "resource Order at ^orders(id: int)\n    required count: int\n\n\
+         pub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_module_less_script_string_into_an_enum_field_is_a_check_error() {
+    // The enum counterpart: a script's enum-typed field `state: Status` written a
+    // raw `string`. The field type resolves to the script's own `Status`, so the
+    // mismatch is caught rather than dropping to `Unknown` and passing.
+    let found = check_script(
+        "script-string-into-enum",
+        "enum Status\n    active\n    archived\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         pub fn main()\n    var o: Order\n    o.state = \"notamember\"\n    ^orders(1) = o\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_module_less_script_self_reference_checks_clean() {
+    // The over-rejection guard: once a script's own types become visible, a
+    // correct script must still check clean. Its resource, its enum-typed field,
+    // and a same-enum comparison all resolve to the script's own declarations.
+    let root = temp_project("script-self-reference-clean", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "enum Status\n    active\n    archived\n\n\
+             resource Order at ^orders(id: int)\n    required state: Status\n\n\
+             pub fn main()\n    var o: Order\n    o.state = Status::active\n    \
+             ^orders(1) = o\n\n\
+             pub fn isActive(): bool\n    return ^orders(1).state == Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        !report.has_errors(),
+        "a correct module-less script must check clean: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn another_module_cannot_use_a_module_less_script() {
+    // The import-safety invariant: a script is self-resolvable but un-importable.
+    // A sibling `module other` that does `use app` against a module-less `app.mw`
+    // must still fail with `check.unresolved_import` — the empty-named script is
+    // never bound to a name a `use` can spell.
+    let root = temp_project("script-not-importable", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "resource Order at ^orders(id: int)\n    required count: int\n\n\
+             pub fn main()\n    print(\"hi\")\n",
+        );
+        write(
+            root,
+            "src/other.mw",
+            "module other\nuse app\n\npub fn run()\n    print(\"ok\")\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.unresolved_import");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("app"), "{}", found[0].message);
+}
+
+#[test]
+fn a_module_less_script_joins_the_program_under_the_empty_name() {
+    // Pins the construction: a parse-clean script enters `program.modules` under
+    // the empty module name, carrying its own resources, so the nominal resolvers
+    // (which scan `program.modules`) can see `Order`. This is what turns the
+    // script's field types from `Unknown` into its real types.
+    let root = temp_project("script-empty-named-module", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "resource Order at ^orders(id: int)\n    required count: int\n\n\
+             pub fn main()\n    print(\"hi\")\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let script = program
+        .modules
+        .iter()
+        .find(|module| module.name.is_empty())
+        .expect("the module-less script joins the program under the empty name");
+    assert!(
+        script.resources.iter().any(|r| r.name == "Order"),
+        "the script's own resource is present for nominal resolution"
+    );
+}
+
+#[test]
+fn two_module_less_scripts_are_a_check_error() {
+    // The soundness fix: a project may hold at most one module-less file (its
+    // single entrypoint script). Two scripts share the empty module name, so a
+    // bare reference in one could resolve against the other's declarations. Rather
+    // than alias them, the checker rejects every module-less file past the first —
+    // a project's library files must declare a `module`.
+    let root = temp_project("two-scripts-rejected", |root| {
+        write(
+            root,
+            "src/one.mw",
+            "resource Order at ^orders(id: int)\n    required count: int\n\n\
+             pub fn main()\n    print(\"one\")\n",
+        );
+        write(
+            root,
+            "src/two.mw",
+            "resource Ticket at ^tickets(id: int)\n    required note: string\n\n\
+             pub fn other()\n    print(\"two\")\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.multiple_scripts");
+    // Each offending file is named; neither is privileged over the other.
+    assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
+    assert!(
+        found.iter().all(|d| d.message.contains("module")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.file.ends_with("one.mw"))
+            && found.iter().any(|d| d.file.ends_with("two.mw")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn two_scripts_with_clashing_resources_never_silently_bind_to_the_wrong_shape() {
+    // The wrong-resource-binding repro: each script declares its own `Order` with a
+    // different shape (`one.mw`'s has `count`, `two.mw`'s has `priority`). Under the
+    // empty-name alias, `two.mw`'s `var o: Order` could bind to `one.mw`'s `Order`,
+    // and assigning a field only `two.mw`'s `Order` has would either silently accept
+    // against the wrong shape or corrupt at run time. Rejecting the second script
+    // makes that impossible: the binding never happens because the file is an error.
+    let root = temp_project("two-scripts-wrong-shape", |root| {
+        write(
+            root,
+            "src/one.mw",
+            "resource Order at ^orders_a(id: int)\n    required count: int\n\n\
+             pub fn main()\n    var o: Order\n    o.count = 1\n    ^orders_a(1) = o\n",
+        );
+        write(
+            root,
+            "src/two.mw",
+            "resource Order at ^orders_b(id: int)\n    required priority: int\n\n\
+             pub fn other()\n    var o: Order\n    o.priority = 9\n    ^orders_b(1) = o\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        !with_code(&report, "check.multiple_scripts").is_empty(),
+        "two scripts with clashing resources must be rejected, never silently bound: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_script_cannot_see_another_scripts_functions() {
+    // The cross-script call repro: `b.mw` calls `helper`, declared only in `a.mw`.
+    // Under the empty-name alias `b` could resolve `helper` against `a`'s module —
+    // false cross-script visibility. With the scripts rejected, the call cannot
+    // resolve across the file boundary.
+    let root = temp_project("cross-script-call", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "pub fn helper(): int\n    return 1\n\npub fn main()\n    print(\"a\")\n",
+        );
+        write(root, "src/b.mw", "pub fn other()\n    var x = helper()\n");
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        !with_code(&report, "check.multiple_scripts").is_empty(),
+        "b cannot see a's functions; the two-script project is rejected: {:#?}",
         report.diagnostics
     );
 }

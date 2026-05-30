@@ -276,3 +276,55 @@ fn check_json_reports_type_errors_for_a_single_file() {
         "{stdout}"
     );
 }
+
+#[test]
+fn check_single_module_less_script_string_into_an_int_field_errors() {
+    // A module-less single file is a script. Its own `^orders` resource must be
+    // nominally checked through the single-file `check` path: a `string` written
+    // into the `int` field `count` is a type mismatch, exit 1.
+    let path = temp_source(
+        "single-script-string-into-int",
+        "resource Order at ^orders(id: int)\n    required count: int\n\npub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn check_rejects_a_project_with_two_module_less_scripts() {
+    // A project may hold at most one module-less file; library files declare a
+    // `module`. Two scripts share the empty module name, so the checker rejects
+    // the project rather than alias one script's names against the other's.
+    let dir = temp_project_dir("two-scripts");
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("src/one.mw"),
+        "pub fn main()\n    print(\"one\")\n",
+    )
+    .expect("write one");
+    fs::write(
+        dir.join("src/two.mw"),
+        "pub fn other()\n    print(\"two\")\n",
+    )
+    .expect("write two");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&dir)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_dir_all(&dir).ok();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.multiple_scripts"), "{stderr}");
+}

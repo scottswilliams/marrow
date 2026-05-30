@@ -20,8 +20,10 @@ root. The `module` declaration must match the source-root-relative path.
 External package management is outside this reference.
 
 A file without a `module` declaration is a single-file script. It can run as
-an entrypoint, but other modules do not import it by path. Project libraries
-declare their module name explicitly.
+an entrypoint, but other modules do not import it by path. A script's own
+declarations are type-checked within the file; they are not visible to any
+other module. A project may hold at most one such script; every other file
+declares its module name explicitly.
 
 ## Imports
 

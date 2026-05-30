@@ -140,7 +140,9 @@ fn resolve_bare<'p>(
     let mut sole_private: Option<&str> = None;
     let mut private_count = 0usize;
     for module in &program.modules {
-        if module.name == from_module {
+        // An empty-named module is a single-file script, which no `use` can name,
+        // so it must never be surfaced as a candidate in this enrichment hint.
+        if module.name == from_module || module.name.is_empty() {
             continue;
         }
         if let Some(item) = lookup_in_module(module, leaf, kind) {

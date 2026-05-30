@@ -29,6 +29,9 @@ pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
 /// Two library files declare the same module name.
 pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
+/// A project holds more than one module-less file. A project may have at most one
+/// single-file script (its entrypoint); every other file must declare a `module`.
+pub const CHECK_MULTIPLE_SCRIPTS: &str = "check.multiple_scripts";
 /// A name is declared or imported more than once within a single file.
 pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 /// A `use` names a module that is neither a project module nor a standard
@@ -67,8 +70,9 @@ pub const CHECK_KEY_TYPE: &str = "check.key_type";
 /// typing every value name must be defined.
 pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// A call names a function that is neither a builtin nor a declared function. Only
-/// reported for calls in library modules of a fully parsed project, so a
-/// module-less script or a module excluded by a parse error never false-positives.
+/// reported for calls in files that are part of a fully parsed project — a library
+/// module or a module-less script — so a module excluded by a parse error never
+/// false-positives.
 pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// A qualified call (`module::fn`) names a function that exists but is not `pub`,
 /// so it is not callable from another module. Distinct from
@@ -250,6 +254,13 @@ pub fn analyze_project(
     // full project module set without re-reading files.
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
         Vec::new();
+    // Module-less parse-clean files, deferred until the whole project is seen. A
+    // project may hold at most one such single-file script; it joins `program`
+    // under the empty module name. Two or more would share that name, so a bare
+    // reference in one could alias another's declarations — that is rejected, not
+    // assembled. Holding the candidates until the loop ends lets the decision rest
+    // on the project-wide count rather than first-seen order.
+    let mut scripts: Vec<CheckedModule> = Vec::new();
 
     // Pass 1: parse each file and collect per-file findings plus the project's
     // module set.
@@ -384,9 +395,58 @@ pub fn analyze_project(
                     ),
                 )),
             }
+        } else if !parsed.has_errors() {
+            // A module-less file is a single-file script: its declarations are
+            // nominally self-resolvable within the file, but it is never bound to
+            // a path and no other module can `use` it. A single script joins
+            // `program` under the empty module name it always carries — so its own
+            // resource, enum, and function references resolve and are checked — but
+            // never `declared`, the import-resolvable map, so it stays
+            // un-importable. The empty-name module is deferred until the project's
+            // script count is known. A file carrying a parse error contributes none.
+            scripts.push(CheckedModule {
+                name: String::new(),
+                source_file: file.path.clone(),
+                span: SourceSpan::default(),
+                imports: parsed
+                    .file
+                    .uses
+                    .iter()
+                    .map(|use_decl| use_decl.name.clone())
+                    .collect(),
+                constants,
+                functions,
+                resources,
+                enums,
+            });
         }
 
         parsed_files.push((file, parsed));
+    }
+
+    // A project may have at most one module-less file: its single entrypoint
+    // script. Exactly one joins the program under the empty module name. Two or
+    // more share that name, so the empty-named module would be ambiguous — a bare
+    // reference in one script could resolve against another's declarations, a
+    // `var o: Order` could bind to a foreign resource of the same name, and an
+    // entry in any but the first would be unreachable at run time. Rather than
+    // assemble that aliasing module, reject every script: a project's library files
+    // must declare a `module`. The single-file `check`/`run` paths see one script
+    // and are unaffected.
+    if scripts.len() <= 1 {
+        program.modules.append(&mut scripts);
+    } else {
+        for script in &scripts {
+            report.diagnostics.push(CheckDiagnostic {
+                code: CHECK_MULTIPLE_SCRIPTS,
+                severity: Severity::Error,
+                file: script.source_file.clone(),
+                message: "a project may have at most one file without a `module` \
+                    declaration (its single-file script); declare a `module` for this file"
+                    .to_string(),
+                span: SourceSpan::default(),
+            });
+        }
     }
 
     // Pass 3: flag type annotations on functions and constants that name an
@@ -3446,8 +3506,8 @@ fn check_call(
     }
     // Calls resolve from the module the file contributes: a bare name in its own
     // module, a qualified `mod::name` in the named module (cross-module needs the
-    // qualifier and the target must be `pub`). A module-less script has no module
-    // name; its calls are suppressed anyway.
+    // qualifier and the target must be `pub`). A module-less script contributes the
+    // empty module, so its bare calls resolve against its own functions.
     let from_module = module_of_file(program, file).unwrap_or_default();
     // A callee naming a declared resource is a constructor, not a function:
     // `Book(...)` builds the resource value and `Book::Id(...)` builds its
@@ -3457,10 +3517,10 @@ fn check_call(
         return ty;
     }
     // Resolving as a `Function` can only ever Find a function, so the other arms
-    // never carry a non-function item. Only library-module calls are reported: a
-    // module-less script is not a call target, and a project that did not fully
-    // parse has its unresolved calls suppressed in `check_project` (the missing
-    // definition may live in an excluded module).
+    // never carry a non-function item. Only calls in a file that is part of the
+    // program are reported, and a project that did not fully parse has its
+    // unresolved calls suppressed in `check_project` (the missing definition may
+    // live in an excluded module).
     let function = match resolve(program, from_module, segments, ResolvableKind::Function) {
         Resolution::Found(Def {
             item: DefItem::Function(function),
@@ -3887,8 +3947,9 @@ fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagn
     }
 }
 
-/// Whether `file` is a library module included in the program. Calls in such a
-/// file are resolution-checked; a module-less script (not a call target) is not.
+/// Whether `file` contributes a module to the program — a library module or a
+/// module-less script. Calls in such a file are resolution-checked; a file
+/// excluded by a parse error is not.
 fn file_in_program(program: &CheckedProgram, file: &Path) -> bool {
     program
         .modules
@@ -4102,10 +4163,14 @@ pub fn check_tests(
     }
 
     // Imports in a test file resolve against the project's modules, the other
-    // test modules, and the standard library.
+    // test modules, and the standard library. The project's module-less script
+    // carries the empty name; a `use ""` is not spellable, so it is filtered out
+    // here — the import-safety invariant (a script is never importable) is kept
+    // local to this map rather than resting on a distant construction guard.
     let mut resolvable: HashMap<String, PathBuf> = project
         .modules
         .iter()
+        .filter(|module| !module.name.is_empty())
         .map(|module| (module.name.clone(), module.source_file.clone()))
         .collect();
     for module in &modules {

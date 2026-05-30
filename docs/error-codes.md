@@ -130,6 +130,7 @@ name-resolution and type rules below run when a whole project is checked (by
 |---|---|
 | `check.module_path` | A library file declares a module name that does not match its path. |
 | `check.duplicate_module` | Two library files declare the same module name. |
+| `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
 | `check.duplicate_declaration` | A name is declared or imported more than once within a single file. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
