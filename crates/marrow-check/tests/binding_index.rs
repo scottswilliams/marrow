@@ -201,6 +201,32 @@ fn definition_from_an_aliased_call_site_resolves_to_the_function() {
 }
 
 #[test]
+fn a_bare_call_goes_to_its_own_module_not_a_foreign_one() {
+    // Both `aaa` and `zzz` declare `fn greet`. A bare `greet()` in `zzz::run`
+    // resolves in its own module first, so go-to-def must land on `zzz::greet` —
+    // never first-matched to the foreign `aaa::greet`. The binding index now
+    // shares the unified resolver, so this matches what the checker and runtime do.
+    let aaa = "module aaa\npub fn greet(): int\n    return 1\n";
+    let zzz = "module zzz\nfn greet(): int\n    return 2\nfn run(): int\n    return greet()\n";
+    let (index, paths) = analyze(
+        "binding-bare-own-module",
+        &[("src/aaa.mw", aaa), ("src/zzz.mw", zzz)],
+    );
+    let zzz_file = &paths[1];
+
+    // The cursor sits on the bare call `greet()` inside `zzz::run`.
+    let call_offset = zzz.rfind("greet()").expect("bare call");
+    let def = index
+        .definition(zzz_file, call_offset)
+        .expect("bare call resolves to a function definition");
+    assert_eq!(def.kind, SymbolKind::Function, "{def:?}");
+    assert_eq!(
+        def.file, *zzz_file,
+        "a bare call goes to its own module's `greet`, not the foreign one: {def:?}",
+    );
+}
+
+#[test]
 fn a_saved_field_name_is_saved_data_backed_and_unsafe() {
     // `title` is a stored field of the saved `Book` resource; its on-disk path is
     // `^books(id).title`, so renaming the source name orphans saved data.

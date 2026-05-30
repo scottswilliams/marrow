@@ -21,7 +21,7 @@ pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_bindi
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
 };
-pub use resolve::{Def, DefItem, ResolvableKind, Resolution, resolve};
+pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
@@ -66,6 +66,10 @@ pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// so it is not callable from another module. Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: the name resolves, the visibility does not.
 pub const CHECK_PRIVATE_FUNCTION: &str = "check.private_function";
+/// A bare call names a `pub` function reachable in two or more modules, so the
+/// bare name cannot pick one — it must be qualified (`module::fn`). Distinct from
+/// [`CHECK_UNRESOLVED_CALL`]: candidates exist, the bare spelling is ambiguous.
+pub const CHECK_AMBIGUOUS_CALL: &str = "check.ambiguous_call";
 /// `nextId(^root)` names a root with no default integer allocation policy: a
 /// composite identity, a single non-integer identity key, or a keyless singleton.
 /// The default per-root policy is only available for a resource with one `int`
@@ -2463,8 +2467,30 @@ fn check_call(
             }
             return MarrowType::Unknown;
         }
+        // A bare name that names a `pub` function in two or more modules: each is
+        // reachable, but only as `module::fn`; the bare spelling must be qualified.
+        Resolution::Ambiguous(candidates) => {
+            if file_in_program(program, file) {
+                let leaf = segments.join("::");
+                let options = candidates
+                    .iter()
+                    .map(|module| format!("`{module}::{leaf}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_AMBIGUOUS_CALL,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!(
+                        "call to `{leaf}` is ambiguous; qualify it as one of {options}"
+                    ),
+                    span,
+                });
+            }
+            return MarrowType::Unknown;
+        }
         // A non-builtin call that resolves to no declared function is unresolved.
-        Resolution::Found(_) | Resolution::Ambiguous(_) | Resolution::Unresolved => {
+        Resolution::Found(_) | Resolution::Unresolved => {
             if file_in_program(program, file) {
                 diagnostics.push(CheckDiagnostic {
                     code: CHECK_UNRESOLVED_CALL,
@@ -2877,7 +2903,12 @@ fn resource_constructor_type(
             _ => None,
         },
         [name, id] if id == "Id" => {
-            match resolve(program, from_module, segments, ResolvableKind::ResourceIdentity) {
+            match resolve(
+                program,
+                from_module,
+                segments,
+                ResolvableKind::ResourceIdentity,
+            ) {
                 Resolution::Found(_) => Some(MarrowType::Identity(name.clone())),
                 _ => None,
             }

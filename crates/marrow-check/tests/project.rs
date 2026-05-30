@@ -2522,3 +2522,41 @@ fn same_named_resources_constructor_resolves_by_module() {
         report.diagnostics
     );
 }
+
+#[test]
+fn bare_call_to_a_pub_fn_in_two_modules_is_ambiguous() {
+    // `aaa` and `bbb` each declare a `pub fn greet`; `zzz` declares no `greet` and
+    // calls a bare `greet()`. Each is reachable only as `module::greet`, so the
+    // bare name cannot pick one: a distinct `check.ambiguous_call` (qualify it),
+    // not a plain unresolved call or a silent first-match to `aaa::greet`.
+    let root = temp_project("w1-ambiguous-call", |root| {
+        write(
+            root,
+            "src/aaa.mw",
+            "module aaa\npub fn greet(): int\n    return 1\n",
+        );
+        write(
+            root,
+            "src/bbb.mw",
+            "module bbb\npub fn greet(): int\n    return 2\n",
+        );
+        write(
+            root,
+            "src/zzz.mw",
+            "module zzz\nfn run(): int\n    return greet()\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        with_code(&report, "check.ambiguous_call").len(),
+        1,
+        "a bare call to a pub fn in two modules must be ambiguous: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.unresolved_call").is_empty(),
+        "an ambiguous call has candidates, so it is not also unresolved: {:#?}",
+        report.diagnostics
+    );
+}

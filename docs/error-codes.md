@@ -143,6 +143,8 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |
 | `check.unresolved_call` | A call names a function that is neither a builtin nor a declared function. |
+| `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
+| `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of `run.overflow`. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
@@ -187,6 +189,7 @@ errors in running programs".
 | `run.divide_by_zero` | Integer division or remainder by zero. |
 | `run.no_enclosing_loop` | A `break`/`continue` reached the top of a function with no loop to target. |
 | `run.unknown_function` | A call named a function the program does not declare. |
+| `run.private_function` | A qualified call reached a function that exists but is not `pub` to the calling module. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. |
 | `run.absent_element` | A direct read of a saved element that is absent (unpopulated). |
 | `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. |

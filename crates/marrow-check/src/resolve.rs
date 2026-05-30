@@ -83,8 +83,8 @@ pub enum Resolution<'p> {
 /// non-pub → [`Resolution::NotVisible`], missing → [`Resolution::Unresolved`]);
 /// a **bare** `leaf` resolves in `from_module` only (self-visible regardless of
 /// `pub`), and otherwise is [`Resolution::Unresolved`] — a cross-module scan runs
-/// solely to upgrade the diagnostic (a lone non-pub match becomes
-/// [`Resolution::NotVisible`]).
+/// solely to upgrade the diagnostic (`pub` in two-plus modules →
+/// [`Resolution::Ambiguous`]; a lone non-pub match → [`Resolution::NotVisible`]).
 ///
 /// Builtins and `std::` helpers are the caller's pre-check; this never resolves
 /// them.
@@ -119,9 +119,10 @@ pub fn resolve<'p>(
 /// Resolve a bare `leaf` in `from_module` only. A match there is visible
 /// regardless of `pub` (a module sees its own declarations). Otherwise the name
 /// is unresolved — `use` imports module names, not the names inside them — but a
-/// cross-module scan upgrades the diagnostic: a name that exists elsewhere only
-/// as a non-`pub` declaration surfaces as [`Resolution::NotVisible`] rather than
-/// a bare "unresolved".
+/// cross-module scan upgrades the diagnostic: a name reachable as `pub` in two or
+/// more modules is [`Resolution::Ambiguous`] (a qualified path is needed to pick
+/// one), and a name that exists elsewhere *only* as a single non-`pub`
+/// declaration is [`Resolution::NotVisible`] rather than a bare "unresolved".
 fn resolve_bare<'p>(
     program: &'p CheckedProgram,
     from_module: &str,
@@ -133,9 +134,12 @@ fn resolve_bare<'p>(
     {
         return Resolution::Found(Def { module, kind, item });
     }
-    // Not in our own module. The name is unresolved as a bare reference; scan the
-    // rest of the project only to enrich the diagnostic: a single non-`pub` match
-    // elsewhere is a visibility problem, not a missing declaration.
+    // Not in our own module, so the bare name does not resolve to a declaration —
+    // `use` imports module names, not the names inside them. Scan the rest of the
+    // project only to enrich the diagnostic for this already-erroring reference:
+    // collect the modules that expose `leaf` as `pub` (each reachable as
+    // `module::leaf`) and note a lone non-`pub` match.
+    let mut public: Vec<String> = Vec::new();
     let mut sole_private: Option<&str> = None;
     let mut private_count = 0usize;
     for module in &program.modules {
@@ -144,16 +148,23 @@ fn resolve_bare<'p>(
         }
         if let Some(item) = lookup_in_module(module, leaf, kind) {
             if is_public(&item) {
-                // Reachable, but only as `module::leaf`; the bare name does not
-                // resolve to it. Report it as plainly unresolved.
-                return Resolution::Unresolved;
+                public.push(module.name.clone());
+            } else {
+                private_count += 1;
+                sole_private = Some(&module.name);
             }
-            private_count += 1;
-            sole_private = Some(&module.name);
         }
     }
-    match (private_count, sole_private) {
-        (1, Some(module)) => Resolution::NotVisible(format!("{module}::{leaf}")),
+    match (public.len(), private_count, sole_private) {
+        // Two or more modules expose `leaf` as `pub`: the bare name cannot pick
+        // one, so qualifying it is required. Name the candidates for the hint.
+        (2.., _, _) => Resolution::Ambiguous(public),
+        // Reachable as `pub` in exactly one module, but only via `module::leaf`;
+        // the bare name still does not resolve to it. Plainly unresolved.
+        (1, _, _) => Resolution::Unresolved,
+        // The only matches anywhere are a single non-`pub` declaration: a
+        // visibility problem, not a missing one.
+        (0, 1, Some(module)) => Resolution::NotVisible(format!("{module}::{leaf}")),
         _ => Resolution::Unresolved,
     }
 }
@@ -259,11 +270,13 @@ fn lookup_in_module<'p>(
             .iter()
             .find(|function| function.name == leaf)
             .map(DefItem::Function),
-        ResolvableKind::Resource | ResolvableKind::ResourceIdentity | ResolvableKind::Type => module
-            .resources
-            .iter()
-            .find(|resource| resource.name == leaf)
-            .map(DefItem::Resource),
+        ResolvableKind::Resource | ResolvableKind::ResourceIdentity | ResolvableKind::Type => {
+            module
+                .resources
+                .iter()
+                .find(|resource| resource.name == leaf)
+                .map(DefItem::Resource)
+        }
         ResolvableKind::Const => module
             .constants
             .iter()

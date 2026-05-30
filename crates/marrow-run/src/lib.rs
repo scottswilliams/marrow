@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{
     CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, MarrowType,
-    ResolvableKind, Resolution, resolve,
+    Resolution, ResolvableKind, resolve,
 };
 use marrow_schema::stdlib::{self, Capability};
 use marrow_schema::{Element, IndexSchema, ResourceSchema, Type};
@@ -1218,8 +1218,7 @@ fn eval_call(
     // Resolve the call from this activation's module: a bare name in its own
     // module, a qualified `mod::fn` elsewhere (which must be `pub`). The resolved
     // module seeds the callee's activation, so its own short-form imports expand.
-    let (module, function) =
-        resolve_program_function(ctx.program, env.module, &segments, span)?;
+    let (module, function) = resolve_program_function(ctx.program, env.module, &segments, span)?;
     if has_moded {
         return eval_call_with_modes(module, function, args, span, env);
     }
