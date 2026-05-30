@@ -661,7 +661,7 @@ pub(crate) fn eval_raw_field_read(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let path = raw_segment_path(base, segment, span, env)?;
+    let (path, ..) = raw_segment_path(base, segment, span, env)?;
     let bytes = {
         let store = env.store.borrow();
         store

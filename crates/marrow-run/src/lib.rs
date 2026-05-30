@@ -45,7 +45,7 @@ pub(crate) use marrow_syntax::{
     LiteralKind, MatchArm, ParamMode, SourceSpan, Statement, UnaryOp, duration_unit_seconds,
 };
 pub(crate) use write::{
-    ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
+    ResourceValue, WRITE_RAW_DECLARED_FIELD, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
     WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity, next_id, next_layer_pos,
     plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
     plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,

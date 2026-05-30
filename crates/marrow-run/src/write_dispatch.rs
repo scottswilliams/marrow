@@ -58,22 +58,24 @@ pub(crate) fn write_saved_field(
 }
 
 /// Lower a quoted/raw record path `^root(key…)."segment"` to the encoded literal
-/// path and gate it on maintenance. Quoted segments are for existing raw data,
-/// import, export, migration, and repair; without maintenance they are rejected with
-/// `write.raw_requires_maintenance` — distinct from `write.unknown_field`, so a
-/// tool can tell raw syntax from a declared-field typo. The base must lower to a
-/// top-level record identity under a managed root; a raw segment names a literal
-/// `Field` directly under the record key, bypassing the resource schema.
-pub(crate) fn raw_segment_path(
+/// path and gate it on maintenance, returning the path along with the root name and
+/// resolved resource so a write can apply its declared-field guard. Quoted segments
+/// are for existing raw data, import, export, migration, and repair; without
+/// maintenance they are rejected with `write.raw_requires_maintenance` — distinct
+/// from `write.unknown_field`, so a tool can tell raw syntax from a declared-field
+/// typo. The base must lower to a top-level record identity under a managed root; a
+/// raw segment names a literal `Field` directly under the record key, bypassing the
+/// resource schema.
+pub(crate) fn raw_segment_path<'p>(
     base: &Expression,
     segment: &str,
     span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Vec<PathSegment>, RuntimeError> {
+    env: &mut Env<'p>,
+) -> Result<(Vec<PathSegment>, String, &'p ResourceSchema), RuntimeError> {
     let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    if find_resource(env.program, &root).is_none() {
+    let Some(resource) = find_resource(env.program, &root) else {
         return Err(unsupported("a raw segment under this saved path", span));
-    }
+    };
     env.require_maintenance(
         WRITE_RAW_REQUIRES_MAINTENANCE,
         format!(
@@ -82,7 +84,8 @@ pub(crate) fn raw_segment_path(
         ),
         span,
     )?;
-    Ok(saved_segments(&root, &identity, &[], Some(segment)))
+    let path = saved_segments(&root, &identity, &[], Some(segment));
+    Ok((path, root, resource))
 }
 
 /// Write a quoted/raw segment `^root(key…)."segment" = value` under maintenance:
@@ -96,7 +99,22 @@ pub(crate) fn eval_raw_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let path = raw_segment_path(base, segment, span, env)?;
+    let (path, root, resource) = raw_segment_path(base, segment, span, env)?;
+    // A raw segment runs no index maintenance, so clobbering a DECLARED field's
+    // literal path would overwrite its stored value while leaving any index it feeds
+    // stale. Anything the schema models must go through the managed write; raw access
+    // is only for paths the schema does not model. This holds even under maintenance.
+    if resource.field_type(&[segment]).is_some() {
+        return Err(raise_fault(
+            WRITE_RAW_DECLARED_FIELD,
+            format!(
+                "`\"{segment}\"` is a declared field of `^{root}`; write it as \
+                 `^{root}(…).{segment}` so its indexes stay coherent — a raw \
+                 segment is only for data the schema does not model"
+            ),
+            span,
+        ));
+    }
     // Raw segments are an untyped text boundary: `eval_raw_field_read` decodes them
     // as text, so a raw write takes a string to keep the round-trip symmetric.
     // Convert other scalars explicitly before a raw write.

@@ -187,6 +187,12 @@ What `--maintenance` permits, precisely:
   before a rename, import staging, repair. A raw write takes a string (raw
   segments are an untyped text boundary; a non-string scalar is a `run.type`
   error). A raw read of an absent segment is a catchable absent-element error.
+  A raw write cannot target a DECLARED field: `^books(id)."title" = …` when
+  `title` is declared is rejected with `write.raw_declared_field`, even under
+  maintenance, since the raw path runs no index maintenance and would leave any
+  index the field feeds stale. Write a declared field as `^books(id).title`, the
+  managed path that keeps its indexes coherent; raw segments stay confined to
+  names the schema does not model.
 
 What it does not loosen:
 
