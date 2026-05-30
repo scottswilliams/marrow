@@ -180,20 +180,6 @@ pub(crate) fn eval_identity_constructor(
     Ok(Value::Identity(keys))
 }
 
-/// Whether the resource declares an unkeyed nested group, which a whole-resource
-/// value owns but the runtime does not materialize. A group layer has no key
-/// params (a keyed leaf or keyed group always does), so any such layer is an
-/// unkeyed group the whole-resource read would silently omit and the
-/// whole-resource write would silently delete; both paths reject it instead.
-pub(crate) fn declares_unkeyed_group(resource: &ResourceSchema) -> bool {
-    // A plain top-level field also has empty key params, so the group check must
-    // exclude it — only a `Group` with no key params is an unkeyed group.
-    resource
-        .members
-        .iter()
-        .any(|node| node.key_params.is_empty() && matches!(node.element, Element::Group))
-}
-
 /// Whether `name` is a resource type declared in the program (for an
 /// uninitialized `var book: Book` to start as an empty resource value).
 pub(crate) fn is_resource_type(program: &CheckedProgram, name: &str) -> bool {
@@ -545,33 +531,4 @@ fn leaf_class(leaf: LeafKind) -> SavedPathClass {
         LeafKind::Scalar(ty) => SavedPathClass::Scalar(ty),
         LeafKind::Identity { resource, arity } => SavedPathClass::Identity { resource, arity },
     }
-}
-
-/// The plain Field members of a saved root's GROUP layer, as `(name, leaf kind)`
-/// in declaration order, for materializing a whole group entry. A scalar/enum
-/// member is a scalar leaf; a typed-reference member is an identity leaf. `None` if
-/// the layer is unknown.
-pub(crate) fn resource_group_members(
-    program: &CheckedProgram,
-    root: &str,
-    layer: &str,
-) -> Option<Vec<(String, LeafKind)>> {
-    let resource = find_resource(program, root)?;
-    let declared = resource
-        .members
-        .iter()
-        .find(|declared| declared.name == layer)?;
-    // Only plain field members materialize into a group entry; a nested keyed
-    // leaf or group is read through its own path, not as a flat field.
-    let members = declared
-        .members
-        .iter()
-        .filter_map(|member| match &member.element {
-            Element::Slot { ty, .. } if member.is_plain_field() => {
-                Some((member.name.clone(), leaf_kind(program, ty)?))
-            }
-            _ => None,
-        })
-        .collect();
-    Some(members)
 }

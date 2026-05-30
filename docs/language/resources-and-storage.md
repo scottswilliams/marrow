@@ -226,10 +226,10 @@ Typed code reads non-unique index identities through direct iteration or
 `keys(...)`. It reads a unique index identity from the lookup path. Generated
 marker values are visible only through raw inspection.
 
-Index arguments may name identity keys, fields, or nested fields through
-unkeyed groups. They do not walk keyed child layers. A non-unique index ends
-with all resource identity keys in declaration order so each entry is
-distinct:
+Index arguments may name identity keys or top-level fields. Nested fields
+through unkeyed groups are rejected, and indexes do not walk keyed child
+layers. A non-unique index ends with all resource identity keys in declaration
+order so each entry is distinct:
 
 ```mw
 for id in ^books.byShelf("fiction")

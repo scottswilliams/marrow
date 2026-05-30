@@ -183,14 +183,13 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.index_in_group` | An index appears inside a group; indexes are direct members of keyed saved resources. |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
-| `schema.unknown_index_arg` | An index argument does not resolve to an identity key, a top-level field, or a field reached through unkeyed groups. |
+| `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.duplicate_stable_id` | Two resource elements declare the same stable ID. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as an identity, a name, or a sequence; a key must be an orderable scalar. |
 | `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; a saved field stores a scalar or an enum ordinal. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a resource with no keyed saved root. |
-| `schema.required_in_unkeyed_group` | A `required` field is declared inside an unkeyed group (not yet materialized by the write planner). |
 | `schema.nested_index_arg` | An index argument names a field nested through an unkeyed group (not yet resolved by the write planner). |
 
 ### `run.*` — kind `runtime`

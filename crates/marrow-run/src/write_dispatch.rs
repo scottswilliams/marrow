@@ -294,13 +294,6 @@ pub(crate) fn write_resource(
     };
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing this saved root", span))?;
-    if declares_unkeyed_group(resource) {
-        return Err(unsupported(
-            "a whole-resource write of a resource with an unkeyed nested group \
-             (it would silently delete the group's data)",
-            span,
-        ));
-    }
     // A whole-record write adds/replaces a key in the root's identity layer.
     env.guard_traversed_layer(&[PathSegment::Root(root.into())], span)?;
     let value = resource_value_of(env.program, &resource.members, fields, span)?;
@@ -442,9 +435,37 @@ pub(crate) fn resource_value_of(
     fields: Vec<(String, Value)>,
     span: SourceSpan,
 ) -> Result<ResourceValue, RuntimeError> {
-    let mut resource_fields = Vec::new();
-    let mut identities = Vec::new();
+    let mut value = ResourceValue::default();
+    collect_resource_value(program, members, fields, &mut Vec::new(), span, &mut value)?;
+    Ok(value)
+}
+
+fn collect_resource_value(
+    program: &CheckedProgram,
+    members: &[Node],
+    fields: Vec<(String, Value)>,
+    prefix: &mut Vec<String>,
+    span: SourceSpan,
+    out: &mut ResourceValue,
+) -> Result<(), RuntimeError> {
     for (name, value) in fields {
+        if let Some(group) = members.iter().find(|node| {
+            node.name == name
+                && node.key_params.is_empty()
+                && matches!(node.element, Element::Group)
+        }) {
+            let Value::Resource(fields) = value else {
+                return Err(unsupported(
+                    "a non-resource value for an unkeyed group",
+                    span,
+                ));
+            };
+            prefix.push(name);
+            collect_resource_value(program, &group.members, fields, prefix, span, out)?;
+            prefix.pop();
+            continue;
+        }
+        let field = flattened_field_name(prefix, &name);
         // A single-key identity collapses to its bare key value at runtime, so a
         // scalar value could be either a plain field or a single-key reference;
         // the planner disambiguates by the declared field type. An identity value
@@ -458,8 +479,8 @@ pub(crate) fn resource_value_of(
                 // declared-type check then rejects it as a `write.type_mismatch`.
                 let referenced_arity =
                     identity_field_arity(program, members, &name).unwrap_or(keys.len());
-                identities.push(SuppliedIdentity {
-                    field: name,
+                out.identities.push(SuppliedIdentity {
+                    field,
                     keys,
                     referenced_arity,
                 });
@@ -467,14 +488,21 @@ pub(crate) fn resource_value_of(
             other => {
                 let saved = value_to_saved(other)
                     .ok_or_else(|| unsupported("a nested resource field", span))?;
-                resource_fields.push((name, saved));
+                out.fields.push((field, saved));
             }
         }
     }
-    Ok(ResourceValue {
-        fields: resource_fields,
-        identities,
-    })
+    Ok(())
+}
+
+fn flattened_field_name(prefix: &[String], name: &str) -> String {
+    if prefix.is_empty() {
+        return name.to_string();
+    }
+    let mut field = prefix.join(".");
+    field.push('.');
+    field.push_str(name);
+    field
 }
 
 /// The referenced resource's identity arity for a member field declared as a typed
@@ -591,6 +619,28 @@ pub(crate) fn eval_field_delete(
     let (root, identity) = lower(base, env)?.into_record(base.span())?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("deleting from this saved root", span))?;
+    if let Some(group) = resource.members.iter().find(|declared| {
+        declared.name == field
+            && declared.key_params.is_empty()
+            && matches!(declared.element, Element::Group)
+    }) {
+        if !env.host.maintenance && unkeyed_group_has_required_materialized_field(group) {
+            return Err(raise_fault(
+                WRITE_REQUIRED_FIELD,
+                format!(
+                    "cannot delete unkeyed group `{field}` because it contains a required \
+                     field; delete the whole record instead, or run in maintenance mode"
+                ),
+                span,
+            ));
+        }
+        let path = saved_segments(&root, &identity, &[(field.to_string(), Vec::new())], None);
+        env.store
+            .borrow_mut()
+            .delete(&encode_path(&path))
+            .map_err(|error| error.located(span))?;
+        return Ok(());
+    }
     // Deleting a required field on its own would leave the resource invalid; it is
     // only allowed when the surrounding entry or whole resource is deleted, or
     // under an explicit maintenance run (repair may drop a required field).
@@ -630,19 +680,88 @@ pub(crate) fn delete_nested_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    if let Some(group) = nested_unkeyed_group(env.program, root, &layer_names, field) {
+        if !env.host.maintenance && unkeyed_group_has_required_materialized_field(group) {
+            return Err(raise_fault(
+                WRITE_REQUIRED_FIELD,
+                format!(
+                    "cannot delete unkeyed group `{field}` because it contains a required \
+                     field; delete the whole record instead, or run in maintenance mode"
+                ),
+                span,
+            ));
+        }
+        let mut group_layers = layers.to_vec();
+        group_layers.push((field.to_string(), Vec::new()));
+        let path = saved_segments(root, identity, &group_layers, None);
+        env.store
+            .borrow_mut()
+            .delete(&encode_path(&path))
+            .map_err(|error| error.located(span))?;
+        return Ok(());
+    }
     if !resource_nested_member_exists(env.program, root, &layer_names, field) {
         return Err(unsupported("deleting this group field", span));
     }
-    // No required-field guard is needed here: a required field inside an unkeyed
-    // group is a compile error (`schema.required_in_unkeyed_group`). If group
-    // materialization ever lifts that rejection, add the guard that
-    // `eval_field_delete` applies to top-level required fields.
+    if !env.host.maintenance
+        && nested_field_required(env.program, root, &layer_names, field).unwrap_or(false)
+    {
+        return Err(raise_fault(
+            WRITE_REQUIRED_FIELD,
+            format!(
+                "cannot delete required field `{field}`; delete the whole record \
+                 instead, or run in maintenance mode"
+            ),
+            span,
+        ));
+    }
     let path = saved_segments(root, identity, layers, Some(field));
     env.store
         .borrow_mut()
         .delete(&encode_path(&path))
         .map_err(|error| error.located(span))?;
     Ok(())
+}
+
+fn nested_unkeyed_group<'a>(
+    program: &'a CheckedProgram,
+    root: &str,
+    layers: &[&str],
+    field: &str,
+) -> Option<&'a Node> {
+    let resource = find_resource(program, root)?;
+    let members = match layers {
+        [] => &resource.members,
+        _ => &resource.descend_layers(layers)?.members,
+    };
+    members.iter().find(|node| {
+        node.name == field && node.key_params.is_empty() && matches!(node.element, Element::Group)
+    })
+}
+
+fn nested_field_required(
+    program: &CheckedProgram,
+    root: &str,
+    layers: &[&str],
+    field: &str,
+) -> Option<bool> {
+    let resource = find_resource(program, root)?;
+    let members = match layers {
+        [] => &resource.members,
+        _ => &resource.descend_layers(layers)?.members,
+    };
+    members.iter().find_map(|node| match &node.element {
+        Element::Slot { required, .. } if node.name == field && node.key_params.is_empty() => {
+            Some(*required)
+        }
+        _ => None,
+    })
+}
+
+fn unkeyed_group_has_required_materialized_field(group: &Node) -> bool {
+    crate::write::materialized_plain_fields(&group.members)
+        .into_iter()
+        .any(|field| field.required)
 }
 
 /// Apply a keyed-entry subtree delete `delete ^root(key…).layer(entryKey…)`. The

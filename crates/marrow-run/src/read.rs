@@ -535,34 +535,21 @@ pub(crate) fn read_group_entry(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let members = resource_group_members(env.program, root, layer)
+    let resource = find_resource(env.program, root)
+        .ok_or_else(|| unsupported("reading this saved root", span))?;
+    let declared = resource
+        .descend_layers(&[layer])
+        .filter(|node| matches!(node.element, Element::Group))
         .ok_or_else(|| unsupported("reading this layer", span))?;
     let store = env.store.borrow();
-    let mut fields = Vec::new();
-    for (name, leaf) in members {
-        let mut segments = entry.to_vec();
-        segments.push(PathSegment::Field(name.clone()));
-        let Some(bytes) = store
-            .read(&encode_path(&segments))
-            .map_err(|error| error.located(span))?
-        else {
-            continue;
-        };
-        let value = decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("stored value for `{name}` did not decode to a runtime value"),
-            span,
-        })?;
-        fields.push((name, value));
-    }
+    let fields =
+        materialize_resource_members(env.program, &declared.members, entry, &*store, span)?;
     Ok(Value::Resource(fields))
 }
 
 /// Read a whole resource `^root(key…)` into a materialized [`Value::Resource`]:
-/// each present top-level field, in schema order, decoded by its declared type.
-/// Absent (sparse) fields are simply omitted.
+/// each present plain field in schema order, with unkeyed groups represented as
+/// nested resources. Absent sparse fields and empty groups are omitted.
 pub(crate) fn eval_resource_read(
     callee: &Expression,
     args: &[Argument],
@@ -578,9 +565,9 @@ pub(crate) fn eval_resource_read(
 }
 
 /// Read a whole resource from a pre-lowered identity into a materialized
-/// [`Value::Resource`]: each present top-level field in schema order, decoded by
-/// its type; sparse fields omitted. Shared by [`eval_resource_read`] and
-/// `out`/`inout` place reads.
+/// [`Value::Resource`]: direct plain fields and unkeyed-group descendants in
+/// schema order, with sparse fields and empty groups omitted. Shared by
+/// [`eval_resource_read`] and `out`/`inout` place reads.
 pub(crate) fn read_resource(
     root: &str,
     identity: &[SavedKey],
@@ -604,45 +591,53 @@ pub(crate) fn read_resource(
             span,
         ));
     }
-    if declares_unkeyed_group(resource) {
-        return Err(unsupported(
-            "a whole-resource read of a resource with an unkeyed nested group \
-             (it would silently omit the group's fields)",
-            span,
-        ));
-    }
     let prefix = saved_segments(root, identity, &[], None);
 
     let store = env.store.borrow();
-    let mut fields = Vec::new();
-    // Only plain top-level fields are materialized; keyed leaves and groups are
-    // read through their own paths, not the whole-resource read. A scalar/enum field
-    // decodes by its scalar; a typed-reference field decodes its stored identity.
-    for (field, ty) in resource
-        .members
-        .iter()
-        .filter_map(|node| node.plain_field_type().map(|ty| (node, ty)))
-    {
-        let mut segments = prefix.clone();
-        segments.push(PathSegment::Field(field.name.clone()));
-        let Some(bytes) = store
-            .read(&encode_path(&segments))
-            .map_err(|error| error.located(span))?
-        else {
-            continue;
-        };
-        let leaf = leaf_kind(env.program, ty)
-            .ok_or_else(|| unsupported("reading this field type", span))?;
-        let value = decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("stored value for `{}` did not decode", field.name),
-            span,
-        })?;
-        fields.push((field.name.clone(), value));
-    }
+    let fields =
+        materialize_resource_members(env.program, &resource.members, &prefix, &*store, span)?;
     Ok(Value::Resource(fields))
+}
+
+fn materialize_resource_members(
+    program: &CheckedProgram,
+    members: &[Node],
+    prefix: &[PathSegment],
+    store: &dyn Backend,
+    span: SourceSpan,
+) -> Result<Vec<(String, Value)>, RuntimeError> {
+    let mut fields = Vec::new();
+    for node in members {
+        if let Some(ty) = node.plain_field_type() {
+            let mut segments = prefix.to_vec();
+            segments.push(PathSegment::Field(node.name.clone()));
+            let Some(bytes) = store
+                .read(&encode_path(&segments))
+                .map_err(|error| error.located(span))?
+            else {
+                continue;
+            };
+            let leaf = leaf_kind(program, ty)
+                .ok_or_else(|| unsupported("reading this field type", span))?;
+            let value = decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_TYPE,
+                message: format!("stored value for `{}` did not decode", node.name),
+                span,
+            })?;
+            fields.push((node.name.clone(), value));
+        } else if node.key_params.is_empty() && matches!(node.element, Element::Group) {
+            let mut group_prefix = prefix.to_vec();
+            group_prefix.push(PathSegment::ChildLayer(node.name.clone()));
+            let nested =
+                materialize_resource_members(program, &node.members, &group_prefix, store, span)?;
+            if !nested.is_empty() {
+                fields.push((node.name.clone(), Value::Resource(nested)));
+            }
+        }
+    }
+    Ok(fields)
 }
 
 /// Read a quoted/raw segment `^root(key…)."segment"` under maintenance: the bytes

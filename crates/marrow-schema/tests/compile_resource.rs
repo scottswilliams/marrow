@@ -9,9 +9,8 @@ use marrow_schema::{
     Element, Node, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
     SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NON_ENUM_NAMED_FIELD,
-    SCHEMA_NONSCALAR_KEY, SCHEMA_REQUIRED_IN_UNKEYED_GROUP, SCHEMA_UNKNOWN_IN_SAVED,
-    SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, ScalarType, Type, check_saved_named_fields,
-    compile_resource,
+    SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
+    SCHEMA_UNORDERABLE_KEY, ScalarType, Type, check_saved_named_fields, compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -455,7 +454,7 @@ resource Book at ^books(id: int)
 
 #[test]
 fn index_arg_naming_no_member_is_an_error() {
-    // Index arguments must resolve to an identity key, field, or nested field.
+    // Index arguments must resolve to an identity key or top-level field.
     // `shelf` names nothing here.
     let source = "\
 resource Book at ^books(id: int)
@@ -802,21 +801,26 @@ resource Draft
 }
 
 #[test]
-fn required_field_inside_an_unkeyed_group_is_an_error() {
-    // The write planner does not materialize unkeyed groups: a whole-resource
-    // write neither validates nor persists their fields, so a required field
-    // inside an unkeyed group is a compile error rather than a silently
-    // unenforced constraint. The canonical Patient
-    // `name { required first; last }` shape exercises this.
+fn required_field_inside_an_unkeyed_group_is_allowed() {
+    // Unkeyed groups are structural. A required field inside one is required for
+    // the containing resource, and remains marked on the nested schema node.
     let source = "\
 resource Patient at ^patients(id: string)
     name
         required first: string
         last: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
-    assert_eq!(codes(&errors), [SCHEMA_REQUIRED_IN_UNKEYED_GROUP]);
-    assert!(errors[0].message.contains("first"));
+    let schema = compile_ok(source);
+    let name = layer(&schema, "name");
+    let first = name
+        .members
+        .iter()
+        .find(|node| node.name == "first")
+        .expect("nested first field");
+    assert!(matches!(
+        first.element,
+        Element::Slot { required: true, .. }
+    ));
 }
 
 #[test]

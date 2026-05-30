@@ -534,9 +534,8 @@ pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
 /// live in the saved path, so a stored member of the same name is ambiguous.
 pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
 
-/// An index argument does not resolve to an identity key, a top-level field, or
-/// a nested field reached through unkeyed groups. Index arguments do not walk
-/// keyed child layers.
+/// An index argument does not resolve to an identity key or a top-level field.
+/// Index arguments do not walk keyed child layers or unkeyed group descendants.
 pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
 
 /// Two resource elements declare the same stable ID. Stable IDs must be unique.
@@ -561,13 +560,6 @@ pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_ident
 /// are members of keyed saved resources; a singleton (keyless) or local
 /// (non-saved) resource has no generated identity for an entry to point to.
 pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
-
-/// A required field is declared inside an unkeyed group. The write planner does
-/// not materialize unkeyed groups (their fields live in `layers`, not `fields`),
-/// so it neither validates nor persists them on a whole-resource write. A
-/// required field there is a compile error rather than a silently unenforced
-/// constraint.
-pub const SCHEMA_REQUIRED_IN_UNKEYED_GROUP: &str = "schema.required_in_unkeyed_group";
 
 /// An index argument names a field nested through an unkeyed group. The write
 /// planner matches index arguments by flat top-level name, so it would silently
@@ -770,42 +762,6 @@ fn check_saved_data(
     for member in members {
         check_member_unknown(member, errors);
         check_member_keys(member, errors);
-        check_required_in_unkeyed_group(member, false, errors);
-    }
-}
-
-/// Reject a required field reachable only through an unkeyed group. The write
-/// planner does not materialize unkeyed groups, so a required field there is
-/// never validated or persisted. `under_unkeyed` is true once an enclosing group
-/// has no key parameters; a keyed group resets nothing, because a field already
-/// under an unkeyed group stays unreachable.
-fn check_required_in_unkeyed_group(
-    member: &ResourceMember,
-    under_unkeyed: bool,
-    errors: &mut Vec<SchemaError>,
-) {
-    match member {
-        ResourceMember::Field(field) if field.keys.is_empty() => {
-            if under_unkeyed && field.required {
-                errors.push(SchemaError {
-                    code: SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
-                    message: format!(
-                        "required field `{}` is inside an unkeyed group, which the \
-                         write planner does not maintain",
-                        field.name
-                    ),
-                    span: field.span,
-                });
-            }
-        }
-        ResourceMember::Group(group) => {
-            let under_unkeyed = under_unkeyed || group.keys.is_empty();
-            for nested in &group.members {
-                check_required_in_unkeyed_group(nested, under_unkeyed, errors);
-            }
-        }
-        // A keyed leaf carries a value, not a required-field tree to descend.
-        ResourceMember::Field(_) | ResourceMember::Index(_) => {}
     }
 }
 
@@ -955,7 +911,7 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                     code: SCHEMA_UNKNOWN_INDEX_ARG,
                     message: format!(
                         "index `{}` argument `{arg}` does not name an identity \
-                         key, a field, or a nested field through unkeyed groups",
+                         key or top-level field",
                         index.name
                     ),
                     span: index.span,

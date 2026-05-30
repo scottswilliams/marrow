@@ -16,7 +16,7 @@ use marrow_store::mem::MemStore;
 use marrow_store::path::{
     ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
 };
-use marrow_store::value::{SavedValue, ScalarType, decode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::{Declaration, parse_source};
 
 /// Compile the single resource declared in `source`.
@@ -141,6 +141,14 @@ resource Book at ^books(id: int)
     index byShelf(shelf, id)
 ";
 
+const PATIENT_WITH_REQUIRED_GROUP: &str = "\
+resource Patient at ^patients(id: int)
+    mrn: string
+    name
+        required first: string
+        last: string
+";
+
 fn saved(text: &str) -> SavedValue {
     SavedValue::Str(text.into())
 }
@@ -215,6 +223,16 @@ fn field_path(id: i64, field: &str) -> Vec<u8> {
     encode_path(&[
         PathSegment::Root("books".into()),
         PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::Field(field.into()),
+    ])
+}
+
+/// The encoded path `^patients(id).name.field`.
+fn patient_name_field_path(id: i64, field: &str) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("patients".into()),
+        PathSegment::RecordKey(SavedKey::Int(id)),
+        PathSegment::ChildLayer("name".into()),
         PathSegment::Field(field.into()),
     ])
 }
@@ -404,6 +422,90 @@ fn a_missing_required_field_is_rejected_with_no_write() {
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
         "{result:?}"
+    );
+}
+
+#[test]
+fn a_missing_required_field_inside_an_unkeyed_group_is_rejected() {
+    let patient = schema(PATIENT_WITH_REQUIRED_GROUP);
+    let value = ResourceValue {
+        fields: vec![("mrn".into(), saved("A1"))],
+        identities: vec![],
+    };
+    let result = plan_resource_write(&patient, &[SavedKey::Int(1)], &value, &MemStore::new());
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_whole_resource_write_persists_unkeyed_group_fields_under_child_layers() {
+    let patient = schema(PATIENT_WITH_REQUIRED_GROUP);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &patient,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("mrn".into(), saved("A1")),
+                ("name.first".into(), saved("Sam")),
+                ("name.last".into(), saved("Vimes")),
+            ],
+            identities: vec![],
+        },
+    );
+    assert_eq!(
+        decode_value(
+            store
+                .read(&patient_name_field_path(1, "first"))
+                .expect("first"),
+            ScalarType::Str
+        ),
+        Some(SavedValue::Str("Sam".into()))
+    );
+    assert_eq!(
+        decode_value(
+            store
+                .read(&patient_name_field_path(1, "last"))
+                .expect("last"),
+            ScalarType::Str
+        ),
+        Some(SavedValue::Str("Vimes".into()))
+    );
+}
+
+#[test]
+fn a_whole_resource_write_deletes_omitted_sparse_fields_inside_unkeyed_groups() {
+    let patient = schema(PATIENT_WITH_REQUIRED_GROUP);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &patient,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("mrn".into(), saved("A1")),
+                ("name.first".into(), saved("Sam")),
+                ("name.last".into(), saved("Vimes")),
+            ],
+            identities: vec![],
+        },
+    );
+    write(
+        &mut store,
+        &patient,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("name.first".into(), saved("Sam"))],
+            identities: vec![],
+        },
+    );
+    assert_eq!(
+        store.read(&patient_name_field_path(1, "last")),
+        None,
+        "replace semantics delete omitted sparse nested fields"
     );
 }
 
@@ -1584,6 +1686,79 @@ fn a_merge_omitting_a_required_field_not_yet_stored_is_rejected() {
     };
     let store = MemStore::new();
     let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, None, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_merge_preserves_omitted_fields_inside_unkeyed_groups() {
+    let patient = schema(PATIENT_WITH_REQUIRED_GROUP);
+    let mut store = MemStore::new();
+    write(
+        &mut store,
+        &patient,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![
+                ("name.first".into(), saved("Sam")),
+                ("name.last".into(), saved("Vimes")),
+            ],
+            identities: vec![],
+        },
+    );
+    merge(
+        &mut store,
+        &patient,
+        &[SavedKey::Int(1)],
+        ResourceValue {
+            fields: vec![("mrn".into(), saved("A1"))],
+            identities: vec![],
+        },
+    );
+    assert_eq!(
+        decode_value(
+            store
+                .read(&patient_name_field_path(1, "last"))
+                .expect("last"),
+            ScalarType::Str
+        ),
+        Some(SavedValue::Str("Vimes".into())),
+        "merge does not clear omitted nested fields"
+    );
+}
+
+#[test]
+fn a_merge_missing_a_required_field_inside_an_unkeyed_group_on_empty_target_is_rejected() {
+    let patient = schema(PATIENT_WITH_REQUIRED_GROUP);
+    let value = ResourceValue {
+        fields: vec![("mrn".into(), saved("A1"))],
+        identities: vec![],
+    };
+    let store = MemStore::new();
+    let result = plan_resource_merge(&patient, &[SavedKey::Int(1)], &value, None, &store);
+    assert!(
+        matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_saved_source_merge_does_not_raw_copy_unkeyed_groups_to_satisfy_required_fields() {
+    let patient = schema(PATIENT_WITH_REQUIRED_GROUP);
+    let mut store = MemStore::new();
+    store.write(
+        &patient_name_field_path(1, "first"),
+        encode_value(&SavedValue::Str("Sam".into())).expect("encodes"),
+    );
+    let result = plan_resource_merge(
+        &patient,
+        &[SavedKey::Int(2)],
+        &ResourceValue::default(),
+        Some(&[SavedKey::Int(1)]),
+        &store,
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_REQUIRED_ABSENT),
         "{result:?}"

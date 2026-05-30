@@ -7,7 +7,7 @@
 //! one is internally coherent.
 //!
 //! It covers whole-resource writes, single-field writes, deletes, and merges
-//! over a resource's top-level fields, keeping generated indexes (unique and
+//! over materialized resource fields, keeping generated indexes (unique and
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
@@ -17,12 +17,14 @@ use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueError, decode_value, encode_value};
 
-/// A resource value supplied to a write: its present top-level fields, by name. A
-/// scalar/enum field carries its saved value; a typed-reference field carries the
-/// referenced identity's key segments under `identities`, paired with the referenced
-/// resource's identity arity so the staged leaf is validated before encoding. A
-/// field listed in neither is simply not supplied (absent). Keyed layers are written
-/// through the dedicated layer planners, not this value.
+/// A resource value supplied to a write: its present materialized fields, by
+/// name. Nested fields under unkeyed groups use dotted names such as
+/// `name.first`. A scalar/enum field carries its saved value; a typed-reference
+/// field carries the referenced identity's key segments under `identities`,
+/// paired with the referenced resource's identity arity so the staged leaf is
+/// validated before encoding. A field listed in neither is simply not supplied
+/// (absent). Keyed layers are written through the dedicated layer planners, not
+/// this value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceValue {
     pub fields: Vec<(String, SavedValue)>,
@@ -238,14 +240,15 @@ pub fn plan_resource_write(
     // Validate every field and collect the ones to write, before staging any
     // step — a rejected write must leave no trace. A scalar/enum field carries a
     // saved value; a typed-reference field carries the referenced identity's keys.
-    let mut to_write: Vec<(&str, Vec<u8>)> = Vec::new();
-    for (field, ty, required) in plain_fields(&schema.members) {
-        match supplied_field(value, &field.name, ty)? {
-            Some(bytes) => to_write.push((field.name.as_str(), bytes)),
-            None if required => {
+    let mut to_write: Vec<(Vec<String>, Vec<u8>)> = Vec::new();
+    for field in materialized_plain_fields(&schema.members) {
+        let name = materialized_field_name(&field.path);
+        match supplied_field(value, &name, field.ty)? {
+            Some(bytes) => to_write.push((field.path, bytes)),
+            None if field.required => {
                 return Err(WriteError {
                     code: WRITE_REQUIRED_ABSENT,
-                    message: format!("required field `{}` is absent", field.name),
+                    message: format!("required field `{name}` is absent"),
                 });
             }
             None => {}
@@ -265,9 +268,9 @@ pub fn plan_resource_write(
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&identity_path(root, identity)),
     }];
-    for (name, bytes) in to_write {
+    for (path, bytes) in to_write {
         steps.push(PlanStep::Write {
-            path: encode_path(&field_path(root, identity, name)),
+            path: encode_path(&materialized_field_path(root, identity, &path)),
             value: bytes,
         });
     }
@@ -480,21 +483,23 @@ pub fn plan_resource_merge(
     // Validate the supplied fields and collect the ones to write. A required
     // field the merge does not supply must already be stored — the resulting
     // resource must still satisfy required fields.
-    let mut to_write: Vec<(&str, Vec<u8>)> = Vec::new();
-    for (field, ty, required) in plain_fields(&schema.members) {
-        match supplied_field(value, &field.name, ty)? {
-            Some(bytes) => to_write.push((field.name.as_str(), bytes)),
-            None if required
+    let mut to_write: Vec<(Vec<String>, Vec<u8>)> = Vec::new();
+    for field in materialized_plain_fields(&schema.members) {
+        let name = materialized_field_name(&field.path);
+        match supplied_field(value, &name, field.ty)? {
+            Some(bytes) => to_write.push((field.path, bytes)),
+            None if field.required
                 && store
-                    .read(&encode_path(&field_path(root, identity, &field.name)))?
+                    .read(&encode_path(&materialized_field_path(
+                        root,
+                        identity,
+                        &field.path,
+                    )))?
                     .is_none() =>
             {
                 return Err(WriteError {
                     code: WRITE_REQUIRED_ABSENT,
-                    message: format!(
-                        "required field `{}` is absent and not already stored",
-                        field.name
-                    ),
+                    message: format!("required field `{name}` is absent and not already stored"),
                 });
             }
             None => {}
@@ -511,9 +516,9 @@ pub fn plan_resource_merge(
 
     // Stage the field overwrites — no subtree clear, so untouched fields remain.
     let mut steps = Vec::new();
-    for (name, bytes) in to_write {
+    for (path, bytes) in to_write {
         steps.push(PlanStep::Write {
-            path: encode_path(&field_path(root, identity, name)),
+            path: encode_path(&materialized_field_path(root, identity, &path)),
             value: bytes,
         });
     }
@@ -547,8 +552,19 @@ pub fn plan_resource_merge(
     // overlay reads the source subtree at plan time, before any target change.
     // Generated indexes do not span child layers, so this needs no index work.
     if let Some(source) = source {
-        for layer in schema.members.iter().filter(|node| !node.is_plain_field()) {
-            let layer_plan = plan_layer_merge(schema, source, identity, &layer.name, store)?;
+        if source.len() != root.identity_keys.len() {
+            return Err(WriteError {
+                code: WRITE_IDENTITY_MISMATCH,
+                message: format!(
+                    "resource `{}` expects {} source identity key(s), got {}",
+                    schema.name,
+                    root.identity_keys.len(),
+                    source.len()
+                ),
+            });
+        }
+        for layer in keyed_layer_paths(&schema.members) {
+            let layer_plan = plan_layer_path_merge(root, source, identity, &layer, store)?;
             steps.extend(layer_plan.steps);
         }
     }
@@ -764,14 +780,15 @@ pub fn plan_layer_group_write(
 
     // Validate every group field and collect the ones to write before staging any
     // step — a rejected write must leave no trace.
-    let mut to_write: Vec<(&str, Vec<u8>)> = Vec::new();
-    for (field, ty, required) in plain_fields(&declared.members) {
-        match supplied_field(value, &field.name, ty)? {
-            Some(bytes) => to_write.push((field.name.as_str(), bytes)),
-            None if required => {
+    let mut to_write: Vec<(Vec<String>, Vec<u8>)> = Vec::new();
+    for field in materialized_plain_fields(&declared.members) {
+        let name = materialized_field_name(&field.path);
+        match supplied_field(value, &name, field.ty)? {
+            Some(bytes) => to_write.push((field.path, bytes)),
+            None if field.required => {
                 return Err(WriteError {
                     code: WRITE_REQUIRED_ABSENT,
-                    message: format!("required field `{}` is absent", field.name),
+                    message: format!("required field `{name}` is absent"),
                 });
             }
             None => {}
@@ -782,9 +799,12 @@ pub fn plan_layer_group_write(
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&layer_leaf_path(root, identity, layer, key)),
     }];
-    for (name, bytes) in to_write {
+    let mut prefix = vec![layer.to_string()];
+    for (path, bytes) in to_write {
+        prefix.truncate(1);
+        prefix.extend(path);
         steps.push(PlanStep::Write {
-            path: encode_path(&layer_field_path(root, identity, layer, key, name)),
+            path: encode_path(&materialized_layer_field_path(root, identity, &prefix, key)),
             value: bytes,
         });
     }
@@ -819,11 +839,25 @@ pub fn plan_layer_merge(
         });
     }
     find_layer(schema, layer)?;
+    plan_layer_path_merge(root, from, to, &[layer.to_string()], store)
+}
+
+fn plan_layer_path_merge(
+    root: &SavedRootSchema,
+    from: &[SavedKey],
+    to: &[SavedKey],
+    layers: &[String],
+    store: &dyn Backend,
+) -> Result<WritePlan, WriteError> {
     let mut source = identity_path(root, from);
-    source.push(PathSegment::ChildLayer(layer.into()));
+    for layer in layers {
+        source.push(PathSegment::ChildLayer(layer.clone()));
+    }
     let source = encode_path(&source);
     let mut target = identity_path(root, to);
-    target.push(PathSegment::ChildLayer(layer.into()));
+    for layer in layers {
+        target.push(PathSegment::ChildLayer(layer.clone()));
+    }
     let target = encode_path(&target);
 
     // Overlay: copy each source entry to the matching target path — the suffix
@@ -1002,6 +1036,78 @@ fn supplied_field(
     }
 }
 
+/// A plain field materialized by a whole-resource or whole-group value. `path`
+/// is a field path through structural unkeyed groups, e.g. `["name", "first"]`.
+pub(crate) struct MaterializedField<'a> {
+    pub(crate) path: Vec<String>,
+    pub(crate) ty: &'a Type,
+    pub(crate) required: bool,
+}
+
+/// Plain fields materialized as part of a resource value: direct plain fields
+/// plus descendants under unkeyed groups. Keyed leaves and keyed groups are
+/// saved layers, so whole-resource materialization skips them.
+pub(crate) fn materialized_plain_fields(members: &[Node]) -> Vec<MaterializedField<'_>> {
+    let mut fields = Vec::new();
+    collect_materialized_plain_fields(members, &mut Vec::new(), &mut fields);
+    fields
+}
+
+fn collect_materialized_plain_fields<'a>(
+    members: &'a [Node],
+    prefix: &mut Vec<String>,
+    fields: &mut Vec<MaterializedField<'a>>,
+) {
+    for node in members {
+        match &node.element {
+            Element::Slot { ty, required } if node.is_plain_field() => {
+                let mut path = prefix.clone();
+                path.push(node.name.clone());
+                fields.push(MaterializedField {
+                    path,
+                    ty,
+                    required: *required,
+                });
+            }
+            Element::Group if node.key_params.is_empty() => {
+                prefix.push(node.name.clone());
+                collect_materialized_plain_fields(&node.members, prefix, fields);
+                prefix.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn materialized_field_name(path: &[String]) -> String {
+    path.join(".")
+}
+
+fn keyed_layer_paths(members: &[Node]) -> Vec<Vec<String>> {
+    let mut paths = Vec::new();
+    collect_keyed_layer_paths(members, &mut Vec::new(), &mut paths);
+    paths
+}
+
+fn collect_keyed_layer_paths(
+    members: &[Node],
+    prefix: &mut Vec<String>,
+    paths: &mut Vec<Vec<String>>,
+) {
+    for node in members {
+        if node.is_plain_field() {
+            continue;
+        }
+        prefix.push(node.name.clone());
+        if node.key_params.is_empty() {
+            collect_keyed_layer_paths(&node.members, prefix, paths);
+        } else {
+            paths.push(prefix.clone());
+        }
+        prefix.pop();
+    }
+}
+
 /// The plain field members of `members` (top-level or a group's), as
 /// `(node, value type, required)`. A keyed leaf and a group are layers, not plain
 /// fields the planner materializes, so they are skipped.
@@ -1045,6 +1151,21 @@ fn identity_path(root: &SavedRootSchema, identity: &[SavedKey]) -> Vec<PathSegme
 fn field_path(root: &SavedRootSchema, identity: &[SavedKey], field: &str) -> Vec<PathSegment> {
     let mut path = identity_path(root, identity);
     path.push(PathSegment::Field(field.into()));
+    path
+}
+
+fn materialized_field_path(
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    field: &[String],
+) -> Vec<PathSegment> {
+    let mut path = identity_path(root, identity);
+    for group in &field[..field.len().saturating_sub(1)] {
+        path.push(PathSegment::ChildLayer(group.clone()));
+    }
+    if let Some(name) = field.last() {
+        path.push(PathSegment::Field(name.clone()));
+    }
     path
 }
 
@@ -1119,17 +1240,24 @@ fn descend_group_layers<'a>(
     })
 }
 
-/// The encoded-path segments for a group-entry field,
-/// `^root(identity).layer(key…).field`.
-fn layer_field_path(
+fn materialized_layer_field_path(
     root: &SavedRootSchema,
     identity: &[SavedKey],
-    layer: &str,
+    field: &[String],
     key: &[SavedKey],
-    field: &str,
 ) -> Vec<PathSegment> {
-    let mut path = layer_leaf_path(root, identity, layer, key);
-    path.push(PathSegment::Field(field.into()));
+    let mut path = identity_path(root, identity);
+    let Some((layer, rest)) = field.split_first() else {
+        return path;
+    };
+    path.push(PathSegment::ChildLayer(layer.clone()));
+    path.extend(key.iter().cloned().map(PathSegment::IndexKey));
+    for group in &rest[..rest.len().saturating_sub(1)] {
+        path.push(PathSegment::ChildLayer(group.clone()));
+    }
+    if let Some(name) = rest.last() {
+        path.push(PathSegment::Field(name.clone()));
+    }
     path
 }
 

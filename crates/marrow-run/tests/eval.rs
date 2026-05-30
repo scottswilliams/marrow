@@ -3893,10 +3893,8 @@ fn copies_a_whole_resource() {
     assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
 }
 
-/// A resource declaring an unkeyed nested group (`name`). A whole-resource read
-/// would silently omit the group's fields, and a whole-resource write would
-/// delete the group subtree while rewriting only top-level fields — so both
-/// must fail fast until group materialization lands.
+/// A resource declaring an unkeyed nested group (`name`). Whole-resource reads
+/// and writes materialize the structural group as a nested resource value.
 const PATIENT_WITH_GROUP: &str = "\
 resource Patient at ^patients(id: int)
     mrn: string
@@ -3909,36 +3907,95 @@ fn read(id: int): Patient
 
 fn copy(from: int, to: int)
     ^patients(to) = ^patients(from)
+
+fn merge_from(from: int, to: int)
+    merge ^patients(to) = ^patients(from)
+
+fn first_of(id: int): string
+    return ^patients(id).name.first
 ";
 
 #[test]
-fn whole_resource_read_with_unkeyed_group_fails_fast() {
+fn whole_resource_read_materializes_unkeyed_groups() {
     let program = checked_program(PATIENT_WITH_GROUP);
     let store = RefCell::new(MemStore::new());
-    store.borrow_mut().write(
-        &encode_path(&[
-            PathSegment::Root("patients".into()),
-            PathSegment::RecordKey(SavedKey::Int(1)),
-            PathSegment::Field("mrn".into()),
-        ]),
-        encode_value(&SavedValue::Str("A1".into())).expect("in-range value encodes"),
+    seed_patient_field(&store, 1, "mrn", "A1");
+    seed_patient_name_field(&store, 1, "first", "Sam");
+    let outcome = run_entry(&program, &store, "test::read", &[Value::Int(1)]).expect("read");
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![
+            ("mrn".into(), Value::Str("A1".into())),
+            (
+                "name".into(),
+                Value::Resource(vec![("first".into(), Value::Str("Sam".into()))])
+            ),
+        ]))
     );
-    let error = run_entry(&program, &store, "test::read", &[Value::Int(1)]).unwrap_err();
-    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
 #[test]
-fn whole_resource_write_with_unkeyed_group_fails_fast() {
+fn whole_resource_write_copies_unkeyed_group_fields() {
     let program = checked_program(PATIENT_WITH_GROUP);
     let store = RefCell::new(MemStore::new());
-    let error = run_entry(
+    seed_patient_field(&store, 1, "mrn", "A1");
+    seed_patient_name_field(&store, 1, "first", "Sam");
+    run_entry(
         &program,
         &store,
         "test::copy",
         &[Value::Int(1), Value::Int(2)],
     )
-    .unwrap_err();
-    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+    .expect("copy");
+    assert_eq!(
+        run_entry(&program, &store, "test::first_of", &[Value::Int(2)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Sam".into()))
+    );
+}
+
+#[test]
+fn saved_source_merge_copies_unkeyed_group_fields() {
+    let program = checked_program(PATIENT_WITH_GROUP);
+    let store = RefCell::new(MemStore::new());
+    seed_patient_name_field(&store, 1, "first", "Sam");
+    run_entry(
+        &program,
+        &store,
+        "test::merge_from",
+        &[Value::Int(1), Value::Int(2)],
+    )
+    .expect("merge");
+    assert_eq!(
+        run_entry(&program, &store, "test::first_of", &[Value::Int(2)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Sam".into()))
+    );
+}
+
+fn seed_patient_field(store: &RefCell<MemStore>, id: i64, field: &str, value: &str) {
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("patients".into()),
+            PathSegment::RecordKey(SavedKey::Int(id)),
+            PathSegment::Field(field.into()),
+        ]),
+        encode_value(&SavedValue::Str(value.into())).expect("in-range value encodes"),
+    );
+}
+
+fn seed_patient_name_field(store: &RefCell<MemStore>, id: i64, field: &str, value: &str) {
+    store.borrow_mut().write(
+        &encode_path(&[
+            PathSegment::Root("patients".into()),
+            PathSegment::RecordKey(SavedKey::Int(id)),
+            PathSegment::ChildLayer("name".into()),
+            PathSegment::Field(field.into()),
+        ]),
+        encode_value(&SavedValue::Str(value.into())).expect("in-range value encodes"),
+    );
 }
 
 /// The sample's `add` shape: allocate an id, build a local resource field by
@@ -6763,12 +6820,38 @@ resource Patient at ^patients(id: string)
         last: string
 ";
 
+const PATIENT_REQUIRED_GROUP: &str = "\
+module test
+resource Patient at ^patients(id: string)
+    name
+        required first: string
+        last: string
+";
+
+const PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP: &str = "\
+module test
+resource Patient at ^patients(id: string)
+    visits(pos: int)
+        name
+            required first: string
+            last: string
+
+fn seed()
+    ^patients(\"p1\").visits(1).name.first = \"Sam\"
+    ^patients(\"p1\").visits(1).name.last = \"Vimes\"
+
+fn drop()
+    delete ^patients(\"p1\").visits(1).name
+
+fn visit_first(): string
+    const visit = ^patients(\"p1\").visits(1)
+    return visit.name.first
+";
+
 #[test]
 fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
-    // Field delete descends unkeyed-group layers. A REQUIRED field inside an
-    // unkeyed group cannot be declared today (schema.required_in_unkeyed_group
-    // rejects it at compile time), so the nested required-delete guard waits on
-    // group materialization, which lifts that rejection.
+    // Field delete descends unkeyed-group layers. Sparse descendants may still be
+    // deleted independently.
     let program = checked_program(&format!(
         "{PATIENT_SPARSE_GROUP}\
          pub fn drop()\n\
@@ -6776,6 +6859,80 @@ fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
     ));
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::drop", &[]).expect("sparse group-field delete is a no-op");
+}
+
+#[test]
+fn deleting_a_required_field_inside_an_unkeyed_group_is_rejected() {
+    let program = checked_program(&format!(
+        "{PATIENT_REQUIRED_GROUP}\
+         pub fn drop()\n\
+         \x20   delete ^patients(\"p1\").name.first\n"
+    ));
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::drop", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_field"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn deleting_an_unkeyed_group_with_required_descendants_is_rejected() {
+    let program = checked_program(&format!(
+        "{PATIENT_REQUIRED_GROUP}\
+         pub fn drop()\n\
+         \x20   delete ^patients(\"p1\").name\n"
+    ));
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::drop", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_field"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn deleting_a_nested_unkeyed_group_with_required_descendants_is_rejected() {
+    let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let result = run_entry(&program, &store, "test::drop", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_field"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn maintenance_can_delete_a_nested_unkeyed_group_with_required_descendants() {
+    let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::drop", &[]).expect("drop");
+    for field in ["first", "last"] {
+        assert_eq!(
+            store.borrow().read(&encode_path(&[
+                PathSegment::Root("patients".into()),
+                PathSegment::RecordKey(SavedKey::Str("p1".into())),
+                PathSegment::ChildLayer("visits".into()),
+                PathSegment::IndexKey(SavedKey::Int(1)),
+                PathSegment::ChildLayer("name".into()),
+                PathSegment::Field(field.into()),
+            ])),
+            None,
+            "{field} removed under maintenance"
+        );
+    }
+}
+
+#[test]
+fn keyed_group_entry_read_materializes_unkeyed_group_descendants() {
+    let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let outcome = run_entry(&program, &store, "test::visit_first", &[]).expect("read");
+    assert_eq!(outcome.value, Some(Value::Str("Sam".into())));
 }
 
 // --- Maintenance mode & managed-root protection ---
