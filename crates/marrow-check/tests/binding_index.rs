@@ -227,6 +227,277 @@ fn a_bare_call_goes_to_its_own_module_not_a_foreign_one() {
 }
 
 #[test]
+fn an_enum_member_literal_resolves_to_the_member_definition() {
+    // `Status::archived` names the `archived` enum member, not an unresolved
+    // qualified value path. References stay per-member, so `active` is separate.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn archived(): bool\n    \
+        return Status::archived == Status::active\n";
+    let (index, paths) = analyze("enum-member-literal", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let use_offset = source
+        .rfind("Status::archived")
+        .expect("archived member use");
+    let def = index
+        .definition(file, use_offset)
+        .expect("enum member literal resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("archived\n").expect("archived declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+
+    let refs = index.references(&def);
+    assert!(
+        refs.iter()
+            .any(|reference| reference.span.start_byte <= member_decl
+                && member_decl <= reference.span.end_byte),
+        "member declaration is a reference: {refs:?}",
+    );
+    assert!(
+        refs.iter()
+            .any(|reference| reference.span.start_byte <= use_offset
+                && use_offset <= reference.span.end_byte),
+        "member literal use is a reference: {refs:?}",
+    );
+    let active_use = source.rfind("Status::active").expect("active member use");
+    assert!(
+        !refs
+            .iter()
+            .any(|reference| reference.span.start_byte <= active_use
+                && active_use <= reference.span.end_byte),
+        "`active` use must not be attributed to `archived`: {refs:?}",
+    );
+}
+
+#[test]
+fn a_match_arm_resolves_to_the_enum_member_definition() {
+    // Match arms are relative member paths. The scrutinee's enum supplies the
+    // `Status` prefix, so a cursor on `active` should still reach `Status::active`.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn classify(s: Status): int\n    \
+        match s\n        \
+        active\n            \
+        return 1\n        \
+        archived\n            \
+        return 2\n";
+    let (index, paths) = analyze("enum-match-arm", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n            return 1")
+        .expect("active match arm");
+    let def = index.definition(file, arm_use).expect("match arm resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("active\n").expect("active declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+
+    let refs = index.references(&def);
+    assert!(
+        refs.iter()
+            .any(|reference| reference.span.start_byte <= arm_use
+                && arm_use <= reference.span.end_byte),
+        "match arm use is a reference: {refs:?}",
+    );
+}
+
+#[test]
+fn a_match_arm_resolves_through_an_inferred_enum_local() {
+    // The checker infers `s` as `Status` from its enum-member initializer, so the
+    // binding index should use that same type when resolving relative match arms.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn classify(): int\n    \
+        const s = Status::active\n    \
+        match s\n        \
+        active\n            \
+        return 1\n        \
+        archived\n            \
+        return 2\n";
+    let (index, paths) = analyze("enum-match-inferred-local", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n            return 1")
+        .expect("active match arm");
+    let def = index
+        .definition(file, arm_use)
+        .expect("match arm from inferred local resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("active\n").expect("active declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+}
+
+#[test]
+fn a_match_arm_resolves_through_a_module_enum_constant() {
+    // Module constants are part of the checker prelude for every function body.
+    // Match arm navigation should see their enum type too.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        const Default: Status = Status::active\n\
+        fn classify(): int\n    \
+        match Default\n        \
+        active\n            \
+        return 1\n        \
+        archived\n            \
+        return 2\n";
+    let (index, paths) = analyze("enum-match-module-const", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("archived\n            return 2")
+        .expect("archived match arm");
+    let def = index
+        .definition(file, arm_use)
+        .expect("match arm from module constant resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("archived\n").expect("archived declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+}
+
+#[test]
+fn a_match_arm_trailing_comment_is_not_a_member_reference() {
+    // The reference span should cover the member path, not trivia after it.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn classify(s: Status): int\n    \
+        match s\n        \
+        active ; chosen case\n            \
+        return 1\n        \
+        archived\n            \
+        return 2\n";
+    let (index, paths) = analyze("enum-match-comment-span", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let comment = source.find("chosen").expect("arm trailing comment");
+    assert!(
+        index.definition(file, comment).is_none(),
+        "trailing comment text must not resolve as an enum member",
+    );
+
+    let after_label = source.find("active ;").expect("active arm") + "active".len();
+    assert!(
+        index.definition(file, after_label).is_none(),
+        "the space after a match arm label must not resolve as an enum member",
+    );
+}
+
+#[test]
+fn a_match_arm_resolves_through_an_enum_returning_call() {
+    // Match dispatch uses the scrutinee expression's inferred enum type, not just
+    // local names. A call returning `Status` should unlock relative arm refs.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn pick(): Status\n    \
+        return Status::active\n\
+        fn classify(): int\n    \
+        match pick()\n        \
+        active\n            \
+        return 1\n        \
+        archived\n            \
+        return 2\n";
+    let (index, paths) = analyze("enum-match-call-scrutinee", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n            return 1")
+        .expect("active match arm");
+    let def = index
+        .definition(file, arm_use)
+        .expect("match arm from enum-returning call resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+}
+
+#[test]
+fn an_invalid_enum_member_scrutinee_does_not_create_arm_references() {
+    // `Status::missing` names the enum prefix but no member. The checker rejects
+    // the scrutinee, and the binding index should avoid false arm references.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn classify(): int\n    \
+        match Status::missing\n        \
+        active\n            \
+        return 1\n        \
+        archived\n            \
+        return 2\n";
+    let (index, paths) = analyze("enum-match-invalid-scrutinee", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n            return 1")
+        .expect("active match arm");
+    assert!(
+        index.definition(file, arm_use).is_none(),
+        "invalid enum scrutinee should not create arm member refs",
+    );
+}
+
+#[test]
+fn a_match_arm_resolves_through_a_sequence_enum_loop_binding() {
+    // Loop bindings use the checker-shared `for` frame, so iterating
+    // `sequence[Status]` makes `s` a `Status` value for relative match arms.
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn classify(items: sequence[Status]): int\n    \
+        for s in items\n        \
+        match s\n            \
+        active\n                \
+        return 1\n            \
+        archived\n                \
+        return 2\n    \
+        return 0\n";
+    let (index, paths) = analyze("enum-match-sequence-loop", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n                return 1")
+        .expect("active match arm");
+    let def = index
+        .definition(file, arm_use)
+        .expect("match arm from sequence enum loop binding resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("active\n").expect("active declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+}
+
+#[test]
 fn a_saved_field_name_is_saved_data_backed_and_unsafe() {
     // `title` is a stored field of the saved `Book` resource; its on-disk path is
     // `^books(id).title`, so renaming the source name orphans saved data.

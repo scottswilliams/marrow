@@ -25,17 +25,22 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_syntax::{
-    Block, Declaration, Expression, ParsedSource, ResourceDecl, ResourceMember, SourceSpan,
-    Statement,
+    Block, Declaration, EnumMember, Expression, MatchArm, ParsedSource, ResourceDecl,
+    ResourceMember, SourceSpan, Statement,
 };
 
-use crate::{AnalysisSnapshot, CheckedProgram, find_resource_schema, resolve_function_in_module};
+use crate::MarrowType;
+use crate::{
+    AnalysisSnapshot, CheckedProgram, file_prelude, find_resource_schema, for_frame, infer_only,
+    local_binding, resolve_enum_member_path, resolve_function_in_module, resolve_type,
+};
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
 /// live: function-local bindings (`Param`, `Local`), module-level declarations
 /// (`ModuleConst`, `Function`, `Resource` and its generated `ResourceIdentity`),
-/// the members of a resource that name saved data (`Field`, `Layer`, `Index`), and
-/// imported module aliases (`ModuleRef`).
+/// enum declarations and members (`Enum`, `EnumMember`), the members of a
+/// resource that name saved data (`Field`, `Layer`, `Index`), and imported module
+/// aliases (`ModuleRef`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
     /// A function parameter, scoped to that function's body.
@@ -50,6 +55,10 @@ pub enum SymbolKind {
     Resource,
     /// A resource's generated `Type::Id` identity.
     ResourceIdentity,
+    /// A declared enum type.
+    Enum,
+    /// A declared enum member.
+    EnumMember,
     /// A stored field of a resource (a top-level field or a group field).
     Field,
     /// A keyed layer or group of a resource.
@@ -215,6 +224,8 @@ struct ModuleScope {
     identities: HashMap<String, DefId>,
     /// `(module name, function name) -> DefId`, the function's definition.
     functions: HashMap<(String, String), DefId>,
+    /// `(module name, enum name, member path) -> DefId` for enum members.
+    enum_members: HashMap<(String, String, Vec<String>), DefId>,
     /// `(file, saved root, member chain) -> DefId` for saved members, so a saved
     /// read resolves to the field/layer/index it touches.
     saved_members: HashMap<(String, Vec<String>), DefId>,
@@ -312,10 +323,51 @@ impl<'p> IndexBuilder<'p> {
                 Declaration::Resource(resource) => {
                     self.collect_resource(file, resource);
                 }
-                // Enums declare no saved data and are not yet a go-to-definition or
-                // rename target, so the index records no binding for one.
-                Declaration::Enum(_) => {}
+                Declaration::Enum(enum_decl) => {
+                    self.define(
+                        SymbolRef {
+                            file: file.to_path_buf(),
+                            span: enum_decl.span,
+                            kind: SymbolKind::Enum,
+                        },
+                        RenameSafety::SourceOnly,
+                    );
+                    self.collect_enum_members(
+                        file,
+                        &module,
+                        &enum_decl.name,
+                        &mut Vec::new(),
+                        &enum_decl.members,
+                    );
+                }
             }
+        }
+    }
+
+    fn collect_enum_members(
+        &mut self,
+        file: &Path,
+        module: &str,
+        enum_name: &str,
+        path: &mut Vec<String>,
+        members: &[EnumMember],
+    ) {
+        for member in members {
+            path.push(member.name.clone());
+            let id = self.define(
+                SymbolRef {
+                    file: file.to_path_buf(),
+                    span: member.span,
+                    kind: SymbolKind::EnumMember,
+                },
+                RenameSafety::SourceOnly,
+            );
+            self.module_scope.enum_members.insert(
+                (module.to_string(), enum_name.to_string(), path.clone()),
+                id,
+            );
+            self.collect_enum_members(file, module, enum_name, path, &member.members);
+            path.pop();
         }
     }
 
@@ -444,6 +496,9 @@ impl<'p> IndexBuilder<'p> {
                 // module's bindings. Parameters have no AST span, so a parameter
                 // binding is defined here at the function span and tracked by name.
                 let mut scope: Vec<HashMap<String, DefId>> = vec![HashMap::new()];
+                let prelude = file_prelude(self.program, file, parsed);
+                let mut type_scope: Vec<HashMap<String, MarrowType>> =
+                    vec![prelude.module_constants.clone()];
                 for param in &function.params {
                     let id = self.define(
                         SymbolRef {
@@ -454,13 +509,18 @@ impl<'p> IndexBuilder<'p> {
                         RenameSafety::SourceOnly,
                     );
                     scope[0].insert(param.name.clone(), id);
+                    type_scope[0].insert(
+                        param.name.clone(),
+                        resolve_type(&param.ty, self.program, &prelude.aliases, file),
+                    );
                 }
                 let mut walker = UseWalker {
                     builder: self,
                     file,
                     module: &module,
+                    aliases: &prelude.aliases,
                 };
-                walker.walk_block(&function.body, &mut scope);
+                walker.walk_block(&function.body, &mut scope, &mut type_scope);
             }
         }
     }
@@ -481,21 +541,34 @@ struct UseWalker<'a, 'p> {
     builder: &'a mut IndexBuilder<'p>,
     file: &'a Path,
     module: &'a str,
+    aliases: &'a HashMap<String, Vec<String>>,
 }
 
 impl UseWalker<'_, '_> {
     /// Walk a block: push a fresh frame, then process each statement in order,
     /// binding the local it introduces (so a later sibling sees it, but its own
     /// initializer does not) before descending.
-    fn walk_block(&mut self, block: &Block, scope: &mut Vec<HashMap<String, DefId>>) {
+    fn walk_block(
+        &mut self,
+        block: &Block,
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
         scope.push(HashMap::new());
+        type_scope.push(HashMap::new());
         for statement in &block.statements {
-            self.walk_statement(statement, scope);
+            self.walk_statement(statement, scope, type_scope);
         }
         scope.pop();
+        type_scope.pop();
     }
 
-    fn walk_statement(&mut self, statement: &Statement, scope: &mut Vec<HashMap<String, DefId>>) {
+    fn walk_statement(
+        &mut self,
+        statement: &Statement,
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
         match statement {
             Statement::Const {
                 name, value, span, ..
@@ -505,6 +578,15 @@ impl UseWalker<'_, '_> {
                 self.walk_expr(value, scope);
                 let id = self.define_local(*span);
                 bind(scope, name, id);
+                if let Some((_, ty)) = local_binding(
+                    self.builder.program,
+                    statement,
+                    type_scope,
+                    self.aliases,
+                    self.file,
+                ) {
+                    bind_type(type_scope, name, ty);
+                }
             }
             Statement::Var {
                 name, value, span, ..
@@ -514,6 +596,15 @@ impl UseWalker<'_, '_> {
                 }
                 let id = self.define_local(*span);
                 bind(scope, name, id);
+                if let Some((_, ty)) = local_binding(
+                    self.builder.program,
+                    statement,
+                    type_scope,
+                    self.aliases,
+                    self.file,
+                ) {
+                    bind_type(type_scope, name, ty);
+                }
             }
             Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
                 self.walk_expr(target, scope);
@@ -538,15 +629,15 @@ impl UseWalker<'_, '_> {
                 if let Some(condition) = condition {
                     self.walk_expr(condition, scope);
                 }
-                self.walk_block(then_block, scope);
+                self.walk_block(then_block, scope, type_scope);
                 for else_if in else_ifs {
                     if let Some(condition) = &else_if.condition {
                         self.walk_expr(condition, scope);
                     }
-                    self.walk_block(&else_if.block, scope);
+                    self.walk_block(&else_if.block, scope, type_scope);
                 }
                 if let Some(block) = else_block {
-                    self.walk_block(block, scope);
+                    self.walk_block(block, scope, type_scope);
                 }
             }
             Statement::While {
@@ -555,7 +646,7 @@ impl UseWalker<'_, '_> {
                 if let Some(condition) = condition {
                     self.walk_expr(condition, scope);
                 }
-                self.walk_block(body, scope);
+                self.walk_block(body, scope, type_scope);
             }
             Statement::For {
                 binding,
@@ -571,19 +662,29 @@ impl UseWalker<'_, '_> {
                 if let Some(second) = &binding.second {
                     frame.insert(second.clone(), self.define_local(statement.span()));
                 }
+                let type_frame = for_frame(
+                    self.builder.program,
+                    binding,
+                    iterable,
+                    type_scope,
+                    self.aliases,
+                    self.file,
+                );
                 scope.push(frame);
+                type_scope.push(type_frame);
                 // Body statements run under the loop frame plus their own block.
                 for inner in &body.statements {
-                    self.walk_statement(inner, scope);
+                    self.walk_statement(inner, scope, type_scope);
                 }
                 scope.pop();
+                type_scope.pop();
             }
-            Statement::Transaction { body, .. } => self.walk_block(body, scope),
+            Statement::Transaction { body, .. } => self.walk_block(body, scope, type_scope),
             Statement::Lock { path, body, .. } => {
                 if let Some(path) = path {
                     self.walk_expr(path, scope);
                 }
-                self.walk_block(body, scope);
+                self.walk_block(body, scope, type_scope);
             }
             Statement::Try {
                 body,
@@ -591,19 +692,23 @@ impl UseWalker<'_, '_> {
                 finally,
                 ..
             } => {
-                self.walk_block(body, scope);
+                self.walk_block(body, scope, type_scope);
                 if let Some(clause) = catch {
                     // The caught error is bound for the catch block only.
                     let mut frame = HashMap::new();
+                    let mut type_frame = HashMap::new();
                     frame.insert(clause.name.clone(), self.define_local(clause.block.span));
+                    type_frame.insert(clause.name.clone(), MarrowType::Error);
                     scope.push(frame);
+                    type_scope.push(type_frame);
                     for inner in &clause.block.statements {
-                        self.walk_statement(inner, scope);
+                        self.walk_statement(inner, scope, type_scope);
                     }
                     scope.pop();
+                    type_scope.pop();
                 }
                 if let Some(finally) = finally {
-                    self.walk_block(finally, scope);
+                    self.walk_block(finally, scope, type_scope);
                 }
             }
             Statement::Match {
@@ -612,10 +717,16 @@ impl UseWalker<'_, '_> {
                 if let Some(scrutinee) = scrutinee {
                     self.walk_expr(scrutinee, scope);
                 }
-                // Arm member names dispatch the enum; they bind no local, so only
-                // each arm's block is walked for the names it uses.
+                let enum_identity = scrutinee
+                    .as_ref()
+                    .and_then(|scrutinee| self.match_scrutinee_enum(scrutinee, type_scope));
+                if let Some((enum_module, enum_name)) = enum_identity {
+                    for arm in arms {
+                        self.resolve_match_arm(&enum_module, &enum_name, arm);
+                    }
+                }
                 for arm in arms {
-                    self.walk_block(&arm.block, scope);
+                    self.walk_block(&arm.block, scope, type_scope);
                 }
             }
             Statement::Break { .. } | Statement::Continue { .. } => {}
@@ -716,7 +827,99 @@ impl UseWalker<'_, '_> {
         {
             self.builder
                 .use_of(def, self.file, span, SymbolKind::ResourceIdentity);
+            return;
         }
+        if let Some(def) = self.resolve_enum_member(segments) {
+            self.builder
+                .use_of(def, self.file, span, SymbolKind::EnumMember);
+        }
+    }
+
+    fn resolve_enum_member(&self, segments: &[String]) -> Option<DefId> {
+        let expr = Expression::Name {
+            segments: segments.to_vec(),
+            span: SourceSpan::default(),
+        };
+        let resolved =
+            resolve_enum_member_path(self.builder.program, &expr, self.aliases, self.file)?;
+        let marrow_schema::MemberPathResolution::Found(ordinal) = resolved.member else {
+            return None;
+        };
+        let path = resolved
+            .schema
+            .member_path(ordinal)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        self.builder
+            .module_scope
+            .enum_members
+            .get(&(resolved.module, resolved.enum_name, path))
+            .copied()
+    }
+
+    fn match_scrutinee_enum(
+        &self,
+        scrutinee: &Expression,
+        type_scope: &[HashMap<String, MarrowType>],
+    ) -> Option<(String, String)> {
+        match infer_only(
+            self.builder.program,
+            scrutinee,
+            type_scope,
+            self.aliases,
+            self.file,
+        ) {
+            MarrowType::Enum { module, name } => Some((module, name)),
+            _ => None,
+        }
+    }
+
+    fn resolve_match_arm(&mut self, enum_module: &str, enum_name: &str, arm: &MatchArm) {
+        let Some(schema) = self.enum_schema(enum_module, enum_name) else {
+            return;
+        };
+        let segments: Vec<&str> = arm.path.iter().map(String::as_str).collect();
+        let marrow_schema::MemberPathResolution::Found(ordinal) =
+            schema.walk_member_path(&segments)
+        else {
+            return;
+        };
+        let path = schema
+            .member_path(ordinal)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let Some(def) = self
+            .builder
+            .module_scope
+            .enum_members
+            .get(&(enum_module.to_string(), enum_name.to_string(), path))
+            .copied()
+        else {
+            return;
+        };
+        self.builder.use_of(
+            def,
+            self.file,
+            match_arm_header_span(arm),
+            SymbolKind::EnumMember,
+        );
+    }
+
+    fn enum_schema(
+        &self,
+        enum_module: &str,
+        enum_name: &str,
+    ) -> Option<&marrow_schema::EnumSchema> {
+        self.builder
+            .program
+            .modules
+            .iter()
+            .find(|module| module.name == enum_module)?
+            .enums
+            .iter()
+            .find(|schema| schema.name == enum_name)
     }
 
     /// Resolve a call whose callee is a name to a function definition, expanding
@@ -813,6 +1016,25 @@ fn lookup(scope: &[HashMap<String, DefId>], name: &str) -> Option<DefId> {
 fn bind(scope: &mut [HashMap<String, DefId>], name: &str, id: DefId) {
     if let Some(frame) = scope.last_mut() {
         frame.insert(name.to_string(), id);
+    }
+}
+
+fn bind_type(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
+    if let Some(frame) = scope.last_mut() {
+        frame.insert(name.to_string(), ty);
+    }
+}
+
+fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
+    let label_len = arm.path.join("::").len();
+    SourceSpan {
+        start_byte: arm.span.start_byte,
+        end_byte: arm
+            .span
+            .start_byte
+            .saturating_add(label_len.saturating_sub(1)),
+        line: arm.span.line,
+        column: arm.span.column,
     }
 }
 
