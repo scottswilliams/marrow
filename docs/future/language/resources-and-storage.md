@@ -51,29 +51,29 @@ structure.
 
 ## Collection spellings
 
-A designed extension adds `list[T]`, `map[K, V]`, and `set[K]` as spellings for
-common tree shapes. These spellings do not add a second object model; they name
-ordinary Marrow access patterns.
+A designed extension adds `map[K, V]` and `set[K]` as spellings for two common
+keyed-tree shapes. Ordered sequences already have a spelling, `sequence[T]`, the
+1-based integer-keyed tree. None of these add a second object model; they name
+ordinary Marrow access patterns over typed trees.
 
 | Spelling | Tree shape | Use |
 |---|---|---|
-| `list[T]` | positive integer-keyed sequence | ordered append and traversal |
 | `map[K, V]` | keyed tree with values | lookup by a typed key |
 | `set[K]` | presence-only keyed tree | membership by a typed key |
 
-Collection keys use the same key rules as keyed trees. A `list[T]` is the
-developer-facing spelling for a sequence when storage positions are not the
-point of the model. A `map[K, V]` is the developer-facing spelling for a keyed
-tree when lookup is the point. A `set[K]` stores membership, not a user-visible
-`bool`; a member is present or absent.
+A `map[K, V]` is the developer-facing spelling for a single keyed layer when
+lookup is the point; its key follows the same rules as any keyed tree. For more
+than one key, use a native multi-layer keyed tree rather than a nested `map`:
+`counts(day: date, category: string): int` is flatter and more expressive than
+`map[date, map[string, int]]`. Use a declared index when a saved resource needs
+a maintained alternate lookup path.
 
-A set entry is populated with `insert(path)` and removed with `delete path`.
-There is no element value to read.
+A `set[K]` stores membership, not a user-visible `bool`; a member is present or
+absent. Because a set member has no value, there is no right-hand side to
+assign: `insert(path)` populates a member, much as appending allocates the next
+key in a sequence. `delete path` removes a member and `exists(path)` tests one.
 
 ```mw
-var tags: list[string]
-append(tags, "fiction")
-
 var counts: map[string, int]
 counts(word) = (counts(word) ?? 0) + 1
 
@@ -86,7 +86,14 @@ if exists(seen(word))
 delete seen(word)
 ```
 
-Local and scratch `map` and `set` values may use hash-based in-memory
-representations. Saved collection data remains typed tree data: it is ordered,
-inspectable, portable, and reached through paths. Use a declared index when a
-saved resource needs a maintained alternate lookup path.
+Like `sequence[T]`, `map[K, V]` and `set[K]` are built-in spellings, not
+user-instantiable generic types. A collection element accepts no undeclared
+children: if an element needs child fields, model it as a named resource or an
+explicit keyed group, and if set membership must carry metadata, it is no longer
+a set — use `map[K, V]`, for example `map[string, Flag]`.
+
+Saved collection data is typed tree data: ordered, inspectable, portable, and
+reached through paths. A local or scratch `map` or `set` has no portable saved
+form, so an implementation may choose memory-optimized structures for it; code
+still depends on Marrow's typed tree behavior, not on a particular in-memory
+data structure.
