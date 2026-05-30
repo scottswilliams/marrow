@@ -130,3 +130,10 @@ pub fn lookup(module: &str, op: &str) -> Option<&'static StdOp> {
         .iter()
         .find(|entry| entry.module == module && entry.op == op)
 }
+
+/// Every descriptor in declaration order. Editor tooling enumerates the table to
+/// offer `std::<module>::` completions; the checker and runtime still reach a
+/// single op through [`lookup`].
+pub fn all() -> &'static [StdOp] {
+    TABLE
+}
