@@ -142,3 +142,137 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("schema.unknown_in_saved"), "{stderr}");
 }
+
+#[test]
+fn check_reports_return_type_errors_for_a_single_file() {
+    // A single file that parses but returns the wrong type used to print "ok" and
+    // exit 0 because the single-file path only parsed. It now runs the full type
+    // checker, so the `check.return_type` diagnostic surfaces and the exit is
+    // non-zero — located at the operator's real file path, not a scratch path.
+    let path = temp_source(
+        "return-type",
+        "module m\nfn f(): int\n    return \"nope\"\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.return_type"), "{stderr}");
+    assert!(
+        stderr.contains(&path.display().to_string()),
+        "diagnostic should point at the named file: {stderr}"
+    );
+}
+
+#[test]
+fn check_reports_assignment_type_errors_for_a_single_file() {
+    // Assigning a `string` to an `int` local is a `check.assignment_type` error
+    // that single-file parsing alone never caught.
+    let path = temp_source(
+        "assignment-type",
+        "module m\nfn f()\n    var x: int = \"str\"\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn check_reports_operator_type_errors_for_a_single_file() {
+    // `1 + true` is an int-plus-bool operator error; the single-file path now
+    // reaches the operator type rule.
+    let path = temp_source("operator-type", "module m\nfn f()\n    var x = 1 + true\n");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.operator_type"), "{stderr}");
+}
+
+#[test]
+fn check_reports_type_errors_in_a_module_less_script() {
+    // A module-less script (no `module` line) is still type-checked: it is placed
+    // path-free in the synthesized project, so no spurious module-path error masks
+    // the real `check.return_type` diagnostic.
+    let path = temp_source("script-type", "fn f(): int\n    return \"nope\"\n");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.return_type"), "{stderr}");
+}
+
+#[test]
+fn check_accepts_a_type_correct_single_file() {
+    // A file with a body that type-checks cleanly still exits 0 with the friendly
+    // `ok` summary — the type checker adds no false positives on correct source.
+    let path = temp_source(
+        "type-correct",
+        "module m\nfn f(): int\n    return 1\n\nfn g()\n    var x: int = f()\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(stdout.contains("ok"), "{stdout}");
+}
+
+#[test]
+fn check_json_reports_type_errors_for_a_single_file() {
+    // The `--format json` single-file path also surfaces type errors: a failed
+    // status and a `check.return_type` diagnostic record.
+    let path = temp_source(
+        "json-return-type",
+        "module m\nfn f(): int\n    return \"nope\"\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg("--format")
+        .arg("json")
+        .arg(&path)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let record: Value = serde_json::from_str(stdout.trim()).expect("json object");
+    assert_eq!(record["status"], "failed", "{stdout}");
+    assert_eq!(
+        record["diagnostics"][0]["code"], "check.return_type",
+        "{stdout}"
+    );
+}
