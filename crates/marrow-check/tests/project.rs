@@ -1061,9 +1061,10 @@ fn a_call_to_an_undefined_function_is_flagged() {
 
 #[test]
 fn a_call_to_an_unknown_std_submodule_is_flagged() {
-    // `std::bogus::foo()` names no real std module (STD_MODULES), so it is not a
-    // builtin — it is reported consistently with `use std::bogus` rejection,
-    // rather than silently type-checking.
+    // `std::bogus::foo()` names no real std module (the std-module set derived
+    // from the shared stdlib table), so it is not a builtin — it is reported
+    // consistently with `use std::bogus` rejection, rather than silently
+    // type-checking.
     let found = check_module(
         "call-std-bogus",
         "module m\n\
@@ -2424,4 +2425,100 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+// --- W1 unified resolver: module-aware, visibility-aware call resolution ---
+
+/// Check a two-module project (`src/aaa.mw` + `src/zzz.mw`), returning the whole
+/// report. The two modules let a call in `zzz` be resolved against `zzz`'s own
+/// declarations, `aaa`'s declarations, and any imports — exercising the
+/// module-aware resolver across a real module boundary.
+fn check_two_modules(name: &str, aaa: &str, zzz: &str) -> marrow_check::CheckReport {
+    let root = temp_project(name, |root| {
+        write(root, "src/aaa.mw", aaa);
+        write(root, "src/zzz.mw", zzz);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    report
+}
+
+#[test]
+fn bare_call_resolves_in_own_module_not_a_foreign_one() {
+    // Two modules each declare `fn greet`. `zzz::run` calls a bare `greet()`: a
+    // bare name resolves in its own module first, so it must reach `zzz::greet`
+    // and check clean — never a foreign `aaa::greet`. (The runtime twin of this
+    // pin proves the P1 bug, where the bare call ran `aaa::greet`.)
+    let report = check_two_modules(
+        "w1-bare-own-module",
+        "module aaa\npub fn greet(): int\n    return 1\n",
+        "module zzz\nfn greet(): int\n    return 2\nfn run(): int\n    return greet()\n",
+    );
+    assert!(
+        with_code(&report, "check.unresolved_call").is_empty()
+            && with_code(&report, "check.private_function").is_empty(),
+        "a bare call to a same-module function must resolve clean: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn cross_module_bare_call_is_unresolved_not_first_match() {
+    // `aaa` declares `pub fn greet`; `zzz` declares no `greet` and calls a bare
+    // `greet()`. Imports bring module names, not bare names, so a cross-module
+    // function is only reachable as `aaa::greet`. The bare call must be
+    // `check.unresolved_call` — not silently first-matched to `aaa::greet`.
+    let report = check_two_modules(
+        "w1-cross-bare-unresolved",
+        "module aaa\npub fn greet(): int\n    return 1\n",
+        "module zzz\nfn run(): int\n    return greet()\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.unresolved_call").len(),
+        1,
+        "a bare cross-module call must be unresolved, not first-matched: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
+    // `aaa` declares a module-private `fn secret`; `zzz` qualifies it as
+    // `aaa::secret()`. The function exists but is not `pub`, so a cross-module
+    // call is a distinct visibility error (`check.private_function`), not a plain
+    // unresolved call — the name resolves, the visibility does not.
+    let report = check_two_modules(
+        "w1-cross-private",
+        "module aaa\nfn secret(): int\n    return 1\n",
+        "module zzz\nfn run(): int\n    return aaa::secret()\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.private_function").len(),
+        1,
+        "a cross-module call to a non-pub function is a visibility error: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.unresolved_call").is_empty(),
+        "a private function resolves by name, so it is not also unresolved: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn same_named_resources_constructor_resolves_by_module() {
+    // Both modules declare a resource named `Book`. A constructor is the resource
+    // NAME, which is module-scoped: a bare `Book(...)` in `zzz` constructs the
+    // `zzz` resource. The call must type as a constructor (no unresolved call),
+    // resolving by the calling module rather than first-matching `aaa::Book`.
+    let report = check_two_modules(
+        "w1-same-named-resource",
+        "module aaa\nresource Book\n    title: string\n",
+        "module zzz\nresource Book\n    title: string\nfn make(): Book\n    return Book(title: \"x\")\n",
+    );
+    assert!(
+        with_code(&report, "check.unresolved_call").is_empty(),
+        "a bare same-module constructor must resolve, not report unresolved: {:#?}",
+        report.diagnostics
+    );
 }

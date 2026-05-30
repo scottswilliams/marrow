@@ -20,7 +20,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::{CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType};
+use marrow_check::{
+    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, MarrowType,
+    ResolvableKind, Resolution, resolve,
+};
 use marrow_schema::stdlib::{self, Capability};
 use marrow_schema::{Element, IndexSchema, ResourceSchema, Type};
 use marrow_store::Decimal;
@@ -245,6 +248,10 @@ pub const RUN_DIVIDE_BY_ZERO: &str = "run.divide_by_zero";
 pub const RUN_NO_ENCLOSING_LOOP: &str = "run.no_enclosing_loop";
 /// A call named a function the program does not declare.
 pub const RUN_UNKNOWN_FUNCTION: &str = "run.unknown_function";
+/// A qualified call named a function that exists but is not `pub`, so it is not
+/// callable from the calling module. The checker (`check.private_function`)
+/// catches this before a run; this is the runtime backstop.
+pub const RUN_PRIVATE_FUNCTION: &str = "run.private_function";
 /// A call to a function that returns no value was used where a value is needed.
 pub const RUN_NO_VALUE: &str = "run.no_value";
 /// A direct read of a saved element that is absent (unpopulated).
@@ -384,8 +391,9 @@ pub fn evaluate_function(
     match invoke(
         ctx,
         output,
-        // The bare-program path has no modules, so no import aliases to expand.
-        HashMap::new(),
+        // The bare-program path has no module, so no name resolution or import
+        // aliases (a call to another function cannot resolve).
+        None,
         &names,
         &function.body,
         function.span,
@@ -463,13 +471,21 @@ fn run_entry_impl<'p>(
     hook: Option<&'p mut dyn StepHook>,
 ) -> Result<RunOutput, RuntimeError> {
     let segments: Vec<String> = entry.split("::").map(str::to_string).collect();
-    let function = resolve_function(program, &segments).ok_or_else(|| {
-        RuntimeError::fault(
-            RUN_UNKNOWN_FUNCTION,
-            format!("the program has no function `{entry}`"),
-            SourceSpan::default(),
-        )
-    })?;
+    // The entry is the root activation, invoked by the host directly, so it is
+    // resolved as a bare name *from its own module* — visible regardless of `pub`,
+    // exactly as the module would see it. `module::function` splits into that
+    // module and the bare function name.
+    let (leaf, module_prefix) = segments
+        .split_last()
+        .ok_or_else(|| unknown_function(entry, SourceSpan::default()))?;
+    let entry_module = module_prefix.join("::");
+    let (module, function) = resolve_program_function(
+        program,
+        &entry_module,
+        std::slice::from_ref(leaf),
+        SourceSpan::default(),
+    )
+    .map_err(|_| unknown_function(entry, SourceSpan::default()))?;
     let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
@@ -484,7 +500,7 @@ fn run_entry_impl<'p>(
     let value = match invoke(
         ctx,
         Rc::clone(&output),
-        frame_aliases(program, &segments),
+        Some(module),
         &names,
         &function.body,
         function.span,
@@ -538,14 +554,14 @@ type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut dyn StepHo
 /// caller can keep stepping after the call returns. A fatal `Err` aborts the run
 /// and drops the borrow with it. Moving the `&mut` (rather than reborrowing)
 /// preserves its `'p` lifetime exactly, so no `unsafe` is needed.
-// The activation's inputs are independent (context, output, the frame's import
-// aliases, parameter names, body, span, args, write-back set, debugger hook,
-// call depth); bundling them would not aid clarity.
+// The activation's inputs are independent (context, output, the module this
+// activation runs in, parameter names, body, span, args, write-back set, debugger
+// hook, call depth); bundling them would not aid clarity.
 #[allow(clippy::too_many_arguments)]
 fn invoke<'p>(
     ctx: Context<'p>,
     output: Rc<RefCell<String>>,
-    aliases: HashMap<String, Vec<String>>,
+    module: Option<&'p CheckedModule>,
     param_names: &[&str],
     body: &Block,
     span: SourceSpan,
@@ -565,7 +581,7 @@ fn invoke<'p>(
             span,
         ));
     }
-    let mut env = Env::new(ctx, output, aliases, hook, depth);
+    let mut env = Env::new(ctx, output, module, hook, depth);
     env.push_scope();
     for (name, arg) in param_names.iter().zip(args) {
         // `out`/`inout` parameters are reassignable inside the callee; plain
@@ -642,66 +658,46 @@ fn raise(error: Value, span: SourceSpan) -> RuntimeError {
     }
 }
 
-/// Resolve a function name to its declaration. A qualified name's last segment
-/// is the function and the rest its module; a bare name is searched across all
-/// modules. Returns `None` when no function matches.
-fn resolve_function<'p>(
-    program: &'p CheckedProgram,
-    segments: &[String],
-) -> Option<&'p CheckedFunction> {
-    let (name, module) = segments.split_last()?;
-    if module.is_empty() {
-        program
-            .modules
-            .iter()
-            .flat_map(|module| &module.functions)
-            .find(|function| &function.name == name)
-    } else {
-        let module_name = module.join("::");
-        program
-            .modules
-            .iter()
-            .find(|module| module.name == module_name)?
-            .functions
-            .iter()
-            .find(|function| &function.name == name)
+/// A `run.unknown_function` fault for a call/entry that resolves to no function.
+fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        throw: None,
+        code: RUN_UNKNOWN_FUNCTION,
+        message: format!("the program has no function `{name}`"),
+        span,
     }
 }
 
-/// The module that owns the function `segments` resolves to, mirroring
-/// [`resolve_function`]'s matching: a qualified `mod::fn` names exactly that
-/// module; a bare name takes the first module declaring a function of that name.
-/// Used to build the call frame's short→full import alias map, so a short-form
-/// `clock::now()` in that module's body expands the same way the checker did.
-fn resolve_module<'p>(
+/// Resolve a program-function call from `env`'s module through the unified
+/// resolver, mapping the outcome to a runtime `Result`: a `pub`-or-own-module
+/// match yields its `(module, function)`; a non-`pub` cross-module target is a
+/// distinct [`RUN_PRIVATE_FUNCTION`] fault; anything else is the usual
+/// [`RUN_UNKNOWN_FUNCTION`]. Builtins/std are dispatched before this is reached.
+fn resolve_program_function<'p>(
     program: &'p CheckedProgram,
+    from_module: &str,
     segments: &[String],
-) -> Option<&'p CheckedModule> {
-    let (name, module) = segments.split_last()?;
-    if module.is_empty() {
-        program.modules.iter().find(|module| {
-            module
-                .functions
-                .iter()
-                .any(|function| &function.name == name)
-        })
-    } else {
-        let module_name = module.join("::");
-        program
-            .modules
-            .iter()
-            .find(|module| module.name == module_name)
+    span: SourceSpan,
+) -> Result<(&'p CheckedModule, &'p CheckedFunction), RuntimeError> {
+    match resolve(program, from_module, segments, ResolvableKind::Function) {
+        Resolution::Found(Def {
+            module,
+            item: DefItem::Function(function),
+            ..
+        }) => Ok((module, function)),
+        Resolution::NotVisible(name) => Err(RuntimeError {
+            throw: None,
+            code: RUN_PRIVATE_FUNCTION,
+            message: format!("function `{name}` is private to its module"),
+            span,
+        }),
+        _ => Err(RuntimeError {
+            throw: None,
+            code: RUN_UNKNOWN_FUNCTION,
+            message: format!("the program has no function `{}`", segments.join("::")),
+            span,
+        }),
     }
-}
-
-/// The short→full import alias map for the module owning `segments`, or an empty
-/// map when no module is found (e.g. the bare-program [`evaluate_function`] path).
-/// Reuses the checker's [`marrow_check::build_alias_map`] over the module's
-/// `imports` so check and run expand short-form identically.
-fn frame_aliases(program: &CheckedProgram, segments: &[String]) -> HashMap<String, Vec<String>> {
-    resolve_module(program, segments)
-        .map(|module| marrow_check::build_alias_map(&module.imports))
-        .unwrap_or_default()
 }
 
 /// Bind a call's positional and named arguments to a function's parameters,
@@ -1219,14 +1215,13 @@ fn eval_call(
         store: env.store,
         host: env.host,
     };
-    let function = resolve_function(ctx.program, &segments).ok_or_else(|| RuntimeError {
-        throw: None,
-        code: RUN_UNKNOWN_FUNCTION,
-        message: format!("the program has no function `{}`", segments.join("::")),
-        span,
-    })?;
+    // Resolve the call from this activation's module: a bare name in its own
+    // module, a qualified `mod::fn` elsewhere (which must be `pub`). The resolved
+    // module seeds the callee's activation, so its own short-form imports expand.
+    let (module, function) =
+        resolve_program_function(ctx.program, env.module, &segments, span)?;
     if has_moded {
-        return eval_call_with_modes(function, &segments, args, span, env);
+        return eval_call_with_modes(module, function, args, span, env);
     }
     let values = bind_arguments(&function.params, args, span, env)?;
     let names: Vec<&str> = function
@@ -1240,7 +1235,7 @@ fn eval_call(
     let (completion, _, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
-        frame_aliases(ctx.program, &segments),
+        Some(module),
         &names,
         &function.body,
         function.span,
@@ -1332,12 +1327,12 @@ fn absent_read(position: ReadPosition, message: String, span: SourceSpan) -> Run
 /// read (for `inout`) to seed the parameter and written back after the callee
 /// returns normally; the callee's throw or fault skips write-back. The argument's
 /// mode must match the parameter's.
-fn eval_call_with_modes(
-    function: &CheckedFunction,
-    segments: &[String],
+fn eval_call_with_modes<'p>(
+    module: &'p CheckedModule,
+    function: &'p CheckedFunction,
     args: &[Argument],
     span: SourceSpan,
-    env: &mut Env<'_>,
+    env: &mut Env<'p>,
 ) -> Result<Option<Value>, RuntimeError> {
     let (values, places) = bind_arguments_with_modes(&function.params, args, span, env)?;
     let names: Vec<&str> = function
@@ -1362,7 +1357,7 @@ fn eval_call_with_modes(
     let (completion, finals, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
-        frame_aliases(ctx.program, segments),
+        Some(module),
         &names,
         &function.body,
         function.span,
@@ -2679,6 +2674,11 @@ struct Env<'p> {
     /// innermost last. A write/delete/append/merge whose affected layer is in this
     /// set mutates a layer being iterated, which is a [`RUN_TRAVERSAL`] fault.
     traversed_layers: Vec<Vec<u8>>,
+    /// The name of the module this activation runs in, so a call inside it
+    /// resolves from the right module (a bare name in its own module, a qualified
+    /// name elsewhere) through the unified resolver. Empty for the bare-program
+    /// [`evaluate_function`] path, where no project module hosts the body.
+    module: &'p str,
     /// The active function's module short→full import alias map, so a short-form
     /// call (`clock::now()`) expands to its full path (`std::clock::now`) before
     /// dispatch, exactly as the checker resolved it. Empty for the bare-program
@@ -2715,10 +2715,16 @@ impl<'p> Env<'p> {
     fn new(
         ctx: Context<'p>,
         output: Rc<RefCell<String>>,
-        aliases: HashMap<String, Vec<String>>,
+        module: Option<&'p CheckedModule>,
         hook: Option<&'p mut dyn StepHook>,
         depth: usize,
     ) -> Self {
+        // The activation's module supplies both its name (for resolving the calls
+        // inside it) and its short→full import aliases. The bare-program path has
+        // no module: an empty name and no aliases (expansion is a no-op).
+        let aliases = module
+            .map(|module| marrow_check::build_alias_map(&module.imports))
+            .unwrap_or_default();
         Self {
             scopes: Vec::new(),
             output,
@@ -2726,6 +2732,7 @@ impl<'p> Env<'p> {
             store: ctx.store,
             host: ctx.host,
             traversed_layers: Vec::new(),
+            module: module.map_or("", |module| module.name.as_str()),
             aliases,
             transaction_depth: 0,
             hook,
@@ -4668,18 +4675,12 @@ fn resource_layer_chain_exists(program: &CheckedProgram, root: &str, layers: &[&
     find_resource(program, root).is_some_and(|resource| resource.descend_layers(layers).is_some())
 }
 
-/// The resource schema attached to a saved root, by root name.
+/// The resource schema attached to a saved root, by root name. Saved roots are
+/// project-wide (a `^books` write addresses the one `books` resource from any
+/// module), so this routes through the resolver's project-wide root lookup; the
+/// checker's `find_resource_schema` shares the same helper.
 fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p ResourceSchema> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| {
-            resource
-                .saved_root
-                .as_ref()
-                .is_some_and(|saved| saved.root == root)
-        })
+    marrow_check::resolve::resolve_resource_by_root(program, root)
 }
 
 /// The number of declared identity keys for the resource at saved root `name`,
@@ -4694,16 +4695,13 @@ fn root_identity_arity(program: &CheckedProgram, name: &str) -> Option<usize> {
 
 /// The resource schema declared with `name`, for an identity constructor
 /// `Name::Id(...)`. Keyed on the resource name (not its saved root), since the
-/// constructor names the resource.
+/// constructor names the resource; routed through the resolver's project-wide
+/// name lookup so the runtime keeps no name resolution of its own.
 fn find_resource_by_name<'p>(
     program: &'p CheckedProgram,
     name: &str,
 ) -> Option<&'p ResourceSchema> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| resource.name == name)
+    marrow_check::resolve::resolve_resource_by_name_any(program, name)
 }
 
 /// Build a resource identity value from a `Resource::Id(...)` constructor: its

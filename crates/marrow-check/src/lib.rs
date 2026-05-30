@@ -14,12 +14,14 @@ use marrow_syntax::{Severity, SourceSpan, parse_source};
 
 pub mod binding;
 pub mod program;
+pub mod resolve;
 mod rules;
 
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
 };
+pub use resolve::{Def, DefItem, ResolvableKind, Resolution, resolve};
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
@@ -60,6 +62,10 @@ pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// reported for calls in library modules of a fully parsed project, so a
 /// module-less script or a module excluded by a parse error never false-positives.
 pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
+/// A qualified call (`module::fn`) names a function that exists but is not `pub`,
+/// so it is not callable from another module. Distinct from
+/// [`CHECK_UNRESOLVED_CALL`]: the name resolves, the visibility does not.
+pub const CHECK_PRIVATE_FUNCTION: &str = "check.private_function";
 /// `nextId(^root)` names a root with no default integer allocation policy: a
 /// composite identity, a single non-integer identity key, or a keyless singleton.
 /// The default per-root policy is only available for a resource with one `int`
@@ -1783,22 +1789,15 @@ fn saved_field_type(
     field_member_type(resource, &[field])
 }
 
-/// The schema of the resource that owns saved root `^root`, if any. Mirrors the
-/// runtime's `find_resource`.
+/// The schema of the resource that owns saved root `^root`, if any. Saved roots
+/// are project-wide (a `^books` write addresses the one `books` resource from any
+/// module), so this is a thin shim over the resolver's project-wide root lookup;
+/// the runtime's `find_resource` routes through the same helper.
 pub(crate) fn find_resource_schema<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<&'p marrow_schema::ResourceSchema> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| {
-            resource
-                .saved_root
-                .as_ref()
-                .is_some_and(|saved| saved.root == root)
-        })
+    resolve::resolve_resource_by_root(program, root)
 }
 
 /// The resource type of a whole-record read `^root(key…)`: the call's callee is
@@ -2425,29 +2424,58 @@ fn check_call(
             .or_else(|| (segments == ["Error"]).then_some(MarrowType::Error))
             .unwrap_or(MarrowType::Unknown);
     }
+    // Calls resolve from the module the file contributes: a bare name in its own
+    // module, a qualified `mod::name` in the named module (cross-module needs the
+    // qualifier and the target must be `pub`).
+    let from_module = module_of_file(program, file);
     // A callee naming a declared resource is a constructor, not a function:
     // `Book(...)` builds the resource value and `Book::Id(...)` builds its
     // identity. Recognize it so a valid
     // constructor is not a false `check.unresolved_call`.
-    if let Some(ty) = resource_constructor_type(program, segments) {
+    if let Some(ty) = resource_constructor_type(program, from_module, segments) {
         return ty;
     }
-    let Some(function) = resolve_function(program, segments) else {
-        // A non-builtin call that resolves to no declared function is unresolved.
-        // Only report it for calls in a library module of the program: a
-        // module-less script is not a call target, and a project that did not
-        // fully parse has its unresolved calls suppressed in `check_project` (the
-        // missing definition may live in an excluded module).
-        if file_in_program(program, file) {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNRESOLVED_CALL,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!("function `{}` is not defined", segments.join("::")),
-                span,
-            });
+    // Resolving as a `Function` can only ever Find a function, so the other arms
+    // never carry a non-function item. Only library-module calls are reported: a
+    // module-less script is not a call target, and a project that did not fully
+    // parse has its unresolved calls suppressed in `check_project` (the missing
+    // definition may live in an excluded module).
+    let function = match resolve(program, from_module, segments, ResolvableKind::Function) {
+        Resolution::Found(Def {
+            item: DefItem::Function(function),
+            ..
+        }) => function,
+        // The function exists but is not `pub` to this module: a distinct
+        // visibility error, not "unresolved" (the name resolved, the access did
+        // not).
+        Resolution::NotVisible(name) => {
+            if file_in_program(program, file) {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_PRIVATE_FUNCTION,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!(
+                        "function `{name}` is private to its module; mark it `pub` to call it \
+                         from another module"
+                    ),
+                    span,
+                });
+            }
+            return MarrowType::Unknown;
         }
-        return MarrowType::Unknown;
+        // A non-builtin call that resolves to no declared function is unresolved.
+        Resolution::Found(_) | Resolution::Ambiguous(_) | Resolution::Unresolved => {
+            if file_in_program(program, file) {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_UNRESOLVED_CALL,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!("function `{}` is not defined", segments.join("::")),
+                    span,
+                });
+            }
+            return MarrowType::Unknown;
+        }
     };
     // Every parameter is required (no defaults), so the argument count must match.
     if args.len() != function.params.len() {
@@ -2800,64 +2828,60 @@ fn file_in_program(program: &CheckedProgram, file: &Path) -> bool {
         .any(|module| module.source_file == file)
 }
 
-/// Resolve a call name to a declared function, mirroring the runtime: a bare name
-/// matches the first function of that name in any module; a qualified `mod::fn`
-/// name matches a function in exactly that module.
-pub(crate) fn resolve_function<'p>(
-    program: &'p CheckedProgram,
-    segments: &[String],
-) -> Option<&'p CheckedFunction> {
-    resolve_function_in_module(program, segments).map(|(_, function)| function)
+/// The name of the module `file` contributes, for resolving the calls inside it
+/// from the right module. Empty for a file with no module in the program (a
+/// module-less script), whose calls are suppressed anyway.
+fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> &'p str {
+    program
+        .modules
+        .iter()
+        .find(|module| module.source_file == file)
+        .map_or("", |module| module.name.as_str())
 }
 
-/// Like [`resolve_function`], but also yielding the [`CheckedModule`] that owns the
-/// function, so a caller (the binding index) can locate the definition's source
-/// file. The resolution rules are identical, kept in one place so they cannot
-/// drift: a bare name matches any module's function in declaration order; a
-/// qualified name targets the named module.
+/// Like [`resolve_function`], but also yielding the [`CheckedModule`] that owns
+/// the function, so the binding index can locate the definition's source file. A
+/// thin shim over the unified [`resolve`]: a bare name resolves in `from_module`,
+/// a qualified name in the named module — so a bare cross-module call no longer
+/// first-matches a foreign function. Used by the LSP binding index, which carries
+/// the referencing module.
 pub(crate) fn resolve_function_in_module<'p>(
     program: &'p CheckedProgram,
+    from_module: &str,
     segments: &[String],
 ) -> Option<(&'p CheckedModule, &'p CheckedFunction)> {
-    let (name, module) = segments.split_last()?;
-    if module.is_empty() {
-        program.modules.iter().find_map(|module| {
-            module
-                .functions
-                .iter()
-                .find(|function| &function.name == name)
-                .map(|function| (module, function))
-        })
-    } else {
-        let module_name = module.join("::");
-        let module = program
-            .modules
-            .iter()
-            .find(|module| module.name == module_name)?;
-        module
-            .functions
-            .iter()
-            .find(|function| &function.name == name)
-            .map(|function| (module, function))
+    match resolve(program, from_module, segments, ResolvableKind::Function) {
+        Resolution::Found(Def {
+            module,
+            item: DefItem::Function(function),
+            ..
+        }) => Some((module, function)),
+        _ => None,
     }
 }
 
 /// The type produced by a resource constructor callee, if `segments` name a
-/// declared resource: `Book(...)` constructs the resource value (its
-/// [`MarrowType::Resource`]), and `Book::Id(...)` constructs its identity
-/// ([`MarrowType::Identity`]). Any other callee returns `None`, so a genuinely
-/// unresolved call is still reported.
-fn resource_constructor_type(program: &CheckedProgram, segments: &[String]) -> Option<MarrowType> {
-    let is_resource = |name: &str| {
-        program
-            .modules
-            .iter()
-            .flat_map(|module| &module.resources)
-            .any(|resource| resource.name == name)
-    };
+/// resource visible to `from_module`: `Book(...)` constructs the resource value
+/// (its [`MarrowType::Resource`]), and `Book::Id(...)` constructs its identity
+/// ([`MarrowType::Identity`]). The resource *name* is module-scoped (own module
+/// first), so two modules can each declare a `Book`. Any other callee returns
+/// `None`, so a genuinely unresolved call is still reported.
+fn resource_constructor_type(
+    program: &CheckedProgram,
+    from_module: &str,
+    segments: &[String],
+) -> Option<MarrowType> {
     match segments {
-        [name] if is_resource(name) => Some(MarrowType::Resource(name.clone())),
-        [name, id] if id == "Id" && is_resource(name) => Some(MarrowType::Identity(name.clone())),
+        [name] => match resolve(program, from_module, segments, ResolvableKind::Resource) {
+            Resolution::Found(_) => Some(MarrowType::Resource(name.clone())),
+            _ => None,
+        },
+        [name, id] if id == "Id" => {
+            match resolve(program, from_module, segments, ResolvableKind::ResourceIdentity) {
+                Resolution::Found(_) => Some(MarrowType::Identity(name.clone())),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -2887,9 +2911,9 @@ fn is_builtin_call(segments: &[String]) -> bool {
             ) || ScalarType::from_scalar_name(name).is_some()
         }
         // A `std::module::op` builtin must name a real std module, mirroring
-        // import resolution (`is_std_module`/STD_MODULES); an unknown submodule is
-        // not a builtin, so it is reported like a rejected `use std::bogus`.
-        [first, module, _] => first == "std" && STD_MODULES.contains(&module.as_str()),
+        // import resolution (`is_std_module`/`std_modules`); an unknown submodule
+        // is not a builtin, so it is reported like a rejected `use std::bogus`.
+        [first, module, _] => first == "std" && std_modules().contains(&module.as_str()),
         _ => false,
     }
 }
@@ -3347,18 +3371,23 @@ pub fn expand_alias(
     segments.to_vec()
 }
 
-/// The standard-library modules. Host modules resolve at check time even when a
-/// host would not provide them at run time.
-const STD_MODULES: &[&str] = &[
-    "clock", "io", "env", "text", "bytes", "math", "assert", "log",
-];
+/// The standard-library module names, derived once from the shared stdlib table
+/// ([`marrow_schema::stdlib::all`]) so import resolution and the op table share a
+/// single source of truth — a new `std::<module>::op` row adds its module here
+/// automatically, with no hardcoded list to drift. Host modules resolve at check
+/// time even when a host would not provide them at run time.
+fn std_modules() -> &'static std::collections::HashSet<&'static str> {
+    static STD_MODULES: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    STD_MODULES.get_or_init(|| stdlib::all().iter().map(|op| op.module).collect())
+}
 
 /// Is `name` a standard-library module path? Accepts `std::<module>` and any
 /// deeper path under a valid `std` module.
 fn is_std_module(name: &str) -> bool {
     name.strip_prefix("std::")
         .and_then(|rest| rest.split("::").next())
-        .is_some_and(|module| STD_MODULES.contains(&module))
+        .is_some_and(|module| std_modules().contains(module))
 }
 
 /// An import resolves when it names a project module or a standard-library

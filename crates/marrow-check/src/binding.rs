@@ -4,12 +4,12 @@
 //!
 //! This is the resolution layer the editor tooling (go-to-definition,
 //! find-all-references, rename) builds on. It does not reimplement name
-//! resolution: it reuses the checker's `build_alias_map`/`expand_alias` for
-//! short-form `use` aliases, `resolve_function_in_module` for project-wide
-//! function calls, `find_resource_schema` plus the schema's field/layer/index
-//! lookup for saved data, and the same block traversal shape the A1 scope
-//! primitives use so a local's scope cannot drift from the one the checker
-//! builds.
+//! resolution: it reuses the checker's unified `resolve` (via
+//! `resolve_function_in_module`) for module-aware function calls — short-form
+//! `use` aliases and visibility included — `find_resource_schema` plus the
+//! schema's field/layer/index lookup for saved data, and the same block
+//! traversal shape the A1 scope primitives use so a local's scope cannot drift
+//! from the one the checker builds.
 //!
 //! Spans. A *use* of a single-segment name (a local, parameter, module constant,
 //! or unqualified function) is recorded at the identifier itself, because the
@@ -29,10 +29,7 @@ use marrow_syntax::{
     Statement,
 };
 
-use crate::{
-    AnalysisSnapshot, CheckedProgram, build_alias_map, expand_alias, find_resource_schema,
-    resolve_function_in_module,
-};
+use crate::{AnalysisSnapshot, CheckedProgram, find_resource_schema, resolve_function_in_module};
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
 /// live: function-local bindings (`Param`, `Local`), module-level declarations
@@ -437,14 +434,6 @@ impl<'p> IndexBuilder<'p> {
     /// reconstructed lexical scope.
     fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource) {
         let module = Self::module_name(parsed);
-        let aliases = build_alias_map(
-            &parsed
-                .file
-                .uses
-                .iter()
-                .map(|use_decl| use_decl.name.clone())
-                .collect::<Vec<_>>(),
-        );
 
         for declaration in &parsed.file.declarations {
             if let Declaration::Function(function) = declaration {
@@ -467,7 +456,6 @@ impl<'p> IndexBuilder<'p> {
                     builder: self,
                     file,
                     module: &module,
-                    aliases: &aliases,
                 };
                 walker.walk_block(&function.body, &mut scope);
             }
@@ -490,7 +478,6 @@ struct UseWalker<'a, 'p> {
     builder: &'a mut IndexBuilder<'p>,
     file: &'a Path,
     module: &'a str,
-    aliases: &'a HashMap<String, Vec<String>>,
 }
 
 impl UseWalker<'_, '_> {
@@ -730,11 +717,12 @@ impl UseWalker<'_, '_> {
             return false;
         };
         // Marrow has no first-class functions, so a bare name in callee position
-        // resolves as a function (not a value). Expand aliases and resolve through
-        // the same path the checker's `check_call` uses.
-        let expanded = expand_alias(segments, self.aliases);
+        // resolves as a function (not a value). Resolve through the same unified
+        // resolver the checker's `check_call` uses, from this file's module, so a
+        // bare go-to-def lands on the calling module's own function — never a
+        // foreign one — and a private cross-module call resolves to nothing.
         if let Some((module, function)) =
-            resolve_function_in_module(self.builder.program, &expanded)
+            resolve_function_in_module(self.builder.program, self.module, segments)
             && let Some(def) = self
                 .builder
                 .module_scope

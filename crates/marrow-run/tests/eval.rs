@@ -6729,6 +6729,113 @@ fn an_ordinary_run_with_host_is_unchanged_by_the_hook_machinery() {
     assert_eq!(outcome.value, Some(Value::Int(5)));
 }
 
+// --- W1 unified resolver: module-aware, visibility-aware runtime dispatch ---
+
+/// Build a checked program from `(module_name, source)` pairs, one
+/// [`CheckedModule`] per pair, so a call in one module resolves against its own
+/// declarations, the other modules', and its imports — exercising the
+/// module-aware resolver across a real module boundary at run time. Functions are
+/// carried with their declared visibility (`pub`); parameter types stay
+/// `Unknown` (the runtime binds by name).
+fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
+    let modules = modules
+        .iter()
+        .map(|(name, source)| {
+            let parsed = parse_source(source);
+            assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
+            let functions = parsed
+                .file
+                .declarations
+                .into_iter()
+                .filter_map(|declaration| match declaration {
+                    Declaration::Function(function) => Some(CheckedFunction {
+                        name: function.name.clone(),
+                        public: function.public,
+                        params: function
+                            .params
+                            .iter()
+                            .map(|param| CheckedParam {
+                                name: param.name.clone(),
+                                mode: param.mode,
+                                ty: MarrowType::Unknown,
+                            })
+                            .collect(),
+                        return_type: None,
+                        span: function.span,
+                        touches_saved_data: false,
+                        body: function.body,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            CheckedModule {
+                name: (*name).to_string(),
+                source_file: std::path::PathBuf::new(),
+                span: Default::default(),
+                imports: Vec::new(),
+                constants: Vec::new(),
+                functions,
+                resources: Vec::new(),
+            }
+        })
+        .collect();
+    CheckedProgram { modules }
+}
+
+#[test]
+fn bare_call_resolves_in_own_module_not_a_foreign_one() {
+    // The proven P1 bug: two modules each declare `fn greet` returning a distinct
+    // value. `zzz::run` calls a bare `greet()`. A bare name resolves in its own
+    // module first, so it must run `zzz::greet` (2) — never the foreign
+    // `aaa::greet` (1) the old first-match-across-all-modules resolver reached.
+    let program = multi_module_program(&[
+        ("aaa", "pub fn greet(): int\n    return 1\n"),
+        (
+            "zzz",
+            "fn greet(): int\n    return 2\nfn run(): int\n    return greet()\n",
+        ),
+    ]);
+    assert_eq!(
+        run(&program, "zzz::run", &[]),
+        Ok(Some(Value::Int(2))),
+        "a bare call must run the calling module's own function"
+    );
+}
+
+#[test]
+fn cross_module_bare_call_is_unresolved_not_first_match() {
+    // `aaa` declares `pub fn greet`; `zzz` declares no `greet` and calls a bare
+    // `greet()`. A cross-module function is reachable only as `aaa::greet`, so the
+    // bare call must fail to resolve (`run.unknown_function`) rather than silently
+    // first-match the foreign `aaa::greet`.
+    let program = multi_module_program(&[
+        ("aaa", "pub fn greet(): int\n    return 1\n"),
+        ("zzz", "fn run(): int\n    return greet()\n"),
+    ]);
+    let result = run(&program, "zzz::run", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNKNOWN_FUNCTION),
+        "a bare cross-module call must be unresolved, not first-matched: {result:?}"
+    );
+}
+
+#[test]
+fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
+    // `aaa` declares a module-private `fn secret`; `zzz` qualifies it as
+    // `aaa::secret()`. The name resolves but is not `pub`, so the runtime rejects
+    // it with a distinct visibility code (`run.private_function`), not the same
+    // `run.unknown_function` an undeclared call gets.
+    let program = multi_module_program(&[
+        ("aaa", "fn secret(): int\n    return 1\n"),
+        ("zzz", "fn run(): int\n    return aaa::secret()\n"),
+    ]);
+    let result = run(&program, "zzz::run", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "run.private_function"),
+        "a cross-module call to a non-pub function is a visibility error: {result:?}"
+    );
+}
+
 /// An index branch is not an assignable place: `out ^books.byShelf(s)` is
 /// rejected, the same unsupported-path classification the lowering gives it.
 #[test]
