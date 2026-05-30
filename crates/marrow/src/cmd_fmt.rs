@@ -6,13 +6,23 @@ use std::process::ExitCode;
 use crate::{CheckFormat, report_check, report_io_error};
 
 pub(crate) fn fmt(args: &[String]) -> ExitCode {
-    let mut mode = FmtMode::Print;
+    let mut mode = None;
     let mut target = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--check" => mode = FmtMode::Check,
-            "--write" => mode = FmtMode::Write,
+            "--check" => {
+                if mode.replace(FmtMode::Check).is_some() {
+                    eprintln!("marrow fmt accepts only one of --check or --write");
+                    return ExitCode::from(2);
+                }
+            }
+            "--write" => {
+                if mode.replace(FmtMode::Write).is_some() {
+                    eprintln!("marrow fmt accepts only one of --check or --write");
+                    return ExitCode::from(2);
+                }
+            }
             "--help" | "-h" => {
                 print!(
                     "\
@@ -49,6 +59,7 @@ place. `marrow fmt` does not read from stdin.
         index += 1;
     }
 
+    let mode = mode.unwrap_or(FmtMode::Print);
     let Some(target) = target else {
         eprintln!("missing source file or project directory");
         return ExitCode::from(2);

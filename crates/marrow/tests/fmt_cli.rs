@@ -68,6 +68,32 @@ fn fmt_write_rewrites_the_file_in_place() {
 }
 
 #[test]
+fn fmt_rejects_check_with_write_without_rewriting() {
+    let source = "module app\nconst Max:int=5\n";
+    let path = temp_source("check-write", source);
+    let output = run_fmt(&["--check", "--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(written, source);
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--check"), "{stderr}");
+    assert!(stderr.contains("--write"), "{stderr}");
+}
+
+#[test]
+fn fmt_rejects_duplicate_mode_flags() {
+    let path = temp_source("dupe-check", "module app\n\nconst Max: int = 5\n");
+    let output = run_fmt(&["--check", "--check", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--check"), "{stderr}");
+}
+
+#[test]
 fn fmt_refuses_to_format_source_with_errors() {
     let path = temp_source("broken", "module app\n\tconst Max: int = 5\n");
     let output = run_fmt(&[path.to_str().unwrap()]);

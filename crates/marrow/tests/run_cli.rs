@@ -72,6 +72,33 @@ fn entry_flag_overrides_the_default_entry() {
 }
 
 #[test]
+fn bare_entry_flag_resolves_the_first_matching_function() {
+    let root = temp_project("run-bare-entry", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "src/util.mw",
+            "module util\n\npub fn helper(): int\n    print(\"helper ran\")\n    return 1\n",
+        );
+    });
+    let output = run_run(&["--entry", "helper", root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "helper ran\n");
+}
+
+#[test]
+fn run_rejects_duplicate_format_flag() {
+    let output = run_run(&["--format", "json", "--format", "text", "missing-project"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--format"), "{stderr}");
+}
+
+#[test]
 fn module_constants_are_bound_at_runtime() {
     let root = temp_project("run-module-const", |root| {
         write(

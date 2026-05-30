@@ -30,6 +30,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut trace = false;
     let mut dry_run = false;
     let mut format = CheckFormat::Text;
+    let mut saw_format = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -51,6 +52,11 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             // them back so the store is left byte-for-byte unchanged.
             "--dry-run" => dry_run = true,
             "--format" => {
+                if saw_format {
+                    eprintln!("duplicate --format");
+                    return ExitCode::from(2);
+                }
+                saw_format = true;
                 index += 1;
                 let Some(value) = args.get(index) else {
                     eprintln!("missing value for --format");
@@ -137,21 +143,45 @@ fn run_project_dir(
         );
         return ExitCode::FAILURE;
     };
+    let entry = resolve_entry(&program, entry);
 
     match resolve_store_path(dir, &config) {
         Err(code) => code,
         Ok(None) => {
             let store = RefCell::new(marrow_store::mem::MemStore::new());
-            execute(&program, &store, entry, maintenance, observe)
+            execute(&program, &store, &entry, maintenance, observe)
         }
         Ok(Some(path)) => match marrow_store::redb::RedbStore::open(&path) {
-            Ok(store) => execute(&program, &RefCell::new(store), entry, maintenance, observe),
+            Ok(store) => execute(&program, &RefCell::new(store), &entry, maintenance, observe),
             Err(error) => {
                 report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
                 ExitCode::FAILURE
             }
         },
     }
+}
+
+/// CLI entries accept a bare function name as a convenience. The runtime expects
+/// a module-qualified entry, so the command resolves the documented first match
+/// before it enters the store-specific execution path.
+fn resolve_entry(program: &marrow_check::CheckedProgram, entry: &str) -> String {
+    if entry.contains("::") {
+        return entry.to_string();
+    }
+    for module in &program.modules {
+        if module
+            .functions
+            .iter()
+            .any(|function| function.name == entry)
+        {
+            return if module.name.is_empty() {
+                entry.to_string()
+            } else {
+                format!("{}::{entry}", module.name)
+            };
+        }
+    }
+    entry.to_string()
 }
 
 /// Run `entry` from a checked `program` over `store`, printing its output. The run
