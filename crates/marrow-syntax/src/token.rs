@@ -277,5 +277,30 @@ pub(crate) fn is_type_text(text: &str) -> bool {
     {
         return is_type_text(inner);
     }
+    if let Some((key, value)) = map_type_parts(text) {
+        return is_type_text(key) && is_type_text(value);
+    }
     is_qualified_name(text)
+}
+
+fn map_type_parts(text: &str) -> Option<(&str, &str)> {
+    let inner = text.strip_prefix("map[")?.strip_suffix(']')?;
+    split_top_level_comma(inner)
+}
+
+fn split_top_level_comma(text: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '[' => depth = depth.checked_add(1)?,
+            ']' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                let key = &text[..index];
+                let value = &text[index + ch.len_utf8()..];
+                return (!key.is_empty() && !value.is_empty()).then_some((key, value));
+            }
+            _ => {}
+        }
+    }
+    None
 }

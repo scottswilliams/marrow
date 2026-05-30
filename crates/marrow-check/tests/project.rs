@@ -1223,6 +1223,31 @@ fn reports_unknown_types_in_signatures_and_consts() {
 }
 
 #[test]
+fn map_annotations_outside_resource_members_are_not_supported_types() {
+    let root = temp_project("map-type-annotation", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nresource Draft\n    scores: map[string, int]\nconst X: map[string, int] = 1\nfn f(a: map[string, int]): map[string, int]\n    return 1\nfn g()\n    const c: map[string, int] = 1\n    var v: map[string, int]\n    var counts(k: map[string, int]): int\n    try\n        return\n    catch e: map[string, int]\n        return\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let found = with_code(&report, "check.unknown_type");
+    assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
+    assert!(
+        found
+            .iter()
+            .all(|diagnostic| diagnostic.message.contains("map[string,int]")),
+        "{found:#?}"
+    );
+    let schema = with_code(&report, "schema.unsupported_type");
+    assert_eq!(schema.len(), 1, "{:#?}", report.diagnostics);
+    assert!(schema[0].message.contains("scores"), "{schema:#?}");
+}
+
+#[test]
 fn known_types_are_not_flagged_as_unknown() {
     let root = temp_project("known-types", |root| {
         // Primitive, sequence, identity, the module's own resource, `unknown`, and

@@ -182,6 +182,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.duplicate_root_owner` | Two resources claim the same saved root (a cross-resource rule the project checker reports). |
 | `schema.index_in_group` | An index appears inside a group; indexes are direct members of keyed saved resources. |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
+| `schema.unsupported_type` | A parsed type spelling is only supported in a narrower declaration context, such as `map[K, V]` saved-resource member sugar. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.duplicate_stable_id` | Two resource elements declare the same stable ID. |

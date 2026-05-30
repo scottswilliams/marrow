@@ -10,7 +10,8 @@ use marrow_schema::{
     SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NON_ENUM_NAMED_FIELD,
     SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
-    SCHEMA_UNORDERABLE_KEY, ScalarType, Type, check_saved_named_fields, compile_resource,
+    SCHEMA_UNORDERABLE_KEY, SCHEMA_UNSUPPORTED_TYPE, ScalarType, Type, check_saved_named_fields,
+    compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -286,6 +287,17 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn saved_map_member_value_typed_unknown_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    scores: map[string, unknown]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert!(errors[0].message.contains("scores"));
+}
+
+#[test]
 fn saved_field_typed_sequence_of_concrete_type_is_allowed() {
     // A sequence of a concrete type is an ordinary saved field; the check does
     // not over-trigger on the `sequence[...]` wrapper.
@@ -338,6 +350,22 @@ fn sequence_member_matches_the_canonical_keyed_leaf() {
 }
 
 #[test]
+fn map_member_matches_the_canonical_keyed_leaf() {
+    // `scores: map[string, int]` is sugar for `scores(key: string): int`.
+    let sugar = layer(
+        &compile_ok("resource Book at ^books(id: int)\n    scores: map[string, int]\n"),
+        "scores",
+    )
+    .clone();
+    let canonical = layer(
+        &compile_ok("resource Book at ^books(id: int)\n    scores(key: string): int\n"),
+        "scores",
+    )
+    .clone();
+    assert_eq!(sugar, canonical);
+}
+
+#[test]
 fn nested_sequence_member_desugars_inside_a_group() {
     // A sequence nested inside a group desugars the same way.
     let source = "\
@@ -356,6 +384,92 @@ resource Book at ^books(id: int)
     assert_eq!(notes.key_params.len(), 1);
     assert_eq!(notes.key_params[0].name, "pos");
     assert_eq!(notes.key_params[0].ty, Type::Scalar(ScalarType::Int));
+}
+
+#[test]
+fn nested_map_member_desugars_inside_a_group() {
+    let source = "\
+resource Book at ^books(id: int)
+    versions(version: int)
+        scores: map[string, int]
+";
+    let schema = compile_ok(source);
+    let versions = layer(&schema, "versions");
+    let scores = &versions.members[0];
+    assert!(
+        matches!(&scores.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Int)),
+        "scores should desugar to a nested keyed-leaf layer"
+    );
+    assert_eq!(scores.name, "scores");
+    assert_eq!(scores.key_params.len(), 1);
+    assert_eq!(scores.key_params[0].name, "key");
+    assert_eq!(scores.key_params[0].ty, Type::Scalar(ScalarType::Str));
+}
+
+#[test]
+fn map_member_sugar_is_rejected_on_local_resources() {
+    let source = "\
+resource Draft
+    scores: map[string, int]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
+    assert!(errors[0].message.contains("scores"));
+}
+
+#[test]
+fn map_type_nested_inside_sequence_is_rejected() {
+    let source = "\
+resource Book at ^books(id: int)
+    scores: sequence[map[string, int]]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
+    assert!(errors[0].message.contains("scores"));
+}
+
+#[test]
+fn map_type_in_identity_key_is_rejected() {
+    let source = "\
+resource Book at ^books(id: map[string, int])
+    title: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
+    assert!(errors[0].message.contains("id"));
+}
+
+#[test]
+fn map_type_in_key_param_is_rejected() {
+    let source = "\
+resource Draft
+    scores(k: map[string, int]): int
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
+    assert!(errors[0].message.contains("k"));
+}
+
+#[test]
+fn map_type_as_map_key_is_rejected_once() {
+    let source = "\
+resource Book at ^books(id: int)
+    scores: map[map[string, int], int]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
+    assert!(errors[0].message.contains("key"));
+}
+
+#[test]
+fn required_map_member_sugar_is_rejected() {
+    let source = "\
+resource Book at ^books(id: int)
+    required scores: map[string, int]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
+    assert!(errors[0].message.contains("scores"));
 }
 
 #[test]
@@ -495,6 +609,18 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn index_arg_naming_map_member_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    scores: map[string, int]
+    index byScore(scores, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
+    assert!(errors[0].message.contains("scores"));
+}
+
+#[test]
 fn index_over_a_decimal_field_is_an_error() {
     // `decimal` has no order-preserving key encoding, so the write planner could
     // never maintain an index entry for it. Reject it at compile time rather than
@@ -519,6 +645,17 @@ resource Book at ^books(id: int)
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
     assert!(errors[0].message.contains("ts"));
+}
+
+#[test]
+fn map_member_with_a_decimal_key_type_is_an_error() {
+    let source = "\
+resource Book at ^books(id: int)
+    scores: map[decimal, int]
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
+    assert!(errors[0].message.contains("key"));
 }
 
 #[test]
@@ -1049,4 +1186,57 @@ resource Order at ^orders(id: int)
         check_saved_named_fields(&local, &[]).is_empty(),
         "a local resource has no saved fields to reject"
     );
+}
+
+#[test]
+fn a_bare_named_map_value_must_be_a_declared_enum() {
+    let decl = resource(
+        "\
+resource Order at ^orders(id: int)
+    scores: map[string, Status]
+",
+    );
+    assert!(
+        check_saved_named_fields(&decl, &["Status".to_string()]).is_empty(),
+        "an enum-typed map value is allowed"
+    );
+    let errors = check_saved_named_fields(&decl, &[]);
+    assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
+    assert!(errors[0].message.contains("scores"));
+}
+
+#[test]
+fn unsupported_map_value_is_not_checked_as_bare_named_saved_field() {
+    let decl = resource(
+        "\
+resource Order at ^orders(id: int)
+    scores: map[string, map[string, int]]
+",
+    );
+    let errors = check_saved_named_fields(&decl, &[]);
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn unsupported_map_key_does_not_check_map_value_as_bare_named_saved_field() {
+    let decl = resource(
+        "\
+resource Order at ^orders(id: int)
+    scores: map[map[string, int], Missing]
+",
+    );
+    let errors = check_saved_named_fields(&decl, &[]);
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn required_map_member_does_not_check_value_as_bare_named_saved_field() {
+    let decl = resource(
+        "\
+resource Order at ^orders(id: int)
+    required scores: map[string, Missing]
+",
+    );
+    let errors = check_saved_named_fields(&decl, &[]);
+    assert!(errors.is_empty(), "{errors:#?}");
 }

@@ -176,6 +176,13 @@ pub(crate) fn check_file_types(
                     function.return_type.is_some(),
                     diagnostics,
                 );
+                check_block_type_annotations(
+                    &function.body,
+                    file,
+                    project_resources,
+                    project_enums,
+                    diagnostics,
+                );
                 check_function_types(
                     program,
                     file,
@@ -216,8 +223,9 @@ pub(crate) fn check_file_types(
 }
 
 /// Record a `check.unknown_type` diagnostic when `ty` names a type the checker
-/// does not recognize. Located at `span` (the declaration), since a type
-/// annotation carries no span of its own.
+/// does not recognize or uses unsupported map syntax outside saved-resource
+/// member sugar. Located at `span` (the declaration), since a type annotation
+/// carries no span of its own.
 pub(crate) fn check_type_annotation(
     ty: &marrow_syntax::TypeRef,
     span: SourceSpan,
@@ -226,7 +234,9 @@ pub(crate) fn check_type_annotation(
     enums: &HashSet<String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if !MarrowType::names_known_type(ty, resources, enums) {
+    if marrow_schema::contains_map_type_syntax(&ty.text)
+        || !MarrowType::names_known_type(ty, resources, enums)
+    {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
@@ -234,6 +244,93 @@ pub(crate) fn check_type_annotation(
             message: format!("unknown type `{}`", ty.text.trim()),
             span,
         });
+    }
+}
+
+fn check_block_type_annotations(
+    block: &marrow_syntax::Block,
+    file: &Path,
+    resources: &HashSet<String>,
+    enums: &HashSet<String>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for statement in &block.statements {
+        check_statement_type_annotations(statement, file, resources, enums, diagnostics);
+    }
+}
+
+fn check_statement_type_annotations(
+    statement: &marrow_syntax::Statement,
+    file: &Path,
+    resources: &HashSet<String>,
+    enums: &HashSet<String>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::Const {
+            ty: Some(ty), span, ..
+        } => {
+            check_type_annotation(ty, *span, file, resources, enums, diagnostics);
+        }
+        Statement::Var { keys, ty, span, .. } => {
+            for key in keys {
+                check_type_annotation(&key.ty, *span, file, resources, enums, diagnostics);
+            }
+            if let Some(ty) = ty {
+                check_type_annotation(ty, *span, file, resources, enums, diagnostics);
+            }
+        }
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            check_block_type_annotations(then_block, file, resources, enums, diagnostics);
+            for else_if in else_ifs {
+                check_block_type_annotations(&else_if.block, file, resources, enums, diagnostics);
+            }
+            if let Some(block) = else_block {
+                check_block_type_annotations(block, file, resources, enums, diagnostics);
+            }
+        }
+        Statement::While { body, .. }
+        | Statement::For { body, .. }
+        | Statement::Transaction { body, .. }
+        | Statement::Lock { body, .. } => {
+            check_block_type_annotations(body, file, resources, enums, diagnostics);
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            check_block_type_annotations(body, file, resources, enums, diagnostics);
+            if let Some(catch) = catch {
+                if let Some(ty) = &catch.ty {
+                    check_type_annotation(
+                        ty,
+                        catch.block.span,
+                        file,
+                        resources,
+                        enums,
+                        diagnostics,
+                    );
+                }
+                check_block_type_annotations(&catch.block, file, resources, enums, diagnostics);
+            }
+            if let Some(finally) = finally {
+                check_block_type_annotations(finally, file, resources, enums, diagnostics);
+            }
+        }
+        Statement::Match { arms, .. } => {
+            for arm in arms {
+                check_block_type_annotations(&arm.block, file, resources, enums, diagnostics);
+            }
+        }
+        _ => {}
     }
 }
 

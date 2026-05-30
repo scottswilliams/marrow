@@ -530,6 +530,11 @@ pub const SCHEMA_INDEX_IN_GROUP: &str = "schema.index_in_group";
 /// resources may use `unknown`.
 pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
 
+/// A parsed type spelling is only supported in a narrower declaration context.
+/// Currently `map[K, V]` is declaration sugar for saved-resource members only;
+/// it is not a general local or nested map type.
+pub const SCHEMA_UNSUPPORTED_TYPE: &str = "schema.unsupported_type";
+
 /// A top-level field or layer shares a name with an identity key. Identity keys
 /// live in the saved path, so a stored member of the same name is ambiguous.
 pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
@@ -606,6 +611,7 @@ impl std::error::Error for SchemaError {}
 /// (cross-resource) stable-ID uniqueness.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
+    let map_sugar = decl.store.is_some();
 
     let saved_root = decl.store.as_ref().map(|store| SavedRootSchema {
         root: store.root.clone(),
@@ -624,7 +630,7 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
             }
             _ => {
                 names.check(member_name(member), member_span(member), &mut errors);
-                members.push(member_node(member, &mut errors));
+                members.push(member_node(member, &mut errors, map_sugar));
             }
         }
     }
@@ -643,6 +649,7 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
         check_saved_data(store, &decl.members, decl.span, &mut errors);
     }
 
+    check_unsupported_map_types(&decl.members, map_sugar, &mut errors);
     check_index_args(decl, &mut errors);
     check_stable_ids(decl, &mut errors);
 
@@ -739,11 +746,15 @@ fn check_saved_data(
 ) {
     check_duplicate_key_params(&store.keys, decl_span, errors);
     for key in &store.keys {
-        let ty = Type::resolve(&key.ty);
-        if ty.embeds_unknown() {
-            errors.push(unknown_error("identity key", &key.name, decl_span));
-        } else if let Some(error) = key_type_error("identity key", &key.name, &ty, decl_span) {
+        if let Some(error) = unsupported_map_key_param_error(key, decl_span) {
             errors.push(error);
+        } else {
+            let ty = Type::resolve(&key.ty);
+            if ty.embeds_unknown() {
+                errors.push(unknown_error("identity key", &key.name, decl_span));
+            } else if let Some(error) = key_type_error("identity key", &key.name, &ty, decl_span) {
+                errors.push(error);
+            }
         }
         if let Some(span) = top_level_member_span(members, &key.name) {
             errors.push(SchemaError {
@@ -772,7 +783,14 @@ fn check_saved_data(
 /// Identity keys are checked separately in [`check_saved_data`].
 fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
-        ResourceMember::Field(field) => check_key_params(&field.keys, field.span, errors),
+        ResourceMember::Field(field) => {
+            if field.keys.is_empty()
+                && let Some((key, _)) = map_entry(&field.ty.text)
+            {
+                check_synthetic_map_key(key, field.span, errors);
+            }
+            check_key_params(&field.keys, field.span, errors);
+        }
         ResourceMember::Group(group) => {
             check_key_params(&group.keys, group.span, errors);
             for nested in &group.members {
@@ -787,12 +805,45 @@ fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
 /// no span of their own, so errors point at the keyed layer's `span`.
 fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
     for key in keys {
+        if let Some(error) = unsupported_map_key_param_error(key, span) {
+            errors.push(error);
+            continue;
+        }
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
             errors.push(unknown_error("key", &key.name, span));
         } else if let Some(error) = key_type_error("key", &key.name, &ty, span) {
             errors.push(error);
         }
+    }
+}
+
+fn unsupported_map_key_param_error(key: &KeyParam, span: SourceSpan) -> Option<SchemaError> {
+    unsupported_map_key_error(&key.name, &key.ty.text, span)
+}
+
+fn unsupported_map_key_error(name: &str, ty: &str, span: SourceSpan) -> Option<SchemaError> {
+    contains_map_type_syntax(ty).then(|| SchemaError {
+        code: SCHEMA_UNSUPPORTED_TYPE,
+        message: format!(
+            "key `{}` uses `map[...]`, which is only supported as saved-resource \
+             member sugar for a keyed leaf",
+            name
+        ),
+        span,
+    })
+}
+
+fn check_synthetic_map_key(key: &str, span: SourceSpan, errors: &mut Vec<SchemaError>) {
+    if let Some(error) = unsupported_map_key_error("key", key, span) {
+        errors.push(error);
+        return;
+    }
+    let ty = Type::resolve_text(key);
+    if ty.embeds_unknown() {
+        errors.push(unknown_error("key", "key", span));
+    } else if let Some(error) = key_type_error("key", "key", &ty, span) {
+        errors.push(error);
     }
 }
 
@@ -804,12 +855,16 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
         ResourceMember::Field(field) => {
             // A keyed leaf carries its value type the same way a plain field
             // does; both reject `unknown`.
-            let what = if field.keys.is_empty() {
-                "field"
+            let (what, ty) = if field.keys.is_empty()
+                && let Some((_, value)) = map_entry(&field.ty.text)
+            {
+                ("keyed leaf", Type::resolve_text(value))
+            } else if field.keys.is_empty() {
+                ("field", Type::resolve(&field.ty))
             } else {
-                "keyed leaf"
+                ("keyed leaf", Type::resolve(&field.ty))
             };
-            if Type::resolve(&field.ty).embeds_unknown() {
+            if ty.embeds_unknown() {
                 errors.push(unknown_error(what, &field.name, field.span));
             }
         }
@@ -820,6 +875,73 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
         }
         ResourceMember::Index(_) => {}
     }
+}
+
+fn check_unsupported_map_types(
+    members: &[ResourceMember],
+    saved_map_sugar: bool,
+    errors: &mut Vec<SchemaError>,
+) {
+    for member in members {
+        match member {
+            ResourceMember::Field(field) => {
+                if !saved_map_sugar {
+                    check_unsupported_map_key_params(&field.keys, field.span, errors);
+                }
+                if let Some((key, value)) = map_entry(&field.ty.text)
+                    && saved_map_sugar
+                    && field.keys.is_empty()
+                {
+                    if field.required || contains_map_type(value) {
+                        errors.push(unsupported_map_field_error(field));
+                    } else if !contains_map_type(key) {
+                        continue;
+                    }
+                } else if contains_map_type(&field.ty.text) {
+                    errors.push(unsupported_map_field_error(field));
+                }
+            }
+            ResourceMember::Group(group) => {
+                if !saved_map_sugar {
+                    check_unsupported_map_key_params(&group.keys, group.span, errors);
+                }
+                check_unsupported_map_types(&group.members, saved_map_sugar, errors);
+            }
+            ResourceMember::Index(_) => {}
+        }
+    }
+}
+
+fn check_unsupported_map_key_params(
+    keys: &[KeyParam],
+    span: SourceSpan,
+    errors: &mut Vec<SchemaError>,
+) {
+    for key in keys {
+        if let Some(error) = unsupported_map_key_param_error(key, span) {
+            errors.push(error);
+        }
+    }
+}
+
+fn unsupported_map_field_error(field: &FieldDecl) -> SchemaError {
+    SchemaError {
+        code: SCHEMA_UNSUPPORTED_TYPE,
+        message: format!(
+            "field `{}` uses `map[...]`, which is only supported as unrequired \
+             saved-resource member sugar for a keyed leaf",
+            field.name
+        ),
+        span: field.span,
+    }
+}
+
+fn is_supported_map_member(field: &FieldDecl) -> bool {
+    !field.required
+        && field.keys.is_empty()
+        && map_entry(&field.ty.text)
+            .map(|(key, value)| !contains_map_type(key) && !contains_map_type(value))
+            .unwrap_or(false)
 }
 
 /// Reject every managed saved field whose type is a bare name that is not one of
@@ -841,7 +963,20 @@ pub fn check_saved_named_fields(decl: &ResourceDecl, enums: &[String]) -> Vec<Sc
 fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
-            if let Type::Named(name) = Type::resolve(&field.ty)
+            let ty = if contains_map_type(&field.ty.text) {
+                if field.keys.is_empty()
+                    && let Some((_, value)) = map_entry(&field.ty.text)
+                    && is_supported_map_member(field)
+                    && !contains_map_type(value)
+                {
+                    Type::resolve_text(value)
+                } else {
+                    return;
+                }
+            } else {
+                Type::resolve(&field.ty)
+            };
+            if let Type::Named(name) = ty
                 && !enums.iter().any(|enum_name| enum_name == &name)
             {
                 errors.push(SchemaError {
@@ -986,7 +1121,10 @@ fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> O
     let (name, rest) = segments.split_first().expect("non-empty field path");
     members.iter().find_map(|member| match member {
         ResourceMember::Field(field)
-            if rest.is_empty() && field.name == *name && field.keys.is_empty() =>
+            if rest.is_empty()
+                && field.name == *name
+                && field.keys.is_empty()
+                && map_entry(&field.ty.text).is_none() =>
         {
             Some(&field.ty)
         }
@@ -1055,6 +1193,46 @@ fn sequence_element(text: &str) -> Option<&str> {
         .strip_prefix("sequence[")
         .and_then(|rest| rest.strip_suffix(']'))
         .map(str::trim)
+}
+
+/// The key and value type spellings of a `map[K, V]`, split at the top-level
+/// comma, or `None` for a non-map type.
+fn map_entry(text: &str) -> Option<(&str, &str)> {
+    let inner = text
+        .trim()
+        .strip_prefix("map[")
+        .and_then(|rest| rest.strip_suffix(']'))?;
+    split_top_level_comma(inner).map(|(key, value)| (key.trim(), value.trim()))
+}
+
+/// Whether a type spelling contains the unsupported `map[...]` type form.
+pub fn contains_map_type_syntax(text: &str) -> bool {
+    contains_map_type(text)
+}
+
+fn contains_map_type(text: &str) -> bool {
+    let text = text.trim();
+    map_entry(text).is_some()
+        || sequence_element(text)
+            .map(contains_map_type)
+            .unwrap_or(false)
+}
+
+fn split_top_level_comma(text: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '[' => depth = depth.checked_add(1)?,
+            ']' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                let key = &text[..index];
+                let value = &text[index + ch.len_utf8()..];
+                return (!key.is_empty() && !value.is_empty()).then_some((key, value));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
@@ -1158,7 +1336,7 @@ fn index_arg_key_error(
 /// Compile the members nested inside a group into nodes. Fields and groups
 /// recurse; an index here is an error, since indexes are direct members of the
 /// resource.
-fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<Node> {
+fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Vec<Node> {
     let mut members = Vec::new();
     let mut names = Namespace::default();
 
@@ -1175,7 +1353,7 @@ fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<Node> 
             }),
             _ => {
                 names.check(member_name(member), member_span(member), errors);
-                members.push(member_node(member, errors));
+                members.push(member_node(member, errors, map_sugar));
             }
         }
     }
@@ -1202,17 +1380,23 @@ fn member_span(member: &ResourceMember) -> SourceSpan {
 }
 
 /// Compile one non-index resource member (a field or a group) into a [`Node`]:
-/// an unkeyed plain field is a top-level `Slot`; a `sequence[T]` field and a
-/// keyed field are both keyed-leaf `Slot`s; a group is a `Group` with recursed
+/// an unkeyed plain field is a top-level `Slot`; `sequence[T]`, `map[K, V]`,
+/// and keyed fields are keyed-leaf `Slot`s; a group is a `Group` with recursed
 /// members. An index is not a node and is handled by the caller.
-fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
+fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Node {
     match member {
         ResourceMember::Field(field) if field.keys.is_empty() => {
-            // `name: sequence[T]` is sugar for the `name(pos: int): T` keyed leaf,
-            // so it becomes a keyed `Slot` rather than a plain top-level field.
+            // Collection member sugar becomes a keyed `Slot` rather than a
+            // plain top-level field.
             match Type::resolve(&field.ty) {
                 Type::Sequence(element) => sequence_leaf(field, *element),
-                ty => slot_node(field, ty, vec![], field.required),
+                ty => {
+                    if map_sugar && let Some((key, value)) = map_entry(&field.ty.text) {
+                        map_leaf(field, key, value)
+                    } else {
+                        slot_node(field, ty, vec![], field.required)
+                    }
+                }
             }
         }
         // A keyed field is a keyed-leaf layer; its declared type is the leaf type
@@ -1233,7 +1417,7 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
                 docs: group.docs.clone(),
                 stable_id: group.stable_id.clone(),
                 key_params: group.keys.iter().map(key_def).collect(),
-                members: group_members(group, errors),
+                members: group_members(group, errors, map_sugar),
                 element: Element::Group,
             }
         }
@@ -1265,6 +1449,19 @@ fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
         vec![KeyDef {
             name: "pos".to_string(),
             ty: Type::Scalar(ScalarType::Int),
+        }],
+        false,
+    )
+}
+
+/// Desugar `name: map[K, V]` into the keyed leaf `name(key: K): V`.
+fn map_leaf(field: &FieldDecl, key: &str, value: &str) -> Node {
+    slot_node(
+        field,
+        Type::resolve_text(value),
+        vec![KeyDef {
+            name: "key".to_string(),
+            ty: Type::resolve_text(key),
         }],
         false,
     )
