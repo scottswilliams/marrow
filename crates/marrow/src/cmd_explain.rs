@@ -123,6 +123,16 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
                         println!("index plan: {}", index_phrase(&indexes));
                     }
                 }
+                SavedPathClass::Identity {
+                    resource: referenced,
+                    ..
+                } => {
+                    print!(" resolves to");
+                    if let Some(owner) = resource {
+                        print!(" {} of resource {}", member_phrase(field), owner.name);
+                    }
+                    println!(", type {referenced}::Id");
+                }
                 SavedPathClass::IndexMarker => {
                     println!(" is a generated index entry");
                 }
@@ -207,7 +217,8 @@ fn saved_path_record(
     indexes: &[&IndexSchema],
 ) -> serde_json::Value {
     let (class_name, ty) = match class {
-        SavedPathClass::Scalar(ty) => ("scalar", Some(ty.name())),
+        SavedPathClass::Scalar(ty) => ("scalar", Some(ty.name().to_string())),
+        SavedPathClass::Identity { resource, .. } => ("identity", Some(format!("{resource}::Id"))),
         SavedPathClass::IndexMarker => ("index_marker", None),
         SavedPathClass::KeyTypeMismatch { .. } => ("key_type_mismatch", None),
         SavedPathClass::Orphan => ("orphan", None),

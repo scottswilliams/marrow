@@ -17,12 +17,36 @@ use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
 use marrow_store::value::{SavedValue, ValueError, decode_value, encode_value};
 
-/// A resource value supplied to a write: its present top-level fields, by name.
-/// A field not listed here is simply not supplied (absent). Keyed layers are
-/// written through the dedicated layer planners, not this value.
+/// A resource value supplied to a write: its present top-level fields, by name. A
+/// scalar/enum field carries its saved value; a typed-reference field carries the
+/// referenced identity's key segments under `identities`, paired with the referenced
+/// resource's identity arity so the staged leaf is validated before encoding. A
+/// field listed in neither is simply not supplied (absent). Keyed layers are written
+/// through the dedicated layer planners, not this value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceValue {
     pub fields: Vec<(String, SavedValue)>,
+    pub identities: Vec<SuppliedIdentity>,
+}
+
+/// A typed-reference field supplied to a write: the field name, the referenced
+/// identity's key segments, and the referenced resource's identity arity (the arity
+/// the staged leaf must have to round-trip through `decode_identity`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppliedIdentity {
+    pub field: String,
+    pub keys: Vec<SavedKey>,
+    pub referenced_arity: usize,
+}
+
+impl ResourceValue {
+    /// The referenced identity supplied for `field`, if it is a typed-reference
+    /// field this value populates.
+    fn supplied_identity(&self, field: &str) -> Option<&SuppliedIdentity> {
+        self.identities
+            .iter()
+            .find(|supplied| supplied.field == field)
+    }
 }
 
 /// A managed write that could not be planned. `code` is a stable `write.*`
@@ -212,22 +236,19 @@ pub fn plan_resource_write(
     let root = resolve_saved_root(schema, identity)?;
 
     // Validate every field and collect the ones to write, before staging any
-    // step — a rejected write must leave no trace.
-    let mut to_write = Vec::new();
+    // step — a rejected write must leave no trace. A scalar/enum field carries a
+    // saved value; a typed-reference field carries the referenced identity's keys.
+    let mut to_write: Vec<(&str, Vec<u8>)> = Vec::new();
     for (field, ty, required) in plain_fields(&schema.members) {
-        match supplied_value(value, &field.name) {
-            Some(saved) => {
-                check_type(&field.name, ty, saved)?;
-                to_write.push((field.name.as_str(), saved));
+        match supplied_field(value, &field.name, ty)? {
+            Some(bytes) => to_write.push((field.name.as_str(), bytes)),
+            None if required => {
+                return Err(WriteError {
+                    code: WRITE_REQUIRED_ABSENT,
+                    message: format!("required field `{}` is absent", field.name),
+                });
             }
-            None => {
-                if required {
-                    return Err(WriteError {
-                        code: WRITE_REQUIRED_ABSENT,
-                        message: format!("required field `{}` is absent", field.name),
-                    });
-                }
-            }
+            None => {}
         }
     }
 
@@ -244,10 +265,10 @@ pub fn plan_resource_write(
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&identity_path(root, identity)),
     }];
-    for (name, saved) in to_write {
+    for (name, bytes) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&field_path(root, identity, name)),
-            value: encode_value(saved)?,
+            value: bytes,
         });
     }
 
@@ -360,6 +381,40 @@ pub fn plan_field_write(
     Ok(WritePlan { steps })
 }
 
+/// Plan a write of a typed-reference field: set the identity-typed `field` of the
+/// resource at `identity` to the referenced identity `keys`, leaving the
+/// resource's other fields in place. `field` must be declared with an identity
+/// type (`authorId: Author::Id`), and `keys` must have the referenced resource's
+/// identity arity (`referenced_arity`, the same arity `decode_identity` reads the
+/// stored leaf back by). The leaf is stored as the referenced identity's canonical
+/// key encoding — the very `encode_identity` a unique index entry uses, reused
+/// unchanged — so a wrong-shape value is a catchable [`WRITE_TYPE_MISMATCH`]
+/// rather than an opaque runtime fault.
+///
+/// A typed-reference field is not an index argument in this layer: an index keys on
+/// scalar fields, and a referenced identity has no single scalar projection in the
+/// composite case. So there is no index reconciliation here.
+pub fn plan_identity_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let (_, ty, _) = field_slot(&schema.members, field).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_FIELD,
+        message: format!("resource `{}` has no field `{field}`", schema.name),
+    })?;
+    let value = staged_identity_value(field, ty, keys, referenced_arity)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&field_path(root, identity, field)),
+            value,
+        }],
+    })
+}
+
 /// Plan a managed field delete: remove `field` of the resource at `identity`,
 /// leaving the resource's other fields in place, and tear down any index the
 /// field feeds. Validates that the field is declared (`WRITE_UNKNOWN_FIELD`),
@@ -425,28 +480,24 @@ pub fn plan_resource_merge(
     // Validate the supplied fields and collect the ones to write. A required
     // field the merge does not supply must already be stored — the resulting
     // resource must still satisfy required fields.
-    let mut to_write = Vec::new();
+    let mut to_write: Vec<(&str, Vec<u8>)> = Vec::new();
     for (field, ty, required) in plain_fields(&schema.members) {
-        match supplied_value(value, &field.name) {
-            Some(saved) => {
-                check_type(&field.name, ty, saved)?;
-                to_write.push((field.name.as_str(), saved));
+        match supplied_field(value, &field.name, ty)? {
+            Some(bytes) => to_write.push((field.name.as_str(), bytes)),
+            None if required
+                && store
+                    .read(&encode_path(&field_path(root, identity, &field.name)))?
+                    .is_none() =>
+            {
+                return Err(WriteError {
+                    code: WRITE_REQUIRED_ABSENT,
+                    message: format!(
+                        "required field `{}` is absent and not already stored",
+                        field.name
+                    ),
+                });
             }
-            None => {
-                if required
-                    && store
-                        .read(&encode_path(&field_path(root, identity, &field.name)))?
-                        .is_none()
-                {
-                    return Err(WriteError {
-                        code: WRITE_REQUIRED_ABSENT,
-                        message: format!(
-                            "required field `{}` is absent and not already stored",
-                            field.name
-                        ),
-                    });
-                }
-            }
+            None => {}
         }
     }
 
@@ -460,10 +511,10 @@ pub fn plan_resource_merge(
 
     // Stage the field overwrites — no subtree clear, so untouched fields remain.
     let mut steps = Vec::new();
-    for (name, saved) in to_write {
+    for (name, bytes) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&field_path(root, identity, name)),
-            value: encode_value(saved)?,
+            value: bytes,
         });
     }
 
@@ -546,6 +597,78 @@ pub fn plan_layer_leaf_write(
     })
 }
 
+/// Plan a typed-reference keyed-leaf write: set the entry at
+/// `^root(identity).layer(key)` to the referenced identity `keys`, the identity-leaf
+/// analogue of [`plan_layer_leaf_write`]. `layer` must be a declared keyed leaf with
+/// an identity type, `key` must match the layer's key arity, and `keys` must have
+/// the referenced resource's identity arity (`referenced_arity`). The leaf is stored
+/// as the referenced identity's canonical encoding.
+pub fn plan_layer_identity_leaf_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = find_layer(schema, layer)?;
+    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+        return Err(WriteError {
+            code: WRITE_NOT_A_LEAF_LAYER,
+            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+        });
+    };
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    let value = staged_identity_value(layer, leaf_type, keys, referenced_arity)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&layer_leaf_path(root, identity, layer, key)),
+            value,
+        }],
+    })
+}
+
+/// The staged bytes for a typed-reference leaf: the referenced identity's canonical
+/// encoding. `ty` must be an identity type, and `keys` must have the referenced
+/// resource's identity arity, so the stored bytes round-trip through
+/// `decode_identity`. A non-identity declared type or a wrong-arity value is a
+/// catchable [`WRITE_TYPE_MISMATCH`] — the leaf could never decode back otherwise.
+/// Shared by the top-level, nested, and keyed-leaf identity-write planners.
+fn staged_identity_value(
+    name: &str,
+    ty: &Type,
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<Vec<u8>, WriteError> {
+    let Type::Identity(referenced) = ty else {
+        return Err(WriteError {
+            code: WRITE_TYPE_MISMATCH,
+            message: format!("field `{name}` does not hold a `{ty}`"),
+        });
+    };
+    if keys.len() != referenced_arity {
+        return Err(WriteError {
+            code: WRITE_TYPE_MISMATCH,
+            message: format!(
+                "field `{name}` references `{referenced}`, whose identity has \
+                 {referenced_arity} key(s), but the value has {}",
+                keys.len()
+            ),
+        });
+    }
+    Ok(encode_identity(keys))
+}
+
 /// Plan a field write into a (possibly nested) keyed group entry, descending the
 /// `layers` chain of `(layer, key…)` levels from the resource. Each level must
 /// name a group layer with matching key arity; the field is a scalar member of
@@ -571,6 +694,37 @@ pub fn plan_nested_field_write(
         steps: vec![PlanStep::Write {
             path: encode_path(&path),
             value: encode_value(value)?,
+        }],
+    })
+}
+
+/// Plan a typed-reference field write into a (possibly nested) keyed group entry,
+/// the identity-leaf analogue of [`plan_nested_field_write`]. The innermost group
+/// layer must declare `field` with an identity type, and `keys` must have the
+/// referenced resource's identity arity (`referenced_arity`); the leaf is stored as
+/// the referenced identity's canonical encoding. A wrong-shape value is a catchable
+/// [`WRITE_TYPE_MISMATCH`].
+pub fn plan_nested_identity_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+    field: &str,
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let innermost = descend_group_layers(schema, layers)?;
+    let (_, ty, _) = field_slot(&innermost.members, field).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_FIELD,
+        message: format!("group layer `{}` has no field `{field}`", innermost.name),
+    })?;
+    let value = staged_identity_value(field, ty, keys, referenced_arity)?;
+    let mut path = nested_layer_path(root, identity, layers);
+    path.push(PathSegment::Field(field.into()));
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&path),
+            value,
         }],
     })
 }
@@ -610,21 +764,17 @@ pub fn plan_layer_group_write(
 
     // Validate every group field and collect the ones to write before staging any
     // step — a rejected write must leave no trace.
-    let mut to_write = Vec::new();
+    let mut to_write: Vec<(&str, Vec<u8>)> = Vec::new();
     for (field, ty, required) in plain_fields(&declared.members) {
-        match supplied_value(value, &field.name) {
-            Some(saved) => {
-                check_type(&field.name, ty, saved)?;
-                to_write.push((field.name.as_str(), saved));
+        match supplied_field(value, &field.name, ty)? {
+            Some(bytes) => to_write.push((field.name.as_str(), bytes)),
+            None if required => {
+                return Err(WriteError {
+                    code: WRITE_REQUIRED_ABSENT,
+                    message: format!("required field `{}` is absent", field.name),
+                });
             }
-            None => {
-                if required {
-                    return Err(WriteError {
-                        code: WRITE_REQUIRED_ABSENT,
-                        message: format!("required field `{}` is absent", field.name),
-                    });
-                }
-            }
+            None => {}
         }
     }
 
@@ -632,10 +782,10 @@ pub fn plan_layer_group_write(
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&layer_leaf_path(root, identity, layer, key)),
     }];
-    for (name, saved) in to_write {
+    for (name, bytes) in to_write {
         steps.push(PlanStep::Write {
             path: encode_path(&layer_field_path(root, identity, layer, key, name)),
-            value: encode_value(saved)?,
+            value: bytes,
         });
     }
     Ok(WritePlan { steps })
@@ -803,6 +953,53 @@ fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a Saved
         .iter()
         .find(|(name, _)| name == field)
         .map(|(_, value)| value)
+}
+
+/// The staged bytes for a supplied plain field of declared type `ty`: a scalar/enum
+/// field's canonical value encoding, or a typed-reference field's canonical identity
+/// encoding. `None` when the field is not supplied. A supplied scalar value is
+/// type-checked against `ty`; a typed reference is taken from the value's
+/// `identities` and stored as `encode_identity`, the same flat encoding the leaf
+/// planners and unique-index entries use.
+fn supplied_field(
+    value: &ResourceValue,
+    field: &str,
+    ty: &Type,
+) -> Result<Option<Vec<u8>>, WriteError> {
+    if let Type::Identity(referenced) = ty {
+        // A composite reference arrives under `identities`; a single-key one may
+        // collapse to a bare scalar (`nextId`, a single-key lookup) and land in
+        // `fields` instead. Either way the leaf stages through `staged_identity_value`,
+        // which validates the referenced arity so a wrong-shape value is caught here
+        // rather than written as a leaf that cannot decode back — the same guard the
+        // single-field identity planner applies.
+        if let Some(supplied) = value.supplied_identity(field) {
+            let staged =
+                staged_identity_value(field, ty, &supplied.keys, supplied.referenced_arity)?;
+            return Ok(Some(staged));
+        }
+        return match supplied_value(value, field) {
+            Some(saved) => {
+                let key = saved.as_key().ok_or_else(|| WriteError {
+                    code: WRITE_TYPE_MISMATCH,
+                    message: format!(
+                        "field `{field}` references `{referenced}`, but the value is not an identity"
+                    ),
+                })?;
+                // A collapsed scalar is one key, so it stages against a referenced
+                // arity of one — the same guard, never a bare `encode_identity`.
+                Ok(Some(staged_identity_value(field, ty, &[key], 1)?))
+            }
+            None => Ok(None),
+        };
+    }
+    match supplied_value(value, field) {
+        Some(saved) => {
+            check_type(field, ty, saved)?;
+            Ok(Some(encode_value(saved)?))
+        }
+        None => Ok(None),
+    }
 }
 
 /// The plain field members of `members` (top-level or a group's), as
@@ -1086,9 +1283,17 @@ fn encode_identity(identity: &[SavedKey]) -> Vec<u8> {
 /// that many well-formed keys with nothing left over. The runtime reads it back
 /// when a unique-index lookup is used in value position.
 pub fn decode_identity(bytes: &[u8], root: &SavedRootSchema) -> Option<Vec<SavedKey>> {
-    let mut keys = Vec::with_capacity(root.identity_keys.len());
+    decode_identity_arity(bytes, root.identity_keys.len())
+}
+
+/// Decode a stored identity by its key `arity` alone — the same walk as
+/// [`decode_identity`], for a typed-reference leaf whose referenced resource gives
+/// the arity directly. Returns `None` unless the bytes are exactly that many
+/// well-formed keys with nothing left over.
+pub fn decode_identity_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
+    let mut keys = Vec::with_capacity(arity);
     let mut rest = bytes;
-    for _ in 0..root.identity_keys.len() {
+    for _ in 0..arity {
         let (key, used) = decode_key_value(rest)?;
         keys.push(key);
         rest = rest.get(used..)?;

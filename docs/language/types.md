@@ -65,9 +65,35 @@ Saved fields use concrete types. A saved leaf field may use `int`,
 Nested resources, sequences, and keyed trees are saved by their declared
 shape.
 
-Saving an identity value in a field does not create an implicit foreign-key
-constraint, cascade, or join. It is a typed value. Applications enforce
-relationship rules in code or model them as resources and indexes.
+A saved leaf field typed as a resource identity is a typed reference. A field
+`authorId: Author::Id` holds an `Author` identity and only an `Author` identity:
+assigning an identity of a different resource, or a raw scalar, is a check error,
+since identities are nominal. A dynamic (`unknown`) value is rejected the same way
+a scalar field rejects one — convert it through the identity constructor
+(`Author::Id(...)`) first — so an unchecked value cannot land in a reference where
+it would read back as a foreign or malformed identity. Writing the field stores the
+referenced identity's canonical key encoding, and reading it back yields the same
+identity value, so a saved reference round-trips. A field may reference its own
+resource (`managerId: Person::Id` on `Person`).
+
+This rule covers every typed saved location, not just one field: an `unknown`
+value must be converted before it is written to a scalar field, an identity field,
+a whole resource (`^books(1) = value`), or a whole group entry. A dynamic record
+could otherwise carry a raw scalar or foreign identity into one of the resource's
+typed fields, so the value must first be made into that resource — a constructor or
+a read of the same resource — before the write.
+
+Two identities of the same resource compare with `==`; identities of different
+resources do not, mirroring how enum `==` is nominal. Comparison is by the
+referenced keys, so the same reference written twice is equal.
+
+Saving an identity in a field does not create a foreign-key constraint, cascade,
+or join: it is a typed value, not an enforced relationship. The field is not
+checked against the referent's existence — a reference may name a resource that
+was never written or was later deleted, and a `delete` does not follow stored
+references. Referential actions (cascade, restrict) and dangling-reference
+handling are a deferred layer; applications enforce relationship rules in code or
+model them as resources and indexes.
 
 Saved keys are orderable scalar types — every scalar except `decimal`. A key
 may not be `decimal`, an enum or other named type, a whole resource, a
@@ -274,6 +300,11 @@ when their stored keys share a shape, so a `Magazine::Id` is rejected wherever a
 way — both a raw scalar of the wrong type (`^books("oops")`) and a foreign
 identity spliced into a keyspace (`^books(magazineId)`) are reported as
 `check.key_type`.
+
+An identity constructor's key arguments are checked the same way: each key passed
+to `Book::Id(...)` must match the referenced resource's declared identity key type,
+so `Book::Id("oops")` for an `int`-keyed `Book` is a `check.key_type`, as is a
+wrong-typed key of a composite identity.
 
 At run time the key scalar type and arity are enforced before any store write: a
 key whose scalar kind or count does not match the declared keyspace faults

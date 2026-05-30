@@ -484,6 +484,11 @@ pub(crate) fn values_equal(
         (Value::Instant(a), Value::Instant(b)) => Ok(a == b),
         (Value::Date(a), Value::Date(b)) => Ok(a == b),
         (Value::Duration(a), Value::Duration(b)) => Ok(a == b),
+        // Two identities compare by their key segments. The checker's nominal rule
+        // already requires both to name the same resource, so a value comparison of
+        // the keys is the whole verdict; identities of different resources never
+        // reach here in a well-typed program.
+        (Value::Identity(a), Value::Identity(b)) => Ok(a == b),
         _ => Err(type_error("cannot compare values of different types", span)),
     }
 }

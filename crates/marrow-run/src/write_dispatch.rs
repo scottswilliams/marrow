@@ -47,6 +47,16 @@ pub(crate) fn write_saved_field(
 ) -> Result<(), RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
+    // A typed-reference field (`authorId: Author::Id`) stores the referenced
+    // identity's canonical encoding; a scalar/enum field stores its saved value. An
+    // unknown field falls through to `plan_field_write`, keeping its
+    // `write.unknown_field` diagnostic.
+    if let Some(LeafKind::Identity { arity, .. }) = resource_field_leaf(env.program, root, field) {
+        let keys = identity_keys_of(value, span)?;
+        let plan = plan_identity_field_write(resource, identity, field, &keys, arity);
+        env.apply_plan(plan, span)?;
+        return Ok(());
+    }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
@@ -160,12 +170,25 @@ pub(crate) fn write_nested_field(
 ) -> Result<(), RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
-    let saved = value_to_saved(value)
-        .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let layer_refs: Vec<(&str, &[SavedKey])> = layers
         .iter()
         .map(|(name, keys)| (name.as_str(), keys.as_slice()))
         .collect();
+    let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    // A typed-reference field inside a group entry stores the referenced identity's
+    // canonical encoding; a scalar/enum field stores its saved value. An unknown
+    // field falls through to keep its `write.unknown_field` diagnostic.
+    if let Some(LeafKind::Identity { arity, .. }) =
+        resource_nested_member_leaf(env.program, root, &layer_names, field)
+    {
+        let keys = identity_keys_of(value, span)?;
+        let plan =
+            plan_nested_identity_field_write(resource, identity, &layer_refs, field, &keys, arity);
+        env.apply_plan(plan, span)?;
+        return Ok(());
+    }
+    let saved = value_to_saved(value)
+        .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved);
     env.apply_plan(plan, span)?;
     Ok(())
@@ -188,15 +211,32 @@ pub(crate) fn eval_group_entry_write(
     env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
     // A declared keyed LEAF (e.g. `tags(pos: int): string`) takes a scalar value
     // written at the keyed path, sharing the write planner's keyed-leaf write path with
-    // `append`. A keyed GROUP takes a whole-entry resource value.
-    if resource_layer_leaf_type(env.program, &root, layer).is_some() {
-        let saved = value_to_saved(eval_expr(value, env)?)
-            .ok_or_else(|| unsupported("writing a resource value to a keyed leaf", span))?;
+    // `append`; an identity-typed keyed leaf stores the referenced identity. A keyed
+    // GROUP takes a whole-entry resource value.
+    if let Some(leaf) = resource_layer_leaf(env.program, &root, layer) {
         let resource = find_resource(env.program, &root)
             .ok_or_else(|| unsupported("writing to this saved root", span))?;
         let expected = layer_key_params(env.program, &root, &[layer]);
+        let value = eval_expr(value, env)?;
         let layer_keys = lower_keys(keys, span, false, expected, env)?;
-        let plan = plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved);
+        let plan = match leaf {
+            LeafKind::Identity { arity, .. } => {
+                let identity_keys = identity_keys_of(value, span)?;
+                plan_layer_identity_leaf_write(
+                    resource,
+                    &identity,
+                    layer,
+                    &layer_keys,
+                    &identity_keys,
+                    arity,
+                )
+            }
+            LeafKind::Scalar(_) => {
+                let saved = value_to_saved(value)
+                    .ok_or_else(|| unsupported("writing a resource value to a keyed leaf", span))?;
+                plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved)
+            }
+        };
         env.apply_plan(plan, span)?;
         return Ok(());
     }
@@ -210,7 +250,11 @@ pub(crate) fn eval_group_entry_write(
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
     let expected = layer_key_params(env.program, &root, &[layer]);
     let layer_keys = lower_keys(keys, span, false, expected, env)?;
-    let value = resource_value_of(fields, span)?;
+    let group_members = match resource.descend_layers(&[layer]) {
+        Some(node) => node.members.as_slice(),
+        None => &[],
+    };
+    let value = resource_value_of(env.program, group_members, fields, span)?;
     let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value);
     env.apply_plan(plan, span)?;
     Ok(())
@@ -259,7 +303,7 @@ pub(crate) fn write_resource(
     }
     // A whole-record write adds/replaces a key in the root's identity layer.
     env.guard_traversed_layer(&[PathSegment::Root(root.into())], span)?;
-    let value = resource_value_of(fields, span)?;
+    let value = resource_value_of(env.program, &resource.members, fields, span)?;
     let plan = {
         let store = env.store.borrow();
         plan_resource_write(resource, identity, &value, &*store)
@@ -299,7 +343,7 @@ pub(crate) fn eval_resource_merge(
         .ok_or_else(|| unsupported("merging this saved root", span))?;
     // A whole-record merge can create a new identity in the root's identity layer.
     env.guard_traversed_layer(&[PathSegment::Root(root.clone())], span)?;
-    let value = resource_value_of(fields, span)?;
+    let value = resource_value_of(env.program, &resource.members, fields, span)?;
     let plan = {
         let store = env.store.borrow();
         plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store)
@@ -386,20 +430,65 @@ pub(crate) fn layer_prefix(root: &str, identity: &[SavedKey], layer: &str) -> Ve
 }
 
 /// Lower a materialized resource value's present fields to a `ResourceValue` for
-/// the managed-write planners. A nested resource field is unsupported.
+/// the managed-write planners: a scalar/enum field lands in `fields`, a typed
+/// reference (an identity value) in `identities`. A nested resource field — a value
+/// that is neither a scalar nor an identity — is unsupported. `members` are the
+/// declared fields the value is being written into (the resource's own, or a group
+/// layer's), used to pair each supplied identity with the referenced resource's
+/// identity arity so the planner can validate the staged leaf's shape.
 pub(crate) fn resource_value_of(
+    program: &CheckedProgram,
+    members: &[Node],
     fields: Vec<(String, Value)>,
     span: SourceSpan,
 ) -> Result<ResourceValue, RuntimeError> {
-    let mut resource_fields = Vec::with_capacity(fields.len());
+    let mut resource_fields = Vec::new();
+    let mut identities = Vec::new();
     for (name, value) in fields {
-        let saved =
-            value_to_saved(value).ok_or_else(|| unsupported("a nested resource field", span))?;
-        resource_fields.push((name, saved));
+        // A single-key identity collapses to its bare key value at runtime, so a
+        // scalar value could be either a plain field or a single-key reference;
+        // the planner disambiguates by the declared field type. An identity value
+        // is always a reference. Splitting here keeps the runtime value the source
+        // of truth for what was supplied, and the schema for how each lands.
+        match value {
+            Value::Identity(keys) => {
+                // The referenced arity comes from the declared field type. A value
+                // supplied for a field the schema does not declare as an identity
+                // keeps its own length as the expected arity; the planner's
+                // declared-type check then rejects it as a `write.type_mismatch`.
+                let referenced_arity =
+                    identity_field_arity(program, members, &name).unwrap_or(keys.len());
+                identities.push(SuppliedIdentity {
+                    field: name,
+                    keys,
+                    referenced_arity,
+                });
+            }
+            other => {
+                let saved = value_to_saved(other)
+                    .ok_or_else(|| unsupported("a nested resource field", span))?;
+                resource_fields.push((name, saved));
+            }
+        }
     }
     Ok(ResourceValue {
         fields: resource_fields,
+        identities,
     })
+}
+
+/// The referenced resource's identity arity for a member field declared as a typed
+/// reference (`field: Resource::Id`), or `None` when `field` is not declared as a
+/// plain identity field in `members`.
+fn identity_field_arity(program: &CheckedProgram, members: &[Node], field: &str) -> Option<usize> {
+    let ty = members.iter().find_map(|node| match &node.element {
+        Element::Slot { ty, .. } if node.name == field && node.key_params.is_empty() => Some(ty),
+        _ => None,
+    })?;
+    match leaf_kind(program, ty)? {
+        LeafKind::Identity { arity, .. } => Some(arity),
+        LeafKind::Scalar(_) => None,
+    }
 }
 
 /// Apply a `delete`, dispatching on the target shape: a `.field` off a saved
@@ -541,7 +630,7 @@ pub(crate) fn delete_nested_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
-    if resource_nested_member_type(env.program, root, &layer_names, field).is_none() {
+    if !resource_nested_member_exists(env.program, root, &layer_names, field) {
         return Err(unsupported("deleting this group field", span));
     }
     // No required-field guard is needed here: a required field inside an unkeyed

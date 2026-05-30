@@ -499,7 +499,7 @@ pub(crate) fn read_layer_entry(
     );
 
     // A leaf layer reads one value; a group layer materializes its entry.
-    let Some(leaf_type) = resource_layer_leaf_type(env.program, root, layer) else {
+    let Some(leaf) = resource_layer_leaf(env.program, root, layer) else {
         return read_group_entry(root, layer, &entry, span, env);
     };
     let bytes = env
@@ -514,15 +514,13 @@ pub(crate) fn read_layer_entry(
             span,
         ));
     };
-    decode_value(&bytes, leaf_type)
-        .map(saved_value_to_value)
-        .ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("stored value in `{layer}` did not decode to a runtime value"),
-            span,
-        })
+    decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_TYPE,
+        message: format!("stored value in `{layer}` did not decode to a runtime value"),
+        span,
+    })
 }
 
 /// Materialize a keyed GROUP entry `^root(key…).layer(key…)` (its path already
@@ -540,7 +538,7 @@ pub(crate) fn read_group_entry(
         .ok_or_else(|| unsupported("reading this layer", span))?;
     let store = env.store.borrow();
     let mut fields = Vec::new();
-    for (name, value_type) in members {
+    for (name, leaf) in members {
         let mut segments = entry.to_vec();
         segments.push(PathSegment::Field(name.clone()));
         let Some(bytes) = store
@@ -549,15 +547,13 @@ pub(crate) fn read_group_entry(
         else {
             continue;
         };
-        let value = decode_value(&bytes, value_type)
-            .map(saved_value_to_value)
-            .ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!("stored value for `{name}` did not decode to a runtime value"),
-                span,
-            })?;
+        let value = decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
+            throw: None,
+            origin: None,
+            code: RUN_TYPE,
+            message: format!("stored value for `{name}` did not decode to a runtime value"),
+            span,
+        })?;
         fields.push((name, value));
     }
     Ok(Value::Resource(fields))
@@ -619,7 +615,8 @@ pub(crate) fn read_resource(
     let store = env.store.borrow();
     let mut fields = Vec::new();
     // Only plain top-level fields are materialized; keyed leaves and groups are
-    // read through their own paths, not the whole-resource read.
+    // read through their own paths, not the whole-resource read. A scalar/enum field
+    // decodes by its scalar; a typed-reference field decodes its stored identity.
     for (field, ty) in resource
         .members
         .iter()
@@ -633,18 +630,15 @@ pub(crate) fn read_resource(
         else {
             continue;
         };
-        let value_type = ty
-            .stored_scalar()
+        let leaf = leaf_kind(env.program, ty)
             .ok_or_else(|| unsupported("reading this field type", span))?;
-        let value = decode_value(&bytes, value_type)
-            .map(saved_value_to_value)
-            .ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!("stored value for `{}` did not decode", field.name),
-                span,
-            })?;
+        let value = decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
+            throw: None,
+            origin: None,
+            code: RUN_TYPE,
+            message: format!("stored value for `{}` did not decode", field.name),
+            span,
+        })?;
         fields.push((field.name.clone(), value));
     }
     Ok(Value::Resource(fields))

@@ -197,6 +197,111 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
 }
 
 #[test]
+fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_key_value, encode_path};
+
+    // A `Book.authorId` typed reference to `Author` stores the referenced identity's
+    // canonical single-key encoding. Planting a value with a valid key followed by
+    // trailing garbage cannot decode back to one clean key, so integrity flags it as
+    // a `data.decode` on the identity leaf.
+    let project = temp_dir("data-integrity-identity");
+    write(
+        &project,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Author at ^authors(id: int)\n\
+         \x20\x20\x20\x20required name: string\n\n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20authorId: Author::Id\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("corrupt.mra");
+    let leaf_path = encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("authorId".into()),
+    ]);
+    // A valid `Author::Id(7)` key with an extra trailing byte: decodes one key but
+    // leaves bytes over, which `decode_identity_arity` rejects.
+    let mut corrupt = encode_key_value(&SavedKey::Int(7));
+    corrupt.push(0xFF);
+    write_archive_with(&archive, &[(leaf_path, corrupt)]);
+    assert_eq!(
+        marrow(&["restore", &dir, archive.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.decode"), "{stderr}");
+    assert!(stderr.contains("^books(1).authorId"), "{stderr}");
+}
+
+#[test]
+fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_key_value, encode_path};
+
+    // A `Book.authorId` typed reference to `Author` (an `int`-keyed resource) stores
+    // the referenced identity's canonical key encoding. A planted leaf that holds a
+    // single *string* key decodes back as one clean key by arity alone, so the
+    // arity-only check passes it — but `Author`'s identity key is declared `int`, so
+    // the stored reference points at a record that cannot exist. Integrity must flag
+    // the inner key as a `data.key_type` mismatch, not silently accept it.
+    let project = temp_dir("data-integrity-identity-key-type");
+    write(
+        &project,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Author at ^authors(id: int)\n\
+         \x20\x20\x20\x20required name: string\n\n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20authorId: Author::Id\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("wrongkey.mra");
+    let leaf_path = encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("authorId".into()),
+    ]);
+    // One clean string key where `Author`'s identity key is declared `int`: decodes
+    // by arity but is the wrong scalar for the referenced keyspace.
+    let wrong_typed = encode_key_value(&SavedKey::Str("not-an-int".into()));
+    write_archive_with(&archive, &[(leaf_path, wrong_typed)]);
+    assert_eq!(
+        marrow(&["restore", &dir, archive.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.key_type"), "{stderr}");
+    assert!(stderr.contains("^books(1).authorId"), "{stderr}");
+}
+
+#[test]
 fn data_integrity_reports_orphan_data_under_an_unknown_root() {
     use marrow_store::path::{PathSegment, SavedKey, encode_path};
 

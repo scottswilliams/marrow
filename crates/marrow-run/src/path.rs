@@ -114,7 +114,7 @@ impl SavedPath {
                 Terminal::Field(_) => unreachable!("guarded by the let-else"),
             };
         };
-        let field_type = self.field_type(env.program, field).ok_or_else(|| {
+        let leaf = self.leaf_kind(env.program, field).ok_or_else(|| {
             // A top-level field rejects as "reading this field"; a group-entry field
             // as "reading this group field", keeping each read's message.
             let what = if self.layers.is_empty() {
@@ -139,15 +139,13 @@ impl SavedPath {
             };
             return Err(absent_read(position, what, span));
         };
-        decode_value(&bytes, field_type)
-            .map(saved_value_to_value)
-            .ok_or_else(|| {
-                RuntimeError::fault(
-                    RUN_TYPE,
-                    format!("stored value for `{field}` did not decode to a runtime value"),
-                    span,
-                )
-            })
+        decode_leaf(&bytes, &leaf).ok_or_else(|| {
+            RuntimeError::fault(
+                RUN_TYPE,
+                format!("stored value for `{field}` did not decode to a runtime value"),
+                span,
+            )
+        })
     }
 
     /// Write `value` to this lowered path, routing a scalar field or whole-record
@@ -177,14 +175,15 @@ impl SavedPath {
         }
     }
 
-    /// The declared scalar type of this path's [`Terminal::Field`]: a top-level
-    /// field when the layer chain is empty, otherwise a nested group member.
-    fn field_type(&self, program: &CheckedProgram, field: &str) -> Option<ScalarType> {
+    /// The stored leaf kind of this path's [`Terminal::Field`]: a top-level field
+    /// when the layer chain is empty, otherwise a nested group member. A scalar or
+    /// enum field is a scalar leaf; an identity-typed field is a typed reference.
+    fn leaf_kind(&self, program: &CheckedProgram, field: &str) -> Option<LeafKind> {
         if self.layers.is_empty() {
-            resource_field_type(program, &self.root, field)
+            resource_field_leaf(program, &self.root, field)
         } else {
             let layer_names: Vec<&str> = self.layers.iter().map(|(n, _)| n.as_str()).collect();
-            resource_nested_member_type(program, &self.root, &layer_names, field)
+            resource_nested_member_leaf(program, &self.root, &layer_names, field)
         }
     }
 }
@@ -397,11 +396,8 @@ pub(crate) fn lower_keys(
                 // wrong-typed key faults here rather than corrupting the keyspace.
                 // An unresolved schema passes no expectations, so the guard skips
                 // and arity faults still fire downstream.
-                if let Some(def) = expected.get(position)
-                    && let Some(declared) = def.ty.scalar()
-                    && declared != key.scalar_type()
-                {
-                    return Err(key_type_fault(declared, key.scalar_type(), span));
+                if let Some(def) = expected.get(position) {
+                    guard_key_type(def, &key, span)?;
                 }
                 keys.push(key);
             }
@@ -436,11 +432,25 @@ pub(crate) fn check_spliced_identity(
         ));
     }
     for (key, def) in identity.iter().zip(expected) {
-        if let Some(declared) = def.ty.scalar()
-            && declared != key.scalar_type()
-        {
-            return Err(key_type_fault(declared, key.scalar_type(), span));
-        }
+        guard_key_type(def, key, span)?;
+    }
+    Ok(())
+}
+
+/// Guard one lowered key's scalar kind against its declared key type, the single
+/// typed-keyspace check every key path shares — a record/layer lookup, a spliced
+/// identity, and an `Name::Id(...)` constructor all route their keys through it. A
+/// non-scalar (defer) declaration passes no expectation, so the guard skips and
+/// any arity fault still fires downstream. A wrong scalar is a `key_type_fault`.
+pub(crate) fn guard_key_type(
+    declared: &KeyDef,
+    key: &SavedKey,
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    if let Some(expected) = declared.ty.scalar()
+        && expected != key.scalar_type()
+    {
+        return Err(key_type_fault(expected, key.scalar_type(), span));
     }
     Ok(())
 }

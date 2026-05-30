@@ -125,14 +125,25 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
 /// Whether an expected type has a value-conversion boundary, so an `unknown` value
 /// against it is a `check.untyped_value` ("convert it first") rather than a
 /// deferral. Scalars and the checker-only `Error` are reached by the conversion
-/// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor), and an
-/// enum is a concrete typed place a dynamic value must be made into; a resource,
-/// identity, or sequence has no such conversion, so an `unknown` value there is
-/// left to the runtime.
+/// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor), an enum is
+/// a concrete typed place a dynamic value must be made into, and an identity is
+/// reached by its `Resource::Id(...)` constructor. A whole resource is the same
+/// hazard at the record level: an `unknown` record's fields would land raw scalars
+/// or foreign identities in the resource's typed (identity) fields — encodings
+/// `data integrity` cannot later distinguish from a genuine reference, since a
+/// stored identity carries only its keys, not its source resource. So every
+/// concrete typed place rejects an `unknown` value, which must be converted into the
+/// resource (a constructor, a read of the same resource) first. The only place an
+/// `unknown` flows without conversion is into another `unknown`; a sequence has no
+/// conversion either and is left to the runtime.
 pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
     matches!(
         ty,
-        MarrowType::Primitive(_) | MarrowType::Error | MarrowType::Enum { .. }
+        MarrowType::Primitive(_)
+            | MarrowType::Error
+            | MarrowType::Enum { .. }
+            | MarrowType::Identity(_)
+            | MarrowType::Resource(_)
     )
 }
 

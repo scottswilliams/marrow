@@ -188,6 +188,7 @@ pub(crate) fn infer_type(
                 saved_leaf_type(program, callee)
                     .or_else(|| saved_index_identity_type(program, callee))
                     .or_else(|| saved_resource_type(program, callee))
+                    .or_else(|| saved_group_entry_type(program, callee))
                     .unwrap_or(MarrowType::Unknown)
             } else {
                 call_type
@@ -269,8 +270,31 @@ pub(crate) fn infer_type(
                 }
             }
         }
-        // Any other multi-segment name or saved root has no known type.
-        Expression::Name { .. } | Expression::SavedRoot { .. } => MarrowType::Unknown,
+        // A bare `^root` naming a keyless singleton (`Settings at ^settings`) reads
+        // the whole record by its root, so it types to that resource — the same
+        // `Resource` a keyed `^books(key…)` whole read yields through its `Call`
+        // form. A keyed root used bare names no value (it needs keys), and any other
+        // multi-segment name has no known type.
+        Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
+        Expression::Name { .. } => MarrowType::Unknown,
+    }
+}
+
+/// The resource type of a bare `^root` whole read, defined only for a keyless
+/// singleton (a saved root with no identity keys): reading it by its root yields the
+/// whole record. A keyed root needs keys to address a record, so a bare reference to
+/// one names no value here.
+fn singleton_resource_type(program: &CheckedProgram, root: &str) -> MarrowType {
+    match find_resource_schema(program, root) {
+        Some(resource)
+            if resource
+                .saved_root
+                .as_ref()
+                .is_some_and(|saved_root| saved_root.identity_keys.is_empty()) =>
+        {
+            MarrowType::Resource(resource.name.clone())
+        }
+        _ => MarrowType::Unknown,
     }
 }
 
@@ -310,6 +334,28 @@ pub(crate) fn saved_resource_type(
     };
     let resource = find_resource_schema(program, root)?;
     Some(MarrowType::Resource(resource.name.clone()))
+}
+
+/// The record type of a whole group-entry access `^root(key…).layer(key…)` whose
+/// terminal layer is a keyed GROUP (not a leaf): the owning resource. A group entry
+/// is a record value — read as a `Value::Resource`, written from one — so it shares
+/// the resource type, which gives an `unknown`-typed whole-entry write the same
+/// conversion boundary a whole-resource write has (a raw scalar or foreign identity
+/// must not silently land in one of the entry's typed fields). `callee` is the layer
+/// field `^root(key…)….layer`. A leaf layer is handled by `saved_leaf_type`; only a
+/// group entry reaches here.
+pub(crate) fn saved_group_entry_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let (root, layers) = saved_layer_chain(callee)?;
+    let resource = find_resource_schema(program, root)?;
+    // Only a keyed group (a layer holding members) is a whole-entry record; a keyed
+    // leaf is a scalar/identity value already typed through `saved_leaf_type`.
+    resource
+        .descend_layers(&layers)
+        .filter(|node| matches!(node.element, marrow_schema::Element::Group))
+        .map(|_| MarrowType::Resource(resource.name.clone()))
 }
 
 /// The identity type of a unique-index lookup `^root.uniqueIndex(args)`: the

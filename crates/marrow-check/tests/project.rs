@@ -2489,14 +2489,311 @@ fn a_typed_initializer_with_an_unresolved_value_is_flagged() {
 
 #[test]
 fn an_unknown_value_into_an_identity_place_is_not_flagged() {
-    // The place is an identity, not a primitive, so strict untyped-value checking
-    // does not apply — this guards the `const id: Book::Id = nextId(^books)` shape.
+    // `nextId(^books)` is typed `Book::Id`, not `unknown`, so the initializer is the
+    // nominal match — this guards the `const id: Book::Id = nextId(^books)` shape
+    // against a false untyped-value error.
     let found = check_module(
         "untyped-identity",
         "module m\n\
          resource Book at ^books(id: int)\n    title: string\n\n\
          fn f()\n    const id: Book::Id = nextId(^books)\n",
         "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_typed_field_accepts_an_identity_of_that_resource() {
+    // A saved field typed `Author::Id` is a reference: assigning a real
+    // `Author::Id` is the nominal match, so nothing is flagged.
+    let found = check_module(
+        "ref-field-ok",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         fn f()\n    ^books(1).authorId = Author::Id(7)\n",
+        "check.assignment_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_typed_field_rejects_a_wrong_resource_identity() {
+    // Assigning a `Book::Id` into an `Author::Id` field is the nominal mismatch a
+    // typed reference forbids.
+    let found = check_module(
+        "ref-field-wrong-resource",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         fn f()\n    ^books(1).authorId = Book::Id(7)\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_identity_typed_field_rejects_a_raw_scalar() {
+    // A bare `int` is not an identity; it must be constructed as `Author::Id(...)`.
+    let found = check_module(
+        "ref-field-raw-scalar",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         fn f()\n    ^books(1).authorId = 7\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_unknown_value_into_an_identity_field_is_an_untyped_value() {
+    // A dynamic `unknown` parameter stored into an `Author::Id` field is the
+    // foreign-value hazard: a single raw key is a structurally valid identity
+    // encoding, so `data integrity` cannot catch it later. The conversion boundary
+    // for an identity is its `Author::Id(...)` constructor, so strict typing rejects
+    // the unconverted value the same way a scalar place does — convert it first.
+    let found = check_module(
+        "ref-field-untyped",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         fn put(x: unknown)\n    ^books(1).authorId = x\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn nextid_into_an_identity_field_is_not_an_untyped_value() {
+    // `nextId(^authors)` is typed `Author::Id`, not `unknown`, so assigning it into
+    // an `Author::Id` field is the nominal match — never the untyped-value path.
+    let found = check_module(
+        "ref-field-nextid-ok",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         fn put()\n    ^books(1).authorId = nextId(^authors)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_converted_value_into_an_identity_field_is_not_an_untyped_value() {
+    // Converting a dynamic value through the `Author::Id(...)` constructor produces
+    // an `Author::Id`, so the assignment is the nominal match — the dynamic value has
+    // been made typed and is no longer flagged.
+    let found = check_module(
+        "ref-field-converted-ok",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         fn put(x: unknown)\n    ^books(1).authorId = Author::Id(int(x))\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_a_wrong_typed_key() {
+    // `Author::Id("x")` builds an identity for an `int`-keyed resource from a
+    // string. The identity keyspace is typed, so a wrong-scalar key would settle a
+    // string into an `int` keyslot; it is the same `check.key_type` a record lookup
+    // `^authors("x")` reports.
+    let found = check_module(
+        "ctor-key-wrong-type",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         fn f()\n    const id = Author::Id(\"x\")\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_an_identity_as_a_key() {
+    // `Author::Id(Book::Id(7))` passes another resource's identity where a scalar
+    // `int` key is declared; an identity is not a key scalar, so it is the same
+    // `check.key_type` mismatch.
+    let found = check_module(
+        "ctor-key-identity",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    const id = Author::Id(Book::Id(7))\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_a_wrong_typed_composite_key() {
+    // A composite identity `Pair::Id(int, string)` built with a swapped second key
+    // (`int` where `string` is declared) settles the wrong scalar into a keyslot;
+    // each key is checked against its declared type, so this is `check.key_type`.
+    let found = check_module(
+        "ctor-composite-wrong-type",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(7, 9)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_accepts_a_correct_key() {
+    // `Author::Id(7)` matches the declared `int` key, so nothing is flagged — the
+    // type guard must not over-reject a correct identity construction.
+    let found = check_module(
+        "ctor-key-ok",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         fn f()\n    const id = Author::Id(7)\n",
+        "check.key_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_accepts_a_correct_composite_key() {
+    // `Pair::Id(7, "x")` matches the declared `(int, string)` keys, positional and
+    // named both — a correct composite must round-trip the type guard clean.
+    let found = check_module(
+        "ctor-composite-ok",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(7, \"x\")\n    const named = Pair::Id(a: 7, b: \"x\")\n",
+        "check.key_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_a_wrong_typed_named_composite_key() {
+    // Named composite keys are matched to their declared key by name, so a swapped
+    // type under the right name (`b: 9` where `b: string`) is still `check.key_type`.
+    let found = check_module(
+        "ctor-named-wrong-type",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7, b: 9)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_unknown_value_into_a_whole_resource_is_an_untyped_value() {
+    // `^books(1) = x` writes a whole `Book`. A dynamic `unknown` value carries no
+    // type, so its fields could spill a raw scalar or a foreign identity into a
+    // typed (identity) field — a structurally valid encoding the runtime cannot
+    // later distinguish. A whole resource is a concrete typed place, so the value
+    // must be converted into a `Book` first.
+    let found = check_module(
+        "whole-resource-untyped",
+        "module m\n\
+         resource Book at ^books(id: int)\n    authorId: int\n\n\
+         fn put(x: unknown)\n    ^books(1) = x\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_unknown_value_into_a_whole_group_entry_is_an_untyped_value() {
+    // `^books(1).chapters(0) = x` writes a whole group entry. Like a whole
+    // resource, the entry is a concrete typed record place, so a dynamic `unknown`
+    // value (which could land a raw scalar or foreign identity in a typed field)
+    // must be converted first.
+    let found = check_module(
+        "whole-group-entry-untyped",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20title: string\n\
+         \x20\x20\x20\x20chapters(pos: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20title: string\n\n\
+         fn put(x: unknown)\n    ^books(1).chapters(0) = x\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_typed_whole_resource_write_is_not_an_untyped_value() {
+    // A whole-resource write of a value already typed as the resource (a read
+    // `^books(2)`, a constructed `Book(...)`, or a `Book`-typed local) is the
+    // nominal match — never the untyped-value path.
+    let found = check_module(
+        "whole-resource-typed-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn copy()\n    ^books(1) = ^books(2)\n\n\
+         fn construct()\n    ^books(1) = Book(title: \"hi\")\n\n\
+         fn local()\n    var b: Book\n    b.title = \"hi\"\n    ^books(1) = b\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_typed_whole_group_entry_write_is_not_an_untyped_value() {
+    // A whole-group-entry write of a value typed as the owning resource (a
+    // `Book`-typed local or another read group entry) is the nominal match, not the
+    // untyped-value path.
+    let found = check_module(
+        "whole-group-entry-typed-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20chapters(pos: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
+         fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(0) = b\n\n\
+         fn copy()\n    ^books(1).chapters(1) = ^books(1).chapters(0)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn equality_on_two_identities_of_the_same_resource_types_bool() {
+    // Two `Author::Id` values compare with `==`; the result is `bool`, so no
+    // operator diagnostic is raised.
+    let found = check_module(
+        "ref-eq-same-resource",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         fn f(): bool\n    return Author::Id(1) == Author::Id(2)\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn equality_across_resource_identities_is_an_operator_error() {
+    // `==` between an `Author::Id` and a `Book::Id` is a nominal category error.
+    let found = check_module(
+        "ref-eq-cross-resource",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f(): bool\n    return Author::Id(1) == Book::Id(1)\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_self_referencing_identity_field_accepts_its_own_identity() {
+    // A field typed `Self::Id`-style — here `Person::Id` on `Person` — is a valid
+    // same-resource reference.
+    let found = check_module(
+        "ref-self",
+        "module m\n\
+         resource Person at ^people(id: int)\n    managerId: Person::Id\n\n\
+         fn f()\n    ^people(1).managerId = Person::Id(2)\n",
+        "check.assignment_type",
     );
     assert!(found.is_empty(), "{found:#?}");
 }

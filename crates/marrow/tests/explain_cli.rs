@@ -166,6 +166,36 @@ fn explains_a_module_qualified_resource_identity() {
 }
 
 #[test]
+fn explains_a_typed_reference_field() {
+    // `^books(1).authorId` is a typed-reference field (`authorId: Author::Id`),
+    // classified as an identity leaf naming the referenced resource — not a scalar.
+    let project = temp_project("explain-ref-field", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\n\
+             resource Author at ^authors(id: int)\n\
+             \x20\x20\x20\x20required name: string\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20required title: string\n\
+             \x20\x20\x20\x20authorId: Author::Id\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["explain", "--format", "json", &dir, "^books(1).authorId"]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["kind"], "saved_path");
+    assert_eq!(value["class"], "identity");
+    assert_eq!(value["type"], "Author::Id");
+    assert_eq!(value["root"], "books");
+}
+
+#[test]
 fn explains_a_bare_resource_name() {
     // A bare `Book` is neither a function nor in the empty module; it falls back to
     // a project-wide resource-name lookup and resolves to resource `Book`.

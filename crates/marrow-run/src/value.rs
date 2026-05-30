@@ -131,6 +131,31 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
     })
 }
 
+/// The identity key segments a typed-reference field stores. A composite identity
+/// arrives as a [`Value::Identity`]; a single-key identity collapses to its bare key
+/// value at runtime — the same way `nextId` and a single-key record lookup do — so a
+/// scalar value is taken as that one key. A non-key value is a type fault.
+///
+/// The checker's nominal rule already rejects a wrong-resource or scalar value
+/// statically; this guards the well-typed path and gives a catchable `run.type`
+/// fault for a value that lost its nominal type through dynamic code, and the write
+/// planner's arity check rejects a single key written to a composite reference.
+pub(crate) fn identity_keys_of(
+    value: Value,
+    span: SourceSpan,
+) -> Result<Vec<SavedKey>, RuntimeError> {
+    match value {
+        Value::Identity(keys) => Ok(keys),
+        other => match value_to_key(other) {
+            Some(key) => Ok(vec![key]),
+            None => Err(type_error(
+                "an identity-typed field takes a resource identity (`Resource::Id(...)`)",
+                span,
+            )),
+        },
+    }
+}
+
 /// Convert a record-key value to a [`SavedKey`], or `None` for a type that is not
 /// a valid key (decimals, sequences, resources, and identities are not keys).
 pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
@@ -146,6 +171,19 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
         // An identity is not a single key — lowering splices its segments in
         // before reaching here.
         Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
+    }
+}
+
+/// Decode a stored leaf's bytes to its runtime value by the leaf's kind: a scalar
+/// leaf through the canonical scalar codec, a typed-reference leaf through
+/// `decode_identity` against the referenced identity arity, yielding a
+/// [`Value::Identity`]. `None` when the bytes are not a canonical form for the leaf.
+pub(crate) fn decode_leaf(bytes: &[u8], leaf: &LeafKind) -> Option<Value> {
+    match leaf {
+        LeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
+        LeafKind::Identity { arity, .. } => {
+            decode_identity_arity(bytes, *arity).map(Value::Identity)
+        }
     }
 }
 

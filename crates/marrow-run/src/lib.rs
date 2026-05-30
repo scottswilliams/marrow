@@ -33,7 +33,7 @@ pub(crate) use marrow_check::{
 };
 pub(crate) use marrow_schema::stdlib::Capability;
 pub(crate) use marrow_schema::{
-    Element, EnumSchema, IndexSchema, KeyDef, MemberPathResolution, ResourceSchema, Type,
+    Element, EnumSchema, IndexSchema, KeyDef, MemberPathResolution, Node, ResourceSchema, Type,
 };
 pub(crate) use marrow_store::Decimal;
 pub(crate) use marrow_store::backend::{Backend, Presence, StoreError};
@@ -47,11 +47,12 @@ pub(crate) use marrow_syntax::{
     LiteralKind, MatchArm, ParamMode, SourceSpan, Statement, UnaryOp, duration_unit_seconds,
 };
 pub(crate) use write::{
-    ResourceValue, WRITE_RAW_DECLARED_FIELD, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
-    WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity, next_id, next_layer_pos,
-    plan_field_delete, plan_field_write, plan_layer_group_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
-    plan_resource_write,
+    ResourceValue, SuppliedIdentity, WRITE_RAW_DECLARED_FIELD, WRITE_RAW_REQUIRES_MAINTENANCE,
+    WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity,
+    next_id, next_layer_pos, plan_field_delete, plan_field_write, plan_identity_field_write,
+    plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
+    plan_layer_merge, plan_nested_field_write, plan_nested_identity_field_write,
+    plan_resource_delete, plan_resource_merge, plan_resource_write,
 };
 
 pub mod base64;
@@ -93,6 +94,6 @@ pub use error::{
     RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{Frame, Host, StepHook};
-pub use schema_query::{SavedPathClass, classify_saved_path};
+pub use schema_query::{SavedPathClass, classify_saved_path, identity_leaf_key_mismatch};
 pub use value::{RunOutput, Value};
-pub use write::WriteOp;
+pub use write::{WriteOp, decode_identity_arity};

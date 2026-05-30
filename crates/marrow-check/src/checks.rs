@@ -1175,7 +1175,7 @@ pub(crate) fn check_return_type(
         }),
         // Strict typing: a value with no known type returned where a convertible type
         // is declared must be converted first. A void function (unknown return type),
-        // or one returning a resource/identity/sequence (no conversion boundary),
+        // or one returning a whole resource or a sequence (no conversion boundary),
         // places no such constraint and is left alone.
         None if matches!(value_type, MarrowType::Unknown) && expects_conversion(return_type) => {
             diagnostics.push(CheckDiagnostic {
@@ -1193,12 +1193,12 @@ pub(crate) fn check_return_type(
     }
 }
 
-/// Flag a value stored into a concrete (primitive) place when its type is wrong
-/// or cannot be resolved. A known-incompatible primitive is a
-/// `check.assignment_type` mismatch; an `Unknown` value is a `check.untyped_value`
-/// error (strict typing: dynamic data must be converted before typed use). An
-/// untyped place (a local resource field, a whole resource, `unknown`) is left
-/// alone, as is a known non-primitive value.
+/// Flag a value stored into a concrete place when its type is wrong or cannot be
+/// resolved. A known-incompatible value is a `check.assignment_type` mismatch; an
+/// `Unknown` value stored into a place with a conversion boundary (a scalar, an
+/// identity, an enum, a whole resource) is a `check.untyped_value` error (strict
+/// typing: dynamic data must be converted before typed use). An untyped place (a
+/// sequence, `unknown`) is left alone.
 pub(crate) fn check_assignment(
     file: &Path,
     span: SourceSpan,
@@ -1220,8 +1220,8 @@ pub(crate) fn check_assignment(
             span,
         }),
         // A value the checker could not resolve, stored into a convertible place. An
-        // untyped place (a whole resource, an identity, a sequence, `unknown`) has no
-        // conversion boundary and is left alone.
+        // untyped place (a sequence, `unknown`) has no conversion boundary and is
+        // left alone.
         None if matches!(value, MarrowType::Unknown) && expects_conversion(place) => {
             diagnostics.push(CheckDiagnostic {
                 code: CHECK_UNTYPED_VALUE,
@@ -1331,6 +1331,53 @@ pub(crate) fn check_keys_against(
                 span,
                 format!(
                     "key `{}` expects `{}`, but this value is `{}`",
+                    key.name,
+                    marrow_type_name(&expected),
+                    marrow_type_name(arg_type),
+                ),
+            ));
+        }
+    }
+}
+
+/// Type-check the key arguments of an identity constructor `Name::Id(key…)`
+/// against the referenced resource's declared identity keys. Positional keys map
+/// by position; named (composite) keys map to the declared key of the same name,
+/// so a swapped type under the right name is still caught. A wrong-scalar key, or
+/// a non-key value such as another identity, is a `check.key_type` — the same
+/// keyspace guard a record lookup passes. Arity and named/positional-mixing faults
+/// are left to the runtime constructor, which already reports them; this adds only
+/// the per-key type guard the constructor lacked.
+pub(crate) fn check_identity_constructor_keys(
+    keys: &[marrow_schema::KeyDef],
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let all_named = !args.is_empty() && args.iter().all(|arg| arg.name.is_some());
+    for (position, key) in keys.iter().enumerate() {
+        // A named key binds to the argument that names it; a positional key binds by
+        // position. A missing argument is an arity/name fault the runtime reports, so
+        // the per-key type guard simply skips it here.
+        let arg_type = if all_named {
+            args.iter()
+                .position(|arg| arg.name.as_deref() == Some(key.name.as_str()))
+                .and_then(|index| arg_types.get(index))
+        } else {
+            arg_types.get(position)
+        };
+        let Some(arg_type) = arg_type else {
+            continue;
+        };
+        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+        if type_compatible(&expected, arg_type) == Some(false) {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "identity key `{}` expects `{}`, but this value is `{}`",
                     key.name,
                     marrow_type_name(&expected),
                     marrow_type_name(arg_type),
@@ -1781,6 +1828,25 @@ pub(crate) fn check_call(
     // identity. Recognize it so a valid
     // constructor is not a false `check.unresolved_call`.
     if let Some(ty) = resource_constructor_type(program, from_module, segments) {
+        // An identity constructor `Name::Id(key…)` builds into a typed keyspace, so
+        // each key argument is checked against the referenced resource's declared
+        // identity key types — the same `check.key_type` a record lookup
+        // `^root(key…)` reports. Without this a wrong-scalar or a non-key value
+        // (another identity) would settle silently into a typed keyslot.
+        if let [name, id] = segments
+            && id == "Id"
+            && let Some(resource) = resolve::resolve_resource_by_name_any(program, name)
+            && let Some(saved_root) = &resource.saved_root
+        {
+            check_identity_constructor_keys(
+                &saved_root.identity_keys,
+                args,
+                arg_types,
+                span,
+                file,
+                diagnostics,
+            );
+        }
         return ty;
     }
     // Resolving as a `Function` can only ever Find a function, so the other arms

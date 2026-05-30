@@ -403,6 +403,32 @@ fn check_record(
                 })
             }
         }
+        // A typed-reference leaf stores the referenced identity's canonical
+        // encoding; it is sound when those bytes decode back to that many keys whose
+        // scalar kinds match the referenced resource's declared identity keys. A
+        // wrong-scalar key decodes by arity alone, so the byte check passes it — the
+        // reference would point at a record the referenced keyspace could never
+        // hold, so the inner key type is checked too.
+        marrow_run::SavedPathClass::Identity { resource, arity } => {
+            match marrow_run::decode_identity_arity(value, arity) {
+                None => Some(IntegrityProblem {
+                    code: "data.decode",
+                    path: display_path(path),
+                    message: format!("stored value is not a canonical `{resource}::Id` encoding"),
+                }),
+                Some(keys) => marrow_run::identity_leaf_key_mismatch(program, &resource, &keys)
+                    .map(|(expected, found)| IntegrityProblem {
+                        code: "data.key_type",
+                        path: display_path(path),
+                        message: format!(
+                            "stored `{resource}::Id` reference has a {} key where the schema \
+                             declares {}",
+                            found.name(),
+                            expected.name()
+                        ),
+                    }),
+            }
+        }
         // Generated index entries are raw-only by design; they are legal.
         marrow_run::SavedPathClass::IndexMarker => None,
         marrow_run::SavedPathClass::KeyTypeMismatch { expected, found } => Some(IntegrityProblem {

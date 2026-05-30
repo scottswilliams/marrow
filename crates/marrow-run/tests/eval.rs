@@ -17,7 +17,7 @@ use marrow_run::{
 use marrow_schema::{compile_enum, compile_resource};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
-use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_key_value, encode_path};
 use marrow_store::redb::RedbStore;
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::{Declaration, FunctionDecl, parse_source};
@@ -4558,6 +4558,31 @@ fn a_plain_int_identity_still_works() {
     assert_eq!(value, Some(Value::Str("a".into())));
 }
 
+#[test]
+fn identity_constructor_faults_on_a_wrong_typed_key() {
+    // A dynamic `unknown` value reaches the constructor untyped, so the checker
+    // cannot see it; the runtime must guard each key against the declared key type,
+    // the same `key_type_fault` a record lookup `^books(key)` raises. A string into
+    // an `int`-keyed identity faults cleanly rather than settling a wrong scalar
+    // into the keyspace.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn make(x: unknown)\n    const id = Book::Id(x)\n",
+    );
+    let error = run(&program, "test::make", &[Value::Str("not-an-int".into())]).unwrap_err();
+    assert_eq!(error.code, RUN_TYPE, "{error:#?}");
+}
+
+#[test]
+fn identity_constructor_faults_on_a_wrong_typed_composite_key() {
+    // A composite identity built with a wrong-scalar component (an `int` where the
+    // second key is declared `string`) must fault on that key, not store it.
+    let program = checked_program(
+        "resource Pair at ^pairs(a: int, b: string)\n    note: string\n\nfn make(x: unknown)\n    const id = Pair::Id(7, x)\n",
+    );
+    let error = run(&program, "test::make", &[Value::Int(9)]).unwrap_err();
+    assert_eq!(error.code, RUN_TYPE, "{error:#?}");
+}
+
 /// A composite-key resource: `Enrollment::Id(studentId:..., courseId:...)` builds
 /// one identity from named keys, in declared order, and `^enrollments(id)` lowers
 /// it back into both key segments.
@@ -7753,4 +7778,180 @@ fn outer_frame_does_not_overwrite_inner_origin() {
     let error = run(&program, "a::outer", &[]).unwrap_err();
     assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(1)));
+}
+
+/// A program with an `Author` resource and a `Book` whose `authorId` is a typed
+/// reference to `Author`. `seed` writes a reference; `read` reads it back.
+fn typed_ref_program() -> CheckedProgram {
+    checked_program(
+        "resource Author at ^authors(id: int)\n\
+         \x20   name: string\n\
+         \n\
+         resource Book at ^books(id: int)\n\
+         \x20   authorId: Author::Id\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^books(1).authorId = Author::Id(7)\n\
+         \n\
+         pub fn read(): bool\n\
+         \x20   return ^books(1).authorId == Author::Id(7)\n",
+    )
+}
+
+#[test]
+fn an_identity_field_round_trips_through_saved_data() {
+    // A `Book.authorId: Author::Id` field stores an identity and reads it back as
+    // the same identity value: `^books(1).authorId == Author::Id(7)` is true.
+    let program = typed_ref_program();
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::read", &[])
+            .unwrap()
+            .value,
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn a_stored_identity_field_reads_back_the_identity_value() {
+    // Reading the field directly yields a `Value::Identity` carrying the referenced
+    // resource's key segments, not a bare scalar.
+    let program = checked_program(
+        "resource Author at ^authors(id: int)\n\
+         \x20   name: string\n\
+         \n\
+         resource Book at ^books(id: int)\n\
+         \x20   authorId: Author::Id\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^books(1).authorId = Author::Id(7)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    // The stored leaf is the canonical identity encoding — the same
+    // order-preserving key bytes a unique index entry stores — so it equals
+    // `encode_key_value(Author::Id(7))`, not a scalar `encode_value`.
+    let store = store.borrow();
+    let stored = store
+        .read(&encode_path(&[
+            PathSegment::Root("books".into()),
+            PathSegment::RecordKey(SavedKey::Int(1)),
+            PathSegment::Field("authorId".into()),
+        ]))
+        .map(<[u8]>::to_vec);
+    assert_eq!(
+        stored,
+        Some(encode_key_value(&SavedKey::Int(7))),
+        "identity field stored as its canonical key encoding"
+    );
+}
+
+#[test]
+fn an_identity_field_assigned_via_next_id_round_trips() {
+    // Constructing the reference from `nextId(^authors)` (the first allocated id is
+    // `1` on an empty root) round-trips the same way the explicit constructor does.
+    let program = checked_program(
+        "resource Author at ^authors(id: int)\n\
+         \x20   name: string\n\
+         \n\
+         resource Book at ^books(id: int)\n\
+         \x20   authorId: Author::Id\n\
+         \n\
+         pub fn seed()\n\
+         \x20   const a = nextId(^authors)\n\
+         \x20   ^authors(a).name = \"Ada\"\n\
+         \x20   ^books(1).authorId = a\n\
+         \n\
+         pub fn read(): bool\n\
+         \x20   return ^books(1).authorId == Author::Id(1)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::read", &[])
+            .unwrap()
+            .value,
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn a_self_referencing_identity_field_round_trips() {
+    // A field of the same resource (`managerId: Person::Id` on `Person`) is a valid
+    // self-reference that stores and reads back like any other typed reference.
+    let program = checked_program(
+        "resource Person at ^people(id: int)\n\
+         \x20   managerId: Person::Id\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^people(1).managerId = Person::Id(2)\n\
+         \n\
+         pub fn read(): bool\n\
+         \x20   return ^people(1).managerId == Person::Id(2)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::read", &[])
+            .unwrap()
+            .value,
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn equality_on_two_identities_of_the_same_resource_evaluates() {
+    // `==` on two identities of the same resource is value equality of their keys:
+    // equal keys are `true`, differing keys `false`.
+    let program = checked_program(
+        "resource Author at ^authors(id: int)\n\
+         \x20   name: string\n\
+         \n\
+         pub fn same(): bool\n\
+         \x20   return Author::Id(7) == Author::Id(7)\n\
+         \n\
+         pub fn different(): bool\n\
+         \x20   return Author::Id(7) == Author::Id(8)\n",
+    );
+    assert_eq!(
+        run(&program, "test::same", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::different", &[]).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn a_whole_resource_write_with_an_identity_field_round_trips() {
+    // A whole-record write `^books(1) = b` carrying an identity-typed field stores
+    // the reference, and a whole-record read reads it back.
+    let program = checked_program(
+        "resource Author at ^authors(id: int)\n\
+         \x20   name: string\n\
+         \n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   authorId: Author::Id\n\
+         \n\
+         pub fn seed()\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"Mort\"\n\
+         \x20   b.authorId = Author::Id(7)\n\
+         \x20   ^books(1) = b\n\
+         \n\
+         pub fn read(): bool\n\
+         \x20   const b = ^books(1)\n\
+         \x20   return b.authorId == Author::Id(7)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
+    assert_eq!(
+        run_entry(&program, &store, "test::read", &[])
+            .unwrap()
+            .value,
+        Some(Value::Bool(true))
+    );
 }

@@ -2,17 +2,20 @@
 //! into the store, and keep generated index entries coherent.
 
 use crate::write::{
-    ResourceValue, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH, WRITE_LAYER_KEY_ARITY,
-    WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
+    ResourceValue, SuppliedIdentity, WRITE_ID_OVERFLOW, WRITE_IDENTITY_MISMATCH,
+    WRITE_LAYER_KEY_ARITY, WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
     WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
-    WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, next_id, next_layer_pos, plan_field_delete,
-    plan_field_write, plan_layer_group_write, plan_layer_leaf_write, plan_layer_merge,
-    plan_nested_field_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
+    WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, WriteOp, next_id, next_layer_pos, plan_field_delete,
+    plan_field_write, plan_identity_field_write, plan_layer_group_write, plan_layer_leaf_write,
+    plan_layer_merge, plan_nested_field_write, plan_resource_delete, plan_resource_merge,
+    plan_resource_write,
 };
 use marrow_schema::{ResourceSchema, compile_resource};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
-use marrow_store::path::{ChildSegment, PathSegment, SavedKey, decode_key_value, encode_path};
+use marrow_store::path::{
+    ChildSegment, PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path,
+};
 use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 
@@ -279,6 +282,7 @@ fn a_whole_group_entry_write_replaces_the_entry() {
                 ("title".into(), saved("v2")),
                 ("note".into(), saved("first")),
             ],
+            identities: vec![],
         },
     )
     .expect("valid group write")
@@ -291,6 +295,7 @@ fn a_whole_group_entry_write_replaces_the_entry() {
         &[SavedKey::Int(2)],
         &ResourceValue {
             fields: vec![("title".into(), saved("v2-edited"))],
+            identities: vec![],
         },
     )
     .expect("valid group write")
@@ -318,6 +323,7 @@ fn a_whole_group_entry_write_requires_required_fields() {
         &[SavedKey::Int(2)],
         &ResourceValue {
             fields: vec![("note".into(), saved("x"))],
+            identities: vec![],
         },
     );
     assert_eq!(result.unwrap_err().code, WRITE_REQUIRED_ABSENT);
@@ -331,7 +337,10 @@ fn a_whole_group_entry_write_rejects_a_leaf_layer() {
         &[SavedKey::Int(1)],
         "tags",
         &[SavedKey::Int(0)],
-        &ResourceValue { fields: vec![] },
+        &ResourceValue {
+            fields: vec![],
+            identities: vec![],
+        },
     );
     assert_eq!(result.unwrap_err().code, WRITE_NOT_A_GROUP_LAYER);
 }
@@ -349,6 +358,7 @@ fn a_whole_resource_write_lowers_fields_into_the_store() {
                 ("title".into(), saved("Small Gods")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
 
@@ -373,6 +383,7 @@ fn a_sparse_field_may_be_omitted() {
         &[SavedKey::Int(7)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -387,6 +398,7 @@ fn a_missing_required_field_is_rejected_with_no_write() {
     let book = schema(BOOK);
     let value = ResourceValue {
         fields: vec![("shelf".into(), saved("fiction"))],
+        identities: vec![],
     };
     let result = plan_resource_write(&book, &[SavedKey::Int(42)], &value, &MemStore::new());
     assert!(
@@ -401,6 +413,7 @@ fn a_field_type_mismatch_is_rejected() {
     // `title` is a string; an int does not satisfy it.
     let value = ResourceValue {
         fields: vec![("title".into(), SavedValue::Int(5))],
+        identities: vec![],
     };
     let result = plan_resource_write(&book, &[SavedKey::Int(42)], &value, &MemStore::new());
     assert!(
@@ -422,6 +435,7 @@ fn a_whole_resource_write_replaces_the_previous_value() {
                 ("title".into(), saved("draft")),
                 ("shelf".into(), saved("new")),
             ],
+            identities: vec![],
         },
     );
     // The second write omits the sparse field; replace semantics remove it.
@@ -431,6 +445,7 @@ fn a_whole_resource_write_replaces_the_previous_value() {
         &[SavedKey::Int(1)],
         ResourceValue {
             fields: vec![("title".into(), saved("final"))],
+            identities: vec![],
         },
     );
 
@@ -458,6 +473,7 @@ fn next_id_allocates_after_the_highest_record() {
             &[SavedKey::Int(id)],
             ResourceValue {
                 fields: vec![("title".into(), saved("t"))],
+                identities: vec![],
             },
         );
     }
@@ -517,6 +533,7 @@ fn next_id_at_the_key_space_boundary_is_a_typed_overflow() {
         &[SavedKey::Int(i64::MAX)],
         ResourceValue {
             fields: vec![("title".into(), saved("t"))],
+            identities: vec![],
         },
     );
     let result = next_id(&book, &store);
@@ -569,6 +586,7 @@ fn by_sku_entry(sku: &str) -> Vec<u8> {
 fn book_with_isbn(title: &str, isbn: &str) -> ResourceValue {
     ResourceValue {
         fields: vec![("title".into(), saved(title)), ("isbn".into(), saved(isbn))],
+        identities: vec![],
     }
 }
 
@@ -595,6 +613,7 @@ fn a_write_emits_non_unique_index_entries() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -615,6 +634,7 @@ fn no_index_entry_when_an_indexed_field_is_absent() {
         &[SavedKey::Int(42)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     let prefix = encode_path(&[
@@ -637,6 +657,7 @@ fn re_writing_an_indexed_field_moves_the_index_entry() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // Re-write with a different shelf; the old index entry is torn down.
@@ -649,6 +670,7 @@ fn re_writing_an_indexed_field_moves_the_index_entry() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("history")),
             ],
+            identities: vec![],
         },
     );
 
@@ -677,6 +699,7 @@ fn deleting_a_resource_removes_its_fields_and_index_entries() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
 
@@ -705,6 +728,7 @@ fn an_enum_field_index_builds_and_tears_down_by_its_ordinal() {
                 ("title".into(), saved("Mort")),
                 ("state".into(), SavedValue::Int(1)),
             ],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -724,6 +748,7 @@ fn an_enum_field_index_builds_and_tears_down_by_its_ordinal() {
                 ("title".into(), saved("Mort")),
                 ("state".into(), SavedValue::Int(2)),
             ],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -762,6 +787,7 @@ fn a_field_write_updates_one_field_and_leaves_the_rest() {
                 ("title".into(), saved("draft")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     write_field(
@@ -835,6 +861,7 @@ fn a_field_write_moves_the_index_entry_of_an_indexed_field() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     write_field(
@@ -876,6 +903,7 @@ fn a_field_write_that_populates_an_indexed_field_adds_its_entry() {
         &[SavedKey::Int(42)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     write_field(
@@ -906,6 +934,7 @@ fn a_field_write_rebuilds_a_composite_index_key_from_stored_args() {
                 ("shelf".into(), saved("fiction")),
                 ("category".into(), saved("fantasy")),
             ],
+            identities: vec![],
         },
     );
     // Writing only `shelf` rebuilds the composite key, reading the untouched
@@ -943,6 +972,7 @@ fn a_field_write_with_an_unchanged_value_keeps_the_index_entry() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // Re-writing the same value deletes then re-writes the same entry path, so
@@ -974,6 +1004,7 @@ fn a_field_delete_removes_the_field_and_leaves_the_rest() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
 
@@ -1006,6 +1037,7 @@ fn a_field_delete_tears_down_the_index_entry_it_feeds() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
 
@@ -1035,6 +1067,7 @@ fn a_field_delete_of_a_field_with_no_index_stages_only_the_field_delete() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // `title` feeds no index, so deleting it leaves the byShelf entry in place.
@@ -1061,6 +1094,7 @@ fn deleting_an_absent_field_is_a_successful_no_op() {
         &[SavedKey::Int(9)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     // `shelf` was never populated, so there is no field and no index entry.
@@ -1115,6 +1149,7 @@ fn no_unique_entry_when_the_indexed_field_is_absent() {
         &[SavedKey::Int(7)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     let prefix = encode_path(&[
@@ -1316,6 +1351,7 @@ fn replacing_a_record_without_its_unique_field_tears_down_the_entry() {
         &[SavedKey::Int(1)],
         ResourceValue {
             fields: vec![("title".into(), saved("A"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1339,6 +1375,7 @@ fn a_composite_identity_unique_entry_round_trips_and_detects_conflict() {
                 ("name".into(), saved("Widget")),
                 ("sku".into(), saved("ABC")),
             ],
+            identities: vec![],
         },
     );
 
@@ -1360,6 +1397,7 @@ fn a_composite_identity_unique_entry_round_trips_and_detects_conflict() {
             ("name".into(), saved("Gadget")),
             ("sku".into(), saved("ABC")),
         ],
+        identities: vec![],
     };
     assert!(
         matches!(
@@ -1374,6 +1412,7 @@ fn a_composite_identity_unique_entry_round_trips_and_detects_conflict() {
             ("name".into(), saved("Widget v2")),
             ("sku".into(), saved("ABC")),
         ],
+        identities: vec![],
     };
     plan_resource_write(&item, &acme5, &same, &store).expect("self re-write is not a conflict");
 }
@@ -1391,6 +1430,7 @@ fn a_merge_overwrites_supplied_fields_and_leaves_the_rest() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // Merge supplies only `shelf`; `title` is left as stored.
@@ -1400,6 +1440,7 @@ fn a_merge_overwrites_supplied_fields_and_leaves_the_rest() {
         &[SavedKey::Int(1)],
         ResourceValue {
             fields: vec![("shelf".into(), saved("history"))],
+            identities: vec![],
         },
     );
 
@@ -1431,6 +1472,7 @@ fn a_merge_into_an_empty_identity_writes_supplied_fields() {
         &[SavedKey::Int(1)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1460,6 +1502,7 @@ fn an_explicit_absent_in_a_merge_leaves_the_target_field() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // Not supplying `shelf` means "not contributed": leave it as stored.
@@ -1467,7 +1510,10 @@ fn an_explicit_absent_in_a_merge_leaves_the_target_field() {
         &mut store,
         &book,
         &[SavedKey::Int(1)],
-        ResourceValue { fields: vec![] },
+        ResourceValue {
+            fields: vec![],
+            identities: vec![],
+        },
     );
     assert_eq!(
         decode_value(
@@ -1484,6 +1530,7 @@ fn a_merge_with_a_mismatched_type_is_rejected() {
     let book = schema(BOOK);
     let value = ResourceValue {
         fields: vec![("title".into(), SavedValue::Int(5))],
+        identities: vec![],
     };
     let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, None, &MemStore::new());
     assert!(
@@ -1505,6 +1552,7 @@ fn a_merge_omitting_a_required_field_already_stored_succeeds() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // `title` (required) is not supplied, but it is already stored.
@@ -1514,6 +1562,7 @@ fn a_merge_omitting_a_required_field_already_stored_succeeds() {
         &[SavedKey::Int(1)],
         ResourceValue {
             fields: vec![("shelf".into(), saved("history"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1531,6 +1580,7 @@ fn a_merge_omitting_a_required_field_not_yet_stored_is_rejected() {
     // Empty store: `title` (required) is neither supplied nor stored.
     let value = ResourceValue {
         fields: vec![("shelf".into(), saved("fiction"))],
+        identities: vec![],
     };
     let store = MemStore::new();
     let result = plan_resource_merge(&book, &[SavedKey::Int(1)], &value, None, &store);
@@ -1553,6 +1603,7 @@ fn merging_an_indexed_field_moves_the_index_entry() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     merge(
@@ -1561,6 +1612,7 @@ fn merging_an_indexed_field_moves_the_index_entry() {
         &[SavedKey::Int(42)],
         ResourceValue {
             fields: vec![("shelf".into(), saved("history"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1588,6 +1640,7 @@ fn merging_a_non_indexed_field_preserves_the_index_entry() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     // The merge touches `title`, not the indexed `shelf`: the entry — whose key
@@ -1598,6 +1651,7 @@ fn merging_a_non_indexed_field_preserves_the_index_entry() {
         &[SavedKey::Int(42)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort the Second"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1627,6 +1681,7 @@ fn a_merge_onto_a_unique_key_held_by_another_is_rejected() {
     // Record 2 merging onto record 1's isbn is rejected.
     let value = ResourceValue {
         fields: vec![("isbn".into(), saved("X"))],
+        identities: vec![],
     };
     let result = plan_resource_merge(&book, &[SavedKey::Int(2)], &value, None, &store);
     assert!(
@@ -1653,6 +1708,7 @@ fn merging_a_unique_field_moves_the_entry() {
         &[SavedKey::Int(1)],
         ResourceValue {
             fields: vec![("isbn".into(), saved("Z"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1674,6 +1730,7 @@ fn merging_an_indexed_field_into_a_record_without_it_creates_the_entry() {
         &[SavedKey::Int(42)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     merge(
@@ -1682,6 +1739,7 @@ fn merging_an_indexed_field_into_a_record_without_it_creates_the_entry() {
         &[SavedKey::Int(42)],
         ResourceValue {
             fields: vec![("shelf".into(), saved("fiction"))],
+            identities: vec![],
         },
     );
     assert_eq!(
@@ -1808,6 +1866,7 @@ fn a_keyed_leaf_write_leaves_top_level_fields_untouched() {
         &[SavedKey::Int(5)],
         ResourceValue {
             fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![],
         },
     );
     write_tag(&mut store, &book, 5, 1, "favorite");
@@ -2357,6 +2416,7 @@ fn a_whole_resource_merge_copies_child_layers_and_moves_the_index() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     write_tag(&mut store, &book, 1, 1, "favorite");
@@ -2369,6 +2429,7 @@ fn a_whole_resource_merge_copies_child_layers_and_moves_the_index() {
                 ("title".into(), saved("Reaper")),
                 ("shelf".into(), saved("history")),
             ],
+            identities: vec![],
         },
     );
 
@@ -2382,6 +2443,7 @@ fn a_whole_resource_merge_copies_child_layers_and_moves_the_index() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
         &[SavedKey::Int(1)],
     );
@@ -2450,6 +2512,7 @@ fn a_tree_merge_copies_child_entries_and_leaves_no_stray_index_entries() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     write_tag(&mut store, &book, 1, 1, "favorite");
@@ -2463,6 +2526,7 @@ fn a_tree_merge_copies_child_entries_and_leaves_no_stray_index_entries() {
                 ("title".into(), saved("Reaper")),
                 ("shelf".into(), saved("history")),
             ],
+            identities: vec![],
         },
     );
     write_tag(&mut store, &book, 2, 1, "old"); // overlaps source pos 1
@@ -2476,6 +2540,7 @@ fn a_tree_merge_copies_child_entries_and_leaves_no_stray_index_entries() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
         &[SavedKey::Int(1)],
     );
@@ -2646,6 +2711,7 @@ fn a_failing_plan_step_leaves_the_store_byte_for_byte_unchanged() {
                 ("title".into(), saved("Mort")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
     );
     let before = {
@@ -2664,6 +2730,7 @@ fn a_failing_plan_step_leaves_the_store_byte_for_byte_unchanged() {
                 ("title".into(), saved("Reaper Man")),
                 ("shelf".into(), saved("fiction")),
             ],
+            identities: vec![],
         },
         &seed,
     )
@@ -2693,6 +2760,7 @@ fn plan_step_count(book: &ResourceSchema) -> usize {
         &[SavedKey::Int(99)],
         &ResourceValue {
             fields: vec![("title".into(), saved("x")), ("shelf".into(), saved("y"))],
+            identities: vec![],
         },
         &MemStore::new(),
     )
@@ -2713,6 +2781,7 @@ fn the_no_transaction_batched_path_gives_the_same_final_state() {
             ("title".into(), saved("Mort")),
             ("shelf".into(), saved("fiction")),
         ],
+        identities: vec![],
     };
 
     let mut batched = MemStore::new();
@@ -2734,4 +2803,119 @@ fn the_no_transaction_batched_path_gives_the_same_final_state() {
         snapshot(in_place_backend),
         "batched and in-place commits land identical state"
     );
+}
+
+/// A `Book` whose `authorId` is a typed reference to `Author`.
+const BOOK_REF: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    authorId: Author::Id
+";
+
+#[test]
+fn an_identity_field_write_stages_the_canonical_identity_encoding() {
+    // Writing `^books(1).authorId = Author::Id(7)` stages the referenced identity's
+    // canonical key encoding at the field path — the same `encode_identity` a unique
+    // index entry uses, reused unchanged.
+    let book = schema(BOOK_REF);
+    let plan = plan_identity_field_write(
+        &book,
+        &[SavedKey::Int(1)],
+        "authorId",
+        &[SavedKey::Int(7)],
+        1,
+    )
+    .expect("valid identity field write");
+    let steps: Vec<_> = plan.steps().collect();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    let (op, path, value) = &steps[0];
+    assert_eq!(*op, WriteOp::Write);
+    assert_eq!(*path, field_path(1, "authorId").as_slice());
+    assert_eq!(
+        value.map(<[u8]>::to_vec),
+        Some(encode_key_value(&SavedKey::Int(7))),
+        "the staged leaf is the canonical identity encoding"
+    );
+}
+
+#[test]
+fn an_identity_field_write_rejects_a_wrong_referenced_arity() {
+    // The referenced resource has a single-key identity, so a two-key value is the
+    // wrong shape: a catchable `write.type_mismatch`, not a `run.*` fault.
+    let book = schema(BOOK_REF);
+    let result = plan_identity_field_write(
+        &book,
+        &[SavedKey::Int(1)],
+        "authorId",
+        &[SavedKey::Int(7), SavedKey::Int(8)],
+        1,
+    );
+    assert_eq!(result.unwrap_err().code, WRITE_TYPE_MISMATCH);
+}
+
+#[test]
+fn an_identity_field_write_rejects_a_scalar_field() {
+    // `title` is a `string`, not an identity field, so staging an identity there is
+    // a `write.type_mismatch`.
+    let book = schema(BOOK_REF);
+    let result =
+        plan_identity_field_write(&book, &[SavedKey::Int(1)], "title", &[SavedKey::Int(7)], 1);
+    assert_eq!(result.unwrap_err().code, WRITE_TYPE_MISMATCH);
+}
+
+#[test]
+fn a_whole_resource_write_stages_a_supplied_identity_field() {
+    // A whole-resource write carrying an arity-correct `authorId` stages the
+    // referenced identity's canonical encoding at the field path, the same leaf the
+    // single-field planner produces.
+    let book = schema(BOOK_REF);
+    let plan = plan_resource_write(
+        &book,
+        &[SavedKey::Int(1)],
+        &ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![SuppliedIdentity {
+                field: "authorId".into(),
+                keys: vec![SavedKey::Int(7)],
+                referenced_arity: 1,
+            }],
+        },
+        &MemStore::new(),
+    )
+    .expect("valid whole-resource write");
+    let staged = plan
+        .steps()
+        .find(|(op, path, _)| {
+            *op == WriteOp::Write && *path == field_path(1, "authorId").as_slice()
+        })
+        .map(|(_, _, value)| value.map(<[u8]>::to_vec));
+    assert_eq!(
+        staged,
+        Some(Some(encode_key_value(&SavedKey::Int(7)))),
+        "the staged leaf is the canonical identity encoding"
+    );
+}
+
+#[test]
+fn a_whole_resource_write_rejects_a_wrong_arity_identity_field() {
+    // Symmetric with the single-field planner: a whole-resource write whose supplied
+    // identity has the wrong referenced arity is a catchable `write.type_mismatch`,
+    // not a leaf that silently fails to decode back. A runtime `Value::Identity`
+    // always carries an arity-correct identity, so this guards against a defective
+    // value reaching the planner by another route.
+    let book = schema(BOOK_REF);
+    let result = plan_resource_write(
+        &book,
+        &[SavedKey::Int(1)],
+        &ResourceValue {
+            fields: vec![("title".into(), saved("Mort"))],
+            identities: vec![SuppliedIdentity {
+                field: "authorId".into(),
+                keys: vec![SavedKey::Int(7), SavedKey::Int(8)],
+                referenced_arity: 1,
+            }],
+        },
+        &MemStore::new(),
+    );
+    assert_eq!(result.unwrap_err().code, WRITE_TYPE_MISMATCH);
 }

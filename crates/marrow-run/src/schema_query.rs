@@ -150,27 +150,31 @@ pub(crate) fn eval_identity_constructor(
     }
     let mut keys = Vec::with_capacity(root.identity_keys.len());
     if named == 0 {
-        // Positional: each argument lowers to the key at the same position.
-        for arg in args {
-            keys.push(
-                value_to_key(eval_expr(&arg.value, env)?)
-                    .ok_or_else(|| type_error("a key of this type", span))?,
-            );
+        // Positional: each argument lowers to the key at the same position, then is
+        // guarded against that position's declared key type so a wrong-scalar key —
+        // a dynamic value the checker could not see — faults instead of settling
+        // into the typed keyspace, the same guard a record lookup `^root(key)` runs.
+        for (key_def, arg) in root.identity_keys.iter().zip(args) {
+            let key = value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| type_error("a key of this type", span))?;
+            guard_key_type(key_def, &key, span)?;
+            keys.push(key);
         }
     } else {
         // Named (composite): for each declared key, find the matching argument,
-        // so keys land in declared order regardless of argument order.
-        for key in &root.identity_keys {
+        // so keys land in declared order regardless of argument order; each is
+        // guarded against its declared key type the same way.
+        for key_def in &root.identity_keys {
             let arg = args
                 .iter()
-                .find(|arg| arg.name.as_deref() == Some(key.name.as_str()))
+                .find(|arg| arg.name.as_deref() == Some(key_def.name.as_str()))
                 .ok_or_else(|| {
-                    type_error(&format!("identity key `{}` is missing", key.name), span)
+                    type_error(&format!("identity key `{}` is missing", key_def.name), span)
                 })?;
-            keys.push(
-                value_to_key(eval_expr(&arg.value, env)?)
-                    .ok_or_else(|| type_error("a key of this type", span))?,
-            );
+            let key = value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| type_error("a key of this type", span))?;
+            guard_key_type(key_def, &key, span)?;
+            keys.push(key);
         }
     }
     Ok(Value::Identity(keys))
@@ -227,55 +231,100 @@ pub(crate) fn is_group_base(base: &Expression) -> bool {
     }
 }
 
-/// The declared scalar type of a saved root's top-level field — its own scalar,
-/// or `int` for an enum field whose stored value is the member ordinal.
-pub(crate) fn resource_field_type(
+/// How a saved leaf field stores and reads: a plain scalar (its own type, or an
+/// enum's ordinal `int`), or a typed reference to another resource's identity. An
+/// identity leaf names the referenced resource and carries its identity arity, so
+/// the runtime decodes the stored bytes back with `decode_identity` and encodes a
+/// write with `encode_identity`, sharing the flat key encoding unique-index entries
+/// already use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LeafKind {
+    Scalar(ScalarType),
+    Identity { resource: String, arity: usize },
+}
+
+/// Resolve a declared member [`Type`] to its stored [`LeafKind`], given the program
+/// so an identity type can resolve the referenced resource's identity arity. A
+/// scalar or enum field is a scalar leaf; an `Author::Id` field is an identity leaf
+/// referencing `Author`. Any other type (a sequence, a bare resource, an unresolved
+/// identity reference) has no flat leaf form, so this is `None`.
+pub(crate) fn leaf_kind(program: &CheckedProgram, ty: &Type) -> Option<LeafKind> {
+    match ty {
+        Type::Identity(resource) => {
+            let referenced = find_resource_by_name(program, resource)?;
+            let arity = referenced.saved_root.as_ref()?.identity_keys.len();
+            Some(LeafKind::Identity {
+                resource: resource.clone(),
+                arity,
+            })
+        }
+        other => other.stored_scalar().map(LeafKind::Scalar),
+    }
+}
+
+/// The stored leaf kind of a saved root's top-level field — a scalar (its own type,
+/// or `int` for an enum's ordinal) or a typed reference to another resource.
+pub(crate) fn resource_field_leaf(
     program: &CheckedProgram,
     root: &str,
     field: &str,
-) -> Option<ScalarType> {
-    find_resource(program, root)?
-        .field_type(&[field])?
-        .stored_scalar()
+) -> Option<LeafKind> {
+    let ty = find_resource(program, root)?.field_type(&[field])?.clone();
+    leaf_kind(program, &ty)
 }
 
-/// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
-/// `string` of `tags(pos: int): string`).
-pub(crate) fn resource_layer_leaf_type(
+/// The stored leaf kind of a keyed-leaf layer on a saved root (e.g. the `string` of
+/// `tags(pos: int): string`, or an identity-typed keyed leaf).
+pub(crate) fn resource_layer_leaf(
     program: &CheckedProgram,
     root: &str,
     layer: &str,
-) -> Option<ScalarType> {
-    find_resource(program, root)?
-        .leaf_type(&[layer])?
-        .stored_scalar()
+) -> Option<LeafKind> {
+    let ty = find_resource(program, root)?.leaf_type(&[layer])?.clone();
+    leaf_kind(program, &ty)
 }
 
-/// The declared type of a scalar member field inside a saved root's GROUP layer,
+/// The stored leaf kind of a scalar member field inside a saved root's GROUP layer,
 /// at any nesting depth (e.g. the `string` of
 /// `versions(version: int).comments(pos: int).text`). `layers` names the group
 /// layers from outermost to innermost.
-pub(crate) fn resource_nested_member_type(
+pub(crate) fn resource_nested_member_leaf(
     program: &CheckedProgram,
     root: &str,
     layers: &[&str],
     field: &str,
-) -> Option<ScalarType> {
+) -> Option<LeafKind> {
     let resource = find_resource(program, root)?;
     let mut chain = layers.to_vec();
     chain.push(field);
-    resource.field_type(&chain)?.stored_scalar()
+    let ty = resource.field_type(&chain)?.clone();
+    leaf_kind(program, &ty)
+}
+
+/// Whether a nested group member is declared (scalar or identity), for a delete
+/// that only needs the member's existence, not its kind.
+pub(crate) fn resource_nested_member_exists(
+    program: &CheckedProgram,
+    root: &str,
+    layers: &[&str],
+    field: &str,
+) -> bool {
+    resource_nested_member_leaf(program, root, layers, field).is_some()
 }
 
 /// How a stored saved path relates to the project schema, for data-integrity
 /// inspection. A path is classified by composing the same field/layer/index
 /// resolution the runtime uses for reads, so the inspector and the runtime agree
 /// on what each path means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedPathClass {
     /// The path is a declared scalar leaf of the given type; its stored bytes
     /// should decode as a canonical form of that type.
     Scalar(ScalarType),
+    /// The path is a declared typed-reference leaf (`authorId: Author::Id`); its
+    /// stored bytes are the referenced identity's canonical encoding, which decodes
+    /// back with `decode_identity` against `arity` keys, not as a scalar.
+    Identity { resource: String, arity: usize },
     /// The path is a generated index entry (`^root.index(keys…)`). Its value is a
     /// presence marker or a stored identity, raw-only by design — not a typed
     /// scalar, and a legal, expected store-level value.
@@ -304,8 +353,8 @@ pub enum SavedPathClass {
 /// - `^root.index(keys…)` is a generated index entry;
 /// - anything under an unknown root or naming an undeclared member is an orphan.
 ///
-/// It composes [`resource_field_type`], [`resource_layer_leaf_type`], and
-/// [`resource_nested_member_type`] so the schema-walk stays in one place.
+/// It composes [`resource_field_leaf`], [`resource_layer_leaf`], and
+/// [`resource_nested_member_leaf`] so the schema-walk stays in one place.
 pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -> SavedPathClass {
     let Some((PathSegment::Root(root), rest)) = segments.split_first() else {
         return SavedPathClass::Orphan;
@@ -360,6 +409,28 @@ pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -
 pub(crate) fn record_key(segment: &PathSegment) -> Option<&SavedKey> {
     match segment {
         PathSegment::RecordKey(key) => Some(key),
+        _ => None,
+    }
+}
+
+/// The first inner-key type mismatch of a stored identity-leaf reference, given
+/// the referenced resource and the keys decoded from the leaf — for data-integrity
+/// inspection of a typed-reference leaf (`authorId: Author::Id`). A wrong-scalar
+/// key encodes by arity alone, so the arity check passes it; this catches the
+/// reference that points at a record the referenced keyspace could never hold. The
+/// referenced resource's declared identity keys are the authority; an unresolved
+/// or keyless resource declares none, so the check finds nothing.
+pub fn identity_leaf_key_mismatch(
+    program: &CheckedProgram,
+    resource: &str,
+    keys: &[SavedKey],
+) -> Option<(ScalarType, ScalarType)> {
+    let declared = find_resource_by_name(program, resource)
+        .and_then(|resource| resource.saved_root.as_ref())?
+        .identity_keys
+        .as_slice();
+    match key_type_mismatch(declared, keys.iter()) {
+        Some(SavedPathClass::KeyTypeMismatch { expected, found }) => Some((expected, found)),
         _ => None,
     }
 }
@@ -449,44 +520,55 @@ pub(crate) fn classify_member(
     // No leading layers: either a top-level field `^root(id).field` or a single
     // keyed-leaf layer entry `^root(id).layer(keys…)`.
     if layers.is_empty() {
-        if let Some(ty) = resource_field_type(program, root, last) {
-            return SavedPathClass::Scalar(ty);
+        if let Some(leaf) = resource_field_leaf(program, root, last) {
+            return leaf_class(leaf);
         }
-        if let Some(ty) = resource_layer_leaf_type(program, root, last) {
-            return SavedPathClass::Scalar(ty);
+        if let Some(leaf) = resource_layer_leaf(program, root, last) {
+            return leaf_class(leaf);
         }
         return SavedPathClass::Orphan;
     }
 
     // Leading layers: a nested group field `^root(id).layer(keys…)….field`, or a
     // deeper keyed-leaf layer whose own name is the tail.
-    if let Some(ty) = resource_nested_member_type(program, root, layers, last) {
-        return SavedPathClass::Scalar(ty);
+    if let Some(leaf) = resource_nested_member_leaf(program, root, layers, last) {
+        return leaf_class(leaf);
     }
     SavedPathClass::Orphan
 }
 
-/// The scalar Field members of a saved root's GROUP layer, as `(name, value type)`
-/// in declaration order, for materializing a whole group entry. `None` if the
-/// layer is unknown.
+/// Map a resolved [`LeafKind`] to the integrity classification of its stored bytes:
+/// a scalar leaf decodes as its scalar type; an identity leaf decodes as the
+/// referenced identity's canonical encoding.
+fn leaf_class(leaf: LeafKind) -> SavedPathClass {
+    match leaf {
+        LeafKind::Scalar(ty) => SavedPathClass::Scalar(ty),
+        LeafKind::Identity { resource, arity } => SavedPathClass::Identity { resource, arity },
+    }
+}
+
+/// The plain Field members of a saved root's GROUP layer, as `(name, leaf kind)`
+/// in declaration order, for materializing a whole group entry. A scalar/enum
+/// member is a scalar leaf; a typed-reference member is an identity leaf. `None` if
+/// the layer is unknown.
 pub(crate) fn resource_group_members(
     program: &CheckedProgram,
     root: &str,
     layer: &str,
-) -> Option<Vec<(String, ScalarType)>> {
+) -> Option<Vec<(String, LeafKind)>> {
     let resource = find_resource(program, root)?;
-    let layer = resource
+    let declared = resource
         .members
         .iter()
         .find(|declared| declared.name == layer)?;
     // Only plain field members materialize into a group entry; a nested keyed
     // leaf or group is read through its own path, not as a flat field.
-    let members = layer
+    let members = declared
         .members
         .iter()
         .filter_map(|member| match &member.element {
             Element::Slot { ty, .. } if member.is_plain_field() => {
-                Some((member.name.clone(), ty.stored_scalar()?))
+                Some((member.name.clone(), leaf_kind(program, ty)?))
             }
             _ => None,
         })
