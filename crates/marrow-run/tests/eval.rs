@@ -3059,6 +3059,9 @@ impl Backend for FailingRollbackStore {
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
         Backend::scan(&self.inner, path, limit)
     }
+    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan_after(&self.inner, path, cursor, limit)
+    }
     fn roots(&self) -> Result<Vec<String>, StoreError> {
         Backend::roots(&self.inner)
     }
