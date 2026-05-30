@@ -72,6 +72,33 @@ fn entry_flag_overrides_the_default_entry() {
 }
 
 #[test]
+fn module_constants_are_bound_at_runtime() {
+    let root = temp_project("run-module-const", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             const Base: int = 40\n\
+             const Offset = 2\n\
+             const Label = \"answer\"\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20print($\"{Label}={Base + Offset}\")\n",
+        );
+    });
+    let output = run_run(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "answer=42\n");
+}
+
+#[test]
 fn native_store_persists_writes_across_runs() {
     let root = temp_project("run-native", |root| {
         write(

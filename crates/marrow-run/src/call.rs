@@ -242,6 +242,14 @@ pub(crate) fn invoke<'p>(
     }
     let mut env = Env::new(ctx, output, module, hook, depth);
     env.push_scope();
+    if let Some(module) = module {
+        for constant in &module.constants {
+            if let Some(value) = &constant.value {
+                let value = eval_expr(value, &mut env)?;
+                env.bind(constant.name.clone(), value, false);
+            }
+        }
+    }
     for (name, arg) in param_names.iter().zip(args) {
         // `out`/`inout` parameters are reassignable inside the callee; plain
         // parameters are read-only.

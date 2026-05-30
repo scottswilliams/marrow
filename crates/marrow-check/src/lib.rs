@@ -718,6 +718,7 @@ fn check_file_source(
                         .ty
                         .as_ref()
                         .map(|ty| MarrowType::resolve(ty, names)),
+                    value: constant.value.clone(),
                     span: constant.span,
                 });
             }

@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
-use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
+use marrow_syntax::{Block, Expression, ParamMode, SourceSpan, TypeRef};
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -71,6 +71,7 @@ pub struct CheckedModule {
 pub struct CheckedConst {
     pub name: String,
     pub ty: Option<MarrowType>,
+    pub value: Option<Expression>,
     pub span: SourceSpan,
 }
 
