@@ -402,7 +402,7 @@ tags: sequence[string]
 Appending to a sequence writes after the highest populated positive integer
 key. It does not fill holes left by delete, failed work, or explicit keyed
 writes. Sequence keys are stable storage positions; use an ordered local value
-when code needs a dense list.
+when code needs dense, gap-free positions.
 
 Sequence helpers use positive integer positions. Use an integer-keyed tree
 when zero or negative keys are part of the data model.
