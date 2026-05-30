@@ -88,13 +88,27 @@ impl<'a> ExprParser<'a> {
     }
 
     fn and_expr(&mut self) -> Option<Expression> {
-        let mut left = self.equality_expr()?;
+        let mut left = self.is_expr()?;
         while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::And))) {
             self.advance();
-            let right = self.equality_expr()?;
+            let right = self.is_expr()?;
             left = binary_expr(BinaryOp::And, left, right);
         }
         Some(left)
+    }
+
+    /// `is` sits one level looser than equality and tighter than `and`, on its own
+    /// non-associative level: `value is Cat::tiger` is the enum-subtree test, and
+    /// `a is X is Y` is rejected (non-chaining), mirroring `??`. The right operand
+    /// is a member-path expression (`Cat::tiger`).
+    fn is_expr(&mut self) -> Option<Expression> {
+        let left = self.equality_expr()?;
+        if !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
+            return Some(left);
+        }
+        self.advance();
+        let right = self.equality_expr()?;
+        Some(binary_expr(BinaryOp::Is, left, right))
     }
 
     fn equality_expr(&mut self) -> Option<Expression> {

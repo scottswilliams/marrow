@@ -375,11 +375,12 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse `match <scrutinee>` followed by an indented block of arms. Each arm
-    /// is a bare member name on its own line, then an indented arm block — the
-    /// scrutinee supplies the enum, so an arm names a member, not `Enum::member`.
-    /// A local enum's `match` has no wildcard arm; exhaustiveness and member
-    /// validity are checker rules, so the parser only structures the arms.
+    /// Parse `match <scrutinee>` followed by an indented block of arms. Each arm is
+    /// a member path on its own line (`bengal`, `tiger::bengal`, or a category
+    /// `tiger`), then an indented arm block — the scrutinee supplies the enum, so an
+    /// arm names a member relative to it, not `Enum::member`. A local enum's `match`
+    /// has no wildcard arm; exhaustiveness and member validity are checker rules, so
+    /// the parser only structures the arms.
     fn match_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `match`
         let scrutinee = self.header_expression();
@@ -422,26 +423,25 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse one `match` arm: a bare member-name header line, then its indented
-    /// block. An arm header that is not a single bare identifier is a parse error.
+    /// Parse one `match` arm: a member-path header line (`bengal`, `tiger::bengal`,
+    /// or a category `tiger`) relative to the scrutinee enum, then its indented
+    /// block. An arm header that is not a `::`-separated run of identifiers is a
+    /// parse error.
     fn match_arm(&mut self) -> Option<MatchArm> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
         let span = line_span(header);
-        let member = match header {
-            [token] if token.kind == TokenKind::Identifier => token.text(self.source).to_string(),
-            _ => {
-                self.error_span(span, "a match arm is a bare member name");
-                self.pos = (newline + 1).min(self.tokens.len());
-                self.skip_block_if_indented();
-                return None;
-            }
+        let Some(path) = arm_member_path(self.source, header) else {
+            self.error_span(span, "a match arm is a member path relative to the enum");
+            self.pos = (newline + 1).min(self.tokens.len());
+            self.skip_block_if_indented();
+            return None;
         };
         self.pos = (newline + 1).min(self.tokens.len());
         let block = self.block_body();
         Some(MatchArm {
-            member,
+            path,
             span: join_spans(span, block.span),
             block,
         })
@@ -1057,8 +1057,9 @@ impl<'a> DeclParser<'a> {
                     let token = self.advance();
                     docs.push(doc_comment_text(token.text(self.source)));
                 }
-                // A deeper indent under a member is stray: a flat enum has no
-                // nested members. Report at the deeper line and skip the block.
+                // An indent that opens before any member on this level is stray:
+                // there is no member header for it to nest under. A member's own
+                // nested block is consumed right after its header, below.
                 TokenKind::Indent => {
                     self.advance(); // INDENT
                     if self.peek().is_some_and(|kind| {
@@ -1077,12 +1078,24 @@ impl<'a> DeclParser<'a> {
                     let err = self.content_span();
                     let header = self.take_header_line();
                     match enum_member_name(self.source, &header) {
-                        Ok(name) => members.push(EnumMember {
-                            docs: std::mem::take(&mut docs),
-                            stable_id: None,
-                            name,
-                            span,
-                        }),
+                        Ok((name, category)) => {
+                            // A member's children are the indented block that
+                            // immediately follows its header, parsed by the same
+                            // routine and attached, so members nest to any depth.
+                            let nested = if matches!(self.peek(), Some(TokenKind::Indent)) {
+                                self.parse_enum_members()
+                            } else {
+                                Vec::new()
+                            };
+                            members.push(EnumMember {
+                                docs: std::mem::take(&mut docs),
+                                stable_id: None,
+                                name,
+                                category,
+                                members: nested,
+                                span,
+                            });
+                        }
                         Err(message) => self.error_span(err, message),
                     }
                 }
@@ -1492,16 +1505,58 @@ fn parse_enum_head(source: &str, tokens: &[Token]) -> Result<(bool, String), &'s
     Ok((public, name))
 }
 
-/// The name of an enum member from its header tokens: a single bare identifier.
+/// The name and category flag of an enum member from its header tokens: a bare
+/// identifier, optionally led by a contextual `category` word that marks it a
+/// grouping node. `category` is recognized positionally as the header lead, so it
+/// never collides with `category` used as an ordinary identifier elsewhere.
 /// Anything else — a type annotation, key parameters, or extra tokens — is the
-/// resource-member surface, which a flat enum does not have.
-fn enum_member_name(source: &str, tokens: &[Token]) -> Result<String, &'static str> {
-    match tokens {
-        [token] if token.kind == TokenKind::Identifier => Ok(token.text(source).to_string()),
+/// resource-member surface, which an enum member does not have.
+fn enum_member_name(source: &str, tokens: &[Token]) -> Result<(String, bool), &'static str> {
+    let (category, rest) = match tokens.first() {
+        Some(token)
+            if token.kind == TokenKind::Identifier
+                && token.text(source) == "category"
+                && tokens.len() > 1 =>
+        {
+            (true, &tokens[1..])
+        }
+        _ => (false, tokens),
+    };
+    match rest {
+        [token] if token.kind == TokenKind::Identifier => {
+            Ok((token.text(source).to_string(), category))
+        }
         // A single non-identifier token is a reserved word standing in for a name.
         [_] => Err("expected an enum member name"),
         _ => Err("an enum member is a bare name; it takes no type or parameters"),
     }
+}
+
+/// The `::`-separated identifier segments of a match-arm header, or `None` when
+/// the header is not a member path (`identifier ("::" identifier)*`). The
+/// scrutinee supplies the enum, so an arm header carries no enum prefix — it is a
+/// relative path the checker walks against the scrutinee enum's member tree.
+fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<String>> {
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        // Even positions are identifiers, odd positions the `::` separators.
+        if index % 2 == 0 {
+            if token.kind != TokenKind::Identifier {
+                return None;
+            }
+            segments.push(token.text(source).to_string());
+        } else if token.kind != TokenKind::DoubleColon {
+            return None;
+        }
+    }
+    // A trailing `::` (an even count of tokens) leaves a separator with no segment.
+    if tokens.len() % 2 == 0 {
+        return None;
+    }
+    Some(segments)
 }
 
 /// Parse a resource header's tokens after the `resource` keyword:

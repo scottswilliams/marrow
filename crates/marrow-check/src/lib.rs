@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
-use marrow_schema::Type;
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
+use marrow_schema::{MemberPathResolution, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
@@ -32,8 +32,8 @@ pub use enums::resolve_match_enums;
 // resolvable across the boundary without per-call qualification.
 pub(crate) use checks::*;
 pub(crate) use enums::{
-    check_match, collect_enum_names, enum_schema_in, normalize_program_enum_types,
-    normalize_program_enum_types_against, resolve_enum, resolve_type,
+    check_is, check_match, collect_enum_names, join_or, normalize_program_enum_types,
+    normalize_program_enum_types_against, resolve_enum_member_path, resolve_type,
 };
 pub(crate) use infer::*;
 pub use marrow_schema::{IndexSchema, ResourceSchema};
@@ -119,14 +119,34 @@ pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
 pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// A qualified name `Enum::member` names a known enum but not one of its members.
 pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
+/// A bare `Enum::member` literal names a member that exists under more than one
+/// parent in the enum tree (a blessed duplicate, e.g. `Cat::tiger::paw` and
+/// `Cat::lion::paw`). The bare name cannot pick one, so it is rejected in value and
+/// `is` positions; the full path always disambiguates.
+pub const CHECK_AMBIGUOUS_MEMBER: &str = "check.ambiguous_member";
 /// A `match` scrutinee is not an enum value. `match` dispatches on an enum's
 /// members, so it requires an enum-typed scrutinee.
 pub const CHECK_MATCH_REQUIRES_ENUM: &str = "check.match_requires_enum";
-/// A `match` does not cover every member of its enum. A `match` over a local
-/// enum is exhaustive: each member needs an arm, and there is no wildcard.
+/// A `match` does not cover every member of its enum. A `match` over an enum is
+/// exhaustive over its selectable leaves: each needs an arm (a category arm covers
+/// its whole subtree), and there is no wildcard.
 pub const CHECK_NONEXHAUSTIVE_MATCH: &str = "check.nonexhaustive_match";
-/// A `match` has two arms for the same member.
+/// A `match` has two arms covering the same member — either a repeated arm or a
+/// leaf already covered by an enclosing category arm.
 pub const CHECK_DUPLICATE_MATCH_ARM: &str = "check.duplicate_match_arm";
+/// A category enum member is named in value position. A category groups its
+/// descendants and is not selectable; only a concrete member under it can be a
+/// value.
+pub const CHECK_CATEGORY_NOT_SELECTABLE: &str = "check.category_not_selectable";
+/// A `match` arm names a bare member that exists at more than one level of the
+/// enum tree. The arm must resolve to a single member.
+pub const CHECK_AMBIGUOUS_MATCH_ARM: &str = "check.ambiguous_match_arm";
+/// The left operand of `is` is not an enum value. `is` tests enum-subtree
+/// membership, so it requires an enum-typed left operand.
+pub const CHECK_IS_REQUIRES_ENUM: &str = "check.is_requires_enum";
+/// The right operand of `is` is not a member of the left operand's enum. `is`
+/// tests membership within one enum, so both sides must name the same enum.
+pub const CHECK_IS_TYPE: &str = "check.is_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one

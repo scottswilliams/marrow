@@ -20,6 +20,51 @@ pub(crate) fn eval_coalesce(
     }
 }
 
+/// Resolve a member-path literal (`Enum::member`, `Cat::tiger::bengal`, or a
+/// qualified `mod::Enum::member`) to its enum schema and the member's pre-order
+/// ordinal, or `None` when the path is not a member reference (too few segments, or
+/// no such enum). The enum is the longest visible-enum prefix and the rest is the
+/// member path, walked down the schema's member tree by the same shared walk the
+/// checker uses, so a value and its check cannot disagree. A path that does not
+/// walk to a single member only arises in an unchecked program and is a fault.
+/// Shared by the `Name` value eval and the `is` operator.
+fn resolve_enum_member<'p>(
+    segments: &[String],
+    span: SourceSpan,
+    env: &Env<'p>,
+) -> Result<Option<(&'p EnumSchema, usize)>, RuntimeError> {
+    if segments.len() < 2 {
+        return Ok(None);
+    }
+    // A bare `Enum::path` takes `segments[0]` as a same-module enum; the rest is the
+    // member path. Otherwise the enum is a qualified `module::Enum`, found by the
+    // longest module prefix that names a known enum (leaving ≥1 member segment).
+    let (schema, path) = if let Some(schema) = resolve_enum(env.program, env.module, &segments[0]) {
+        (schema, &segments[1..])
+    } else {
+        let mut found = None;
+        for enum_index in (1..segments.len() - 1).rev() {
+            let module =
+                marrow_check::expand_module_alias(&segments[..enum_index].join("::"), &env.aliases);
+            if let Some(schema) = enum_in(env.program, &module, &segments[enum_index]) {
+                found = Some((schema, &segments[enum_index + 1..]));
+                break;
+            }
+        }
+        let Some(found) = found else {
+            return Ok(None);
+        };
+        found
+    };
+    let walk_path: Vec<&str> = path.iter().map(String::as_str).collect();
+    match schema.walk_member_path(&walk_path) {
+        MemberPathResolution::Found(ordinal) => Ok(Some((schema, ordinal))),
+        // The checker proved a value/`is` operand walks to exactly one member, so
+        // a miss here is a fault, not a reachable path.
+        _ => Err(unsupported("a qualified name", span)),
+    }
+}
+
 pub(crate) fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
     match expr {
         Expression::Literal { kind, text, span } => eval_literal(*kind, text, *span),
@@ -34,25 +79,7 @@ pub(crate) fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, R
             // module stays whole (`a::b::Status::active` → module `a::b`, enum
             // `Status`, member `active`). A bare `Enum::member` (no prefix) resolves
             // relative to the running module, mirroring the checker.
-            let enum_member = match segments.as_slice() {
-                [enum_name, member] => {
-                    resolve_enum(env.program, env.module, enum_name).map(|schema| (schema, member))
-                }
-                [module_prefix @ .., enum_name, member] => {
-                    // Expand a short module alias (`c::Status::active` under
-                    // `use a::b::c`) through the frame's imports before lookup, so an
-                    // aliased literal binds to the imported module's enum, matching
-                    // how the checker resolved it and how call dispatch expands.
-                    let module =
-                        marrow_check::expand_module_alias(&module_prefix.join("::"), &env.aliases);
-                    enum_in(env.program, &module, enum_name).map(|schema| (schema, member))
-                }
-                _ => None,
-            };
-            if let Some((schema, member)) = enum_member {
-                let ordinal = schema
-                    .ordinal(member)
-                    .ok_or_else(|| unsupported("a qualified name", *span))?;
+            if let Some((_, ordinal)) = resolve_enum_member(segments, *span, env)? {
                 return Ok(Value::Int(ordinal as i64));
             }
             if segments.len() != 1 {
@@ -288,12 +315,38 @@ pub(crate) fn eval_binary(
         BinaryOp::GreaterEqual => compare_values(left, right, env, span, |o| o != Ordering::Less),
         BinaryOp::Equal => Ok(Value::Bool(values_equal(left, right, env, span)?)),
         BinaryOp::NotEqual => Ok(Value::Bool(!values_equal(left, right, env, span)?)),
+        BinaryOp::Is => eval_is(left, right, span, env),
         BinaryOp::Coalesce => eval_coalesce(left, right, env),
         BinaryOp::Concat => concat(left, right, env, span),
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
             Err(unsupported("this operator", span))
         }
     }
+}
+
+/// Evaluate `left is right`: whether the left enum value sits at or under the
+/// right member in its enum's hierarchy. The left evaluates to its stored ordinal;
+/// the right is a member-path literal resolved to its ordinal, and the test is the
+/// schema's inclusive `is_descendant` — exact for a concrete-leaf right, a subtree
+/// test for a category. The checker proved both sides name the same enum, so an
+/// unresolved right is a fault, not a reachable program path.
+pub(crate) fn eval_is(
+    left: &Expression,
+    right: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let Value::Int(ordinal) = eval_expr(left, env)? else {
+        return Err(type_error("operator `is` requires an enum value", span));
+    };
+    let Expression::Name { segments, .. } = right else {
+        return Err(unsupported("the right operand of `is`", span));
+    };
+    let (schema, ancestor) = resolve_enum_member(segments, span, env)?
+        .ok_or_else(|| unsupported("the right operand of `is`", span))?;
+    Ok(Value::Bool(
+        schema.is_descendant(ordinal as usize, ancestor),
+    ))
 }
 
 /// Apply a checked numeric operation to two operands of the same numeric type —

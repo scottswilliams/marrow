@@ -156,9 +156,14 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |
 | `check.catch_type` | A `catch` annotation is not `Error`. |
 | `check.match_requires_enum` | A `match` scrutinee is not an enum value, or names an enum the project does not declare. |
-| `check.unknown_enum_member` | A `match` arm, or an `Enum::member` reference, names a member the enum does not declare. |
-| `check.duplicate_match_arm` | Two `match` arms name the same member. |
-| `check.nonexhaustive_match` | A `match` over an enum does not cover every member. |
+| `check.unknown_enum_member` | A `match` arm path, or an `Enum::member` reference, walks to no member the enum declares. |
+| `check.duplicate_match_arm` | Two `match` arms cover the same member — a repeated arm, or a leaf already covered by an enclosing category arm. |
+| `check.nonexhaustive_match` | A `match` over an enum does not cover every selectable leaf; the message names each uncovered leaf by its full path. |
+| `check.ambiguous_match_arm` | A `match` arm is a bare member name that appears under more than one parent of the enum tree; the message names the qualifying paths to disambiguate. |
+| `check.ambiguous_member` | A bare `Enum::member` literal (in value or `is` position) names a member that appears under more than one parent; the full path (`Enum::parent::member`) disambiguates. |
+| `check.category_not_selectable` | A category enum member is named in value position; only a concrete member under it is selectable. |
+| `check.is_requires_enum` | The left operand of `is` is not an enum value. |
+| `check.is_type` | The right operand of `is` is not a member of the left operand's enum. |
 | `check.invalid_assign_target` | An assignment or `merge` target is not a writable place. |
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
@@ -170,7 +175,9 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 
 | Code | Meaning |
 |---|---|
-| `schema.duplicate_member` | A resource member name collides with another member at the same level. |
+| `schema.duplicate_member` | A resource or enum member name collides with another member at the same level. |
+| `schema.category_leaf` | A `category` enum member has no nested members, so it can never be selected or matched. |
+| `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
 | `schema.duplicate_root_owner` | Two resources claim the same saved root (a cross-resource rule the project checker reports). |
 | `schema.index_in_group` | An index appears inside a group; indexes are direct members of keyed saved resources. |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |

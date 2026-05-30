@@ -128,6 +128,21 @@ pub(crate) fn infer_type(
             span,
         } => {
             let left_type = infer_type(program, left, scope, aliases, file, diagnostics);
+            // `is` is the enum-subtree predicate: its right is a member-path naming a
+            // member or category, not a value, so it is resolved inside `check_is`
+            // rather than inferred as a value here — inferring it would reject a
+            // category right operand as non-selectable.
+            if matches!(op, marrow_syntax::BinaryOp::Is) {
+                return check_is(
+                    program,
+                    &left_type,
+                    right,
+                    aliases,
+                    *span,
+                    file,
+                    diagnostics,
+                );
+            }
             let right_type = infer_type(program, right, scope, aliases, file, diagnostics);
             // `??` only defaults an absent path read, so its left operand must be a
             // path read or `?.` chain — a present non-path value is never absent
@@ -192,48 +207,66 @@ pub(crate) fn infer_type(
                 .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
         }
-        // A two-segment `Enum::member` resolves to the enum type when the enum
-        // and member both exist; an unknown member of a known enum is reported. A
-        // qualified `mod…::Enum::member` (three or more segments) names another
-        // module's enum exactly, where `mod…` may itself be nested (`a::b`). Both
-        // yield the enum's nominal `{module, name}` identity.
+        // A member-path literal `Enum::seg…` (`Status::active`, `Cat::tiger::bengal`,
+        // or a qualified `a::b::Status::active`) resolves to the enum's nominal
+        // `{module, name}` identity. The enum is the longest visible-enum prefix and
+        // the rest is the member path, walked down the enum's tree. In value position
+        // the resolved member must be a concrete leaf: a category groups its
+        // descendants and is not selectable, and a bare name duplicated under several
+        // parents is ambiguous (the full path always disambiguates).
         Expression::Name { segments, span } if segments.len() >= 2 => {
-            // The last segment is the member, the one before it the enum name; any
-            // remaining prefix is the owning module (`a::b::Status::active` →
-            // module `a::b`, enum `Status`, member `active`). A bare `Enum::member`
-            // (no prefix) resolves relative to the module the expression appears in
-            // (same-module first). Either way two same-named enums never alias.
-            let member = segments.last().expect("at least two segments");
-            let enum_name = &segments[segments.len() - 2];
-            let module_prefix = &segments[..segments.len() - 2];
-            let resolved = if module_prefix.is_empty() {
-                resolve_enum(program, module_of_file(program, file), enum_name)
-                    .map(|(module, schema)| (module.to_string(), schema))
-            } else {
-                // Expand a short module alias (`c::Status::active` under
-                // `use a::b::c`) through the file's imports before resolution, so an
-                // aliased literal names the imported module's enum rather than a
-                // top-level homonym or nothing — mirroring call dispatch.
-                let module = expand_module_alias(&module_prefix.join("::"), aliases);
-                enum_schema_in(program, &module, enum_name).map(|schema| (module, schema))
+            let Some(resolved) = resolve_enum_member_path(program, expr, aliases, file) else {
+                // Not an enum: a cross-module name or identity path stays unknown.
+                return MarrowType::Unknown;
             };
-            match resolved {
-                Some((module, schema)) if schema.ordinal(member).is_some() => MarrowType::Enum {
-                    module,
-                    name: enum_name.clone(),
-                },
-                Some(_) => {
+            let enum_name = &resolved.enum_name;
+            match resolved.member {
+                MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
                     diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNKNOWN_ENUM_MEMBER,
+                        code: CHECK_CATEGORY_NOT_SELECTABLE,
                         severity: Severity::Error,
                         file: file.to_path_buf(),
-                        message: format!("`{enum_name}` has no member `{member}`"),
+                        message: format!(
+                            "`{}` is a category and cannot be selected; pick a concrete member under it",
+                            segments.join("::")
+                        ),
                         span: *span,
                     });
                     MarrowType::Unknown
                 }
-                // Not an enum: a cross-module name or identity path stays unknown.
-                None => MarrowType::Unknown,
+                MemberPathResolution::Found(_) => MarrowType::Enum {
+                    module: resolved.module,
+                    name: enum_name.clone(),
+                },
+                // A bare name under several parents cannot pick one in value
+                // position either; the full path (`Cat::tiger::paw`) disambiguates.
+                MemberPathResolution::Ambiguous(paths) => {
+                    diagnostics.push(CheckDiagnostic {
+                        code: CHECK_AMBIGUOUS_MEMBER,
+                        severity: Severity::Error,
+                        file: file.to_path_buf(),
+                        message: format!(
+                            "`{}` names more than one member of `{enum_name}`; qualify as {}",
+                            segments.join("::"),
+                            join_or(&paths)
+                        ),
+                        span: *span,
+                    });
+                    MarrowType::Unknown
+                }
+                MemberPathResolution::NotFound => {
+                    diagnostics.push(CheckDiagnostic {
+                        code: CHECK_UNKNOWN_ENUM_MEMBER,
+                        severity: Severity::Error,
+                        file: file.to_path_buf(),
+                        message: format!(
+                            "`{enum_name}` has no member `{}`",
+                            segments[segments.len() - 1]
+                        ),
+                        span: *span,
+                    });
+                    MarrowType::Unknown
+                }
             }
         }
         // Any other multi-segment name or saved root has no known type.

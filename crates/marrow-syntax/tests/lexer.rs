@@ -450,6 +450,16 @@ fn lexes_equality_operator() {
 }
 
 #[test]
+fn lexes_is_as_a_keyword() {
+    // `is` is a reserved word operator, lexed as a keyword like `and`/`or`/`not`.
+    let kinds = kinds("write(pet is Cat::tiger)\n");
+    assert!(
+        kinds.contains(&TokenKind::Keyword(Keyword::Is)),
+        "expected an `is` keyword, got {kinds:?}"
+    );
+}
+
+#[test]
 fn lexes_absence_operators() {
     // `?.` and `??` each lex as a single multi-character punctuation token.
     let lexed = lex_source("write(a?.b ?? c)\n");

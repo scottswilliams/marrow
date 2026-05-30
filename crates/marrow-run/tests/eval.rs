@@ -7387,6 +7387,177 @@ fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
     );
 }
 
+/// A nested `Cat::tiger::bengal` literal evaluates to its pre-order ordinal — the
+/// value is stored flat, the hierarchy lives only in the schema.
+#[test]
+fn a_nested_member_evaluates_to_its_pre_order_ordinal() {
+    let program = checked_program(
+        "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
+         fn bengal(): int\n    return Cat::bengal\n\n\
+         fn housecat(): int\n    return Cat::housecat\n",
+    );
+    // Pre-order: tiger(0), bengal(1), siberian(2), housecat(3).
+    assert_eq!(
+        run(&program, "test::bengal", &[]).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(&program, "test::housecat", &[]).unwrap(),
+        Some(Value::Int(3))
+    );
+}
+
+/// `pet is Cat::tiger` is true for any value at or under `tiger` (a `bengal`),
+/// false for one outside it (a `housecat`) — the subtree test over the flat
+/// ordinal.
+#[test]
+fn is_tests_subtree_membership_over_the_ordinal() {
+    let program = checked_program_typed(
+        "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
+         fn isTiger(pet: Cat): bool\n    return pet is Cat::tiger\n",
+    );
+    // bengal (ordinal 1) is under tiger; housecat (ordinal 3) is not.
+    assert_eq!(
+        run(&program, "test::isTiger", &[Value::Int(1)]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::isTiger", &[Value::Int(3)]).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
+/// `is` against a concrete leaf is exact equality: a `bengal` value is
+/// `Cat::bengal` but not `Cat::siberian`.
+#[test]
+fn is_against_a_leaf_is_exact() {
+    let program = checked_program_typed(
+        "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
+         fn isBengal(pet: Cat): bool\n    return pet is Cat::bengal\n",
+    );
+    assert_eq!(
+        run(&program, "test::isBengal", &[Value::Int(1)]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::isBengal", &[Value::Int(2)]).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
+/// A `match` runs the category arm for any descendant: a `bengal` or `siberian`
+/// value both take the `tiger` arm, a `housecat` takes its own.
+#[test]
+fn match_runs_the_category_arm_for_any_descendant() {
+    let program = checked_program_typed(
+        "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
+         fn label(pet: Cat): int\n    \
+         match pet\n        tiger\n            return 1\n        \
+         housecat\n            return 2\n",
+    );
+    // bengal(1) and siberian(2) both take the tiger arm; housecat(3) its own.
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(2)]).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(3)]).unwrap(),
+        Some(Value::Int(2))
+    );
+}
+
+/// Two `paw`s under different parents are distinct members: the full member paths
+/// `Cat::tiger::paw` and `Cat::lion::paw` evaluate to their own pre-order ordinals,
+/// the value stored flat. Pre-order: tiger(0), bengal(1), paw(2), lion(3), paw(4),
+/// mane(5).
+#[test]
+fn a_duplicated_member_resolves_by_its_full_path_to_a_distinct_ordinal() {
+    let program = checked_program(
+        "enum Cat\n    category tiger\n        bengal\n        paw\n\
+         \x20   category lion\n        paw\n        mane\n\n\
+         fn tigerPaw(): int\n    return Cat::tiger::paw\n\n\
+         fn lionPaw(): int\n    return Cat::lion::paw\n",
+    );
+    assert_eq!(
+        run(&program, "test::tigerPaw", &[]).unwrap(),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(&program, "test::lionPaw", &[]).unwrap(),
+        Some(Value::Int(4))
+    );
+}
+
+/// A `match` with qualified arms over duplicated leaves dispatches each value to
+/// the correct arm by walking the arm path against the scrutinee enum — the two
+/// `paw`s take different arms even though they share a name.
+#[test]
+fn match_with_qualified_arms_dispatches_each_duplicated_paw_to_its_own_arm() {
+    let program = checked_program_typed(
+        "enum Cat\n    category tiger\n        bengal\n        paw\n\
+         \x20   category lion\n        paw\n        mane\n\n\
+         fn label(pet: Cat): int\n    \
+         match pet\n        \
+         tiger::bengal\n            return 1\n        \
+         tiger::paw\n            return 2\n        \
+         lion::paw\n            return 3\n        \
+         lion::mane\n            return 4\n",
+    );
+    // tiger::paw is ordinal 2, lion::paw is ordinal 4: each takes its own arm.
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(2)]).unwrap(),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(4)]).unwrap(),
+        Some(Value::Int(3))
+    );
+    // The other leaves still dispatch to their arms.
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(5)]).unwrap(),
+        Some(Value::Int(4))
+    );
+}
+
+/// `is` with a full member path is exact over the right leaf, and a category right
+/// operand is the subtree test — the same `is_descendant` walk, now reachable for
+/// a duplicated leaf via its qualifying path.
+#[test]
+fn is_with_a_full_path_to_a_duplicated_leaf_is_exact() {
+    let program = checked_program_typed(
+        "enum Cat\n    category tiger\n        bengal\n        paw\n\
+         \x20   category lion\n        paw\n        mane\n\n\
+         fn isTigerPaw(pet: Cat): bool\n    return pet is Cat::tiger::paw\n\n\
+         fn isTiger(pet: Cat): bool\n    return pet is Cat::tiger\n",
+    );
+    // tiger::paw (2) is exactly Cat::tiger::paw; lion::paw (4) is not.
+    assert_eq!(
+        run(&program, "test::isTigerPaw", &[Value::Int(2)]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::isTigerPaw", &[Value::Int(4)]).unwrap(),
+        Some(Value::Bool(false))
+    );
+    // The category test covers the whole tiger subtree (bengal 1, paw 2).
+    assert_eq!(
+        run(&program, "test::isTiger", &[Value::Int(2)]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::isTiger", &[Value::Int(4)]).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
 #[test]
 fn fatal_fault_in_entry_module_carries_its_file_id() {
     // A divide-by-zero raised in the entry module's own body stamps that

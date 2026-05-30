@@ -171,38 +171,74 @@ pub(crate) fn check_match(
         return;
     };
 
-    let mut covered: Vec<&str> = Vec::new();
+    // Coverage is over the enum's selectable leaves: each must be covered by
+    // exactly one arm. An arm is a member path relative to the scrutinee enum —
+    // a concrete leaf covers itself, a category covers every selectable leaf under
+    // it. A bare arm name duplicated under several parents is ambiguous; the full
+    // path always disambiguates. A leaf covered twice (a repeated arm, or a leaf
+    // already covered by an enclosing category) is an overlap; an uncovered leaf is
+    // non-exhaustive.
+    let mut covered: Vec<usize> = Vec::new();
+    // An arm rejected as an overlap is already the one clear diagnostic for that arm.
+    // Reporting non-exhaustiveness on top — because the rejected arm's leaves were
+    // dropped from coverage — would be noise, so the exhaustiveness pass is skipped
+    // when any overlap fired. A genuinely uncovered leaf with no overlap still reports.
+    let mut had_overlap = false;
     for arm in arms {
-        if schema.ordinal(&arm.member).is_none() {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNKNOWN_ENUM_MEMBER,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!("`{enum_name}` has no member `{}`", arm.member),
-                span: arm.span,
-            });
-            continue;
-        }
-        if covered.contains(&arm.member.as_str()) {
+        let segments: Vec<&str> = arm.path.iter().map(String::as_str).collect();
+        let arm_label = segments.join("::");
+        let arm_ordinal = match schema.walk_member_path(&segments) {
+            MemberPathResolution::Found(ordinal) => ordinal,
+            MemberPathResolution::NotFound => {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_UNKNOWN_ENUM_MEMBER,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!("`{enum_name}` has no member `{arm_label}`"),
+                    span: arm.span,
+                });
+                continue;
+            }
+            // A bare name names a member under more than one parent; name the
+            // qualifying paths so the dev can pick one (`tiger::paw` or `lion::paw`).
+            MemberPathResolution::Ambiguous(paths) => {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_AMBIGUOUS_MATCH_ARM,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!(
+                        "`{arm_label}` names more than one member of `{enum_name}`; qualify as {}",
+                        join_or(&paths)
+                    ),
+                    span: arm.span,
+                });
+                continue;
+            }
+        };
+        let arm_leaves: Vec<usize> = schema
+            .subtree_ordinals(arm_ordinal)
+            .filter(|&ordinal| schema.is_selectable_leaf(ordinal))
+            .collect();
+        if arm_leaves.iter().any(|leaf| covered.contains(leaf)) {
             diagnostics.push(CheckDiagnostic {
                 code: CHECK_DUPLICATE_MATCH_ARM,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
-                message: format!("`match` has a duplicate arm for `{}`", arm.member),
+                message: format!("`match` has a duplicate arm for `{arm_label}`"),
                 span: arm.span,
             });
+            had_overlap = true;
             continue;
         }
-        covered.push(&arm.member);
+        covered.extend(arm_leaves);
     }
 
-    let missing: Vec<&str> = schema
-        .members
-        .iter()
-        .map(|member| member.name.as_str())
-        .filter(|name| !covered.contains(name))
+    let missing: Vec<String> = schema
+        .selectable_leaves()
+        .filter(|ordinal| !covered.contains(ordinal))
+        .map(|ordinal| schema.member_path(ordinal).join("::"))
         .collect();
-    if !missing.is_empty() {
+    if !missing.is_empty() && !had_overlap {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_NONEXHAUSTIVE_MATCH,
             severity: Severity::Error,
@@ -211,7 +247,7 @@ pub(crate) fn check_match(
                 "`match` on `{enum_name}` does not cover {}",
                 missing
                     .iter()
-                    .map(|name| format!("`{name}`"))
+                    .map(|path| format!("`{path}`"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -374,6 +410,189 @@ pub(crate) fn resolve_block_matches(
         }
     }
     scope.pop();
+}
+
+/// A member-path expression (`Cat::tiger::bengal` or `mod::Cat::tiger`) resolved
+/// against the project's enums: the owning module and enum, plus the walk of the
+/// member path relative to that enum. Returned by [`resolve_enum_member_path`] for
+/// both the value position and the `is` right operand, so the one place that
+/// splits the enum prefix and walks the member tree is shared.
+pub(crate) struct ResolvedMemberPath<'p> {
+    pub module: String,
+    pub enum_name: String,
+    pub schema: &'p marrow_schema::EnumSchema,
+    /// The walk of the member segments after the enum, by the schema's shared
+    /// member-path walk. Each caller applies its own position rule (a value rejects
+    /// a category; an `is` operand admits one) and reports ambiguity the same way.
+    pub member: MemberPathResolution,
+}
+
+/// Resolve a `Cat::tiger::bengal` / `mod::Cat::tiger` member-path expression: split
+/// the longest enum prefix (the enum is the segment before the member path, the
+/// rest is the path), resolve that enum (same-module first, then aliased module,
+/// then project-wide), and walk the remaining segments down its member tree by the
+/// schema's shared walk. `None` when the expression is not a member-path of a known
+/// enum (too few segments or no such enum); the member walk itself may still be
+/// [`MemberPathResolution::NotFound`] or `Ambiguous`, left to the caller.
+pub(crate) fn resolve_enum_member_path<'p>(
+    program: &'p CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<ResolvedMemberPath<'p>> {
+    let marrow_syntax::Expression::Name { segments, .. } = expr else {
+        return None;
+    };
+    if segments.len() < 2 {
+        return None;
+    }
+    // Find the enum by the longest prefix that names a visible enum, leaving at
+    // least one segment for the member path. A bare `Enum::a::b` takes `segments[0]`
+    // as a same-module enum; a qualified `mod::Enum::a::b` takes `mod`'s `Enum`.
+    let referencing = module_of_file(program, file);
+    if let Some((module, schema)) =
+        resolve_enum(program, referencing, &segments[0]).map(|(m, s)| (m.to_string(), s))
+    {
+        let path: Vec<&str> = segments[1..].iter().map(String::as_str).collect();
+        return Some(ResolvedMemberPath {
+            member: schema.walk_member_path(&path),
+            module,
+            enum_name: segments[0].clone(),
+            schema,
+        });
+    }
+    // The qualified case: the enum name sits at some index, its module is every
+    // segment before it, and the member path is everything after. Prefer the
+    // longest enum prefix (shortest member path), so scan the split points from the
+    // end down — the first that resolves to a known enum wins.
+    for enum_index in (1..segments.len() - 1).rev() {
+        let module = expand_module_alias(&segments[..enum_index].join("::"), aliases);
+        if let Some(schema) = enum_schema_in(program, &module, &segments[enum_index]) {
+            let path: Vec<&str> = segments[enum_index + 1..]
+                .iter()
+                .map(String::as_str)
+                .collect();
+            return Some(ResolvedMemberPath {
+                member: schema.walk_member_path(&path),
+                module,
+                enum_name: segments[enum_index].clone(),
+                schema,
+            });
+        }
+    }
+    None
+}
+
+/// Join member paths into an actionable "qualify as `a` or `b`" hint, each path
+/// quoted. One path drops the "or" (it should never arise for an ambiguity, but
+/// the join is total).
+pub(crate) fn join_or(paths: &[String]) -> String {
+    let quoted: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
+    match quoted.as_slice() {
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} or {last}", head.join(", ")),
+        [] => String::new(),
+    }
+}
+
+/// Type-check `left is right`. `left` must be an enum value; `right` must be a
+/// member-path of the same enum (a concrete member or a category — a category is
+/// the whole point, testing subtree membership). The result is always `bool`. `is`
+/// is a separate nominal predicate, not an assignability relaxation: a value's type
+/// stays its exact enum, so no subtyping lattice is introduced and the totality of
+/// the type model is untouched.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_is(
+    program: &CheckedProgram,
+    left_type: &MarrowType,
+    right: &marrow_syntax::Expression,
+    aliases: &HashMap<String, Vec<String>>,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    let bool_type = MarrowType::Primitive(ScalarType::Bool);
+    let MarrowType::Enum {
+        module: left_module,
+        name: left_name,
+    } = left_type
+    else {
+        // An untyped left operand defers (an unchecked dynamic value), like the
+        // equality path; a known non-enum is rejected.
+        if !matches!(left_type, MarrowType::Unknown) {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_IS_REQUIRES_ENUM,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "operator `is` requires an enum value on the left, but found `{}`",
+                    marrow_type_name(left_type)
+                ),
+                span,
+            });
+        }
+        return bool_type;
+    };
+    let Some(resolved) = resolve_enum_member_path(program, right, aliases, file) else {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_IS_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!("operator `is` requires a member of `{left_name}` on the right"),
+            span,
+        });
+        return bool_type;
+    };
+    // Both sides must name the same enum, by owning module and name, so two
+    // same-named enums in different modules never alias.
+    if &resolved.module != left_module || &resolved.enum_name != left_name {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_IS_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "operator `is` compares within one enum, but the left is `{left_name}` and the right names `{}`",
+                resolved.enum_name
+            ),
+            span,
+        });
+        return bool_type;
+    }
+    // The right operand is a member path of the left's enum. As an `is` operand any
+    // member is valid (a leaf is exact, a category a subtree), so only an unresolved
+    // or ambiguous path is an error. A bare name duplicated under several parents is
+    // rejected with the qualifying paths — the symmetric fix to the value footgun.
+    match resolved.member {
+        MemberPathResolution::Found(_) => {}
+        MemberPathResolution::Ambiguous(paths) => diagnostics.push(CheckDiagnostic {
+            code: CHECK_AMBIGUOUS_MEMBER,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "`{}` names more than one member of `{left_name}`; qualify as {}",
+                member_path_label(right),
+                join_or(&paths)
+            ),
+            span,
+        }),
+        MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic {
+            code: CHECK_IS_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!("operator `is` requires a member of `{left_name}` on the right"),
+            span,
+        }),
+    }
+    bool_type
+}
+
+/// The member-path segments of a `Name` expression rendered as written, for a
+/// diagnostic that quotes the offending path. A non-name expression renders empty.
+fn member_path_label(expr: &marrow_syntax::Expression) -> String {
+    match expr {
+        marrow_syntax::Expression::Name { segments, .. } => segments.join("::"),
+        _ => String::new(),
+    }
 }
 
 /// Resolve a bare enum `name` referenced from `referencing_module`, returning the

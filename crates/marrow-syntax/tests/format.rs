@@ -229,6 +229,26 @@ fn formats_a_match_with_bare_member_arms() {
 }
 
 #[test]
+fn formats_a_match_with_qualified_member_path_arms() {
+    // A qualified arm `tiger::bengal` renders as its path; a category arm `lion`
+    // renders as the bare member. The formatter re-emits the relative path exactly.
+    let source = "module app\n\
+         fn label(c: Cat)\n\
+         \x20   match c\n\
+         \x20       tiger::bengal\n\
+         \x20           print(\"a\")\n\
+         \x20       lion\n\
+         \x20           print(\"b\")\n";
+    let expected = "\
+         \x20   match c\n\
+         \x20       tiger::bengal\n\
+         \x20           print(\"a\")\n\
+         \x20       lion\n\
+         \x20           print(\"b\")";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
 fn formats_const_declaration_with_docs() {
     let source = "module app\n\
          ;; The maximum number of loans.\n\

@@ -10,8 +10,8 @@
 use std::fmt;
 
 use marrow_syntax::{
-    EnumDecl, FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SavedRoot,
-    SourceSpan, TypeRef,
+    EnumDecl, EnumMember, FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember,
+    SavedRoot, SourceSpan, TypeRef,
 };
 
 pub mod stdlib;
@@ -300,36 +300,196 @@ pub struct IndexSchema {
     pub stable_id: Option<String>,
 }
 
-/// The compiled form of a flat enum: a named, fixed set of members in
-/// declaration order. An enum is its own construct, not a [`ResourceSchema`]; it
+/// The compiled form of an enum: a named, fixed set of members. Members are held
+/// flat in pre-order DFS, so a member's index is its stored ordinal; the tree
+/// shape lives in each member's `parent` link. A flat enum is the degenerate
+/// one-level tree — every member at the top level, in source order — so its
+/// compiled form is byte-identical to a non-hierarchical enum and existing data
+/// needs no migration. An enum is its own construct, not a [`ResourceSchema`]; it
 /// owns no saved root and stores as the ordinal of the selected member.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumSchema {
     pub name: String,
     pub docs: Vec<String>,
-    /// Members in source order; a member's index is its stored ordinal.
+    /// Members in pre-order DFS; a member's index is its stored ordinal.
     pub members: Vec<EnumMemberSchema>,
 }
 
-/// One enum member. `stable_id` is a reserved slot for the rename-safe stable-id
-/// work; it is unused while ordinals are positional.
+/// One enum member. `parent` is the ordinal of the enclosing member, `None` at the
+/// top level. A `category` member groups its descendants and is not selectable as a
+/// value. `stable_id` is a reserved slot for the rename-safe stable-id work; it is
+/// unused while ordinals are positional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMemberSchema {
     pub name: String,
     pub docs: Vec<String>,
     pub stable_id: Option<String>,
+    pub parent: Option<usize>,
+    pub category: bool,
+}
+
+/// The outcome of walking a relative member path against an [`EnumSchema`]. The
+/// one walk behind value, `is`, and `match` arm resolution returns this so each
+/// caller applies its own position rule (selectability) to a single resolved
+/// member and reports ambiguity with the same actionable wording.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemberPathResolution {
+    /// The path names exactly this member ordinal.
+    Found(usize),
+    /// A single bare name appears under more than one parent, so it cannot pick
+    /// one member. Carries the full disambiguating paths of every match
+    /// (`["tiger::paw", "lion::paw"]`), in pre-order, for the diagnostic.
+    Ambiguous(Vec<String>),
+    /// No member the path could walk to. Either the first segment is not a member
+    /// of the enum, or a later segment is not a child of the member before it.
+    NotFound,
 }
 
 impl EnumSchema {
-    /// The stored ordinal of `member` — its position in declaration order — or
-    /// `None` if the enum has no such member.
+    /// The stored ordinal of `member` — its index in pre-order DFS — or `None` if
+    /// the enum has no such member. When two members at different levels share a
+    /// bare name, the first in pre-order wins; the checker rejects an ambiguous
+    /// reference before this is reached for a value or arm.
     pub fn ordinal(&self, member: &str) -> Option<usize> {
         self.members.iter().position(|m| m.name == member)
+    }
+
+    /// Walk a relative member path (`["tiger", "bengal"]`) to a single member. A
+    /// qualified path starts at a top-level member and walks parent→child, one
+    /// segment per level; since names are unique among siblings the walk is always
+    /// unambiguous. A bare single name may sit at any depth and is the one position
+    /// a duplicate can leave unresolved: the same name under different parents
+    /// (`tiger::paw`, `lion::paw`) is [`MemberPathResolution::Ambiguous`].
+    ///
+    /// The single shared walk behind value, `is`, and `match` arm resolution: each
+    /// caller decides whether the resolved member is valid for its position (a value
+    /// rejects a category; an `is` operand or an arm admits one). The ambiguity case
+    /// carries the qualifying paths so every caller reports the same fix.
+    pub fn walk_member_path(&self, path: &[&str]) -> MemberPathResolution {
+        let Some((&first, rest)) = path.split_first() else {
+            return MemberPathResolution::NotFound;
+        };
+        // A bare single name searches the whole tree by name: exactly one match
+        // resolves, several (the same name under different parents) is ambiguous.
+        if rest.is_empty() {
+            let matches: Vec<usize> = (0..self.members.len())
+                .filter(|&ordinal| self.member_is(ordinal, first))
+                .collect();
+            return match matches.as_slice() {
+                [] => MemberPathResolution::NotFound,
+                [ordinal] => MemberPathResolution::Found(*ordinal),
+                _ => MemberPathResolution::Ambiguous(
+                    matches
+                        .iter()
+                        .map(|&ordinal| self.member_path(ordinal).join("::"))
+                        .collect(),
+                ),
+            };
+        }
+        // A qualified path starts at the top level (`tiger` in `tiger::paw`) and
+        // walks children downward. Top-level names are themselves unique only per
+        // sibling level, but a qualified path's leading segment must be a top-level
+        // member; if several share the name the path cannot pick one.
+        let roots: Vec<usize> = (0..self.members.len())
+            .filter(|&ordinal| {
+                self.members[ordinal].parent.is_none() && self.member_is(ordinal, first)
+            })
+            .collect();
+        let [start] = roots.as_slice() else {
+            return MemberPathResolution::NotFound;
+        };
+        let mut current = *start;
+        for &segment in rest {
+            match self.child_named(current, segment) {
+                Some(child) => current = child,
+                None => return MemberPathResolution::NotFound,
+            }
+        }
+        MemberPathResolution::Found(current)
+    }
+
+    /// Whether the member at `ordinal` has the given name.
+    fn member_is(&self, ordinal: usize, name: &str) -> bool {
+        self.members.get(ordinal).is_some_and(|m| m.name == name)
+    }
+
+    /// The ordinal of the child of `parent` named `name`, if any. Children are the
+    /// members whose `parent` link is `parent`; sibling names are unique, so at most
+    /// one matches.
+    fn child_named(&self, parent: usize, name: &str) -> Option<usize> {
+        (0..self.members.len()).find(|&ordinal| {
+            self.members[ordinal].parent == Some(parent) && self.members[ordinal].name == name
+        })
     }
 
     /// The member name an ordinal selects, or `None` if it is out of range.
     pub fn member_name(&self, ordinal: usize) -> Option<&str> {
         self.members.get(ordinal).map(|m| m.name.as_str())
+    }
+
+    /// Whether `ordinal` sits at or under `ancestor` in the member tree — the
+    /// `is` primitive. Inclusive: a member is its own descendant, so a concrete
+    /// leaf on both sides is exact equality and a category ancestor matches its
+    /// whole subtree. Walks `parent` links up from `ordinal`.
+    pub fn is_descendant(&self, ordinal: usize, ancestor: usize) -> bool {
+        let mut current = Some(ordinal);
+        while let Some(index) = current {
+            if index == ancestor {
+                return true;
+            }
+            current = self.members.get(index).and_then(|member| member.parent);
+        }
+        false
+    }
+
+    /// Whether the member at `ordinal` is a category — a grouping node that is not
+    /// selectable as a value but may name a whole subtree in `match` or `is`.
+    pub fn is_category(&self, ordinal: usize) -> bool {
+        self.members.get(ordinal).is_some_and(|m| m.category)
+    }
+
+    /// The ordinals at or under `ancestor` in pre-order, inclusive — the members a
+    /// category arm or an `is` test covers.
+    pub fn subtree_ordinals(&self, ancestor: usize) -> impl Iterator<Item = usize> + '_ {
+        (0..self.members.len()).filter(move |&ordinal| self.is_descendant(ordinal, ancestor))
+    }
+
+    /// The ordinals a value can actually hold: the concrete (non-category) leaves.
+    /// A category is never selectable, and a member with children is a grouping
+    /// node whose value is one of its descendants, so only childless non-category
+    /// members are selectable.
+    pub fn selectable_leaves(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.members.len()).filter(move |&ordinal| self.is_selectable_leaf(ordinal))
+    }
+
+    /// Whether `ordinal` is a selectable leaf: concrete (not a category) and with
+    /// no children.
+    pub fn is_selectable_leaf(&self, ordinal: usize) -> bool {
+        let Some(member) = self.members.get(ordinal) else {
+            return false;
+        };
+        !member.category && !self.has_children(ordinal)
+    }
+
+    /// Whether any member names `ordinal` as its parent.
+    pub fn has_children(&self, ordinal: usize) -> bool {
+        self.members.iter().any(|m| m.parent == Some(ordinal))
+    }
+
+    /// The dotted path of names from the root to `ordinal` (`["tiger", "bengal"]`),
+    /// for diagnostics. Empty when the ordinal is out of range.
+    pub fn member_path(&self, ordinal: usize) -> Vec<&str> {
+        let mut path = Vec::new();
+        let mut current = Some(ordinal);
+        while let Some(index) = current {
+            let Some(member) = self.members.get(index) else {
+                break;
+            };
+            path.push(member.name.as_str());
+            current = member.parent;
+        }
+        path.reverse();
+        path
     }
 }
 
@@ -346,6 +506,20 @@ pub struct SchemaError {
 
 /// A resource member name collides with another member at the same level.
 pub const SCHEMA_DUPLICATE_MEMBER: &str = "schema.duplicate_member";
+
+/// A `category` enum member has no nested members. A category groups its
+/// descendants, so one with nothing under it can never be selected as a value nor
+/// matched, leaving it dead.
+pub const SCHEMA_CATEGORY_LEAF: &str = "schema.category_leaf";
+
+/// A non-`category` enum member has nested members. A member with children is a
+/// grouping node: a value selects one of its descendants, never the node itself,
+/// and a `match` covers its leaves, never the node. Marking such a parent
+/// `category` is what keeps the two value-validity notions aligned — value position
+/// rejects exactly the categories, while `match` covers exactly the childless
+/// non-categories — so a parent left unmarked would be a legal value no arm could
+/// cover. The invariant category <=> has-children makes that fail-open impossible.
+pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
 
 /// An index appears inside a group. Indexes are direct members of keyed saved
 /// resources; nested-layer lookups are modeled as a separate resource.
@@ -485,20 +659,41 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
     (schema, errors)
 }
 
-/// Compile a parsed flat enum into an [`EnumSchema`], with any errors.
+/// Compile a parsed enum into an [`EnumSchema`], with any errors.
 ///
-/// A member's index in declaration order is its stored ordinal. The only
-/// single-declaration rule an enum has is member uniqueness, reported with the
-/// shared duplicate-member code so it reads like a resource's.
+/// Members flatten in pre-order DFS, so a member's index is its stored ordinal and
+/// a flat enum keeps its 0..n ordinals byte-identical. Member-name uniqueness is
+/// per sibling level (two `tiger`s under one parent collide; `Cat::tiger` and
+/// `Dog::tiger` do not), reported with the shared duplicate-member code so it reads
+/// like a resource's. The `category` flag and having children are held in lockstep:
+/// a `category` with no children is dead, and a non-`category` with children is a
+/// grouping node a value could never select — both are rejected, so every parent is
+/// a category and every non-category is a leaf.
 pub fn compile_enum(decl: &EnumDecl) -> (EnumSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
-    let mut seen: Vec<&str> = Vec::new();
     let mut members = Vec::new();
+    flatten_enum_members(&decl.members, None, &mut members, &mut errors);
+    let schema = EnumSchema {
+        name: decl.name.clone(),
+        docs: decl.docs.clone(),
+        members,
+    };
+    (schema, errors)
+}
 
-    for member in &decl.members {
+/// Append one sibling level to `members` in pre-order — each member before its
+/// own children — recording its `parent` ordinal and recursing into its nested
+/// members. A duplicate name at the same level is reported and dropped, so the
+/// stored members and their ordinals reflect only the distinct ones.
+fn flatten_enum_members(
+    siblings: &[EnumMember],
+    parent: Option<usize>,
+    members: &mut Vec<EnumMemberSchema>,
+    errors: &mut Vec<SchemaError>,
+) {
+    let mut seen: Vec<&str> = Vec::new();
+    for member in siblings {
         if seen.contains(&member.name.as_str()) {
-            // Report the duplicate but do not store it, so members and their
-            // ordinals reflect only the distinct members.
             errors.push(SchemaError {
                 code: SCHEMA_DUPLICATE_MEMBER,
                 message: format!("duplicate enum member `{}`", member.name),
@@ -507,19 +702,37 @@ pub fn compile_enum(decl: &EnumDecl) -> (EnumSchema, Vec<SchemaError>) {
             continue;
         }
         seen.push(&member.name);
+        if member.category && member.members.is_empty() {
+            errors.push(SchemaError {
+                code: SCHEMA_CATEGORY_LEAF,
+                message: format!(
+                    "category `{}` has no members; a category must group nested members",
+                    member.name
+                ),
+                span: member.span,
+            });
+        } else if !member.category && !member.members.is_empty() {
+            errors.push(SchemaError {
+                code: SCHEMA_PARENT_NOT_CATEGORY,
+                message: format!(
+                    "`{}` has nested members but is not a category; mark a grouping member \
+                     `category`, since a value selects a concrete member under it, not the \
+                     group itself",
+                    member.name
+                ),
+                span: member.span,
+            });
+        }
+        let ordinal = members.len();
         members.push(EnumMemberSchema {
             name: member.name.clone(),
             docs: member.docs.clone(),
             stable_id: member.stable_id.clone(),
+            parent,
+            category: member.category,
         });
+        flatten_enum_members(&member.members, Some(ordinal), members, errors);
     }
-
-    let schema = EnumSchema {
-        name: decl.name.clone(),
-        docs: decl.docs.clone(),
-        members,
-    };
-    (schema, errors)
 }
 
 /// Report the saved-data rules for a managed saved resource: reject `unknown`

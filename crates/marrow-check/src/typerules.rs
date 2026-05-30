@@ -181,6 +181,7 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
         BinaryOp::Coalesce => "??",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
+        BinaryOp::Is => "is",
     }
 }
 

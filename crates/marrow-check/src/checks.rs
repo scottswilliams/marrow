@@ -1109,6 +1109,9 @@ pub(crate) fn check_binary(
         // `??` constrains its operands by the path's leaf type, not by scalar
         // shape alone, so it is typed in `check_coalesce` before reaching here.
         BinaryOp::Coalesce => (left == right, MarrowType::Primitive(left)),
+        // `is` is the nominal enum-subtree predicate, typed in `check_is` before
+        // reaching here; a scalar operand never satisfies it.
+        BinaryOp::Is => (false, MarrowType::Primitive(ScalarType::Bool)),
     };
     if !valid {
         diagnostics.push(operator_diagnostic(

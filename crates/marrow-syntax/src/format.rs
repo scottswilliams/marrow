@@ -8,15 +8,15 @@
 
 use crate::{
     ArgMode, Argument, BinaryOp, Block, Comment, CommentPlacement, ConstDecl, Declaration,
-    EnumDecl, Expression, FunctionDecl, InterpolationPart, KeyParam, ParamDecl, ParamMode,
-    ResourceDecl, ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
+    EnumDecl, EnumMember, Expression, FunctionDecl, InterpolationPart, KeyParam, ParamDecl,
+    ParamMode, ResourceDecl, ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
 /// parentheses are required. Atoms (literals, names, calls, fields, …) bind
 /// tightest; `or` binds loosest.
-const PREC_ATOM: u8 = 10;
-const PREC_UNARY: u8 = 9;
+const PREC_ATOM: u8 = 11;
+const PREC_UNARY: u8 = 10;
 
 /// One indentation level in canonical Marrow source.
 const INDENT: &str = "    ";
@@ -103,9 +103,24 @@ fn format_enum(decl: &EnumDecl) -> String {
     let visibility = if decl.public { "pub " } else { "" };
     out.push_str(&format!("{visibility}enum {}", decl.name));
     for member in &decl.members {
-        out.push('\n');
-        out.push_str(&format_member_meta(&member.docs, &member.stable_id, 1));
-        out.push_str(&format!("{}{}", INDENT, member.name));
+        out.push_str(&format_enum_member(member, 1));
+    }
+    out
+}
+
+/// Render one enum member and its nested members, each on its own line at the
+/// given indent depth. A `category` member leads with the `category` word.
+fn format_enum_member(member: &EnumMember, level: usize) -> String {
+    let mut out = String::from("\n");
+    out.push_str(&format_member_meta(&member.docs, &member.stable_id, level));
+    let category = if member.category { "category " } else { "" };
+    out.push_str(&format!(
+        "{}{category}{}",
+        INDENT.repeat(level),
+        member.name
+    ));
+    for child in &member.members {
+        out.push_str(&format_enum_member(child, level + 1));
     }
     out
 }
@@ -442,7 +457,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             for arm in arms {
                 out.push_str(&format!(
                     "\n{arm_pad}{}\n{}",
-                    arm.member,
+                    arm.path.join("::"),
                     format_block(source, &arm.block, level + 2)
                 ));
             }
@@ -612,22 +627,24 @@ fn binary_precedence(op: BinaryOp) -> u8 {
     match op {
         BinaryOp::Or => 1,
         BinaryOp::And => 2,
-        BinaryOp::Equal | BinaryOp::NotEqual => 3,
-        BinaryOp::Coalesce => 4,
-        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 5,
-        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => 6,
-        BinaryOp::Concat => 7,
-        BinaryOp::Add | BinaryOp::Subtract => 8,
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => 9,
+        BinaryOp::Is => 3,
+        BinaryOp::Equal | BinaryOp::NotEqual => 4,
+        BinaryOp::Coalesce => 5,
+        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 6,
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => 7,
+        BinaryOp::Concat => 8,
+        BinaryOp::Add | BinaryOp::Subtract => 9,
+        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => 10,
     }
 }
 
-/// Equality, `??`, comparison, and range are non-associative per the grammar;
-/// all other binary operators are left-associative.
+/// `is`, equality, `??`, comparison, and range are non-associative per the
+/// grammar; all other binary operators are left-associative.
 fn is_left_associative(op: BinaryOp) -> bool {
     !matches!(
         op,
-        BinaryOp::Equal
+        BinaryOp::Is
+            | BinaryOp::Equal
             | BinaryOp::NotEqual
             | BinaryOp::Coalesce
             | BinaryOp::Less
@@ -656,6 +673,7 @@ fn binary_symbol(op: BinaryOp) -> &'static str {
         BinaryOp::Coalesce => "??",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
+        BinaryOp::Is => "is",
         // Ranges are emitted without spaces by `format_binary`.
         BinaryOp::RangeExclusive => "..",
         BinaryOp::RangeInclusive => "..=",

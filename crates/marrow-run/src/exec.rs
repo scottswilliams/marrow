@@ -338,7 +338,15 @@ pub(crate) fn eval_match(
         .and_then(|(module, name)| enum_in(env.program, module, name))
         .ok_or_else(|| unsupported("a match over a non-enum value", span))?;
     for arm in arms {
-        if schema.ordinal(&arm.member) == Some(ordinal as usize) {
+        // An arm is a member path relative to the scrutinee enum; the checker proved
+        // it walks to a single member and that arms do not overlap. A concrete-leaf
+        // arm covers its own ordinal; a category arm covers every descendant, so both
+        // reduce to the inclusive `is_descendant` from the arm's ordinal. The walk is
+        // the same one the checker used, so dispatch and coverage cannot drift.
+        let segments: Vec<&str> = arm.path.iter().map(String::as_str).collect();
+        if let MemberPathResolution::Found(arm_ordinal) = schema.walk_member_path(&segments)
+            && schema.is_descendant(ordinal as usize, arm_ordinal)
+        {
             return eval_block(&arm.block, env);
         }
     }

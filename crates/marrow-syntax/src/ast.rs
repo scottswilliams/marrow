@@ -222,6 +222,10 @@ pub enum BinaryOp {
     /// The absence-default `??`: yields the left path read when populated, else
     /// the right default. The left operand must be a path read or `?.` chain.
     Coalesce,
+    /// The enum-subtree test `is`: true when the left value sits at or under the
+    /// right member in its enum's hierarchy. Exact for a concrete leaf, a subtree
+    /// test for a category. Complements `==`, which is exact nominal equality.
+    Is,
     And,
     Or,
 }
@@ -290,9 +294,10 @@ pub struct FunctionDecl {
     pub span: SourceSpan,
 }
 
-/// A flat enum: a named, fixed set of bare member values, generalizing `bool`.
-/// `public` is recorded for `pub enum` consistency with `pub fn`; it is not yet
-/// enforced.
+/// An enum: a named, fixed set of member values, generalizing `bool`. Members
+/// may nest into a tree (`Cat::tiger::bengal`); a flat enum is the degenerate
+/// one-level tree. `public` is recorded for `pub enum` consistency with `pub fn`;
+/// it is not yet enforced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
     pub docs: Vec<String>,
@@ -302,13 +307,17 @@ pub struct EnumDecl {
     pub span: SourceSpan,
 }
 
-/// One enum member: a bare identifier. `stable_id` is a reserved slot for the
-/// rename-safe stable-id work; the parser always leaves it `None` for now.
+/// One enum member: a bare identifier, optionally with nested members under it.
+/// A `category` member groups its descendants and is not selectable as a value.
+/// `stable_id` is a reserved slot for the rename-safe stable-id work; the parser
+/// always leaves it `None` for now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMember {
     pub docs: Vec<String>,
     pub stable_id: Option<String>,
     pub name: String,
+    pub category: bool,
+    pub members: Vec<EnumMember>,
     pub span: SourceSpan,
 }
 
@@ -426,9 +435,12 @@ pub enum Statement {
         span: SourceSpan,
     },
     /// A `match` over an enum-typed scrutinee: each arm names one member of the
-    /// enum and holds the block to run when the scrutinee selects it. Arms name a
-    /// bare member (the scrutinee supplies the enum); a local enum's `match` has
-    /// no wildcard arm. Exhaustiveness and member validity are checker rules.
+    /// enum and holds the block to run when the scrutinee selects it. An arm is a
+    /// member path *relative* to the scrutinee enum — a bare leaf (`bengal`), a
+    /// qualified path (`tiger::bengal`), or a category (`tiger`, its whole subtree).
+    /// The scrutinee supplies the enum, so an arm carries no enum prefix; a local
+    /// enum's `match` has no wildcard arm. Exhaustiveness and member validity are
+    /// checker rules.
     ///
     /// `enum_name`/`enum_module` are the scrutinee's resolved enum identity,
     /// filled by the checker (`enum_module` is the owning module's qualified name,
@@ -444,11 +456,13 @@ pub enum Statement {
     },
 }
 
-/// One arm of a `match` statement: a bare member name and the block run when the
-/// scrutinee selects that member.
+/// One arm of a `match` statement: a member path relative to the scrutinee enum
+/// and the block run when the scrutinee selects a member under it. `path` is the
+/// `::`-separated segments as written (`["tiger", "bengal"]`, or just `["bengal"]`
+/// for a bare leaf); the checker walks it against the scrutinee enum's member tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
-    pub member: String,
+    pub path: Vec<String>,
     pub block: Block,
     pub span: SourceSpan,
 }

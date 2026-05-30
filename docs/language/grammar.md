@@ -108,13 +108,24 @@ enum_decl       =
     visibility? "enum" identifier NEWLINE
     INDENT enum_member+ DEDENT ;
 
-enum_member     = doc_comment* identifier NEWLINE ;
+enum_member     =
+    doc_comment* "category"? identifier NEWLINE
+    (INDENT enum_member+ DEDENT)? ;
 ```
 
-A member is a bare name; it takes no type, key parameters, or nested body. A
-member reference `Enum "::" member` resolves nominally to the enclosing module's
-enum; the qualified `module "::" Enum "::" member` names another module's enum
-exactly (see the `qualified_name` rule under Primary Expressions).
+A member is a bare name; it takes no type or key parameters. Members may nest:
+the indented block beneath a member is its nested members, so a member path
+`Enum "::" member ("::" member)*` walks the tree. The optional `category` lead
+marks a member a grouping node, not selectable as a value. A member is a category
+exactly when it has nested members: a category must have nested members, and a
+member with nested members must be a category. `category` is contextual — recognized only as the lead of an
+enum-member line — so it is a valid identifier elsewhere. A member reference walks
+the member path after the enum: `Enum "::" member ("::" member)*` resolves
+nominally to the enclosing module's enum, and the qualified `module "::" Enum "::"
+member ...` names another module's enum exactly (see the `qualified_name` rule
+under Primary Expressions). A bare `Enum "::" leaf` resolves only when that leaf
+name is unique in the enum; a name shared by several parents must be written as its
+full path.
 
 ## Functions
 
@@ -236,13 +247,16 @@ loop_label      = identifier ":" ;
 for_binding     = identifier | identifier "," identifier ;
 
 match_stmt      = "match" expression NEWLINE INDENT match_arm+ DEDENT ;
-match_arm       = identifier NEWLINE block ;
+match_arm       = identifier ("::" identifier)* NEWLINE block ;
 ```
 
-A `match` dispatches on an enum value. Each arm names one member by its bare name
-(the scrutinee supplies the enum, so an arm is `archived`, not `Status::archived`).
-The checker requires the arms to cover every member exactly once; there is no
-wildcard arm. See [Enums](enums.md).
+A `match` dispatches on an enum value. Each arm is a member path relative to the
+scrutinee enum (the scrutinee supplies the enum, so an arm is `archived` or
+`tiger::bengal`, not `Status::archived`). For a nested enum an arm may be a
+qualified path to one leaf or a category to cover its whole subtree; a bare arm
+name must be unambiguous, else it is qualified. The checker requires the arms to
+cover every selectable leaf exactly once; there is no wildcard arm. See
+[Enums](enums.md).
 
 ## Transactions, Locks, Try/Catch
 
@@ -271,7 +285,9 @@ reads.
 expression      = or_expr ;
 
 or_expr         = and_expr ("or" and_expr)* ;
-and_expr        = equality_expr ("and" equality_expr)* ;
+and_expr        = is_expr ("and" is_expr)* ;
+
+is_expr         = equality_expr ("is" equality_expr)? ;
 
 equality_expr   =
     coalesce_expr (("==" | "!=") coalesce_expr)? ;
@@ -307,6 +323,13 @@ field_name      = identifier | string_lit ;
 so `name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. Its left operand
 must be a path read or a `?.` chain; that constraint is enforced by the checker,
 not the grammar.
+
+`is` is the enum-subtree test: `value is Enum::member` is `true` when the value is
+at or under that member, exact for a concrete leaf. It is a reserved word, sits
+between `and` and `==`, and is non-associative (`a is X is Y` is rejected). The
+right operand is a member path of the same enum (a full path reaches a duplicated
+leaf, a bare name must be unambiguous); that constraint is enforced by the checker.
+See [Enums](enums.md).
 
 ## Primary Expressions
 

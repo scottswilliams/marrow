@@ -2078,17 +2078,33 @@ fn rejects_an_enum_member_with_parameters() {
 }
 
 #[test]
-fn rejects_a_nested_enum_member() {
-    let parsed = parse_source("module app\nenum Status\n    active\n        nested\n");
-    assert!(parsed.has_errors());
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("no nested body")),
-        "{:#?}",
-        parsed.diagnostics
+fn parses_nested_enum_members_into_a_tree() {
+    let parsed = parse_source(
+        "module app\nenum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n",
     );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
+    assert_eq!(member_names(cat), ["tiger", "housecat"]);
+    let tiger = &cat.members[0];
+    assert!(tiger.category, "tiger should be a category");
+    let nested: Vec<&str> = tiger.members.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(nested, ["bengal", "siberian"]);
+    assert!(
+        cat.members[1].members.is_empty(),
+        "housecat has no children"
+    );
+}
+
+#[test]
+fn the_category_modifier_sets_the_flag_and_a_bare_member_does_not() {
+    let parsed =
+        parse_source("module app\nenum Cat\n    category tiger\n        bengal\n    housecat\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
+    assert!(cat.members[0].category, "category tiger");
+    assert!(!cat.members[1].category, "bare housecat");
+    // The nested member is a plain member, not a category.
+    assert!(!cat.members[0].members[0].category, "bengal");
 }
 
 #[test]
@@ -2118,14 +2134,39 @@ fn parses_a_match_statement_with_bare_member_arms() {
         panic!("expected a match, got {:?}", f.body.statements[0]);
     };
     assert!(matches!(scrutinee, Some(Expression::Name { .. })));
-    let members: Vec<&str> = arms.iter().map(|arm| arm.member.as_str()).collect();
-    assert_eq!(members, ["active", "archived"]);
+    let paths: Vec<Vec<&str>> = arms
+        .iter()
+        .map(|arm| arm.path.iter().map(String::as_str).collect())
+        .collect();
+    assert_eq!(paths, [vec!["active"], vec!["archived"]]);
     // Each arm carries its own block.
     assert_eq!(arms[0].block.statements.len(), 1);
 }
 
 #[test]
-fn rejects_a_match_arm_that_is_not_a_bare_member() {
+fn parses_a_match_arm_that_is_a_qualified_member_path() {
+    // A qualified arm `tiger::bengal` and a category arm `lion` parse into their
+    // relative `::`-separated segments; the scrutinee supplies the enum.
+    let parsed = parse_source(
+        "module app\n\
+         fn f(c: Cat)\n    \
+         match c\n        tiger::bengal\n            print(\"a\")\n        \
+         lion\n            print(\"b\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("f");
+    let Statement::Match { arms, .. } = &f.body.statements[0] else {
+        panic!("expected a match, got {:?}", f.body.statements[0]);
+    };
+    let paths: Vec<Vec<&str>> = arms
+        .iter()
+        .map(|arm| arm.path.iter().map(String::as_str).collect())
+        .collect();
+    assert_eq!(paths, [vec!["tiger", "bengal"], vec!["lion"]]);
+}
+
+#[test]
+fn rejects_a_match_arm_that_is_not_a_member_path() {
     let parsed = parse_source(
         "module app\n\
          fn f(s: Status)\n    \
@@ -2136,10 +2177,53 @@ fn rejects_a_match_arm_that_is_not_a_bare_member() {
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("bare member name")),
+            .any(|d| d.message.contains("member path")),
         "{:#?}",
         parsed.diagnostics
     );
+}
+
+#[test]
+fn parses_the_is_operator() {
+    let parsed = parse_source("module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("f");
+    let Statement::Return {
+        value: Some(Expression::Binary { op, right, .. }),
+        ..
+    } = &f.body.statements[0]
+    else {
+        panic!("expected a binary return, got {:?}", f.body.statements[0]);
+    };
+    assert_eq!(*op, BinaryOp::Is);
+    // The right operand is the member-path `Cat::tiger`.
+    let Expression::Name { segments, .. } = right.as_ref() else {
+        panic!("expected a name on the right, got {right:?}");
+    };
+    assert_eq!(segments, &["Cat", "tiger"]);
+}
+
+#[test]
+fn rejects_a_chained_is() {
+    let parsed = parse_source(
+        "module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger is Cat::housecat\n",
+    );
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn a_three_segment_member_path_parses_as_one_name() {
+    let parsed = parse_source("module app\nfn f(): Cat\n    return Cat::tiger::bengal\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("f");
+    let Statement::Return {
+        value: Some(Expression::Name { segments, .. }),
+        ..
+    } = &f.body.statements[0]
+    else {
+        panic!("expected a name return, got {:?}", f.body.statements[0]);
+    };
+    assert_eq!(segments, &["Cat", "tiger", "bengal"]);
 }
 
 /// `(name, ty, docs)` triples for every parameter of a single function, for
