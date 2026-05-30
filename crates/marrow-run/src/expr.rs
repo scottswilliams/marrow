@@ -144,25 +144,35 @@ pub(crate) fn eval_interpolation(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
+    let mut decoded_text = Vec::new();
+    for part in parts {
+        if let InterpolationPart::Text { text, .. } = part {
+            let text = decode_string_escapes(text, span)?;
+            // Literal text is validated before expression holes run, so malformed
+            // escapes cannot be hidden behind side effects or expression faults.
+            decoded_text.push(if text.contains(['{', '}']) {
+                text.replace("{{", "{").replace("}}", "}")
+            } else {
+                text
+            });
+        }
+    }
+
+    let mut decoded_text = decoded_text.into_iter();
     let mut result = String::new();
     for part in parts {
         match part {
-            InterpolationPart::Text { text, .. } => {
-                // Backslash escapes are not decoded (as for plain strings).
-                if text.contains('\\') {
-                    return Err(unsupported("string escape sequences", span));
-                }
-                // A doubled-brace escape can only occur when a brace is present, so
-                // a brace-free part is already literal — push it without allocating.
-                if text.contains(['{', '}']) {
-                    result.push_str(&text.replace("{{", "{").replace("}}", "}"));
-                } else {
-                    result.push_str(text);
-                }
+            InterpolationPart::Text { .. } => {
+                result.push_str(
+                    &decoded_text
+                        .next()
+                        .expect("one decoded text segment per interpolation text part"),
+                );
             }
             InterpolationPart::Expr(expr) => result.push_str(&render(eval_expr(expr, env)?, span)?),
         }
     }
+    debug_assert!(decoded_text.next().is_none());
     Ok(Value::Str(result))
 }
 
@@ -223,30 +233,83 @@ fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeE
 }
 
 /// Decode a string literal's value. The literal `text` is the raw source,
-/// including the surrounding quotes; escape sequences are not decoded, so a
-/// literal containing a backslash is reported as unsupported rather than guessed.
+/// including the surrounding quotes.
 pub(crate) fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let inner = text
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .ok_or_else(|| unsupported("this string literal", span))?;
-    if inner.contains('\\') {
-        return Err(unsupported("string escape sequences", span));
-    }
-    Ok(Value::Str(inner.to_string()))
+    Ok(Value::Str(decode_string_escapes(inner, span)?))
 }
 
-/// Decode a bytes literal `b"..."` to its raw bytes (the content's UTF-8). Like
-/// string literals, escape sequences are not decoded.
+fn decode_string_escapes(text: &str, span: SourceSpan) -> Result<String, RuntimeError> {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            result.push(ch);
+            continue;
+        }
+        let Some(escaped) = chars.next() else {
+            return Err(unsupported("string escape sequences", span));
+        };
+        result.push(match escaped {
+            '\\' => '\\',
+            '"' => '"',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            _ => return Err(unsupported("string escape sequences", span)),
+        });
+    }
+    Ok(result)
+}
+
+/// Decode a bytes literal `b"..."` to its raw bytes. Ordinary text contributes
+/// its UTF-8 bytes, while bytes escapes can emit arbitrary byte values.
 pub(crate) fn eval_bytes_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let inner = text
         .strip_prefix("b\"")
         .and_then(|rest| rest.strip_suffix('"'))
         .ok_or_else(|| unsupported("this bytes literal", span))?;
-    if inner.contains('\\') {
-        return Err(unsupported("bytes escape sequences", span));
+    Ok(Value::Bytes(decode_bytes_escapes(inner, span)?))
+}
+
+fn decode_bytes_escapes(text: &str, span: SourceSpan) -> Result<Vec<u8>, RuntimeError> {
+    let mut result = Vec::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut buffer = [0; 4];
+            result.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
+            continue;
+        }
+        let Some(escaped) = chars.next() else {
+            return Err(unsupported("bytes escape sequences", span));
+        };
+        match escaped {
+            '\\' => result.push(b'\\'),
+            '"' => result.push(b'"'),
+            'n' => result.push(b'\n'),
+            'r' => result.push(b'\r'),
+            't' => result.push(b'\t'),
+            'x' => {
+                let Some(high) = chars.next().and_then(hex_digit) else {
+                    return Err(unsupported("bytes escape sequences", span));
+                };
+                let Some(low) = chars.next().and_then(hex_digit) else {
+                    return Err(unsupported("bytes escape sequences", span));
+                };
+                result.push((high << 4) | low);
+            }
+            _ => return Err(unsupported("bytes escape sequences", span)),
+        }
     }
-    Ok(Value::Bytes(inner.as_bytes().to_vec()))
+    Ok(result)
+}
+
+fn hex_digit(ch: char) -> Option<u8> {
+    ch.to_digit(16).and_then(|digit| u8::try_from(digit).ok())
 }
 
 pub(crate) fn eval_unary(

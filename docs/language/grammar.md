@@ -26,13 +26,25 @@ duration_unit   = "second" | "seconds" | "minute" | "minutes"
 string_lit      = "\"" string_char* "\"" ;
 interp_lit      = "$\"" interp_part* "\"" ;
 bytes_lit       = "b\"" byte_char* "\"" ;
+string_char     = string_text | string_escape ;
+string_escape   = "\\" ("\"" | "\\" | "n" | "r" | "t") ;
+interp_part     = interp_text | interp_expr ;
+interp_text     = (interp_text_char | string_escape | "{{" | "}}")+ ;
+interp_expr     = "{" expression "}" ;
+byte_char       = byte_text | byte_escape ;
+byte_escape     = string_escape | "\\x" hex_digit hex_digit ;
 
 comment         = ";" not_newline* ;
 doc_comment     = ";;" not_newline* ;
 
 letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
+hex_digit       = digit | "A".."F" | "a".."f" ;
 ```
+
+`string_text` is any UTF-8 scalar value except `"`, `\`, or newline.
+`byte_text` has the same source shape and contributes its UTF-8 bytes.
+`interp_text_char` additionally excludes unescaped `{` and `}`.
 
 Type names have one canonical spelling in source.
 

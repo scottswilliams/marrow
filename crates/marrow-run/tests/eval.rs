@@ -340,6 +340,35 @@ fn evaluates_bytes_literals_and_equality() {
 }
 
 #[test]
+fn bytes_escapes_are_decoded() {
+    let program = checked_program(
+        "pub fn f(): bytes\n    return b\"slash \\\\ quote \\\" line\\n carriage\\r tab\\t hex \\x00\\x7f\\xff café\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Bytes(
+            b"slash \\ quote \" line\n carriage\r tab\t hex \x00\x7f\xff caf\xc3\xa9".to_vec()
+        ))
+    );
+}
+
+#[test]
+fn malformed_bytes_escapes_are_rejected() {
+    for source in [
+        "pub fn f(): bytes\n    return b\"\\q\"\n",
+        "pub fn f(): bytes\n    return b\"\\x0g\"\n",
+        "pub fn f(): bytes\n    return b\"\\x0\"\n",
+    ] {
+        let program = checked_program(source);
+        let result = run(&program, "test::f", &[]);
+        assert!(
+            matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
 fn compares_bytes_by_byte_order() {
     let program = checked_program(
         "pub fn f(): bool\n    return b\"a\" < b\"b\"\n\n\
@@ -2176,10 +2205,21 @@ fn compares_strings_for_equality_and_order() {
 }
 
 #[test]
-fn string_escapes_are_not_decoded() {
-    // The source string contains a backslash escape, which the runtime does not
-    // decode.
-    let f = function("fn f(): string\n    return \"a\\nb\"\n");
+fn string_escapes_are_decoded() {
+    let f = function(
+        "fn f(): string\n    return \"slash \\\\ quote \\\" line\\n carriage\\r tab\\t\"\n",
+    );
+    assert_eq!(
+        evaluate_function(&f, &[]),
+        Ok(Some(Value::Str(
+            "slash \\ quote \" line\n carriage\r tab\t".into()
+        )))
+    );
+}
+
+#[test]
+fn unknown_string_escapes_are_rejected() {
+    let f = function("fn f(): string\n    return \"\\q\"\n");
     let result = evaluate_function(&f, &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
@@ -2221,6 +2261,40 @@ fn interpolation_unescapes_literal_braces() {
     assert_eq!(
         evaluate_function(&f, &[]),
         Ok(Some(Value::Str("a { b".into())))
+    );
+}
+
+#[test]
+fn interpolation_text_decodes_string_escapes() {
+    let f = function(
+        "fn f(name: string): string\n    return $\"slash \\\\ quote \\\" {{\\n{name}\\r\\t}}\"\n",
+    );
+    assert_eq!(
+        evaluate_function(&f, &[Value::Str("Ada".into())]),
+        Ok(Some(Value::Str("slash \\ quote \" {\nAda\r\t}".into())))
+    );
+}
+
+#[test]
+fn unknown_interpolation_escapes_are_rejected() {
+    let f = function("fn f(): string\n    return $\"\\q\"\n");
+    let result = evaluate_function(&f, &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn interpolation_rejects_later_bad_escapes_before_evaluating_holes() {
+    let program = checked_program(
+        "fn boom(): decimal\n    return 1.0 / 0.0\n\n\
+         fn f(): string\n    return $\"{boom()}\\q\"\n",
+    );
+    let result = run(&program, "test::f", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
     );
 }
 

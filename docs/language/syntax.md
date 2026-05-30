@@ -222,11 +222,14 @@ operator.
 
 ## Strings
 
-Ordinary strings are byte-exact UTF-8 text:
+Ordinary strings are UTF-8 text:
 
 ```mw
 const title = "Small Gods"
 ```
+
+String literals decode `\\`, `\"`, `\n`, `\r`, and `\t`. Other backslash
+escapes are rejected at runtime.
 
 Interpolation is explicit with `$"..."`:
 
@@ -234,9 +237,9 @@ Interpolation is explicit with `$"..."`:
 write($"book {id}: {title}")
 ```
 
-Inside interpolation strings, `{{` emits `{` and `}}` emits `}`.
-Interpolation expressions are ordinary expressions and cannot contain
-statements.
+Inside interpolation strings, text segments decode the same string escapes;
+`{{` emits `{` and `}}` emits `}`. Interpolation expressions are ordinary
+expressions and cannot contain statements.
 
 Interpolation formats values as text for that string. It does not create an
 implicit conversion for assignment, calls, or saved writes.
@@ -246,6 +249,9 @@ Byte literals use `b"..."`:
 ```mw
 const marker: bytes = b"marrow"
 ```
+
+Byte literals decode `\\`, `\"`, `\n`, `\r`, `\t`, and `\xNN`, where each `N`
+is a hex digit. Unescaped non-ASCII text contributes its UTF-8 bytes.
 
 ## Duration Literals
 
