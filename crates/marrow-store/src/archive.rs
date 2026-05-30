@@ -8,7 +8,7 @@
 //! files. Restore replays the records inside one transaction, so a target either
 //! gains the whole archive or is left unchanged.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 
 use crate::backend::{Backend, StoreError};
 
@@ -49,7 +49,8 @@ pub fn write_archive(backend: &dyn Backend, out: &mut dyn Write) -> Result<u64, 
 pub fn read_archive(input: &mut dyn Read, backend: &mut dyn Backend) -> Result<u64, StoreError> {
     let count = read_header(input)?;
     backend.begin()?;
-    match restore_records(input, backend, count) {
+    let result = restore_records(input, backend, count).and_then(|()| require_archive_eof(input));
+    match result {
         Ok(()) => {
             backend.commit()?;
             Ok(count)
@@ -94,6 +95,23 @@ fn restore_records(
         backend.write(&path, value)?;
     }
     Ok(())
+}
+
+/// Require the archive body to end exactly after its declared records.
+fn require_archive_eof(input: &mut dyn Read) -> Result<(), StoreError> {
+    let mut trailing = [0u8; 1];
+    loop {
+        match input.read(&mut trailing) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {
+                return Err(StoreError::Corruption {
+                    message: "archive has trailing bytes after its declared record count".into(),
+                });
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(io("restore")(error)),
+        }
+    }
 }
 
 /// Write a length-prefixed byte chunk: `u32` little-endian length, then bytes.
