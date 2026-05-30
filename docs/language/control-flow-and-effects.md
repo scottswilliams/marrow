@@ -38,7 +38,42 @@ for i in 1..=10
     write($"{i}")      ; 1 through 10
 ```
 
-Ranges use `int` endpoints.
+`..` excludes the end; `..=` includes it. A range exists only as a loop iterable,
+not as a value.
+
+The two endpoints must be the same steppable type: `int`, `decimal`, `date`, or
+`instant`. The loop variable binds to that type, so the body is fully type-checked.
+A non-steppable endpoint (string, bool, enum) is a check error.
+
+A `by` step sets the increment. For `int` and `decimal` endpoints the step is a
+number of the same type; for `date` and `instant` endpoints it is a duration:
+
+```mw
+for i in 0..10 by 2          ; 0, 2, 4, 6, 8
+for x in 0.0..1.0 by 0.25    ; 0.0, 0.25, 0.50, 0.75
+for d in start..=end by 1.day
+for t in startInstant..endInstant by 1.hour
+```
+
+When `by` is omitted, `int` defaults to a step of `1` and `date` to one calendar
+day. `decimal` and `instant` have no safe default, so a range over either requires
+an explicit `by` step.
+
+A `date` steps in whole calendar days using calendar arithmetic, so it crosses
+month and leap-day boundaries correctly; the date step must be a whole number of
+days. An `instant` steps by its duration in UTC.
+
+A loop never runs forever. For `int` and `decimal` the step's sign sets the
+direction: a positive step ascends, a negative one descends. A step pointing away
+from the end iterates zero times rather than looping endlessly — `10..1 by -1`
+counts down, while `1..10 by -1` and `10..1` (default `+1`) both run zero times. When
+the endpoints and step are all literals and the direction is provably empty, that
+dead loop is a check error; a wrong direction from a variable is simply an empty
+loop. A zero step never progresses and is rejected.
+
+`date` and `instant` ranges ascend only: a duration is never negative, so the step
+must be a positive duration and descending temporal ranges are not yet supported. A
+negated duration step (`by -1.day`) is a check error.
 
 Tree loops iterate one layer at a time:
 

@@ -168,6 +168,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
+| `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (a number for `int`/`decimal`, a positive duration for `date`/`instant`). `decimal` and `instant` require an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 
 ### `schema.*` — kind `check`
 

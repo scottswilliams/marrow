@@ -241,7 +241,7 @@ while_stmt      = loop_label? "while" expression NEWLINE block ;
 
 for_stmt        =
     loop_label?
-    "for" for_binding "in" expression NEWLINE block ;
+    "for" for_binding "in" expression ("by" expression)? NEWLINE block ;
 
 loop_label      = identifier ":" ;
 for_binding     = identifier | identifier "," identifier ;
@@ -249,6 +249,10 @@ for_binding     = identifier | identifier "," identifier ;
 match_stmt      = "match" expression NEWLINE INDENT match_arm+ DEDENT ;
 match_arm       = identifier ("::" identifier)* NEWLINE block ;
 ```
+
+The `by` step is valid only on a range iterable (`lo..hi` or `lo..=hi`); the checker
+rejects it on any other iterable. `by` is contextual — recognized only in this
+position, so a name `by` elsewhere is unaffected.
 
 A `match` dispatches on an enum value. Each arm is a member path relative to the
 scrutinee enum (the scrutinee supplies the enum, so an arm is `archived` or

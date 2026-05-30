@@ -1,6 +1,10 @@
 //! The type-check driver passes over a parsed file: return placement, operator,
 //! condition, assignment, call, and saved-key argument checks.
 
+use std::cmp::Ordering;
+
+use marrow_store::Decimal;
+
 use super::*;
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
@@ -560,12 +564,22 @@ pub(crate) fn check_statement_types(
         Statement::For {
             binding,
             iterable,
+            step,
             body,
             ..
         } => {
             // Inferring the iterable here also operator-checks it; its diagnostics
             // belong to the type pass, so `for_frame` re-infers with a discard sink.
             infer_type(program, iterable, scope, aliases, file, diagnostics);
+            check_range_header(
+                program,
+                file,
+                iterable,
+                step.as_ref(),
+                scope,
+                aliases,
+                diagnostics,
+            );
             let frame = for_frame(program, binding, iterable, scope, aliases, file);
             scope.push(frame);
             check_block_types(
@@ -687,6 +701,11 @@ pub(crate) fn for_frame(
     let iterable_type = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
     let first_type = match (&binding.second, &iterable_type) {
         (None, MarrowType::Sequence(element)) => (**element).clone(),
+        // A range binds its single variable to its endpoint type, so the body type-
+        // checks (`for x in lo..hi`: `x` is the endpoint scalar). Only a same-typed
+        // steppable-endpoint range types its variable; anything else stays unknown.
+        (None, _) => range_endpoint_type(program, iterable, scope, aliases, file)
+            .unwrap_or(MarrowType::Unknown),
         _ => MarrowType::Unknown,
     };
     let mut frame = HashMap::new();
@@ -695,6 +714,379 @@ pub(crate) fn for_frame(
         frame.insert(second.clone(), MarrowType::Unknown);
     }
     frame
+}
+
+/// The endpoint scalar type of a range iterable when both endpoints are the same
+/// steppable type, or `None` for any other iterable or a mismatched/non-steppable
+/// pair. A range binds its loop variable to this type.
+fn range_endpoint_type(
+    program: &CheckedProgram,
+    iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<MarrowType> {
+    let (left, right) = range_endpoints(iterable)?;
+    let left = infer_only(program, left, scope, aliases, file);
+    let right = infer_only(program, right, scope, aliases, file);
+    match (as_primitive(&left), as_primitive(&right)) {
+        (Some(lo), Some(hi)) if lo == hi && is_steppable(lo) => Some(MarrowType::Primitive(lo)),
+        _ => None,
+    }
+}
+
+/// The two endpoint expressions of a range, or `None` if the iterable is not a
+/// range.
+fn range_endpoints(
+    iterable: &marrow_syntax::Expression,
+) -> Option<(&marrow_syntax::Expression, &marrow_syntax::Expression)> {
+    use marrow_syntax::{BinaryOp, Expression};
+    match iterable {
+        Expression::Binary {
+            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+            left,
+            right,
+            ..
+        } => Some((left, right)),
+        _ => None,
+    }
+}
+
+/// Validate a range-for header beyond what the operator and binding checks cover:
+/// the endpoints must be the same steppable type, the `by` step (if any) must
+/// match — a number for int/decimal, a duration for date/instant — decimal and
+/// instant ranges require an explicit step, and a step that statically cannot run
+/// (a literal wrong-direction step, or a zero step) is rejected as a dead loop. A
+/// step on a non-range iterable is also rejected. The endpoint operator-typing is
+/// already reported by the type pass, so a non-steppable or mismatched endpoint
+/// pair is left to it; this pass owns the step and direction rules.
+pub(crate) fn check_range_header(
+    program: &CheckedProgram,
+    file: &Path,
+    iterable: &marrow_syntax::Expression,
+    step: Option<&marrow_syntax::Expression>,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some((left, right)) = range_endpoints(iterable) else {
+        // A step is only meaningful on a range; reject `by` on any other iterable.
+        if let Some(step) = step {
+            diagnostics.push(range_diagnostic(
+                file,
+                step.span(),
+                "a `by` step applies only to a range".to_string(),
+            ));
+        }
+        return;
+    };
+    let endpoint = match (
+        as_primitive(&infer_only(program, left, scope, aliases, file)),
+        as_primitive(&infer_only(program, right, scope, aliases, file)),
+    ) {
+        // A same-typed steppable endpoint pair is the only shape with step rules;
+        // a non-steppable or mismatched pair is reported by the operator check.
+        (Some(lo), Some(hi)) if lo == hi && is_steppable(lo) => lo,
+        _ => return,
+    };
+    let step_type = step.map(|step| as_primitive(&infer_only(program, step, scope, aliases, file)));
+    check_step_type(
+        file,
+        iterable.span(),
+        endpoint,
+        step,
+        step_type,
+        diagnostics,
+    );
+    check_temporal_step_sign(file, endpoint, step, diagnostics);
+    check_date_step_whole_days(file, endpoint, step, diagnostics);
+    check_dead_loop(file, iterable, left, right, step, diagnostics);
+}
+
+/// Reject a negated duration step on a `date`/`instant` range. A duration is always
+/// non-negative — `-1.day` faults, duration subtraction is rejected, and
+/// `parseDuration` rejects negatives — so a descending temporal range can never be
+/// produced at runtime: such a loop only faults. Rather than green-light a guaranteed
+/// fault, the check reports it now. Descending date/instant ranges are not yet
+/// expressible; int/decimal ranges still descend by a negative step.
+fn check_temporal_step_sign(
+    file: &Path,
+    endpoint: ScalarType,
+    step: Option<&marrow_syntax::Expression>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !matches!(endpoint, ScalarType::Date | ScalarType::Instant) {
+        return;
+    }
+    let Some(step) = step else { return };
+    if matches!(literal_int_sign(step), Some(sign) if sign < 0) {
+        diagnostics.push(range_diagnostic(
+            file,
+            step.span(),
+            format!(
+                "{} range step must be a positive duration; descending temporal ranges are not yet supported",
+                article_for(endpoint)
+            ),
+        ));
+    }
+}
+
+/// Reject a literal duration step on a `date` range that is not a whole number of
+/// days. A date has no time of day, so a sub-day or fractional-day step (`by 1.hour`,
+/// `by 25.hours`) faults at runtime; the checker reports the guaranteed fault now. An
+/// `instant` range carries a time component, so any positive duration steps it — this
+/// rule is `date`-only. Only a literal step is statically known; a variable step that
+/// is not a whole-day multiple still faults at runtime, which is correct.
+fn check_date_step_whole_days(
+    file: &Path,
+    endpoint: ScalarType,
+    step: Option<&marrow_syntax::Expression>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if endpoint != ScalarType::Date {
+        return;
+    }
+    let Some(step) = step else { return };
+    let Some(total_seconds) = literal_duration_seconds(step) else {
+        return;
+    };
+    const SECONDS_PER_DAY: i64 = 86_400;
+    if total_seconds % SECONDS_PER_DAY != 0 {
+        diagnostics.push(range_diagnostic(
+            file,
+            step.span(),
+            "a date range step must be a whole number of days".to_string(),
+        ));
+    }
+}
+
+/// The total seconds of a literal duration step (`1.hour` => 3600), or `None` for a
+/// non-literal or non-duration step. A negated duration is read through the negation
+/// so its magnitude is measured; the sign is handled separately.
+fn literal_duration_seconds(expr: &marrow_syntax::Expression) -> Option<i64> {
+    use marrow_syntax::{Expression, LiteralKind, UnaryOp, duration_unit_seconds};
+    match expr {
+        Expression::Literal {
+            kind: LiteralKind::Duration,
+            text,
+            ..
+        } => {
+            let (magnitude, unit) = text.split_once('.')?;
+            let magnitude: i64 = magnitude.parse().ok()?;
+            magnitude.checked_mul(duration_unit_seconds(unit)?)
+        }
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => literal_duration_seconds(operand),
+        _ => None,
+    }
+}
+
+/// The step-type rule: int/decimal endpoints step by a same-typed number;
+/// date/instant endpoints step by a duration. Decimal and instant have no safe
+/// default step, so omitting `by` there is an error; int defaults to 1 and date to
+/// one calendar day. An untyped (`unknown`) step defers.
+fn check_step_type(
+    file: &Path,
+    range_span: SourceSpan,
+    endpoint: ScalarType,
+    step: Option<&marrow_syntax::Expression>,
+    step_type: Option<Option<ScalarType>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let expected = match endpoint {
+        ScalarType::Int | ScalarType::Decimal => endpoint,
+        // date and instant step by a duration span.
+        _ => ScalarType::Duration,
+    };
+    match (step, step_type) {
+        (Some(step), Some(Some(actual))) if actual != expected => {
+            diagnostics.push(range_diagnostic(
+                file,
+                step.span(),
+                format!(
+                    "{} range steps by `{}`, not `{}`",
+                    article_for(endpoint),
+                    expected.name(),
+                    actual.name(),
+                ),
+            ));
+        }
+        (Some(_), _) => {}
+        // No `by`: decimal and instant require one; int and date have a default.
+        (None, _) => {
+            if matches!(endpoint, ScalarType::Decimal | ScalarType::Instant) {
+                diagnostics.push(range_diagnostic(
+                    file,
+                    range_span,
+                    format!(
+                        "{} range needs an explicit `by` step",
+                        article_for(endpoint)
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// A scalar named with its indefinite article and backtick spelling — `an `int``,
+/// `a `decimal``, `an `instant`` — so a range diagnostic reads naturally for both
+/// consonant- and vowel-initial type names. The two vowel-initial steppable
+/// spellings are `int` and `instant`.
+fn article_for(scalar: ScalarType) -> String {
+    let article = if matches!(scalar, ScalarType::Int | ScalarType::Instant) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{article} `{}`", scalar.name())
+}
+
+/// Reject a step that statically can never run. A zero step never progresses; a
+/// literal wrong-direction step over literal endpoints (`1..10 by -1`,
+/// `0.0..1.0 by -0.5`) is a dead loop. A variable endpoint or step is left to the
+/// runtime, where a wrong direction is simply an empty loop and a zero step faults.
+fn check_dead_loop(
+    file: &Path,
+    iterable: &marrow_syntax::Expression,
+    left: &marrow_syntax::Expression,
+    right: &marrow_syntax::Expression,
+    step: Option<&marrow_syntax::Expression>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(step_sign) = literal_step_sign(step) else {
+        return;
+    };
+    if step_sign == Ordering::Equal {
+        diagnostics.push(range_diagnostic(
+            file,
+            iterable.span(),
+            "a range step cannot be zero".to_string(),
+        ));
+        return;
+    }
+    // The endpoints' relative order: integer endpoints compare as integers, decimal
+    // endpoints as decimals. A mismatched or non-literal pair yields `None` and is
+    // left to the runtime.
+    let endpoints = literal_int_value(left)
+        .zip(literal_int_value(right))
+        .map(|(lo, hi)| lo.cmp(&hi))
+        .or_else(|| {
+            literal_decimal_value(left)
+                .zip(literal_decimal_value(right))
+                .map(|(lo, hi)| lo.cmp(&hi))
+        });
+    let Some(endpoints) = endpoints else {
+        return;
+    };
+    // An ascending step needs lo <= hi to run; a descending step needs lo >= hi.
+    // Equal endpoints with `..` are also empty, but that is a legitimate empty loop,
+    // not a wrong-direction bug, so only a provably wrong direction is flagged.
+    let wrong_direction = (step_sign == Ordering::Greater && endpoints == Ordering::Greater)
+        || (step_sign == Ordering::Less && endpoints == Ordering::Less);
+    if wrong_direction {
+        diagnostics.push(range_diagnostic(
+            file,
+            iterable.span(),
+            "this range steps away from its end and never runs".to_string(),
+        ));
+    }
+}
+
+/// The direction of a literal step against zero — `Greater` ascending, `Less`
+/// descending, `Equal` for a zero step — or `None` for a non-literal step (or an
+/// omitted one, which defaults to the ascending unit step). Reads both the
+/// int/duration sign and a decimal literal's sign so a dead decimal loop is caught.
+fn literal_step_sign(step: Option<&marrow_syntax::Expression>) -> Option<Ordering> {
+    let Some(step) = step else {
+        return Some(Ordering::Greater);
+    };
+    literal_int_sign(step)
+        .map(|sign| sign.cmp(&0))
+        .or_else(|| literal_decimal_value(step).map(|value| value.cmp(&Decimal::ZERO)))
+}
+
+/// The value of a literal decimal expression (`0.5`, `-0.5`), or `None` for a
+/// non-literal or non-decimal literal. Used to decide a static decimal range's
+/// direction and step sign.
+fn literal_decimal_value(expr: &marrow_syntax::Expression) -> Option<Decimal> {
+    use marrow_syntax::{Expression, LiteralKind, UnaryOp};
+    match expr {
+        Expression::Literal {
+            kind: LiteralKind::Decimal,
+            text,
+            ..
+        } => Decimal::parse(text),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => literal_decimal_value(operand).and_then(|value| Decimal::ZERO.checked_sub(value)),
+        _ => None,
+    }
+}
+
+/// The signed value of a literal integer expression (`5`, `-1`), or `None` for a
+/// non-literal or a duration/other literal. Used to decide a static range
+/// direction; a duration step's sign is read separately.
+fn literal_int_value(expr: &marrow_syntax::Expression) -> Option<i64> {
+    use marrow_syntax::{Expression, LiteralKind, UnaryOp};
+    match expr {
+        Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            ..
+        } => text.parse().ok(),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => literal_int_value(operand).and_then(i64::checked_neg),
+        _ => None,
+    }
+}
+
+/// The sign (-1, 0, +1) of a literal step — an integer literal or a duration
+/// literal, optionally negated — or `None` for a non-literal step. A duration
+/// literal's magnitude carries the sign through the unary negation.
+fn literal_int_sign(expr: &marrow_syntax::Expression) -> Option<i64> {
+    use marrow_syntax::{Expression, LiteralKind, UnaryOp};
+    match expr {
+        Expression::Literal {
+            kind: LiteralKind::Integer | LiteralKind::Duration,
+            text,
+            ..
+        } => duration_or_int_magnitude(text).map(i64::signum),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => literal_int_sign(operand).map(|sign| -sign),
+        _ => None,
+    }
+}
+
+/// The leading magnitude of an int or duration literal as a signed `i64` for a
+/// sign test: an int literal's value, or a duration literal's count before its
+/// unit (`1.day` => 1). Saturates so a huge magnitude still reports its sign.
+fn duration_or_int_magnitude(text: &str) -> Option<i64> {
+    let digits = text.split('.').next().unwrap_or(text);
+    digits
+        .parse::<i64>()
+        .ok()
+        .or(Some(if digits.is_empty() { 0 } else { i64::MAX }))
+}
+
+fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+    CheckDiagnostic {
+        code: CHECK_RANGE,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message,
+        span,
+    }
 }
 
 /// Type-check an `if`/`while` condition. Inferring it also operator-checks it;
@@ -1101,11 +1493,13 @@ pub(crate) fn check_binary(
             left == ScalarType::Bool && right == ScalarType::Bool,
             MarrowType::Primitive(ScalarType::Bool),
         ),
-        // A range is not a value an operator consumes; accept int endpoints.
-        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => (
-            left == ScalarType::Int && right == ScalarType::Int,
-            MarrowType::Unknown,
-        ),
+        // A range is not a value an operator consumes; accept two endpoints of the
+        // same steppable type. The endpoint typing, step, and direction rules are a
+        // separate range-for check, so this only rejects a non-steppable or
+        // mismatched endpoint pairing.
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
+            (is_steppable(left) && left == right, MarrowType::Unknown)
+        }
         // `??` constrains its operands by the path's leaf type, not by scalar
         // shape alone, so it is typed in `check_coalesce` before reaching here.
         BinaryOp::Coalesce => (left == right, MarrowType::Primitive(left)),

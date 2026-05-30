@@ -298,6 +298,51 @@ fn parses_keyed_var_declaration() {
 }
 
 #[test]
+fn parses_a_range_for_by_step() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   for i in 1..10 by 2\n\
+         \x20       print($\"{i}\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::For { iterable, step, .. } = &run.body.statements[0] else {
+        panic!("expected for, got {:?}", run.body.statements[0]);
+    };
+    assert!(
+        matches!(
+            iterable,
+            Expression::Binary {
+                op: BinaryOp::RangeExclusive,
+                ..
+            }
+        ),
+        "{iterable:?}"
+    );
+    let Some(Expression::Literal { text, .. }) = step.as_ref() else {
+        panic!("expected an integer step literal, got {step:?}");
+    };
+    assert_eq!(text, "2");
+}
+
+#[test]
+fn a_range_for_without_by_has_no_step() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   for i in 1..10\n\
+         \x20       print($\"{i}\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::For { step, .. } = &run.body.statements[0] else {
+        panic!("expected for, got {:?}", run.body.statements[0]);
+    };
+    assert_eq!(*step, None);
+}
+
+#[test]
 fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
     let parsed = parse_source(
         "module app\n\

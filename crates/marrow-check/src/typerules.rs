@@ -140,6 +140,17 @@ pub(crate) fn is_numeric(scalar: ScalarType) -> bool {
     matches!(scalar, ScalarType::Int | ScalarType::Decimal)
 }
 
+/// Whether a scalar can be the endpoint of a range-for loop. A range walks evenly
+/// spaced values, so its endpoint type must support a step: a number for int and
+/// decimal, a duration for the temporal date and instant. String, bool, bytes, and
+/// duration itself are not steppable endpoints.
+pub(crate) fn is_steppable(scalar: ScalarType) -> bool {
+    matches!(
+        scalar,
+        ScalarType::Int | ScalarType::Decimal | ScalarType::Date | ScalarType::Instant
+    )
+}
+
 pub(crate) fn is_ordered(scalar: ScalarType) -> bool {
     matches!(
         scalar,

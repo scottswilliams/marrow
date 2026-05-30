@@ -1907,6 +1907,124 @@ fn an_exclusive_for_range_stops_before_the_end() {
 }
 
 #[test]
+fn an_int_range_steps_by_a_positive_by_value() {
+    // `1..10 by 2` yields 1, 3, 5, 7, 9 (exclusive end), summing to 25.
+    let f = function(
+        "fn f(): int\n    var total = 0\n    for i in 1..10 by 2\n        total = total + i\n    return total\n",
+    );
+    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(25))));
+}
+
+#[test]
+fn an_int_range_steps_down_with_a_negative_by_value() {
+    // `10..1 by -1` counts down 10..2 (exclusive end) — ten iterations from 10 to 2.
+    let f = function(
+        "fn f(): int\n    var last = 0\n    var count = 0\n    for i in 10..1 by -1\n        last = i\n        count = count + 1\n    return count * 100 + last\n",
+    );
+    // 9 iterations (10 down to 2), last value 2.
+    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(902))));
+}
+
+#[test]
+fn an_inclusive_descending_range_reaches_its_end() {
+    // `10..=1 by -1` includes 1, so the final bound is reached.
+    let f = function(
+        "fn f(): int\n    var last = 99\n    for i in 10..=1 by -1\n        last = i\n    return last\n",
+    );
+    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(1))));
+}
+
+#[test]
+fn a_wrong_direction_variable_step_is_an_empty_loop() {
+    // A runtime wrong-direction step never loops forever: it iterates zero times.
+    // `1..10 by step` with step = -1 runs the body never.
+    let f = function(
+        "fn f(step: int): int\n    var count = 0\n    for i in 1..10 by step\n        count = count + 1\n    return count\n",
+    );
+    assert_eq!(
+        evaluate_function(&f, &[Value::Int(-1)]),
+        Ok(Some(Value::Int(0)))
+    );
+}
+
+#[test]
+fn a_default_wrong_direction_range_is_an_empty_loop() {
+    // `lo..hi` with lo > hi and the default +1 step iterates zero times.
+    let f = function(
+        "fn f(lo: int, hi: int): int\n    var count = 0\n    for i in lo..hi\n        count = count + 1\n    return count\n",
+    );
+    assert_eq!(
+        evaluate_function(&f, &[Value::Int(10), Value::Int(1)]),
+        Ok(Some(Value::Int(0)))
+    );
+}
+
+#[test]
+fn a_runtime_zero_step_faults() {
+    // A zero step would never progress; a non-literal zero faults rather than hangs.
+    let f = function(
+        "fn f(step: int): int\n    for i in 1..10 by step\n        return i\n    return 0\n",
+    );
+    let result = evaluate_function(&f, &[Value::Int(0)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_decimal_range_steps_by_a_decimal() {
+    // `0.0..1.0 by 0.25` yields 0.0, 0.25, 0.50, 0.75 (exclusive end): four values.
+    let f = function(
+        "fn f(): int\n    var count = 0\n    for x in 0.0..1.0 by 0.25\n        count = count + 1\n    return count\n",
+    );
+    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(4))));
+}
+
+#[test]
+fn a_date_range_steps_one_calendar_day_across_a_leap_boundary() {
+    // 2024-02-27..=2024-03-02 by 1.day lands on Feb 28, 29, Mar 1, 2 in a leap year:
+    // calendar arithmetic, not 30-day months.
+    let program = checked_program(
+        "pub fn f(): string\n    var acc = \"\"\n    for d in std::clock::parseDate(\"2024-02-27\")..=std::clock::parseDate(\"2024-03-02\") by 1.day\n        acc = acc _ std::clock::formatDate(d) _ \";\"\n    return acc\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str(
+            "2024-02-27;2024-02-28;2024-02-29;2024-03-01;2024-03-02;".into()
+        ))
+    );
+}
+
+#[test]
+fn a_date_range_rejects_a_sub_day_step() {
+    // A date has no time of day, so a step that is not a whole number of days faults.
+    let program = checked_program(
+        "pub fn f(): int\n    var count = 0\n    for d in std::clock::parseDate(\"2024-01-01\")..std::clock::parseDate(\"2024-01-10\") by 1.hour\n        count = count + 1\n    return count\n",
+    );
+    let result = run(&program, "test::f", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TYPE),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_instant_range_steps_by_a_duration_in_utc() {
+    // Stepping an instant range by 1.hour from noon to 3pm UTC yields noon, 1pm, 2pm
+    // (exclusive end): three instants.
+    let program = checked_program(
+        "pub fn f(): string\n    var acc = \"\"\n    for t in std::clock::parseInstant(\"2024-03-10T12:00:00Z\")..std::clock::parseInstant(\"2024-03-10T15:00:00Z\") by 1.hour\n        acc = acc _ std::clock::formatInstant(t) _ \";\"\n    return acc\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str(
+            "2024-03-10T12:00:00Z;2024-03-10T13:00:00Z;2024-03-10T14:00:00Z;".into()
+        ))
+    );
+}
+
+#[test]
 fn break_exits_the_loop() {
     let f = function(
         "fn f(n: int): int\n    var i = 0\n    while true\n        if i > n\n            break\n        i = i + 1\n    return i\n",

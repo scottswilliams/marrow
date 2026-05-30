@@ -259,10 +259,11 @@ impl<'a> StmtParser<'a> {
         let body = self.block_body();
 
         match parsed {
-            Some((binding, iterable)) => Some(Statement::For {
+            Some((binding, iterable, step)) => Some(Statement::For {
                 label,
                 binding,
                 iterable,
+                step,
                 span: join_spans(start, body.span),
                 body,
             }),
@@ -2251,18 +2252,45 @@ fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
     None
 }
 
-/// Parse a `for` header `binding in iterable` into the loop binding and the
-/// iterable expression. Returns `None` if the `in` keyword or binding is
-/// malformed.
+/// Parse a `for` header `binding in iterable [by step]` into the loop binding,
+/// the iterable expression, and the optional range step. Returns `None` if the
+/// `in` keyword or binding is malformed. `by` is a contextual keyword: it splits
+/// the header only as a bare top-level word, so a name `by` elsewhere is unaffected.
 fn parse_for_header(
     source: &str,
     header: &[Token],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<(ForBinding, Expression)> {
+) -> Option<(ForBinding, Expression, Option<Expression>)> {
     let in_index = find_top_level(header, TokenKind::Keyword(Keyword::In))?;
     let binding = parse_for_binding(source, &header[..in_index])?;
-    let iterable = expr_of(source, &header[in_index + 1..], diagnostics)?;
-    Some((binding, iterable))
+    let after_in = &header[in_index + 1..];
+    let (iterable_tokens, step) = match find_top_level_by(source, after_in) {
+        Some(by_index) => {
+            let step = expr_of(source, &after_in[by_index + 1..], diagnostics)?;
+            (&after_in[..by_index], Some(step))
+        }
+        None => (after_in, None),
+    };
+    let iterable = expr_of(source, iterable_tokens, diagnostics)?;
+    Some((binding, iterable, step))
+}
+
+/// Index of a top-level contextual `by` in a range-for header. `by` is a plain
+/// identifier, not a reserved word, so it splits the header only when it stands at
+/// bracket depth 0 — never inside a call's arguments or a name `by` used as a value.
+fn find_top_level_by(source: &str, tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::Identifier if depth == 0 && token.text(source) == "by" => {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse a `catch` header `name` or `name: Type` into the bound name and an

@@ -117,6 +117,13 @@ pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
 pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
+/// A range-for header is malformed: its endpoints are not the same steppable type
+/// (int, decimal, date, instant), its `by` step does not match the endpoints
+/// (a number for int/decimal, a duration for date/instant), a decimal or instant
+/// range omits its required `by` step, the step is a zero or a literal
+/// wrong-direction step that would never run, or a step appears on a non-range
+/// iterable.
+pub const CHECK_RANGE: &str = "check.range";
 /// A qualified name `Enum::member` names a known enum but not one of its members.
 pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
 /// A bare `Enum::member` literal names a member that exists under more than one

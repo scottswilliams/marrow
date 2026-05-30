@@ -416,6 +416,10 @@ pub enum Statement {
         label: Option<String>,
         binding: ForBinding,
         iterable: Expression,
+        /// The `by` step of a range header (`for x in lo..hi by step`), if one was
+        /// written. Only a range iterable accepts a step; the checker rejects a step
+        /// on any other iterable. `None` leaves the default step to the checker.
+        step: Option<Expression>,
         body: Block,
         span: SourceSpan,
     },

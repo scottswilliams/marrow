@@ -185,6 +185,19 @@ fn formats_labeled_loops_and_break_label() {
 }
 
 #[test]
+fn formats_a_range_for_with_a_by_step() {
+    // The `by` step round-trips: header endpoints and the step are re-emitted.
+    let source = "module app\n\
+         fn run()\n\
+         \x20   for i in 10..=1 by -2\n\
+         \x20       print($\"{i}\")\n";
+    let expected = "\
+         \x20   for i in 10..=1 by -2\n\
+         \x20       print($\"{i}\")";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
 fn formats_transaction_lock_and_try_blocks() {
     let source = "module app\n\
          fn commit(id: Book::Id)\n\

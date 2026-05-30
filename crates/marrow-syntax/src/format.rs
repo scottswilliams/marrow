@@ -401,6 +401,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             label,
             binding,
             iterable,
+            step,
             body,
             ..
         } => {
@@ -408,8 +409,12 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
                 Some(second) => format!("{}, {second}", binding.first),
                 None => binding.first.clone(),
             };
+            let step = match step {
+                Some(step) => format!(" by {}", format_expression(step)),
+                None => String::new(),
+            };
             format!(
-                "{pad}{}for {binding} in {}\n{}",
+                "{pad}{}for {binding} in {}{step}\n{}",
                 format_label_prefix(label),
                 format_expression(iterable),
                 format_block(source, body, level + 1)

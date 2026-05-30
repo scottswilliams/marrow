@@ -206,9 +206,10 @@ pub(crate) fn eval_statement(
             label,
             binding,
             iterable,
+            step,
             body,
             span,
-        } => eval_for(label, binding, iterable, body, *span, env),
+        } => eval_for(label, binding, iterable, step.as_ref(), body, *span, env),
         Statement::Transaction { body, span, .. } => {
             // Open a backend transaction; the backend's savepoint stack handles
             // nesting. Any non-error exit (fall-through, `return`, `break`,
@@ -427,6 +428,7 @@ pub(crate) fn eval_for(
     label: &Option<String>,
     binding: &ForBinding,
     iterable: &Expression,
+    step: Option<&Expression>,
     body: &Block,
     span: SourceSpan,
     env: &mut Env<'_>,
@@ -499,15 +501,10 @@ pub(crate) fn eval_for(
             Ok(Flow::Normal)
         });
     }
-    let (start, end, inclusive) = range_bounds(iterable, env)?;
-    let mut current = start;
-    while if inclusive {
-        current <= end
-    } else {
-        current < end
-    } {
+    let mut range = range_iter(iterable, step, span, env)?;
+    while let Some(value) = range.next_value(span)? {
         env.push_scope();
-        env.bind(binding.first.clone(), Value::Int(current), false);
+        env.bind(binding.first.clone(), value, false);
         let flow = eval_block(body, env);
         env.pop_scope();
         match classify(flow?, label) {
@@ -515,36 +512,256 @@ pub(crate) fn eval_for(
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
         }
-        // Stop rather than overflow when the endpoint reaches `i64::MAX`.
-        match current.checked_add(1) {
-            Some(next) => current = next,
-            None => break,
-        }
     }
     Ok(Flow::Normal)
 }
 
-/// The `(start, end, inclusive)` bounds of a range iterable. Only integer ranges
-/// (`a..b`, `a..=b`) are iterable; other iterables are unsupported.
-pub(crate) fn range_bounds(
+/// Nanoseconds in one calendar day, the span a `date` advances by per whole day.
+const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;
+
+/// A typed, stepped range iterator over a `for` header's endpoints. Each variant
+/// carries the live cursor, the resolved endpoint, the inclusive flag, and the
+/// step. Direction is the step's sign: a wrong-direction or out-of-range step
+/// yields no values rather than looping forever. The endpoints share one steppable
+/// type (int, decimal, date, instant); a non-steppable endpoint never reaches here.
+enum RangeIter {
+    /// int and date both advance an integer cursor: int by its step, date by a
+    /// whole number of calendar days (the date is days-since-epoch, so adding whole
+    /// days is leap-safe). `make` keeps each wrapped in the right [`Value`].
+    Integer {
+        current: i64,
+        end: i64,
+        inclusive: bool,
+        step: i64,
+        make: fn(i64) -> Value,
+    },
+    Decimal {
+        current: Decimal,
+        end: Decimal,
+        inclusive: bool,
+        step: Decimal,
+    },
+    Instant {
+        current: i128,
+        end: i128,
+        inclusive: bool,
+        step: i128,
+    },
+}
+
+impl RangeIter {
+    /// The next value in the range, or `None` once the cursor passes the end. A
+    /// step toward the endpoint that overflows ends the loop rather than faulting.
+    fn next_value(&mut self, span: SourceSpan) -> Result<Option<Value>, RuntimeError> {
+        match self {
+            RangeIter::Integer {
+                current,
+                end,
+                inclusive,
+                step,
+                make,
+            } => {
+                if !int_in_range(*current, *end, *inclusive, *step) {
+                    return Ok(None);
+                }
+                let value = make(*current);
+                match current.checked_add(*step) {
+                    Some(next) => *current = next,
+                    // Stepping past `i64::MIN`/`MAX` ends the loop; the value just
+                    // read is still yielded. A zero step then stops the next call.
+                    None => *step = 0,
+                }
+                Ok(Some(value))
+            }
+            RangeIter::Decimal {
+                current,
+                end,
+                inclusive,
+                step,
+            } => {
+                if !decimal_in_range(*current, *end, *inclusive, *step) {
+                    return Ok(None);
+                }
+                let value = Value::Decimal(*current);
+                *current = current.checked_add(*step).ok_or_else(|| overflow(span))?;
+                Ok(Some(value))
+            }
+            RangeIter::Instant {
+                current,
+                end,
+                inclusive,
+                step,
+            } => {
+                if !instant_in_range(*current, *end, *inclusive, *step) {
+                    return Ok(None);
+                }
+                let value = Value::Instant(*current);
+                *current = current.checked_add(*step).ok_or_else(|| overflow(span))?;
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
+/// Whether an integer cursor is still within the range, given the step's sign. A
+/// zero step never progresses, so it yields nothing; an ascending step stops at the
+/// end, a descending one stops below it.
+fn int_in_range(current: i64, end: i64, inclusive: bool, step: i64) -> bool {
+    match step.cmp(&0) {
+        Ordering::Greater if inclusive => current <= end,
+        Ordering::Greater => current < end,
+        Ordering::Less if inclusive => current >= end,
+        Ordering::Less => current > end,
+        Ordering::Equal => false,
+    }
+}
+
+fn decimal_in_range(current: Decimal, end: Decimal, inclusive: bool, step: Decimal) -> bool {
+    let sign = step.coefficient().cmp(&0);
+    match sign {
+        Ordering::Greater if inclusive => current <= end,
+        Ordering::Greater => current < end,
+        Ordering::Less if inclusive => current >= end,
+        Ordering::Less => current > end,
+        Ordering::Equal => false,
+    }
+}
+
+fn instant_in_range(current: i128, end: i128, inclusive: bool, step: i128) -> bool {
+    match step.cmp(&0) {
+        Ordering::Greater if inclusive => current <= end,
+        Ordering::Greater => current < end,
+        Ordering::Less if inclusive => current >= end,
+        Ordering::Less => current > end,
+        Ordering::Equal => false,
+    }
+}
+
+/// Build the typed range iterator for a `for` header. The endpoints decide the
+/// type; the step is the explicit `by` value or the type's default (int => 1,
+/// date => one calendar day). Decimal and instant have no safe default, so a
+/// missing step there is a fault — the checker reports it first, but a dynamically
+/// built program still faults rather than guessing. A zero step is a fault for the
+/// same reason. A date step must be a whole number of days.
+fn range_iter(
     iterable: &Expression,
+    step: Option<&Expression>,
+    span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<(i64, i64, bool), RuntimeError> {
-    match iterable {
+) -> Result<RangeIter, RuntimeError> {
+    let (left, right, inclusive) = match iterable {
         Expression::Binary {
             op: BinaryOp::RangeExclusive,
             left,
             right,
             ..
-        } => Ok((eval_int(left, env)?, eval_int(right, env)?, false)),
+        } => (left, right, false),
         Expression::Binary {
             op: BinaryOp::RangeInclusive,
             left,
             right,
             ..
-        } => Ok((eval_int(left, env)?, eval_int(right, env)?, true)),
-        other => Err(unsupported("iterating this value", other.span())),
+        } => (left, right, true),
+        other => return Err(unsupported("iterating this value", other.span())),
+    };
+    let start = eval_expr(left, env)?;
+    let end = eval_expr(right, env)?;
+    let step = step.map(|expr| eval_expr(expr, env)).transpose()?;
+    match (start, end) {
+        (Value::Int(start), Value::Int(end)) => {
+            let step = match step {
+                Some(Value::Int(n)) => n,
+                Some(_) => return Err(type_error("an int range steps by an int", span)),
+                None => 1,
+            };
+            if step == 0 {
+                return Err(type_error("a range step cannot be zero", span));
+            }
+            Ok(RangeIter::Integer {
+                current: start,
+                end,
+                inclusive,
+                step,
+                make: Value::Int,
+            })
+        }
+        (Value::Decimal(start), Value::Decimal(end)) => {
+            let step = match step {
+                Some(Value::Decimal(d)) => d,
+                Some(_) => return Err(type_error("a decimal range steps by a decimal", span)),
+                None => {
+                    return Err(type_error(
+                        "a decimal range needs an explicit `by` step",
+                        span,
+                    ));
+                }
+            };
+            if step.is_zero() {
+                return Err(type_error("a range step cannot be zero", span));
+            }
+            Ok(RangeIter::Decimal {
+                current: start,
+                end,
+                inclusive,
+                step,
+            })
+        }
+        (Value::Date(start), Value::Date(end)) => {
+            let step_days = match step {
+                Some(Value::Duration(nanos)) => duration_whole_days(nanos, span)?,
+                Some(_) => return Err(type_error("a date range steps by a duration", span)),
+                None => 1,
+            };
+            if step_days == 0 {
+                return Err(type_error("a range step cannot be zero", span));
+            }
+            Ok(RangeIter::Integer {
+                current: i64::from(start),
+                end: i64::from(end),
+                inclusive,
+                step: step_days,
+                make: |days| Value::Date(days as i32),
+            })
+        }
+        (Value::Instant(start), Value::Instant(end)) => {
+            let step = match step {
+                Some(Value::Duration(nanos)) => nanos,
+                Some(_) => return Err(type_error("an instant range steps by a duration", span)),
+                None => {
+                    return Err(type_error(
+                        "an instant range needs an explicit `by` step",
+                        span,
+                    ));
+                }
+            };
+            if step == 0 {
+                return Err(type_error("a range step cannot be zero", span));
+            }
+            Ok(RangeIter::Instant {
+                current: start,
+                end,
+                inclusive,
+                step,
+            })
+        }
+        _ => Err(type_error(
+            "a range needs two endpoints of the same type",
+            span,
+        )),
     }
+}
+
+/// A duration step for a `date` range as a whole number of calendar days. A date
+/// has no time of day, so a sub-day step has no meaning and faults; an exact
+/// multiple of a day is its day count (negative for a descending range).
+fn duration_whole_days(nanos: i128, span: SourceSpan) -> Result<i64, RuntimeError> {
+    if nanos % NANOS_PER_DAY != 0 {
+        return Err(type_error(
+            "a date range step must be a whole number of days",
+            span,
+        ));
+    }
+    i64::try_from(nanos / NANOS_PER_DAY).map_err(|_| overflow(span))
 }
 
 /// Materialize a non-range `for` iterable to a sequence of values. A saved-layer
