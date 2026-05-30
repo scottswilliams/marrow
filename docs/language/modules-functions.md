@@ -21,9 +21,10 @@ External package management is outside this reference.
 
 A file without a `module` declaration is a single-file script. It can run as
 an entrypoint, but other modules do not import it by path. A script's own
-declarations are type-checked within the file; they are not visible to any
-other module. A project may hold at most one such script; every other file
-declares its module name explicitly.
+declarations are type-checked within the file; other modules cannot import a
+script, and its functions are not callable from another module. A project may
+hold at most one such script; every other file declares its module name
+explicitly.
 
 ## Imports
 

@@ -63,6 +63,11 @@ for id, book in entries(^books)
 Use `keys(...)` when a loop only needs identities. `values(...)` and
 `entries(...)` materialize the values or resources they yield.
 
+Iterating a saved layer reads the layer's child identities up front, before the
+first body runs — `O(n)` in the number of children. A bare `for x in ^root`
+reads only those identities; `values(...)` and `entries(...)` also read every
+child's value up front.
+
 `while` loops use a boolean condition:
 
 ```mw

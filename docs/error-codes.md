@@ -152,6 +152,10 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |
 | `check.catch_type` | A `catch` annotation is not `Error`. |
+| `check.match_requires_enum` | A `match` scrutinee is not an enum value, or names an enum the project does not declare. |
+| `check.unknown_enum_member` | A `match` arm, or an `Enum::member` reference, names a member the enum does not declare. |
+| `check.duplicate_match_arm` | Two `match` arms name the same member. |
+| `check.nonexhaustive_match` | A `match` over an enum does not cover every member. |
 | `check.invalid_assign_target` | An assignment or `merge` target is not a writable place. |
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
@@ -172,6 +176,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.duplicate_stable_id` | Two resource elements declare the same stable ID. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as a name or a sequence; a key must be an orderable scalar. |
+| `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; a saved field stores a scalar or an enum ordinal. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a resource with no keyed saved root. |
 | `schema.required_in_unkeyed_group` | A `required` field is declared inside an unkeyed group (not yet materialized by the write planner). |
