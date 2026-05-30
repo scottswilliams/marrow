@@ -340,7 +340,15 @@ pub(crate) fn saved_path_present(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<bool, RuntimeError> {
-    if is_index_branch(expr, env) {
+    if let Some(segments) = unique_index_lookup_path(expr, env)? {
+        let presence = env
+            .store
+            .borrow()
+            .presence(&encode_path(&segments))
+            .map_err(|error| error.located(span))?;
+        return Ok(!matches!(presence, Presence::Absent));
+    }
+    if is_iterable_index_branch(expr, env) {
         return Ok(!enumerate_layer(expr, env)?.is_empty());
     }
     let segments = node_segments(expr, env)?;

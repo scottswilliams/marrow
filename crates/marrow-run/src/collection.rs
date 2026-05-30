@@ -111,7 +111,8 @@ pub(crate) fn eval_append(
 }
 
 /// Evaluate `keys(<layer>)` as a value: enumerate the layer's child keys into a
-/// [`Value::Sequence`]. The same enumeration drives `for x in <layer>`.
+/// [`Value::Sequence`]. Direct loops use this same enumeration only for
+/// address-only collections such as index branches.
 pub(crate) fn eval_keys(
     args: &[Argument],
     span: SourceSpan,
@@ -126,6 +127,7 @@ pub(crate) fn eval_keys(
             span,
         });
     };
+    check_key_collection(&path.value, span, env)?;
     Ok(Value::Sequence(enumerate_layer(&path.value, env)?))
 }
 
@@ -179,10 +181,9 @@ pub(crate) fn eval_entries(
 /// Evaluate `reversed(<iterable>)`: the same elements in reverse key order. Over a
 /// saved layer — directly (`reversed(L)`/`reversed(keys(L))`), or wrapped in
 /// `values`/`entries` — the reversal is pushed into the enumeration as a
-/// `Descending` double-ended store walk, so it is O(k), early-breakable, and a
-/// true reverse at every composite-identity level. Over any other value the
-/// argument must already be an in-memory `sequence`, whose `Vec` is reversed in
-/// place (e.g. `reversed(std::text::split(...))`).
+/// `Descending` store walk, so composite identities reverse at every key level.
+/// Over any other value the argument must already be an in-memory `sequence`,
+/// whose `Vec` is reversed in place (e.g. `reversed(std::text::split(...))`).
 pub(crate) fn eval_reversed(
     args: &[Argument],
     span: SourceSpan,
@@ -209,15 +210,30 @@ pub(crate) fn eval_reversed(
                 .collect(),
         }));
     }
-    // `reversed(L)` / `reversed(keys(L))`: the layer's identities, descending.
-    if let Some(layer) =
-        keys_argument(&arg.value).or((is_saved_path(&arg.value)).then_some(&arg.value))
-    {
+    // `reversed(keys(L))`: addresses, descending.
+    if let Some(layer) = keys_argument(&arg.value) {
+        check_key_collection(layer, span, env)?;
         return Ok(Value::Sequence(enumerate_layer_dir(
             layer,
             Direction::Descending,
             env,
         )?));
+    }
+    // `reversed(L)`: elements for value-bearing saved collections, identities for
+    // key-only index branches.
+    if is_saved_path(&arg.value) {
+        if is_iterable_index_branch(&arg.value, env) {
+            return Ok(Value::Sequence(enumerate_layer_dir(
+                &arg.value,
+                Direction::Descending,
+                env,
+            )?));
+        }
+        let values = materialize_layer_dir(&arg.value, Direction::Descending, env)?
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect();
+        return Ok(Value::Sequence(values));
     }
     // Any other argument must evaluate to an in-memory sequence, reversed directly.
     match eval_expr(&arg.value, env)? {

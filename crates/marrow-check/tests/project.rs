@@ -1831,6 +1831,133 @@ fn an_unknown_call_in_a_module_less_script_is_flagged() {
 }
 
 #[test]
+fn a_primary_root_loop_binds_resource_elements() {
+    let report = check_module_report(
+        "root-loop-elements",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn titles()\n    for book in ^books\n        var title: string = book.title\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_two_name_primary_root_loop_binds_identity_and_resource() {
+    let report = check_module_report(
+        "root-loop-entries",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn titles()\n    for id, book in ^books\n        var typed: Book::Id = id\n        var title: string = book.title\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_sequence_layer_loop_binds_element_values() {
+    let report = check_module_report(
+        "layer-loop-elements",
+        "module m\n\
+         resource Book at ^books(id: int)\n    tags: sequence[string]\n\n\
+         fn tags(id: Book::Id)\n    for tag in ^books(id).tags\n        var text: string = tag\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_single_name_entries_loop_does_not_bind_the_key_type() {
+    let found = check_module(
+        "single-name-entries",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    for entry in entries(^books)\n        var n = entry + 1\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
+    for wrapper in ["keys", "values"] {
+        let found = check_module(
+            &format!("two-name-{wrapper}"),
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 fn f()\n    for first, second in {wrapper}(^books)\n        var n = first + 1\n",
+            ),
+            "check.operator_type",
+        );
+        assert!(found.is_empty(), "{wrapper}: {found:#?}");
+    }
+}
+
+#[test]
+fn a_unique_index_lookup_loop_is_not_typed_as_an_index_branch() {
+    let found = check_module(
+        "unique-index-loop",
+        "module m\n\
+         resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var n = id + 1\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn key_only_index_branches_do_not_bind_pair_types() {
+    for iterable in [
+        "^books.byShelf(\"fiction\")",
+        "entries(^books.byShelf(\"fiction\"))",
+    ] {
+        let found = check_module(
+            "index-pair-loop",
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+                 fn f()\n    for id, marker in {iterable}\n        var n = id + 1\n",
+            ),
+            "check.operator_type",
+        );
+        assert!(found.is_empty(), "{iterable}: {found:#?}");
+    }
+}
+
+#[test]
+fn singleton_root_keys_do_not_bind_generated_identities() {
+    let found = check_module(
+        "singleton-root-keys",
+        "module m\n\
+         resource Settings at ^settings\n    value: int\n\n\
+         fn f()\n    for id in keys(^settings)\n        var n = id + 1\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn supported_collection_wrappers_bind_their_documented_shapes() {
+    let report = check_module_report(
+        "collection-wrapper-shapes",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    for id in keys(^books)\n        var typed: Book::Id = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Book::Id = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn reversed_saved_collection_expressions_type_element_sequences() {
+    let found = check_module(
+        "reversed-saved-expressions",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\n\
+         fn f(id: Book::Id)\n    const books = reversed(^books)\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(^books(id).tags)\n    for tag in tags\n        var also_bad = tag + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
 fn unresolved_calls_are_suppressed_when_a_module_fails_to_parse() {
     // Module `a` has a lexical error (a leading tab), so it is excluded from the
     // program; a call to `a::helper` in clean module `b` must not be reported as
@@ -3370,13 +3497,13 @@ fn const_value_with_a_nested_saved_read_is_rejected() {
 
 #[test]
 fn deleting_the_root_a_loop_traverses_is_rejected() {
-    // `for id in ^books` traverses the `^books` identity layer; `delete ^books(id)`
+    // `keys(^books)` traverses the `^books` identity layer; `delete ^books(id)`
     // removes a key from that same layer, which the checker rejects.
     let found = check_module(
         "loop-delete-root",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn f()\n    for id in ^books\n        delete ^books(id)\n",
+         fn f()\n    for id in keys(^books)\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -3385,13 +3512,13 @@ fn deleting_the_root_a_loop_traverses_is_rejected() {
 
 #[test]
 fn appending_to_the_sequence_a_loop_traverses_is_rejected() {
-    // `for pos in ^books(1).tags` traverses the `tags` layer; `append(...tags...)`
+    // `for tag in ^books(1).tags` traverses the `tags` layer; `append(...tags...)`
     // adds a key to that same layer.
     let found = check_module(
         "loop-append-seq",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
-         fn f()\n    for pos in ^books(1).tags\n        append(^books(1).tags, \"x\")\n",
+         fn f()\n    for tag in ^books(1).tags\n        append(^books(1).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -3403,7 +3530,7 @@ fn writing_a_keyed_leaf_the_loop_traverses_is_rejected() {
         "loop-write-leaf",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
-         fn f()\n    for pos in ^books(1).tags\n        ^books(1).tags(pos) = \"x\"\n",
+         fn f()\n    for pos in keys(^books(1).tags)\n        ^books(1).tags(pos) = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -3431,7 +3558,7 @@ fn mutating_a_different_record_in_a_layer_loop_is_allowed() {
         "loop-other-record",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
-         fn f()\n    for pos in ^books(1).tags\n        append(^books(2).tags, \"x\")\n",
+         fn f()\n    for tag in ^books(1).tags\n        append(^books(2).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -3439,13 +3566,13 @@ fn mutating_a_different_record_in_a_layer_loop_is_allowed() {
 
 #[test]
 fn writing_a_field_in_a_record_loop_is_allowed() {
-    // `for id in ^books` traverses the identity layer; writing a scalar field of a
-    // record does not change which keys the layer holds, so it is allowed.
+    // A two-name root loop traverses records and exposes each identity; writing a
+    // scalar field of a record does not change which keys the layer holds.
     let found = check_module(
         "loop-field-write",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn f()\n    for id in ^books\n        ^books(id).title = \"x\"\n",
+         fn f()\n    for id, book in ^books\n        ^books(id).title = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");

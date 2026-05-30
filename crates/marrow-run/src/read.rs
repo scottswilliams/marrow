@@ -123,8 +123,9 @@ pub(crate) fn keys_argument(expr: &Expression) -> Option<&Expression> {
     }
 }
 
-/// Enumerate the child keys of a saved layer as the values a `for` loop binds or
-/// `keys(...)` materializes. Classifies the path once and descends one shared
+/// Enumerate the child keys of a saved layer for address-oriented traversal:
+/// `keys(...)`, direct index-branch loops, and the materialization helpers that
+/// pair keys with values. Classifies the path once and descends one shared
 /// key-collector ([`collect_child_identities`]):
 ///
 /// - `^root` (a keyed primary root) yields its record identities — a bare key

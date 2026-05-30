@@ -2308,6 +2308,28 @@ fn values_and_entries_over_an_index_branch_are_unsupported() {
             "{builtin}: {result:?}"
         );
     }
+
+    let program = checked_program(&format!(
+        "{resource}fn f()\n    for id, marker in ^books.byShelf(\"x\")\n        print($\"{{id}}: {{marker}}\")\n"
+    ));
+    let result = run(&program, "test::f", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_unique_index_lookup_is_not_a_collection_loop() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn f()\n    for id in ^books.byIsbn(\"978-0\")\n        print($\"{id}\")\n",
+    );
+
+    let result = run(&program, "test::f", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
+    );
 }
 
 #[test]
@@ -3594,7 +3616,7 @@ fn count_on(shelf: string): int
     return c
 
 fn titles_on(shelf: string)
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         print(^books(id).title)
 ";
 
@@ -5040,6 +5062,18 @@ fn register(id: int, t: string, isbn: string)
 fn titleByIsbn(isbn: string): string
     const id: Book::Id = ^books.byIsbn(isbn)
     return ^books(id).title
+
+fn hasIsbn(isbn: string): bool
+    return exists(^books.byIsbn(isbn))
+
+fn countIsbn(isbn: string): int
+    return count(^books.byIsbn(isbn))
+
+fn countKeysByIsbn(isbn: string): int
+    var c = 0
+    for id in keys(^books.byIsbn(isbn))
+        c = c + 1
+    return c
 ";
 
 #[test]
@@ -5080,6 +5114,59 @@ fn an_absent_unique_index_lookup_is_absent() {
     )
     .unwrap_err();
     assert_eq!(error.code, RUN_ABSENT, "{error:?}");
+}
+
+#[test]
+fn unique_index_presence_and_count_follow_the_lookup_value() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::register",
+        &[
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("register");
+
+    let call = |entry: &str, isbn: &str| {
+        run_entry(&program, &store, entry, &[Value::Str(isbn.into())])
+            .expect(entry)
+            .value
+    };
+    assert_eq!(call("test::hasIsbn", "978-0"), Some(Value::Bool(true)));
+    assert_eq!(call("test::hasIsbn", "missing"), Some(Value::Bool(false)));
+    assert_eq!(call("test::countIsbn", "978-0"), Some(Value::Int(1)));
+    assert_eq!(call("test::countIsbn", "missing"), Some(Value::Int(0)));
+}
+
+#[test]
+fn keys_over_a_unique_index_lookup_is_not_a_collection() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::register",
+        &[
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("register");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::countKeysByIsbn",
+        &[Value::Str("978-0".into())],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
 /// A non-unique index in value position has no single identity to yield; the
@@ -5159,9 +5246,8 @@ fn traverses_a_composite_identity_index() {
 
 // --- Unified saved-layer enumeration ---
 
-/// Iterating a primary keyed root yields its record identities. `^books` is a
-/// single-`int`-key root, so each identity is a bare `Value::Int` that re-addresses
-/// the record.
+/// Iterating a primary keyed root yields record elements. `keys(^books)` keeps
+/// explicit identity traversal available when code needs addresses.
 const BOOK_PRIMARY: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -5170,8 +5256,21 @@ fn add(id: int, t: string)
     ^books(id).title = t
 
 fn titles()
-    for id in ^books
+    for id in keys(^books)
         print(^books(id).title)
+
+fn elementTitles()
+    for book in ^books
+        print(book.title)
+
+fn idsAndElementTitles()
+    for id, book in ^books
+        print($\"{id}: {book.title}\")
+
+fn reversedElementTitles()
+    const books = reversed(^books)
+    for book in books
+        print(book.title)
 
 fn ids()
     const all = keys(^books)
@@ -5195,9 +5294,69 @@ fn iterates_a_primary_keyed_root() {
     add(2, "Sourcery");
     add(1, "Mort");
 
-    // Bare-root iteration yields ids in key order, each addressing its record.
+    // `keys(^books)` yields ids in key order, each addressing its record.
     let outcome = run_entry(&program, &store, "test::titles", &[]).expect("run");
     assert_eq!(outcome.output, "Mort\nSourcery\n");
+}
+
+#[test]
+fn primary_root_loop_yields_resource_elements() {
+    let program = checked_program(BOOK_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(title.into())],
+        )
+        .expect("add");
+    };
+    add(2, "Sourcery");
+    add(1, "Mort");
+
+    let outcome = run_entry(&program, &store, "test::elementTitles", &[]).expect("run");
+    assert_eq!(outcome.output, "Mort\nSourcery\n");
+}
+
+#[test]
+fn two_name_primary_root_loop_yields_id_and_resource() {
+    let program = checked_program(BOOK_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(title.into())],
+        )
+        .expect("add");
+    };
+    add(2, "Sourcery");
+    add(1, "Mort");
+
+    let outcome = run_entry(&program, &store, "test::idsAndElementTitles", &[]).expect("run");
+    assert_eq!(outcome.output, "1: Mort\n2: Sourcery\n");
+}
+
+#[test]
+fn reversed_primary_root_expression_yields_resource_elements() {
+    let program = checked_program(BOOK_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(title.into())],
+        )
+        .expect("add");
+    };
+    add(2, "Sourcery");
+    add(1, "Mort");
+
+    let outcome = run_entry(&program, &store, "test::reversedElementTitles", &[]).expect("run");
+    assert_eq!(outcome.output, "Sourcery\nMort\n");
 }
 
 #[test]
@@ -5236,8 +5395,7 @@ fn iterating_a_singleton_root_is_a_type_error() {
     assert_eq!(error.code, RUN_TYPE, "{error:?}");
 }
 
-/// Iterating a composite primary root reconstructs the full identity per record,
-/// so `^enrollments(id)` re-addresses each one.
+/// Iterating a composite primary root yields materialized records in identity order.
 const ENROLLMENT_PRIMARY: &str = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
@@ -5247,8 +5405,8 @@ fn enroll(s: string, c: string, st: string)
     ^enrollments(id).status = st
 
 fn statuses()
-    for id in ^enrollments
-        print(^enrollments(id).status)
+    for enrollment in ^enrollments
+        print(enrollment.status)
 ";
 
 #[test]
@@ -5271,12 +5429,13 @@ fn iterates_a_composite_primary_root() {
     enroll("student-1", "course-9", "active");
     enroll("student-2", "course-1", "dropped");
 
-    // Each reconstructed composite identity re-addresses its record.
+    // Each element is the materialized enrollment record.
     let outcome = run_entry(&program, &store, "test::statuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\ndropped\n");
 }
 
-/// Iterating a sequence/keyed child layer yields the layer's keys.
+/// Iterating a sequence/keyed child layer yields the layer's values. `keys(...)`
+/// keeps explicit position traversal available when code needs addresses.
 const BOOK_TAGS: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -5288,8 +5447,25 @@ fn seed()
     const b: int = append(^books(1).tags, \"funny\")
 
 fn positions()
-    for pos in ^books(1).tags
+    for pos in keys(^books(1).tags)
         print($\"{pos}\")
+
+fn tagValues()
+    for tag in ^books(1).tags
+        print(tag)
+
+fn tagEntries()
+    for pos, tag in ^books(1).tags
+        print($\"{pos}={tag}\")
+
+fn tagValuesDescending()
+    for tag in reversed(^books(1).tags)
+        print(tag)
+
+fn tagValuesDescendingValue()
+    const tags = reversed(^books(1).tags)
+    for tag in tags
+        print(tag)
 
 fn keysOf()
     for pos in keys(^books(1).tags)
@@ -5302,7 +5478,7 @@ fn iterates_a_sequence_child_layer() {
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
 
-    // Bare iteration over the layer yields its 1-based positions in key order.
+    // `keys(^books(1).tags)` yields 1-based positions in key order.
     let outcome = run_entry(&program, &store, "test::positions", &[]).expect("run");
     assert_eq!(outcome.output, "1\n2\n");
 
@@ -5311,15 +5487,60 @@ fn iterates_a_sequence_child_layer() {
     assert_eq!(outcome.output, "1\n2\n");
 }
 
-/// A keyed (non-sequence) child tree iterates its declared keys. (Seeded through
-/// the store directly to keep the focus on iteration order.)
+#[test]
+fn sequence_child_layer_loop_yields_element_values() {
+    let program = checked_program(BOOK_TAGS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let outcome = run_entry(&program, &store, "test::tagValues", &[]).expect("run");
+    assert_eq!(outcome.output, "fiction\nfunny\n");
+}
+
+#[test]
+fn two_name_sequence_child_layer_loop_yields_key_and_value() {
+    let program = checked_program(BOOK_TAGS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let outcome = run_entry(&program, &store, "test::tagEntries", &[]).expect("run");
+    assert_eq!(outcome.output, "1=fiction\n2=funny\n");
+}
+
+#[test]
+fn reversed_sequence_child_layer_loop_yields_values_descending() {
+    let program = checked_program(BOOK_TAGS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let outcome = run_entry(&program, &store, "test::tagValuesDescending", &[]).expect("run");
+    assert_eq!(outcome.output, "funny\nfiction\n");
+}
+
+#[test]
+fn reversed_sequence_child_layer_expression_yields_values_descending() {
+    let program = checked_program(BOOK_TAGS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let outcome = run_entry(&program, &store, "test::tagValuesDescendingValue", &[]).expect("run");
+    assert_eq!(outcome.output, "funny\nfiction\n");
+}
+
+/// A keyed (non-sequence) child tree iterates values, with `keys(...)` available
+/// for declared-key traversal. Seeded through the store directly to keep the
+/// focus on iteration order.
 const PLAYER_SCORES: &str = "\
 resource Game at ^games(id: int)
     scores(playerId: string): int
 
 fn players()
-    for p in ^games(1).scores
+    for p in keys(^games(1).scores)
         print(p)
+
+fn scores()
+    for score in ^games(1).scores
+        print($\"{score}\")
 ";
 
 #[test]
@@ -5343,15 +5564,18 @@ fn iterates_a_keyed_child_tree() {
     // Keys iterate in sorted key order (alice before bob).
     let outcome = run_entry(&program, &store, "test::players", &[]).expect("run");
     assert_eq!(outcome.output, "alice\nbob\n");
+
+    // Bare child-layer iteration yields values in key order.
+    let outcome = run_entry(&program, &store, "test::scores", &[]).expect("run");
+    assert_eq!(outcome.output, "10\n7\n");
 }
 
 #[test]
 fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
-    // `for id in ^books` traverses the `^books` identity layer; deleting a record
-    // inside the loop changes that layer, which is a dynamic traversal fault even
-    // when the checker cannot prove it.
+    // `keys(^books)` traverses the `^books` identity layer; deleting a record
+    // inside the loop changes that layer, which is a dynamic traversal fault.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in ^books\n        delete ^books(id)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in keys(^books)\n        delete ^books(id)\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -5365,7 +5589,7 @@ fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
 #[test]
 fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for pos in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -5400,7 +5624,7 @@ fn mutating_a_different_record_layer_while_traversing_is_allowed() {
     // Traversing `^books(1).tags` and appending to `^books(2).tags` touches a
     // different record's layer, so it is not a traversal fault.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn copy()\n    for pos in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\nfn tags2(): int\n    return count(^books(2).tags)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn copy()\n    for tag in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\nfn tags2(): int\n    return count(^books(2).tags)\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -5432,7 +5656,7 @@ fn tag(id: int, t: string)
     const p: int = append(^books(id).tags, t)
 
 fn idsDescending()
-    for id in reversed(^books)
+    for id in reversed(keys(^books))
         print($\"{id}\")
 
 fn keysReversed()
@@ -5441,8 +5665,8 @@ fn keysReversed()
         print($\"{id}\")
 
 fn titlesDescending()
-    for id in reversed(^books)
-        print(^books(id).title)
+    for book in reversed(^books)
+        print(book.title)
 
 fn nextOf(id: int): int
     return next(^books(id))
@@ -5464,7 +5688,7 @@ fn nextTitle(id: int): string
 
 fn breakAfterFirst(): int
     var seen = 0
-    for id in reversed(^books)
+    for book in reversed(^books)
         seen = seen + 1
         break
     return seen
@@ -5487,7 +5711,7 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     add(2, "Sourcery");
     add(3, "Reaper");
 
-    // `reversed(^books)` yields ids in descending key order.
+    // `reversed(keys(^books))` yields ids in descending key order.
     let outcome = run_entry(&program, &store, "test::idsDescending", &[]).expect("run");
     assert_eq!(outcome.output, "3\n2\n1\n");
 
@@ -5496,7 +5720,7 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     let outcome = run_entry(&program, &store, "test::keysReversed", &[]).expect("run");
     assert_eq!(outcome.output, "3\n2\n1\n");
 
-    // Each descending id re-addresses its record (a true reverse over stored keys).
+    // Bare reversed root iteration yields records in descending key order.
     let outcome = run_entry(&program, &store, "test::titlesDescending", &[]).expect("run");
     assert_eq!(outcome.output, "Reaper\nSourcery\nMort\n");
 
@@ -5702,7 +5926,7 @@ fn reversed_respects_the_traversed_layer_write_guard() {
     // Mutating the layer mid-`reversed`-loop is still a traversal fault: the
     // write-guard sees through the `reversed(...)` wrapper to the same layer prefix.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in reversed(^books)\n        delete ^books(id)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -5738,7 +5962,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
 
     // Ascending identity order is (s1,c1),(s1,c2),(s2,c1); reverse is the mirror.
     let program = checked_program(&format!(
-        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id in reversed(^enrollments)\n        print(^enrollments(id).status)\n"
+        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
     ));
     let outcome = run_entry(&program, &store, "test::revStatuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\ndropped\nactive\n");
@@ -6482,7 +6706,7 @@ fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
 /// A two-key books program with an index, reused by the maintenance tests below:
 /// it can seed records, drop the whole `^books` root, and count remaining records
 /// and index entries so a root drop's effect is observable.
-const MAINTENANCE_BOOKS: &str = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\nfn drop_root()\n    delete ^books\n\nfn record_count(): int\n    var c = 0\n    for id in ^books\n        c = c + 1\n    return c\n\nfn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n";
+const MAINTENANCE_BOOKS: &str = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\nfn drop_root()\n    delete ^books\n\nfn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n\nfn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n";
 
 #[test]
 fn deleting_a_whole_root_without_maintenance_is_rejected() {
@@ -6541,7 +6765,7 @@ fn whole_identity_delete_stays_ungated_under_no_maintenance() {
     // `delete ^books(1)` is ordinary whole-identity work: it must still succeed
     // with no maintenance capability, leaving the sibling record in place.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\nfn drop_one()\n    delete ^books(1)\n\nfn record_count(): int\n    var c = 0\n    for id in ^books\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\nfn drop_one()\n    delete ^books(1)\n\nfn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");

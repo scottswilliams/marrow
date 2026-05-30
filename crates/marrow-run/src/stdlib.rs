@@ -83,12 +83,21 @@ pub(crate) fn eval_count(
             span,
         });
     };
-    // A declared index branch `^root.index(args…)` addresses an `Index`/`IndexKey`
-    // layer that has no record/layer segment form. Count its entries through the same
-    // enumeration `keys(...)` uses over that branch, so `count` and `keys(...).len()`
-    // agree. Scalar, record, and keyed-leaf/group layer paths fall through to the
-    // direct read/child-keys path below.
-    if is_index_branch(&arg.value, env) {
+    if let Some(segments) = unique_index_lookup_path(&arg.value, env)? {
+        let present = env
+            .store
+            .borrow()
+            .read(&encode_path(&segments))
+            .map_err(|error| error.located(span))?
+            .is_some();
+        return Ok(Value::Int(present as i64));
+    }
+    // A non-unique index branch `^root.index(args…)` addresses an
+    // `Index`/`IndexKey` layer that has no record/layer segment form. Count its
+    // entries through the same enumeration `keys(...)` uses over that branch, so
+    // `count` and `keys(...).len()` agree. Scalar, record, and keyed-leaf/group
+    // layer paths fall through to the direct read/child-keys path below.
+    if is_iterable_index_branch(&arg.value, env) {
         let entries = enumerate_layer(&arg.value, env)?.len();
         return Ok(Value::Int(entries as i64));
     }
@@ -109,23 +118,86 @@ pub(crate) fn eval_count(
     Ok(Value::Int(count as i64))
 }
 
-/// Whether `expr` is a declared index branch `^root.index(args…)` — a `Call`
-/// whose callee names an index off a saved root. An index branch has no
-/// record/layer segment form, so `count`, `exists`, and `std::assert::absent`
-/// route it through [`enumerate_layer`] instead, matching the same classification
-/// [`eval_call`] uses for index lookups.
+/// Whether `expr` is any declared index lookup `^root.index(args…)` — a `Call`
+/// whose callee names an index off a saved root. Callers choose whether they need
+/// the unique lookup value path or the non-unique iterable branch shape.
 pub(crate) fn is_index_branch(expr: &Expression, env: &Env<'_>) -> bool {
+    index_branch_schema(expr, env).is_some()
+}
+
+/// Whether `expr` is a non-unique declared index branch that acts as an
+/// address-only collection in direct loops.
+pub(crate) fn is_iterable_index_branch(expr: &Expression, env: &Env<'_>) -> bool {
+    index_branch_schema(expr, env).is_some_and(|(_, index)| !index.unique)
+}
+
+pub(crate) fn check_key_collection(
+    expr: &Expression,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<(), RuntimeError> {
+    if is_index_branch(expr, env) && !is_iterable_index_branch(expr, env) {
+        return Err(unsupported("keys over a unique index lookup", span));
+    }
+    Ok(())
+}
+
+fn index_branch_schema<'a>(
+    expr: &Expression,
+    env: &'a Env<'_>,
+) -> Option<(&'a ResourceSchema, &'a IndexSchema)> {
     let Expression::Call { callee, .. } = expr else {
-        return false;
+        return None;
     };
     let Expression::Field { base, name, .. } = callee.as_ref() else {
-        return false;
+        return None;
     };
     let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
-        return false;
+        return None;
     };
-    find_resource(env.program, root)
-        .is_some_and(|resource| resource.indexes.iter().any(|index| &index.name == name))
+    let resource = find_resource(env.program, root)?;
+    let index = resource.indexes.iter().find(|index| &index.name == name)?;
+    Some((resource, index))
+}
+
+pub(crate) fn unique_index_lookup_path(
+    expr: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
+    let Expression::Call { callee, args, span } = expr else {
+        return Ok(None);
+    };
+    let Expression::Field { base, name, .. } = callee.as_ref() else {
+        return Ok(None);
+    };
+    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return Ok(None);
+    };
+    let Some((root_name, index_name)) = (|| {
+        let resource = find_resource(env.program, root)?;
+        let index = resource.indexes.iter().find(|index| &index.name == name)?;
+        if !index.unique {
+            return None;
+        }
+        let saved_root = resource.saved_root.as_ref()?;
+        Some((saved_root.root.clone(), index.name.clone()))
+    })() else {
+        return Ok(None);
+    };
+    let mut segments = vec![PathSegment::Root(root_name), PathSegment::Index(index_name)];
+    for arg in args {
+        if arg.mode.is_some() || arg.name.is_some() {
+            return Err(unsupported(
+                "an index lookup with named or out arguments",
+                *span,
+            ));
+        }
+        segments.push(PathSegment::IndexKey(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("an index key of this type", *span))?,
+        ));
+    }
+    Ok(Some(segments))
 }
 
 /// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,

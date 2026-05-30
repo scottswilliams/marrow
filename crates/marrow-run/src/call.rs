@@ -931,7 +931,8 @@ pub(crate) fn eval_call(
                     return eval_conversion(name, args, span, env).map(Some);
                 }
                 // `keys(<layer>)` materializes the layer's child keys as a sequence
-                // value (the same enumeration `for x in <layer>` drives).
+                // value. Direct loops use this enumeration only for address-only
+                // collections such as index branches.
                 "keys" => return eval_keys(args, span, env).map(Some),
                 // `count(path)` is a one-layer tree scan over the lowered path.
                 "count" => return eval_count(args, span, env).map(Some),

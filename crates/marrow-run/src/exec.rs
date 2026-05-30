@@ -433,8 +433,9 @@ pub(crate) fn eval_for(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    // A two-name binding (`for k, v in entries(...)`) iterates `[key, value]`
-    // pairs; ranges have no second name to bind.
+    // A two-name binding over a saved collection binds its address and element
+    // directly. Other iterables still need an explicit pair sequence, such as
+    // `entries(...)`; ranges have no second name to bind.
     if let Some(second) = &binding.second {
         if matches!(
             iterable,
@@ -445,7 +446,7 @@ pub(crate) fn eval_for(
         ) {
             return Err(unsupported("a two-name binding over a range", span));
         }
-        let entries = eval_collection(iterable, env)?;
+        let entries = eval_collection_entries(iterable, env)?;
         let prefix = traversed_layer_prefix(iterable, env)?;
         return iterate_saved_layer(prefix, env, |env| {
             for entry in entries {
@@ -765,35 +766,69 @@ fn duration_whole_days(nanos: i128, span: SourceSpan) -> Result<i64, RuntimeErro
 }
 
 /// Materialize a non-range `for` iterable to a sequence of values. A saved-layer
-/// path — a primary root `^books`, an index branch `^books.byShelf("x")`, or a
-/// keyed/sequence child layer `^books(id).tags` — and `keys(<layer>)` of one both
-/// enumerate the layer's child keys through [`enumerate_layer`]. Every other
-/// iterable must evaluate to an in-memory sequence (e.g. `std::text::split(...)`).
+/// path yields elements for value-bearing collections and identities for
+/// key-only index branches. `keys(<layer>)` preserves address-only traversal.
+/// Every other iterable must evaluate to an in-memory sequence (e.g.
+/// `std::text::split(...)`).
 pub(crate) fn eval_collection(
     iterable: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    // `for x in reversed(L)` walks the same layer in reverse key order. Only a bare
-    // saved path or a `keys(...)` wrapper yields child keys, so only those take the
-    // descending key-enumeration fast-path here. `reversed(values(L))` /
-    // `reversed(entries(L))` must materialize values/pairs — and a
-    // `reversed(<sequence>)` reverses in memory — so both fall through to
-    // `eval_expr`, which routes to `eval_reversed` and shapes the rows correctly.
-    if let Some(inner) = reversed_argument(iterable)
-        && let Some(layer) = keys_argument(inner).or(is_saved_path(inner).then_some(inner))
-    {
-        return enumerate_layer_dir(layer, Direction::Descending, env);
+    // `for x in reversed(L)` walks the same layer in reverse key order. `keys(L)`
+    // stays address-only; direct value-bearing layers materialize their elements.
+    // `reversed(values(L))` / `reversed(entries(L))` and in-memory sequences fall
+    // through to `eval_expr`, which shapes those rows.
+    if let Some(inner) = reversed_argument(iterable) {
+        if let Some(layer) = keys_argument(inner) {
+            check_key_collection(layer, iterable.span(), env)?;
+            return enumerate_layer_dir(layer, Direction::Descending, env);
+        }
+        if is_saved_path(inner) {
+            if is_iterable_index_branch(inner, env) {
+                return enumerate_layer_dir(inner, Direction::Descending, env);
+            }
+            return materialize_layer_dir(inner, Direction::Descending, env)
+                .map(|rows| rows.into_iter().map(|(_, value)| value).collect());
+        }
     }
     if let Some(path) = keys_argument(iterable) {
+        check_key_collection(path, iterable.span(), env)?;
         return enumerate_layer(path, env);
     }
     if is_saved_path(iterable) {
-        return enumerate_layer(iterable, env);
+        if is_iterable_index_branch(iterable, env) {
+            return enumerate_layer(iterable, env);
+        }
+        return materialize_layer(iterable, env)
+            .map(|rows| rows.into_iter().map(|(_, value)| value).collect());
     }
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
         _ => Err(unsupported("iterating this value", iterable.span())),
     }
+}
+
+fn eval_collection_entries(
+    iterable: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    if let Some(inner) = reversed_argument(iterable)
+        && is_saved_path(inner)
+        && keys_argument(inner).is_none()
+    {
+        return materialize_entry_pairs(materialize_layer_dir(inner, Direction::Descending, env)?);
+    }
+    if is_saved_path(iterable) {
+        return materialize_entry_pairs(materialize_layer(iterable, env)?);
+    }
+    eval_collection(iterable, env)
+}
+
+fn materialize_entry_pairs(rows: Vec<(Value, Value)>) -> Result<Vec<Value>, RuntimeError> {
+    Ok(rows
+        .into_iter()
+        .map(|(key, value)| Value::Sequence(vec![key, value]))
+        .collect())
 }
 
 /// The single local name an assignment targets, or an "unsupported" error for a

@@ -684,12 +684,11 @@ pub(crate) fn check_statement_types(
 }
 
 /// The scope frame a `for` loop's body runs under, mirroring
-/// [`check_statement_types`]: the loop binding(s) in scope for the body. Iterating
-/// a sequence binds its single binding to the element type; other iterables
-/// (ranges, index keys) and the key/value form stay unknown. The checker and the
-/// editor scope reconstruction share this so a loop binding's type is derived in
-/// one place. Inference here discards diagnostics; the type pass emits the
-/// iterable's separately.
+/// [`check_statement_types`]: the loop binding(s) in scope for the body.
+/// Collection loops bind the collection's element, with `keys(...)` preserving
+/// address-only traversal and two-name loops binding address plus element.
+/// Inference here discards diagnostics; the type pass emits the iterable's
+/// separately.
 pub(crate) fn for_frame(
     program: &CheckedProgram,
     binding: &marrow_syntax::ForBinding,
@@ -699,6 +698,16 @@ pub(crate) fn for_frame(
     file: &Path,
 ) -> HashMap<String, MarrowType> {
     let iterable_type = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
+    if let Some((first_type, second_type)) =
+        collection_loop_binding_types(program, binding.second.is_some(), iterable)
+    {
+        let mut frame = HashMap::new();
+        frame.insert(binding.first.clone(), first_type);
+        if let Some(second) = &binding.second {
+            frame.insert(second.clone(), second_type.unwrap_or(MarrowType::Unknown));
+        }
+        return frame;
+    }
     let first_type = match (&binding.second, &iterable_type) {
         (None, MarrowType::Sequence(element)) => (**element).clone(),
         // A range binds its single variable to its endpoint type, so the body type-
@@ -714,6 +723,149 @@ pub(crate) fn for_frame(
         frame.insert(second.clone(), MarrowType::Unknown);
     }
     frame
+}
+
+fn collection_loop_binding_types(
+    program: &CheckedProgram,
+    two_name: bool,
+    iterable: &marrow_syntax::Expression,
+) -> Option<(MarrowType, Option<MarrowType>)> {
+    let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
+    if let Some(path) = collection_wrapper_arg(iterable, "keys") {
+        if two_name {
+            return None;
+        }
+        return Some((saved_path_key_type(program, path)?, None));
+    }
+    if let Some(path) = collection_wrapper_arg(iterable, "values") {
+        if two_name || is_saved_index_branch_path(program, path) {
+            return None;
+        }
+        return Some((saved_path_value_type(program, path), None));
+    }
+    if let Some(path) = collection_wrapper_arg(iterable, "entries") {
+        if !two_name || is_saved_index_branch_path(program, path) {
+            return None;
+        }
+        return Some((
+            saved_path_key_type(program, path)?,
+            Some(saved_path_value_type(program, path)),
+        ));
+    }
+    if !is_saved_path_syntax(program, iterable) {
+        return None;
+    }
+    if is_saved_index_branch_path(program, iterable) {
+        if two_name {
+            return None;
+        }
+        return Some((saved_path_key_type(program, iterable)?, None));
+    }
+    if two_name {
+        return Some((
+            saved_path_key_type(program, iterable)?,
+            saved_path_direct_value_type(program, iterable),
+        ));
+    }
+    Some((saved_path_value_type(program, iterable), None))
+}
+
+fn reversed_call_arg(expr: &marrow_syntax::Expression) -> Option<&marrow_syntax::Expression> {
+    collection_wrapper_arg(expr, "reversed")
+}
+
+fn collection_wrapper_arg<'a>(
+    expr: &'a marrow_syntax::Expression,
+    wrapper: &str,
+) -> Option<&'a marrow_syntax::Expression> {
+    let marrow_syntax::Expression::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
+    };
+    if segments.as_slice() != [wrapper] {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        _ => None,
+    }
+}
+
+fn is_saved_path_syntax(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Field { .. } => saved_layer_chain(expr).is_some(),
+        Expression::Call { callee, .. } => saved_index_branch_type(program, callee).is_some(),
+        _ => false,
+    }
+}
+
+fn saved_path_key_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    use marrow_syntax::Expression;
+    match path {
+        Expression::SavedRoot { name, .. } => {
+            let resource = find_resource_schema(program, name)?;
+            resource
+                .saved_root
+                .as_ref()
+                .filter(|root| !root.identity_keys.is_empty())?;
+            Some(MarrowType::Identity(resource.name.clone()))
+        }
+        Expression::Call { callee, .. } => saved_index_branch_type(program, callee.as_ref()),
+        Expression::Field { .. } => Some(layer_key_type(program, path)),
+        _ => None,
+    }
+}
+
+fn saved_path_value_type(program: &CheckedProgram, path: &marrow_syntax::Expression) -> MarrowType {
+    saved_path_direct_value_type(program, path).unwrap_or(MarrowType::Unknown)
+}
+
+fn saved_path_direct_value_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    use marrow_syntax::Expression;
+    match path {
+        Expression::SavedRoot { name, .. } => {
+            let resource = find_resource_schema(program, name)?;
+            resource
+                .saved_root
+                .as_ref()
+                .filter(|root| !root.identity_keys.is_empty())?;
+            Some(MarrowType::Resource(resource.name.clone()))
+        }
+        Expression::Field { .. } => saved_leaf_type(program, path).or(Some(MarrowType::Unknown)),
+        _ => None,
+    }
+}
+
+fn saved_index_branch_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Field { base, name, .. } = callee else {
+        return None;
+    };
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return None;
+    };
+    let resource = find_resource_schema(program, root)?;
+    resource
+        .indexes
+        .iter()
+        .any(|index| &index.name == name && !index.unique)
+        .then(|| MarrowType::Identity(resource.name.clone()))
+}
+
+fn is_saved_index_branch_path(program: &CheckedProgram, path: &marrow_syntax::Expression) -> bool {
+    matches!(path, marrow_syntax::Expression::Call { callee, .. } if saved_index_branch_type(program, callee).is_some())
 }
 
 /// The endpoint scalar type of a range iterable when both endpoints are the same
@@ -1775,17 +1927,16 @@ pub(crate) fn check_call(
     {
         return check_next_id(program, args, span, file, diagnostics);
     }
-    // `reversed` is type-transparent: it yields the same elements in reverse order,
-    // so its result is exactly its argument's type (a `sequence[T]` stays
-    // `sequence[T]`; an untyped layer stays `Unknown`, never regressing loop-element
-    // typing). `next`/`prev` need the argument *expression* — the `^path` — to find
-    // the resource/layer they navigate, so they too resolve here before the generic
-    // builtin branch typed only from `arg_types`.
+    // `reversed` needs the argument expression for saved collections, whose element
+    // sequence type is not always the argument's direct value type. `next`/`prev`
+    // likewise need the `^path` expression to find the resource/layer they navigate,
+    // so these resolve here before the generic builtin branch typed only from
+    // `arg_types`.
     if let [name] = segments {
         match name.as_str() {
             "reversed" => {
                 check_arity(name, 1, args, span, file, diagnostics);
-                return arg_types.first().cloned().unwrap_or(MarrowType::Unknown);
+                return reversed_type(program, args, arg_types);
             }
             "next" | "prev" => {
                 check_arity(name, 1, args, span, file, diagnostics);
@@ -1994,6 +2145,21 @@ pub(crate) fn check_call(
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+fn reversed_type(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> MarrowType {
+    if let [arg] = args
+        && arg.mode.is_none()
+        && arg.name.is_none()
+        && let Some((element, None)) = collection_loop_binding_types(program, false, &arg.value)
+    {
+        return MarrowType::Sequence(Box::new(element));
+    }
+    arg_types.first().cloned().unwrap_or(MarrowType::Unknown)
 }
 
 #[allow(clippy::too_many_arguments)]
