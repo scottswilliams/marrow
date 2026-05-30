@@ -50,6 +50,11 @@ Marrow does not include user-defined type aliases in the first language
 surface. Use resources for named tree shapes and generated identity types for
 saved resource identities.
 
+An `enum` is a named, fixed set of values — the user-defined generalization of
+`bool`. It is a named scalar-valued type: a value such as `Status::archived`
+compares nominally (it equals only a value of the same enum) and stores as the
+member's compact ordinal. See [Enums](enums.md).
+
 ## Saved Types
 
 Saved fields use concrete types. A saved leaf field may use `int`,
@@ -62,8 +67,10 @@ Saving an identity value in a field does not create an implicit foreign-key
 constraint, cascade, or join. It is a typed value. Applications enforce
 relationship rules in code or model them as resources and indexes.
 
-Saved keys use ordered key types: scalars and generated resource identity
-types. Keys do not use whole resources, sequences, keyed trees, or `unknown`.
+Saved keys are orderable scalar types — every scalar except `decimal`. A key
+may not be `decimal`, an enum or other named type, a whole resource, a
+sequence, a keyed tree, or `unknown`. Identity-typed keys such as `Book::Id`
+are not yet supported.
 
 `unknown` belongs at dynamic boundaries, not inside managed saved schemas. If
 dynamic payload must be persisted, store it as `bytes`, `string`, or an

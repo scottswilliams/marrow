@@ -34,6 +34,7 @@ pub struct CheckedModule {
     pub constants: Vec<CheckedConst>,
     pub functions: Vec<CheckedFunction>,
     pub resources: Vec<marrow_schema::ResourceSchema>,
+    pub enums: Vec<marrow_schema::EnumSchema>,
 }
 
 /// A module-level constant. Its type is the resolved annotation when one was
@@ -82,34 +83,63 @@ pub enum MarrowType {
     Resource(String),
     /// A resource identity such as `Book::Id`, carrying the resource name.
     Identity(String),
+    /// An enum, identified by its owning module and bare name. Identity is
+    /// module-qualified: a bare `Status` referenced in module `b` resolves to
+    /// `b::Status` (same-module first), and two same-named enums in different
+    /// modules never alias. Nominal: an enum value equals only a value of the
+    /// same enum.
+    Enum {
+        module: String,
+        name: String,
+    },
     Sequence(Box<MarrowType>),
     Unknown,
 }
 
+/// The module's named types — resources and enums — that resolution needs to
+/// promote a bare [`Type::Named`] to a reference rather than [`MarrowType::Unknown`].
+/// Both are looked up by name; an enum name and a resource name never collide
+/// (the checker reports that as a duplicate declaration).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TypeNames<'a> {
+    /// The qualified name of the module these names belong to, so a bare enum
+    /// annotation resolves to that module's enum (`module::name` identity). Empty
+    /// for a module-less script, whose enums are project-unique by construction.
+    pub module: &'a str,
+    pub resources: &'a [String],
+    pub enums: &'a [String],
+}
+
 impl MarrowType {
-    /// Resolve a [`TypeRef`] against the resource names declared in the same
-    /// module. Best-effort and total: it never errors, falling back to
+    /// Resolve a [`TypeRef`] against the named types declared in the same module.
+    /// Best-effort and total: it never errors, falling back to
     /// [`MarrowType::Unknown`] for anything it cannot place.
-    pub(crate) fn resolve(ty: &TypeRef, module_resources: &[String]) -> Self {
-        Self::from_resolved(Type::resolve(ty), module_resources)
+    pub(crate) fn resolve(ty: &TypeRef, names: TypeNames<'_>) -> Self {
+        Self::from_resolved(Type::resolve(ty), names)
     }
 
     /// Promote a schema-resolved [`Type`] to the checker's lattice using the
-    /// module's resource names. The structure (scalar, sequence, identity,
+    /// module's named types. The structure (scalar, sequence, identity,
     /// `unknown`) is already decided; this layer only places a bare [`Type::Named`]
-    /// as a resource reference, the checker-only `Error` type, or `Unknown`.
-    pub(crate) fn from_resolved(ty: Type, module_resources: &[String]) -> Self {
+    /// as a resource reference, an enum reference, the checker-only `Error` type,
+    /// or `Unknown`.
+    pub(crate) fn from_resolved(ty: Type, names: TypeNames<'_>) -> Self {
         match ty {
             Type::Scalar(scalar) => Self::Primitive(scalar),
             Type::Sequence(element) => {
-                Self::Sequence(Box::new(Self::from_resolved(*element, module_resources)))
+                Self::Sequence(Box::new(Self::from_resolved(*element, names)))
             }
             Type::Identity(resource) => Self::Identity(resource),
             Type::Unknown => Self::Unknown,
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
             Type::Named(name) if name == "Error" => Self::Error,
-            Type::Named(name) if module_resources.contains(&name) => Self::Resource(name),
+            Type::Named(name) if names.resources.contains(&name) => Self::Resource(name),
+            // A bare enum annotation names the owning module's enum.
+            Type::Named(name) if names.enums.contains(&name) => Self::Enum {
+                module: names.module.to_string(),
+                name,
+            },
             Type::Named(_) => Self::Unknown,
         }
     }
@@ -117,19 +147,29 @@ impl MarrowType {
     /// Whether `ty` names a type the checker recognizes: a scalar, `Error`,
     /// `unknown`, a `sequence[...]` of a known type, a qualified or identity type
     /// (anything containing `::`, validated more precisely later), or a resource
-    /// declared anywhere in `resources` (project-wide). Used to flag unknown type
+    /// or enum declared anywhere in the project. Used to flag unknown type
     /// annotations without false-flagging cross-module references.
-    pub(crate) fn names_known_type(ty: &TypeRef, resources: &HashSet<String>) -> bool {
-        Self::resolved_is_known(&Type::resolve(ty), resources)
+    pub(crate) fn names_known_type(
+        ty: &TypeRef,
+        resources: &HashSet<String>,
+        enums: &HashSet<String>,
+    ) -> bool {
+        Self::resolved_is_known(&Type::resolve(ty), resources, enums)
     }
 
-    fn resolved_is_known(ty: &Type, resources: &HashSet<String>) -> bool {
+    fn resolved_is_known(ty: &Type, resources: &HashSet<String>, enums: &HashSet<String>) -> bool {
         match ty {
             Type::Scalar(_) | Type::Identity(_) | Type::Unknown => true,
-            Type::Sequence(element) => Self::resolved_is_known(element, resources),
+            Type::Sequence(element) => Self::resolved_is_known(element, resources, enums),
             // A qualified name (any `::`) is assumed a cross-module reference and
-            // accepted; `Error` and declared resources are known by name.
-            Type::Named(name) => name.contains("::") || name == "Error" || resources.contains(name),
+            // accepted; `Error`, declared resources, and declared enums are known
+            // by name.
+            Type::Named(name) => {
+                name.contains("::")
+                    || name == "Error"
+                    || resources.contains(name)
+                    || enums.contains(name)
+            }
         }
     }
 }

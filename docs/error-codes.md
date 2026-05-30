@@ -170,6 +170,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key, a top-level field, or a field reached through unkeyed groups. |
 | `schema.duplicate_stable_id` | Two resource elements declare the same stable ID. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
+| `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as a name or a sequence; a key must be an orderable scalar. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a resource with no keyed saved root. |
 | `schema.required_in_unkeyed_group` | A `required` field is declared inside an unkeyed group (not yet materialized by the write planner). |

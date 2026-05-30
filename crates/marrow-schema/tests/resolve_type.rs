@@ -110,3 +110,15 @@ fn embeds_unknown_sees_through_sequences() {
     assert!(!resolve("sequence[int]").embeds_unknown());
     assert!(!resolve("int").embeds_unknown());
 }
+
+#[test]
+fn an_enum_field_stores_as_an_int_ordinal() {
+    // A scalar field stores by its own scalar; a `Named` field — an enum, the only
+    // named type that reaches a stored scalar — stores as `int`, its member
+    // ordinal. A sequence or identity has no scalar storage form.
+    assert_eq!(resolve("int").stored_scalar(), Some(ScalarType::Int));
+    assert_eq!(resolve("string").stored_scalar(), Some(ScalarType::Str));
+    assert_eq!(resolve("Status").stored_scalar(), Some(ScalarType::Int));
+    assert_eq!(resolve("sequence[int]").stored_scalar(), None);
+    assert_eq!(resolve("Book::Id").stored_scalar(), None);
+}

@@ -44,6 +44,7 @@ top_level_decl  =
       use_decl
     | doc_comment* const_decl
     | doc_comment* resource_decl
+    | doc_comment* enum_decl
     | doc_comment* function_decl
     ;
 
@@ -96,6 +97,21 @@ index_arg_list  = index_arg ("," index_arg)* ","? ;
 index_arg       = field_path ;
 field_path      = identifier ("." identifier)* ;
 ```
+
+## Enums
+
+```ebnf
+enum_decl       =
+    visibility? "enum" identifier NEWLINE
+    INDENT enum_member+ DEDENT ;
+
+enum_member     = doc_comment* identifier NEWLINE ;
+```
+
+A member is a bare name; it takes no type, key parameters, or nested body. A
+member reference `Enum "::" member` resolves nominally to the enclosing module's
+enum; the qualified `module "::" Enum "::" member` names another module's enum
+exactly (see the `qualified_name` rule under Primary Expressions).
 
 ## Functions
 
@@ -167,6 +183,7 @@ statement       =
     | delete_stmt
     | merge_stmt
     | if_stmt
+    | match_stmt
     | while_stmt
     | for_stmt
     | break_stmt
@@ -214,7 +231,15 @@ for_stmt        =
 
 loop_label      = identifier ":" ;
 for_binding     = identifier | identifier "," identifier ;
+
+match_stmt      = "match" expression NEWLINE INDENT match_arm+ DEDENT ;
+match_arm       = identifier NEWLINE block ;
 ```
+
+A `match` dispatches on an enum value. Each arm names one member by its bare name
+(the scrutinee supplies the enum, so an arm is `archived`, not `Status::archived`).
+The checker requires the arms to cover every member exactly once; there is no
+wildcard arm. See [Enums](enums.md).
 
 ## Transactions, Locks, Try/Catch
 

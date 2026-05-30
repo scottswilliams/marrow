@@ -312,6 +312,9 @@ impl<'p> IndexBuilder<'p> {
                 Declaration::Resource(resource) => {
                     self.collect_resource(file, resource);
                 }
+                // Enums declare no saved data and are not yet a go-to-definition or
+                // rename target, so the index records no binding for one.
+                Declaration::Enum(_) => {}
             }
         }
     }
@@ -601,6 +604,18 @@ impl UseWalker<'_, '_> {
                 }
                 if let Some(finally) = finally {
                     self.walk_block(finally, scope);
+                }
+            }
+            Statement::Match {
+                scrutinee, arms, ..
+            } => {
+                if let Some(scrutinee) = scrutinee {
+                    self.walk_expr(scrutinee, scope);
+                }
+                // Arm member names dispatch the enum; they bind no local, so only
+                // each arm's block is walked for the names it uses.
+                for arm in arms {
+                    self.walk_block(&arm.block, scope);
                 }
             }
             Statement::Break { .. } | Statement::Continue { .. } => {}

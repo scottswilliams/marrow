@@ -8,8 +8,8 @@
 
 use crate::{
     ArgMode, Argument, BinaryOp, Block, Comment, CommentPlacement, ConstDecl, Declaration,
-    Expression, FunctionDecl, InterpolationPart, KeyParam, ParamDecl, ParamMode, ResourceDecl,
-    ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
+    EnumDecl, Expression, FunctionDecl, InterpolationPart, KeyParam, ParamDecl, ParamMode,
+    ResourceDecl, ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -69,6 +69,7 @@ fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(decl),
         Declaration::Function(decl) => format_function(source, decl),
+        Declaration::Enum(decl) => format_enum(decl),
     }
 }
 
@@ -93,6 +94,18 @@ fn format_resource(decl: &ResourceDecl) -> String {
     for member in &decl.members {
         out.push('\n');
         out.push_str(&format_resource_member(member, 1));
+    }
+    out
+}
+
+fn format_enum(decl: &EnumDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    let visibility = if decl.public { "pub " } else { "" };
+    out.push_str(&format!("{visibility}enum {}", decl.name));
+    for member in &decl.members {
+        out.push('\n');
+        out.push_str(&format_member_meta(&member.docs, &member.stable_id, 1));
+        out.push_str(&format!("{}{}", INDENT, member.name));
     }
     out
 }
@@ -400,6 +413,20 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
                 out.push_str(&format!(
                     "\n{pad}finally\n{}",
                     format_block(source, finally, level + 1)
+                ));
+            }
+            out
+        }
+        Statement::Match {
+            scrutinee, arms, ..
+        } => {
+            let arm_pad = INDENT.repeat(level + 1);
+            let mut out = format!("{pad}match {}", format_opt_expression(scrutinee.as_ref()));
+            for arm in arms {
+                out.push_str(&format!(
+                    "\n{arm_pad}{}\n{}",
+                    arm.member,
+                    format_block(source, &arm.block, level + 2)
                 ));
             }
             out

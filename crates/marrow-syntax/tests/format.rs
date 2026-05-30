@@ -211,6 +211,24 @@ fn formats_transaction_lock_and_try_blocks() {
 }
 
 #[test]
+fn formats_a_match_with_bare_member_arms() {
+    let source = "module app\n\
+         fn label(s: Status)\n\
+         \x20   match s\n\
+         \x20       active\n\
+         \x20           print(\"a\")\n\
+         \x20       archived\n\
+         \x20           print(\"b\")\n";
+    let expected = "\
+         \x20   match s\n\
+         \x20       active\n\
+         \x20           print(\"a\")\n\
+         \x20       archived\n\
+         \x20           print(\"b\")";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
 fn formats_const_declaration_with_docs() {
     let source = "module app\n\
          ;; The maximum number of loans.\n\

@@ -25,7 +25,7 @@ use marrow_check::{
     Resolution, ResolvableKind, resolve,
 };
 use marrow_schema::stdlib::{self, Capability};
-use marrow_schema::{Element, IndexSchema, KeyDef, ResourceSchema, Type};
+use marrow_schema::{Element, EnumSchema, IndexSchema, KeyDef, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, StoreError};
 use marrow_store::mem::MemStore;
@@ -33,7 +33,7 @@ use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, ScalarType, ValueError, decode_value, encode_value};
 use marrow_syntax::{
     ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
-    LiteralKind, ParamMode, SourceSpan, Statement, UnaryOp,
+    LiteralKind, MatchArm, ParamMode, SourceSpan, Statement, UnaryOp,
 };
 use write::{
     ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,
@@ -399,8 +399,8 @@ pub fn evaluate_function(
     match invoke(
         ctx,
         output,
-        // The bare-program path has no module, so no name resolution or import
-        // aliases (a call to another function cannot resolve).
+        // The bare-program path has no module, so no name resolution, import
+        // aliases, or owning module to qualify a bare `Enum::member`.
         None,
         &names,
         &function.body,
@@ -2683,8 +2683,10 @@ struct Env<'p> {
     traversed_layers: Vec<Vec<u8>>,
     /// The name of the module this activation runs in, so a call inside it
     /// resolves from the right module (a bare name in its own module, a qualified
-    /// name elsewhere) through the unified resolver. Empty for the bare-program
-    /// [`evaluate_function`] path, where no project module hosts the body.
+    /// name elsewhere) through the unified resolver, and a bare `Enum::member`
+    /// resolves to that module's enum first — the same same-module identity the
+    /// checker recorded. Empty for the bare-program [`evaluate_function`] path,
+    /// where no project module hosts the body and enums are project-unique.
     module: &'p str,
     /// The active function's module short→full import alias map, so a short-form
     /// call (`clock::now()`) expands to its full path (`std::clock::now`) before
@@ -2727,8 +2729,9 @@ impl<'p> Env<'p> {
         depth: usize,
     ) -> Self {
         // The activation's module supplies both its name (for resolving the calls
-        // inside it) and its short→full import aliases. The bare-program path has
-        // no module: an empty name and no aliases (expansion is a no-op).
+        // inside it and a bare `Enum::member`) and its short→full import aliases.
+        // The bare-program path has no module: an empty name and no aliases
+        // (expansion is a no-op).
         let aliases = module
             .map(|module| marrow_check::build_alias_map(&module.imports))
             .unwrap_or_default();
@@ -3015,6 +3018,20 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
                 None => Ok(Flow::Normal),
             }
         }
+        Statement::Match {
+            scrutinee,
+            arms,
+            enum_name,
+            enum_module,
+            span,
+        } => eval_match(
+            scrutinee.as_ref(),
+            arms,
+            enum_module.as_deref(),
+            enum_name.as_deref(),
+            *span,
+            env,
+        ),
         Statement::Break { label, .. } => Ok(Flow::Break(label.clone())),
         Statement::Continue { label, .. } => Ok(Flow::Continue(label.clone())),
         Statement::While {
@@ -3133,6 +3150,39 @@ fn eval_statement(statement: &Statement, env: &mut Env<'_>) -> Result<Flow, Runt
             eval_block(body, env)
         }
     }
+}
+
+/// Dispatch a `match` over an enum-typed scrutinee. The scrutinee evaluates to
+/// the selected member's ordinal (an int); the arm whose member has that ordinal
+/// runs. The checker records the scrutinee's enum identity on the statement
+/// (`enum_module`/`enum_name`), so dispatch reads that exact enum's ordinals —
+/// two enums that share member names, even across modules with the same enum
+/// name, never alias. The checker also proves a covering arm exists, so a missing
+/// match is a defensive fault, not a reachable path.
+fn eval_match(
+    scrutinee: Option<&Expression>,
+    arms: &[MatchArm],
+    enum_module: Option<&str>,
+    enum_name: Option<&str>,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    let scrutinee = scrutinee.ok_or_else(|| unsupported("a match with no scrutinee", span))?;
+    let Value::Int(ordinal) = eval_expr(scrutinee, env)? else {
+        return Err(type_error("`match` requires an enum value", span));
+    };
+    let schema = enum_module
+        .zip(enum_name)
+        .and_then(|(module, name)| enum_in(env.program, module, name))
+        .ok_or_else(|| unsupported("a match over a non-enum value", span))?;
+    for arm in arms {
+        if schema.ordinal(&arm.member) == Some(ordinal as usize) {
+            return eval_block(&arm.block, env);
+        }
+    }
+    // The checker proved exhaustiveness, so no covering arm means the stored
+    // ordinal is outside the enum — corrupt data, not a reachable program path.
+    Err(unsupported("a match with no arm for this enum value", span))
 }
 
 /// How a loop body's resulting flow affects a loop labelled `label`.
@@ -3683,6 +3733,37 @@ fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError
     match expr {
         Expression::Literal { kind, text, span } => eval_literal(*kind, text, *span),
         Expression::Name { segments, span } => {
+            // An `Enum::member` (bare) or `mod::Enum::member` (qualified) evaluates
+            // to the member's declaration-order ordinal as an int — the enum's
+            // stored form. The checker has already validated the reference, so an
+            // unknown enum/member here only arises in an unchecked program and is a
+            // fatal fault.
+            // The last segment is the member, the one before it the enum name; any
+            // remaining prefix is the owning module, joined by `::` so a nested
+            // module stays whole (`a::b::Status::active` → module `a::b`, enum
+            // `Status`, member `active`). A bare `Enum::member` (no prefix) resolves
+            // relative to the running module, mirroring the checker.
+            let enum_member = match segments.as_slice() {
+                [enum_name, member] => {
+                    resolve_enum(env.program, env.module, enum_name).map(|schema| (schema, member))
+                }
+                [module_prefix @ .., enum_name, member] => {
+                    // Expand a short module alias (`c::Status::active` under
+                    // `use a::b::c`) through the frame's imports before lookup, so an
+                    // aliased literal binds to the imported module's enum, matching
+                    // how the checker resolved it and how call dispatch expands.
+                    let module =
+                        marrow_check::expand_module_alias(&module_prefix.join("::"), &env.aliases);
+                    enum_in(env.program, &module, enum_name).map(|schema| (schema, member))
+                }
+                _ => None,
+            };
+            if let Some((schema, member)) = enum_member {
+                let ordinal = schema
+                    .ordinal(member)
+                    .ok_or_else(|| unsupported("a qualified name", *span))?;
+                return Ok(Value::Int(ordinal as i64));
+            }
             if segments.len() != 1 {
                 return Err(unsupported("a qualified name", *span));
             }
@@ -4054,7 +4135,7 @@ fn read_resource(
             continue;
         };
         let value_type = ty
-            .scalar()
+            .stored_scalar()
             .ok_or_else(|| unsupported("reading this field type", span))?;
         let value = decode_value(&bytes, value_type)
             .map(saved_value_to_value)
@@ -4693,6 +4774,37 @@ fn resource_layer_chain_exists(program: &CheckedProgram, root: &str, layers: &[&
 /// checker's `find_resource_schema` shares the same helper.
 fn find_resource<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p ResourceSchema> {
     marrow_check::resolve::resolve_resource_by_root(program, root)
+}
+
+/// The enum named `name` owned by exactly `module`, if any. Mirrors the checker's
+/// `enum_schema_in`: a `match`'s recorded enum identity is by owning module, so
+/// dispatch reads that exact enum's ordinals and same-named enums never alias.
+fn enum_in<'p>(program: &'p CheckedProgram, module: &str, name: &str) -> Option<&'p EnumSchema> {
+    program
+        .modules
+        .iter()
+        .find(|m| m.name == module)?
+        .enums
+        .iter()
+        .find(|enum_schema| enum_schema.name == name)
+}
+
+/// Resolve a bare enum `name` referenced from `referencing_module`: that module's
+/// own enum first, then the first project-wide match. Mirrors the checker's
+/// `resolve_enum` so a `Enum::member` ordinal is read from the same enum the
+/// checker validated against.
+fn resolve_enum<'p>(
+    program: &'p CheckedProgram,
+    referencing_module: &str,
+    name: &str,
+) -> Option<&'p EnumSchema> {
+    enum_in(program, referencing_module, name).or_else(|| {
+        program
+            .modules
+            .iter()
+            .flat_map(|module| &module.enums)
+            .find(|enum_schema| enum_schema.name == name)
+    })
 }
 
 /// The number of declared identity keys for the resource at saved root `name`,
@@ -5484,9 +5596,12 @@ fn key_type_fault(expected: ScalarType, found: ScalarType, span: SourceSpan) -> 
     }
 }
 
-/// The declared scalar type of a saved root's top-level field.
+/// The declared scalar type of a saved root's top-level field — its own scalar,
+/// or `int` for an enum field whose stored value is the member ordinal.
 fn resource_field_type(program: &CheckedProgram, root: &str, field: &str) -> Option<ScalarType> {
-    find_resource(program, root)?.field_type(&[field])?.scalar()
+    find_resource(program, root)?
+        .field_type(&[field])?
+        .stored_scalar()
 }
 
 /// The declared leaf type of a keyed-leaf layer on a saved root (e.g. the
@@ -5496,7 +5611,9 @@ fn resource_layer_leaf_type(
     root: &str,
     layer: &str,
 ) -> Option<ScalarType> {
-    find_resource(program, root)?.leaf_type(&[layer])?.scalar()
+    find_resource(program, root)?
+        .leaf_type(&[layer])?
+        .stored_scalar()
 }
 
 /// The declared type of a scalar member field inside a saved root's GROUP layer,
@@ -5512,7 +5629,7 @@ fn resource_nested_member_type(
     let resource = find_resource(program, root)?;
     let mut chain = layers.to_vec();
     chain.push(field);
-    resource.field_type(&chain)?.scalar()
+    resource.field_type(&chain)?.stored_scalar()
 }
 
 /// How a stored saved path relates to the project schema, for data-integrity
@@ -5734,7 +5851,7 @@ fn resource_group_members(
         .iter()
         .filter_map(|member| match &member.element {
             Element::Slot { ty, .. } if member.is_plain_field() => {
-                Some((member.name.clone(), ty.scalar()?))
+                Some((member.name.clone(), ty.stored_scalar()?))
             }
             _ => None,
         })

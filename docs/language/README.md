@@ -94,6 +94,8 @@ This shows the main shape:
 - [Types](types.md) defines primitive types, sparse fields, required fields,
   resources, sequences, keyed trees, local variables, identity types, and
   conversion rules.
+- [Enums](enums.md) defines named, fixed sets of values, their members,
+  nominal equality, and compact ordinal storage.
 - [Resources and Saved Data](resources-and-storage.md) defines resources,
   local trees, saved trees, identity keys, indexes, history, transactions,
   locks, delete, merge, and data access.

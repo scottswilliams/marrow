@@ -136,6 +136,11 @@ fn walk_statement(file: &Path, statement: &Statement, out: &mut Vec<CheckDiagnos
                 walk_finally(file, finally, 0, &mut Vec::new(), out);
             }
         }
+        Statement::Match { arms, .. } => {
+            for arm in arms {
+                walk_block(file, &arm.block, out);
+            }
+        }
         _ => {}
     }
 }
@@ -231,6 +236,11 @@ fn walk_finally(
                     walk_finally(file, finally, 0, &mut Vec::new(), out);
                 }
             }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    walk_finally(file, &arm.block, loop_depth, loop_labels, out);
+                }
+            }
             _ => {}
         }
     }
@@ -318,6 +328,11 @@ fn walk_loop_control_flow(
                     walk_loop_control_flow(file, finally, loop_depth, loop_labels, out);
                 }
             }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    walk_loop_control_flow(file, &arm.block, loop_depth, loop_labels, out);
+                }
+            }
             _ => {}
         }
     }
@@ -399,6 +414,11 @@ fn walk_loop_layer_mutations(
                 }
                 if let Some(finally) = finally {
                     walk_loop_layer_mutations(file, finally, traversed, out);
+                }
+            }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    walk_loop_layer_mutations(file, &arm.block, traversed, out);
                 }
             }
             _ => {}

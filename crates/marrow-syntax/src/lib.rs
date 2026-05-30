@@ -44,6 +44,15 @@ impl SourceFile {
                 _ => None,
             })
     }
+
+    pub fn enum_decl(&self, name: &str) -> Option<&EnumDecl> {
+        self.declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Enum(decl) if decl.name == name => Some(decl),
+                _ => None,
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +72,7 @@ pub enum Declaration {
     Const(ConstDecl),
     Resource(ResourceDecl),
     Function(FunctionDecl),
+    Enum(EnumDecl),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +288,28 @@ pub struct FunctionDecl {
     pub span: SourceSpan,
 }
 
+/// A flat enum: a named, fixed set of bare member values, generalizing `bool`.
+/// `public` is recorded for `pub enum` consistency with `pub fn`; it is not yet
+/// enforced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDecl {
+    pub docs: Vec<String>,
+    pub public: bool,
+    pub name: String,
+    pub members: Vec<EnumMember>,
+    pub span: SourceSpan,
+}
+
+/// One enum member: a bare identifier. `stable_id` is a reserved slot for the
+/// rename-safe stable-id work; the parser always leaves it `None` for now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMember {
+    pub docs: Vec<String>,
+    pub stable_id: Option<String>,
+    pub name: String,
+    pub span: SourceSpan,
+}
+
 /// An indented sequence of statements.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
@@ -391,6 +423,32 @@ pub enum Statement {
         finally: Option<Block>,
         span: SourceSpan,
     },
+    /// A `match` over an enum-typed scrutinee: each arm names one member of the
+    /// enum and holds the block to run when the scrutinee selects it. Arms name a
+    /// bare member (the scrutinee supplies the enum); a local enum's `match` has
+    /// no wildcard arm. Exhaustiveness and member validity are checker rules.
+    ///
+    /// `enum_name`/`enum_module` are the scrutinee's resolved enum identity,
+    /// filled by the checker (`enum_module` is the owning module's qualified name,
+    /// empty for a module-less script). The parser leaves both `None`; the runtime
+    /// dispatches arms by that exact enum's ordinals, so two enums that share
+    /// member names — even across modules with the same enum name — never alias.
+    Match {
+        scrutinee: Option<Expression>,
+        arms: Vec<MatchArm>,
+        enum_name: Option<String>,
+        enum_module: Option<String>,
+        span: SourceSpan,
+    },
+}
+
+/// One arm of a `match` statement: a bare member name and the block run when the
+/// scrutinee selects that member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchArm {
+    pub member: String,
+    pub block: Block,
+    pub span: SourceSpan,
 }
 
 /// One `else if` clause of an `if` statement.
@@ -436,7 +494,8 @@ impl Statement {
             | Self::For { span, .. }
             | Self::Transaction { span, .. }
             | Self::Lock { span, .. }
-            | Self::Try { span, .. } => *span,
+            | Self::Try { span, .. }
+            | Self::Match { span, .. } => *span,
         }
     }
 }
@@ -657,6 +716,8 @@ pub enum Keyword {
     Pub,
     Fn,
     Resource,
+    Enum,
+    Match,
     At,
     Index,
     Unique,
@@ -2076,6 +2137,7 @@ impl<'a> StmtParser<'a> {
             TokenKind::Keyword(Keyword::Transaction) => return Some(self.transaction_stmt()),
             TokenKind::Keyword(Keyword::Lock) => return Some(self.lock_stmt()),
             TokenKind::Keyword(Keyword::Try) => return Some(self.try_stmt()),
+            TokenKind::Keyword(Keyword::Match) => return Some(self.match_stmt()),
             TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
                 self.skip_compound();
                 return None;
@@ -2283,6 +2345,86 @@ impl<'a> StmtParser<'a> {
             span: join_spans(start, body.span),
             path,
             body,
+        }
+    }
+
+    /// Parse `match <scrutinee>` followed by an indented block of arms. Each arm
+    /// is a bare member name on its own line, then an indented arm block — the
+    /// scrutinee supplies the enum, so an arm names a member, not `Enum::member`.
+    /// A local enum's `match` has no wildcard arm; exhaustiveness and member
+    /// validity are checker rules, so the parser only structures the arms.
+    fn match_stmt(&mut self) -> Statement {
+        let start = self.advance().span; // `match`
+        let scrutinee = self.header_expression();
+        let mut end = start;
+        let mut arms = Vec::new();
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.advance(); // INDENT
+            while let Some(kind) = self.peek() {
+                match kind {
+                    TokenKind::Dedent => {
+                        end = self.advance().span;
+                        break;
+                    }
+                    TokenKind::Newline => {
+                        self.advance();
+                    }
+                    TokenKind::Comment => self.take_own_line_comment(),
+                    // A stray nested block under an arm header is skipped rather
+                    // than mis-parsed; the arm header itself opens its own block.
+                    TokenKind::Indent => {
+                        self.skip_block();
+                    }
+                    _ => {
+                        if let Some(arm) = self.match_arm() {
+                            end = arm.block.span;
+                            arms.push(arm);
+                        }
+                    }
+                }
+            }
+        } else {
+            self.error_span(start, "expected an indented match body");
+        }
+        Statement::Match {
+            scrutinee,
+            arms,
+            enum_name: None,
+            enum_module: None,
+            span: join_spans(start, end),
+        }
+    }
+
+    /// Parse one `match` arm: a bare member-name header line, then its indented
+    /// block. An arm header that is not a single bare identifier is a parse error.
+    fn match_arm(&mut self) -> Option<MatchArm> {
+        let newline = self.find_line_end();
+        let content_end = self.split_trailing_comment(newline);
+        let header = &self.tokens[self.pos..content_end];
+        let span = line_span(header);
+        let member = match header {
+            [token] if token.kind == TokenKind::Identifier => token.text(self.source).to_string(),
+            _ => {
+                self.error_span(span, "a match arm is a bare member name");
+                self.pos = (newline + 1).min(self.tokens.len());
+                self.skip_block_if_indented();
+                return None;
+            }
+        };
+        self.pos = (newline + 1).min(self.tokens.len());
+        let block = self.block_body();
+        Some(MatchArm {
+            member,
+            span: join_spans(span, block.span),
+            block,
+        })
+    }
+
+    /// Skip an indented block if one immediately follows, used to recover after a
+    /// malformed arm header so its body does not leak into the surrounding arms.
+    fn skip_block_if_indented(&mut self) {
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.skip_block();
         }
     }
 
@@ -2557,6 +2699,11 @@ impl<'a> DeclParser<'a> {
                     file.declarations.push(Declaration::Resource(resource));
                     saw_top_level_item = true;
                 }
+                _ if self.starts_enum_header() => {
+                    let decl = self.parse_enum(std::mem::take(&mut docs));
+                    file.declarations.push(Declaration::Enum(decl));
+                    saw_top_level_item = true;
+                }
                 _ if self.starts_function_header() => {
                     let function = self.parse_function(std::mem::take(&mut docs));
                     file.declarations.push(Declaration::Function(function));
@@ -2825,6 +2972,90 @@ impl<'a> DeclParser<'a> {
                                 span,
                             }));
                         }
+                        Err(message) => self.error_span(err, message),
+                    }
+                }
+            }
+        }
+        members
+    }
+
+    fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
+        let span = self.header_span();
+        let header = self.take_header_line();
+        let (public, name) = match parse_enum_head(self.source, &header) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                self.error_span(span, message);
+                (false, String::new())
+            }
+        };
+        let members = if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.parse_enum_members()
+        } else {
+            self.error_span(span, "expected an indented enum body");
+            Vec::new()
+        };
+        if members.is_empty() {
+            self.error_span(span, "an enum needs at least one member");
+        }
+        EnumDecl {
+            docs,
+            public,
+            name,
+            members,
+            span,
+        }
+    }
+
+    /// Parse an `INDENT … DEDENT` block of enum members. A member is a bare
+    /// identifier on its own line; anything else (a type annotation, key
+    /// parameters, an `@id`, or a deeper indent) is a parse error. This mirrors
+    /// `parse_resource_members` but accepts only the bare-name form.
+    fn parse_enum_members(&mut self) -> Vec<EnumMember> {
+        let mut members = Vec::new();
+        let mut docs = Vec::new();
+        self.advance(); // INDENT
+
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Dedent => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Newline | TokenKind::Comment => {
+                    self.advance();
+                }
+                TokenKind::DocComment => {
+                    let token = self.advance();
+                    docs.push(doc_comment_text(token.text(self.source)));
+                }
+                // A deeper indent under a member is stray: a flat enum has no
+                // nested members. Report at the deeper line and skip the block.
+                TokenKind::Indent => {
+                    self.advance(); // INDENT
+                    if self.peek().is_some_and(|kind| {
+                        !matches!(
+                            kind,
+                            TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
+                        )
+                    }) {
+                        let err = self.content_span();
+                        self.error_span(err, "an enum member has no nested body");
+                    }
+                    self.skip_to_block_end();
+                }
+                _ => {
+                    let span = self.header_span();
+                    let err = self.content_span();
+                    let header = self.take_header_line();
+                    match enum_member_name(self.source, &header) {
+                        Ok(name) => members.push(EnumMember {
+                            docs: std::mem::take(&mut docs),
+                            stable_id: None,
+                            name,
+                            span,
+                        }),
                         Err(message) => self.error_span(err, message),
                     }
                 }
@@ -3114,6 +3345,25 @@ impl<'a> DeclParser<'a> {
         })
     }
 
+    /// Whether the current line is an enum header: `enum ` or `pub enum `. The
+    /// trailing-space rule applies to each word, matching `pub fn`.
+    fn starts_enum_header(&self) -> bool {
+        let lead = self.tokens[self.pos];
+        match lead.kind {
+            TokenKind::Keyword(Keyword::Enum) => self.space_after(lead),
+            TokenKind::Keyword(Keyword::Pub) => {
+                self.space_after(lead) && self.followed_by_enum_space()
+            }
+            _ => false,
+        }
+    }
+
+    fn followed_by_enum_space(&self) -> bool {
+        self.tokens.get(self.pos + 1).is_some_and(|token| {
+            token.kind == TokenKind::Keyword(Keyword::Enum) && self.space_after(*token)
+        })
+    }
+
     /// Report an error spanning the current header line.
     fn error_header(&mut self, message: impl Into<String>) {
         let span = self.header_span();
@@ -3184,6 +3434,47 @@ fn qualified_name(source: &str, tokens: &[Token]) -> Option<String> {
     let last = tokens.last()?;
     let text = &source[first.span.start_byte..last.span.end_byte];
     is_qualified_name(text).then(|| text.to_string())
+}
+
+/// Parse an enum header line: `[pub] enum Name`. Returns the visibility flag and
+/// the enum name. `pub` is recorded for consistency with `pub fn`; the body of
+/// the enum is parsed separately from its indented block.
+fn parse_enum_head(source: &str, tokens: &[Token]) -> Result<(bool, String), &'static str> {
+    let (public, rest) = if matches!(
+        tokens.first().map(|token| token.kind),
+        Some(TokenKind::Keyword(Keyword::Pub))
+    ) {
+        (true, &tokens[1..])
+    } else {
+        (false, tokens)
+    };
+    if !matches!(
+        rest.first().map(|token| token.kind),
+        Some(TokenKind::Keyword(Keyword::Enum))
+    ) {
+        return Err("expected enum declaration");
+    }
+    let rest = &rest[1..];
+    let name = match rest.first() {
+        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+        _ => return Err("expected enum name"),
+    };
+    if rest.len() > 1 {
+        return Err("an enum header is just `enum Name`");
+    }
+    Ok((public, name))
+}
+
+/// The name of an enum member from its header tokens: a single bare identifier.
+/// Anything else — a type annotation, key parameters, or extra tokens — is the
+/// resource-member surface, which a flat enum does not have.
+fn enum_member_name(source: &str, tokens: &[Token]) -> Result<String, &'static str> {
+    match tokens {
+        [token] if token.kind == TokenKind::Identifier => Ok(token.text(source).to_string()),
+        // A single non-identifier token is a reserved word standing in for a name.
+        [_] => Err("expected an enum member name"),
+        _ => Err("an enum member is a bare name; it takes no type or parameters"),
+    }
 }
 
 /// Parse a resource header's tokens after the `resource` keyword:
@@ -3877,6 +4168,8 @@ fn keyword(text: &str) -> Option<Keyword> {
         "pub" => Keyword::Pub,
         "fn" => Keyword::Fn,
         "resource" => Keyword::Resource,
+        "enum" => Keyword::Enum,
+        "match" => Keyword::Match,
         "at" => Keyword::At,
         "index" => Keyword::Index,
         "unique" => Keyword::Unique,

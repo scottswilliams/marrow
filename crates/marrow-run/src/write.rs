@@ -953,7 +953,7 @@ fn stored_arg_key(
     let Some((_, ty, _)) = field_slot(&schema.members, arg) else {
         return Ok(None);
     };
-    let Some(value_type) = ty.scalar() else {
+    let Some(value_type) = ty.stored_scalar() else {
         return Ok(None);
     };
     let Some(bytes) = store.read(&encode_path(&field_path(root, identity, arg)))? else {
@@ -1104,7 +1104,8 @@ fn check_unique_conflict(
 
 /// Check that `value` matches the field's declared scalar type name.
 fn check_type(field: &str, ty: &Type, value: &SavedValue) -> Result<(), WriteError> {
-    if ty.scalar() == Some(value.ty()) {
+    // A field stores by its scalar type, or its ordinal `int` for an enum field.
+    if ty.stored_scalar() == Some(value.ty()) {
         Ok(())
     } else {
         Err(WriteError {

@@ -8,8 +8,9 @@
 use marrow_schema::{
     Element, Node, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
     SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_REQUIRED_IN_UNKEYED_GROUP,
-    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, ScalarType, Type,
+    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NON_ENUM_NAMED_FIELD,
+    SCHEMA_NONSCALAR_KEY, SCHEMA_REQUIRED_IN_UNKEYED_GROUP, SCHEMA_UNKNOWN_IN_SAVED,
+    SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, ScalarType, Type, check_saved_named_fields,
     compile_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
@@ -533,6 +534,149 @@ resource Reading at ^readings(ts: decimal)
 }
 
 #[test]
+fn identity_key_typed_as_a_bare_name_is_an_error() {
+    // A key must be an orderable scalar. A bare name names no scalar, so a raw
+    // string or int written into that key position would be silently accepted and
+    // corrupt the keyspace. The rule is structural — it needs no knowledge of what
+    // the name refers to — so an enum, a resource, or a typo is caught the same way.
+    let source = "\
+resource Order at ^orders(state: Status)
+    required note: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("Status"));
+}
+
+#[test]
+fn keyed_layer_key_param_typed_as_a_bare_name_is_an_error() {
+    let source = "\
+resource Order at ^orders(id: int)
+    byState(state: Status): string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("Status"));
+}
+
+#[test]
+fn an_undeclared_or_typo_named_identity_key_is_an_error() {
+    // The allowlist is structural, so a name that resolves to nothing is rejected
+    // exactly like a declared one. A typo'd key would otherwise accept any value,
+    // letting an int and a string coexist in one identity keyspace.
+    let source = "\
+resource Order at ^orders(state: Stutus)
+    required note: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("Stutus"));
+}
+
+#[test]
+fn a_resource_typed_identity_key_is_an_error() {
+    // A bare name that happens to be a declared resource is still not an orderable
+    // scalar, so it cannot be a key. `Person` here names a local resource.
+    let source = "\
+resource Person
+    required name: string
+resource Order at ^orders(owner: Person)
+    required note: string
+";
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
+    let order = parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Resource(resource) if resource.name == "Order" => Some(resource.clone()),
+            _ => None,
+        })
+        .expect("Order resource");
+    let (_, errors) = compile_resource(&order);
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("Person"));
+}
+
+#[test]
+fn a_sequence_typed_key_is_an_error() {
+    // A sequence is not a scalar at all, so it cannot project to an orderable key.
+    let source = "\
+resource Order at ^orders(tags: sequence[string])
+    required note: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("sequence"));
+}
+
+#[test]
+fn a_sequence_index_argument_is_an_error() {
+    // An index argument keys on its field's stored scalar. A `sequence` has no
+    // single scalar projection, so it cannot be an index key.
+    let source = "\
+resource Order at ^orders(id: int)
+    tags: sequence[string]
+    index byTags(tags, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert!(errors[0].message.contains("byTags"));
+}
+
+#[test]
+fn an_enum_field_index_argument_is_clean() {
+    // An enum field stores its member ordinal as an orderable `int`, so an index
+    // keys on that ordinal. This is the staged enum-field-index behavior: the index
+    // position projects the stored scalar, which for an enum is `int`, not the
+    // free-floating path-key case that identity and layer keys are.
+    let source = "\
+resource Order at ^orders(id: int)
+    state: Status
+    index byState(state, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        errors.is_empty(),
+        "an enum-field index keys on its ordinal: {errors:?}"
+    );
+}
+
+#[test]
+fn an_orderable_scalar_identity_key_is_clean() {
+    // The allowlist does not over-reject: an orderable scalar key at the identity,
+    // a layer key param, and an index argument all compile clean.
+    let source = "\
+resource Order at ^orders(id: int)
+    byTag(tag: string): string
+    rank: int
+    index byRank(rank, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(errors.is_empty(), "orderable scalar keys: {errors:?}");
+}
+
+#[test]
+fn an_identity_typed_key_is_left_unchanged() {
+    // `Book::Id` as a key is the deferred typed-references feature. Its current
+    // behavior is to compile without a schema error (it faults loudly at runtime),
+    // which the allowlist must not change. This pins that behavior so a future
+    // typed-refs change is the thing that flips it.
+    let source = "\
+resource Loan at ^loans(book: Book::Id)
+    required note: string
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert!(
+        codes(&errors)
+            .iter()
+            .all(|code| *code != SCHEMA_NONSCALAR_KEY),
+        "an identity-typed key is the deferred typed-refs surface, not rejected here: {errors:?}"
+    );
+}
+
+#[test]
 fn non_unique_index_omitting_the_identity_key_is_an_error() {
     // A non-unique index must end with all identity keys so each entry is
     // distinct. `byShelf(shelf)` collapses two books on the same shelf onto one
@@ -857,4 +1001,31 @@ fn member_resolvers_reject_unknown_and_empty_chains() {
     assert_eq!(schema.field_type(&["missing", "note"]), None);
     // A real layer but an undeclared member.
     assert_eq!(schema.field_type(&["versions", "missing"]), None);
+}
+
+#[test]
+fn a_bare_named_saved_field_must_be_a_declared_enum() {
+    let decl = resource(
+        "\
+resource Order at ^orders(id: int)
+    required state: Status
+",
+    );
+    // `Status` is a declared enum: the saved field is accepted.
+    assert!(
+        check_saved_named_fields(&decl, &["Status".to_string()]).is_empty(),
+        "an enum-typed saved field is allowed"
+    );
+    // With no such enum declared, the bare-named field has no stored scalar form
+    // (it would otherwise silently decode as an int) and is rejected.
+    let errors = check_saved_named_fields(&decl, &[]);
+    assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
+    assert!(errors[0].message.contains("state"));
+
+    // A local (non-saved) resource is exempt: nothing lowers into the store.
+    let local = resource("resource Order\n    required state: Status\n");
+    assert!(
+        check_saved_named_fields(&local, &[]).is_empty(),
+        "a local resource has no saved fields to reject"
+    );
 }

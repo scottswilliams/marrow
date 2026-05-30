@@ -10,8 +10,8 @@
 use std::fmt;
 
 use marrow_syntax::{
-    FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SavedRoot, SourceSpan,
-    TypeRef,
+    EnumDecl, FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SavedRoot,
+    SourceSpan, TypeRef,
 };
 
 pub mod stdlib;
@@ -72,6 +72,22 @@ impl Type {
     pub fn scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
+            _ => None,
+        }
+    }
+
+    /// The scalar a stored field of this type encodes as: a plain scalar's own
+    /// type, or `int` for an enum field, whose value is the selected member's
+    /// declaration-order ordinal. A saved field that is a bare [`Type::Named`] is
+    /// always an enum: [`check_saved_named_fields`] rejects any other bare name
+    /// (an undefined name or a resource type) at compile time, so by the time a
+    /// `Named` field reaches the store it stores its ordinal as an `int`. The
+    /// storage boundary — value type-checks, field reads, whole-resource reads —
+    /// uses this.
+    pub fn stored_scalar(&self) -> Option<ScalarType> {
+        match self {
+            Self::Scalar(scalar) => Some(*scalar),
+            Self::Named(_) => Some(ScalarType::Int),
             _ => None,
         }
     }
@@ -284,6 +300,39 @@ pub struct IndexSchema {
     pub stable_id: Option<String>,
 }
 
+/// The compiled form of a flat enum: a named, fixed set of members in
+/// declaration order. An enum is its own construct, not a [`ResourceSchema`]; it
+/// owns no saved root and stores as the ordinal of the selected member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumSchema {
+    pub name: String,
+    pub docs: Vec<String>,
+    /// Members in source order; a member's index is its stored ordinal.
+    pub members: Vec<EnumMemberSchema>,
+}
+
+/// One enum member. `stable_id` is a reserved slot for the rename-safe stable-id
+/// work; it is unused while ordinals are positional.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMemberSchema {
+    pub name: String,
+    pub docs: Vec<String>,
+    pub stable_id: Option<String>,
+}
+
+impl EnumSchema {
+    /// The stored ordinal of `member` — its position in declaration order — or
+    /// `None` if the enum has no such member.
+    pub fn ordinal(&self, member: &str) -> Option<usize> {
+        self.members.iter().position(|m| m.name == member)
+    }
+
+    /// The member name an ordinal selects, or `None` if it is out of range.
+    pub fn member_name(&self, ordinal: usize) -> Option<&str> {
+        self.members.get(ordinal).map(|m| m.name.as_str())
+    }
+}
+
 /// An error found while compiling a resource into a schema.
 ///
 /// `code` is a stable `schema.*` identifier; `message` is human-readable; and
@@ -350,6 +399,23 @@ pub const SCHEMA_REQUIRED_IN_UNKEYED_GROUP: &str = "schema.required_in_unkeyed_g
 /// planner matches index arguments by flat top-level name, so it would silently
 /// never maintain such an entry. Until nested index resolution lands, reject it.
 pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
+
+/// A managed saved field's type is a bare name that is not a declared enum. A
+/// saved field stores a scalar; a bare name reaches the store only as an enum,
+/// whose value is its member ordinal. An undefined name or a resource type has
+/// no stored scalar form, so it cannot be a saved field.
+pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = "schema.non_enum_named_field";
+
+/// A saved key (an identity key, a keyed-layer key parameter, or an index
+/// argument) is typed as a non-scalar name or a sequence. A key must be an
+/// orderable scalar, because the store projects a key from its scalar value and
+/// the key guard cannot tell a member ordinal from a raw string or int written
+/// into a non-scalar position. Every bare or qualified name — a local enum, a
+/// cross-module enum, a resource, or a typo — and every sequence is rejected
+/// structurally, since the rule asks only whether the type is an orderable scalar.
+/// A resource identity (`Book::Id`) is exempt: it is the deferred typed-references
+/// surface, which faults loudly at runtime rather than corrupting the keyspace.
+pub const SCHEMA_NONSCALAR_KEY: &str = "schema.nonscalar_key";
 
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -419,6 +485,43 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
     (schema, errors)
 }
 
+/// Compile a parsed flat enum into an [`EnumSchema`], with any errors.
+///
+/// A member's index in declaration order is its stored ordinal. The only
+/// single-declaration rule an enum has is member uniqueness, reported with the
+/// shared duplicate-member code so it reads like a resource's.
+pub fn compile_enum(decl: &EnumDecl) -> (EnumSchema, Vec<SchemaError>) {
+    let mut errors = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut members = Vec::new();
+
+    for member in &decl.members {
+        if seen.contains(&member.name.as_str()) {
+            // Report the duplicate but do not store it, so members and their
+            // ordinals reflect only the distinct members.
+            errors.push(SchemaError {
+                code: SCHEMA_DUPLICATE_MEMBER,
+                message: format!("duplicate enum member `{}`", member.name),
+                span: member.span,
+            });
+            continue;
+        }
+        seen.push(&member.name);
+        members.push(EnumMemberSchema {
+            name: member.name.clone(),
+            docs: member.docs.clone(),
+            stable_id: member.stable_id.clone(),
+        });
+    }
+
+    let schema = EnumSchema {
+        name: decl.name.clone(),
+        docs: decl.docs.clone(),
+        members,
+    };
+    (schema, errors)
+}
+
 /// Report the saved-data rules for a managed saved resource: reject `unknown`
 /// in identity keys, fields, and keyed leaves (recursively), and reject an
 /// identity key that shares a name with a top-level member.
@@ -436,9 +539,8 @@ fn check_saved_data(
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
             errors.push(unknown_error("identity key", &key.name, decl_span));
-        }
-        if is_unorderable_key_type(&ty) {
-            errors.push(unorderable_key_error("identity key", &key.name, decl_span));
+        } else if let Some(error) = key_type_error("identity key", &key.name, &ty, decl_span) {
+            errors.push(error);
         }
         if let Some(span) = top_level_member_span(members, &key.name) {
             errors.push(SchemaError {
@@ -521,9 +623,8 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
             errors.push(unknown_error("key", &key.name, span));
-        }
-        if is_unorderable_key_type(&ty) {
-            errors.push(unorderable_key_error("key", &key.name, span));
+        } else if let Some(error) = key_type_error("key", &key.name, &ty, span) {
+            errors.push(error);
         }
     }
 }
@@ -548,6 +649,48 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
         ResourceMember::Group(group) => {
             for nested in &group.members {
                 check_member_unknown(nested, errors);
+            }
+        }
+        ResourceMember::Index(_) => {}
+    }
+}
+
+/// Reject every managed saved field whose type is a bare name that is not one of
+/// `enums`. A bare [`Type::Named`] reaches a stored scalar only as an enum (its
+/// member ordinal); an undefined name or a resource type has no stored scalar
+/// form. The caller resolves enum names cross-declaration and passes them here,
+/// since [`compile_resource`] compiles one resource without that context. A
+/// local (non-saved) resource is exempt — only saved fields lower into the store.
+pub fn check_saved_named_fields(decl: &ResourceDecl, enums: &[String]) -> Vec<SchemaError> {
+    let mut errors = Vec::new();
+    if decl.store.is_some() {
+        for member in &decl.members {
+            check_named_field(member, enums, &mut errors);
+        }
+    }
+    errors
+}
+
+fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec<SchemaError>) {
+    match member {
+        ResourceMember::Field(field) => {
+            if let Type::Named(name) = Type::resolve(&field.ty)
+                && !enums.iter().any(|enum_name| enum_name == &name)
+            {
+                errors.push(SchemaError {
+                    code: SCHEMA_NON_ENUM_NAMED_FIELD,
+                    message: format!(
+                        "saved field `{}` has type `{name}`, which is not a declared enum; \
+                         a saved field stores a scalar or an enum ordinal",
+                        field.name
+                    ),
+                    span: field.span,
+                });
+            }
+        }
+        ResourceMember::Group(group) => {
+            for nested in &group.members {
+                check_named_field(nested, enums, errors);
             }
         }
         ResourceMember::Index(_) => {}
@@ -617,18 +760,11 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                     ),
                     span: index.span,
                 }),
-                Some(ty) if is_unorderable_key_type(&Type::resolve(ty)) => {
-                    errors.push(SchemaError {
-                        code: SCHEMA_UNORDERABLE_KEY,
-                        message: format!(
-                            "index `{}` argument `{arg}` is a `decimal`, which has no \
-                         key encoding; index arguments use ordered key types",
-                            index.name
-                        ),
-                        span: index.span,
-                    })
+                Some(ty) => {
+                    if let Some(error) = index_arg_key_error(&index.name, arg, ty, index.span) {
+                        errors.push(error);
+                    }
                 }
-                Some(_) => {}
             }
         }
         if !index.unique && !ends_with_identity_keys(&index.args, keys) {
@@ -765,23 +901,94 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
     }
 }
 
-/// Can this type be a saved key? Saved keys use ordered key types: scalars
-/// (except `decimal`, which has no order-preserving key encoding) and generated
-/// resource identity types. `decimal` is the one scalar the store cannot encode
-/// as a key, so it is rejected wherever a key is expected: identity keys,
-/// keyed-layer key parameters, and index arguments.
-fn is_unorderable_key_type(ty: &Type) -> bool {
-    *ty == Type::Scalar(ScalarType::Decimal)
+/// Why a type may not be a saved key, or `Ok` when it is a valid one. Saved keys
+/// project from an orderable scalar value, so the rule is an allowlist: every
+/// scalar except `decimal` is a key; everything else is rejected. The verdict
+/// needs no knowledge of what a name refers to, so a local enum, a cross-module
+/// enum, a resource, and a typo are all the same `NonScalar` case, caught
+/// structurally without an enum or resource list.
+enum KeyTypeVerdict {
+    Ok,
+    /// `decimal` — a scalar, but the one with no order-preserving key encoding.
+    Decimal,
+    /// A name or a sequence, neither of which projects to an orderable scalar.
+    NonScalar,
+    /// A resource identity (`Book::Id`). The deferred typed-references surface;
+    /// left to fault at runtime rather than rejected here.
+    Identity,
 }
 
-fn unorderable_key_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
-    SchemaError {
-        code: SCHEMA_UNORDERABLE_KEY,
-        message: format!(
-            "saved {what} `{name}` cannot use `decimal`; saved keys use ordered \
-             key types and `decimal` has no key encoding"
-        ),
-        span,
+/// Classify a key type. `decimal` is the one scalar the store cannot encode as a
+/// key; every other scalar is orderable. A resource identity is exempt as the
+/// deferred typed-references feature; a name or a sequence is a non-scalar key.
+fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
+    match ty {
+        Type::Scalar(ScalarType::Decimal) => KeyTypeVerdict::Decimal,
+        Type::Scalar(_) => KeyTypeVerdict::Ok,
+        Type::Identity(_) => KeyTypeVerdict::Identity,
+        Type::Named(_) | Type::Sequence(_) | Type::Unknown => KeyTypeVerdict::NonScalar,
+    }
+}
+
+/// The error a key of type `ty` earns in an identity-key or keyed-layer position,
+/// or `None` if it is a valid key. `decimal` keeps its own "no key encoding"
+/// message and code; any other non-scalar is the orderable-scalar rule. `unknown`
+/// is reported separately by the caller, so it does not reach here.
+fn key_type_error(what: &str, name: &str, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
+    match classify_key_type(ty) {
+        KeyTypeVerdict::Ok | KeyTypeVerdict::Identity => None,
+        KeyTypeVerdict::Decimal => Some(SchemaError {
+            code: SCHEMA_UNORDERABLE_KEY,
+            message: format!(
+                "saved {what} `{name}` cannot use `decimal`; saved keys use ordered \
+                 key types and `decimal` has no key encoding"
+            ),
+            span,
+        }),
+        KeyTypeVerdict::NonScalar => Some(SchemaError {
+            code: SCHEMA_NONSCALAR_KEY,
+            message: format!(
+                "saved {what} `{name}` must be an orderable scalar type, but found `{ty}`"
+            ),
+            span,
+        }),
+    }
+}
+
+/// The error an index argument of source type `ty` earns, or `None` if it is a
+/// valid index key. An index entry keys on the argument's *stored* scalar, so the
+/// orderability rule reads that projection: an enum field stores its ordinal as an
+/// orderable `int` and indexes fine, while a `decimal` (no key encoding) and a
+/// `sequence` (no single scalar) cannot. A resource identity is exempt as the
+/// deferred typed-references surface.
+fn index_arg_key_error(
+    index: &str,
+    arg: &str,
+    ty: &TypeRef,
+    span: SourceSpan,
+) -> Option<SchemaError> {
+    let resolved = Type::resolve(ty);
+    match resolved.stored_scalar() {
+        Some(ScalarType::Decimal) => Some(SchemaError {
+            code: SCHEMA_UNORDERABLE_KEY,
+            message: format!(
+                "index `{index}` argument `{arg}` is a `decimal`, which has no key \
+                 encoding; index arguments use ordered key types"
+            ),
+            span,
+        }),
+        Some(_) => None,
+        // A resource identity carries no stored scalar, but it is the deferred
+        // typed-references surface, left to fault at runtime rather than rejected.
+        None if matches!(resolved, Type::Identity(_)) => None,
+        None => Some(SchemaError {
+            code: SCHEMA_NONSCALAR_KEY,
+            message: format!(
+                "index `{index}` argument `{arg}` must be an orderable scalar type, \
+                 but found `{resolved}`"
+            ),
+            span,
+        }),
     }
 }
 

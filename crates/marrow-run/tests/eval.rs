@@ -12,7 +12,7 @@ use marrow_run::{
     RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, SavedPathClass, Value,
     classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
-use marrow_schema::compile_resource;
+use marrow_schema::{compile_enum, compile_resource};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
@@ -42,6 +42,43 @@ fn checked_program(source: &str) -> CheckedProgram {
     checked_program_with_imports(source, &[])
 }
 
+/// Like [`checked_program`], but with each function's parameter types resolved
+/// against the module's enums and the checker's `match`-scrutinee resolution
+/// applied, so a `match` over an enum parameter dispatches by the right enum
+/// even when two enums share member names.
+fn checked_program_typed(source: &str) -> CheckedProgram {
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
+    let enum_names: Vec<String> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Enum(decl) => Some(decl.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut program = checked_program(source);
+    for function in &mut program.modules[0].functions {
+        let declared = parsed
+            .file
+            .function(&function.name)
+            .expect("a parsed function");
+        for (param, decl) in function.params.iter_mut().zip(&declared.params) {
+            let name = decl.ty.text.trim();
+            if enum_names.iter().any(|enum_name| enum_name == name) {
+                param.ty = MarrowType::Enum {
+                    module: "test".to_string(),
+                    name: name.to_string(),
+                };
+            }
+        }
+    }
+    let resolved = program.clone();
+    marrow_check::resolve_match_enums(&mut program, &resolved);
+    program
+}
+
 /// Like [`checked_program`], but with the module's resolved `use` targets
 /// populated, so short-form calls (`clock::parseDate(...)`) expand to their full
 /// paths at the call site (the checker normally builds this from `use` decls).
@@ -50,6 +87,7 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
     assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
     let mut functions = Vec::new();
     let mut resources = Vec::new();
+    let mut enums = Vec::new();
     for declaration in parsed.file.declarations {
         match declaration {
             Declaration::Function(function) => functions.push(CheckedFunction {
@@ -74,6 +112,11 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
                 assert!(errors.is_empty(), "{errors:?}");
                 resources.push(schema);
             }
+            Declaration::Enum(decl) => {
+                let (schema, errors) = compile_enum(&decl);
+                assert!(errors.is_empty(), "{errors:?}");
+                enums.push(schema);
+            }
             _ => {}
         }
     }
@@ -86,6 +129,7 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
             constants: Vec::new(),
             functions,
             resources,
+            enums,
         }],
     }
 }
@@ -6872,6 +6916,7 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
                 constants: Vec::new(),
                 functions,
                 resources: Vec::new(),
+                enums: Vec::new(),
             }
         })
         .collect();
@@ -6945,5 +6990,121 @@ fn an_index_branch_is_not_an_assignable_place() {
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
+    );
+}
+
+/// An enum-typed field stores its member ordinal and reads back to that member.
+/// Writing `Status::archived` (ordinal 1) persists `1`, and a later read of the
+/// field equals `Status::archived` again — the round-trip the surface promises.
+#[test]
+fn an_enum_field_stores_its_ordinal_and_reads_back() {
+    let program = checked_program(
+        "enum Status\n    active\n    archived\n    banned\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         fn seed(id: int)\n    ^orders(id).state = Status::archived\n\n\
+         fn state_of(id: int): Status\n    return ^orders(id).state\n\n\
+         fn matches_archived(id: int): bool\n    return ^orders(id).state == Status::archived\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(7)]).expect("seed");
+
+    // The stored bytes are the ordinal int 1 (declaration-order position of
+    // `archived`), confirming an enum field stores as a compact ordinal.
+    let store_ref = store.borrow();
+    let raw = store_ref.read(&encode_path(&[
+        PathSegment::Root("orders".into()),
+        PathSegment::RecordKey(SavedKey::Int(7)),
+        PathSegment::Field("state".into()),
+    ]));
+    assert_eq!(
+        decode_value(raw.expect("present"), ScalarType::Int),
+        Some(SavedValue::Int(1))
+    );
+    drop(store_ref);
+
+    // Reading the field back yields the same ordinal, and a nominal `==` against
+    // the member is true.
+    assert_eq!(
+        run_entry(&program, &store, "test::state_of", &[Value::Int(7)])
+            .expect("read state")
+            .value,
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::matches_archived", &[Value::Int(7)])
+            .expect("compare")
+            .value,
+        Some(Value::Bool(true))
+    );
+}
+
+/// Nominal `==` on enum values: comparing the same member is true, comparing two
+/// different members of the same enum is false. Both sides ride as ordinals, so
+/// equality is an ordinal comparison the checker has proven is same-enum.
+#[test]
+fn enum_equality_is_true_for_the_same_member_and_false_otherwise() {
+    let program = checked_program(
+        "enum Color\n    red\n    green\n    blue\n\n\
+         fn same(): bool\n    return Color::green == Color::green\n\n\
+         fn different(): bool\n    return Color::green == Color::blue\n",
+    );
+    assert_eq!(
+        run(&program, "test::same", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::different", &[]).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
+/// `match` dispatches to the arm for the scrutinee's member, by ordinal. Each
+/// arm returns a distinct marker, so the returned value names the chosen arm.
+#[test]
+fn match_dispatches_to_the_arm_for_the_scrutinees_member() {
+    let program = checked_program_typed(
+        "enum Status\n    active\n    archived\n    banned\n\n\
+         fn label(s: Status): int\n    \
+         match s\n        active\n            return 10\n        \
+         archived\n            return 20\n        banned\n            return 30\n",
+    );
+    // Each member dispatches to its own arm: ordinals 0/1/2 -> 10/20/30.
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(0)]).unwrap(),
+        Some(Value::Int(10))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        Some(Value::Int(20))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(2)]).unwrap(),
+        Some(Value::Int(30))
+    );
+}
+
+/// `match` dispatches by the scrutinee's resolved enum, not by the arm member
+/// set. Two enums share member names `x` and `y` but in opposite declaration
+/// order, so they share an arm set yet assign opposite ordinals. A `match` over
+/// a `B` value must read `B`'s ordinals: `B::x` (ordinal 1) takes the `x` arm,
+/// `B::y` (ordinal 0) the `y` arm. Dispatching by the arm set alone would pick
+/// `A` and invert the result.
+#[test]
+fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
+    let program = checked_program_typed(
+        "enum A\n    x\n    y\n\n\
+         enum B\n    y\n    x\n\n\
+         fn label(s: B): int\n    \
+         match s\n        x\n            return 1\n        y\n            return 2\n",
+    );
+    // In `B`, `y` is ordinal 0 and `x` is ordinal 1. Passing `B::x` (1) must take
+    // the `x` arm (1); `B::y` (0) must take the `y` arm (2).
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(&program, "test::label", &[Value::Int(0)]).unwrap(),
+        Some(Value::Int(2))
     );
 }

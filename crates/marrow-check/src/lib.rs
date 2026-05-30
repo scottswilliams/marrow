@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
+use marrow_schema::Type;
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
 use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
@@ -18,6 +19,7 @@ pub mod resolve;
 mod rules;
 
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
+use program::TypeNames;
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
 };
@@ -92,6 +94,16 @@ pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
 pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
+/// A qualified name `Enum::member` names a known enum but not one of its members.
+pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
+/// A `match` scrutinee is not an enum value. `match` dispatches on an enum's
+/// members, so it requires an enum-typed scrutinee.
+pub const CHECK_MATCH_REQUIRES_ENUM: &str = "check.match_requires_enum";
+/// A `match` does not cover every member of its enum. A `match` over a local
+/// enum is exhaustive: each member needs an arm, and there is no wildcard.
+pub const CHECK_NONEXHAUSTIVE_MATCH: &str = "check.nonexhaustive_match";
+/// A `match` has two arms for the same member.
+pub const CHECK_DUPLICATE_MATCH_ARM: &str = "check.duplicate_match_arm";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
 /// Two resources in the project claim the same saved root. A saved root has one
@@ -251,6 +263,7 @@ pub fn analyze_project(
         let CheckedFile {
             parsed,
             resources,
+            enums,
             functions,
             constants,
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
@@ -346,6 +359,7 @@ pub fn analyze_project(
                                 constants,
                                 functions,
                                 resources,
+                                enums,
                             });
                         }
                     }
@@ -376,7 +390,10 @@ pub fn analyze_project(
     }
 
     // Pass 3: flag type annotations on functions and constants that name an
-    // unknown type. Resource member types are validated by schema compilation.
+    // unknown type. Resource and enum member types are validated by schema
+    // compilation. Both name sets are gathered from every parsed file (not from
+    // `program`) so a type referencing a name in an error-bearing file is not
+    // false-flagged unknown.
     let project_resources: HashSet<String> = parsed_files
         .iter()
         .flat_map(|(_, parsed)| parsed.file.declarations.iter())
@@ -385,6 +402,15 @@ pub fn analyze_project(
             _ => None,
         })
         .collect();
+    let project_enums = collect_enum_names(&parsed_files);
+
+    // Stamp each cross-module enum signature slot with its enum's true owner, now
+    // that the whole program is known, before any pass reads parameter types. The
+    // argument check reads each callee's stored parameter type to decide whether to
+    // run the nominal enum gate; a qualified or foreign enum parameter resolves to
+    // `Unknown` per-file, so it must be normalized before the type pass runs or a
+    // wrong-enum argument slips through unchecked.
+    normalize_program_enum_types(&mut program, &parsed_files);
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     check_resolved_files(
@@ -393,8 +419,14 @@ pub fn analyze_project(
         &declared,
         &program,
         &project_resources,
+        &project_enums,
         &mut report,
     );
+
+    // Record each `match`'s resolved scrutinee enum on the artifact's bodies, so the
+    // runtime dispatches by ordinals rather than guessing the enum from the arms.
+    let snapshot = program.clone();
+    resolve_match_enums(&mut program, &snapshot);
 
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are
@@ -430,7 +462,13 @@ pub fn type_at(
 ) -> Option<MarrowType> {
     let prelude = file_prelude(program, file, parsed);
     let function = enclosing_function(parsed, offset)?;
-    let mut scope = function_base_scope(program, function, &prelude.module_constants);
+    let mut scope = function_base_scope(
+        program,
+        function,
+        &prelude.module_constants,
+        &prelude.aliases,
+        file,
+    );
     walk_block_to_offset(
         program,
         &function.body,
@@ -479,6 +517,8 @@ pub fn scope_at(
             program,
             function,
             &prelude.module_constants,
+            &prelude.aliases,
+            file,
         ));
         walk_block_to_offset(
             program,
@@ -527,10 +567,15 @@ fn function_base_scope(
     program: &CheckedProgram,
     function: &marrow_syntax::FunctionDecl,
     module_constants: &HashMap<String, MarrowType>,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
 ) -> Vec<HashMap<String, MarrowType>> {
     let mut base = module_constants.clone();
     for param in &function.params {
-        base.insert(param.name.clone(), resolve_type(&param.ty, program));
+        base.insert(
+            param.name.clone(),
+            resolve_type(&param.ty, program, aliases, file),
+        );
     }
     vec![base]
 }
@@ -749,6 +794,16 @@ fn collect_block_expression<'b>(
                     collect_block_expression(finally, offset, best);
                 }
             }
+            Statement::Match {
+                scrutinee, arms, ..
+            } => {
+                if let Some(scrutinee) = scrutinee {
+                    collect_expression(scrutinee, offset, best);
+                }
+                for arm in arms {
+                    collect_block_expression(&arm.block, offset, best);
+                }
+            }
             Statement::Break { .. } | Statement::Continue { .. } => {}
         }
     }
@@ -817,6 +872,7 @@ fn check_resolved_files(
     resolvable: &HashMap<String, PathBuf>,
     program: &CheckedProgram,
     project_resources: &HashSet<String>,
+    project_enums: &HashSet<String>,
     report: &mut CheckReport,
 ) {
     // Pass 2: every `use` must name a project module, a sibling module, or a
@@ -840,6 +896,7 @@ fn check_resolved_files(
         check_file_types(
             program,
             project_resources,
+            project_enums,
             &file.path,
             parsed,
             &mut report.diagnostics,
@@ -859,6 +916,103 @@ fn check_resolved_files(
             .diagnostics
             .retain(|diagnostic| diagnostic.code != CHECK_UNRESOLVED_CALL);
     }
+}
+
+/// Re-resolve every enum-typed signature slot in the assembled program against the
+/// whole project, so a parameter, return, or constant annotation carries its
+/// enum's true `{module, name}` owner.
+///
+/// Each module's signatures are first resolved per-file against that module's own
+/// names, which cannot place a qualified `mod::Status` or a bare name owned by
+/// another module. This pass revisits those slots with the full program in hand —
+/// the same `resolve_type` the in-body checks use — so a cross-module enum
+/// parameter is the same `Enum { module, name }` value its caller's argument is,
+/// and the call boundary compares like for like. Non-enum slots are left untouched.
+fn normalize_program_enum_types(
+    program: &mut CheckedProgram,
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+) {
+    let resolver = program.clone();
+    normalize_program_enum_types_against(program, &resolver, parsed_files);
+}
+
+/// As [`normalize_program_enum_types`], but resolving against an explicit
+/// `resolver` program. Test modules normalize against the combined project so an
+/// enum a test file imports from a project module resolves to that module.
+fn normalize_program_enum_types_against(
+    program: &mut CheckedProgram,
+    resolver: &CheckedProgram,
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+) {
+    for module in &mut program.modules {
+        let Some((file, parsed)) = parsed_files
+            .iter()
+            .find(|(file, _)| file.path == module.source_file)
+        else {
+            continue;
+        };
+        // The file's import aliases, so an enum annotation qualified by a short
+        // alias (`c::Status` under `use a::b::c`) resolves to the imported module —
+        // the same expansion call dispatch applies. Built once, before the mutable
+        // borrow of the module's functions and constants.
+        let aliases = build_alias_map(&module.imports);
+        for function in &mut module.functions {
+            let Some(decl) = parsed.file.function(&function.name) else {
+                continue;
+            };
+            for (param, param_decl) in function.params.iter_mut().zip(&decl.params) {
+                if let Some(enum_type) =
+                    resolve_enum_annotation(&param_decl.ty, resolver, &aliases, &file.path)
+                {
+                    param.ty = enum_type;
+                }
+            }
+            if let (Some(return_type), Some(return_ref)) =
+                (function.return_type.as_mut(), decl.return_type.as_ref())
+                && let Some(enum_type) =
+                    resolve_enum_annotation(return_ref, resolver, &aliases, &file.path)
+            {
+                *return_type = enum_type;
+            }
+        }
+        for constant in &mut module.constants {
+            let Some(const_ref) =
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        marrow_syntax::Declaration::Const(decl) if decl.name == constant.name => {
+                            decl.ty.as_ref()
+                        }
+                        _ => None,
+                    })
+            else {
+                continue;
+            };
+            if let Some(enum_type) =
+                resolve_enum_annotation(const_ref, resolver, &aliases, &file.path)
+            {
+                constant.ty = Some(enum_type);
+            }
+        }
+    }
+}
+
+/// The enum names declared across every parsed file, including error-bearing
+/// ones, so a type annotation that names an enum is recognized regardless of
+/// whether its file passed.
+fn collect_enum_names(
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+) -> HashSet<String> {
+    parsed_files
+        .iter()
+        .flat_map(|(_, parsed)| parsed.file.declarations.iter())
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Enum(decl) => Some(decl.name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The file-level prelude every function body in a file shares: its short→full
@@ -899,7 +1053,7 @@ fn file_prelude(
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
             let ty = match (&constant.ty, &constant.value) {
-                (Some(ty), _) => resolve_type(ty, program),
+                (Some(ty), _) => resolve_type(ty, program, &aliases, file),
                 (None, Some(value)) => infer_type(
                     program,
                     value,
@@ -925,11 +1079,12 @@ fn file_prelude(
 /// expression/statement type checks (operator/condition/assignment/call/argument
 /// types, std arity, the `nextId` single-`int` gate), and missing-return
 /// analysis. Library files (via [`check_project`]) and test scripts (via
-/// [`check_tests`]) share this pass. `project_resources` is the project-wide set
-/// of resource names used to recognize type annotations.
+/// [`check_tests`]) share this pass. `project_resources` and `project_enums` are
+/// the project-wide name sets used to recognize type annotations.
 fn check_file_types(
     program: &CheckedProgram,
     project_resources: &HashSet<String>,
+    project_enums: &HashSet<String>,
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -947,6 +1102,7 @@ fn check_file_types(
                         function.span,
                         file,
                         project_resources,
+                        project_enums,
                         diagnostics,
                     );
                 }
@@ -956,6 +1112,7 @@ fn check_file_types(
                         function.span,
                         file,
                         project_resources,
+                        project_enums,
                         diagnostics,
                     );
                 }
@@ -988,10 +1145,18 @@ fn check_file_types(
             }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(ty) = &constant.ty {
-                    check_type_annotation(ty, constant.span, file, project_resources, diagnostics);
+                    check_type_annotation(
+                        ty,
+                        constant.span,
+                        file,
+                        project_resources,
+                        project_enums,
+                        diagnostics,
+                    );
                 }
             }
-            marrow_syntax::Declaration::Resource(_) => {}
+            // Resource and enum member types are validated by schema compilation.
+            marrow_syntax::Declaration::Resource(_) | marrow_syntax::Declaration::Enum(_) => {}
         }
     }
 }
@@ -1004,9 +1169,10 @@ fn check_type_annotation(
     span: SourceSpan,
     file: &Path,
     resources: &HashSet<String>,
+    enums: &HashSet<String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if !MarrowType::names_known_type(ty, resources) {
+    if !MarrowType::names_known_type(ty, resources, enums) {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
@@ -1071,6 +1237,11 @@ fn check_return_values(
                 }
                 // `finally` cannot contain `return` (check.finally_control_flow).
             }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    check_return_values(file, &arm.block, returns_value, diagnostics);
+                }
+            }
             _ => {}
         }
     }
@@ -1108,6 +1279,12 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
                     .as_ref()
                     .is_none_or(|clause| block_returns(&clause.block))
         }
+        // A `match` is exhaustive with no fall-through, so it returns on every
+        // path exactly when every arm does. An empty (member-less) match cannot
+        // arise, so `all` over no arms is not a spurious "returns".
+        Statement::Match { arms, .. } => {
+            !arms.is_empty() && arms.iter().all(|arm| block_returns(&arm.block))
+        }
         // A loop may not run or may run forever; conservatively treat a function
         // ending in one as diverging rather than risk a false positive.
         Statement::While { .. } | Statement::For { .. } => true,
@@ -1138,7 +1315,10 @@ fn check_function_types(
     // project's resources so resource-typed bindings feed field-type inference.
     let mut base = module_constants.clone();
     for param in &function.params {
-        base.insert(param.name.clone(), resolve_type(&param.ty, program));
+        base.insert(
+            param.name.clone(),
+            resolve_type(&param.ty, program, aliases, file),
+        );
     }
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];
     // The declared return type (unknown for a void function), used to check each
@@ -1146,7 +1326,9 @@ fn check_function_types(
     let return_type = function
         .return_type
         .as_ref()
-        .map_or(MarrowType::Unknown, |ty| resolve_type(ty, program));
+        .map_or(MarrowType::Unknown, |ty| {
+            resolve_type(ty, program, aliases, file)
+        });
     check_block_types(
         program,
         file,
@@ -1205,7 +1387,7 @@ fn check_statement_types(
                 check_assignment(
                     file,
                     *span,
-                    &resolve_type(ty, program),
+                    &resolve_type(ty, program, aliases, file),
                     &value_type,
                     diagnostics,
                 );
@@ -1226,7 +1408,7 @@ fn check_statement_types(
                 check_assignment(
                     file,
                     *span,
-                    &resolve_type(ty, program),
+                    &resolve_type(ty, program, aliases, file),
                     &value_type,
                     diagnostics,
                 );
@@ -1415,8 +1597,315 @@ fn check_statement_types(
                 );
             }
         }
+        Statement::Match {
+            scrutinee,
+            arms,
+            span,
+            ..
+        } => {
+            check_match(
+                program,
+                file,
+                return_type,
+                scrutinee.as_ref(),
+                arms,
+                *span,
+                scope,
+                aliases,
+                diagnostics,
+            );
+        }
         Statement::Break { .. } | Statement::Continue { .. } => {}
     }
+}
+
+/// Check a `match` statement over an enum scrutinee: the scrutinee must be an
+/// enum, every arm must name a member of that enum, no member may be matched
+/// twice, and every member must be covered (exhaustive, no wildcard). Each arm
+/// block is checked regardless, so type errors inside an arm still surface.
+#[allow(clippy::too_many_arguments)]
+fn check_match(
+    program: &CheckedProgram,
+    file: &Path,
+    return_type: &MarrowType,
+    scrutinee: Option<&marrow_syntax::Expression>,
+    arms: &[marrow_syntax::MatchArm],
+    span: SourceSpan,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    aliases: &HashMap<String, Vec<String>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let scrutinee_type = scrutinee
+        .map(|expr| infer_type(program, expr, scope, aliases, file, diagnostics))
+        .unwrap_or(MarrowType::Unknown);
+
+    // Check every arm body up front so type errors inside an arm surface even when
+    // the scrutinee is not an enum or an arm names an unknown member.
+    for arm in arms {
+        check_block_types(
+            program,
+            file,
+            return_type,
+            &arm.block,
+            scope,
+            aliases,
+            diagnostics,
+        );
+    }
+
+    let MarrowType::Enum {
+        module: enum_module,
+        name: enum_name,
+    } = &scrutinee_type
+    else {
+        // An unresolved scrutinee (an untyped call, a saved read) is left alone:
+        // the check never fires on an uncertain type. A known non-enum is rejected.
+        if !matches!(scrutinee_type, MarrowType::Unknown) {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_MATCH_REQUIRES_ENUM,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "`match` requires an enum value, but the scrutinee is `{}`",
+                    marrow_type_name(&scrutinee_type)
+                ),
+                span,
+            });
+        }
+        return;
+    };
+    let Some(schema) = enum_schema_in(program, enum_module, enum_name) else {
+        // The scrutinee typed as an enum, but no such enum is declared. Rather than
+        // silently skip exhaustiveness (which would let the match fault at runtime),
+        // reject it: a `match` needs a known enum to dispatch over.
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_MATCH_REQUIRES_ENUM,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "`match` requires an enum value, but the scrutinee's enum `{enum_name}` is not declared"
+            ),
+            span,
+        });
+        return;
+    };
+
+    let mut covered: Vec<&str> = Vec::new();
+    for arm in arms {
+        if schema.ordinal(&arm.member).is_none() {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNKNOWN_ENUM_MEMBER,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("`{enum_name}` has no member `{}`", arm.member),
+                span: arm.span,
+            });
+            continue;
+        }
+        if covered.contains(&arm.member.as_str()) {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_DUPLICATE_MATCH_ARM,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("`match` has a duplicate arm for `{}`", arm.member),
+                span: arm.span,
+            });
+            continue;
+        }
+        covered.push(&arm.member);
+    }
+
+    let missing: Vec<&str> = schema
+        .members
+        .iter()
+        .map(|member| member.name.as_str())
+        .filter(|name| !covered.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_NONEXHAUSTIVE_MATCH,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "`match` on `{enum_name}` does not cover {}",
+                missing
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            span,
+        });
+    }
+}
+
+/// Record each `match`'s resolved scrutinee enum on its statement, so the runtime
+/// dispatches arms by that enum's ordinals rather than guessing the enum from the
+/// arm member set. `target` is rewritten in place: every `match` in its function
+/// bodies is stamped with its scrutinee enum. `program` is the read-only resolved
+/// snapshot inference reads from. The two are separate borrows because inference
+/// reads the whole program while `target`'s bodies are rewritten.
+pub fn resolve_match_enums(target: &mut CheckedProgram, program: &CheckedProgram) {
+    for module in &mut target.modules {
+        let aliases = build_alias_map(&module.imports);
+        let constants: HashMap<String, MarrowType> = module
+            .constants
+            .iter()
+            .map(|constant| {
+                (
+                    constant.name.clone(),
+                    constant.ty.clone().unwrap_or(MarrowType::Unknown),
+                )
+            })
+            .collect();
+        let source_file = module.source_file.clone();
+        for function in &mut module.functions {
+            let mut scope = vec![constants.clone()];
+            scope.push(
+                function
+                    .params
+                    .iter()
+                    .map(|param| (param.name.clone(), param.ty.clone()))
+                    .collect(),
+            );
+            resolve_block_matches(
+                &mut function.body,
+                program,
+                &aliases,
+                &mut scope,
+                &source_file,
+            );
+        }
+    }
+}
+
+/// Walk a block, tracking the bindings it introduces, and resolve every `match`'s
+/// scrutinee enum. Mirrors the binding rules [`check_block_types`] uses so a
+/// scrutinee that names a local resolves the same way.
+fn resolve_block_matches(
+    block: &mut marrow_syntax::Block,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    file: &Path,
+) {
+    use marrow_syntax::Statement;
+    scope.push(HashMap::new());
+    for statement in &mut block.statements {
+        match statement {
+            Statement::Const {
+                name, ty, value, ..
+            } => {
+                let value_type = infer_only(program, value, scope, aliases, file);
+                bind(
+                    scope,
+                    name,
+                    binding_type(ty.as_ref(), value_type, program, aliases, file),
+                );
+            }
+            Statement::Var {
+                name, ty, value, ..
+            } => {
+                let value_type = value.as_ref().map_or(MarrowType::Unknown, |value| {
+                    infer_only(program, value, scope, aliases, file)
+                });
+                bind(
+                    scope,
+                    name,
+                    binding_type(ty.as_ref(), value_type, program, aliases, file),
+                );
+            }
+            Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                resolve_block_matches(then_block, program, aliases, scope, file);
+                for else_if in else_ifs {
+                    resolve_block_matches(&mut else_if.block, program, aliases, scope, file);
+                }
+                if let Some(block) = else_block {
+                    resolve_block_matches(block, program, aliases, scope, file);
+                }
+            }
+            Statement::While { body, .. }
+            | Statement::Transaction { body, .. }
+            | Statement::Lock { body, .. } => {
+                resolve_block_matches(body, program, aliases, scope, file);
+            }
+            Statement::For {
+                binding,
+                iterable,
+                body,
+                ..
+            } => {
+                let element = match infer_only(program, iterable, scope, aliases, file) {
+                    MarrowType::Sequence(element) if binding.second.is_none() => *element,
+                    _ => MarrowType::Unknown,
+                };
+                let mut frame = HashMap::new();
+                frame.insert(binding.first.clone(), element);
+                if let Some(second) = &binding.second {
+                    frame.insert(second.clone(), MarrowType::Unknown);
+                }
+                scope.push(frame);
+                resolve_block_matches(body, program, aliases, scope, file);
+                scope.pop();
+            }
+            Statement::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                resolve_block_matches(body, program, aliases, scope, file);
+                if let Some(clause) = catch {
+                    let mut frame = HashMap::new();
+                    frame.insert(clause.name.clone(), MarrowType::Error);
+                    scope.push(frame);
+                    resolve_block_matches(&mut clause.block, program, aliases, scope, file);
+                    scope.pop();
+                }
+                if let Some(finally) = finally {
+                    resolve_block_matches(finally, program, aliases, scope, file);
+                }
+            }
+            Statement::Match {
+                scrutinee,
+                arms,
+                enum_name,
+                enum_module,
+                ..
+            } => {
+                if let Some(scrutinee) = scrutinee.as_ref()
+                    && let MarrowType::Enum { module, name } =
+                        infer_only(program, scrutinee, scope, aliases, file)
+                {
+                    *enum_name = Some(name);
+                    *enum_module = Some(module);
+                }
+                for arm in arms.iter_mut() {
+                    resolve_block_matches(&mut arm.block, program, aliases, scope, file);
+                }
+            }
+            _ => {}
+        }
+    }
+    scope.pop();
+}
+
+/// Infer an expression's type without recording diagnostics. Resolution runs after
+/// the checking pass, which already reported any type errors, so a throwaway sink
+/// keeps it from double-reporting.
+fn infer_only(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> MarrowType {
+    infer_type(program, expr, scope, aliases, file, &mut Vec::new())
 }
 
 /// The declared type of a binding: its annotation when written, otherwise the
@@ -1425,9 +1914,11 @@ fn binding_type(
     annotation: Option<&marrow_syntax::TypeRef>,
     value_type: MarrowType,
     program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
 ) -> MarrowType {
     match annotation {
-        Some(ty) => resolve_type(ty, program),
+        Some(ty) => resolve_type(ty, program, aliases, file),
         None => value_type,
     }
 }
@@ -1476,7 +1967,7 @@ fn local_binding(
     };
     Some((
         name.clone(),
-        binding_type(annotation.as_ref(), value_type, program),
+        binding_type(annotation.as_ref(), value_type, program, aliases, file),
     ))
 }
 
@@ -1771,7 +2262,51 @@ fn infer_type(
                 .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
         }
-        // A multi-segment name or saved root has no known primitive type.
+        // A two-segment `Enum::member` resolves to the enum type when the enum
+        // and member both exist; an unknown member of a known enum is reported. A
+        // qualified `mod…::Enum::member` (three or more segments) names another
+        // module's enum exactly, where `mod…` may itself be nested (`a::b`). Both
+        // yield the enum's nominal `{module, name}` identity.
+        Expression::Name { segments, span } if segments.len() >= 2 => {
+            // The last segment is the member, the one before it the enum name; any
+            // remaining prefix is the owning module (`a::b::Status::active` →
+            // module `a::b`, enum `Status`, member `active`). A bare `Enum::member`
+            // (no prefix) resolves relative to the module the expression appears in
+            // (same-module first). Either way two same-named enums never alias.
+            let member = segments.last().expect("at least two segments");
+            let enum_name = &segments[segments.len() - 2];
+            let module_prefix = &segments[..segments.len() - 2];
+            let resolved = if module_prefix.is_empty() {
+                resolve_enum(program, module_of_file(program, file), enum_name)
+                    .map(|(module, schema)| (module.to_string(), schema))
+            } else {
+                // Expand a short module alias (`c::Status::active` under
+                // `use a::b::c`) through the file's imports before resolution, so an
+                // aliased literal names the imported module's enum rather than a
+                // top-level homonym or nothing — mirroring call dispatch.
+                let module = expand_module_alias(&module_prefix.join("::"), aliases);
+                enum_schema_in(program, &module, enum_name).map(|schema| (module, schema))
+            };
+            match resolved {
+                Some((module, schema)) if schema.ordinal(member).is_some() => MarrowType::Enum {
+                    module,
+                    name: enum_name.clone(),
+                },
+                Some(_) => {
+                    diagnostics.push(CheckDiagnostic {
+                        code: CHECK_UNKNOWN_ENUM_MEMBER,
+                        severity: Severity::Error,
+                        file: file.to_path_buf(),
+                        message: format!("`{enum_name}` has no member `{member}`"),
+                        span: *span,
+                    });
+                    MarrowType::Unknown
+                }
+                // Not an enum: a cross-module name or identity path stays unknown.
+                None => MarrowType::Unknown,
+            }
+        }
+        // Any other multi-segment name or saved root has no known type.
         Expression::Name { .. } | Expression::SavedRoot { .. } => MarrowType::Unknown,
     }
 }
@@ -1796,7 +2331,7 @@ fn saved_field_type(
         _ => return None,
     };
     let resource = find_resource_schema(program, root)?;
-    field_member_type(resource, &[field])
+    field_member_type(resource, &[field], resource_module(program, &resource.name))
 }
 
 /// The schema of the resource that owns saved root `^root`, if any. Saved roots
@@ -1808,6 +2343,76 @@ pub(crate) fn find_resource_schema<'p>(
     root: &str,
 ) -> Option<&'p marrow_schema::ResourceSchema> {
     resolve::resolve_resource_by_root(program, root)
+}
+
+/// The qualified name of the module that declares `resource`. A saved enum field
+/// names an enum declared in the same module (the saved-field rule forbids any
+/// other named field type), so this module owns the enum a bare `Named` field
+/// type refers to. Defaults to the empty module for a resource not found in any
+/// module's list (a module-less script's resource), matching how a script's enums
+/// carry the empty owner.
+fn resource_module<'p>(program: &'p CheckedProgram, name: &str) -> &'p str {
+    program
+        .modules
+        .iter()
+        .find(|module| {
+            module
+                .resources
+                .iter()
+                .any(|resource| resource.name == name)
+        })
+        .map_or("", |module| module.name.as_str())
+}
+
+/// The qualified name of the program module whose source is `file`, if any. The
+/// referencing module for resolving a bare enum name in that file's expressions.
+fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> Option<&'p str> {
+    program
+        .modules
+        .iter()
+        .find(|module| module.source_file == file)
+        .map(|module| module.name.as_str())
+}
+
+/// Resolve a bare enum `name` referenced from `referencing_module`, returning the
+/// owning module's qualified name and its schema. The referencing module's own
+/// enum wins; otherwise the first project-wide match, mirroring how a bare
+/// function name resolves (same-module declarations before the rest). A
+/// module-less or unknown referencing module (`None`) has only the project-wide
+/// fallback.
+fn resolve_enum<'p>(
+    program: &'p CheckedProgram,
+    referencing_module: Option<&'p str>,
+    name: &str,
+) -> Option<(&'p str, &'p marrow_schema::EnumSchema)> {
+    referencing_module
+        .and_then(|module| enum_schema_in(program, module, name).map(|schema| (module, schema)))
+        .or_else(|| {
+            program.modules.iter().find_map(|module| {
+                module
+                    .enums
+                    .iter()
+                    .find(|enum_schema| enum_schema.name == name)
+                    .map(|schema| (module.name.as_str(), schema))
+            })
+        })
+}
+
+/// The schema of the enum named `name` owned by exactly `module`, if any. Used
+/// once an enum's owning module is already resolved (a typed scrutinee or value),
+/// so the lookup is by exact identity rather than a fresh name resolution.
+fn enum_schema_in<'p>(
+    program: &'p CheckedProgram,
+    module: &str,
+    name: &str,
+) -> Option<&'p marrow_schema::EnumSchema> {
+    program
+        .modules
+        .iter()
+        .find(|m| m.name == module)?
+        .enums
+        .iter()
+        .find(|enum_schema| enum_schema.name == name)
 }
 
 /// The resource type of a whole-record read `^root(key…)`: the call's callee is
@@ -1911,7 +2516,7 @@ fn check_keys_against(
         return;
     }
     for (key, arg_type) in keys.iter().zip(arg_types) {
-        let expected = MarrowType::from_resolved(key.ty.clone(), &[]);
+        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
         if type_compatible(&expected, arg_type) == Some(false) {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -1960,11 +2565,27 @@ fn saved_index_identity_type(
         .then(|| MarrowType::Identity(resource.name.clone()))
 }
 
-/// Resolve a type annotation against the project's resource names, so a resource
-/// type like `Book` resolves to `MarrowType::Resource("Book")` rather than
-/// `Unknown` — which lets field reads off a resource-typed local be typed.
-fn resolve_type(ty: &marrow_syntax::TypeRef, program: &CheckedProgram) -> MarrowType {
-    let names: Vec<String> = program
+/// Resolve a type annotation against the project's named types, so a resource
+/// type like `Book` resolves to `MarrowType::Resource("Book")` and an enum type to
+/// the enum it names — carrying that enum's owning module, so two same-named enums
+/// never alias and a foreign enum is never stamped with the referencing module.
+///
+/// An enum annotation is resolved by its true owner, never the referencing module:
+/// a bare `Status` resolves same-module-first then to the project-wide owner (the
+/// symmetry a bare `Status::member` literal already uses), and a qualified
+/// `mod::Status` resolves to `mod`'s enum when `mod` declares it. Resources are
+/// placed by `MarrowType::resolve` with no enum names, so it cannot mint a phantom
+/// enum from a foreign-only bare name.
+fn resolve_type(
+    ty: &marrow_syntax::TypeRef,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> MarrowType {
+    if let Some(enum_type) = resolve_enum_annotation(ty, program, aliases, file) {
+        return enum_type;
+    }
+    let resources: Vec<String> = program
         .modules
         .iter()
         .flat_map(|module| {
@@ -1974,7 +2595,88 @@ fn resolve_type(ty: &marrow_syntax::TypeRef, program: &CheckedProgram) -> Marrow
                 .map(|resource| resource.name.clone())
         })
         .collect();
-    MarrowType::resolve(ty, &names)
+    MarrowType::resolve(
+        ty,
+        TypeNames {
+            module: module_of_file(program, file).unwrap_or_default(),
+            resources: &resources,
+            enums: &[],
+        },
+    )
+}
+
+/// Resolve an enum type annotation to its `Enum { module, name }` identity by the
+/// enum's true owner, or `None` when the annotation is not (or does not contain) an
+/// enum. A qualified `mod::Name` names `mod`'s enum `Name`; a bare `Name` resolves
+/// the way a bare `Name::member` literal does — the referencing module's enum first,
+/// then the project-wide owner — so an annotation and a value spelled the same name
+/// the same enum. A `sequence[...]` recurses on its element: `sequence[Status]`
+/// resolves to `Sequence(Enum { … })` so an enum element keeps its owner, and an
+/// element that is not an enum leaves the whole sequence to the structural resolver.
+fn resolve_enum_annotation(
+    ty: &marrow_syntax::TypeRef,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<MarrowType> {
+    resolve_enum_type(&Type::resolve(ty), program, aliases, file)
+}
+
+/// Resolve an already-structured [`Type`] to its enum identity, recursing through
+/// `sequence[...]`. Returns `None` for any type with no enum inside, so a non-enum
+/// element keeps a sequence on the structural-resolver path.
+fn resolve_enum_type(
+    ty: &Type,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<MarrowType> {
+    match ty {
+        Type::Sequence(element) => resolve_enum_type(element, program, aliases, file)
+            .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
+        Type::Named(name) => {
+            // Split on the *last* `::` so a nested module keeps all but the final
+            // segment: `a::b::Status` names module `a::b`'s enum `Status`, not
+            // module `a`'s `b::Status` (which matches nothing, leaving the slot
+            // `Unknown` and every boundary failing open).
+            if let Some((module, enum_name)) = name.rsplit_once("::") {
+                // Expand a short module alias (`c::Status` under `use a::b::c`)
+                // through the file's imports first, mirroring call dispatch, so an
+                // aliased annotation resolves to the imported module's enum instead
+                // of failing open. A non-alias prefix passes through unchanged.
+                let module = expand_module_alias(module, aliases);
+                return enum_schema_in(program, &module, enum_name).map(|_| MarrowType::Enum {
+                    module,
+                    name: enum_name.to_string(),
+                });
+            }
+            resolve_enum(program, module_of_file(program, file), name).map(|(module, _)| {
+                MarrowType::Enum {
+                    module: module.to_string(),
+                    name: name.clone(),
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Expand a dotted `module` path's leading segment through the file's import
+/// aliases, so an enum spelling qualified by a short alias (`c` under
+/// `use a::b::c`) names the imported module (`a::b::c`). Reuses [`expand_alias`]
+/// by appending a sentinel leaf, so a single-segment alias expands the same way a
+/// call's leading segment does; a non-alias leading segment is left untouched.
+/// Public so the runtime resolves an aliased enum literal to the same module the
+/// checker did.
+pub fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<String>>) -> String {
+    let mut segments: Vec<String> = module.split("::").map(str::to_string).collect();
+    // `expand_alias` only expands a leading alias when a trailing segment follows
+    // (short-form requires the qualifier); append a sentinel so a bare alias
+    // module (`c`) expands, then drop it.
+    segments.push(String::new());
+    let mut expanded = expand_alias(&segments, aliases);
+    expanded.pop();
+    expanded.join("::")
 }
 
 /// The declared type of a field read off a resource-typed value, e.g. `book.title`
@@ -1989,7 +2691,7 @@ fn local_field_type(
         return None;
     };
     let resource = resolve::resolve_resource_by_name_any(program, name)?;
-    field_member_type(resource, &[field])
+    field_member_type(resource, &[field], resource_module(program, &resource.name))
 }
 
 /// The declared type of a group field read at any nesting depth, reached through
@@ -2004,7 +2706,7 @@ fn saved_group_field_type(
     let (root, mut chain) = saved_group_chain(base)?;
     let resource = find_resource_schema(program, root)?;
     chain.push(field);
-    field_member_type(resource, &chain)
+    field_member_type(resource, &chain, resource_module(program, &resource.name))
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -2054,7 +2756,7 @@ fn saved_leaf_type(
 ) -> Option<MarrowType> {
     let (root, layers) = saved_layer_chain(callee)?;
     let resource = find_resource_schema(program, root)?;
-    leaf_member_type(resource, &layers)
+    leaf_member_type(resource, &layers, resource_module(program, &resource.name))
 }
 
 /// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
@@ -2086,15 +2788,16 @@ fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str
 /// The checker type of a stored field read named by its saved-path chain — the
 /// named segments after the identity, outermost first, terminating in a scalar
 /// field. Resolves through the shared schema walk and lifts the result to the
-/// checker's lattice. A saved leaf is always a scalar, sequence, or identity, so
-/// it needs no module resource names to place a bare `Named`.
+/// checker's lattice. `owning_module` is the module that declares the resource, so
+/// an enum-typed field reads as that module's enum rather than `Unknown`.
 fn field_member_type(
     resource: &marrow_schema::ResourceSchema,
     chain: &[&str],
+    owning_module: &str,
 ) -> Option<MarrowType> {
     resource
         .field_type(chain)
-        .map(|ty| MarrowType::from_resolved(ty.clone(), &[]))
+        .map(|ty| lift_member_type(ty.clone(), owning_module))
 }
 
 /// The checker type of a keyed-leaf layer read named by its chain of layer names,
@@ -2104,10 +2807,26 @@ fn field_member_type(
 fn leaf_member_type(
     resource: &marrow_schema::ResourceSchema,
     layers: &[&str],
+    owning_module: &str,
 ) -> Option<MarrowType> {
     resource
         .leaf_type(layers)
-        .map(|ty| MarrowType::from_resolved(ty.clone(), &[]))
+        .map(|ty| lift_member_type(ty.clone(), owning_module))
+}
+
+/// Lift a saved-member schema [`Type`] to the checker's lattice. A saved member is
+/// a scalar, sequence, identity, or — for a bare [`Type::Named`] — an enum, which
+/// the saved-field rule guarantees is declared in `owning_module`. So a `Named`
+/// member reads as that module's enum, carrying its nominal `{module, name}`
+/// identity, rather than collapsing to `Unknown`.
+fn lift_member_type(ty: Type, owning_module: &str) -> MarrowType {
+    match ty {
+        Type::Named(name) => MarrowType::Enum {
+            module: owning_module.to_string(),
+            name,
+        },
+        other => MarrowType::from_resolved(other, TypeNames::default()),
+    }
 }
 
 /// Look up a name's binding, innermost scope frame first; `None` when unbound.
@@ -2277,19 +2996,20 @@ fn check_binary(
     }
     // Equality is decided over concrete non-scalar types before the `as_primitive`
     // gate, which would otherwise drop them to `Unknown`. Whole records and
-    // sequences have no equality; identities compare nominally, so same-resource
-    // identities are equatable (`bool`) while a cross-resource pair, or an identity
-    // against a scalar, is a category error. An `Unknown` operand defers to the
-    // scalar path, where untyped values are handled.
+    // sequences have no equality; identities and enums compare nominally, so a
+    // same-resource identity or same-enum pair is equatable (`bool`) while a
+    // cross-resource pair, a different enum, or either against a scalar is a
+    // category error. An `Unknown` operand defers to the scalar path, where untyped
+    // values are handled.
     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
         && let Some(result) = check_equality(op, left, right, span, file, diagnostics)
     {
         return result;
     }
     // No non-equality operator applies to a concrete non-scalar operand — an
-    // identity, whole record, or sequence. Flag it as an operator misuse rather than
-    // letting the scalar gate below drop it to `Unknown`. An `Unknown` operand still
-    // defers there, where untyped values are handled.
+    // identity, whole record, sequence, or enum. Flag it as an operator misuse
+    // rather than letting the scalar gate below drop it to `Unknown`. An `Unknown`
+    // operand still defers there, where untyped values are handled.
     if is_concrete_nonscalar(left) || is_concrete_nonscalar(right) {
         diagnostics.push(operator_diagnostic(
             file,
@@ -2362,12 +3082,13 @@ fn check_binary(
 
 /// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`
 /// once a verdict is reached and `None` to defer to the scalar path. Whole records
-/// and sequences are not equatable; identities compare nominally, so a
-/// same-resource pair is `bool` and any other identity pairing is a category error.
-/// An `Unknown` operand defers (the untyped-value path owns it); a scalar pair
-/// defers to the ordinary scalar-equality check. A diagnostic is pushed on the
-/// rejected cases, which still yield `bool` so a surrounding expression sees the
-/// natural result type of a comparison.
+/// and sequences are not equatable; identities and enums compare nominally, so a
+/// same-resource identity or same-enum pair is `bool` and any other pairing —
+/// different identities, different enums, or either against a scalar — is a
+/// category error. An `Unknown` operand defers (the untyped-value path owns it); a
+/// scalar pair defers to the ordinary scalar-equality check. A diagnostic is pushed
+/// on the rejected cases, which still yield `bool` so a surrounding expression sees
+/// the natural result type of a comparison.
 fn check_equality(
     op: marrow_syntax::BinaryOp,
     left: &MarrowType,
@@ -2377,14 +3098,13 @@ fn check_equality(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<MarrowType> {
     let reject = |diagnostics: &mut Vec<CheckDiagnostic>| {
+        let (left_name, right_name) = mismatch_display(left, right);
         diagnostics.push(operator_diagnostic(
             file,
             span,
             format!(
-                "operator `{}` cannot compare `{}` and `{}`",
+                "operator `{}` cannot compare `{left_name}` and `{right_name}`",
                 binary_symbol(op),
-                marrow_type_name(left),
-                marrow_type_name(right),
             ),
         ));
         Some(MarrowType::Primitive(ScalarType::Bool))
@@ -2403,8 +3123,19 @@ fn check_equality(
                 reject(diagnostics)
             }
         }
-        // An identity against a scalar or `Error` is a category error.
+        // An identity against a scalar, enum, or `Error` is a category error.
         (MarrowType::Identity(_), _) | (_, MarrowType::Identity(_)) => reject(diagnostics),
+        // Enums compare nominally: equatable only against the same enum, by owning
+        // module and name, so two same-named enums in different modules are not.
+        (MarrowType::Enum { .. }, MarrowType::Enum { .. }) => {
+            if left == right {
+                Some(MarrowType::Primitive(ScalarType::Bool))
+            } else {
+                reject(diagnostics)
+            }
+        }
+        // An enum against a scalar or `Error` is a category error.
+        (MarrowType::Enum { .. }, _) | (_, MarrowType::Enum { .. }) => reject(diagnostics),
         // Two scalars (or `Error`, which the caller already rejected) defer to the
         // ordinary scalar-equality path.
         (
@@ -2508,14 +3239,17 @@ fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
 }
 
 /// Whether a type is a concrete non-scalar value type: an identity, a whole
-/// record, or a sequence. These compare nominally, so an operator that defaults or
-/// equates them resolves by [`type_compatible`] rather than by scalar shape. The
-/// checker-only `Error` and the untyped `Unknown` are excluded: `Error` has its own
-/// operator handling and `Unknown` defers.
+/// record, a sequence, or an enum. These compare nominally, so an operator that
+/// defaults or equates them resolves by [`type_compatible`] rather than by scalar
+/// shape. The checker-only `Error` and the untyped `Unknown` are excluded: `Error`
+/// has its own operator handling and `Unknown` defers.
 fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
     matches!(
         ty,
-        MarrowType::Identity(_) | MarrowType::Resource(_) | MarrowType::Sequence(_)
+        MarrowType::Identity(_)
+            | MarrowType::Resource(_)
+            | MarrowType::Sequence(_)
+            | MarrowType::Enum { .. }
     )
 }
 
@@ -2525,7 +3259,9 @@ fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
 /// no constraint. Identities and resources compare nominally: same resource name
 /// or nothing, so a key-compatible foreign identity is still a mismatch. A
 /// cross-module identity the checker could not place is `Unknown` and defers,
-/// permissive until the type IR is unified across modules.
+/// permissive until the type IR is unified across modules. Enums are nominal too:
+/// a value satisfies an enum place only when it is the same enum, by owning module
+/// and name, so two same-named enums in different modules never alias.
 fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
     if matches!(actual, MarrowType::Unknown) {
         return None;
@@ -2538,6 +3274,7 @@ fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
         MarrowType::Resource(resource) => {
             Some(matches!(actual, MarrowType::Resource(other) if other == resource))
         }
+        MarrowType::Enum { .. } => Some(actual == expected),
         MarrowType::Sequence(element) => match actual {
             MarrowType::Sequence(other) => type_compatible(element, other),
             _ => Some(false),
@@ -2550,11 +3287,15 @@ fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
 /// Whether an expected type has a value-conversion boundary, so an `unknown` value
 /// against it is a `check.untyped_value` ("convert it first") rather than a
 /// deferral. Scalars and the checker-only `Error` are reached by the conversion
-/// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor); a
-/// resource, identity, or sequence has no such conversion, so an `unknown` value
-/// there is left to the runtime.
+/// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor), and an
+/// enum is a concrete typed place a dynamic value must be made into; a resource,
+/// identity, or sequence has no such conversion, so an `unknown` value there is
+/// left to the runtime.
 fn expects_conversion(ty: &MarrowType) -> bool {
-    matches!(ty, MarrowType::Primitive(_) | MarrowType::Error)
+    matches!(
+        ty,
+        MarrowType::Primitive(_) | MarrowType::Error | MarrowType::Enum { .. }
+    )
 }
 
 fn is_numeric(scalar: ScalarType) -> bool {
@@ -2705,8 +3446,9 @@ fn check_call(
     }
     // Calls resolve from the module the file contributes: a bare name in its own
     // module, a qualified `mod::name` in the named module (cross-module needs the
-    // qualifier and the target must be `pub`).
-    let from_module = module_of_file(program, file);
+    // qualifier and the target must be `pub`). A module-less script has no module
+    // name; its calls are suppressed anyway.
+    let from_module = module_of_file(program, file).unwrap_or_default();
     // A callee naming a declared resource is a constructor, not a function:
     // `Book(...)` builds the resource value and `Book::Id(...)` builds its
     // identity. Recognize it so a valid
@@ -2813,9 +3555,9 @@ fn check_call(
             }
             None => function.params.get(index),
         };
-        // Every concrete parameter type — scalar, identity, resource, sequence, or
-        // the checker-only `Error` — is checked nominally; an `unknown` parameter
-        // places no constraint and is left to the runtime.
+        // Every concrete parameter type — scalar, identity, resource, sequence,
+        // enum, or the checker-only `Error` — is checked nominally; an `unknown`
+        // parameter places no constraint and is left to the runtime.
         if let Some(param) = param {
             check_one_arg(
                 &segments.join("::"),
@@ -2835,7 +3577,8 @@ fn check_call(
 /// concrete parameter is a `check.untyped_value` (strict typing — convert dynamic
 /// data before typed use). Shared by the user-function and std argument loops;
 /// `label` names the callee for the message. The expectation is a scalar for every
-/// slot except `std::log::error`, which expects the checker-only `Error` value.
+/// std slot except `std::log::error` (the checker-only `Error` value), and an enum
+/// for a user parameter typed as one.
 fn check_one_arg(
     label: &str,
     parameter: &MarrowType,
@@ -2847,17 +3590,17 @@ fn check_one_arg(
     match type_compatible(parameter, arg_type) {
         Some(true) => {}
         // A known type the parameter does not accept — a different scalar, a foreign
-        // identity, a resource, a sequence, or an `Error` — is a real argument
-        // mismatch.
-        Some(false) => diagnostics.push(call_diagnostic(
-            file,
-            span,
-            format!(
-                "argument to `{label}` expects `{}`, but found `{}`",
-                marrow_type_name(parameter),
-                marrow_type_name(arg_type),
-            ),
-        )),
+        // identity, a resource, a sequence, an enum, or an `Error` — is a real
+        // argument mismatch. Two same-named enums from different modules are
+        // qualified so the message distinguishes them.
+        Some(false) => {
+            let (expected, found) = mismatch_display(parameter, arg_type);
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
+            ));
+        }
         // The parameter places no constraint, or the argument is `unknown`. Only an
         // `unknown` argument against a convertible parameter is reported, under
         // strict typing: dynamic data must be converted before typed use.
@@ -2878,18 +3621,46 @@ fn check_one_arg(
 }
 
 /// The source spelling of a type for a diagnostic message: a scalar by name, an
-/// identity as `Resource::Id`, a resource by its name, a sequence as
-/// `sequence[element]`, the checker-only `Error`, or `value` for a type with no
-/// surface spelling.
+/// identity as `Resource::Id`, a resource by its name, an enum by its name, a
+/// sequence as `sequence[element]`, the checker-only `Error`, or `value` for a type
+/// with no surface spelling.
 fn marrow_type_name(ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
         MarrowType::Identity(resource) => format!("{resource}::Id"),
         MarrowType::Resource(resource) => resource.clone(),
+        MarrowType::Enum { name, .. } => name.clone(),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
         MarrowType::Unknown => "value".to_string(),
     }
+}
+
+/// Display names for two mismatched types, qualifying each enum with its owning
+/// module (`module::Name`) only when both sides are enums that share the same
+/// short name but come from different modules — otherwise the bare names ("expects
+/// `Status`, but found `Status`") name no distinguishing detail. Any other pairing
+/// uses each type's plain [`marrow_type_name`].
+fn mismatch_display(left: &MarrowType, right: &MarrowType) -> (String, String) {
+    if let (
+        MarrowType::Enum {
+            module: left_module,
+            name: left_name,
+        },
+        MarrowType::Enum {
+            module: right_module,
+            name: right_name,
+        },
+    ) = (left, right)
+        && left_name == right_name
+        && left_module != right_module
+    {
+        return (
+            format!("{left_module}::{left_name}"),
+            format!("{right_module}::{right_name}"),
+        );
+    }
+    (marrow_type_name(left), marrow_type_name(right))
 }
 
 /// Check positional `args` against a fixed positional parameter list (the std
@@ -3078,7 +3849,7 @@ fn layer_key_type(program: &CheckedProgram, layer_field: &marrow_syntax::Express
         .descend_layers(&layers)
         .map(|node| node.key_params.as_slice())
     {
-        Some([key]) => MarrowType::from_resolved(key.ty.clone(), &[]),
+        Some([key]) => MarrowType::from_resolved(key.ty.clone(), TypeNames::default()),
         _ => MarrowType::Unknown,
     }
 }
@@ -3123,17 +3894,6 @@ fn file_in_program(program: &CheckedProgram, file: &Path) -> bool {
         .modules
         .iter()
         .any(|module| module.source_file == file)
-}
-
-/// The name of the module `file` contributes, for resolving the calls inside it
-/// from the right module. Empty for a file with no module in the program (a
-/// module-less script), whose calls are suppressed anyway.
-fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> &'p str {
-    program
-        .modules
-        .iter()
-        .find(|module| module.source_file == file)
-        .map_or("", |module| module.name.as_str())
 }
 
 /// Resolve a call's `segments` to a function, also yielding the [`CheckedModule`]
@@ -3310,6 +4070,7 @@ pub fn check_tests(
         let Some(CheckedFile {
             parsed,
             resources,
+            enums,
             functions,
             constants,
         }) = check_file(&file.path, &mut report.diagnostics)
@@ -3334,6 +4095,7 @@ pub fn check_tests(
                 constants,
                 functions,
                 resources,
+                enums,
             });
         }
         parsed_files.push((file, parsed));
@@ -3357,19 +4119,28 @@ pub fn check_tests(
     // modules — cross-module calls and resource constructors resolve, and the
     // `nextId` gate finds the project's resource schemas. Resource annotations are
     // recognized project-wide (project plus test resources).
-    let combined = CheckedProgram {
-        modules: project
-            .modules
-            .iter()
-            .cloned()
-            .chain(modules.iter().cloned())
-            .collect(),
+    let project_count = project.modules.len();
+    let mut combined = CheckedProgram {
+        modules: project.modules.iter().cloned().chain(modules).collect(),
     };
+    // Stamp cross-module enum signature slots in the test modules with their true
+    // owner — resolved against the combined program — before the type pass reads
+    // them, so a test's argument against a qualified or foreign enum parameter is
+    // gated on the parameter's real identity rather than a per-file `Unknown`. The
+    // project modules carry the project's own normalized signatures already.
+    let resolver = combined.clone();
+    normalize_program_enum_types_against(&mut combined, &resolver, &parsed_files);
     let project_resources: HashSet<String> = combined
         .modules
         .iter()
         .flat_map(|module| &module.resources)
         .map(|resource| resource.name.clone())
+        .collect();
+    let project_enums: HashSet<String> = combined
+        .modules
+        .iter()
+        .flat_map(|module| &module.enums)
+        .map(|enum_schema| enum_schema.name.clone())
         .collect();
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_project.
@@ -3381,10 +4152,20 @@ pub fn check_tests(
         &resolvable,
         &combined,
         &project_resources,
+        &project_enums,
         &mut report,
     );
 
-    Ok((report, modules))
+    // Resolve `match` scrutinee enums on the test bodies, inferring against the whole
+    // combined program so a test's `match` over a project enum dispatches correctly.
+    // The bodies belong to the already-normalized test modules — the tail of the
+    // combined program past the project's own modules.
+    let mut test_program = CheckedProgram {
+        modules: combined.modules[project_count..].to_vec(),
+    };
+    resolve_match_enums(&mut test_program, &combined);
+
+    Ok((report, test_program.modules))
 }
 
 /// The per-file result of [`check_file`]: the parsed source and the declaration
@@ -3392,6 +4173,7 @@ pub fn check_tests(
 struct CheckedFile {
     parsed: marrow_syntax::ParsedSource,
     resources: Vec<marrow_schema::ResourceSchema>,
+    enums: Vec<marrow_schema::EnumSchema>,
     functions: Vec<CheckedFunction>,
     constants: Vec<CheckedConst>,
 }
@@ -3457,8 +4239,8 @@ fn check_file_source(
 
     check_duplicate_declarations(file_path, &parsed.file, diagnostics);
 
-    // Resource names resolve first so a module's function and constant types can
-    // refer to its own resources.
+    // Named types resolve first so a module's function and constant types can
+    // refer to its own resources and enums.
     let module_resources: Vec<String> = parsed
         .file
         .declarations
@@ -3468,17 +4250,48 @@ fn check_file_source(
             _ => None,
         })
         .collect();
+    let module_enums: Vec<String> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Enum(decl) => Some(decl.name.clone()),
+            _ => None,
+        })
+        .collect();
+    // A bare enum annotation in a signature names this module's enum, so the
+    // resolved type carries the module's qualified name as the enum's owner. A
+    // module-less script has no declared name (its enums are project-unique).
+    let module_name = parsed
+        .file
+        .module
+        .as_ref()
+        .map_or("", |module| module.name.as_str());
+    let names = TypeNames {
+        module: module_name,
+        resources: &module_resources,
+        enums: &module_enums,
+    };
     let mut resources = Vec::new();
+    let mut enums = Vec::new();
     let mut functions = Vec::new();
     let mut constants = Vec::new();
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
                 rules::check_function_body(file_path, &function.body, diagnostics);
-                functions.push(checked_function(function, &module_resources));
+                functions.push(checked_function(function, names));
             }
             marrow_syntax::Declaration::Resource(resource) => {
-                let (schema, errors) = marrow_schema::compile_resource(resource);
+                let (schema, mut errors) = marrow_schema::compile_resource(resource);
+                // A bare-named saved field must be a declared enum. Schema
+                // compilation cannot see other declarations, so the enum names are
+                // resolved here and the rule applied alongside the other saved-data
+                // checks.
+                errors.extend(marrow_schema::check_saved_named_fields(
+                    resource,
+                    &module_enums,
+                ));
                 for error in errors {
                     diagnostics.push(CheckDiagnostic {
                         code: error.code,
@@ -3490,6 +4303,19 @@ fn check_file_source(
                 }
                 resources.push(schema);
             }
+            marrow_syntax::Declaration::Enum(decl) => {
+                let (schema, errors) = marrow_schema::compile_enum(decl);
+                for error in errors {
+                    diagnostics.push(CheckDiagnostic {
+                        code: error.code,
+                        severity: Severity::Error,
+                        file: file_path.to_path_buf(),
+                        message: error.message,
+                        span: error.span,
+                    });
+                }
+                enums.push(schema);
+            }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(value) = &constant.value {
                     rules::check_const_value(file_path, value, diagnostics);
@@ -3499,7 +4325,7 @@ fn check_file_source(
                     ty: constant
                         .ty
                         .as_ref()
-                        .map(|ty| MarrowType::resolve(ty, &module_resources)),
+                        .map(|ty| MarrowType::resolve(ty, names)),
                     span: constant.span,
                 });
             }
@@ -3509,17 +4335,18 @@ fn check_file_source(
     CheckedFile {
         parsed,
         resources,
+        enums,
         functions,
         constants,
     }
 }
 
 /// Resolve a function declaration for the checked-program artifact: its
-/// signature (parameter and return types resolve against the module's own
-/// resource names) plus its body, which the runtime evaluates.
+/// signature (parameter and return types resolve against the module's own named
+/// types) plus its body, which the runtime evaluates.
 fn checked_function(
     function: &marrow_syntax::FunctionDecl,
-    module_resources: &[String],
+    names: TypeNames<'_>,
 ) -> CheckedFunction {
     CheckedFunction {
         name: function.name.clone(),
@@ -3530,13 +4357,13 @@ fn checked_function(
             .map(|param| CheckedParam {
                 name: param.name.clone(),
                 mode: param.mode,
-                ty: MarrowType::resolve(&param.ty, module_resources),
+                ty: MarrowType::resolve(&param.ty, names),
             })
             .collect(),
         return_type: function
             .return_type
             .as_ref()
-            .map(|ty| MarrowType::resolve(ty, module_resources)),
+            .map(|ty| MarrowType::resolve(ty, names)),
         span: function.span,
         touches_saved_data: block_touches_saved_data(&function.body),
         body: function.body.clone(),
@@ -3604,6 +4431,12 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
                     .as_ref()
                     .is_some_and(|catch| block_touches_saved_data(&catch.block))
                 || finally.as_ref().is_some_and(block_touches_saved_data)
+        }
+        Statement::Match {
+            scrutinee, arms, ..
+        } => {
+            scrutinee.as_ref().is_some_and(expr_touches_saved_data)
+                || arms.iter().any(|arm| block_touches_saved_data(&arm.block))
         }
         Statement::Break { .. } | Statement::Continue { .. } => false,
     }
@@ -3734,6 +4567,7 @@ fn check_duplicate_declarations(
             Declaration::Const(decl) => (decl.name.as_str(), decl.span),
             Declaration::Resource(decl) => (decl.name.as_str(), decl.span),
             Declaration::Function(decl) => (decl.name.as_str(), decl.span),
+            Declaration::Enum(decl) => (decl.name.as_str(), decl.span),
         };
         introduced.push((name, span, "declaration"));
     }

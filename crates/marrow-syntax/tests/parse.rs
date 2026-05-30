@@ -3,6 +3,10 @@ use marrow_syntax::{
     Statement, UnaryOp, parse_source,
 };
 
+fn member_names(decl: &marrow_syntax::EnumDecl) -> Vec<&str> {
+    decl.members.iter().map(|m| m.name.as_str()).collect()
+}
+
 fn reference_sample() -> &'static str {
     r#"module shelf::sample
 
@@ -1757,6 +1761,7 @@ fn normalize(title: string): string
             Declaration::Const(decl) => decl.name.as_str(),
             Declaration::Resource(decl) => decl.name.as_str(),
             Declaration::Function(decl) => decl.name.as_str(),
+            Declaration::Enum(decl) => decl.name.as_str(),
         })
         .collect::<Vec<_>>();
     assert_eq!(names, ["MaxLoans", "Book", "normalize"]);
@@ -1995,6 +2000,140 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
     assert!(
         parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
         "expected a parse error for a bare `=` in expression position: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn parses_a_flat_enum_declaration() {
+    let parsed = parse_source("module app\nenum Status\n    active\n    archived\n    banned\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let status = parsed.file.enum_decl("Status").expect("Status enum");
+    assert!(!status.public);
+    assert_eq!(member_names(status), ["active", "archived", "banned"]);
+    assert!(status.members.iter().all(|m| m.stable_id.is_none()));
+}
+
+#[test]
+fn parses_pub_enum() {
+    let parsed = parse_source("module app\npub enum Status\n    active\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let status = parsed.file.enum_decl("Status").expect("Status enum");
+    assert!(status.public);
+    assert_eq!(member_names(status), ["active"]);
+}
+
+#[test]
+fn attaches_doc_comments_to_enum_members() {
+    let parsed = parse_source("module app\nenum Status\n    ;; Currently live.\n    active\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let status = parsed.file.enum_decl("Status").expect("Status enum");
+    assert_eq!(status.members[0].docs, ["Currently live."]);
+}
+
+#[test]
+fn rejects_an_enum_with_no_members() {
+    let parsed = parse_source("module app\nenum Status\nfn main()\n    return\n");
+    assert!(parsed.has_errors());
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("at least one member")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn rejects_an_enum_member_with_a_type_annotation() {
+    let parsed = parse_source("module app\nenum Status\n    active: int\n");
+    assert!(parsed.has_errors());
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("bare name")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn rejects_an_enum_member_with_parameters() {
+    let parsed = parse_source("module app\nenum Status\n    active(x: int)\n");
+    assert!(parsed.has_errors());
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("bare name")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn rejects_a_nested_enum_member() {
+    let parsed = parse_source("module app\nenum Status\n    active\n        nested\n");
+    assert!(parsed.has_errors());
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("no nested body")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn round_trips_an_enum_through_the_formatter() {
+    let source = "enum Status\n    active\n    archived\n    banned";
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    // The canonical form of a single declaration is the declaration followed by a
+    // trailing newline, so a clean enum round-trips unchanged.
+    assert_eq!(marrow_syntax::format_source(source), format!("{source}\n"));
+}
+
+#[test]
+fn parses_a_match_statement_with_bare_member_arms() {
+    let parsed = parse_source(
+        "module app\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            print(\"a\")\n        \
+         archived\n            print(\"b\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("f");
+    let Statement::Match {
+        scrutinee, arms, ..
+    } = &f.body.statements[0]
+    else {
+        panic!("expected a match, got {:?}", f.body.statements[0]);
+    };
+    assert!(matches!(scrutinee, Some(Expression::Name { .. })));
+    let members: Vec<&str> = arms.iter().map(|arm| arm.member.as_str()).collect();
+    assert_eq!(members, ["active", "archived"]);
+    // Each arm carries its own block.
+    assert_eq!(arms[0].block.statements.len(), 1);
+}
+
+#[test]
+fn rejects_a_match_arm_that_is_not_a_bare_member() {
+    let parsed = parse_source(
+        "module app\n\
+         fn f(s: Status)\n    \
+         match s\n        active: int\n            print(\"a\")\n",
+    );
+    assert!(parsed.has_errors());
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("bare member name")),
+        "{:#?}",
         parsed.diagnostics
     );
 }

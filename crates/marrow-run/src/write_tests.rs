@@ -61,6 +61,27 @@ resource Book at ^books(id: int)
     index byShelfCategory(shelf, category, id)
 ";
 
+/// `Book` with a non-unique index over an enum-typed field plus identity. An
+/// enum field stores its ordinal as an `int`, so the index keys on that ordinal
+/// and must read it back when an entry is torn down.
+const BOOK_ENUM_INDEXED: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+    state: Status
+
+    index byState(state, id)
+";
+
+/// The encoded path `^books.byState(state, id)`.
+fn by_state_entry(state: i64, id: i64) -> Vec<u8> {
+    encode_path(&[
+        PathSegment::Root("books".into()),
+        PathSegment::Index("byState".into()),
+        PathSegment::IndexKey(SavedKey::Int(state)),
+        PathSegment::IndexKey(SavedKey::Int(id)),
+    ])
+}
+
 /// `Book` with a UNIQUE index over the isbn alone: the entry path is the isbn
 /// only, and the entry value is the owning identity.
 const BOOK_UNIQUE: &str = "\
@@ -667,6 +688,64 @@ fn deleting_a_resource_removes_its_fields_and_index_entries() {
         store.read(&by_shelf_entry("fiction", 42)),
         None,
         "index entry removed"
+    );
+}
+
+#[test]
+fn an_enum_field_index_builds_and_tears_down_by_its_ordinal() {
+    let book = schema(BOOK_ENUM_INDEXED);
+    let mut store = MemStore::new();
+    // `state` stores its enum ordinal as an int; the byState entry keys on it.
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("state".into(), SavedValue::Int(1)),
+            ],
+        },
+    );
+    assert_eq!(
+        store.read(&by_state_entry(1, 42)),
+        Some(&b"1"[..]),
+        "the enum-field index entry is built on the stored ordinal"
+    );
+
+    // Re-write with a different ordinal: the old entry must be torn down by
+    // reading the stored ordinal as its key, leaving no stale entry behind.
+    write(
+        &mut store,
+        &book,
+        &[SavedKey::Int(42)],
+        ResourceValue {
+            fields: vec![
+                ("title".into(), saved("Mort")),
+                ("state".into(), SavedValue::Int(2)),
+            ],
+        },
+    );
+    assert_eq!(
+        store.read(&by_state_entry(1, 42)),
+        None,
+        "the stale entry for the old ordinal is gone"
+    );
+    assert_eq!(
+        store.read(&by_state_entry(2, 42)),
+        Some(&b"1"[..]),
+        "the entry for the new ordinal is present"
+    );
+
+    // Deleting the resource reads the stored ordinal to remove its entry.
+    plan_resource_delete(&book, &[SavedKey::Int(42)], &store)
+        .expect("delete")
+        .commit(&mut store, false)
+        .expect("commit succeeds");
+    assert_eq!(
+        store.read(&by_state_entry(2, 42)),
+        None,
+        "the enum-field index entry is torn down on delete"
     );
 }
 

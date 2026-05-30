@@ -154,6 +154,163 @@ fn surfaces_resource_schema_errors() {
 }
 
 #[test]
+fn rejects_an_enum_typed_identity_key() {
+    // A key must be an orderable scalar. An enum names no scalar, so accepting it
+    // as an identity key lets a raw string or int settle silently into the
+    // keyspace. The rule is structural, so it fires without resolving the name.
+    let errors = check_module(
+        "enum-identity-key",
+        "module m\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Order at ^orders(state: Status)\n\
+         \x20   required note: string\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("Status"));
+}
+
+#[test]
+fn rejects_an_enum_typed_layer_key_param() {
+    let errors = check_module(
+        "enum-layer-key",
+        "module m\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Order at ^orders(id: int)\n\
+         \x20   byState(state: Status): string\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("Status"));
+}
+
+#[test]
+fn rejects_a_typo_named_identity_key() {
+    // A name that resolves to nothing is rejected exactly like a declared one: the
+    // allowlist asks only "is this an orderable scalar?". A typo'd key would
+    // otherwise accept any value, letting an int and a string coexist in one
+    // identity keyspace.
+    let errors = check_module(
+        "typo-identity-key",
+        "module m\n\
+         resource Order at ^orders(state: Stutus)\n\
+         \x20   required note: string\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("Stutus"));
+}
+
+#[test]
+fn rejects_a_typo_named_layer_key_param() {
+    let errors = check_module(
+        "typo-layer-key",
+        "module m\n\
+         resource Order at ^orders(id: int)\n\
+         \x20   byState(state: Stutus): string\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("Stutus"));
+}
+
+#[test]
+fn rejects_a_resource_typed_identity_key() {
+    // A bare name that names a declared resource is still not an orderable scalar.
+    // `Person` here is a declared resource, yet it cannot be a key.
+    let errors = check_module(
+        "resource-identity-key",
+        "module m\n\
+         resource Person\n\
+         \x20   required name: string\n\
+         resource Order at ^orders(owner: Person)\n\
+         \x20   required note: string\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("Person"));
+}
+
+#[test]
+fn rejects_a_cross_module_qualified_enum_identity_key() {
+    // A qualified `a::Status` key is structurally a non-scalar name, so it is
+    // rejected without resolving which module owns it. This is the case a
+    // file-local enum list could never reach.
+    let root = temp_project("cross-module-enum-key", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\nenum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\n\
+             resource Order at ^orders(state: a::Status)\n    required note: string\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "schema.nonscalar_key");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("a::Status"));
+}
+
+#[test]
+fn rejects_a_sequence_index_argument() {
+    // An index argument keys on its field's stored scalar. A `sequence` has none,
+    // so the index is rejected at the third key position.
+    let errors = check_module(
+        "sequence-index-arg",
+        "module m\n\
+         resource Order at ^orders(id: int)\n\
+         \x20   tags: sequence[string]\n\
+         \x20   index byTags(tags, id)\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("byTags"));
+}
+
+#[test]
+fn an_enum_field_index_argument_checks_clean() {
+    // An enum field stores its ordinal as an orderable `int`, so an index over it
+    // keys on that ordinal — the staged enum-field-index behavior, unchanged.
+    let report = check_module_report(
+        "enum-index-ok",
+        "module m\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Order at ^orders(id: int)\n\
+         \x20   state: Status\n\
+         \x20   index byState(state, id)\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn an_orderable_scalar_key_checks_clean() {
+    // The allowlist does not over-reject an orderable scalar key alongside a
+    // declared enum field on the same resource.
+    let report = check_module_report(
+        "scalar-key-ok",
+        "module m\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Order at ^orders(id: int)\n\
+         \x20   required state: Status\n\
+         \x20   byTag(tag: string): string\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn reports_two_resources_owning_one_saved_root() {
     let root = temp_project("dup-root", |root| {
         // A saved root has one managed owner; two resources on `^books` collide.
@@ -2139,6 +2296,29 @@ fn check_tests_leaves_a_clean_test_file_clean() {
 }
 
 #[test]
+fn check_tests_catches_a_wrong_enum_to_a_qualified_project_parameter() {
+    // A test file calls a project function whose parameter is the qualified
+    // `app::Status`, passing `app::Color::green`. The test type pass reads the
+    // project's already-normalized parameter, so the nominal mismatch is caught the
+    // same way it is in a library call — not silently dispatched.
+    let report = check_tests_report(
+        "check-tests-enum-arg",
+        "module app\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         pub fn dispatch(s: app::Status): int\n    \
+         match s\n        active\n            return 1\n        archived\n            return 2\n",
+        "pub fn t()\n    var n = app::dispatch(app::Color::green)\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.call_argument").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn finally_return_is_rejected() {
     let found = check_script(
         "fin-return",
@@ -2583,6 +2763,901 @@ fn bare_call_to_a_pub_fn_in_two_modules_is_ambiguous() {
     assert!(
         with_code(&report, "check.unresolved_call").is_empty(),
         "an ambiguous call has candidates, so it is not also unresolved: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_enum_member_reference_checks_clean() {
+    // `Status::archived` is a known member of a declared enum; using it as a
+    // value must not raise an unresolved-name or unknown-member diagnostic.
+    let report = check_module_report(
+        "enum-member-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f()\n    const s: Status = Status::archived\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn an_enum_typed_param_and_var_annotation_is_accepted() {
+    // An enum name is a valid type annotation on a parameter, a `var`, and a
+    // `const`; none should be flagged `check.unknown_type`.
+    let report = check_module_report(
+        "enum-annotation-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status): Status\n    var t: Status = Status::active\n    return t\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn an_enum_typed_resource_field_is_accepted() {
+    let report = check_module_report(
+        "enum-field-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn reports_an_unknown_enum_member() {
+    let found = check_module(
+        "enum-unknown-member",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f()\n    const s: Status = Status::deleted\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("deleted"), "{}", found[0].message);
+}
+
+#[test]
+fn reports_an_enum_resource_name_collision() {
+    // An enum and a resource share the module-level declaration namespace.
+    let root = temp_project("enum-resource-collision", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nenum Book\n    a\nresource Book\n    title: string\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        duplicates[0].message.contains("Book"),
+        "{}",
+        duplicates[0].message
+    );
+}
+
+#[test]
+fn the_checked_program_carries_enum_schemas() {
+    let root = temp_project("enum-program", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nenum Status\n    active\n    archived\n    banned\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let status = &program.modules[0].enums[0];
+    assert_eq!(status.name, "Status");
+    assert_eq!(status.ordinal("banned"), Some(2));
+}
+
+#[test]
+fn enum_equality_against_the_same_enum_is_accepted() {
+    let report = check_module_report(
+        "enum-eq-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(): bool\n    return Status::active == Status::archived\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn comparing_an_enum_to_a_string_is_an_operator_error() {
+    // Nominal `==`: an enum value is comparable only with the same enum, never a
+    // raw string. The mismatch is the existing operator-type diagnostic.
+    let found = check_module(
+        "enum-eq-string",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(): bool\n    return Status::active == \"active\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn comparing_two_different_enums_is_an_operator_error() {
+    let found = check_module(
+        "enum-eq-cross",
+        "module m\n\
+         enum Status\n    active\n\nenum Color\n    red\n\n\
+         fn f(): bool\n    return Status::active == Color::red\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_exhaustive_match_over_an_enum_checks_clean() {
+    let report = check_module_report(
+        "match-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n    banned\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        \
+         archived\n            return\n        banned\n            return\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_nonexhaustive_match_is_a_check_error() {
+    let found = check_module(
+        "match-nonexhaustive",
+        "module m\n\
+         enum Status\n    active\n    archived\n    banned\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        archived\n            return\n",
+        "check.nonexhaustive_match",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("banned"), "{}", found[0].message);
+}
+
+#[test]
+fn a_match_arm_for_an_unknown_member_is_a_check_error() {
+    let found = check_module(
+        "match-unknown-arm",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        \
+         archived\n            return\n        deleted\n            return\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("deleted"), "{}", found[0].message);
+}
+
+#[test]
+fn a_match_over_a_non_enum_scrutinee_is_rejected() {
+    let found = check_module(
+        "match-non-enum",
+        "module m\n\
+         fn f(n: int)\n    \
+         match n\n        active\n            return\n",
+        "check.match_requires_enum",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_duplicate_match_arm_is_a_check_error() {
+    let found = check_module(
+        "match-duplicate-arm",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        \
+         active\n            return\n        archived\n            return\n",
+        "check.duplicate_match_arm",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_match_over_a_modules_own_same_named_enum_checks_clean() {
+    // Two modules each declare an enum `Status`, with different members. Module
+    // `b`'s function matches its own `Status` (members `open`/`closed`)
+    // exhaustively. Enum identity is module-qualified, so the checker validates
+    // the match against `b::Status`, not the first project-wide `Status`
+    // (`a::Status`, `active`/`archived`). Resolving by bare name would read
+    // `a::Status`'s members and falsely reject `b`'s match as nonexhaustive with
+    // unknown arms.
+    let root = temp_project("enum-same-name-match", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\nenum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             enum Status\n    open\n    closed\n\n\
+             fn classify(s: Status): int\n    \
+             match s\n        open\n            return 1\n        \
+             closed\n            return 2\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn passing_one_enum_where_a_different_enum_is_expected_is_a_check_error() {
+    // `classify(s: Status)` is called with a `Color` value. Nominal identity:
+    // enum `Color` is not enum `Status`, so the argument is a real mismatch, not
+    // silently accepted.
+    let found = check_module(
+        "enum-arg-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn classify(s: Status): int\n    \
+         match s\n        active\n            return 1\n        archived\n            return 2\n\n\
+         fn caller(): int\n    return classify(Color::green)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn passing_a_scalar_where_an_enum_is_expected_is_a_check_error() {
+    // A raw scalar into an enum parameter is a mismatch: the parameter is `Status`,
+    // the argument is `int`.
+    let found = check_module(
+        "enum-arg-scalar",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn classify(s: Status): int\n    \
+         match s\n        active\n            return 1\n        archived\n            return 2\n\n\
+         fn caller(): int\n    return classify(3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn returning_a_different_enum_than_declared_is_a_check_error() {
+    let found = check_module(
+        "enum-return-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn f(): Status\n    return Color::red\n",
+        "check.return_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
+    let found = check_module(
+        "enum-assign-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn f()\n    var s: Status = Status::active\n    s = Color::red\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn writing_a_different_enum_into_an_enum_saved_field_is_a_check_error() {
+    // The saved field `state: Status` is written a `Color` value: a nominal
+    // mismatch at the saved-field write boundary.
+    let found = check_module(
+        "enum-field-write-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         fn f()\n    ^orders(1).state = Color::red\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn reading_an_enum_saved_field_types_as_that_enum() {
+    // A read of `^orders(1).state` (an enum-typed saved field) must type as
+    // `Status`: comparing it against the *same* enum is clean. Before the field
+    // read was typed it was `Unknown`, so a nominal `==` against any enum reported
+    // an operator error — this same-enum comparison was wrongly rejected.
+    let report = check_module_report(
+        "enum-field-read-eq-same",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         fn f(): bool\n    return ^orders(1).state == Status::active\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    // And typing as `Status` means a `==` against a *different* enum is rejected.
+    let found = check_module(
+        "enum-field-read-eq-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         fn f(): bool\n    return ^orders(1).state == Color::red\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
+    // A match over a saved enum field `^orders(1).state` must resolve to `Status`
+    // and require every member. Missing `banned` is a check error, not a silently
+    // skipped match that faults at runtime.
+    let found = check_module(
+        "enum-field-read-match",
+        "module m\n\
+         enum Status\n    active\n    archived\n    banned\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         fn f()\n    \
+         match ^orders(1).state\n        active\n            return\n        archived\n            return\n",
+        "check.nonexhaustive_match",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("banned"), "{}", found[0].message);
+}
+
+#[test]
+fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
+    // `s: b::Status` is a qualified enum annotation. The match over it must resolve
+    // to `b::Status` and enforce exhaustiveness; missing `closed` is a check error,
+    // not a runtime crash from an unresolved scrutinee that passed open.
+    let root = temp_project("enum-qualified-nonexhaustive", |root| {
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    open\n    closed\n",
+        );
+        write(
+            root,
+            "src/a.mw",
+            "module a\nuse b\n\
+             fn classify(s: b::Status): int\n    \
+             match s\n        open\n            return 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.nonexhaustive_match");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("closed"), "{}", found[0].message);
+}
+
+#[test]
+fn passing_a_third_modules_enum_to_a_qualified_parameter_is_a_check_error() {
+    // Module `c` calls `b::classify`, whose parameter is `b::Status`, with
+    // `a::Status`. Three modules, three same-or-different enums: only `b::Status`
+    // is accepted. Passing `a::Status` is a nominal mismatch.
+    let root = temp_project("enum-third-module-arg", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\nenum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    open\n    closed\n\n\
+             pub fn classify(s: Status): int\n    \
+             match s\n        open\n            return 1\n        closed\n            return 2\n",
+        );
+        write(
+            root,
+            "src/c.mw",
+            "module c\nuse a\nuse b\n\
+             fn run(): int\n    return b::classify(a::Status::active)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_bare_foreign_only_enum_annotation_resolves_to_the_real_owner_not_a_phantom() {
+    // Module `a` declares `Status`; module `b` does not. A bare `Status` annotation
+    // in `b` must resolve to the real owner `a::Status` — the same enum a bare
+    // `Status::member` literal resolves to there — not a phantom `b::Status` minted
+    // by stamping the referencing module onto a project-wide name (the F3 hole).
+    //
+    // Proof of correct identity: in `b`, `s == Status::active` (both the
+    // annotation and the literal name the real `a::Status`) checks clean, and a
+    // `match s` reads `a::Status`'s members exhaustively. A phantom `b::Status`
+    // would own no members, so the literal `Status::active` would resolve to
+    // `a::Status` while `s` carried `b::Status`, making the `==` a cross-enum
+    // operator error — exactly the false rejection a phantom causes.
+    let root = temp_project("enum-foreign-real-owner", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\nenum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             fn same(s: Status): bool\n    return s == Status::active\n\n\
+             fn classify(s: Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 2\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        !report.has_errors(),
+        "a bare foreign-only enum annotation must resolve to the real owner, not a phantom: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
+    // `b::dispatch(s: b::Status)` annotates its parameter with the *qualified*
+    // `b::Status`. Per-file resolution sees only module `b`'s own enum names, so a
+    // qualified `b::Status` slot is left `Unknown` until the whole program is
+    // assembled — the argument gate must still fire after the slot is stamped with
+    // its true owner. Calling it with `a::Color::green` is a nominal mismatch
+    // (`Color` is not `Status`), not a silently dispatched wrong value.
+    let root = temp_project("enum-qualified-arg-cross", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\npub enum Color\n    red\n    green\n    blue\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    active\n    archived\n\n\
+             pub fn dispatch(s: b::Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 2\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             fn run(): int\n    return b::dispatch(a::Color::green)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn passing_a_raw_scalar_to_a_qualified_enum_parameter_is_a_check_error() {
+    // The same qualified `b::dispatch(s: b::Status)` slot, called with a raw `int`.
+    // A scalar in an enum slot is a concrete mismatch the argument gate must catch
+    // once the cross-module parameter carries its real enum identity.
+    let root = temp_project("enum-qualified-arg-scalar", |root| {
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    active\n    archived\n\n\
+             pub fn dispatch(s: b::Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 2\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse b\n\
+             fn run(): int\n    return b::dispatch(1)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_wrong_enum_through_a_relay_chain_to_a_qualified_parameter_is_a_check_error() {
+    // A three-module relay: `app` calls `mid::relay`, whose parameter is the
+    // qualified `b::Status`. Passing `a::Color::green` through the relay is a
+    // nominal mismatch the argument gate must catch in `mid`, even though `mid`'s
+    // file resolved `b::Status` to `Unknown` before the program was whole.
+    let root = temp_project("enum-relay-chain-arg", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\npub enum Color\n    red\n    green\n    blue\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\npub enum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/leaf.mw",
+            "module leaf\nuse b\n\
+             pub fn sink(s: b::Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 2\n",
+        );
+        write(
+            root,
+            "src/mid.mw",
+            "module mid\nuse b\nuse leaf\n\
+             pub fn relay(s: b::Status): int\n    return leaf::sink(s)\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse mid\n\
+             fn run(): int\n    return mid::relay(a::Color::green)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_wrong_enum_to_a_qualified_parameter_in_an_equality_body_is_a_check_error() {
+    // `b::isActive(s: b::Status): bool` compares its qualified-enum parameter to
+    // `b::Status::active`. Called with `a::Color::red`, the argument is a nominal
+    // mismatch the gate must catch — the qualified parameter's identity, recovered
+    // once the program is whole, drives the comparison.
+    let root = temp_project("enum-qualified-arg-eq", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\npub enum Color\n    red\n    green\n    blue\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    active\n    archived\n\n\
+             pub fn isActive(s: b::Status): bool\n    return s == b::Status::active\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             fn run(): bool\n    return b::isActive(a::Color::red)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_wrong_enum_to_a_qualified_parameter_inside_a_loop_is_a_check_error() {
+    // The same qualified-enum argument mismatch inside a `for` loop body: each
+    // iteration's call is checked, so the nominal mismatch is reported once.
+    let root = temp_project("enum-qualified-arg-loop", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\npub enum Color\n    red\n    green\n    blue\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    active\n    archived\n\n\
+             pub fn dispatch(s: b::Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 2\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             fn run()\n    for i in 1..3\n        b::dispatch(a::Color::green)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn passing_the_matching_enum_to_a_qualified_parameter_checks_clean() {
+    // The clean counterpart: `b::dispatch(s: b::Status)` called with the matching
+    // `b::Status::active`. The argument gate must accept a like-for-like enum across
+    // the module boundary, not over-reject once the slot carries its real owner.
+    let root = temp_project("enum-qualified-arg-clean", |root| {
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    active\n    archived\n\n\
+             pub fn dispatch(s: b::Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 2\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse b\n\
+             fn run(): int\n    return b::dispatch(b::Status::active)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        !report.has_errors(),
+        "a matching cross-module enum argument must check clean: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
+    // A `sequence[Status]` element carries `Status`: iterating it binds the loop
+    // variable to that enum, so a `match` over it is dispatched against `Status`'s
+    // members. Arms naming a *different* enum's members (`Color`'s `red`/`green`)
+    // are then unknown `Status` members — a check error. Without recursing the
+    // element through enum resolution the element binds `Unknown`, the match is
+    // left alone as an unresolved scrutinee, and the foreign arms pass open: a
+    // silent loss of identity over a sequence of enums.
+    let found = check_module(
+        "enum-sequence-element-foreign",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn f(items: sequence[Status])\n    \
+         for s in items\n        \
+         match s\n            red\n                return\n            green\n                return\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error() {
+    // The const-annotation place is an enum; the initializer is a different enum.
+    let found = check_module(
+        "enum-const-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn f()\n    const s: Status = Color::red\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_qualified_enum_var_annotation_accepts_the_same_qualified_member() {
+    // A qualified `var t: b::Status` annotation accepts a `b::Status::open` value:
+    // the annotation and the qualified member literal name the same enum, so the
+    // initializer checks clean. (Proves qualified annotation + qualified member
+    // value resolve to the same nominal identity.)
+    let root = temp_project("enum-qualified-var-ok", |root| {
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    open\n    closed\n",
+        );
+        write(
+            root,
+            "src/a.mw",
+            "module a\nuse b\n\
+             fn f()\n    var t: b::Status = b::Status::open\n    return\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_match_over_a_qualified_member_typed_local_dispatches_clean() {
+    // A `const s: b::Status = b::Status::open` then an exhaustive `match s` over
+    // `b::Status` checks clean: the qualified member literal types the local as
+    // `b::Status`, so the match resolves and is exhaustive.
+    let root = temp_project("enum-qualified-member-match", |root| {
+        write(
+            root,
+            "src/b.mw",
+            "module b\nenum Status\n    open\n    closed\n",
+        );
+        write(
+            root,
+            "src/a.mw",
+            "module a\nuse b\n\
+             fn f(): int\n    const s: b::Status = b::Status::open\n    \
+             match s\n        open\n            return 1\n        closed\n            return 2\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// A nested-module enum `module a::b` owns `Status` and `Color`. Its module name
+/// has *two* segments (`a::b`), so a qualified annotation `a::b::Status` and a
+/// qualified literal `a::b::Color::red` are four-segment paths. The module/enum
+/// split must keep all-but-the-last segment as the module (`a::b`), not the first
+/// (`a`) — otherwise the slot stays `Unknown` and every boundary fails open.
+fn nested_module_sources(root: &Path) {
+    write(
+        root,
+        "src/a/b.mw",
+        "module a::b\n\
+         pub enum Status\n    active\n    archived\n\n\
+         pub enum Color\n    red\n    green\n\n\
+         pub fn take(s: a::b::Status): int\n    \
+         match s\n        active\n            return 1\n        archived\n            return 2\n",
+    );
+}
+
+#[test]
+fn passing_a_nested_module_wrong_enum_to_a_qualified_parameter_is_a_check_error() {
+    // `a::b::take(s: a::b::Status)` called with `a::b::Color::red`: enum `Color`
+    // is not enum `Status`, a nominal mismatch. A first-separator split would make
+    // the parameter `Unknown` (module "a", enum "b::Status" matches nothing), so
+    // the wrong enum would pass with zero diagnostics.
+    let root = temp_project("enum-nested-arg-cross", |root| {
+        nested_module_sources(root);
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a::b\n\
+             fn run(): int\n    return a::b::take(a::b::Color::red)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn passing_a_raw_scalar_to_a_nested_module_enum_parameter_is_a_check_error() {
+    // The same `a::b::take(s: a::b::Status)` slot, called with a raw `int`. The
+    // nested-module parameter must carry its real enum identity so the scalar is a
+    // concrete mismatch, not silently accepted.
+    let root = temp_project("enum-nested-arg-scalar", |root| {
+        nested_module_sources(root);
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a::b\n\
+             fn run(): int\n    return a::b::take(1)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn returning_a_wrong_enum_from_a_nested_module_function_is_a_check_error() {
+    // A function declared `: a::b::Status` returns `a::b::Color::red`. The return
+    // slot must resolve to `a::b::Status` (nested module kept whole), so returning
+    // a `Color` is a nominal mismatch rather than an unresolved slot accepting any
+    // value.
+    let root = temp_project("enum-nested-return-cross", |root| {
+        write(
+            root,
+            "src/a/b.mw",
+            "module a::b\n\
+             pub enum Status\n    active\n    archived\n\n\
+             pub enum Color\n    red\n    green\n\n\
+             fn f(): a::b::Status\n    return a::b::Color::red\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.return_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn assigning_a_wrong_enum_into_a_nested_module_enum_local_is_a_check_error() {
+    // A `var s: a::b::Status` local is assigned `a::b::Color::red`. The annotation
+    // must resolve to `a::b::Status` so the cross-enum assignment is caught.
+    let root = temp_project("enum-nested-assign-cross", |root| {
+        write(
+            root,
+            "src/a/b.mw",
+            "module a::b\n\
+             pub enum Status\n    active\n    archived\n\n\
+             pub enum Color\n    red\n    green\n\n\
+             fn f()\n    var s: a::b::Status = a::b::Status::active\n    s = a::b::Color::red\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.assignment_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_nonexhaustive_match_over_a_nested_module_enum_scrutinee_is_a_check_error() {
+    // `s: a::b::Status` is a nested-module qualified annotation. The match over it
+    // must resolve to `a::b::Status` and enforce exhaustiveness; missing `archived`
+    // is a check error, not a runtime crash from a scrutinee that passed open.
+    let root = temp_project("enum-nested-nonexhaustive", |root| {
+        write(
+            root,
+            "src/a/b.mw",
+            "module a::b\npub enum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a::b\n\
+             fn classify(s: a::b::Status): int\n    \
+             match s\n        active\n            return 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.nonexhaustive_match");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        found[0].message.contains("archived"),
+        "{}",
+        found[0].message
+    );
+}
+
+#[test]
+fn an_unknown_member_of_a_nested_module_enum_literal_is_a_check_error() {
+    // `a::b::Status::bogus` names a real nested-module enum but an unknown member.
+    // The four-segment literal must resolve enum=Status in module=a::b, then report
+    // the missing member — not type `Unknown` and pass silently.
+    let root = temp_project("enum-nested-unknown-member", |root| {
+        write(
+            root,
+            "src/a/b.mw",
+            "module a::b\npub enum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a::b\n\
+             fn run(): int\n    const s: a::b::Status = a::b::Status::bogus\n    return 1\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.unknown_enum_member");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("bogus"), "{}", found[0].message);
+}
+
+#[test]
+fn passing_the_matching_nested_module_enum_checks_clean() {
+    // The clean counterpart: `a::b::take(s: a::b::Status)` called with the matching
+    // `a::b::Status::active`. A like-for-like nested-module enum argument must check
+    // clean — the fix must not over-reject once the slot carries its real owner.
+    let root = temp_project("enum-nested-arg-clean", |root| {
+        nested_module_sources(root);
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a::b\n\
+             fn run(): int\n    return a::b::take(a::b::Status::active)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        !report.has_errors(),
+        "a matching nested-module enum argument must check clean: {:#?}",
         report.diagnostics
     );
 }
