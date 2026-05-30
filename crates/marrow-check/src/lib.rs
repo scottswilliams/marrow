@@ -12,9 +12,11 @@ use marrow_schema::stdlib::{self, ParamType, ReturnType};
 use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
+pub mod binding;
 pub mod program;
 mod rules;
 
+pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, MarrowType,
 };
@@ -1777,7 +1779,7 @@ fn saved_field_type(
 
 /// The schema of the resource that owns saved root `^root`, if any. Mirrors the
 /// runtime's `find_resource`.
-fn find_resource_schema<'p>(
+pub(crate) fn find_resource_schema<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<&'p marrow_schema::ResourceSchema> {
@@ -2637,26 +2639,42 @@ fn file_in_program(program: &CheckedProgram, file: &Path) -> bool {
 /// Resolve a call name to a declared function, mirroring the runtime: a bare name
 /// matches the first function of that name in any module; a qualified `mod::fn`
 /// name matches a function in exactly that module.
-fn resolve_function<'p>(
+pub(crate) fn resolve_function<'p>(
     program: &'p CheckedProgram,
     segments: &[String],
 ) -> Option<&'p CheckedFunction> {
+    resolve_function_in_module(program, segments).map(|(_, function)| function)
+}
+
+/// Like [`resolve_function`], but also yielding the [`CheckedModule`] that owns the
+/// function, so a caller (the binding index) can locate the definition's source
+/// file. The resolution rules are identical, kept in one place so they cannot
+/// drift: a bare name matches any module's function in declaration order; a
+/// qualified name targets the named module.
+pub(crate) fn resolve_function_in_module<'p>(
+    program: &'p CheckedProgram,
+    segments: &[String],
+) -> Option<(&'p CheckedModule, &'p CheckedFunction)> {
     let (name, module) = segments.split_last()?;
     if module.is_empty() {
-        program
-            .modules
-            .iter()
-            .flat_map(|module| &module.functions)
-            .find(|function| &function.name == name)
+        program.modules.iter().find_map(|module| {
+            module
+                .functions
+                .iter()
+                .find(|function| &function.name == name)
+                .map(|function| (module, function))
+        })
     } else {
         let module_name = module.join("::");
-        program
+        let module = program
             .modules
             .iter()
-            .find(|module| module.name == module_name)?
+            .find(|module| module.name == module_name)?;
+        module
             .functions
             .iter()
             .find(|function| &function.name == name)
+            .map(|function| (module, function))
     }
 }
 
