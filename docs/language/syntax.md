@@ -247,6 +247,24 @@ Byte literals use `b"..."`:
 const marker: bytes = b"marrow"
 ```
 
+## Duration Literals
+
+A whole number followed by a dot and a unit is a `duration`:
+
+```mw
+const window: duration = 2.hours
+```
+
+The units are fixed spans, singular or plural: `second`/`seconds`,
+`minute`/`minutes`, `hour`/`hours`, `day`/`days`, `week`/`weeks`. A literal is a
+fixed elapsed span, so `1.day` is exactly 86400 seconds — the same value as
+`std::clock::parseDuration("PT86400S")`. Months and years vary in length and are
+not units.
+
+Only a known unit after the dot reads as a duration. `1.5` is a decimal, and
+`x.field` is field access; an unknown word such as `1.month` is a number, a dot,
+and a name, not a literal.
+
 ## Paths And Calls
 
 | Syntax | Meaning |

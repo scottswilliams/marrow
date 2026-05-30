@@ -18,7 +18,7 @@ pub use ast::*;
 pub use diagnostic::*;
 pub use format::{format_expression, format_source};
 pub use lexer::lex_source;
-pub use token::{Keyword, LexedSource, Token, TokenKind};
+pub use token::{Keyword, LexedSource, Token, TokenKind, duration_unit_seconds};
 
 use parse_decl::DeclParser;
 

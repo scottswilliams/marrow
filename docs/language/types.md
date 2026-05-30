@@ -28,7 +28,9 @@ Equality and ordering use the exact UTF-8 text stored in the value. Use host
 libraries when an application needs locale-aware collation or presentation.
 
 `date` is a plain calendar date. `instant` is a saved point in UTC.
-`duration` is elapsed time. Local time zone presentation belongs at host or
+`duration` is elapsed time. A `duration` value is written either with a
+[duration literal](syntax.md#duration-literals) such as `2.hours` or with
+`std::clock::parseDuration`. Local time zone presentation belongs at host or
 standard-library boundaries, not in the saved-data model.
 
 String literals in an `ErrorCode` position are checked as error codes:

@@ -35,6 +35,9 @@ pub enum TokenKind {
     Identifier,
     Integer,
     Decimal,
+    /// A duration literal `NUMBER.UNIT`, such as `1.day` or `2.hours`. The token
+    /// text is the whole literal; [`duration_unit_seconds`] names the unit set.
+    Duration,
     String,
     InterpolationStart,
     InterpolationText,
@@ -219,6 +222,21 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
         "unknown" => Keyword::Unknown,
         "Error" => Keyword::Error,
         "ErrorCode" => Keyword::ErrorCode,
+        _ => return None,
+    })
+}
+
+/// The whole-seconds span of a duration-literal unit, or `None` for a word that
+/// is not a unit. The set is closed and every unit has a fixed length, so months
+/// and years (which vary) are deliberately absent. Singular and plural spellings
+/// name the same span.
+pub fn duration_unit_seconds(unit: &str) -> Option<i64> {
+    Some(match unit {
+        "second" | "seconds" => 1,
+        "minute" | "minutes" => 60,
+        "hour" | "hours" => 3_600,
+        "day" | "days" => 86_400,
+        "week" | "weeks" => 604_800,
         _ => return None,
     })
 }

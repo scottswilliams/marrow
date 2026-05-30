@@ -869,6 +869,10 @@ fn parses_const_values_into_expression_nodes() {
             Expectation::Literal(LiteralKind::Decimal, "3.14"),
         ),
         (
+            "const Window: duration = 2.hours\n",
+            Expectation::Literal(LiteralKind::Duration, "2.hours"),
+        ),
+        (
             "const Greeting: string = \"hi\"\n",
             Expectation::Literal(LiteralKind::String, "\"hi\""),
         ),

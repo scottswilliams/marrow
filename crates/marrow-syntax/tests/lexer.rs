@@ -214,6 +214,54 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
 }
 
 #[test]
+fn lexes_duration_literals_for_known_units() {
+    // A number followed by a dot and a known fixed-span unit is one duration
+    // token; singular and plural spellings are both accepted.
+    let source = "1.day 2.hours 30.seconds 4.weeks\n";
+
+    assert_eq!(
+        texts(source),
+        vec!["1.day", "2.hours", "30.seconds", "4.weeks", "\n", ""]
+    );
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Duration,
+            TokenKind::Duration,
+            TokenKind::Duration,
+            TokenKind::Duration,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn duration_lexing_does_not_disturb_decimals_fields_or_unknown_units() {
+    // `1.5` is still a decimal; `x.field` is still field access; an unknown unit
+    // such as `month` or `year` leaves the number, dot, and word untouched.
+    let source = "1.5 x.field 1.month 1.year\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Decimal,
+            TokenKind::Identifier,
+            TokenKind::Dot,
+            TokenKind::Identifier,
+            TokenKind::Integer,
+            TokenKind::Dot,
+            TokenKind::Identifier,
+            TokenKind::Integer,
+            TokenKind::Dot,
+            TokenKind::Identifier,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
 fn lexes_interpolation_with_expression_boundaries() {
     let source = "write($\"book {id}: {{ready}}\")\n";
 

@@ -20,6 +20,9 @@ qualified_name  = identifier ("::" identifier)* ;
 
 integer_lit     = digit+ ;
 decimal_lit     = digit+ "." digit+ ;
+duration_lit    = digit+ "." duration_unit ;
+duration_unit   = "second" | "seconds" | "minute" | "minutes"
+                | "hour" | "hours" | "day" | "days" | "week" | "weeks" ;
 string_lit      = "\"" string_char* "\"" ;
 interp_lit      = "$\"" interp_part* "\"" ;
 bytes_lit       = "b\"" byte_char* "\"" ;
@@ -323,6 +326,7 @@ primary_expr    =
 literal         =
       integer_lit
     | decimal_lit
+    | duration_lit
     | string_lit
     | interp_lit
     | bytes_lit

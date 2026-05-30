@@ -190,6 +190,8 @@ pub enum ArgMode {
 pub enum LiteralKind {
     Integer,
     Decimal,
+    /// A duration literal `NUMBER.UNIT` (`1.day`); its text is the whole literal.
+    Duration,
     String,
     Bytes,
     Bool,

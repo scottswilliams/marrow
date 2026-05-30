@@ -66,6 +66,11 @@ std::clock::formatDuration(value: duration): string
 std::clock::add(value: instant, span: duration): instant
 ```
 
+A `duration` argument can be written as a
+[duration literal](syntax.md#duration-literals) instead of parsed from text, so
+`std::clock::add(t, 1.hour)` shifts an instant by one hour without
+`parseDuration`.
+
 Saved `instant` values use a canonical UTC representation. The library surface
 uses canonical text. `today()` returns the current UTC calendar date, not a
 host-local date. Local time zone presentation and localized formatting belong

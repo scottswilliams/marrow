@@ -488,6 +488,44 @@ fn formats_and_parses_durations() {
 }
 
 #[test]
+fn duration_literals_evaluate_to_their_fixed_spans() {
+    // Each unit literal evaluates to the same duration value as parsing its
+    // canonical PT<seconds>S text.
+    let cases = [
+        ("1.second", "PT1S"),
+        ("1.minute", "PT60S"),
+        ("1.hour", "PT3600S"),
+        ("1.day", "PT86400S"),
+        ("1.week", "PT604800S"),
+        ("2.days", "PT172800S"),
+        ("3.hours", "PT10800S"),
+    ];
+    for (literal, canonical) in cases {
+        let program = checked_program(&format!("pub fn f(): duration\n    return {literal}\n"));
+        let reference = checked_program(&format!(
+            "pub fn f(): duration\n    return std::clock::parseDuration(\"{canonical}\")\n"
+        ));
+        assert_eq!(
+            run(&program, "test::f", &[]).unwrap(),
+            run(&reference, "test::f", &[]).unwrap(),
+            "{literal} should equal duration(\"{canonical}\")"
+        );
+    }
+}
+
+#[test]
+fn duration_literal_is_usable_where_a_duration_value_is() {
+    // A duration literal flows into `add(instant, duration)` like any duration.
+    let program = checked_program(
+        "pub fn f(): string\n    return std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour))\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap(),
+        Some(Value::Str("2026-05-28T13:00:00Z".into()))
+    );
+}
+
+#[test]
 fn clock_add_offsets_an_instant_by_a_duration() {
     // add(instant, duration): one hour after noon UTC is 13:00.
     let program = checked_program(

@@ -42,7 +42,7 @@ pub(crate) use marrow_store::value::{
 };
 pub(crate) use marrow_syntax::{
     ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
-    LiteralKind, MatchArm, ParamMode, SourceSpan, Statement, UnaryOp,
+    LiteralKind, MatchArm, ParamMode, SourceSpan, Statement, UnaryOp, duration_unit_seconds,
 };
 pub(crate) use write::{
     ResourceValue, WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD,

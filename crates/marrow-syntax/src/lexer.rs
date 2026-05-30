@@ -2,7 +2,9 @@
 //! file-absolute spans, emitting `INDENT`/`DEDENT`/`NEWLINE` layout tokens and
 //! recording lexical diagnostics as it goes.
 
-use crate::token::{is_identifier_continue_char, is_identifier_start_char, keyword};
+use crate::token::{
+    duration_unit_seconds, is_identifier_continue_char, is_identifier_start_char, keyword,
+};
 use crate::{Diagnostic, LexedSource, PARSE_SYNTAX, Severity, SourceSpan, Token, TokenKind};
 
 pub fn lex_source(source: &str) -> LexedSource {
@@ -355,18 +357,25 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_word(&mut self, line: Line<'a>, start: usize) -> usize {
-        let mut end = start;
-        for (offset, ch) in self.source[start..line.end_byte].char_indices() {
-            if !is_identifier_continue_char(ch) {
-                break;
-            }
-            end = start + offset + ch.len_utf8();
-        }
+        let end = self.identifier_word_end(start, line.end_byte);
         let text = &self.source[start..end];
         let kind = keyword(text)
             .map(TokenKind::Keyword)
             .unwrap_or(TokenKind::Identifier);
         self.push(kind, self.span(line, start, end));
+        end
+    }
+
+    /// The byte index just past the run of identifier-continue characters at
+    /// `start`. Equal to `start` when no identifier word begins there.
+    fn identifier_word_end(&self, start: usize, line_end: usize) -> usize {
+        let mut end = start;
+        for (offset, ch) in self.source[start..line_end].char_indices() {
+            if !is_identifier_continue_char(ch) {
+                break;
+            }
+            end = start + offset + ch.len_utf8();
+        }
         end
     }
 
@@ -380,6 +389,21 @@ impl<'a> Lexer<'a> {
         }
 
         let mut kind = TokenKind::Integer;
+
+        // A dot followed by a known fixed-span unit (`1.day`) is one duration
+        // literal. The unit set is closed, so `1.foo` is not a literal: the dot
+        // and word fall through to ordinary field-access lexing.
+        if self.source[end..line.end_byte].starts_with('.') {
+            let unit_start = end + 1;
+            let unit_end = self.identifier_word_end(unit_start, line.end_byte);
+            if unit_end > unit_start
+                && duration_unit_seconds(&self.source[unit_start..unit_end]).is_some()
+            {
+                self.push(TokenKind::Duration, self.span(line, start, unit_end));
+                return unit_end;
+            }
+        }
+
         if self.source[end..line.end_byte].starts_with('.')
             && self
                 .source

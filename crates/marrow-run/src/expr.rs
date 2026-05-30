@@ -155,6 +155,7 @@ pub(crate) fn eval_literal(
                 message: format!("integer literal `{text}` is out of range"),
                 span,
             }),
+        LiteralKind::Duration => eval_duration_literal(text, span),
         LiteralKind::Bool => Ok(Value::Bool(text == "true")),
         LiteralKind::String => eval_string_literal(text, span),
         LiteralKind::Decimal => {
@@ -170,6 +171,28 @@ pub(crate) fn eval_literal(
         }
         LiteralKind::Bytes => eval_bytes_literal(text, span),
     }
+}
+
+/// Decode a duration literal `NUMBER.UNIT` to its fixed nanosecond span, the
+/// same value `duration("PT<seconds>S")` produces. The lexer guarantees the
+/// shape — digits, a dot, and a known unit — so only an out-of-range magnitude
+/// faults, sharing the int/decimal overflow path.
+fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let overflow = || RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_OVERFLOW,
+        message: format!("duration literal `{text}` is out of range"),
+        span,
+    };
+    let (magnitude, unit) = text.split_once('.').expect("a duration literal has a dot");
+    let magnitude: i128 = magnitude.parse().map_err(|_| overflow())?;
+    let seconds = duration_unit_seconds(unit).expect("a duration literal names a known unit");
+    let nanos = magnitude
+        .checked_mul(seconds as i128)
+        .and_then(|total_seconds| total_seconds.checked_mul(1_000_000_000))
+        .ok_or_else(overflow)?;
+    Ok(Value::Duration(nanos))
 }
 
 /// Decode a string literal's value. The literal `text` is the raw source,

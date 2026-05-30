@@ -497,6 +497,50 @@ fn well_typed_std_call_checks_clean() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
+/// A duration literal types to `duration`: returned from a `: duration`
+/// function and passed where a `duration` argument is expected it checks clean,
+/// and returned from a `: int` function it is a return-type error.
+#[test]
+fn duration_literal_types_to_duration() {
+    let root = temp_project("program-duration-literal", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             pub fn span(): duration\n\
+             \x20   return 1.day\n\
+             pub fn shift(): instant\n\
+             \x20   return std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n\
+             pub fn wrong(): int\n\
+             \x20   return 1.day\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    // The duration argument to `std::clock::add` must not raise an untyped-value
+    // error: a duration literal is a known type, not dynamic data.
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.untyped_value"),
+        "{:#?}",
+        report.diagnostics
+    );
+    let return_type_errors: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "check.return_type")
+        .collect();
+    assert_eq!(
+        return_type_errors.len(),
+        1,
+        "only the `: int` return should mismatch: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// Short-form std calls are arg-checked identically to fully-qualified ones:
 /// `clock::add(int, ...)` (wrong first arg) under `use std::clock` is flagged.
 #[test]

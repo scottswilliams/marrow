@@ -24,6 +24,9 @@ pub(crate) fn check_literal_range(
     let out_of_range = match kind {
         LiteralKind::Integer => text.parse::<i64>().is_err(),
         LiteralKind::Decimal => decimal_out_of_envelope(text),
+        // A duration literal's magnitude is checked at run time, where it shares
+        // the int/decimal overflow path, so nothing is flagged here.
+        LiteralKind::Duration => false,
         LiteralKind::String | LiteralKind::Bytes | LiteralKind::Bool => false,
     };
     if out_of_range {

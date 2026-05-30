@@ -475,6 +475,7 @@ pub(crate) fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
     MarrowType::Primitive(match kind {
         LiteralKind::Integer => ScalarType::Int,
         LiteralKind::Decimal => ScalarType::Decimal,
+        LiteralKind::Duration => ScalarType::Duration,
         LiteralKind::String => ScalarType::Str,
         LiteralKind::Bytes => ScalarType::Bytes,
         LiteralKind::Bool => ScalarType::Bool,

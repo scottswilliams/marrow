@@ -369,6 +369,10 @@ impl<'a> ExprParser<'a> {
                 self.advance();
                 literal(LiteralKind::Decimal)
             }
+            TokenKind::Duration => {
+                self.advance();
+                literal(LiteralKind::Duration)
+            }
             TokenKind::String => {
                 self.advance();
                 literal(LiteralKind::String)
