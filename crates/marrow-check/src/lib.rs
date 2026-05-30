@@ -229,6 +229,10 @@ impl ProjectSources {
     pub fn get(&self, path: &Path) -> Option<&str> {
         self.overlays.get(path).map(String::as_str)
     }
+
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.overlays.keys().map(PathBuf::as_path)
+    }
 }
 
 /// Discover, read, and parse every `.mw` file in the project, collecting parse

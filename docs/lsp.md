@@ -27,13 +27,18 @@ The current server is a first slice:
   (`textDocumentSync: 1`). Each `textDocument/didChange` carries the whole new
   document; the server uses the last content change as the buffer's new text.
 - Diagnostics. On every `textDocument/didOpen` and `textDocument/didChange`,
-  it parses the buffer and publishes `textDocument/publishDiagnostics`. On
+  it publishes `textDocument/publishDiagnostics`. If the editor initializes the
+  server with a `rootUri` that points at a Marrow project, diagnostics come from
+  the project checker with open buffers overlaid on disk. Without a valid
+  project root, the server falls back to parsing the open buffer. On
   `textDocument/didClose` it publishes an empty diagnostic list to clear what
   the editor was showing.
 
-These diagnostics come from the parser ([`marrow check`](error-codes.md) uses
-the same source of truth, `marrow_syntax::parse_source`), so editor squiggles
-match what `marrow check` reports on the same file.
+Project diagnostics use the same checker path as [`marrow check`](cli.md#marrow-check)
+on a project directory, so editor squiggles include parser, schema, name
+resolution, type, and saved-path findings for files discovered through
+`marrow.json` or open under its source roots. Parse-only fallback diagnostics
+use `marrow_syntax::parse_source`.
 
 ### `initialize`
 
@@ -51,8 +56,8 @@ definition, and no other capability advertised today.
 
 ### Diagnostics
 
-Each diagnostic maps a Marrow parse diagnostic into the LSP shape. A parse error
-like a missing return type produces:
+Each diagnostic maps a Marrow diagnostic into the LSP shape. A parse error like
+a missing return type produces:
 
 ```json
 {
@@ -86,6 +91,11 @@ Field details:
 A buffer with no diagnostics publishes an empty `diagnostics` array, which
 clears any prior squiggles for that file.
 
+When project checking is active, only diagnostics for the opened or changed
+document are published in that document's notification. Other files in the
+project are still checked so cross-file facts are available, but their
+diagnostics are not pushed until those documents are opened or changed.
+
 ## Behavior and Edge Cases
 
 - Unknown requests (any message with an `id` whose method the server does
@@ -103,16 +113,12 @@ clears any prior squiggles for that file.
 
 ## Not Yet Implemented
 
-The server is a parse-diagnostics slice. These are not provided today:
+These are not provided today:
 
 - hover, go-to-definition, references, completion, rename, signature help, and
   document symbols;
 - incremental document sync (`textDocumentSync: 2`);
-- workspace or multi-file awareness — each open buffer is parsed on its own,
-  with no project resolution, imports, or `marrow.json` loading;
-- project-level (checked-fact) diagnostics — diagnostics today come from the
-  parser only, not from name resolution, type checking, effect checking, or
-  capability checking;
+- diagnostics for unopened files;
 - formatting through the server (use [`marrow fmt`](cli.md#marrow-fmt) on the
   command line);
 - precise UTF-16 column offsets for astral (non-BMP) characters.
@@ -122,16 +128,14 @@ The server is a parse-diagnostics slice. These are not provided today:
 The intended progression mirrors how the runtime is layered: from source-only
 parse facts to facts derived from a checked project.
 
-1. Parse diagnostics (today). Per-buffer syntax errors and warnings with
-   stable spans and dotted codes.
-2. Checked-project diagnostics. Resolve `marrow.json` and source roots,
-   build the same checked-program artifact the runtime uses (modules, imports,
-   schemas, type and effect facts, capability needs, source spans), and surface
-   its diagnostics. This makes editor diagnostics match `marrow run` and
-   `marrow test` semantics, not just the parser.
+1. Parse diagnostics. Per-buffer syntax errors and warnings with stable spans
+   and dotted codes.
+2. Checked-project diagnostics (today, when `rootUri` points at a valid Marrow
+   project). Resolve `marrow.json` and source roots, build the same checked
+   program artifact the runtime uses, and surface diagnostics for open
+   documents.
 3. Navigation and hover. Hover and go-to-definition driven by checked
    facts, then broader services as the fact model proves out.
 
-Each step reports what it actually does. For now, `marrow lsp` is a live parse
-checker for `.mw` files in your editor; use [`marrow check`](cli.md#marrow-check)
-for the same diagnostics on the command line.
+Each step reports what it actually does. For command-line diagnostics, use
+[`marrow check`](cli.md#marrow-check).

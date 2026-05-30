@@ -350,10 +350,12 @@ marrow lsp
 
 Run the Marrow language server over stdio: JSON-RPC 2.0 with `Content-Length`
 framing. It handles the `initialize`/`shutdown`/`exit` lifecycle, tracks open
-documents, and publishes parse diagnostics for open `.mw` documents on every
-`didOpen`/`didChange`. Point an LSP-capable editor at this command; it is not
-meant to be run by hand. It takes no arguments — any flag other than `--help` is a
-usage error (exit `2`).
+documents, and publishes diagnostics for open `.mw` documents on every
+`didOpen`/`didChange`. With a valid project `rootUri`, diagnostics come from the
+project checker using open-buffer overlays; otherwise they fall back to parsing
+the open buffer. Point an LSP-capable editor at this command; it is not meant to
+be run by hand. It takes no arguments — any flag other than `--help` is a usage
+error (exit `2`).
 
 This is the editor language server, distinct from `marrow serve`.
 

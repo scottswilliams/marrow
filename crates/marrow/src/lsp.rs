@@ -2,19 +2,20 @@
 //!
 //! It speaks JSON-RPC 2.0 with `Content-Length` framing, handles the
 //! `initialize`/`shutdown`/`exit` lifecycle, and tracks open documents with full
-//! text sync. On every `didOpen`/`didChange` it parses the buffer and publishes
-//! `textDocument/publishDiagnostics`. Today it reports only parse diagnostics from
-//! [`marrow_syntax::parse_source`]; hover, definition, and project-level checked
-//! diagnostics are not yet implemented.
+//! text sync. On every `didOpen`/`didChange` it publishes
+//! `textDocument/publishDiagnostics`: project checker diagnostics when initialize
+//! supplies a valid `rootUri`, otherwise parse diagnostics for the open buffer.
+//! Hover, definition, and other language features are not yet implemented.
 //!
 //! This is the editor language server, distinct from `marrow serve` (a data/IPC
 //! server with different framing and purpose).
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use marrow_syntax::{Severity, parse_source};
+use marrow_syntax::{Severity, SourceSpan, parse_source};
 use serde_json::{Value, json};
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -50,12 +51,14 @@ reports diagnostics for open `.mw` documents; point an LSP-capable editor at it.
 /// `Err` on an I/O failure.
 fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<bool> {
     let mut documents: HashMap<String, String> = HashMap::new();
+    let mut project: Option<ProjectContext> = None;
     let mut shutdown = false;
     while let Some(message) = read_message(reader)? {
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let id = message.get("id").cloned();
         match method {
             "initialize" => {
+                project = project_context(&message);
                 let result = json!({
                     "capabilities": { "textDocumentSync": 1 },
                     "serverInfo": {
@@ -68,7 +71,10 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<bool>
             "textDocument/didOpen" | "textDocument/didChange" => {
                 if let Some((uri, text)) = document_params(method, &message) {
                     documents.insert(uri.clone(), text.clone());
-                    write_message(writer, &diagnostics_notification(&uri, &text))?;
+                    write_message(
+                        writer,
+                        &diagnostics_notification(&uri, &text, project.as_ref(), &documents),
+                    )?;
                 }
             }
             "textDocument/didClose" => {
@@ -95,6 +101,11 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<bool>
     Ok(shutdown)
 }
 
+struct ProjectContext {
+    root: PathBuf,
+    config: marrow_project::ProjectConfig,
+}
+
 /// The `(uri, full text)` of a `didOpen`/`didChange`. Full text sync means a
 /// change carries the whole new document as its last content change.
 fn document_params(method: &str, message: &Value) -> Option<(String, String)> {
@@ -110,13 +121,81 @@ fn document_params(method: &str, message: &Value) -> Option<(String, String)> {
     Some((uri, text))
 }
 
+fn project_context(message: &Value) -> Option<ProjectContext> {
+    let root = uri_to_path(message["params"]["rootUri"].as_str()?)?;
+    let config_text = std::fs::read_to_string(root.join("marrow.json")).ok()?;
+    let config = marrow_project::parse_config(&config_text).ok()?;
+    Some(ProjectContext { root, config })
+}
+
+/// Build a `publishDiagnostics` notification for `uri`, using project checking
+/// when initialize supplied a valid project root and falling back to parsing.
+fn diagnostics_notification(
+    uri: &str,
+    text: &str,
+    project: Option<&ProjectContext>,
+    documents: &HashMap<String, String>,
+) -> Value {
+    if let Some(project) = project
+        && let Some(notification) = checked_diagnostics_notification(uri, text, project, documents)
+    {
+        return notification;
+    }
+    parse_diagnostics_notification(uri, text)
+}
+
+fn checked_diagnostics_notification(
+    uri: &str,
+    text: &str,
+    project: &ProjectContext,
+    documents: &HashMap<String, String>,
+) -> Option<Value> {
+    let path = uri_to_path(uri)?;
+    let mut sources = marrow_check::ProjectSources::new();
+    for (uri, text) in documents {
+        if let Some(path) = uri_to_path(uri) {
+            sources.insert(path, text);
+        }
+    }
+    let snapshot = marrow_check::analyze_project(&project.root, &project.config, &sources).ok()?;
+    if !snapshot.files.iter().any(|file| file.path == path) {
+        return None;
+    }
+    let diagnostics = snapshot
+        .report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.file == path)
+        .map(|diagnostic| {
+            lsp_diagnostic(
+                diagnostic.code,
+                diagnostic.severity,
+                &diagnostic.message,
+                None,
+                diagnostic.span,
+                text,
+            )
+        })
+        .collect();
+    Some(publish_notification(uri, diagnostics))
+}
+
 /// Parse `text` and build a `publishDiagnostics` notification for `uri`.
-fn diagnostics_notification(uri: &str, text: &str) -> Value {
+fn parse_diagnostics_notification(uri: &str, text: &str) -> Value {
     let parsed = parse_source(text);
     let diagnostics = parsed
         .diagnostics
         .iter()
-        .map(|diagnostic| lsp_diagnostic(diagnostic, text))
+        .map(|diagnostic| {
+            lsp_diagnostic(
+                diagnostic.code,
+                diagnostic.severity,
+                &diagnostic.message,
+                diagnostic.help.as_deref(),
+                diagnostic.span,
+                text,
+            )
+        })
         .collect();
     publish_notification(uri, diagnostics)
 }
@@ -132,23 +211,30 @@ fn publish_notification(uri: &str, diagnostics: Vec<Value>) -> Value {
 /// Map a Marrow diagnostic to the LSP shape: a `range` from the span's byte
 /// offsets, a numeric `severity`, the dotted `code`, `source: "marrow"`, and the
 /// message (with any `help` appended, as `marrow check` does).
-fn lsp_diagnostic(diagnostic: &marrow_syntax::Diagnostic, text: &str) -> Value {
-    let severity = match diagnostic.severity {
+fn lsp_diagnostic(
+    code: &str,
+    severity: Severity,
+    message: &str,
+    help: Option<&str>,
+    span: SourceSpan,
+    text: &str,
+) -> Value {
+    let severity = match severity {
         Severity::Error => 1,
         Severity::Warning => 2,
     };
-    let mut message = diagnostic.message.clone();
-    if let Some(help) = &diagnostic.help {
+    let mut message = message.to_string();
+    if let Some(help) = help {
         message.push_str("\nhelp: ");
         message.push_str(help);
     }
     json!({
         "range": {
-            "start": position(diagnostic.span.start_byte, text),
-            "end": position(diagnostic.span.end_byte, text),
+            "start": position(span.start_byte, text),
+            "end": position(span.end_byte, text),
         },
         "severity": severity,
-        "code": diagnostic.code,
+        "code": code,
         "source": "marrow",
         "message": message,
     })
@@ -176,6 +262,40 @@ fn position(byte: usize, text: &str) -> Value {
         offset += ch.len_utf8();
     }
     json!({ "line": line, "character": character })
+}
+
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    uri.strip_prefix("file://")
+        .map(percent_decode_path)
+        .map(PathBuf::from)
+}
+
+fn percent_decode_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2]))
+        {
+            out.push((high << 4) | low);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn response(id: Option<Value>, result: Value) -> Value {

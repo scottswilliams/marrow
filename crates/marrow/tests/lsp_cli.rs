@@ -1,4 +1,6 @@
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
@@ -61,10 +63,39 @@ fn initialize() -> Vec<u8> {
     frame(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}))
 }
 
+fn initialize_with_root(root_uri: &str) -> Vec<u8> {
+    frame(&json!({
+        "jsonrpc":"2.0",
+        "id":1,
+        "method":"initialize",
+        "params":{"capabilities":{}, "rootUri": root_uri}
+    }))
+}
+
 fn shutdown_exit() -> Vec<u8> {
     let mut bytes = frame(&json!({"jsonrpc":"2.0","id":99,"method":"shutdown"}));
     bytes.extend(frame(&json!({"jsonrpc":"2.0","method":"exit"})));
     bytes
+}
+
+fn temp_project(name: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
+    fs::create_dir_all(&root).expect("create project root");
+    root
+}
+
+fn write(root: &Path, relative: &str, contents: &str) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
+    fs::write(path, contents).expect("write file");
+}
+
+fn file_uri(path: &Path) -> String {
+    format!("file://{}", path.display())
 }
 
 #[test]
@@ -108,6 +139,111 @@ fn did_open_with_an_error_publishes_a_located_diagnostic() {
     assert_eq!(diagnostics[0]["source"], json!("marrow"));
     // The tab is on the second line (0-based line 1).
     assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(1));
+}
+
+#[test]
+fn did_open_in_project_publishes_checker_diagnostics() {
+    let root = temp_project("lsp-check-diagnostics");
+    write(&root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+    write(
+        &root,
+        "src/app.mw",
+        "module app\nfn f()\n    var x: int = 1\n",
+    );
+    let file = root.join("src/app.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"module app\nfn f()\n    var x: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "project checker diagnostic should be published: {publish}",
+    );
+}
+
+#[test]
+fn did_open_new_project_source_publishes_checker_diagnostics() {
+    let root = temp_project("lsp-new-source");
+    write(&root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+    fs::create_dir_all(root.join("src")).expect("create src");
+    let file = root.join("src/new_file.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"module new_file\nfn f()\n    var x: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "new project source should get checker diagnostics: {publish}",
+    );
+}
+
+#[test]
+fn did_open_outside_project_sources_falls_back_to_parse_diagnostics() {
+    let root = temp_project("lsp-outside-source");
+    write(&root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+    write(&root, "src/app.mw", "module app\n");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&root.join("scratch.mw"));
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"module scratch\n\tfn f()\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("parse.syntax")),
+        "non-project files should still get parse diagnostics: {publish}",
+    );
 }
 
 #[test]

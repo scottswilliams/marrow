@@ -33,7 +33,14 @@ pub fn analyze_project(
     config: &ProjectConfig,
     sources: &ProjectSources,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
-    let files = discover_modules(project_root, config)?;
+    let mut files = discover_modules(project_root, config)?;
+    for path in sources.paths() {
+        if let Some(file) = overlay_module_file(project_root, config, path) {
+            files.push(file);
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
     let mut report = CheckReport::default();
     let mut program = CheckedProgram::default();
     // The first valid library file (in path order) to declare each module owns
@@ -301,6 +308,29 @@ pub fn analyze_project(
         program,
         files: analyzed,
     })
+}
+
+fn overlay_module_file(
+    project_root: &Path,
+    config: &ProjectConfig,
+    path: &Path,
+) -> Option<marrow_project::ModuleFile> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("mw") {
+        return None;
+    }
+    for source_root in &config.source_roots {
+        let root = project_root.join(source_root);
+        let Ok(relative_path) = path.strip_prefix(&root) else {
+            continue;
+        };
+        let relative_path = relative_path.to_path_buf();
+        return Some(marrow_project::ModuleFile {
+            path: path.to_path_buf(),
+            module_name: marrow_project::expected_module_name(&relative_path),
+            relative_path,
+        });
+    }
+    None
 }
 
 /// The type of the expression at byte `offset` in `parsed` (a file of `program`),
