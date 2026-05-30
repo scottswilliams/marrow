@@ -185,7 +185,9 @@ pub(crate) fn infer_type(
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
             if matches!(call_type, MarrowType::Unknown) {
-                saved_leaf_type(program, callee)
+                count_builtin_type(program, callee, args)
+                    .or_else(|| saved_leaf_type(program, callee))
+                    .or_else(|| singleton_saved_leaf_type(program, callee))
                     .or_else(|| saved_index_identity_type(program, callee))
                     .or_else(|| saved_resource_type(program, callee))
                     .or_else(|| saved_group_entry_type(program, callee))
@@ -204,6 +206,7 @@ pub(crate) fn infer_type(
             // A field off a resource-typed local (`book.title`) resolves through the
             // resource's schema.
             saved_field_type(program, base, name)
+                .or_else(|| singleton_saved_group_field_type(program, base, name))
                 .or_else(|| saved_group_field_type(program, base, name))
                 .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
@@ -309,15 +312,18 @@ pub(crate) fn saved_field_type(
     field: &str,
 ) -> Option<MarrowType> {
     use marrow_syntax::Expression;
-    let root = match base {
+    let (root, bare_root) = match base {
         Expression::Call { callee, .. } => match callee.as_ref() {
-            Expression::SavedRoot { name, .. } => name,
+            Expression::SavedRoot { name, .. } => (name, false),
             _ => return None,
         },
-        Expression::SavedRoot { name, .. } => name,
+        Expression::SavedRoot { name, .. } => (name, true),
         _ => return None,
     };
     let resource = find_resource_schema(program, root)?;
+    if bare_root && saved_root_requires_keys(resource) {
+        return None;
+    }
     field_member_type(resource, &[field], resource_module(program, &resource.name))
 }
 
@@ -388,11 +394,22 @@ pub(crate) fn local_field_type(
     base_type: &MarrowType,
     field: &str,
 ) -> Option<MarrowType> {
-    let MarrowType::Resource(name) = base_type else {
-        return None;
-    };
-    let resource = resolve::resolve_resource_by_name_any(program, name)?;
-    field_member_type(resource, &[field], resource_module(program, &resource.name))
+    match base_type {
+        MarrowType::Resource(name) => {
+            let resource = resolve::resolve_resource_by_name_any(program, name)?;
+            field_member_type(resource, &[field], resource_module(program, &resource.name))
+        }
+        MarrowType::Error => error_field_type(field),
+        _ => None,
+    }
+}
+
+fn error_field_type(field: &str) -> Option<MarrowType> {
+    match field {
+        "code" | "message" | "help" => Some(MarrowType::Primitive(ScalarType::Str)),
+        "data" => Some(MarrowType::Unknown),
+        _ => None,
+    }
 }
 
 /// The declared type of a group field read at any nesting depth, reached through
@@ -406,8 +423,32 @@ pub(crate) fn saved_group_field_type(
 ) -> Option<MarrowType> {
     let (root, mut chain) = saved_group_chain(base)?;
     let resource = find_resource_schema(program, root)?;
+    if starts_from_bare_keyed_root(program, base) {
+        return None;
+    }
     chain.push(field);
     field_member_type(resource, &chain, resource_module(program, &resource.name))
+}
+
+fn singleton_saved_group_field_type(
+    program: &CheckedProgram,
+    base: &marrow_syntax::Expression,
+    field: &str,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Call { callee, .. } = base else {
+        return None;
+    };
+    let (root, layer) = singleton_saved_layer(callee)?;
+    let resource = find_resource_schema(program, root)?;
+    let saved_root = resource.saved_root.as_ref()?;
+    if !saved_root.identity_keys.is_empty() {
+        return None;
+    }
+    field_member_type(
+        resource,
+        &[layer, field],
+        resource_module(program, &resource.name),
+    )
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -422,8 +463,11 @@ pub(crate) fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&st
         return saved_layer_chain(callee.as_ref());
     }
     // An unkeyed group hop `….name`: a field off the record or a deeper group.
-    let Expression::Field { base, name, .. } = expr else {
-        return None;
+    let (base, name) = match expr {
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            (base, name)
+        }
+        _ => return None,
     };
     match base.as_ref() {
         // The record base: `^root(key…)` (a call on the saved root) or the
@@ -439,8 +483,8 @@ pub(crate) fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&st
             _ => None,
         },
         Expression::SavedRoot { name: root, .. } => Some((root, vec![name])),
-        // A deeper unkeyed group `Field`: recurse and append this member.
-        Expression::Field { .. } => {
+        // A deeper unkeyed group hop: recurse and append this member.
+        Expression::Field { .. } | Expression::OptionalField { .. } => {
             let (root, mut members) = saved_group_chain(base)?;
             members.push(name);
             Some((root, members))
@@ -458,6 +502,32 @@ pub(crate) fn saved_leaf_type(
     let (root, layers) = saved_layer_chain(callee)?;
     let resource = find_resource_schema(program, root)?;
     leaf_member_type(resource, &layers, resource_module(program, &resource.name))
+}
+
+fn singleton_saved_leaf_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let (root, layer) = singleton_saved_layer(callee)?;
+    let resource = find_resource_schema(program, root)?;
+    let saved_root = resource.saved_root.as_ref()?;
+    if !saved_root.identity_keys.is_empty() {
+        return None;
+    }
+    leaf_member_type(resource, &[layer], resource_module(program, &resource.name))
+}
+
+fn singleton_saved_layer(callee: &marrow_syntax::Expression) -> Option<(&str, &str)> {
+    let marrow_syntax::Expression::Field {
+        base, name: layer, ..
+    } = callee
+    else {
+        return None;
+    };
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return None;
+    };
+    Some((root, layer))
 }
 
 /// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
@@ -559,6 +629,82 @@ pub(crate) fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
         LiteralKind::Bytes => ScalarType::Bytes,
         LiteralKind::Bool => ScalarType::Bool,
     })
+}
+
+fn count_builtin_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return None;
+    };
+    let [arg] = args else {
+        return None;
+    };
+    if segments.as_slice() == ["count"]
+        && arg.mode.is_none()
+        && arg.name.is_none()
+        && is_saved_path_expression(program, &arg.value)
+    {
+        Some(MarrowType::Primitive(ScalarType::Int))
+    } else {
+        None
+    }
+}
+
+fn is_saved_path_expression(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::Call { callee, .. } => is_saved_path_callee(program, callee),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            !starts_from_bare_keyed_root(program, expr) && is_saved_path_expression(program, base)
+        }
+        _ => false,
+    }
+}
+
+fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match callee {
+        Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            match base.as_ref() {
+                Expression::SavedRoot { name: root, .. } => find_resource_schema(program, root)
+                    .is_some_and(|resource| {
+                        !saved_root_requires_keys(resource)
+                            || resource.indexes.iter().any(|index| &index.name == name)
+                    }),
+                _ => is_saved_path_expression(program, base),
+            }
+        }
+        _ => false,
+    }
+}
+
+fn starts_from_bare_keyed_root(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    starts_from_bare_saved_root(expr)
+        .and_then(|root| find_resource_schema(program, root))
+        .is_some_and(saved_root_requires_keys)
+}
+
+fn starts_from_bare_saved_root(expr: &marrow_syntax::Expression) -> Option<&str> {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { name, .. } => Some(name),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            starts_from_bare_saved_root(base)
+        }
+        _ => None,
+    }
+}
+
+fn saved_root_requires_keys(resource: &marrow_schema::ResourceSchema) -> bool {
+    resource
+        .saved_root
+        .as_ref()
+        .is_some_and(|saved_root| !saved_root.identity_keys.is_empty())
 }
 
 /// The `Resource::Id` identity type of the resource at saved root `root`, or

@@ -2407,6 +2407,42 @@ fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
 }
 
 #[test]
+fn type_surface_count_builtin_result_is_an_int() {
+    let report = check_module_report(
+        "count-result-int",
+        "module m\n\
+         resource Book at ^books(id: int)\n    tags(pos: int): string\n\n\
+         fn countBooks(): int\n    return count(^books)\n\n\
+         fn countTags(id: Book::Id): int\n    return count(^books(id).tags)\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn type_surface_count_of_a_non_path_is_not_an_int() {
+    let found = check_module(
+        "count-non-path",
+        "module m\nfn f(): int\n    return count(1)\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn type_surface_caught_error_fields_have_declared_types() {
+    let report = check_module_report(
+        "caught-error-fields",
+        "module m\n\
+         fn f()\n\
+         \x20   try\n        throw Error(code: \"x.y\", message: \"boom\")\n\
+         \x20   catch err: Error\n\
+         \x20       const code: ErrorCode = err.code\n\
+         \x20       const message: string = err.message\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.
@@ -2445,6 +2481,30 @@ fn a_singleton_field_read_in_a_typed_place_is_not_an_untyped_value() {
         "module m\n\
          resource Settings at ^settings\n    theme: string\n\n\
          fn f()\n    const t: string = ^settings.theme\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_singleton_keyed_leaf_read_feeds_type_checks() {
+    let found = check_module(
+        "singleton-keyed-leaf",
+        "module m\n\
+         resource Settings at ^settings\n    counts(name: string): int\n\n\
+         fn f(name: string): int\n    return ^settings.counts(name)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_singleton_keyed_group_field_read_feeds_type_checks() {
+    let found = check_module(
+        "singleton-keyed-group-field",
+        "module m\n\
+         resource Settings at ^settings\n    tokens(pos: int)\n        kind: string\n\n\
+         fn f(pos: int): string\n    return ^settings.tokens(pos).kind\n",
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -2491,6 +2551,32 @@ fn a_correctly_typed_unkeyed_group_field_read_is_not_flagged() {
         "check.return_type",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_optional_group_field_read_preserves_the_leaf_type() {
+    let found = check_module(
+        "optional-group-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20   binding\n        cover: string\n\n\
+         fn cover(id: Book::Id): string\n    return ^books(id)?.binding?.cover\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_optional_keyed_root_chain_is_not_a_typed_leaf() {
+    let found = check_module(
+        "optional-keyed-root-chain",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20   binding\n        cover: string\n\n\
+         fn cover(): string\n    return ^books?.binding?.cover\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
