@@ -6,12 +6,14 @@ database.
 ```
 marrow check [--format text|json|jsonl] <file.mw | projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
-marrow run [--entry <module::function>] [--maintenance] <projectdir>
-marrow test <projectdir>
+marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
+  [--format text|json|jsonl] <projectdir>
+marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow backup <projectdir> <archive>
 marrow restore <projectdir> <archive>
 marrow data <roots|stats|dump|integrity> <projectdir>
 marrow data get <projectdir> <path>
+marrow explain [--format text|json|jsonl] <projectdir> <target>
 marrow lsp
 marrow serve [--port <port>] <projectdir>
 marrow --version
@@ -39,14 +41,16 @@ Commands that report diagnostics or saved data take `--format`:
 
 - `text` (the default) — human-readable lines. Diagnostics and findings go to
   stderr; primary results go to stdout.
-- `json` — a single JSON object on stdout.
-- `jsonl` — one JSON object per line on stdout, ending with a `{"kind":
-  "summary", …}` line. Useful for streaming many records or diagnostics.
+- `json` — one JSON object per tooling report on stdout.
+- `jsonl` — one JSON object per line for streaming tooling reports, ending
+  with a `{"kind": "summary", …}` line where the report has many records.
 
-`run` has no `--format`: its stdout is the program's own `print`/`write` output,
-which carries no envelope. `--format` is accepted by `check` and every `data`
-subcommand; for `data roots` and `data stats`, `jsonl` emits the same single
-object as `json` (there is nothing to stream).
+Plain `run` output is the program's own `print`/`write` stream, which carries no
+envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
+for their tooling reports; when reports compose, more than one top-level JSON
+object may appear on stdout. `--format` is also accepted by `check`, `explain`,
+and every `data` subcommand; for `data roots`, `data stats`, and `data get`,
+`jsonl` emits the same single object as `json` (there is nothing to stream).
 
 ---
 
@@ -125,7 +129,8 @@ unknown flag, or a `-` stdin argument.
 ## `marrow run`
 
 ```
-marrow run [--entry <module::function>] [--maintenance] <projectdir>
+marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
+  [--format text|json|jsonl] <projectdir>
 ```
 
 Check a project, then run an entry function over the store its `marrow.json`
@@ -145,6 +150,30 @@ repair, and restore tooling. It permits whole managed-root deletes,
 required-field deletes, and raw quoted-segment access that the default run
 rejects. An operator must type it; the default run and `run.defaultEntry` can
 never inject it. Use it deliberately.
+
+`--trace` reports each statement as it runs — file, line, call depth, and the
+visible locals — and each managed write or delete, in execution order. Under text
+the trace is an indented stream on stderr, leaving the program's stdout alone.
+Under `json`/`jsonl` it emits `step` records and managed-write `write` records.
+
+`--dry-run` runs the entry, reports the saved-data writes it would commit, then
+rolls them back. The store is left byte-for-byte unchanged: the run rides one
+outer savepoint that is always rolled back, so managed writes inside
+`transaction` blocks stage and then discard with the rest. Only saved data is
+rewound; host side effects such as `std::io` writes or `std::log` lines are not
+rolled back.
+
+`--dry-run` takes `--format`. Under text, planned writes are reported on stderr
+as `would write <path>` / `would delete <path>` lines and a
+`dry run: N write(s), M delete(s) (rolled back)` summary. Under `json`/`jsonl`,
+the report is a `{"committed": false, "planned": […]}` envelope whose planned
+entries carry the op, human path, and base64 value bytes.
+
+`--trace` composes with `--dry-run`: the run is traced and its writes are then
+discarded. Under `--format json`, stdout receives the trace object followed by
+the dry-run envelope as separate top-level JSON objects. This is the preview a
+maintenance migration wants:
+`marrow run --dry-run --maintenance --entry migrate::main ./proj`.
 
 Exits `0` on success, `1` if the project does not check, the store cannot be
 opened, there is no entry, or the run raises an error. An uncaught runtime fault
@@ -166,7 +195,7 @@ $ marrow run --maintenance --entry shelf::repair ./proj
 ## `marrow test`
 
 ```
-marrow test <projectdir>
+marrow test [--trace] [--format text|json|jsonl] <projectdir>
 ```
 
 Check a project, then run its tests: every `pub fn` with no parameters in a test
@@ -181,6 +210,13 @@ source position, followed by a summary line.
 Exits `0` only when every test passes. It exits `1` if any test fails or errors,
 if the project does not check, or if no test is found (`test.none`).
 
+With `--trace`, every test runs under an execution trace attributed to that test
+by name. The trace events have the same text/json/jsonl shapes as `run --trace`,
+and each event carries the test label so consumer tooling can group it. The test
+runner still prints its normal `ok`/`FAIL`/`ERROR` lines and summary on stdout;
+under `--format json` or `jsonl`, those text lines appear after each test's trace
+report.
+
 ```console
 $ marrow test ./proj
 ok    tests::smoke_test::add_runs
@@ -194,6 +230,40 @@ $ echo $?
 
 The implemented assertions are `std::assert::isTrue`, `isFalse`, `absent`, and
 `fail`.
+
+---
+
+## `marrow explain`
+
+```
+marrow explain [--format text|json|jsonl] <projectdir> <target>
+```
+
+Statically explain a target without running code. The target is either a saved
+`^path` or a name.
+
+A `^path` target reports its path/index plan: the root and resource it names,
+the resolved class — a scalar leaf and its type, a generated index entry, a
+key-type mismatch, or an orphan — and, for a field, the indexes it participates
+in. The classification is the same one `data integrity` applies per record, so
+explain and integrity agree on what each path means.
+
+A name target reports its resolution through the same resolver the checker and
+runtime use: found (with owning module and kind), ambiguous (with candidate
+modules), not visible (a private function reached by a qualified path), or
+unresolved.
+
+```console
+$ marrow explain ./proj '^books(1).title'
+^books(1).title resolves to field `title` of resource Book, type string
+index plan: covered by `byTitle`(title) unique
+
+$ marrow explain --format json ./proj shelf::add
+{"target":"shelf::add","kind":"name","resolution":"found","module":"shelf","resolved_kind":"function"}
+```
+
+Exits `0` when it can explain the target, `1` if the project does not check, and
+`2` on command-line usage errors or a malformed saved-path target.
 
 ---
 
