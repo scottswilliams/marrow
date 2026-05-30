@@ -448,9 +448,11 @@ These rules are part of the grammar contract:
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
 - `out` and `inout` arguments must be assignable places.
-- Direct tree iteration `for id in ^books` yields keys from the next declared
-  layer; for a managed resource root, that means resource identities.
-- `keys`, `values`, and `entries` make traversal intent explicit.
+- Direct collection iteration yields elements. For a managed resource root, that
+  means resource values; for a non-unique index branch, that means the identities
+  in the branch.
+- `keys`, `values`, and `entries` expose address-only, element-only, and
+  address-plus-element traversal as expression forms.
 - Documentation comments attach to the next const, resource, function, or
   resource element at the same indentation level.
 - `@id(...)` attaches to the next resource element at the same indentation

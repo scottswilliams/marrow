@@ -16,9 +16,9 @@ shape, not on a backend key layout.
 Encoded resource keys are distinct from structural names. A record key such as
 `"byShelf"` does not collide with an index named `byShelf`.
 
-Typed traversal keeps those segment kinds separate: `^books` yields resource
-identities, while `^books.byShelf(...)` yields identities from that index
-branch.
+Typed traversal keeps those segment kinds separate: `^books` yields `Book`
+elements, `keys(^books)` yields resource identities, and
+`^books.byShelf(...)` yields identities from that index branch.
 
 ## Resource Trees
 
@@ -232,7 +232,7 @@ with all resource identity keys in declaration order so each entry is
 distinct:
 
 ```mw
-for id in keys(^books.byShelf("fiction"))
+for id in ^books.byShelf("fiction")
     write($"book {id}: {^books(id).title}")
 ```
 
@@ -293,7 +293,7 @@ const title = ^books(id).title
 Use an index when the access pattern matters:
 
 ```mw
-for id in keys(^books.byShelf("fiction"))
+for id in ^books.byShelf("fiction")
     print(^books(id).title)
 ```
 
@@ -443,10 +443,10 @@ book.shelf = "favorites"
 
 A whole-resource read materializes the resource's fields — its top-level scalars
 and any unkeyed nested groups — into a local value. It does not pull in keyed
-child layers such as history, sequences, or keyed trees; those are read and
-written through their saved paths (for example `^books(id).versions(v)`), or
-traversed with `keys`, `values`, and `entries`. A whole read is useful for small
-records and construction; read or traverse the child layers you need directly.
+child layers such as history, sequences, or keyed trees; those are read, written,
+and traversed through their saved paths (for example `^books(id).versions(v)`).
+A whole read is useful for small records and construction; read or traverse the
+child layers you need directly.
 
 Whole-resource assignment replaces the saved resource for that identity.
 Fields and child entries absent from the assigned value are removed. Use

@@ -74,7 +74,7 @@ pub fn remove(id: Book::Id)
     delete ^books(id)
 
 pub fn printShelf(shelf: string)
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         print($"{id}: {^books(id).title}")
 
 pub fn main()

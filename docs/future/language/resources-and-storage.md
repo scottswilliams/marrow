@@ -68,6 +68,11 @@ than one key, use a native multi-layer keyed tree rather than a nested `map`:
 `map[date, map[string, int]]`. Use a declared index when a saved resource needs
 a maintained alternate lookup path.
 
+Map iteration follows the collection rule: one loop variable walks values, two
+loop variables walk key/value entries, and `keys(...)` walks keys only. The
+`values(...)` and `entries(...)` helpers remain useful when code needs an
+explicit map-style view as a value.
+
 A `set[K]` stores membership, not a user-visible `bool`; a member is present or
 absent. Because a set member has no value, there is no right-hand side to
 assign: `insert(path)` populates a member, much as appending allocates the next
@@ -77,10 +82,22 @@ key in a sequence. `delete path` removes a member and `exists(path)` tests one.
 var counts: map[string, int]
 counts(word) = (counts(word) ?? 0) + 1
 
+for count in counts
+    write($"{count}")
+
+for word, count in counts
+    write($"{word}: {count}")
+
+for word in keys(counts)
+    write(word)
+
 var seen: set[string]
 insert(seen(word))
 
 if exists(seen(word))
+    write(word)
+
+for word in seen
     write(word)
 
 delete seen(word)

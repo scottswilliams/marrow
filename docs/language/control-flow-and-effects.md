@@ -75,33 +75,49 @@ loop. A zero step never progresses and is rejected.
 must be a positive duration and descending temporal ranges are not yet supported. A
 negated duration step (`by -1.day`) is a check error.
 
-Tree loops iterate one layer at a time:
+Collection loops walk elements:
 
 ```mw
-for id in ^books
-    write($"book {id}")
+for book in ^books
+    write(book.title)
 
-for id in keys(^books.byShelf("fiction"))
+for tag in ^books(id).tags
+    write(tag)
+```
+
+A collection element is the useful value the collection stores or selects. For a
+primary resource root, the element is the resource. For a sequence, the element
+is the item at a populated position. For a non-unique index branch, the element
+is the identity stored in that lookup branch:
+
+```mw
+for id in ^books.byShelf("fiction")
     write($"book {id}: {^books(id).title}")
 ```
 
-`values` and `entries` make other traversal shapes explicit:
+Use two loop variables when code needs both the address and the element:
 
 ```mw
-for book in values(^books)
-    write(book.title)
-
-for id, book in entries(^books)
+for id, book in ^books
     write($"{id}: {book.title}")
+
+for pos, tag in ^books(id).tags
+    write($"{pos}: {tag}")
 ```
 
-Use `keys(...)` when a loop only needs identities. `values(...)` and
-`entries(...)` materialize the values or resources they yield.
+Use `keys(...)` when code only needs addresses:
 
-Iterating a saved layer reads the layer's child identities up front, before the
-first body runs — `O(n)` in the number of children. A bare `for x in ^root`
-reads only those identities; `values(...)` and `entries(...)` also read every
-child's value up front.
+```mw
+for id in keys(^books)
+    write($"{id}")
+
+for pos in keys(^books(id).tags)
+    write($"{pos}")
+```
+
+Iterating a saved layer reads the layer's child keys up front, before the first
+body runs — `O(n)` in the number of children. Element and two-variable loops also
+read the values they yield. `keys(...)` reads only the addresses.
 
 `while` loops use a boolean condition:
 

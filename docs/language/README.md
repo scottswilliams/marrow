@@ -68,7 +68,7 @@ pub fn add(title: string, author: string, shelf: string): Book::Id
     return id
 
 pub fn listShelf(shelf: string)
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         print($"book {id}: {^books(id).title}")
 ```
 
@@ -85,7 +85,7 @@ This shows the main shape:
 - Assignment to an indexed field updates the field and its index entries
   together.
 - A single managed write does not need a user-written transaction.
-- `keys(...)` iterates one layer of a tree.
+- Plain collection loops walk elements; `keys(...)` walks addresses only.
 
 ## Reference Map
 
@@ -143,7 +143,7 @@ pub fn loan(id: Book::Id, borrower: string): bool
     return true
 
 pub fn printShelf(shelf: string)
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         const title: string = ^books(id).title
         const author: string = ^books(id).author
         print($"{title} by {author}")

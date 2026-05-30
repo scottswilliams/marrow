@@ -72,12 +72,12 @@ important lookup paths.
 
 A whole-resource read materializes top-level scalars and unkeyed groups into a
 local value. It does not pull in keyed child layers — those are read through
-their saved paths or traversed with `keys`, `values`, and `entries`:
+their saved paths or traversed directly:
 
 ```mw
-var local: Book = ^books(id)        ; scalars + unkeyed groups
-for pos in keys(^books(id).tags)    ; keyed layers read directly
-    write($"tag {pos}: {^books(id).tags(pos)}")
+var local: Book = ^books(id)    ; scalars + unkeyed groups
+for pos, tag in ^books(id).tags ; keyed layers read directly
+    write($"tag {pos}: {tag}")
 ```
 
 ## Identity Keys
@@ -224,7 +224,7 @@ pub fn link(authorId: Author::Id, title: string): Book::Id
     return id
 
 pub fn printByAuthor(authorId: Author::Id)
-    for id in keys(^books.byAuthor(int(authorId)))
+    for id in ^books.byAuthor(int(authorId))
         const ref = Author::Id(^books(id).authorId)
         print($"{^books(id).title} by {^authors(ref).name}")
 ```
@@ -356,16 +356,16 @@ const title = ^books(id).title
 By non-unique index, iterating the identities under a branch:
 
 ```mw
-for id in keys(^books.byShelf("fiction"))
+for id in ^books.byShelf("fiction")
     print($"{id}: {^books(id).title}")
 ```
 
-`keys(...)` is the lightest traversal — it yields identities only. On a managed
-root, plain iteration follows the declared layer: `^books` yields book
-identities, `^books.byShelf("fiction")` yields the identities in that branch.
-Use `values(...)` and `entries(...)` on primary roots and ordinary keyed layers;
-the marker values that back non-unique index entries are a raw-inspection detail,
-not typed data.
+Plain iteration yields the natural element of the collection. On a managed root,
+`^books` yields `Book` values. On a non-unique index branch,
+`^books.byShelf("fiction")` yields the identities in that branch. Use two loop
+variables when both address and element are needed, and use `keys(...)` when code
+only needs addresses. The marker values that back non-unique index entries are a
+raw-inspection detail, not typed data.
 
 By traversal, following a stored reference and reconstructing the identity:
 

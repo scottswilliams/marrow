@@ -30,40 +30,57 @@ These are for sparse paths. They do not suppress schema or decoding errors; a
 missing required field in saved data is still invalid data. The operators are
 covered in detail under Operators in the syntax reference.
 
-## Tree Traversal
+## Collection Traversal
 
-Direct iteration over a tree yields keys from the next layer:
+Direct iteration over a collection yields its elements:
 
 ```mw
-for id in ^books
+for book in ^books
+    write(book.title)
+
+for tag in ^books(id).tags
+    write(tag)
+```
+
+The element is the useful value the collection stores or selects. A primary
+resource root yields resources. A sequence or keyed layer yields the value stored
+at each populated child. A key-only collection such as a set or non-unique index
+branch yields its members:
+
+```mw
+for id in ^books.byShelf("fiction")
     write($"{id}")
 ```
 
-For managed roots, iteration follows the declared layer. `^books` yields book
-identities; `^books.byShelf("fiction")` yields the identities stored in that
-index branch.
+Use two loop variables for the address and element together:
 
-On declared index branches, use direct iteration or `keys(...)` to read
-identities. `values(...)` and `entries(...)` are for primary resource roots
-and ordinary keyed layers; generated index marker values are a raw inspection
-detail.
+```mw
+for id, book in ^books
+    write($"{id}: {book.title}")
+
+for pos, tag in ^books(id).tags
+    write($"{pos}: {tag}")
+```
 
 Explicit traversal helpers:
 
 | Builtin | Meaning |
 |---|---|
-| `keys(tree)` | Keys at the next layer |
-| `values(tree)` | Values/resources at the next layer |
-| `entries(tree)` | Key and value/resource pairs |
+| `keys(collection)` | Element addresses |
+| `values(collection)` | Elements |
+| `entries(collection)` | Address and element pairs |
 | `count(path)` | Populated immediate children, or scalar presence |
 | `reversed(iterable)` | The same elements in reverse key order |
 | `next(element)` | The nearest stored neighbor identity in key order |
 | `prev(element)` | The nearest stored neighbor identity, the other way |
 
-`keys(...)` is the lightest traversal shape when code only needs identities or
-child keys. `values(...)` and `entries(...)` materialize the values or
-resources they yield. Deep raw tree walks belong to inspection, backup, repair,
-and migration tools.
+`keys(...)` is the lightest traversal shape when code only needs identities,
+positions, map keys, or other addresses. `values(...)` and `entries(...)` are
+the expression forms of one-variable and two-variable loops over value-bearing
+collections. Key-only collections such as sets and non-unique index branches do
+not have separate values; their generated marker values are a raw inspection
+detail. Deep raw tree walks belong to inspection, backup, repair, and migration
+tools.
 
 ### Stored Entries In Key Order
 
@@ -99,15 +116,14 @@ String and byte lengths use `std::text::length(text)` and
 
 `reversed(iterable)` yields the same elements as the iterable in reverse key
 order. It works over a layer or index branch directly, over `keys(...)` of either,
-over `values(...)` and `entries(...)` where those apply (resource roots and
-ordinary keyed layers, not index branches — see above), and over an in-memory
+over `values(...)` and `entries(...)` where those apply, and over an in-memory
 `sequence`:
 
 ```mw
-for id in reversed(^books)
-    write($"{id}")
+for book in reversed(^books)
+    write(book.title)
 
-for tag in reversed(values(^books(id).tags))
+for tag in reversed(^books(id).tags)
     write(tag)
 
 for word in reversed(std::text::split(line, ","))

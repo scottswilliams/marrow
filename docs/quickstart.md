@@ -65,7 +65,7 @@ pub fn add(title: string, author: string, shelf: string): Book::Id
     return id
 
 pub fn listShelf(shelf: string)
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         print($"{id}: {^books(id).title} by {^books(id).author}")
 
 pub fn main()

@@ -64,7 +64,7 @@ populate it before any code reads it directly. Backfill in ordinary code:
 
 ```mw
 pub fn backfillPages()
-    for id in ^books
+    for id in keys(^books)
         ^books(id).pages = 0
 ```
 
@@ -130,7 +130,7 @@ updates the generated index entry as one coherent step:
 
 ```mw
 pub fn rebuildByShelf()
-    for id in ^books
+    for id in keys(^books)
         ^books(id).shelf = ^books(id).shelf
 ```
 
