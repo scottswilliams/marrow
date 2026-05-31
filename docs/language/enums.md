@@ -72,7 +72,7 @@ A value is still a single selected member, stored as one ordinal exactly as a fl
 enum value is. Ordinals are assigned in pre-order — a parent before its children,
 in source order among siblings — so a flat enum keeps the same `0..n` ordinals it
 always had. The hierarchy lives in the schema, not in the value, so flat and
-nested enums share one storage model and existing data needs no migration.
+nested enums share one storage model and existing data needs no rewrite.
 
 A member marked `category` groups its descendants and cannot be selected as a
 value; only its concrete members can. Above, `Cat::tiger` is a category and is

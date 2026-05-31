@@ -7,11 +7,11 @@ Future counterpart of
 
 Today an element's stable identity is a name-derived string token written by
 hand, `@id("book.title")`, which marks a field or layer's rename identity. The
-approved redesign replaces that string with an assigned, opaque stable id: an
-id-typed token allocated by the LSP rather than derived from the element name.
-Because the token is assigned and not name-shaped, a rename never desyncs the
-identity, and one uniform marker covers every element. The current name-derived
-`@id("...")` remains the implemented form until this lands.
+approved redesign replaces that string with catalog-owned opaque stable identity
+for stored entities. Tools may allocate or preserve those identities while
+editing, but the project catalog is the authority. Because the identity is not
+name-shaped, a rename never desyncs it from the data it names. The current
+name-derived `@id("...")` remains the implemented form until this lands.
 
 ## GUID identity allocation
 
@@ -36,7 +36,7 @@ fn count(word: string)
 Local data has no sigil, scratch data uses `~`, and saved data uses `^`.
 Scratch data is run-local: it is available to code that can name the root during
 one command, one server request, or one test, and it is cleared before the
-next run. It is not included in backups, restores, migrations, saved-data
+next run. It is not included in backups, restores, data evolution, saved-data
 integrity checks, or ordinary saved-data inspection.
 
 Scratch roots use the same resource shapes, path syntax, presence rules,

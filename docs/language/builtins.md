@@ -79,8 +79,8 @@ positions, map keys, or other addresses. `values(...)` and `entries(...)` are
 the expression forms of one-variable and two-variable loops over value-bearing
 collections. Key-only collections such as sets and non-unique index branches do
 not have separate values; their generated marker values are a raw inspection
-detail. Deep raw tree walks belong to inspection, backup, repair, and migration
-tools.
+detail. Deep raw tree walks belong to inspection, backup, repair, and data
+evolution tools.
 
 ### Stored Entries In Key Order
 

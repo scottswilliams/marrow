@@ -18,9 +18,8 @@ point at the [language reference](language/) for the exact rules.
 - [Data Modeling](data-modeling.md) — roots, child layers, identity keys,
   sparse and required fields, relationships, history, indexes, and lookup
   patterns.
-- [Schema Changes And Migrations](migrations.md) — evolving a schema with
-  explicit migration code: adding fields, `@id` renames, backfilling indexes,
-  maintenance mode, repair, and restore policy.
+- [Data Evolution And Maintenance](data-evolution.md) — evolving saved data with
+  explicit backfills, stable IDs, maintenance mode, repair, backup, and restore.
 
 ## Language Reference
 

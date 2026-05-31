@@ -146,7 +146,7 @@ neither is present, `run` fails with `run.no_entry` (exit `1`).
 Output written with `print`/`write` goes to stdout. `std::log` output goes to
 stderr. The run reads the real system clock, environment, and filesystem.
 
-`--maintenance` grants the run the maintenance capability, for migration,
+`--maintenance` grants the run the maintenance capability, for data evolution,
 repair, and restore tooling. It permits whole managed-root deletes,
 required-field deletes, and raw quoted-segment access that the default run
 rejects. An operator must type it; the default run and `run.defaultEntry` can
@@ -172,9 +172,9 @@ entries carry the op, human path, and base64 value bytes.
 
 `--trace` composes with `--dry-run`: the run is traced and its writes are then
 discarded. Under `--format json`, stdout receives the trace object followed by
-the dry-run envelope as separate top-level JSON objects. This is the preview a
-maintenance migration wants:
-`marrow run --dry-run --maintenance --entry migrate::main ./proj`.
+the dry-run envelope as separate top-level JSON objects. This previews explicit
+maintenance or data-evolution work:
+`marrow run --dry-run --maintenance --entry evolve::main ./proj`.
 
 Exits `0` on success, `1` if the project does not check, the store cannot be
 opened, there is no entry, or the run raises an error. An uncaught runtime fault

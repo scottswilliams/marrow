@@ -385,6 +385,7 @@ fn maintenance_flag_appears_in_help() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(stdout.contains("--maintenance"), "{stdout}");
+    assert!(stdout.contains("data evolution"), "{stdout}");
 }
 
 fn marrow(args: &[&str]) -> std::process::Output {

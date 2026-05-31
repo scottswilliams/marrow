@@ -5,7 +5,8 @@ This repository is Marrow.
 Marrow is a lightweight, typed `.mw` language with built-in saved data. Data is
 scalars or trees. A resource is a typed tree; the same shape can be local or
 saved, and `^` marks saved data. Marrow is its own language and database model,
-not a layer on another system.
+not a layer on another system. Durable data stays under Marrow's language and
+tooling contract regardless of which storage engine holds the bytes.
 
 `docs/language/` is the canonical source for Marrow language behavior. Parser,
 checker, runtime, CLI, LSP, examples, tests, and other docs converge on that
@@ -134,7 +135,8 @@ belong together.
   find the rest in `docs/`.
 - Follow the 80/20 rule: avoid large changes without proportionate impact.
 - Add tests near the behavior being changed.
-- Keep storage behavior behind the backend contract.
+- Keep storage behavior behind the backend contract; a backend is a store target,
+  not the owner of Marrow semantics.
 - Keep saved data inspectable through Marrow tools.
 - Keep the repository Apache-2.0 only.
 - Keep native `.mw` as the only default language surface.

@@ -78,7 +78,7 @@ This shows the main shape:
 - `at ^books(id: int)` declares the stored identity key and generated
   `Book::Id` type.
 - Documentation comments and `@id(...)` metadata feed editor hover, docs,
-  inspect output, and rename/migration tooling.
+  inspect output, and data-evolution tooling.
 - `index byShelf(shelf, id)` declares an alternate lookup tree.
 - `var book: Book` uses the same resource shape locally.
 - `^books(id) = book` saves the local resource and creates index entries.

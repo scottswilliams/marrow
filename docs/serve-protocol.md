@@ -5,7 +5,7 @@ opens the store the project's `marrow.json` selects and answers newline-delimite
 JSON requests over a loopback TCP connection. It never writes managed data: it is
 an inspection surface, not Marrow's application API. Managed data changes come
 only from checked Marrow execution (`marrow run` or an embedded runtime) and from
-explicit repair and migration commands.
+explicit repair, restore, or maintenance data-evolution workflows.
 
 It is distinct from [`marrow lsp`](lsp.md), the editor language server, which
 speaks `Content-Length`-framed JSON-RPC over stdio for a different purpose. For

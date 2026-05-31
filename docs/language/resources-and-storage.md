@@ -7,7 +7,7 @@ This page uses "saved data" for data marked with `^`. Saved data persists in
 the project database. Local data has no `^` and exists only while code runs.
 
 Ordinary application code declares resources for saved roots. Raw saved-tree
-access is for import, export, migration, repair, and tools.
+access is for import, export, data evolution, repair, and tools.
 
 Saved path syntax is logical. Marrow decides how roots, keyed layers, fields,
 and indexes are encoded for the selected backend. Code depends on the resource
@@ -141,7 +141,8 @@ reaches the backend.
 
 Use identity keys when changing a key means "this is a different record."
 Identity keys do not change in place. Changing identity means creating a new
-record and deleting or migrating the old record.
+record and explicitly transforming or deleting any data that should not remain
+under the old identity.
 
 ## Element Documentation And IDs
 
@@ -155,8 +156,8 @@ resource Book at ^books(id: int)
 ```
 
 Documentation comments feed generated docs, editor hover, inspect output, and
-LSP help. Stable IDs let rename and migration tools track an element even if
-its source name changes.
+LSP help. Stable IDs let data-evolution tools track an element even if its
+source name changes.
 
 An `@id(...)` value names the resource element for tooling. It does not change
 the saved path, the field name, the runtime value, or the type of the element.
@@ -175,17 +176,17 @@ resource Book at ^books(id: int)
     displayTitle: string
 ```
 
-That gives rename and migration tools a durable way to understand that
-`displayTitle` is the same logical element that used to be spelled `title`.
-The migration still decides what saved data to move or rewrite; Marrow does not
-guess that from the ID alone.
+That gives data-evolution tools a durable way to understand that `displayTitle`
+is the same logical element that used to be spelled `title`. The tool still
+decides what saved data to read, rewrite, or delete; Marrow does not move bytes
+from the ID alone.
 
 Stable IDs are optional source metadata, not a database catalog. When present,
 they must be unique in the project. Use stable dotted text that describes the
 logical element, not its current source spelling. Add IDs to elements that need
-durable identity across rename, migration, generated documentation, or external
-tooling. Leave them off short-lived private shapes where a source name is
-enough.
+durable identity across rename, data evolution, generated documentation, or
+external tooling. Leave them off short-lived private shapes where a source name
+is enough.
 
 `@id(...)` applies only to the next resource element at the same indentation
 level: a field, keyed field, group, keyed group, or index. It does not apply to
@@ -193,8 +194,9 @@ the whole resource declaration, the saved root, or identity keys in the
 `at ^root(...)` clause.
 
 Adding a sparse element is a source change. Adding a required element requires
-a migration that populates existing saved resources before they validate.
-Adding an index requires backfill or rebuild of the generated index tree.
+explicit data-evolution work that populates existing saved resources before code
+depends on the field. Adding an index requires a backfill or rebuild of the
+generated index tree when matching base data already exists.
 
 ## Indexes
 
@@ -261,9 +263,9 @@ records with absent indexed fields do not create placeholder entries. Unique
 sparse indexes reject conflicts among populated keys; absence is not a unique
 value.
 
-Indexes describe current resource lookup paths. They do not automatically
-index every history entry. If historical data needs its own lookup path, model
-it as a resource or add an explicit migration/backfill function.
+Indexes describe current resource lookup paths. They do not automatically index
+every history entry. If historical data needs its own lookup path, model it as a
+resource or add an explicit data-evolution transform.
 
 Unique index conflicts reject the write without committing saved data. If the
 conflict error escapes a transaction, the transaction rolls back. If code
@@ -274,12 +276,12 @@ Identity keys, declared fields, keyed layers, and index names share the
 resource namespace. A resource cannot use the same name for a field and an
 index, or for an identity key and a field.
 
-Managed resource elements use declared identifiers. Quoted path segments are
-for existing raw data, import, export, migration, and repair; they do not
-create undeclared fields in a managed resource.
+Managed resource elements use declared identifiers. Quoted path segments are for
+existing raw data, import, export, data evolution, and repair; they do not create
+undeclared fields in a managed resource.
 
 Ordinary code may read declared index trees. Ordinary code does not write them;
-repair and backfill are migration work.
+repair and derived rebuild are explicit data-evolution tooling work.
 
 ## Lookup And Query
 
@@ -299,8 +301,8 @@ for id in ^books.byShelf("fiction")
 ```
 
 Marrow does not add a separate storage query language. If code needs a new
-lookup path, add an index to the resource and migrate or backfill the generated
-tree.
+lookup path, add an index to the resource and rebuild the generated tree when
+existing data should appear through it.
 
 ## Managed Writes
 
@@ -526,15 +528,14 @@ managed root is maintenance work. Code must opt into maintenance mode. The
 operation may still fail with a typed storage limit when the selected store
 cannot delete that subtree safely. Delete does not follow identity values
 stored in other resources. Cascading cleanup is ordinary application or
-migration code.
+data-evolution code.
 
 ## Backup And Restore
 
 Backups are portable saved-data archives. They contain ordered paths, values,
-and a small manifest with source fingerprints. They are not engine files.
+and a small manifest. They are not engine files.
 
-Generated index trees are included as saved paths. Typed restore can verify or
-rebuild them when source is available.
+Generated index trees are included as saved paths.
 
 With matching or bundled source available, tools can show backup entries as
 typed resources. Without source, tools can still restore or inspect the raw
@@ -613,14 +614,14 @@ capability or runtime error.
 When a resource owns a saved root, writes under that root go through the
 resource schema. Raw untyped writes to managed roots are rejected unless code
 explicitly opts into maintenance mode.
-Maintenance mode is selected by tools for migrations, repair, restore, and
+Maintenance mode is selected by tools for data evolution, repair, restore, and
 root-wide work; ordinary application code does not enter it by accident.
 
 This protects managed indexes, history layers, and typed fields from
 accidental corruption while still allowing deliberate maintenance functions.
 Untyped writes to a managed root are rejected when the runtime can enforce the
-boundary. Otherwise the project treats the writer as an explicit maintenance
-or migration risk.
+boundary. Otherwise the project treats the writer as an explicit maintenance or
+data-integrity risk.
 
 ## Passing Resource Places
 

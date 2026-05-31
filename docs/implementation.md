@@ -5,6 +5,8 @@ trees.
 
 A tree can be local to one run, or it can be saved under a root such as
 `^books`. The language does not change when storage changes.
+Durable saved data stays under Marrow's language and tooling contract regardless
+of which storage engine holds the bytes.
 
 Language behavior lives in [`language/`](language/). This page describes the
 runtime, tooling, and backend shape that make that language work.
@@ -16,12 +18,14 @@ A resource is a typed tree.
 A saved resource is a typed tree stored under ^root.
 An index is a generated lookup tree.
 A backend stores ordered paths and bytes.
+Marrow owns the meaning of durable data.
 ```
 
 Marrow owns the language. Backends own durable ordered storage.
 
 A backend does not parse `.mw`, understand resource fields, maintain indexes,
-or expose backend-specific application APIs. Those jobs belong to Marrow.
+plan data evolution, or expose backend-specific application APIs. Those jobs
+belong to Marrow.
 
 Native storage is the normal local project store. Other storage engines are
 outside the default product.
@@ -38,8 +42,8 @@ Marrow has a small kernel:
 | Store | Persist ordered paths and byte values. |
 | Tools | Inspect source, schemas, saved trees, and errors. |
 
-Anything that needs field names, types, indexes, history, or migrations
-belongs above the store. Anything that only needs ordered paths and bytes
+Anything that needs field names, types, indexes, history, data evolution, or
+repair belongs above the store. Anything that only needs ordered paths and bytes
 belongs in the store.
 
 ## Source Pipeline
@@ -63,7 +67,7 @@ both. The runtime does not need a separate procedure construct.
 
 The runtime does not re-parse source. The store never receives source facts.
 Tools use the same checked facts for diagnostics, hover, inspect output,
-generated docs, and migration planning.
+generated docs, repair, and maintenance workflows.
 
 ## Project Model
 
@@ -89,7 +93,7 @@ Project configuration contains project choices:
 - a native data directory;
 - test file patterns.
 
-It does not contain compiled schemas, hidden index metadata, migration history,
+It does not contain compiled schemas, hidden index metadata, data-evolution history,
 permissions, backend application APIs, connection strings, or secrets.
 
 Library files declare modules explicitly. A module-less `.mw` file is a script
@@ -167,7 +171,7 @@ The encoding belongs to Marrow. It preserves Marrow order, records segment
 kinds, and prevents collisions between record keys, fields, layers, and index
 names.
 
-Raw saved-tree access exists for import, export, migration, repair, and tools.
+Raw saved-tree access exists for import, export, data evolution, repair, and tools.
 Ordinary `.mw` code uses managed resources.
 
 ## Values And Order
@@ -352,18 +356,18 @@ are deferred — see [future/cli.md](future/cli.md).
 Backend-native files can support fast local snapshots, but they are not the
 portable archive format.
 
-## Evolution And Maintenance
+## Data Evolution And Maintenance
 
-Schemas evolve through source changes and explicit migration work. Stable
+Schemas evolve through source changes and explicit data-evolution work. Stable
 metadata IDs let tools recognize a field or layer after a source rename.
 
-Marrow does not guess data migrations. If a change moves data, rebuilds an
-index, or changes identity, that work is explicit, inspectable, and
-recoverable.
+Marrow does not guess data movement. If a change moves data, populates a new
+required field, rebuilds an index, or changes identity, that work is explicit,
+inspectable, and recoverable.
 
-Migration work is ordinary Marrow code. A tool runs a named `fn` in explicit
-maintenance mode. There is no separate migration DSL and no hidden migration
-ledger in the database kernel.
+Data-evolution work is ordinary Marrow code. A tool runs a named `fn` in
+explicit maintenance mode when it needs maintenance capabilities. There is no
+separate migration DSL and no hidden migration ledger in the database kernel.
 
 Maintenance mode is selected by tools, not ordinary application code. A
 maintenance run names the roots it may change. It can opt into raw writes
@@ -395,8 +399,8 @@ are deferred (see [future/data-tools.md](future/data-tools.md)).
 
 `marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
 portable archive — the canonical ordered (path, value) stream behind a small
-manifest (format magic, version, and record count; source fingerprints arrive
-with typed restore), not an engine file. `marrow restore <projectdir> <archive>`
+manifest (format magic, version, and record count), not an engine file.
+`marrow restore <projectdir> <archive>`
 replays one into an empty store in a single transaction; a non-empty target fails
 with `restore.not_empty`, since restoring over existing data is an explicit
 maintenance action. Empty-target restore is the only mode implemented today;
@@ -429,9 +433,9 @@ trees for read-only inspection. Neither would mutate saved data.
 
 The protocol never writes managed roots: it is a read-only inspection surface.
 Managed data changes come only from checked Marrow execution — `marrow run` or an
-embedded runtime — and from explicit repair and migration commands, never from
-the serve protocol. That read-only guarantee is what lets serve be a long-lived
-shared owner of the store.
+embedded runtime — and from explicit repair, restore, data-evolution, and store
+maintenance workflows, never from the serve protocol. That read-only guarantee is
+what lets serve be a long-lived shared owner of the store.
 
 Loopback TCP is available for clients that cannot use local IPC. Binding TCP
 beyond loopback is an explicit operator choice and requires authentication and
@@ -479,6 +483,6 @@ program facts in runtime and tools, ordered path/value operations below.
 ## Non-Goals
 
 Marrow does not grow a second storage query language, hidden object store, ORM
-layer, automatic schema migration system, implicit async syntax, required
-background service, web framework, remote database product, built-in
-users-and-roles system, or backend-specific application APIs.
+layer, SQL-style migration subsystem, implicit async syntax, required background
+service, web framework, remote database product, built-in users-and-roles
+system, or backend-specific application APIs.

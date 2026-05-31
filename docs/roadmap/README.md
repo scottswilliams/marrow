@@ -17,14 +17,20 @@ product, so the boundary stays clear as it grows.
 
 No accepted implementation issues are currently open.
 
+Closed implementation records:
+
+- [#1 Implement element-oriented collection loop semantics](https://github.com/scottswilliams/marrow/issues/1)
+  is closed; the accepted element-oriented loop rule now lives in the language
+  reference.
+
 ## Non-Goals
 
 Marrow stays a local language/database kernel. It does not aim to become these:
 
 - a second storage query language;
-- an ORM layer or an automatic migration engine;
-- a migration DSL before ordinary functions in maintenance mode prove
-  insufficient;
-- a hidden migration ledger inside the database kernel;
+- an ORM layer or a SQL-style migration subsystem;
+- a separate migration DSL as the primary data-evolution model;
+- a hidden database-owned migration ledger outside Marrow's compiler/catalog
+  model;
 - unchecked dynamic `any` (`unknown` marks dynamic boundaries);
 - a built-in users, roles, and permissions system;

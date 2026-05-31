@@ -124,7 +124,8 @@ Rules to model around:
   them or treat them as gap-free counters; failed or rolled-back work can leave
   unused IDs behind.
 - Identity keys do not change in place. Changing a key means "this is a different
-  record" — create a new record and delete or migrate the old one.
+  record" — create a new record and explicitly transform or delete any old data
+  that should not remain under the old key.
 
 For a single `int` key, `nextId` allocates the next identity:
 
@@ -235,8 +236,8 @@ its constructor when needed. A field declared with a generated identity type
 path; such a write fails with `run.unsupported`. Use a scalar key field plus
 explicit identity construction, as above.
 
-Cascading cleanup is ordinary application or migration code. `delete` does not
-follow identity values stored in other resources.
+Cascading cleanup is ordinary application or data-evolution code. `delete` does
+not follow identity values stored in other resources.
 
 ## History as Keyed Child Layers
 
@@ -290,8 +291,8 @@ The rule of thumb:
 - History keys select a historical state inside the record.
 
 Indexes describe current lookup paths; they do not automatically index history.
-If historical data needs its own lookup path, model it as a resource or add an
-explicit backfill.
+If historical data needs its own lookup path, model it as a resource or add a
+typed data-evolution transform.
 
 ## Indexes
 
@@ -331,15 +332,16 @@ removes the old entry, and adds the new one as one coherent managed write — no
 special `set` call. On a unique conflict the write is rejected with nothing
 committed.
 
-Ordinary code reads declared index trees but does not write them; index repair
-and backfill are migration work — see [Schema Changes And
-Migrations](migrations.md) for backfilling an index added to a populated root.
+Ordinary code reads declared index trees but does not write them. Index repair
+and rebuild are explicit data-evolution work — see
+[Data Evolution And Maintenance](data-evolution.md) for index changes on
+populated roots.
 
 ## Lookup Patterns
 
 Marrow reads saved data with paths, traversal, and declared indexes. There is no
 separate query language — if you need a new access pattern, add an index and
-backfill its tree.
+rebuild the generated tree when existing data should appear through it.
 
 By identity, when the identity is known:
 

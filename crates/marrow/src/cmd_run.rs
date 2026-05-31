@@ -80,10 +80,10 @@ Check a Marrow project, then run an entry function over the store its
 is `--entry` if given, else the project's `run.defaultEntry`. Output written
 with `print`/`write` goes to stdout.
 
-  --maintenance  Run with the maintenance capability, for migration, repair,
-                 and restore tooling. It permits whole managed-root deletes,
-                 required-field deletes, and raw quoted-segment access that the
-                 default run rejects. Use it deliberately.
+  --maintenance  Run with the maintenance capability, for data evolution,
+                 repair, and restore tooling. It permits whole managed-root
+                 deletes, required-field deletes, and raw quoted-segment access
+                 that the default run rejects. Use it deliberately.
   --trace        Report each statement (file:line, call depth, visible locals)
                  and each managed write as the run executes, in execution order.
   --dry-run      Run the entry, report the saved-data writes it would commit,

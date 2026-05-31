@@ -205,8 +205,9 @@ it carries extra duties. Each maps to a stable `store.*` code (see
 
 - Format version. The native store records an on-disk format version
   (currently `1`) in a small metadata table. Opening a file that records a
-  different version is refused as `store.format_version` — it is not auto-migrated
-  or misread. A brand-new file is stamped with the version on creation.
+  different version is refused as `store.format_version` — it is not
+  auto-converted or misread. A brand-new file is stamped with the version on
+  creation.
 - Lock. redb holds an OS lock on the file, so a second writer for an open
   store is refused as `store.locked` rather than racing it. A read-only inspecting
   open releases the lock when it drops, so it does not block a later read-write

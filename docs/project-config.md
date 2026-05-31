@@ -5,8 +5,8 @@ root. Every project command — `check`, `run`, `test`, `fmt`, `backup`,
 `restore`, `data`, `serve` — reads `<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
 backend and its data directory, and test patterns. It does not hold compiled
-schemas, index metadata, migration history, permissions, connection strings, or
-secrets.
+schemas, index metadata, data-evolution history, permissions, connection strings,
+or secrets.
 
 Unknown keys are rejected, so a typo is an error rather than a silently ignored
 setting.
