@@ -1365,6 +1365,17 @@ fn rejects_concatenation_of_non_strings() {
 }
 
 #[test]
+fn bytes_interpolation_is_a_check_error() {
+    let found = check_module(
+        "interp-bytes",
+        "module m\nfn f(): string\n    const b: bytes = b\"hi\"\n    return $\"<{b}>\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("bytes"), "{}", found[0].message);
+}
+
+#[test]
 fn rejects_a_logical_operator_on_a_non_bool() {
     // `and` needs bool operands; `true and 1` mixes in an int.
     let found = check_script(
@@ -2399,6 +2410,38 @@ fn exists_and_append_builtin_return_types_feed_checks() {
 }
 
 #[test]
+fn append_to_a_group_layer_is_a_check_error() {
+    let found = check_module(
+        "append-group-layer",
+        "module m\n\
+         resource Log at ^log(name: string)\n    items(pos: int)\n        required n: int\n\n\
+         fn add(name: string): int\n    return append(^log(name).items, 1)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("leaf layer"),
+        "{}",
+        found[0].message
+    );
+}
+
+#[test]
+fn append_to_a_keyed_leaf_layer_still_checks_clean() {
+    let report = check_module_report(
+        "append-leaf-layer",
+        "module m\n\
+         resource Log at ^log(name: string)\n    items(pos: int): int\n\n\
+         fn add(name: string): int\n    return append(^log(name).items, 1)\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn coalesce_yields_the_default_type() {
     // `path ?? default` types to the path's leaf-or-default type; with a string
     // default it is `string`, so `+ 1` is string-plus-int.
@@ -2527,6 +2570,34 @@ fn a_conversion_into_a_matching_annotated_place_is_not_flagged() {
         "check.assignment_type",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn bytes_conversion_rejects_a_known_non_string_source() {
+    let found = check_module(
+        "bytes-conv-int",
+        "module m\nfn f(): bytes\n    return bytes(int(9))\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("bytes"), "{}", found[0].message);
+    assert!(found[0].message.contains("string"), "{}", found[0].message);
+}
+
+#[test]
+fn bytes_conversion_accepts_string_bytes_and_unknown_sources() {
+    let report = check_module_report(
+        "bytes-conv-ok",
+        "module m\n\
+         fn fromString(s: string): bytes\n    return bytes(s)\n\n\
+         fn fromBytes(b: bytes): bytes\n    return bytes(b)\n\n\
+         fn fromUnknown(raw: unknown): bytes\n    return bytes(raw)\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

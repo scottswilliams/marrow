@@ -2065,12 +2065,13 @@ pub(crate) fn check_call(
             _ => {}
         }
     }
-    // Builtins dispatch before user functions. For std helpers the signatures are
-    // fixed, so argument types and arity are checked here the
-    // same way user-function arguments are; other builtins leave their arguments to
-    // the runtime. A std helper's return type feeds the surrounding type checks.
+    // Builtins dispatch before user functions. Std helpers have fixed signatures,
+    // and a few single-name builtins have static shape rules; the rest leave their
+    // arguments to the runtime. A std helper's return type feeds the surrounding
+    // type checks.
     if is_builtin_call(segments) {
         check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
+        check_builtin_call_args(program, segments, args, arg_types, span, file, diagnostics);
         if let Some(params) = std_call_params(segments) {
             check_args_against(
                 &segments.join("::"),
@@ -2277,6 +2278,77 @@ pub(crate) fn check_call(
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+fn check_builtin_call_args(
+    program: &CheckedProgram,
+    segments: &[String],
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [name] = segments else { return };
+    match name.as_str() {
+        "append" => check_append_args(program, args, span, file, diagnostics),
+        "bytes" => check_bytes_conversion_arg(arg_types, span, file, diagnostics),
+        _ => {}
+    }
+}
+
+fn check_append_args(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [target, _value] = args else { return };
+    let Some(node) = saved_layer_node(program, &target.value) else {
+        return;
+    };
+    if matches!(node.element, marrow_schema::Element::Group) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            "`append` target must be a keyed leaf layer, but this path names a group layer"
+                .to_string(),
+        ));
+    }
+}
+
+fn saved_layer_node<'p>(
+    program: &'p CheckedProgram,
+    expr: &marrow_syntax::Expression,
+) -> Option<&'p marrow_schema::Node> {
+    let (root, layers) = saved_group_chain(expr)?;
+    find_resource_schema(program, root)?.descend_layers(&layers)
+}
+
+fn check_bytes_conversion_arg(
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [arg_type] = arg_types else { return };
+    if matches!(
+        arg_type,
+        MarrowType::Unknown
+            | MarrowType::Primitive(ScalarType::Str)
+            | MarrowType::Primitive(ScalarType::Bytes)
+    ) {
+        return;
+    }
+    diagnostics.push(call_diagnostic(
+        file,
+        span,
+        format!(
+            "`bytes` converts a `string` or `bytes` value, but this argument is `{}`",
+            marrow_type_name(arg_type)
+        ),
+    ));
 }
 
 fn check_plain_call_modes(

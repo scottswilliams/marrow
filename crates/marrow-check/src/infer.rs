@@ -99,7 +99,15 @@ pub(crate) fn infer_type(
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
-                    infer_type(program, expr, scope, aliases, file, diagnostics);
+                    let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
+                    if matches!(ty, MarrowType::Primitive(ScalarType::Bytes)) {
+                        diagnostics.push(operator_diagnostic(
+                            file,
+                            expr.span(),
+                            "interpolation cannot render `bytes`; encode the bytes explicitly"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
             MarrowType::Primitive(ScalarType::Str)
