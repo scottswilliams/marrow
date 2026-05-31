@@ -533,6 +533,9 @@ pub(crate) fn eval_for(
             ..
         }
     ) {
+        if let Some(stream) = simple_saved_layer_loop(iterable, env)? {
+            return eval_streamed_saved_layer_for(label, binding, stream, body, span, env);
+        }
         let values = eval_collection(iterable, env)?;
         let prefix = traversed_layer_prefix(iterable, env)?;
         return iterate_saved_layer(prefix, env, |env| {
@@ -811,6 +814,62 @@ fn duration_whole_days(nanos: i128, span: SourceSpan) -> Result<i64, RuntimeErro
         ));
     }
     i64::try_from(nanos / NANOS_PER_DAY).map_err(|_| overflow(span))
+}
+
+fn eval_streamed_saved_layer_for(
+    label: &Option<String>,
+    binding: &ForBinding,
+    stream: SimpleSavedLayerLoop,
+    body: &Block,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    iterate_saved_layer(Some(stream.prefix.clone()), env, |env| {
+        let parent = encode_path(&stream.prefix);
+        let mut child = seek_stream_child(&parent, None, stream.dir, env, span)?;
+        while let Some(segment) = child {
+            let ChildSegment::Key(key) = segment else {
+                return Err(unsupported("iterating this saved path", span));
+            };
+            let anchor = encode_path(&[stream_child_segment(stream.child_kind, key.clone())]);
+            let value = saved_key_to_value(key)
+                .ok_or_else(|| unsupported("iterating keys of this type", span))?;
+            env.push_scope();
+            env.bind(binding.first.clone(), value, false);
+            let flow = eval_block(body, env);
+            env.pop_scope();
+            match classify(flow?, label) {
+                LoopStep::Iterate => {}
+                LoopStep::Stop => break,
+                LoopStep::Propagate(flow) => return Ok(flow),
+            }
+            child = seek_stream_child(&parent, Some(&anchor), stream.dir, env, span)?;
+        }
+        Ok(Flow::Normal)
+    })
+}
+
+fn seek_stream_child(
+    parent: &[u8],
+    anchor: Option<&[u8]>,
+    dir: Direction,
+    env: &Env<'_>,
+    span: SourceSpan,
+) -> Result<Option<ChildSegment>, RuntimeError> {
+    let store = env.store.borrow();
+    let result = match (anchor, dir) {
+        (None, Direction::Ascending) => store.first_child(parent),
+        (None, Direction::Descending) => store.last_child(parent),
+        (Some(anchor), Direction::Ascending) => store.next_sibling(parent, anchor),
+        (Some(anchor), Direction::Descending) => store.prev_sibling(parent, anchor),
+    };
+    result.map_err(|_| RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_STORE,
+        message: "could not seek the next child at this path".into(),
+        span,
+    })
 }
 
 /// Materialize a non-range `for` iterable to a sequence of values. A saved-layer

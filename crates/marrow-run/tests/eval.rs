@@ -1,7 +1,7 @@
 //! Evaluate pure scalar functions: arithmetic, comparison, logical operators,
 //! locals, and conditionals over integer and boolean values.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -3611,6 +3611,9 @@ impl Backend for FailingRollbackStore {
     fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         Backend::child_keys_rev(&self.inner, path)
     }
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
+        Backend::child_count(&self.inner, path)
+    }
     fn next_sibling(
         &self,
         parent: &[u8],
@@ -3695,6 +3698,9 @@ impl Backend for FailingFirstCommitStore {
     fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         Backend::child_keys_rev(&self.inner, path)
     }
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
+        Backend::child_count(&self.inner, path)
+    }
     fn next_sibling(
         &self,
         parent: &[u8],
@@ -3746,6 +3752,124 @@ impl Backend for FailingFirstCommitStore {
                 message: "commit could not be applied".into(),
             });
         }
+        Backend::commit(&mut self.inner)
+    }
+    fn rollback(&mut self) -> Result<(), StoreError> {
+        Backend::rollback(&mut self.inner)
+    }
+}
+
+#[derive(Default)]
+struct StoreProbe {
+    child_keys: Cell<usize>,
+    child_keys_rev: Cell<usize>,
+    child_count: Cell<usize>,
+    first_child: Cell<usize>,
+    last_child: Cell<usize>,
+    next_sibling: Cell<usize>,
+    prev_sibling: Cell<usize>,
+}
+
+impl StoreProbe {
+    fn reset(&self) {
+        self.child_keys.set(0);
+        self.child_keys_rev.set(0);
+        self.child_count.set(0);
+        self.first_child.set(0);
+        self.last_child.set(0);
+        self.next_sibling.set(0);
+        self.prev_sibling.set(0);
+    }
+}
+
+struct ProbedStore {
+    inner: MemStore,
+    probe: Rc<StoreProbe>,
+}
+
+impl ProbedStore {
+    fn new(probe: Rc<StoreProbe>) -> Self {
+        Self {
+            inner: MemStore::new(),
+            probe,
+        }
+    }
+}
+
+impl Backend for ProbedStore {
+    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Backend::read(&self.inner, path)
+    }
+    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        Backend::write(&mut self.inner, path, value)
+    }
+    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+        Backend::delete(&mut self.inner, path)
+    }
+    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
+        Backend::presence(&self.inner, path)
+    }
+    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        self.probe.child_keys.set(self.probe.child_keys.get() + 1);
+        Backend::child_keys(&self.inner, path)
+    }
+    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        self.probe
+            .child_keys_rev
+            .set(self.probe.child_keys_rev.get() + 1);
+        Backend::child_keys_rev(&self.inner, path)
+    }
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
+        self.probe.child_count.set(self.probe.child_count.get() + 1);
+        Backend::child_count(&self.inner, path)
+    }
+    fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        self.probe
+            .next_sibling
+            .set(self.probe.next_sibling.get() + 1);
+        Backend::next_sibling(&self.inner, parent, after)
+    }
+    fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        self.probe
+            .prev_sibling
+            .set(self.probe.prev_sibling.get() + 1);
+        Backend::prev_sibling(&self.inner, parent, before)
+    }
+    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        self.probe.first_child.set(self.probe.first_child.get() + 1);
+        Backend::first_child(&self.inner, parent)
+    }
+    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        self.probe.last_child.set(self.probe.last_child.get() + 1);
+        Backend::last_child(&self.inner, parent)
+    }
+    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan(&self.inner, path, limit)
+    }
+    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan_after(&self.inner, path, cursor, limit)
+    }
+    fn roots(&self) -> Result<Vec<String>, StoreError> {
+        Backend::roots(&self.inner)
+    }
+    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        Backend::max_int_record_key(&self.inner, prefix)
+    }
+    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        Backend::max_int_index_key(&self.inner, prefix)
+    }
+    fn begin(&mut self) -> Result<(), StoreError> {
+        Backend::begin(&mut self.inner)
+    }
+    fn commit(&mut self) -> Result<(), StoreError> {
         Backend::commit(&mut self.inner)
     }
     fn rollback(&mut self) -> Result<(), StoreError> {
@@ -7487,6 +7611,99 @@ fn count_over_an_indexed_root_ignores_populated_index_branches() {
     );
     assert_eq!(call("test::countRoot", &[]), Some(Value::Int(1)));
     assert_eq!(call("test::iterRoot", &[]), Some(Value::Int(1)));
+}
+
+#[test]
+fn count_over_a_direct_saved_root_uses_child_count_without_child_key_lists() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn countRoot(): int\n    return count(^books)\n",
+    );
+    let probe = Rc::new(StoreProbe::default());
+    let store = RefCell::new(ProbedStore::new(Rc::clone(&probe)));
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    probe.reset();
+    assert_eq!(
+        run_entry(&program, &store, "test::countRoot", &[])
+            .expect("count")
+            .value,
+        Some(Value::Int(3))
+    );
+    assert_eq!(probe.child_count.get(), 1);
+    assert_eq!(probe.child_keys.get(), 0);
+    assert_eq!(probe.child_keys_rev.get(), 0);
+}
+
+#[test]
+fn keys_saved_root_loop_streams_through_seek_operations() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn idOrder(): int\n    var total = 0\n    for id in keys(^books)\n        total = total * 10 + id\n    return total\n",
+    );
+    let probe = Rc::new(StoreProbe::default());
+    let store = RefCell::new(ProbedStore::new(Rc::clone(&probe)));
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    probe.reset();
+    assert_eq!(
+        run_entry(&program, &store, "test::idOrder", &[])
+            .expect("id order")
+            .value,
+        Some(Value::Int(123))
+    );
+    assert_eq!(probe.child_keys.get(), 0);
+    assert_eq!(probe.child_keys_rev.get(), 0);
+    assert!(probe.first_child.get() > 0);
+    assert!(probe.next_sibling.get() > 0);
+}
+
+#[test]
+fn direct_saved_root_value_loop_preserves_eager_element_values() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\nfn mutateFutureValue(): int\n    var total = 0\n    for book in ^books\n        if book.title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if book.title == \"B\"\n            total = total * 10 + 2\n        else if book.title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    assert_eq!(
+        run_entry(&program, &store, "test::mutateFutureValue", &[])
+            .expect("loop")
+            .value,
+        Some(Value::Int(12))
+    );
+}
+
+#[test]
+fn keys_saved_layer_loops_stream_in_both_directions() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(1).tags(1) = \"x\"\n    ^books(1).tags(2) = \"y\"\n    ^books(1).tags(3) = \"z\"\n\nfn tagKeys(): int\n    var total = 0\n    for pos in keys(^books(1).tags)\n        total = total * 10 + pos\n    return total\n\nfn tagKeysRev(): int\n    var total = 0\n    for pos in reversed(keys(^books(1).tags))\n        total = total * 10 + pos\n    return total\n",
+    );
+    let probe = Rc::new(StoreProbe::default());
+    let store = RefCell::new(ProbedStore::new(Rc::clone(&probe)));
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    probe.reset();
+    assert_eq!(
+        run_entry(&program, &store, "test::tagKeys", &[])
+            .expect("tag keys")
+            .value,
+        Some(Value::Int(123))
+    );
+    assert_eq!(probe.child_keys.get(), 0);
+    assert_eq!(probe.child_keys_rev.get(), 0);
+    assert!(probe.first_child.get() > 0);
+    assert!(probe.next_sibling.get() > 0);
+
+    probe.reset();
+    assert_eq!(
+        run_entry(&program, &store, "test::tagKeysRev", &[])
+            .expect("tag keys")
+            .value,
+        Some(Value::Int(321))
+    );
+    assert_eq!(probe.child_keys.get(), 0);
+    assert_eq!(probe.child_keys_rev.get(), 0);
+    assert!(probe.last_child.get() > 0);
+    assert!(probe.prev_sibling.get() > 0);
 }
 
 #[test]

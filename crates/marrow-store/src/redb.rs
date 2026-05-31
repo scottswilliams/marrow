@@ -544,6 +544,13 @@ impl Backend for RedbStore {
         })
     }
 
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
+        read_view!(self, "child_count", |table| {
+            let rows = collect_rows(&table, path, |_| false, "child_count")?;
+            traversal::child_count(entries(&rows), path)
+        })
+    }
+
     fn next_sibling(
         &self,
         parent: &[u8],

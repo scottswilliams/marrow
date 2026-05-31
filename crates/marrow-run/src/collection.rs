@@ -23,6 +23,81 @@ pub(crate) enum Direction {
     Descending,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum StreamChildKind {
+    Record,
+    Index,
+}
+
+pub(crate) struct SimpleSavedLayerLoop {
+    pub(crate) prefix: Vec<PathSegment>,
+    pub(crate) dir: Direction,
+    pub(crate) child_kind: StreamChildKind,
+}
+
+/// Classify the single-level saved layer key walks a `for` loop can stream
+/// without first materializing the key list. Direct value loops still
+/// materialize before the body runs, preserving their eager element semantics.
+/// Composite identities and index branches stay on the recursive materialized
+/// path.
+pub(crate) fn simple_saved_layer_loop(
+    iterable: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Option<SimpleSavedLayerLoop>, RuntimeError> {
+    let (iterable, dir) = match reversed_argument(iterable) {
+        Some(inner) => (inner, Direction::Descending),
+        None => (iterable, Direction::Ascending),
+    };
+    let Some(path) = keys_argument(iterable) else {
+        return Ok(None);
+    };
+    if !is_saved_path(path) {
+        return Ok(None);
+    }
+    if is_index_branch(path, env) {
+        return Ok(None);
+    }
+    match path {
+        Expression::SavedRoot { name, span } => {
+            match root_identity_arity(env.program, name) {
+                Some(1) => {}
+                Some(0) => {
+                    return Err(type_error(
+                        &format!("`^{name}` is a singleton with no identities to iterate"),
+                        *span,
+                    ));
+                }
+                Some(_) | None => return Ok(None),
+            }
+            Ok(Some(SimpleSavedLayerLoop {
+                prefix: vec![PathSegment::Root(name.clone())],
+                dir,
+                child_kind: StreamChildKind::Record,
+            }))
+        }
+        Expression::Field {
+            base, name: layer, ..
+        } => {
+            let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
+            let mut with_layer = parents.clone();
+            with_layer.push((layer.clone(), Vec::new()));
+            Ok(Some(SimpleSavedLayerLoop {
+                prefix: saved_segments(&root, &identity, &with_layer, None),
+                dir,
+                child_kind: StreamChildKind::Index,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn stream_child_segment(kind: StreamChildKind, key: SavedKey) -> PathSegment {
+    match kind {
+        StreamChildKind::Record => PathSegment::RecordKey(key),
+        StreamChildKind::Index => PathSegment::IndexKey(key),
+    }
+}
+
 /// The absent-element error for a read at `position`: catchable in value
 /// position, plain fatal as an argument seed.
 pub(crate) fn absent_read(

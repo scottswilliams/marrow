@@ -72,6 +72,35 @@ pub(crate) fn child_keys<'a>(
     Ok(children)
 }
 
+/// Count the distinct immediate children directly below `path`, from a range
+/// that begins at `path`. This is the same ordered walk and consecutive-child
+/// collapse as [`child_keys`], but it tallies instead of building a child list.
+pub(crate) fn child_count<'a>(entries: impl Entries<'a>, path: &[u8]) -> Result<usize, StoreError> {
+    let mut count = 0;
+    let mut last: Option<Vec<u8>> = None;
+    for entry in entries {
+        let (key, _) = entry?;
+        if !key.starts_with(path) {
+            break; // past the subtree
+        }
+        if key.len() <= path.len() {
+            continue; // the path's own entry, not a child
+        }
+        let rest = &key[path.len()..];
+        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
+        let segment = &rest[..len];
+        if last.as_deref() == Some(segment) {
+            continue; // same immediate child as the previous descendant
+        }
+        if decode_child_segment(segment).is_none() {
+            return Err(corrupt(key));
+        }
+        last = Some(segment.to_vec());
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// The single immediate *key* child of `parent_prefix` adjacent to the child
 /// segment `bound`, in the stream's direction, or `None` when `bound` is the edge
 /// key child (no key neighbor that way). `bound` is one encoded child segment (kind

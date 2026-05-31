@@ -8,11 +8,12 @@
 //! in-memory implementor; a persistent backend implements the same contract.
 //!
 //! One iteration invariant holds across every ordered op — `child_keys`,
-//! `child_keys_rev`, `next_sibling`/`prev_sibling`, and `first_child`/
-//! `last_child`: each visits only **stored** entries, in Marrow key order, and
-//! skips holes. Deleting an entry removes it from every traversal; there are no
-//! placeholder positions to step onto. A backend that merely orders raw bytes
-//! inherits this for free, since the encoding makes byte order Marrow order.
+//! `child_keys_rev`, `child_count`, `next_sibling`/`prev_sibling`, and
+//! `first_child`/`last_child`: each visits only **stored** entries, in Marrow key
+//! order, and skips holes. Deleting an entry removes it from every traversal;
+//! there are no placeholder positions to step onto. A backend that merely orders
+//! raw bytes inherits this for free, since the encoding makes byte order Marrow
+//! order.
 //!
 //! Reads return owned bytes so a persistent backend can serve them from a
 //! transaction guard, and every operation is fallible: a persistent store can
@@ -120,6 +121,10 @@ pub trait Backend {
     /// not a forward walk reversed after the fact. Like every traversal op it
     /// visits only stored entries and skips holes.
     fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>;
+
+    /// The number of distinct immediate children directly below `path`, matching
+    /// `child_keys(path).len()` without allocating the child list.
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError>;
 
     /// The immediate *key* child of `parent` that directly follows `after` in
     /// Marrow order, or `None` when `after` is the last key child (`after` has no

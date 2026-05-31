@@ -166,6 +166,10 @@ impl Backend for MemStore {
         traversal::child_keys(self.range_band_rev(path), path)
     }
 
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
+        traversal::child_count(self.range_from(path), path)
+    }
+
     /// The immediate *key* child of the encoded `parent` directly after `after` in
     /// Marrow order, or `None` when `after` is the last key child. `after` is one
     /// encoded child segment. The range begins at `parent ++ after` (inclusive) and

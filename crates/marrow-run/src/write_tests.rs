@@ -2810,6 +2810,10 @@ impl Backend for FailingBackend {
         Backend::child_keys_rev(&self.inner, path)
     }
 
+    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
+        Backend::child_count(&self.inner, path)
+    }
+
     fn next_sibling(
         &self,
         parent: &[u8],

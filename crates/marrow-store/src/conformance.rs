@@ -22,6 +22,7 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     delete_removes_the_subtree(&mut make());
     delete_of_an_absent_path_is_a_no_op(&mut make());
     child_keys_list_integer_records_in_order(&mut make());
+    child_count_matches_immediate_child_key_semantics(&mut make());
     max_int_record_key_returns_the_highest_integer_child(&mut make());
     max_int_record_key_ignores_non_integer_and_named_children(&mut make());
     max_int_record_key_handles_negative_keys(&mut make());
@@ -171,6 +172,46 @@ fn child_keys_list_integer_records_in_order(store: &mut dyn Backend) {
             ChildSegment::Key(SavedKey::Int(10)),
             ChildSegment::Key(SavedKey::Int(100)),
         ]
+    );
+}
+
+fn child_count_matches_immediate_child_key_semantics(store: &mut dyn Backend) {
+    assert_eq!(
+        store.child_count(&root("seq")).unwrap(),
+        0,
+        "an absent root has no children"
+    );
+    store.write(&root("seq"), b"root".to_vec()).unwrap();
+    assert_eq!(
+        store.child_count(&root("seq")).unwrap(),
+        0,
+        "the root's own value is not a child"
+    );
+    store
+        .write(&keyed_field("seq", SavedKey::Int(1), "a"), b"x".to_vec())
+        .unwrap();
+    store
+        .write(&keyed_field("seq", SavedKey::Int(1), "b"), b"y".to_vec())
+        .unwrap();
+    store
+        .write(&keyed_field("seq", SavedKey::Int(2), "a"), b"z".to_vec())
+        .unwrap();
+    store
+        .write(
+            &encode_path(&[
+                PathSegment::Root("seq".into()),
+                PathSegment::Field("byName".into()),
+                PathSegment::IndexKey(SavedKey::Str("fiction".into())),
+            ]),
+            b"idx".to_vec(),
+        )
+        .unwrap();
+
+    let keys = store.child_keys(&root("seq")).unwrap();
+    assert_eq!(
+        store.child_count(&root("seq")).unwrap(),
+        keys.len(),
+        "child_count matches child_keys' collapsed immediate children"
     );
 }
 

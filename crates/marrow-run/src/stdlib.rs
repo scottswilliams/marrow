@@ -68,9 +68,7 @@ pub(crate) fn eval_count(
     if !is_saved_path(&arg.value) {
         return local_collection_count(eval_expr(&arg.value, env)?, span);
     }
-    if is_keyed_primary_root(&arg.value, env) {
-        let count =
-            i64::try_from(enumerate_layer(&arg.value, env)?.len()).map_err(|_| overflow(span))?;
+    if let Some(count) = direct_primary_root_count(&arg.value, span, env)? {
         return Ok(Value::Int(count));
     }
     if let Some(values) = unique_index_lookup_values(&arg.value, span, Direction::Ascending, env)? {
@@ -88,9 +86,8 @@ pub(crate) fn eval_count(
     let path = encode_path(&node_segments(&arg.value, env)?);
     let store = env.store.borrow();
     let children = store
-        .child_keys(&path)
-        .map_err(|error| error.located(span))?
-        .len();
+        .child_count(&path)
+        .map_err(|error| error.located(span))?;
     let count = if children > 0 {
         children
     } else {
@@ -102,12 +99,61 @@ pub(crate) fn eval_count(
     Ok(Value::Int(count as i64))
 }
 
-fn is_keyed_primary_root(expr: &Expression, env: &Env<'_>) -> bool {
-    matches!(
-        expr,
-        Expression::SavedRoot { name, .. }
-            if root_identity_arity(env.program, name).is_some_and(|arity| arity > 0)
-    )
+fn direct_primary_root_count(
+    expr: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<i64>, RuntimeError> {
+    let Expression::SavedRoot { name, .. } = expr else {
+        return Ok(None);
+    };
+    let Some(resource) = find_resource(env.program, name) else {
+        return Ok(None);
+    };
+    let Some(root) = &resource.saved_root else {
+        return Ok(None);
+    };
+    match root.identity_keys.len() {
+        0 => Ok(None),
+        1 if resource.indexes.is_empty() => {
+            let path = encode_path(&[PathSegment::Root(name.clone())]);
+            let count = env
+                .store
+                .borrow()
+                .child_count(&path)
+                .map_err(|error| error.located(span))?;
+            i64::try_from(count).map(Some).map_err(|_| overflow(span))
+        }
+        1 => {
+            let path = encode_path(&[PathSegment::Root(name.clone())]);
+            let count = count_record_key_children(&path, span, env)?;
+            i64::try_from(count).map(Some).map_err(|_| overflow(span))
+        }
+        _ => {
+            let count = enumerate_layer(expr, env)?.len();
+            i64::try_from(count).map(Some).map_err(|_| overflow(span))
+        }
+    }
+}
+
+fn count_record_key_children(
+    parent: &[u8],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<usize, RuntimeError> {
+    let store = env.store.borrow();
+    let mut count = 0;
+    let mut child = store
+        .first_child(parent)
+        .map_err(|error| error.located(span))?;
+    while let Some(ChildSegment::Key(key)) = child {
+        count += 1;
+        let anchor = encode_path(&[PathSegment::RecordKey(key)]);
+        child = store
+            .next_sibling(parent, &anchor)
+            .map_err(|error| error.located(span))?;
+    }
+    Ok(count)
 }
 
 /// Whether `expr` is any declared index lookup `^root.index(args…)` — a `Call`
