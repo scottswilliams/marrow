@@ -113,6 +113,8 @@ pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_sing
 /// single key position to seek). The runtime would reject these with an
 /// uncatchable `run.unsupported` fault; the checker catches it before a run.
 pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
+/// A `lock` target is not a saved root, record, or subtree.
+pub const CHECK_LOCK_TARGET: &str = "check.lock_target";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.

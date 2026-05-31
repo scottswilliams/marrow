@@ -3800,6 +3800,31 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
+#[test]
+fn lock_targets_must_be_saved_roots_records_or_subtrees() {
+    let found = check_module(
+        "lock-targets",
+        "module m\n\
+         resource Cell at ^cells(id: int)\n    required v: int\n\
+         fn lockLocal()\n    var x: int = 1\n    lock x\n        x = 2\n\
+         fn lockField(id: int)\n    lock ^cells(id).v\n        ^cells(id).v = 2\n\
+         fn lockLiteral()\n    lock 5\n        print(\"nope\")\n",
+        "check.lock_target",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+}
+
+#[test]
+fn saved_root_record_and_group_lock_targets_are_allowed() {
+    let report = check_module_report(
+        "lock-targets-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    notes(pos: int)\n        body: string\n\
+         fn ok(id: int, pos: int)\n    lock ^books\n        print(\"root\")\n    lock ^books(id)\n        print(\"record\")\n    lock ^books(id).notes\n        print(\"layer\")\n    lock ^books(id).notes(pos)\n        ^books(id).notes(pos).body = \"x\"\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 // --- W1 unified resolver: module-aware, visibility-aware call resolution ---
 
 /// Check a two-module project (`src/aaa.mw` + `src/zzz.mw`), returning the whole

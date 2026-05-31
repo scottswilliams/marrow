@@ -606,6 +606,7 @@ pub(crate) fn check_statement_types(
         }
         Statement::Lock { path, body, .. } => {
             if let Some(path) = path {
+                check_lock_target(program, file, path, diagnostics);
                 infer_type(program, path, scope, aliases, file, diagnostics);
             }
             check_block_types(
@@ -801,6 +802,61 @@ fn is_saved_path_syntax(program: &CheckedProgram, expr: &marrow_syntax::Expressi
         Expression::Call { callee, .. } => saved_index_branch_type(program, callee).is_some(),
         _ => false,
     }
+}
+
+fn check_lock_target(
+    program: &CheckedProgram,
+    file: &Path,
+    path: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !is_lockable_saved_path(program, path) {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_LOCK_TARGET,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: "`lock` target must be a saved root, record, or subtree".to_string(),
+            span: path.span(),
+        });
+    }
+}
+
+fn is_lockable_saved_path(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Call { callee, .. } => is_lockable_saved_call(program, callee),
+        Expression::Field { .. } => is_lockable_saved_field(program, expr),
+        _ => false,
+    }
+}
+
+fn is_lockable_saved_call(program: &CheckedProgram, callee: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match callee {
+        Expression::SavedRoot { .. } => true,
+        Expression::Field { .. } if saved_index_branch_type(program, callee).is_some() => true,
+        Expression::Field { .. } => {
+            let Some((root, layers)) = saved_layer_chain(callee) else {
+                return false;
+            };
+            find_resource_schema(program, root).is_some_and(|resource| {
+                resource.descend_layers(&layers).is_some() && resource.leaf_type(&layers).is_none()
+            })
+        }
+        _ => false,
+    }
+}
+
+fn is_lockable_saved_field(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    let Some((root, chain)) = saved_group_chain(expr) else {
+        return false;
+    };
+    find_resource_schema(program, root).is_some_and(|resource| {
+        resource.field_type(&chain).is_none()
+            && (resource.descend_layers(&chain).is_some()
+                || chain.len() == 1 && resource.indexes.iter().any(|index| index.name == chain[0]))
+    })
 }
 
 fn saved_path_key_type(
