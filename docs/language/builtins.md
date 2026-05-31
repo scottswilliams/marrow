@@ -162,7 +162,7 @@ Stepping off the edge — `next` of the last entry, or `prev` of the first — r
 the catchable `run.absent_element` fault, so it composes with `??`:
 
 ```mw
-const following = next(^books(id)) ?? ^books(id)
+const following = next(^books(id)) ?? Book::Id(id)
 ```
 
 ## Sequence Updates
