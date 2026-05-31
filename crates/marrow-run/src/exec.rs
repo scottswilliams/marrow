@@ -68,7 +68,7 @@ pub(crate) fn eval_statement(
                 // `var n: int` then `f(out n)` pattern) is usable before its first
                 // assignment.
                 None => match ty.as_ref().map(Type::resolve) {
-                    Some(Type::Named(name)) if is_resource_type(env.program, &name) => {
+                    Some(Type::Named(name)) if is_resource_type(env.program, env.module, &name) => {
                         Value::Resource(Vec::new())
                     }
                     Some(ty) => default_value(&ty).ok_or_else(|| {

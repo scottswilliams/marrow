@@ -1419,6 +1419,18 @@ fn an_inout_parameter_mutates_a_local_resource() {
 }
 
 #[test]
+fn an_uninitialized_qualified_resource_var_starts_empty() {
+    let program = checked_program_modules(&[
+        "module library\nresource Book\n    title: string\n",
+        "module app\nuse library\npub fn main(): string\n    var book: library::Book\n    book.title = \"draft\"\n    return book.title\n",
+    ]);
+    assert_eq!(
+        run(&program, "app::main", &[]),
+        Ok(Some(Value::Str("draft".into())))
+    );
+}
+
+#[test]
 fn an_inout_parameter_writes_back_to_a_local_resource_field() {
     // A field of a local resource, `book.title`, is an assignable place; passing it
     // `inout` reads it to seed the parameter and writes the result back.

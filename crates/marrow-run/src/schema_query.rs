@@ -180,14 +180,24 @@ pub(crate) fn eval_identity_constructor(
     Ok(Value::Identity(keys))
 }
 
-/// Whether `name` is a resource type declared in the program (for an
-/// uninitialized `var book: Book` to start as an empty resource value).
-pub(crate) fn is_resource_type(program: &CheckedProgram, name: &str) -> bool {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .any(|resource| resource.name == name)
+/// Whether `name` names a resource type (for an uninitialized `var book: Book`
+/// to start as an empty resource value).
+pub(crate) fn is_resource_type(program: &CheckedProgram, from_module: &str, name: &str) -> bool {
+    if !name.contains("::") {
+        return program
+            .modules
+            .iter()
+            .flat_map(|module| &module.resources)
+            .any(|resource| resource.name == name);
+    }
+    let segments: Vec<String> = name.split("::").map(str::to_string).collect();
+    matches!(
+        resolve(program, from_module, &segments, ResolvableKind::Resource),
+        Resolution::Found(Def {
+            item: DefItem::Resource(_),
+            ..
+        })
+    )
 }
 
 /// Whether an expression denotes a saved path (rooted at a `^root`), as opposed
