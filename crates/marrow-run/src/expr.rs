@@ -102,7 +102,9 @@ pub(crate) fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, R
             right,
             span,
         } => eval_binary(*op, left, right, *span, env),
-        Expression::Call { callee, args, span } => match eval_call(callee, args, *span, env)? {
+        Expression::Call {
+            callee, args, span, ..
+        } => match eval_call(callee, args, *span, env)? {
             Some(value) => Ok(value),
             None => Err(RuntimeError {
                 throw: None,

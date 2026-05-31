@@ -97,6 +97,7 @@ impl<'a> StmtParser<'a> {
             self.source,
             token,
             CommentPlacement::OwnLine,
+            CommentMarker::Line,
         ));
         if matches!(self.peek(), Some(TokenKind::Newline)) {
             self.advance();
@@ -107,14 +108,14 @@ impl<'a> StmtParser<'a> {
         let mut statements = Vec::new();
         while let Some(kind) = self.peek() {
             match kind {
+                TokenKind::Eof => break,
                 TokenKind::Dedent => break,
                 TokenKind::Newline => {
                     self.advance();
                 }
                 kind if is_line_comment(kind) => self.take_own_line_comment(),
                 TokenKind::Indent => {
-                    // A stray nested block (e.g. under a swallowed compound
-                    // statement). Skip it rather than mis-parse.
+                    self.report_unexpected_indented_block();
                     self.skip_block();
                 }
                 _ => statements.extend(self.statement()),
@@ -191,6 +192,7 @@ impl<'a> StmtParser<'a> {
                 self.source,
                 token,
                 CommentPlacement::Trailing,
+                CommentMarker::Line,
             ));
             line_end - 1
         } else {
@@ -488,6 +490,7 @@ impl<'a> StmtParser<'a> {
                         self.source,
                         token,
                         CommentPlacement::Trailing,
+                        CommentMarker::Line,
                     ));
                 }
                 _ => {
@@ -543,12 +546,54 @@ impl<'a> StmtParser<'a> {
         while index < self.tokens.len()
             && !matches!(
                 self.tokens[index].kind,
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
             )
         {
             index += 1;
         }
         index
+    }
+
+    fn report_unexpected_indented_block(&mut self) {
+        if let Some(span) = self.first_indented_content_span() {
+            self.error_span(
+                span,
+                "unexpected indentation; only compound statements introduce nested blocks",
+            );
+        }
+    }
+
+    fn first_indented_content_span(&self) -> Option<SourceSpan> {
+        let mut depth = 0usize;
+        let mut index = self.pos;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::Indent => depth += 1,
+                TokenKind::Dedent => {
+                    if depth == 0 {
+                        return None;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        return None;
+                    }
+                }
+                TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment => {}
+                TokenKind::Eof => return None,
+                _ if depth > 0 => {
+                    let line_start = token.span.start_byte - (token.span.column as usize - 1);
+                    return Some(SourceSpan {
+                        start_byte: token.span.start_byte,
+                        end_byte: first_line_end(self.source, line_start),
+                        line: token.span.line,
+                        column: token.span.column,
+                    });
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        None
     }
 
     /// A block-introducing keyword (such as a stray `else`) appearing where it
@@ -672,7 +717,7 @@ impl<'a> DeclParser<'a> {
 
     pub(crate) fn parse(mut self) -> ParsedSource {
         let mut file = SourceFile::default();
-        let mut docs = Vec::new();
+        let mut docs: Vec<Token> = Vec::new();
         let mut saw_top_level_item = false;
 
         while let Some(kind) = self.peek() {
@@ -681,11 +726,16 @@ impl<'a> DeclParser<'a> {
                     self.advance();
                 }
                 TokenKind::Comment => {
-                    self.advance();
+                    let token = self.advance();
+                    file.comments.push(comment_from_token(
+                        self.source,
+                        token,
+                        CommentPlacement::OwnLine,
+                        CommentMarker::Line,
+                    ));
                 }
                 TokenKind::DocComment => {
-                    let token = self.advance();
-                    docs.push(doc_comment_text(token.text(self.source)));
+                    self.push_pending_doc(&mut docs, &mut file.comments);
                 }
                 TokenKind::Eof => break,
                 // Indentation where a top-level declaration was expected: report
@@ -701,31 +751,36 @@ impl<'a> DeclParser<'a> {
                 // by a space. A bare keyword (or one glued to the next token,
                 // like `module::x`) is an unknown top-level declaration.
                 TokenKind::Keyword(Keyword::Module) if self.keyword_introduces_decl() => {
-                    self.parse_module(&mut file, &mut docs, saw_top_level_item);
+                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
+                    self.parse_module(&mut file, saw_top_level_item);
                     saw_top_level_item = true;
                 }
                 TokenKind::Keyword(Keyword::Use) if self.keyword_introduces_decl() => {
+                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
                     self.parse_use(&mut file);
-                    docs.clear();
                     saw_top_level_item = true;
                 }
                 TokenKind::Keyword(Keyword::Const) if self.keyword_introduces_decl() => {
-                    let decl = self.parse_const(std::mem::take(&mut docs));
+                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
+                    let decl = self.parse_const(decl_docs);
                     file.declarations.push(Declaration::Const(decl));
                     saw_top_level_item = true;
                 }
                 TokenKind::Keyword(Keyword::Resource) if self.keyword_introduces_decl() => {
-                    let resource = self.parse_resource(std::mem::take(&mut docs));
+                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
+                    let resource = self.parse_resource(decl_docs);
                     file.declarations.push(Declaration::Resource(resource));
                     saw_top_level_item = true;
                 }
                 _ if self.starts_enum_header() => {
-                    let decl = self.parse_enum(std::mem::take(&mut docs));
+                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
+                    let decl = self.parse_enum(decl_docs);
                     file.declarations.push(Declaration::Enum(decl));
                     saw_top_level_item = true;
                 }
                 _ if self.starts_function_header() => {
-                    let function = self.parse_function(std::mem::take(&mut docs));
+                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
+                    let function = self.parse_function(decl_docs);
                     file.declarations.push(Declaration::Function(function));
                     saw_top_level_item = true;
                 }
@@ -733,19 +788,20 @@ impl<'a> DeclParser<'a> {
                 TokenKind::Identifier
                     if self.identifier_is(self.pos, "type") && self.keyword_introduces_decl() =>
                 {
+                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
                     self.error_header(
                     "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
                 );
-                    docs.clear();
                     saw_top_level_item = true;
                 }
                 _ => {
+                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
                     self.error_header("expected module, use, const, resource, or fn declaration");
-                    docs.clear();
                     saw_top_level_item = true;
                 }
             }
         }
+        self.flush_docs_as_comments(&mut docs, &mut file.comments);
 
         ParsedSource {
             file,
@@ -753,12 +809,63 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    fn parse_module(
-        &mut self,
-        file: &mut SourceFile,
-        docs: &mut Vec<String>,
-        saw_top_level_item: bool,
-    ) {
+    fn push_pending_doc(&mut self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
+        let token = self.advance();
+        if docs
+            .last()
+            .is_some_and(|last| token.span.line > last.span.line + 1)
+        {
+            self.flush_docs_as_comments(docs, comments);
+        }
+        docs.push(token);
+    }
+
+    fn take_docs_for_current_item(
+        &self,
+        docs: &mut Vec<Token>,
+        comments: &mut Vec<Comment>,
+    ) -> Vec<String> {
+        let item_line = self.tokens[self.pos].span.line;
+        if docs
+            .last()
+            .is_some_and(|last| item_line == last.span.line + 1)
+        {
+            return docs
+                .drain(..)
+                .map(|token| doc_comment_text(token.text(self.source)))
+                .collect();
+        }
+        self.flush_docs_as_comments(docs, comments);
+        Vec::new()
+    }
+
+    fn take_member_docs(
+        &self,
+        docs: &mut Vec<Token>,
+        comments: &mut Vec<Comment>,
+        has_stable_id: bool,
+    ) -> Vec<String> {
+        if has_stable_id && !docs.is_empty() {
+            return docs
+                .drain(..)
+                .map(|token| doc_comment_text(token.text(self.source)))
+                .collect();
+        }
+        self.take_docs_for_current_item(docs, comments)
+    }
+
+    fn flush_docs_as_comments(&self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
+        comments.extend(docs.drain(..).map(|token| {
+            comment_from_token(
+                self.source,
+                token,
+                CommentPlacement::OwnLine,
+                CommentMarker::Doc,
+            )
+        }));
+    }
+
+    fn parse_module(&mut self, file: &mut SourceFile, saw_top_level_item: bool) {
         let span = self.header_span();
         let header = self.take_header_line();
         let name = qualified_name(self.source, &header[1..]);
@@ -772,7 +879,6 @@ impl<'a> DeclParser<'a> {
         } else {
             self.error_span(span, "expected qualified module name");
         }
-        docs.clear();
     }
 
     fn parse_use(&mut self, file: &mut SourceFile) {
@@ -874,26 +980,28 @@ impl<'a> DeclParser<'a> {
                 (String::new(), None)
             }
         };
-        let members = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_resource_members()
         } else {
             self.error_span(span, "expected an indented resource body");
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         ResourceDecl {
             docs,
             name,
             store,
             members,
+            comments,
             span,
         }
     }
 
     /// Parse an `INDENT … DEDENT` block of resource members. Nested groups recurse
     /// on their own child block. Each member's span is its whole header line.
-    fn parse_resource_members(&mut self) -> Vec<ResourceMember> {
+    fn parse_resource_members(&mut self) -> (Vec<ResourceMember>, Vec<Comment>) {
         let mut members = Vec::new();
-        let mut docs = Vec::new();
+        let mut comments = Vec::new();
+        let mut docs: Vec<Token> = Vec::new();
         let mut stable_id = None;
         self.advance(); // INDENT
 
@@ -903,12 +1011,20 @@ impl<'a> DeclParser<'a> {
                     self.advance();
                     break;
                 }
-                TokenKind::Newline | TokenKind::Comment => {
+                TokenKind::Newline => {
                     self.advance();
                 }
-                TokenKind::DocComment => {
+                TokenKind::Comment => {
                     let token = self.advance();
-                    docs.push(doc_comment_text(token.text(self.source)));
+                    comments.push(comment_from_token(
+                        self.source,
+                        token,
+                        CommentPlacement::OwnLine,
+                        CommentMarker::Line,
+                    ));
+                }
+                TokenKind::DocComment => {
+                    self.push_pending_doc(&mut docs, &mut comments);
                 }
                 // A deeper indent under a field (rather than a group) is stray:
                 // report at the deeper line's content and skip the whole block.
@@ -934,6 +1050,11 @@ impl<'a> DeclParser<'a> {
                     let span = self.header_span();
                     let err = self.content_span();
                     if matches!(kind, TokenKind::At) {
+                        if docs.last().is_some_and(|last| {
+                            self.tokens[self.pos].span.line > last.span.line + 1
+                        }) {
+                            self.flush_docs_as_comments(&mut docs, &mut comments);
+                        }
                         match parse_stable_id_tokens(self.source, &self.take_header_line()) {
                             Some(id) => stable_id = Some(id),
                             None => {
@@ -943,10 +1064,12 @@ impl<'a> DeclParser<'a> {
                         continue;
                     }
                     if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
+                        let member_docs =
+                            self.take_member_docs(&mut docs, &mut comments, stable_id.is_some());
                         let header = self.take_header_line();
                         match parse_index_tokens(self.source, &header[1..]) {
                             Ok(index) => members.push(ResourceMember::Index(IndexDecl {
-                                docs: std::mem::take(&mut docs),
+                                docs: member_docs,
                                 stable_id: stable_id.take(),
                                 span,
                                 ..index
@@ -955,6 +1078,8 @@ impl<'a> DeclParser<'a> {
                         }
                         continue;
                     }
+                    let member_docs =
+                        self.take_member_docs(&mut docs, &mut comments, stable_id.is_some());
                     let header = self.take_header_line();
                     match parse_field_or_group_tokens(self.source, &header) {
                         Ok(MemberHead::Field {
@@ -967,7 +1092,7 @@ impl<'a> DeclParser<'a> {
                                 self.error_span(err, "expected field type annotation");
                             }
                             members.push(ResourceMember::Field(FieldDecl {
-                                docs: std::mem::take(&mut docs),
+                                docs: member_docs,
                                 stable_id: stable_id.take(),
                                 required,
                                 name,
@@ -977,18 +1102,23 @@ impl<'a> DeclParser<'a> {
                             }));
                         }
                         Ok(MemberHead::Group { name, keys }) => {
-                            let children = if matches!(self.peek(), Some(TokenKind::Indent)) {
-                                self.parse_resource_members()
-                            } else {
-                                self.error_span(err, "expected an indented resource group body");
-                                Vec::new()
-                            };
+                            let (children, child_comments) =
+                                if matches!(self.peek(), Some(TokenKind::Indent)) {
+                                    self.parse_resource_members()
+                                } else {
+                                    self.error_span(
+                                        err,
+                                        "expected an indented resource group body",
+                                    );
+                                    (Vec::new(), Vec::new())
+                                };
                             members.push(ResourceMember::Group(GroupDecl {
-                                docs: std::mem::take(&mut docs),
+                                docs: member_docs,
                                 stable_id: stable_id.take(),
                                 name,
                                 keys,
                                 members: children,
+                                comments: child_comments,
                                 span,
                             }));
                         }
@@ -997,7 +1127,8 @@ impl<'a> DeclParser<'a> {
                 }
             }
         }
-        members
+        self.flush_docs_as_comments(&mut docs, &mut comments);
+        (members, comments)
     }
 
     fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
@@ -1010,11 +1141,11 @@ impl<'a> DeclParser<'a> {
                 (false, String::new())
             }
         };
-        let members = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_enum_members()
         } else {
             self.error_span(span, "expected an indented enum body");
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         if members.is_empty() {
             self.error_span(span, "an enum needs at least one member");
@@ -1024,6 +1155,7 @@ impl<'a> DeclParser<'a> {
             public,
             name,
             members,
+            comments,
             span,
         }
     }
@@ -1032,9 +1164,10 @@ impl<'a> DeclParser<'a> {
     /// identifier on its own line; anything else (a type annotation, key
     /// parameters, an `@id`, or a deeper indent) is a parse error. This mirrors
     /// `parse_resource_members` but accepts only the bare-name form.
-    fn parse_enum_members(&mut self) -> Vec<EnumMember> {
+    fn parse_enum_members(&mut self) -> (Vec<EnumMember>, Vec<Comment>) {
         let mut members = Vec::new();
-        let mut docs = Vec::new();
+        let mut comments = Vec::new();
+        let mut docs: Vec<Token> = Vec::new();
         self.advance(); // INDENT
 
         while let Some(kind) = self.peek() {
@@ -1043,12 +1176,20 @@ impl<'a> DeclParser<'a> {
                     self.advance();
                     break;
                 }
-                TokenKind::Newline | TokenKind::Comment => {
+                TokenKind::Newline => {
                     self.advance();
                 }
-                TokenKind::DocComment => {
+                TokenKind::Comment => {
                     let token = self.advance();
-                    docs.push(doc_comment_text(token.text(self.source)));
+                    comments.push(comment_from_token(
+                        self.source,
+                        token,
+                        CommentPlacement::OwnLine,
+                        CommentMarker::Line,
+                    ));
+                }
+                TokenKind::DocComment => {
+                    self.push_pending_doc(&mut docs, &mut comments);
                 }
                 // An indent that opens before any member on this level is stray:
                 // there is no member header for it to nest under. A member's own
@@ -1069,23 +1210,26 @@ impl<'a> DeclParser<'a> {
                 _ => {
                     let span = self.header_span();
                     let err = self.content_span();
+                    let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                     let header = self.take_header_line();
                     match enum_member_name(self.source, &header) {
                         Ok((name, category)) => {
                             // A member's children are the indented block that
                             // immediately follows its header, parsed by the same
                             // routine and attached, so members nest to any depth.
-                            let nested = if matches!(self.peek(), Some(TokenKind::Indent)) {
-                                self.parse_enum_members()
-                            } else {
-                                Vec::new()
-                            };
+                            let (nested, nested_comments) =
+                                if matches!(self.peek(), Some(TokenKind::Indent)) {
+                                    self.parse_enum_members()
+                                } else {
+                                    (Vec::new(), Vec::new())
+                                };
                             members.push(EnumMember {
-                                docs: std::mem::take(&mut docs),
+                                docs: member_docs,
                                 stable_id: None,
                                 name,
                                 category,
                                 members: nested,
+                                comments: nested_comments,
                                 span,
                             });
                         }
@@ -1094,7 +1238,8 @@ impl<'a> DeclParser<'a> {
                 }
             }
         }
-        members
+        self.flush_docs_as_comments(&mut docs, &mut comments);
+        (members, comments)
     }
 
     fn parse_function(&mut self, docs: Vec<String>) -> FunctionDecl {
@@ -1194,7 +1339,10 @@ impl<'a> DeclParser<'a> {
     /// so a multi-line const value stays one header line.
     fn take_header_line(&mut self) -> Vec<Token> {
         let end = self.header_end();
-        let line = self.tokens[self.pos..end].to_vec();
+        let mut line = self.tokens[self.pos..end].to_vec();
+        if line.last().is_some_and(|token| is_line_comment(token.kind)) {
+            line.pop();
+        }
         self.pos = end;
         if matches!(self.peek(), Some(TokenKind::Newline)) {
             self.advance();
@@ -2356,7 +2504,12 @@ fn is_line_comment(kind: TokenKind) -> bool {
 
 /// Build a `Comment` from a line comment token, stripping the leading marker and
 /// surrounding whitespace so the formatter renders a canonical `; text` line.
-fn comment_from_token(source: &str, token: Token, placement: CommentPlacement) -> Comment {
+fn comment_from_token(
+    source: &str,
+    token: Token,
+    placement: CommentPlacement,
+    marker: CommentMarker,
+) -> Comment {
     let text = token
         .text(source)
         .trim_start_matches(';')
@@ -2365,6 +2518,7 @@ fn comment_from_token(source: &str, token: Token, placement: CommentPlacement) -
     Comment {
         text,
         placement,
+        marker,
         span: token.span,
     }
 }

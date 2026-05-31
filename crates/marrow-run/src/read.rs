@@ -28,7 +28,9 @@ pub(crate) fn traversed_layer_prefix(
         // An index branch `^root.index(args…)`: the prefix is the root, index name,
         // and the supplied index-key args (the levels below are reconstructed
         // identities, so the traversed layer is the branch the args reach).
-        Expression::Call { callee, args, span } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) =>
+        Expression::Call {
+            callee, args, span, ..
+        } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) =>
         {
             let Expression::Field {
                 base, name: index, ..
@@ -168,7 +170,9 @@ pub(crate) fn enumerate_layer_dir(
         }
         // An index branch `^root.index(args…)` (a `Call` whose callee is a `.index`
         // off a saved root) or a keyed/sequence child layer `^root(id…).layer`.
-        Expression::Call { callee, args, span } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
+        Expression::Call {
+            callee, args, span, ..
+        } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
             enumerate_index_branch(callee, args, dir, *span, env)
         }
         Expression::Field { .. } => enumerate_child_layer(path, dir, env),

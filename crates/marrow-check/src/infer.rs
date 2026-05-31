@@ -160,7 +160,9 @@ pub(crate) fn infer_type(
             }
             check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
         }
-        Expression::Call { callee, args, span } => {
+        Expression::Call {
+            callee, args, span, ..
+        } => {
             // Visit the callee subtree (it may hold nested calls, e.g. the
             // `^books(id)` inside `^books(id).tags(pos)`) and infer each argument
             // once. A bare single-segment callee names a function, not a value, so

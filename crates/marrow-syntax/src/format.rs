@@ -7,9 +7,9 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    ArgMode, Argument, BinaryOp, Block, Comment, CommentPlacement, ConstDecl, Declaration,
-    EnumDecl, EnumMember, Expression, FunctionDecl, InterpolationPart, KeyParam, ParamDecl,
-    ParamMode, ResourceDecl, ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
+    ArgMode, Argument, BinaryOp, Block, Comment, CommentMarker, CommentPlacement, ConstDecl,
+    Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, InterpolationPart, KeyParam,
+    ParamDecl, ParamMode, ResourceDecl, ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -35,30 +35,104 @@ const INDENT: &str = "    ";
 pub fn format_source(source: &str) -> String {
     let parsed = crate::parse_source(source);
     let file = &parsed.file;
-    let mut sections: Vec<String> = Vec::new();
+    let mut sections: Vec<FormatSection> = Vec::new();
 
     if let Some(module) = &file.module {
-        sections.push(format!("module {}", module.name));
+        sections.push(FormatSection::item(
+            module.span,
+            format!("module {}", module.name),
+        ));
     }
-    if !file.uses.is_empty() {
-        sections.push(
-            file.uses
-                .iter()
-                .map(|use_decl| format!("use {}", use_decl.name))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+    for comment in &file.comments {
+        sections.push(FormatSection::comment(comment));
+    }
+    for use_decl in &file.uses {
+        sections.push(FormatSection::use_decl(
+            use_decl.span,
+            format!("use {}", use_decl.name),
+        ));
     }
     for declaration in &file.declarations {
-        sections.push(format_declaration(source, declaration));
+        sections.push(FormatSection::item(
+            declaration_span(declaration),
+            format_declaration(source, declaration),
+        ));
     }
 
     if sections.is_empty() {
         return String::new();
     }
-    let mut out = sections.join("\n\n");
+    sections.sort_by_key(|section| section.span.start_byte);
+    let mut out = String::new();
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            out.push_str(section_separator(&sections[index - 1], section));
+        }
+        out.push_str(&section.text);
+    }
     out.push('\n');
     out
+}
+
+struct FormatSection {
+    span: crate::SourceSpan,
+    text: String,
+    kind: FormatSectionKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FormatSectionKind {
+    Comment,
+    Use,
+    Item,
+}
+
+impl FormatSection {
+    fn item(span: crate::SourceSpan, text: String) -> Self {
+        Self {
+            span,
+            text,
+            kind: FormatSectionKind::Item,
+        }
+    }
+
+    fn use_decl(span: crate::SourceSpan, text: String) -> Self {
+        Self {
+            span,
+            text,
+            kind: FormatSectionKind::Use,
+        }
+    }
+
+    fn comment(comment: &Comment) -> Self {
+        Self {
+            span: comment.span,
+            text: format_comment(comment),
+            kind: FormatSectionKind::Comment,
+        }
+    }
+}
+
+fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str {
+    if prev.kind == FormatSectionKind::Use
+        && next.kind == FormatSectionKind::Use
+        && next.span.line == prev.span.line + 1
+    {
+        return "\n";
+    }
+    if prev.kind == FormatSectionKind::Comment && next.span.line == prev.span.line + 1 {
+        return "\n";
+    }
+    "\n\n"
+}
+
+fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
+    match declaration {
+        Declaration::Const(decl) => decl.span,
+        Declaration::Resource(decl) => decl.span,
+        Declaration::Function(decl) => decl.span,
+        Declaration::Enum(decl) => decl.span,
+    }
 }
 
 /// Format a top-level declaration (const, resource, or function) as canonical
@@ -91,9 +165,10 @@ fn format_resource(decl: &ResourceDecl) -> String {
     if let Some(store) = &decl.store {
         out.push_str(&format_saved_root(store));
     }
-    for member in &decl.members {
+    let body = format_resource_body(&decl.members, &decl.comments, 1);
+    if !body.is_empty() {
         out.push('\n');
-        out.push_str(&format_resource_member(member, 1));
+        out.push_str(&body);
     }
     out
 }
@@ -102,8 +177,10 @@ fn format_enum(decl: &EnumDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
     out.push_str(&format!("{visibility}enum {}", decl.name));
-    for member in &decl.members {
-        out.push_str(&format_enum_member(member, 1));
+    let body = format_enum_body(&decl.members, &decl.comments, 1);
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
     }
     out
 }
@@ -111,22 +188,80 @@ fn format_enum(decl: &EnumDecl) -> String {
 /// Render one enum member and its nested members, each on its own line at the
 /// given indent depth. A `category` member leads with the `category` word.
 fn format_enum_member(member: &EnumMember, level: usize) -> String {
-    let mut out = String::from("\n");
-    out.push_str(&format_member_meta(&member.docs, &member.stable_id, level));
+    let mut out = format_member_meta(&member.docs, &member.stable_id, level);
     let category = if member.category { "category " } else { "" };
     out.push_str(&format!(
         "{}{category}{}",
         INDENT.repeat(level),
         member.name
     ));
-    for child in &member.members {
-        out.push_str(&format_enum_member(child, level + 1));
+    let body = format_enum_body(&member.members, &member.comments, level + 1);
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
     }
     out
 }
 
 fn format_saved_root(store: &SavedRoot) -> String {
     format!(" at ^{}{}", store.root, format_key_params(&store.keys))
+}
+
+fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level: usize) -> String {
+    let mut lines = Vec::new();
+    for comment in comments {
+        lines.push(FormattedBodyLine {
+            span: comment.span,
+            text: format_comment(comment),
+        });
+    }
+    for member in members {
+        lines.push(FormattedBodyLine {
+            span: resource_member_span(member),
+            text: format_resource_member(member, level),
+        });
+    }
+    lines.sort_by_key(|line| line.span.start_byte);
+    lines
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_enum_body(members: &[EnumMember], comments: &[Comment], level: usize) -> String {
+    let mut lines = Vec::new();
+    for comment in comments {
+        lines.push(FormattedBodyLine {
+            span: comment.span,
+            text: format_comment(comment),
+        });
+    }
+    for member in members {
+        lines.push(FormattedBodyLine {
+            span: member.span,
+            text: format_enum_member(member, level),
+        });
+    }
+    lines.sort_by_key(|line| line.span.start_byte);
+    lines
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+struct FormattedBodyLine {
+    span: crate::SourceSpan,
+    text: String,
+}
+
+fn resource_member_span(member: &ResourceMember) -> crate::SourceSpan {
+    match member {
+        ResourceMember::Field(field) => field.span,
+        ResourceMember::Group(group) => group.span,
+        ResourceMember::Index(index) => index.span,
+    }
 }
 
 fn format_resource_member(member: &ResourceMember, level: usize) -> String {
@@ -151,9 +286,10 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
                 group.name,
                 format_key_params(&group.keys)
             ));
-            for child in &group.members {
+            let body = format_resource_body(&group.members, &group.comments, level + 1);
+            if !body.is_empty() {
                 out.push('\n');
-                out.push_str(&format_resource_member(child, level + 1));
+                out.push_str(&body);
             }
             out
         }
@@ -310,10 +446,14 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
 /// re-indenting it to whichever block the lexer structurally attached it to.
 fn format_comment(comment: &Comment) -> String {
     let pad = " ".repeat(comment.span.column.saturating_sub(1) as usize);
+    let marker = match comment.marker {
+        CommentMarker::Line => ";",
+        CommentMarker::Doc => ";;",
+    };
     if comment.text.is_empty() {
-        format!("{pad};")
+        format!("{pad}{marker}")
     } else {
-        format!("{pad}; {}", comment.text)
+        format!("{pad}{marker} {}", comment.text)
     }
 }
 
@@ -327,7 +467,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         } => format!(
             "{pad}const {name}{} = {}",
             format_type_annotation(ty),
-            format_expression(value)
+            format_expression_at(value, level)
         ),
         Statement::Var {
             name,
@@ -337,7 +477,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             ..
         } => {
             let value = match value {
-                Some(value) => format!(" = {}", format_expression(value)),
+                Some(value) => format!(" = {}", format_expression_at(value, level)),
                 None => String::new(),
             };
             format!(
@@ -348,23 +488,27 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         }
         Statement::Assign { target, value, .. } => format!(
             "{pad}{} = {}",
-            format_expression(target),
-            format_expression(value)
+            format_expression_at(target, level),
+            format_expression_at(value, level)
         ),
-        Statement::Delete { path, .. } => format!("{pad}delete {}", format_expression(path)),
+        Statement::Delete { path, .. } => {
+            format!("{pad}delete {}", format_expression_at(path, level))
+        }
         Statement::Merge { target, value, .. } => format!(
             "{pad}merge {} = {}",
-            format_expression(target),
-            format_expression(value)
+            format_expression_at(target, level),
+            format_expression_at(value, level)
         ),
         Statement::Return { value, .. } => match value {
-            Some(value) => format!("{pad}return {}", format_expression(value)),
+            Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
             None => format!("{pad}return"),
         },
         Statement::Break { label, .. } => format!("{pad}break{}", format_label_suffix(label)),
         Statement::Continue { label, .. } => format!("{pad}continue{}", format_label_suffix(label)),
-        Statement::Throw { value, .. } => format!("{pad}throw {}", format_expression(value)),
-        Statement::Expr { value, .. } => format!("{pad}{}", format_expression(value)),
+        Statement::Throw { value, .. } => {
+            format!("{pad}throw {}", format_expression_at(value, level))
+        }
+        Statement::Expr { value, .. } => format!("{pad}{}", format_expression_at(value, level)),
         Statement::If {
             condition,
             then_block,
@@ -374,13 +518,13 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         } => {
             let mut out = format!(
                 "{pad}if {}\n{}",
-                format_opt_expression(condition.as_ref()),
+                format_opt_expression_at(condition.as_ref(), level),
                 format_block(source, then_block, level + 1)
             );
             for else_if in else_ifs {
                 out.push_str(&format!(
                     "\n{pad}else if {}\n{}",
-                    format_opt_expression(else_if.condition.as_ref()),
+                    format_opt_expression_at(else_if.condition.as_ref(), level),
                     format_block(source, &else_if.block, level + 1)
                 ));
             }
@@ -400,7 +544,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         } => format!(
             "{pad}{}while {}\n{}",
             format_label_prefix(label),
-            format_opt_expression(condition.as_ref()),
+            format_opt_expression_at(condition.as_ref(), level),
             format_block(source, body, level + 1)
         ),
         Statement::For {
@@ -416,13 +560,13 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
                 None => binding.first.clone(),
             };
             let step = match step {
-                Some(step) => format!(" by {}", format_expression(step)),
+                Some(step) => format!(" by {}", format_expression_at(step, level)),
                 None => String::new(),
             };
             format!(
                 "{pad}{}for {binding} in {}{step}\n{}",
                 format_label_prefix(label),
-                format_expression(iterable),
+                format_expression_at(iterable, level),
                 format_block(source, body, level + 1)
             )
         }
@@ -434,7 +578,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         }
         Statement::Lock { path, body, .. } => format!(
             "{pad}lock {}\n{}",
-            format_opt_expression(path.as_ref()),
+            format_opt_expression_at(path.as_ref(), level),
             format_block(source, body, level + 1)
         ),
         Statement::Try {
@@ -464,7 +608,10 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             scrutinee, arms, ..
         } => {
             let arm_pad = INDENT.repeat(level + 1);
-            let mut out = format!("{pad}match {}", format_opt_expression(scrutinee.as_ref()));
+            let mut out = format!(
+                "{pad}match {}",
+                format_opt_expression_at(scrutinee.as_ref(), level)
+            );
             for arm in arms {
                 out.push_str(&format!(
                     "\n{arm_pad}{}\n{}",
@@ -512,17 +659,43 @@ fn format_label_suffix(label: &Option<String>) -> String {
 
 /// Format a single expression as canonical Marrow source.
 pub fn format_expression(expression: &Expression) -> String {
+    format_expression_at(expression, 0)
+}
+
+fn format_expression_at(expression: &Expression, level: usize) -> String {
     match expression {
         Expression::Literal { text, .. } => text.clone(),
         Expression::Name { segments, .. } => segments.join("::"),
         Expression::SavedRoot { name, .. } => format!("^{name}"),
-        Expression::Call { callee, args, .. } => {
-            let args = args
-                .iter()
-                .map(format_argument)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{}({})", format_child(callee, PREC_ATOM), args)
+        Expression::Call {
+            callee,
+            args,
+            multiline,
+            ..
+        } => {
+            let callee = format_child_at(callee, PREC_ATOM, level);
+            if *multiline {
+                let arg_pad = INDENT.repeat(level + 1);
+                let close_pad = INDENT.repeat(level);
+                let mut out = format!("{callee}(");
+                for arg in args {
+                    out.push('\n');
+                    out.push_str(&arg_pad);
+                    out.push_str(&format_argument_at(arg, level + 1));
+                    out.push(',');
+                }
+                out.push('\n');
+                out.push_str(&close_pad);
+                out.push(')');
+                out
+            } else {
+                let args = args
+                    .iter()
+                    .map(format_argument)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{callee}({args})")
+            }
         }
         Expression::Field {
             base, name, quoted, ..
@@ -532,7 +705,7 @@ pub fn format_expression(expression: &Expression) -> String {
             } else {
                 name.clone()
             };
-            format!("{}.{}", format_child(base, PREC_ATOM), segment)
+            format!("{}.{}", format_child_at(base, PREC_ATOM, level), segment)
         }
         Expression::OptionalField {
             base, name, quoted, ..
@@ -542,10 +715,10 @@ pub fn format_expression(expression: &Expression) -> String {
             } else {
                 name.clone()
             };
-            format!("{}?.{}", format_child(base, PREC_ATOM), segment)
+            format!("{}?.{}", format_child_at(base, PREC_ATOM, level), segment)
         }
         Expression::Unary { op, operand, .. } => {
-            let operand = format_child(operand, PREC_UNARY);
+            let operand = format_child_at(operand, PREC_UNARY, level);
             match op {
                 UnaryOp::Neg => format!("-{operand}"),
                 UnaryOp::Not => format!("not {operand}"),
@@ -553,8 +726,8 @@ pub fn format_expression(expression: &Expression) -> String {
         }
         Expression::Binary {
             op, left, right, ..
-        } => format_binary(*op, left, right),
-        Expression::Interpolation { parts, .. } => format_interpolation(parts),
+        } => format_binary_at(*op, left, right, level),
+        Expression::Interpolation { parts, .. } => format_interpolation_at(parts, level),
     }
 }
 
@@ -564,7 +737,13 @@ fn format_opt_expression(expression: Option<&Expression>) -> String {
     expression.map(format_expression).unwrap_or_default()
 }
 
-fn format_binary(op: BinaryOp, left: &Expression, right: &Expression) -> String {
+fn format_opt_expression_at(expression: Option<&Expression>, level: usize) -> String {
+    expression
+        .map(|expression| format_expression_at(expression, level))
+        .unwrap_or_default()
+}
+
+fn format_binary_at(op: BinaryOp, left: &Expression, right: &Expression, level: usize) -> String {
     let precedence = binary_precedence(op);
     // Left-associative operators keep an equal-precedence left operand without
     // parentheses; the right operand needs them. Non-associative operators
@@ -574,8 +753,8 @@ fn format_binary(op: BinaryOp, left: &Expression, right: &Expression) -> String 
     } else {
         (precedence + 1, precedence + 1)
     };
-    let left = format_child(left, left_min);
-    let right = format_child(right, right_min);
+    let left = format_child_at(left, left_min, level);
+    let right = format_child_at(right, right_min, level);
     match op {
         BinaryOp::RangeExclusive => format!("{left}..{right}"),
         BinaryOp::RangeInclusive => format!("{left}..={right}"),
@@ -583,10 +762,8 @@ fn format_binary(op: BinaryOp, left: &Expression, right: &Expression) -> String 
     }
 }
 
-/// Format `child`, wrapping it in parentheses when it binds looser than
-/// `min_precedence` requires.
-fn format_child(child: &Expression, min_precedence: u8) -> String {
-    let rendered = format_expression(child);
+fn format_child_at(child: &Expression, min_precedence: u8, level: usize) -> String {
+    let rendered = format_expression_at(child, level);
     if precedence(child) < min_precedence {
         format!("({rendered})")
     } else {
@@ -595,6 +772,10 @@ fn format_child(child: &Expression, min_precedence: u8) -> String {
 }
 
 fn format_argument(argument: &Argument) -> String {
+    format_argument_at(argument, 0)
+}
+
+fn format_argument_at(argument: &Argument, level: usize) -> String {
     let mut out = String::new();
     match argument.mode {
         Some(ArgMode::Out) => out.push_str("out "),
@@ -605,11 +786,11 @@ fn format_argument(argument: &Argument) -> String {
         out.push_str(name);
         out.push_str(": ");
     }
-    out.push_str(&format_expression(&argument.value));
+    out.push_str(&format_expression_at(&argument.value, level));
     out
 }
 
-fn format_interpolation(parts: &[InterpolationPart]) -> String {
+fn format_interpolation_at(parts: &[InterpolationPart], level: usize) -> String {
     let mut out = String::from("$\"");
     for part in parts {
         match part {
@@ -617,7 +798,7 @@ fn format_interpolation(parts: &[InterpolationPart]) -> String {
             InterpolationPart::Text { text, .. } => out.push_str(text),
             InterpolationPart::Expr(expression) => {
                 out.push('{');
-                out.push_str(&format_expression(expression));
+                out.push_str(&format_expression_at(expression, level));
                 out.push('}');
             }
         }

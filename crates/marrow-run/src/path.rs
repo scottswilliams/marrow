@@ -236,7 +236,9 @@ pub(crate) fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, R
         });
     }
     // A keyed layer hop `….layer(key…)`: a call whose callee is a `.layer` access.
-    if let Expression::Call { callee, args, span } = expr
+    if let Expression::Call {
+        callee, args, span, ..
+    } = expr
         && let Expression::Field { base, name, .. } = callee.as_ref()
     {
         let mut path = lower(base, env)?;
@@ -282,7 +284,10 @@ pub(crate) fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, R
             None => Err(unsupported("this saved path", *span)),
         };
     }
-    let Expression::Call { callee, args, span } = expr else {
+    let Expression::Call {
+        callee, args, span, ..
+    } = expr
+    else {
         return Err(unsupported("this saved path", expr.span()));
     };
     let Expression::SavedRoot { name, .. } = callee.as_ref() else {

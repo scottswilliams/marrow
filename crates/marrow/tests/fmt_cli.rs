@@ -107,6 +107,20 @@ fn fmt_refuses_to_format_source_with_errors() {
     assert_eq!(unchanged, "module app\n\tconst Max: int = 5\n");
 }
 
+#[test]
+fn fmt_write_refuses_unexpected_indentation_without_rewriting() {
+    let source = "module app\nfn main()\n    print(\"kept\")\n        print(\"over-indented\")\n";
+    let path = temp_source("over-indented", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let unchanged = fs::read_to_string(&path).expect("read back");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert_eq!(unchanged, source);
+}
+
 /// A temp project directory with a `marrow.json` selecting `src` and one `.mw`
 /// file written there.
 fn temp_project(name: &str, relative: &str, source: &str) -> std::path::PathBuf {

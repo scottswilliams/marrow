@@ -165,7 +165,8 @@ pub(crate) fn unique_index_lookup(
 ) -> Result<Option<UniqueIndexLookup>, RuntimeError> {
     let Expression::Call {
         callee, args, span, ..
-    } = expr else {
+    } = expr
+    else {
         return Ok(None);
     };
     let Expression::Field { base, name, .. } = callee.as_ref() else {

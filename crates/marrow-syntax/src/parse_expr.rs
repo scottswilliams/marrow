@@ -224,16 +224,18 @@ impl<'a> ExprParser<'a> {
         loop {
             match self.peek() {
                 Some(TokenKind::LeftParen) => {
-                    self.advance();
-                    let args = self.arguments()?;
+                    let open = self.advance();
+                    let parsed_args = self.arguments()?;
                     if !matches!(self.peek(), Some(TokenKind::RightParen)) {
                         return None;
                     }
                     let close = self.advance();
                     let span = join_spans(expr.span(), close.span);
+                    let multiline = parsed_args.trailing_comma || close.span.line > open.span.line;
                     expr = Expression::Call {
                         callee: Box::new(expr),
-                        args,
+                        args: parsed_args.args,
+                        multiline,
                         span,
                     };
                 }
@@ -309,12 +311,16 @@ impl<'a> ExprParser<'a> {
         Some((name, quoted, segment.span))
     }
 
-    fn arguments(&mut self) -> Option<Vec<Argument>> {
+    fn arguments(&mut self) -> Option<ParsedArguments> {
         let mut args = Vec::new();
         if matches!(self.peek(), Some(TokenKind::RightParen)) {
-            return Some(args);
+            return Some(ParsedArguments {
+                args,
+                trailing_comma: false,
+            });
         }
         let mut seen_named = false;
+        let mut trailing_comma = false;
         loop {
             let arg = self.argument()?;
             // After the first named argument, every remaining argument must be
@@ -336,10 +342,14 @@ impl<'a> ExprParser<'a> {
             }
             self.advance();
             if matches!(self.peek(), Some(TokenKind::RightParen)) {
+                trailing_comma = true;
                 break;
             }
         }
-        Some(args)
+        Some(ParsedArguments {
+            args,
+            trailing_comma,
+        })
     }
 
     fn argument(&mut self) -> Option<Argument> {
@@ -510,6 +520,11 @@ impl<'a> ExprParser<'a> {
             span: join_spans(first.span, end),
         })
     }
+}
+
+struct ParsedArguments {
+    args: Vec<Argument>,
+    trailing_comma: bool,
 }
 
 /// Type keywords and `Error` that can begin a value when immediately called as

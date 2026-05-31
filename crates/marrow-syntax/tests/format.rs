@@ -532,3 +532,65 @@ fn documented_parameter_signature_round_trips() {
     assert!(once.contains("book: int,"));
     assert!(once.contains("shelf: string,"));
 }
+
+#[test]
+fn preserves_top_level_and_member_line_comments() {
+    let source = "module app\n\
+         ; shared constants\n\
+         const Max:int=5\n\
+         ; stored records\n\
+         resource Book\n\
+         \x20   ; visible label\n\
+         \x20   title: string\n";
+    let expected = "module app\n\
+         \n\
+         ; shared constants\n\
+         const Max: int = 5\n\
+         \n\
+         ; stored records\n\
+         resource Book\n\
+         \x20   ; visible label\n\
+         \x20   title: string\n";
+
+    assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
+    let source = "module app\n\
+         ;; Module overview.\n\
+         ;;\n\
+         \n\
+         ;; Stored books.\n\
+         resource Book\n\
+         \x20   title: string\n";
+    let expected = "module app\n\
+         \n\
+         ;; Module overview.\n\
+         ;;\n\
+         \n\
+         ;; Stored books.\n\
+         resource Book\n\
+         \x20   title: string\n";
+
+    assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn preserves_multiline_trailing_comma_calls() {
+    let source = "module app\n\
+         fn fail()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   )\n";
+    let expected = "module app\n\
+         \n\
+         fn fail()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   )\n";
+
+    assert_eq!(format_source(source), expected);
+}

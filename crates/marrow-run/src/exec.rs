@@ -153,7 +153,10 @@ pub(crate) fn eval_statement(
         Statement::Expr { value, .. } => {
             // A call statement may invoke a function that returns nothing; only a
             // call in value position requires a return value.
-            if let Expression::Call { callee, args, span } = value {
+            if let Expression::Call {
+                callee, args, span, ..
+            } = value
+            {
                 eval_call(callee, args, *span, env)?;
             } else {
                 eval_expr(value, env)?;
