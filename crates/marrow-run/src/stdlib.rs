@@ -580,9 +580,10 @@ pub(crate) fn eval_bytes_conversion(
 }
 
 /// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
-/// `instant`/`duration`): coerce a dynamically-typed value to the named type.
-/// Text forms go through the same canonical scalar codec as saved values, so
-/// conversions accept only the spellings the store can round-trip exactly.
+/// `instant`/`duration`/`ErrorCode`): coerce a dynamically-typed value to the
+/// named type.
+/// Text forms with a scalar codec go through the same canonical path as saved
+/// values, while `ErrorCode` validates the documented lowercase dotted form.
 pub(crate) fn eval_conversion(
     name: &str,
     args: &[Argument],
@@ -601,6 +602,7 @@ pub(crate) fn eval_conversion(
         "date" => convert_to_canonical_scalar(value, ScalarType::Date, "date", span),
         "instant" => convert_to_canonical_scalar(value, ScalarType::Instant, "instant", span),
         "duration" => convert_to_canonical_scalar(value, ScalarType::Duration, "duration", span),
+        "ErrorCode" => convert_to_error_code(value, span),
         _ => Err(conversion_error(name, span)),
     }
 }
@@ -669,6 +671,34 @@ pub(crate) fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value,
         }
     };
     Ok(Value::Str(text))
+}
+
+fn convert_to_error_code(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Str(text) if is_error_code_text(&text) => Ok(Value::Str(text)),
+        _ => Err(conversion_error("ErrorCode", span)),
+    }
+}
+
+fn is_error_code_text(text: &str) -> bool {
+    let mut saw_dot = false;
+    let mut segment_has_char = false;
+    for byte in text.bytes() {
+        match byte {
+            b'.' => {
+                if !segment_has_char {
+                    return false;
+                }
+                saw_dot = true;
+                segment_has_char = false;
+            }
+            b'a'..=b'z' | b'0'..=b'9' | b'_' => {
+                segment_has_char = true;
+            }
+            _ => return false,
+        }
+    }
+    saw_dot && segment_has_char
 }
 
 fn convert_to_canonical_scalar(

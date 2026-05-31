@@ -890,6 +890,48 @@ fn decimal_conversion_parses_canonical_text() {
 }
 
 #[test]
+fn error_code_conversion_validates_and_returns_text() {
+    let program = checked_program(
+        "fn code(): string\n\
+         \x20   const code: ErrorCode = ErrorCode(\"x.y\")\n\
+         \x20   if code == ErrorCode(\"x.y\")\n\
+         \x20       return string(code)\n\
+         \x20   return \"mismatch\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::code", &[]),
+        Ok(Some(Value::Str("x.y".into())))
+    );
+}
+
+#[test]
+fn error_code_conversion_accepts_dynamic_text() {
+    let program =
+        checked_program("fn code(raw: string): string\n    return string(ErrorCode(raw))\n");
+    assert_eq!(
+        run(&program, "test::code", &[Value::Str("app.missing".into())]),
+        Ok(Some(Value::Str("app.missing".into())))
+    );
+}
+
+#[test]
+fn error_code_conversion_failures_are_catchable_type_errors() {
+    let program = checked_program(
+        "fn code(raw: string): string\n\
+         \x20   try\n\
+         \x20       return string(ErrorCode(raw))\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n",
+    );
+    for raw in ["Bad.Code", "missing_dot"] {
+        assert_eq!(
+            run(&program, "test::code", &[Value::Str(raw.into())]),
+            Ok(Some(Value::Str(RUN_TYPE.into())))
+        );
+    }
+}
+
+#[test]
 fn conversion_builtins_accept_documented_sources() {
     let program = checked_program(
         "fn intFromDecimal(v: decimal): int\n    return int(v)\n\

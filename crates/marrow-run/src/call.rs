@@ -940,8 +940,8 @@ pub(crate) fn eval_call(
                 "nextId" => return eval_next_id(args, span, env).map(Some),
                 "append" => return eval_append(args, span, env).map(Some),
                 "bytes" => return eval_bytes_conversion(args, span, env).map(Some),
-                "int" | "decimal" | "string" | "bool" | "date" | "instant" | "duration" => {
-                    return eval_conversion(name, args, span, env).map(Some);
+                other if ScalarType::from_scalar_name(other).is_some() => {
+                    return eval_conversion(other, args, span, env).map(Some);
                 }
                 // `keys(<layer>)` materializes the layer's child keys as a sequence
                 // value. Direct loops use this enumeration only for address-only
