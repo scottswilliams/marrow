@@ -89,9 +89,10 @@ pub(crate) use write_dispatch::*;
 
 pub use call::{evaluate_function, run_entry, run_entry_with_debugger, run_entry_with_host};
 pub use error::{
-    RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE,
-    RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
+    RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO,
+    RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_STORE,
+    RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION,
+    RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{Frame, Host, StepHook};
 pub use schema_query::{SavedPathClass, classify_saved_path, identity_leaf_key_mismatch};

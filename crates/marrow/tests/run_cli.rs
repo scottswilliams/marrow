@@ -825,7 +825,7 @@ fn an_absent_element_fault_is_located() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("src/app.mw:6:") && stderr.contains("run.absent_element:"),
+        stderr.contains("src/app.mw:7:") && stderr.contains("run.absent_element:"),
         "absent_element must be located, got: {stderr}"
     );
 }

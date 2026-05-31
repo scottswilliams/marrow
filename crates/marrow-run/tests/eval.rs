@@ -9,10 +9,10 @@ use marrow_check::{
     CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
 };
 use marrow_run::{
-    Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
-    RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, SavedPathClass, Value,
-    classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
+    Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO,
+    RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE,
+    RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput,
+    SavedPathClass, Value, classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::{compile_enum, compile_resource};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
@@ -276,6 +276,17 @@ fn decimal_division_rounds_half_even() {
     assert_eq!(
         run(&program, "test::f", &[]).unwrap(),
         Some(Value::Str(format!("0.{}", "3".repeat(34))))
+    );
+}
+
+#[test]
+fn decimal_multiplication_must_fit_exactly() {
+    let program = checked_program(
+        "pub fn f(): decimal\n    return 0.123456789012345678 * 0.123456789012345678\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap_err().code,
+        RUN_DECIMAL_OVERFLOW
     );
 }
 
@@ -1174,14 +1185,72 @@ fn finally_runs_on_success_and_on_throw() {
 }
 
 #[test]
-fn a_runtime_fault_in_try_is_not_caught() {
-    // `catch` handles thrown Errors, not runtime faults; the fault propagates.
+fn a_runtime_fault_in_try_is_caught() {
     let program = checked_program(
         "pub fn f(): int\n    try\n        return 1 / 0\n    catch err: Error\n        return 2\n",
     );
+    assert_eq!(run(&program, "test::f", &[]), Ok(Some(Value::Int(2))));
+}
+
+#[test]
+fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
+    let program = checked_program(
+        "pub fn overflow_code(): string\n\
+         \x20   try\n\
+         \x20       var x: int = 9223372036854775807\n\
+         \x20       x = x + 1\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn remainder_code(): string\n\
+         \x20   try\n\
+         \x20       var z: int = 0\n\
+         \x20       var y: int = 5 % z\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn parse_date_code(): string\n\
+         \x20   try\n\
+         \x20       var d: date = std::clock::parseDate(\"2023-02-29\")\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn instant_range_code(): string\n\
+         \x20   try\n\
+         \x20       var text: string = std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"9999-12-31T23:59:59Z\"), 1.day))\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn decimal_overflow_code(): string\n\
+         \x20   try\n\
+         \x20       var x: decimal = 9999999999999999999999999999999999.0 * 9999999999999999999999999999999999.0\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n",
+    );
     assert_eq!(
-        run(&program, "test::f", &[]).unwrap_err().code,
-        RUN_DIVIDE_BY_ZERO
+        run(&program, "test::overflow_code", &[]),
+        Ok(Some(Value::Str(RUN_OVERFLOW.into())))
+    );
+    assert_eq!(
+        run(&program, "test::remainder_code", &[]),
+        Ok(Some(Value::Str(RUN_DIVIDE_BY_ZERO.into())))
+    );
+    assert_eq!(
+        run(&program, "test::parse_date_code", &[]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+    assert_eq!(
+        run(&program, "test::instant_range_code", &[]),
+        Ok(Some(Value::Str("value.range".into())))
+    );
+    assert_eq!(
+        run(&program, "test::decimal_overflow_code", &[]),
+        Ok(Some(Value::Str("run.decimal_overflow".into())))
     );
 }
 
@@ -1247,28 +1316,22 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
 #[test]
 fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
     // After a caller catches a callee's throw, the pending throw is cleared, so a
-    // later genuine fault (divide-by-zero) is NOT mistaken for a catchable throw.
+    // later fault is caught with its own Error value rather than the stale throw.
     let program = checked_program(
         "fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        return 1 / 0\n    catch boom: Error\n        return 99\n    return 0\n",
     );
-    assert_eq!(
-        run(&program, "test::check", &[]).unwrap_err().code,
-        RUN_DIVIDE_BY_ZERO
-    );
+    assert_eq!(run(&program, "test::check", &[]), Ok(Some(Value::Int(99))));
 }
 
 #[test]
 fn a_throwing_finally_does_not_leak_a_pending_throw() {
     // A `finally` throwing over a call-propagated throw must not leave that throw
-    // stashed: after an outer `catch` swallows the finally throw, a later fault
-    // still faults rather than being caught with the stale error.
+    // stashed: after an outer `catch` swallows the finally throw, a later fault is
+    // caught with its own Error value rather than the stale throw.
     let program = checked_program(
         "fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        return 1 / 0\n    catch boom: Error\n        return 99\n    return 0\n",
     );
-    assert_eq!(
-        run(&program, "test::leak", &[]).unwrap_err().code,
-        RUN_DIVIDE_BY_ZERO
-    );
+    assert_eq!(run(&program, "test::leak", &[]), Ok(Some(Value::Int(99))));
 }
 
 #[test]
@@ -1860,7 +1923,7 @@ fn detects_an_over_envelope_decimal_literal() {
     let f = function("fn f(): decimal\n    return 9.9999999999999999999999999999999999\n");
     let result = evaluate_function(&f, &[]);
     assert!(
-        matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        matches!(result, Err(ref error) if error.code == RUN_DECIMAL_OVERFLOW),
         "{result:?}"
     );
 }
@@ -5721,6 +5784,20 @@ fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
 }
 
 #[test]
+fn traversal_faults_are_not_catchable_errors() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear(): string\n    try\n        for id in keys(^books)\n            delete ^books(id)\n        return \"completed\"\n    catch error: Error\n        return error.code\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::clear", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
 fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
@@ -8283,7 +8360,7 @@ fn is_with_a_full_path_to_a_duplicated_leaf_is_exact() {
 }
 
 #[test]
-fn fatal_fault_in_entry_module_carries_its_file_id() {
+fn uncaught_fault_in_entry_module_carries_its_file_id() {
     // A divide-by-zero raised in the entry module's own body stamps that
     // module's file id (index 0), so a renderer can name the file it lives in.
     let program = multi_module_program(&[("a", "pub fn boom(): int\n    return 1 / 0\n")]);
@@ -8297,10 +8374,10 @@ fn fatal_fault_in_entry_module_carries_its_file_id() {
 }
 
 #[test]
-fn fatal_fault_in_cross_module_callee_carries_the_callee_file_id() {
+fn uncaught_fault_in_cross_module_callee_carries_the_callee_file_id() {
     // The entry `a::run` calls `b::boom`, which divides by zero. The fault is
-    // fatal, so it bubbles through every frame unchanged — its origin must be
-    // `b`'s file (index 1), the frame that raised it, not the entry's `a`.
+    // uncaught, so its origin must be `b`'s file (index 1), the frame that
+    // raised it, not the entry's `a`.
     let program = multi_module_program(&[
         ("a", "pub fn run(): int\n    return b::boom()\n"),
         ("b", "pub fn boom(): int\n    return 1 / 0\n"),
@@ -8345,9 +8422,9 @@ fn bare_program_fault_leaves_origin_none() {
 
 #[test]
 fn outer_frame_does_not_overwrite_inner_origin() {
-    // `a::outer` calls `a::mid` calls `b::boom`. The fatal fault crosses three
-    // frames in two modules; the deepest (`b`, index 1) wins and the outer `a`
-    // frames must not overwrite it.
+    // `a::outer` calls `a::mid` calls `b::boom`. The uncaught fault crosses
+    // three frames in two modules; the deepest (`b`, index 1) wins and the outer
+    // `a` frames must not overwrite it.
     let program = multi_module_program(&[
         (
             "a",

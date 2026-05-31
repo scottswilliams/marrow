@@ -138,13 +138,7 @@ pub(crate) fn eval_raw_field_write(
     }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a raw segment", span))?;
-    let bytes = encode_value(&saved).map_err(|error| RuntimeError {
-        throw: None,
-        origin: None,
-        code: error.code(),
-        message: error.to_string(),
-        span,
-    })?;
+    let bytes = encode_value(&saved).map_err(|error| error.located(span))?;
     env.store
         .borrow_mut()
         .write(&encode_path(&path), bytes)

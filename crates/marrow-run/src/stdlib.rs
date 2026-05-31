@@ -30,13 +30,7 @@ pub(crate) fn eval_output(
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("`{name}` takes one argument"),
-            span,
-        });
+        return Err(type_error(&format!("`{name}` takes one argument"), span));
     };
     let text = render(eval_expr(&arg.value, env)?, span)?;
     let mut output = env.output.borrow_mut();
@@ -54,13 +48,7 @@ pub(crate) fn eval_exists(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`exists` takes one argument".into(),
-            span,
-        });
+        return Err(type_error("`exists` takes one argument", span));
     };
     Ok(Value::Bool(saved_path_present(&arg.value, span, env)?))
 }
@@ -75,13 +63,7 @@ pub(crate) fn eval_count(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`count` takes one argument".into(),
-            span,
-        });
+        return Err(type_error("`count` takes one argument", span));
     };
     if let Some(segments) = unique_index_lookup_path(&arg.value, env)? {
         let present = env
@@ -214,81 +196,50 @@ pub(crate) fn eval_assert(
     match op {
         "isTrue" | "isFalse" => {
             let [arg] = args else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: format!("`std::assert::{op}` takes one boolean"),
+                return Err(type_error(
+                    &format!("`std::assert::{op}` takes one boolean"),
                     span,
-                });
+                ));
             };
             let Value::Bool(actual) = eval_expr(&arg.value, env)? else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: format!("`std::assert::{op}` takes a boolean"),
+                return Err(type_error(
+                    &format!("`std::assert::{op}` takes a boolean"),
                     span,
-                });
+                ));
             };
             if actual != (op == "isTrue") {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_ASSERT,
-                    message: format!("assertion failed: {op}({actual})"),
+                return Err(raise_fault(
+                    RUN_ASSERT,
+                    format!("assertion failed: {op}({actual})"),
                     span,
-                });
+                ));
             }
             Ok(None)
         }
         "absent" => {
             let [arg] = args else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: "`std::assert::absent` takes one path".into(),
-                    span,
-                });
+                return Err(type_error("`std::assert::absent` takes one path", span));
             };
             if saved_path_present(&arg.value, span, env)? {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_ASSERT,
-                    message: "assertion failed: expected the path to be absent".into(),
+                return Err(raise_fault(
+                    RUN_ASSERT,
+                    "assertion failed: expected the path to be absent".into(),
                     span,
-                });
+                ));
             }
             Ok(None)
         }
         "fail" => {
             let [arg] = args else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: "`std::assert::fail` takes one message".into(),
-                    span,
-                });
+                return Err(type_error("`std::assert::fail` takes one message", span));
             };
             let Value::Str(message) = eval_expr(&arg.value, env)? else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: "`std::assert::fail` takes a string message".into(),
+                return Err(type_error(
+                    "`std::assert::fail` takes a string message",
                     span,
-                });
+                ));
             };
-            Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_ASSERT,
-                message,
-                span,
-            })
+            Err(raise_fault(RUN_ASSERT, message, span))
         }
         other => Err(unsupported(&format!("std::assert::{other}"), span)),
     }
@@ -655,13 +606,7 @@ pub(crate) fn eval_text(
 /// and the `i64::MIN % -1` overflow.
 pub(crate) fn int_remainder(a: i64, b: i64, span: SourceSpan) -> Result<i64, RuntimeError> {
     if b == 0 {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_DIVIDE_BY_ZERO,
-            message: "integer remainder by zero".into(),
-            span,
-        });
+        return Err(divide_by_zero("integer remainder by zero", span));
     }
     a.checked_rem(b).ok_or_else(|| overflow(span))
 }

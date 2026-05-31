@@ -6,14 +6,14 @@ use crate::*;
 /// source span of the construct that raised it.
 ///
 /// When `throw` is `Some`, the fault is a catchable unwinding throw carrying its
-/// `Error` value: a `throw` from a called function or a recoverable `write.*`/
-/// `run.absent_element` fault that a surrounding `try`/`catch` can bind. The
-/// value rides this `Err` channel directly, so an expression-position throw
-/// (from a call or builtin) and a statement-position throw (`Flow::Throw`) agree
-/// through one mechanism with no out-of-band carrier. When `throw` is `None` the
-/// fault is fatal and uncatchable (a type error, overflow, unknown function, an
-/// `out`/`inout` seed read of an absent element, …). `code`/`message` always
-/// describe how the fault renders if it escapes uncaught.
+/// `Error` value: a `throw` from a called function, a deterministic evaluator
+/// fault, or a recoverable `write.*` fault that a surrounding `try`/`catch` can
+/// bind. The value rides this `Err` channel directly, so an expression-position
+/// throw (from a call or builtin) and a statement-position throw (`Flow::Throw`)
+/// agree through one mechanism with no out-of-band carrier. When `throw` is
+/// `None` the fault is fatal and uncatchable (unknown functions, store
+/// corruption, unsupported runtime constructs, host capability failures, …).
+/// `code`/`message` always describe how the fault renders if it escapes uncaught.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeError {
     pub code: &'static str,
@@ -78,6 +78,9 @@ pub const RUN_UNBOUND_NAME: &str = "run.unbound_name";
 
 /// Integer arithmetic overflowed the 64-bit range.
 pub const RUN_OVERFLOW: &str = "run.overflow";
+
+/// Decimal arithmetic exceeded the 34-digit / 34-place decimal envelope.
+pub const RUN_DECIMAL_OVERFLOW: &str = "run.decimal_overflow";
 
 /// Integer division or remainder by zero.
 pub const RUN_DIVIDE_BY_ZERO: &str = "run.divide_by_zero";
@@ -289,7 +292,7 @@ impl Located for StoreError {
 /// keeps the codec's stable dotted code.
 impl Located for ValueError {
     fn located(self, span: SourceSpan) -> RuntimeError {
-        RuntimeError::fault(self.code(), self.to_string(), span)
+        raise_fault(self.code(), self.to_string(), span)
     }
 }
 
@@ -313,9 +316,21 @@ pub(crate) fn unsupported(what: &str, span: SourceSpan) -> RuntimeError {
 }
 
 pub(crate) fn type_error(message: &str, span: SourceSpan) -> RuntimeError {
-    RuntimeError::fault(RUN_TYPE, message.to_string(), span)
+    raise_fault(RUN_TYPE, message.to_string(), span)
 }
 
 pub(crate) fn overflow(span: SourceSpan) -> RuntimeError {
-    RuntimeError::fault(RUN_OVERFLOW, "integer arithmetic overflowed".into(), span)
+    raise_fault(RUN_OVERFLOW, "integer arithmetic overflowed".into(), span)
+}
+
+pub(crate) fn decimal_overflow(span: SourceSpan) -> RuntimeError {
+    raise_fault(
+        RUN_DECIMAL_OVERFLOW,
+        "decimal arithmetic exceeded the 34-digit / 34-place envelope".into(),
+        span,
+    )
+}
+
+pub(crate) fn divide_by_zero(message: &str, span: SourceSpan) -> RuntimeError {
+    raise_fault(RUN_DIVIDE_BY_ZERO, message.to_string(), span)
 }

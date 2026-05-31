@@ -45,10 +45,11 @@ pub fn evaluate_function(
             Completion::Faulted {
                 error,
                 code,
+                span,
                 origin,
             },
             ..,
-        ) => Err(reraise_fault(error, code, function.span, origin)),
+        ) => Err(reraise_fault(error, code, span, origin)),
     }
 }
 
@@ -160,11 +161,12 @@ pub(crate) fn run_entry_impl<'p>(
             Completion::Faulted {
                 error,
                 code,
+                span,
                 origin,
             },
             ..,
         ) => {
-            return Err(reraise_fault(error, code, function.span, origin));
+            return Err(reraise_fault(error, code, span, origin));
         }
     };
     Ok(RunOutput {
@@ -186,13 +188,14 @@ pub(crate) enum Completion {
         /// the deepest (raising) file rather than re-deriving it at each frame.
         origin: Option<FileId>,
     },
-    /// A recoverable fault (e.g. `write.unique_conflict`, `run.absent_element`)
-    /// that escaped a called function uncaught. It crosses the call boundary as a
-    /// catchable error like a throw, but keeps its own dotted `code` so an
-    /// uncaught fault surfaces with that code, not `run.uncaught_error`.
+    /// A catchable fault (e.g. `write.unique_conflict`, `run.overflow`,
+    /// `run.absent_element`) that escaped a called function uncaught. It crosses
+    /// the call boundary as a catchable error like a throw, but keeps its own
+    /// dotted `code` and source span so an uncaught fault surfaces as itself.
     Faulted {
         error: Value,
         code: &'static str,
+        span: SourceSpan,
         origin: Option<FileId>,
     },
 }
@@ -302,11 +305,13 @@ pub(crate) fn invoke<'p>(
         Err(RuntimeError {
             throw: Some(error),
             code,
+            span,
             origin,
             ..
         }) => Completion::Faulted {
             error: *error,
             code,
+            span,
             origin: origin.or_else(here),
         },
         Err(fatal) => return Err(fatal.with_origin_from(env.program, module)),
@@ -1045,8 +1050,9 @@ pub(crate) fn complete_call(
         Completion::Faulted {
             error,
             code,
+            span: fault_span,
             origin,
-        } => Err(reraise_fault(error, code, span, origin)),
+        } => Err(reraise_fault(error, code, fault_span, origin)),
     }
 }
 

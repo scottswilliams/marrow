@@ -95,7 +95,7 @@ code is stable and predictable:
 |---|---|
 | `parse` | `parse` |
 | `check`, `schema` | `check` |
-| `run` | `runtime` |
+| `run`, `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
 | `protocol` | `protocol` |
@@ -151,7 +151,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
-| `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of `run.overflow`. |
+| `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |
 | `check.catch_type` | A `catch` annotation is not `Error`. |
@@ -194,35 +194,51 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 
 ### `run.*` — kind `runtime`
 
-Runtime faults from the evaluator, surfaced by `run` and `test`. In `.mw` code
-these are catchable `Error` values; a fault that reaches the top of the program
-is reported under the code below, except `run.uncaught_error` — see "Typed
-errors in running programs".
+Runtime faults from the evaluator, surfaced by `run` and `test`. Deterministic
+faults that the evaluator can recover from are raised as catchable `Error`
+values: arithmetic faults, decimal envelope failures, absent-element reads,
+recoverable type and parse/range failures from builtins, and assertions keep
+their specific `run.*` code. Runtime backstops for
+unchecked or internal states, control-flow invariants, missing host
+capabilities, unsupported constructs, storage failures, and traversal
+conflicts are fatal runtime errors rather than catchable `Error` values. A
+catchable fault that reaches the top of the program is reported under its own
+code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 
 | Code | Meaning |
 |---|---|
-| `run.type` | A value was used where another type was required. |
-| `run.unbound_name` | A name was read or assigned that is not bound in scope. |
+| `run.type` | A value was used where another type was required. Recoverable builtin/evaluator type faults are catchable; unchecked internal type backstops can be fatal. |
+| `run.unbound_name` | A name was read or assigned that is not bound in scope. Fatal runtime backstop for unchecked programs. |
 | `run.overflow` | Integer arithmetic overflowed the 64-bit range. |
+| `run.decimal_overflow` | Decimal arithmetic exceeded the 34-digit / 34-place envelope. |
 | `run.divide_by_zero` | Integer division or remainder by zero. |
-| `run.no_enclosing_loop` | A `break`/`continue` reached the top of a function with no loop to target. |
-| `run.unknown_function` | A call named a function the program does not declare. |
+| `run.no_enclosing_loop` | A `break`/`continue` reached the top of a function with no loop to target. Fatal runtime control-flow backstop. |
+| `run.unknown_function` | A call named a function the program does not declare. Fatal runtime backstop for unchecked programs. |
 | `run.private_function` | A qualified call reached a function that exists but is not `pub` to the calling module. The runtime backstop for `check.private_function`. |
-| `run.no_value` | A call to a function that returns no value was used where a value is needed. |
+| `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
 | `run.absent_element` | A direct read of a saved element that is absent (unpopulated). |
-| `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. |
-| `run.unsupported` | A construct this slice of the runtime does not yet evaluate. |
-| `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. |
+| `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. Fatal storage/backend failure while evaluating a read. |
+| `run.unsupported` | A construct this slice of the runtime does not yet evaluate. Fatal runtime backstop. |
+| `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |
-| `run.traversal` | A write, delete, append, or merge changed the saved layer a loop was actively traversing. The dynamic counterpart of `check.loop_mutates_traversed_layer`. |
+| `run.traversal` | A write, delete, append, or merge changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
+
+### `value.*` — kind `runtime`
+
+Value codec range faults raised while formatting or writing runtime values.
+These are catchable `Error` values inside a running program.
+
+| Code | Meaning |
+|---|---|
+| `value.range` | A date or instant lies outside Marrow's supported calendar range, years 0001-9999. |
 
 ### `write.*` — kind `tooling`
 
 Managed-write faults raised by the write planner inside a running program. They
-surface to `run`/`test` as `Error` values, so an uncaught one is reported as
-`run.uncaught_error` carrying the `write.*` code in its message.
+surface to `run`/`test` as `Error` values, so code can catch them; an uncaught
+one is reported under its own `write.*` code.
 
 | Code | Meaning |
 |---|---|
@@ -323,11 +339,16 @@ the store's `store.corrupt_path`, not a `data.*` code.)
 ## Typed Errors In Running Programs
 
 In `.mw` code an error is an `Error` value with its own dotted `code`, raised by
-`throw` and caught by `catch`. Builtins and managed writes raise typed errors
-too: a failed `std::io::readText` raises `io.read`, a rejected write raises a
-`write.*` code, and so on, all catchable in code. When such an error is *not*
-caught and reaches the top of the program, `run`/`test` report it as
-`run.uncaught_error` and carry the original code in the message, for example:
+`throw` and caught by `catch`. Builtins, managed writes, and deterministic
+runtime faults raise typed errors too when the fault is recoverable: a failed
+`std::io::readText` raises `io.read`, a rejected write raises a `write.*` code,
+arithmetic raises specific numeric `run.*` codes, and value range failures raise
+`value.*` codes. These typed raises are catchable in code. Fatal runtime
+backstops for unchecked/internal states and host/tooling failures are not
+`Error` values and can surface at the top level under their own `run.*` code.
+When a language `throw` or `std::io` error is *not* caught and reaches the top of
+the program, `run`/`test` report it as `run.uncaught_error` and carry the
+original code in the message, for example:
 
 ```
 run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/such/file`: No such file or directory (os error 2)
