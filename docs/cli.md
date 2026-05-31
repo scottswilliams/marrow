@@ -66,7 +66,8 @@ diagnostics.
 - Given a `.mw` file, it parses that file in isolation and reports parse
   diagnostics. It does not type-check across modules.
 - Given a project directory, it loads `marrow.json` and runs the project checker
-  over every source root: parse, type, effect, and saved-path checks.
+  over every source root plus configured test files: parse, type, effect, and
+  saved-path checks.
 
 Exits `0` when there are no errors, `1` when there are (or when the file or
 `marrow.json` cannot be read).

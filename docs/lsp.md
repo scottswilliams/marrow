@@ -37,8 +37,8 @@ The current server is a first slice:
 Project diagnostics use the same checker path as [`marrow check`](cli.md#marrow-check)
 on a project directory, so editor squiggles include parser, schema, name
 resolution, type, and saved-path findings for files discovered through
-`marrow.json` or open under its source roots. Parse-only fallback diagnostics
-use `marrow_syntax::parse_source`.
+`marrow.json`, open under its source roots, or open under its configured test
+patterns. Parse-only fallback diagnostics use `marrow_syntax::parse_source`.
 
 ### `initialize`
 

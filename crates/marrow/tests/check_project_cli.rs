@@ -160,6 +160,426 @@ fn project_check_reports_type_errors_in_configured_tests() {
 }
 
 #[test]
+fn surfaces_a_parse_error_in_configured_test_files() {
+    let root = temp_project("proj-test-parse-tab", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(root, "src/app.mw", "module app\n");
+        // A tab is a lexical error.
+        write(root, "tests/bad_test.mw", "pub fn t()\n\tapp::noop()\n");
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("bad_test.mw"), "{stderr}");
+    assert!(stderr.contains("tabs"), "{stderr}");
+}
+
+#[test]
+fn reports_configured_test_files_when_source_files_have_errors() {
+    let root = temp_project("proj-test-source-error", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nfn f()\n    var x: int = \"str\"\n",
+        );
+        // A tab is a lexical error.
+        write(root, "tests/bad_test.mw", "pub fn t()\n\treturn\n");
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("bad_test.mw"), "{stderr}");
+}
+
+#[test]
+fn suppresses_configured_test_resolution_noise_when_source_parse_fails() {
+    let root = temp_project("proj-test-incomplete-source", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        // The tab is a lexical error, so this file contributes no `app` module,
+        // even though the parser saw its resource and function declarations.
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             fn f()\n\
+             \x20   return\n\
+             \tconst BAD = 1\n",
+        );
+        write(
+            root,
+            "tests/smoke_test.mw",
+            "use app\nfn smoke()\n    app::f()\n    var b: Book\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    assert!(!stderr.contains("check.unresolved_import"), "{stderr}");
+    assert!(!stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(!stderr.contains("check.unknown_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_configured_test_local_resolution_diagnostics_when_source_parse_fails() {
+    let root = temp_project("proj-test-local-errors-incomplete-source", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(root, "src/app.mw", "module app\n\tfn f()\n");
+        write(
+            root,
+            "tests/smoke_test.mw",
+            "use std::definitely_missing\n\
+             fn smoke()\n\
+             \x20   tests::helper::missing()\n\
+             \x20   missing_local()\n\
+             \x20   var n: NotAType\n\
+             \x20   var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.unresolved_import"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.unknown_type"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_configured_test_local_bare_call_matching_hidden_source_module() {
+    let root = temp_project("proj-test-local-bare-call-incomplete-source", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(root, "src/app.mw", "module app\n\tfn f()\n");
+        write(
+            root,
+            "tests/smoke_test.mw",
+            "fn smoke()\n    app()\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_configured_test_local_submodule_import_matching_hidden_source_prefix() {
+    let root = temp_project(
+        "proj-test-local-submodule-import-incomplete-source",
+        |root| {
+            write(
+                root,
+                "marrow.json",
+                r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            );
+            write(root, "src/app.mw", "module app\n\tfn f()\n");
+            write(
+                root,
+                "tests/smoke_test.mw",
+                "use app::missing\nfn smoke()\n    var y: int = \"str\"\n",
+            );
+        },
+    );
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_import"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_configured_test_local_unresolved_call_when_another_test_has_parse_error() {
+    let root = temp_project("proj-test-local-call-with-broken-sibling-test", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\npub fn main()\n    return\n",
+        );
+        write(root, "tests/a_bad_test.mw", "fn broken()\n\treturn\n");
+        write(
+            root,
+            "tests/b_smoke_test.mw",
+            "fn smoke()\n    missing_local()\n    var n: NotAType\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.unknown_type"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn suppresses_unresolved_import_when_broken_configured_test_is_imported() {
+    let root = temp_project("proj-test-import-broken-sibling-test", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\npub fn main()\n    return\n",
+        );
+        write(root, "tests/helper.mw", "fn helper()\n\treturn\n");
+        write(
+            root,
+            "tests/smoke_test.mw",
+            "use tests::helper\nfn smoke()\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(!stderr.contains("check.unresolved_import"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn ignores_declared_modules_in_broken_configured_tests_for_call_suppression() {
+    let root = temp_project(
+        "proj-test-local-call-with-broken-declared-module-test",
+        |root| {
+            write(
+                root,
+                "marrow.json",
+                r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            );
+            write(
+                root,
+                "src/app.mw",
+                "module app\npub fn main()\n    return\n",
+            );
+            write(
+                root,
+                "tests/a_bad_test.mw",
+                "module app\nfn broken()\n\treturn\n",
+            );
+            write(
+                root,
+                "tests/b_smoke_test.mw",
+                "fn smoke()\n    app::missing()\n    var y: int = \"str\"\n",
+            );
+        },
+    );
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_source_module_calls_when_broken_test_path_collides() {
+    let root = temp_project("proj-test-path-collides-with-source-module", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/tests/app.mw",
+            "module tests::app\npub fn main()\n    return\n",
+        );
+        write(root, "tests/app.mw", "fn broken()\n\treturn\n");
+        write(
+            root,
+            "tests/b_smoke_test.mw",
+            "fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_test_module_calls_when_broken_source_path_collides() {
+    let root = temp_project("proj-source-path-collides-with-test-module", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(root, "src/tests/app.mw", "module tests::app\n\tfn f()\n");
+        write(root, "tests/app.mw", "fn existing()\n    return\n");
+        write(
+            root,
+            "tests/b_smoke_test.mw",
+            "fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn reports_duplicate_when_test_module_collides_with_source_module() {
+    let root = temp_project("proj-test-module-duplicates-source-module", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/tests/app.mw",
+            "module tests::app\npub fn sourceOnly()\n    return\n",
+        );
+        write(root, "tests/app.mw", "pub fn testOnly()\n    return\n");
+        write(
+            root,
+            "tests/b_smoke_test.mw",
+            "fn smoke()\n    tests::app::testOnly()\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.duplicate_module"), "{stderr}");
+    assert!(!stderr.contains("check.unresolved_call"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn suppresses_unknown_types_from_broken_configured_test_declarations() {
+    let root = temp_project("proj-test-type-from-broken-sibling-test", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\npub fn main()\n    return\n",
+        );
+        write(
+            root,
+            "tests/a_bad_test.mw",
+            "resource Fixture\n    title: string\n\tconst BAD = 1\n",
+        );
+        write(
+            root,
+            "tests/b_smoke_test.mw",
+            "fn smoke()\n    var f: Fixture\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(!stderr.contains("check.unknown_type"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
+fn keeps_configured_test_local_type_syntax_diagnostics_when_hidden_type_names_match() {
+    let root = temp_project("proj-test-local-type-syntax-incomplete-source", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \tconst BAD = 1\n",
+        );
+        write(
+            root,
+            "tests/smoke_test.mw",
+            "fn smoke()\n    var n: map[Book,int]\n    var y: int = \"str\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("check.unknown_type"), "{stderr}");
+    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+}
+
+#[test]
 fn reports_missing_marrow_json() {
     let root = temp_project("proj-noconfig", |root| {
         write(root, "src/main.mw", "fn main()\n    return\n");

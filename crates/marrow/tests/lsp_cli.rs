@@ -214,6 +214,636 @@ fn did_open_new_project_source_publishes_checker_diagnostics() {
 }
 
 #[test]
+fn did_open_new_project_test_publishes_checker_diagnostics() {
+    let root = temp_project("lsp-new-test");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(&root, "src/app.mw", "module app\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/new_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    var x: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "new project test should get checker diagnostics: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_gets_checker_diagnostics_when_sources_have_errors() {
+    let root = temp_project("lsp-test-with-source-error");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/app.mw",
+        "module app\nfn f()\n    var x: int = \"str\"\n",
+    );
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/new_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "project test should get checker diagnostics despite source errors: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_suppresses_resolution_noise_when_source_parse_fails() {
+    let root = temp_project("lsp-test-incomplete-source");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    // The tab is a lexical error, so this file contributes no `app` module,
+    // even though the parser saw its resource and function declarations.
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\
+         resource Book at ^books(id: int)\n\
+         \x20   title: string\n\
+         fn f()\n\
+         \x20   return\n\
+         \tconst BAD = 1\n",
+    );
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/new_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"use app\nfn smoke()\n    app::f()\n    var b: Book\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "test-local checker diagnostics should remain: {publish}",
+    );
+    assert!(
+        !diagnostics.iter().any(|diagnostic| diagnostic["code"]
+            == json!("check.unresolved_import")
+            || diagnostic["code"] == json!("check.unresolved_call")
+            || diagnostic["code"] == json!("check.unknown_type")),
+        "resolution against incomplete source modules should be suppressed: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_keeps_local_resolution_diagnostics_when_source_parse_fails() {
+    let root = temp_project("lsp-test-local-errors-incomplete-source");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(&root, "src/app.mw", "module app\n\tfn f()\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/new_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"use std::definitely_missing\nfn smoke()\n    tests::helper::missing()\n    missing_local()\n    var n: NotAType\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    for code in [
+        "check.unresolved_import",
+        "check.unresolved_call",
+        "check.unknown_type",
+        "check.assignment_type",
+    ] {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == json!(code)),
+            "{code} should remain for test-local errors: {publish}",
+        );
+    }
+}
+
+#[test]
+fn did_open_project_test_keeps_bare_call_matching_hidden_source_module() {
+    let root = temp_project("lsp-test-local-bare-call-incomplete-source");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(&root, "src/app.mw", "module app\n\tfn f()\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/new_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    app()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_call")),
+        "bare test-local calls should remain: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_keeps_submodule_import_matching_hidden_source_prefix() {
+    let root = temp_project("lsp-test-local-submodule-import-incomplete-source");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(&root, "src/app.mw", "module app\n\tfn f()\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/new_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"use app::missing\nfn smoke()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_import")),
+        "submodule imports should remain exact-module errors: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_keeps_unresolved_call_when_another_test_has_parse_error() {
+    let root = temp_project("lsp-test-local-call-with-broken-sibling-test");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/app.mw",
+        "module app\npub fn main()\n    return\n",
+    );
+    write(&root, "tests/a_bad_test.mw", "fn broken()\n\treturn\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/b_smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    missing_local()\n    var n: NotAType\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    for code in [
+        "check.unresolved_call",
+        "check.unknown_type",
+        "check.assignment_type",
+    ] {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == json!(code)),
+            "{code} should remain for the clean configured test: {publish}",
+        );
+    }
+}
+
+#[test]
+fn did_open_project_test_suppresses_unresolved_import_when_broken_configured_test_is_imported() {
+    let root = temp_project("lsp-test-import-broken-sibling-test");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/app.mw",
+        "module app\npub fn main()\n    return\n",
+    );
+    write(&root, "tests/helper.mw", "fn helper()\n\treturn\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"use tests::helper\nfn smoke()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_import")),
+        "imports of incomplete configured tests should not become resolution noise: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_ignores_declared_modules_in_broken_configured_tests_for_call_suppression()
+{
+    let root = temp_project("lsp-test-local-call-with-broken-declared-module-test");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/app.mw",
+        "module app\npub fn main()\n    return\n",
+    );
+    write(
+        &root,
+        "tests/a_bad_test.mw",
+        "module app\nfn broken()\n\treturn\n",
+    );
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/b_smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    app::missing()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_call")),
+        "declared modules in configured tests must not suppress source-module calls: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_keeps_source_module_calls_when_broken_test_path_collides() {
+    let root = temp_project("lsp-test-path-collides-with-source-module");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/tests/app.mw",
+        "module tests::app\npub fn main()\n    return\n",
+    );
+    write(&root, "tests/app.mw", "fn broken()\n\treturn\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/b_smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_call")),
+        "broken test paths must not suppress calls into complete source modules: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_keeps_test_module_calls_when_broken_source_path_collides() {
+    let root = temp_project("lsp-source-path-collides-with-test-module");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(&root, "src/tests/app.mw", "module tests::app\n\tfn f()\n");
+    write(&root, "tests/app.mw", "fn existing()\n    return\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/b_smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_call")),
+        "broken source paths must not suppress calls into complete test modules: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_suppresses_unresolved_call_when_test_module_duplicates_source_module() {
+    let root = temp_project("lsp-test-module-duplicates-source-module");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/tests/app.mw",
+        "module tests::app\npub fn sourceOnly()\n    return\n",
+    );
+    write(&root, "tests/app.mw", "pub fn testOnly()\n    return\n");
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/b_smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    tests::app::testOnly()\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unresolved_call")),
+        "duplicate source/test modules should not look like a missing function: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
+fn did_open_project_test_suppresses_unknown_types_from_broken_configured_test_declarations() {
+    let root = temp_project("lsp-test-type-from-broken-sibling-test");
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+    );
+    write(
+        &root,
+        "src/app.mw",
+        "module app\npub fn main()\n    return\n",
+    );
+    write(
+        &root,
+        "tests/a_bad_test.mw",
+        "resource Fixture\n    title: string\n\tconst BAD = 1\n",
+    );
+    fs::create_dir_all(root.join("tests")).expect("create tests");
+    let file = root.join("tests/b_smoke_test.mw");
+    let root_uri = file_uri(&root);
+    let file_uri = file_uri(&file);
+
+    let mut input = initialize_with_root(&root_uri);
+    input.extend(frame(&json!({
+        "jsonrpc":"2.0","method":"textDocument/didOpen",
+        "params":{"textDocument":{"uri": file_uri, "languageId":"marrow","version":1,
+            "text":"fn smoke()\n    var f: Fixture\n    var y: int = \"str\"\n"}}
+    })));
+    input.extend(shutdown_exit());
+    let (output, frames) = run_lsp(&input);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let publish = frames
+        .iter()
+        .find(|m| m["method"] == json!("textDocument/publishDiagnostics"))
+        .expect("publishDiagnostics");
+    let diagnostics = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.unknown_type")),
+        "types declared in broken configured tests should not become sibling unknown-type noise: {publish}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
+        "other test-local checker diagnostics should remain: {publish}",
+    );
+}
+
+#[test]
 fn did_open_outside_project_sources_falls_back_to_parse_diagnostics() {
     let root = temp_project("lsp-outside-source");
     write(&root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);

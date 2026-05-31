@@ -490,6 +490,144 @@ pub fn check_tests_with_sources(
     project: &CheckedProgram,
     sources: &ProjectSources,
 ) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
+    let checked = check_tests_with_sources_analysis(
+        project_root,
+        config,
+        project,
+        sources,
+        TestResolutionSuppression::default(),
+    )?;
+    Ok((checked.report, checked.modules))
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TestResolutionSuppression {
+    hidden_modules: HashSet<String>,
+    hidden_types: HashSet<String>,
+    hidden_qualified_types: HashSet<String>,
+}
+
+impl TestResolutionSuppression {
+    pub(crate) fn hide_module(&mut self, name: String) {
+        self.hidden_modules.insert(name);
+    }
+
+    pub(crate) fn hide_declared_types(
+        &mut self,
+        parsed: &marrow_syntax::ParsedSource,
+        modules: &[String],
+    ) {
+        for declaration in &parsed.file.declarations {
+            let name = match declaration {
+                marrow_syntax::Declaration::Resource(resource) => &resource.name,
+                marrow_syntax::Declaration::Enum(enum_decl) => &enum_decl.name,
+                _ => continue,
+            };
+            self.hidden_types.insert(name.clone());
+            for module in modules {
+                self.hidden_qualified_types
+                    .insert(format!("{module}::{name}"));
+            }
+        }
+    }
+
+    pub(crate) fn reveal_complete_modules(&mut self, program: &CheckedProgram) {
+        for module in &program.modules {
+            self.hidden_modules.remove(&module.name);
+        }
+    }
+
+    fn should_suppress(&self, diagnostic: &CheckDiagnostic) -> bool {
+        match diagnostic.code {
+            CHECK_UNRESOLVED_IMPORT => {
+                diagnostic_message_name(&diagnostic.message, "cannot resolve import `", "`")
+                    .is_some_and(|name| self.references_hidden_module_exactly(name))
+            }
+            CHECK_UNRESOLVED_CALL => {
+                diagnostic_message_name(&diagnostic.message, "function `", "` is not defined")
+                    .is_some_and(|name| self.references_hidden_module_member(name))
+            }
+            CHECK_UNKNOWN_TYPE => {
+                diagnostic_message_name(&diagnostic.message, "unknown type `", "`")
+                    .is_some_and(|name| self.references_hidden_type(name))
+            }
+            _ => false,
+        }
+    }
+
+    fn references_hidden_module_exactly(&self, name: &str) -> bool {
+        self.hidden_modules.contains(name)
+    }
+
+    fn references_hidden_module_member(&self, name: &str) -> bool {
+        self.hidden_modules
+            .iter()
+            .any(|module| name.starts_with(&format!("{module}::")))
+    }
+
+    fn references_hidden_type(&self, name: &str) -> bool {
+        self.references_hidden_type_text(name.trim())
+    }
+
+    fn references_hidden_type_text(&self, name: &str) -> bool {
+        if let Some(element) = sequence_type_element(name) {
+            return self.references_hidden_type_text(element);
+        }
+        if let Some(resource) = name.strip_suffix("::Id") {
+            return self.references_hidden_named_type(resource);
+        }
+        self.references_hidden_named_type(name)
+    }
+
+    fn references_hidden_named_type(&self, name: &str) -> bool {
+        if !is_type_name_like(name) {
+            return false;
+        }
+        if name.contains("::") {
+            self.hidden_qualified_types.contains(name)
+        } else {
+            self.hidden_types.contains(name)
+        }
+    }
+}
+
+fn sequence_type_element(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix("sequence[")?.strip_suffix(']')?;
+    (!inner.is_empty()).then_some(inner)
+}
+
+fn is_type_name_like(text: &str) -> bool {
+    let mut saw_segment = false;
+    for segment in text.split("::") {
+        if segment.is_empty()
+            || !segment
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return false;
+        }
+        saw_segment = true;
+    }
+    saw_segment
+}
+
+fn diagnostic_message_name<'a>(message: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    message.strip_prefix(prefix)?.strip_suffix(suffix)
+}
+
+pub(crate) struct CheckedTests {
+    pub(crate) report: CheckReport,
+    pub(crate) modules: Vec<CheckedModule>,
+    pub(crate) files: Vec<analysis::AnalyzedFile>,
+}
+
+pub(crate) fn check_tests_with_sources_analysis(
+    project_root: &Path,
+    config: &ProjectConfig,
+    project: &CheckedProgram,
+    sources: &ProjectSources,
+    mut resolution_suppression: TestResolutionSuppression,
+) -> Result<CheckedTests, DiscoverError> {
     let mut files = discover_test_modules(project_root, config)?;
     for path in sources.paths() {
         if let Some(file) = marrow_project::test_module_file(project_root, config, path) {
@@ -502,6 +640,7 @@ pub fn check_tests_with_sources(
     let mut modules = Vec::new();
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
         Vec::new();
+    let mut parsed_sources: HashMap<PathBuf, String> = HashMap::new();
 
     for file in &files {
         let Some(source) = read_source(&file.path, sources, &mut report.diagnostics) else {
@@ -516,8 +655,8 @@ pub fn check_tests_with_sources(
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
 
         // A test file is a script: it is named from its path, never from a
-        // declared `module`, so it can never shadow or duplicate a project
-        // module. Skip a file carrying a parse error.
+        // declared `module`. Duplicate source/test module names are rejected
+        // after the clean test module set is known.
         if !parsed.has_errors() {
             modules.push(CheckedModule {
                 name: file.module_name.clone().unwrap_or_default(),
@@ -536,8 +675,50 @@ pub fn check_tests_with_sources(
                 enum_public: enum_visibility(&parsed.file),
             });
         }
+        parsed_sources.insert(file.path.clone(), source);
         parsed_files.push((file, parsed));
     }
+
+    for (file, parsed) in &parsed_files {
+        if parsed.has_errors() {
+            if let Some(module) = &file.module_name {
+                resolution_suppression.hide_declared_types(parsed, std::slice::from_ref(module));
+            } else {
+                resolution_suppression.hide_declared_types(parsed, &[]);
+            }
+        }
+    }
+
+    // A clean test file is named from its project-root path. If that name
+    // collides with a source module, keeping both would make one qualified name
+    // point at two files depending on which resolver table was used.
+    let project_module_sources: HashMap<&str, &PathBuf> = project
+        .modules
+        .iter()
+        .filter(|module| !module.name.is_empty())
+        .map(|module| (module.name.as_str(), &module.source_file))
+        .collect();
+    let mut duplicate_test_module_names = HashSet::new();
+    let mut unique_modules = Vec::new();
+    for module in modules {
+        if let Some(first) = project_module_sources.get(module.name.as_str()) {
+            report.diagnostics.push(CheckDiagnostic {
+                code: CHECK_DUPLICATE_MODULE,
+                severity: Severity::Error,
+                file: module.source_file.clone(),
+                message: format!(
+                    "module `{}` is already declared by `{}`",
+                    module.name,
+                    first.display()
+                ),
+                span: SourceSpan::default(),
+            });
+            duplicate_test_module_names.insert(module.name);
+        } else {
+            unique_modules.push(module);
+        }
+    }
+    let modules = unique_modules;
 
     // Imports in a test file resolve against the project's modules, the other
     // test modules, and the standard library. The project's module-less script
@@ -565,6 +746,12 @@ pub fn check_tests_with_sources(
     let mut combined = CheckedProgram {
         modules: project.modules.iter().cloned().chain(modules).collect(),
     };
+    resolution_suppression.reveal_complete_modules(&combined);
+    // The duplicate diagnostic is the useful error; downstream references into
+    // that invalid namespace should not also pretend the function is just absent.
+    for module in &duplicate_test_module_names {
+        resolution_suppression.hide_module(module.clone());
+    }
     // Stamp cross-module named-type signature slots in the test modules with their
     // true owner — resolved against the combined program — before the type pass
     // reads them. The project modules carry the project's own normalized
@@ -584,18 +771,29 @@ pub fn check_tests_with_sources(
         .map(|enum_schema| enum_schema.name.clone())
         .collect();
 
-    // Passes 2-3 plus unresolved-call suppression are shared with check_project.
+    // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look
-    // unresolved; the suppression there handles that exactly as check_project does.
+    // unresolved; the shared suppression handles that qualified-call case.
     check_resolved_files(
-        files.len(),
-        &parsed_files,
-        &resolvable,
-        &combined,
-        &project_resources,
-        &project_enums,
+        ResolvedFileCheck {
+            files: &files,
+            parsed_files: &parsed_files,
+            module_name_policy: ModuleNamePolicy::PathOnly,
+            resolvable: &resolvable,
+            program: &combined,
+            project_resources: &project_resources,
+            project_enums: &project_enums,
+        },
         &mut report,
     );
+    // When the source program is partial, a configured test may name a module,
+    // function, resource, or enum that exists in a source file which could not
+    // join `project`.
+    // Keep test-local parse/type diagnostics, but avoid reporting resolution
+    // noise whose truth depends on the incomplete source module set.
+    report
+        .diagnostics
+        .retain(|diagnostic| !resolution_suppression.should_suppress(diagnostic));
 
     // Resolve `match` scrutinee enums on the test bodies, inferring against the whole
     // combined program so a test's `match` over a project enum dispatches correctly.
@@ -605,8 +803,21 @@ pub fn check_tests_with_sources(
         modules: combined.modules[project_count..].to_vec(),
     };
     resolve_match_enums(&mut test_program, &combined);
+    let analyzed = parsed_files
+        .into_iter()
+        .map(|(file, parsed)| analysis::AnalyzedFile {
+            path: file.path.clone(),
+            module_name: file.module_name.clone(),
+            source: parsed_sources.remove(&file.path).unwrap_or_default(),
+            parsed,
+        })
+        .collect();
 
-    Ok((report, test_program.modules))
+    Ok(CheckedTests {
+        report,
+        modules: test_program.modules,
+        files: analyzed,
+    })
 }
 
 /// The per-file result of [`check_file`]: the parsed source and the declaration

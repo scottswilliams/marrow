@@ -36,12 +36,69 @@ pub fn analyze_project(
     sources: &ProjectSources,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
     let mut snapshot = analyze_source_project(project_root, config, sources)?;
-    if !snapshot.report.has_errors() {
-        let (test_report, _test_modules) =
-            crate::check_tests_with_sources(project_root, config, &snapshot.program, sources)?;
-        snapshot.report.diagnostics.extend(test_report.diagnostics);
-    }
+    let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
+    let tests = crate::check_tests_with_sources_analysis(
+        project_root,
+        config,
+        &snapshot.program,
+        sources,
+        resolution_suppression,
+    )?;
+    snapshot.report.diagnostics.extend(tests.report.diagnostics);
+    snapshot.files.extend(tests.files);
+    snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
+    snapshot.files.dedup_by(|a, b| a.path == b.path);
     Ok(snapshot)
+}
+
+fn source_resolution_suppression(
+    snapshot: &AnalysisSnapshot,
+    project_root: &Path,
+    config: &ProjectConfig,
+) -> TestResolutionSuppression {
+    let mut suppression = TestResolutionSuppression::default();
+    let mut declared_modules: HashMap<String, usize> = HashMap::new();
+    for file in &snapshot.files {
+        if let Some(module) = &file.parsed.file.module {
+            *declared_modules.entry(module.name.clone()).or_default() += 1;
+        }
+    }
+
+    for file in &snapshot.files {
+        let declared = file.parsed.file.module.as_ref().map(|module| &module.name);
+        let path_matches = match (declared, file.module_name.as_ref()) {
+            (Some(declared), Some(expected)) => declared == expected,
+            (Some(_), None) => false,
+            _ => true,
+        };
+        let duplicate_module = declared.is_some_and(|name| declared_modules[name] > 1);
+        if file.parsed.has_errors() || !path_matches || duplicate_module {
+            let mut hidden_module_names = Vec::new();
+            if let Some(name) = declared {
+                hidden_module_names.push(name.clone());
+            }
+            if let Some(name) = &file.module_name
+                && !hidden_module_names.iter().any(|module| module == name)
+            {
+                hidden_module_names.push(name.clone());
+            }
+            for name in &hidden_module_names {
+                suppression.hide_module(name.clone());
+            }
+            suppression.hide_declared_types(&file.parsed, &hidden_module_names);
+        }
+    }
+
+    for diagnostic in &snapshot.report.diagnostics {
+        if diagnostic.code == IO_READ
+            && let Some(file) = overlay_module_file(project_root, config, &diagnostic.file)
+            && let Some(name) = file.module_name
+        {
+            suppression.hide_module(name);
+        }
+    }
+
+    suppression
 }
 
 /// Source-root-only analysis shared by [`check_project`]. Runtime entry points use
@@ -295,12 +352,15 @@ pub(crate) fn analyze_source_project(
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     check_resolved_files(
-        files.len(),
-        &parsed_files,
-        &declared,
-        &program,
-        &project_resources,
-        &project_enums,
+        ResolvedFileCheck {
+            files: &files,
+            parsed_files: &parsed_files,
+            module_name_policy: ModuleNamePolicy::DeclaredOrPath,
+            resolvable: &declared,
+            program: &program,
+            project_resources: &project_resources,
+            project_enums: &project_enums,
+        },
         &mut report,
     );
 

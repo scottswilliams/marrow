@@ -8,24 +8,33 @@ use marrow_store::Decimal;
 use super::*;
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
-/// file against `program` with `project_resources`, then suppress unresolved-call
-/// reports when any file failed to parse or read. This is the shared tail of
-/// check_project and check_tests: pass 1 (parse plus each caller's module and
-/// ownership construction) differs and stays in the caller, but once the
-/// resolvable module set, program, and resource set are known every step is
-/// identical. `files_len` is the discovered-file count, passed in so the helper
-/// does not depend on the two callers' differing discovery return shapes; the
-/// `files_len == parsed_files.len()` check keeps the read-failure-drops-a-file
-/// invariant both callers rely on.
-pub(crate) fn check_resolved_files(
-    files_len: usize,
-    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
-    resolvable: &HashMap<String, PathBuf>,
-    program: &CheckedProgram,
-    project_resources: &HashSet<String>,
-    project_enums: &HashSet<String>,
-    report: &mut CheckReport,
-) {
+/// file against `program` with `project_resources`, then suppress resolution
+/// reports that target modules whose files failed to parse or read. This is the
+/// shared tail of check_project and check_tests: pass 1 (parse plus each caller's
+/// module and ownership construction) differs and stays in the caller, but once
+/// the resolvable module set, program, and resource set are known every step is
+/// identical.
+pub(crate) struct ResolvedFileCheck<'a> {
+    pub(crate) files: &'a [marrow_project::ModuleFile],
+    pub(crate) parsed_files: &'a [(&'a marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    pub(crate) module_name_policy: ModuleNamePolicy,
+    pub(crate) resolvable: &'a HashMap<String, PathBuf>,
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) project_resources: &'a HashSet<String>,
+    pub(crate) project_enums: &'a HashSet<String>,
+}
+
+pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut CheckReport) {
+    let ResolvedFileCheck {
+        files,
+        parsed_files,
+        module_name_policy,
+        resolvable,
+        program,
+        project_resources,
+        project_enums,
+    } = input;
+
     // Pass 2: every `use` must name a project module, a sibling module, or a
     // standard-library module, now that the full resolvable module set is known.
     for (file, parsed) in parsed_files {
@@ -54,19 +63,103 @@ pub(crate) fn check_resolved_files(
         );
     }
 
-    // Unresolved-call reports are trustworthy only when every file parsed and the
-    // program is whole: a file that failed to parse or read is excluded from the
-    // program, so a call into it would look unresolved though its definition
-    // exists. Suppress them then — the parse or read errors are the real problem to
-    // fix first. (A read failure drops a file from `parsed_files` without setting
-    // has_errors, so the length check is needed alongside the has_errors check.)
-    let fully_parsed = files_len == parsed_files.len()
-        && parsed_files.iter().all(|(_, parsed)| !parsed.has_errors());
-    if !fully_parsed {
-        report
-            .diagnostics
-            .retain(|diagnostic| diagnostic.code != CHECK_UNRESOLVED_CALL);
+    // A file that failed to parse or read is excluded from the program, so exact
+    // imports of its module and qualified calls into it would look unresolved
+    // even though the source may contain the definition. Suppress only those
+    // reports; other clean files' local resolution diagnostics remain trustworthy.
+    let incomplete_modules =
+        incomplete_module_names(files, parsed_files, module_name_policy, program);
+    if !incomplete_modules.is_empty() {
+        report.diagnostics.retain(|diagnostic| {
+            if diagnostic.code == CHECK_UNRESOLVED_IMPORT
+                && unresolved_import_name(&diagnostic.message)
+                    .is_some_and(|name| incomplete_modules.contains(name))
+            {
+                return false;
+            }
+            if diagnostic.code == CHECK_UNRESOLVED_CALL
+                && unresolved_call_name(&diagnostic.message).is_some_and(|name| {
+                    references_incomplete_module_member(name, &incomplete_modules)
+                })
+            {
+                return false;
+            }
+            true
+        });
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ModuleNamePolicy {
+    DeclaredOrPath,
+    PathOnly,
+}
+
+fn incomplete_module_names(
+    files: &[marrow_project::ModuleFile],
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    module_name_policy: ModuleNamePolicy,
+    program: &CheckedProgram,
+) -> HashSet<String> {
+    let complete_modules: HashSet<&str> = program
+        .modules
+        .iter()
+        .map(|module| module.name.as_str())
+        .collect();
+    let parsed_paths: HashSet<&Path> = parsed_files
+        .iter()
+        .map(|(file, _)| file.path.as_path())
+        .collect();
+    let mut modules = HashSet::new();
+    for file in files {
+        if !parsed_paths.contains(file.path.as_path())
+            && let Some(module) = &file.module_name
+        {
+            insert_incomplete_module(&mut modules, &complete_modules, module);
+        }
+    }
+    for (file, parsed) in parsed_files {
+        if parsed.has_errors() {
+            if matches!(module_name_policy, ModuleNamePolicy::DeclaredOrPath)
+                && let Some(module) = &parsed.file.module
+            {
+                insert_incomplete_module(&mut modules, &complete_modules, &module.name);
+            }
+            if let Some(module) = &file.module_name {
+                insert_incomplete_module(&mut modules, &complete_modules, module);
+            }
+        }
+    }
+    modules
+}
+
+fn insert_incomplete_module(
+    modules: &mut HashSet<String>,
+    complete_modules: &HashSet<&str>,
+    name: &str,
+) {
+    if !complete_modules.contains(name) {
+        modules.insert(name.to_string());
+    }
+}
+
+fn unresolved_call_name(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("function `")?
+        .strip_suffix("` is not defined")
+}
+
+fn unresolved_import_name(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("cannot resolve import `")?
+        .strip_suffix('`')
+}
+
+fn references_incomplete_module_member(name: &str, modules: &HashSet<String>) -> bool {
+    modules.iter().any(|module| {
+        name.strip_prefix(module)
+            .is_some_and(|rest| rest.starts_with("::"))
+    })
 }
 
 /// The file-level prelude every function body in a file shares: its short→full

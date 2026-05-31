@@ -233,8 +233,12 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (mut report, program) = match marrow_check::check_project(Path::new(dir), &config) {
-        Ok(result) => result,
+    let report = match marrow_check::analyze_project(
+        Path::new(dir),
+        &config,
+        &marrow_check::ProjectSources::new(),
+    ) {
+        Ok(snapshot) => snapshot.report,
         Err(error) => {
             report_simple_error(
                 error.code,
@@ -244,21 +248,6 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !report.has_errors() && !config.tests.is_empty() {
-        let (test_report, _test_modules) =
-            match marrow_check::check_tests(Path::new(dir), &config, &program) {
-                Ok(result) => result,
-                Err(error) => {
-                    report_simple_error(
-                        error.code,
-                        &format!("{}: {}", error.path.display(), error.message),
-                        format,
-                    );
-                    return ExitCode::FAILURE;
-                }
-            };
-        report.diagnostics.extend(test_report.diagnostics);
-    }
 
     report_project(dir, &report, format);
     if report.has_errors() {
