@@ -4196,6 +4196,40 @@ fn constructs_a_qualified_resource_value() {
 }
 
 #[test]
+fn resource_constructor_value_can_be_saved() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20author: string\n\n\
+         fn save(): int\n\
+         \x20\x20\x20\x20const draft = Book(title: \"Small Gods\", author: \"Pratchett\")\n\
+         \x20\x20\x20\x20^books(1) = draft\n\
+         \x20\x20\x20\x20return count(^books)\n\n\
+         fn title(): string\n\
+         \x20\x20\x20\x20return ^books(1).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let saved = run_entry(&program, &store, "test::save", &[]).expect("save");
+    assert_eq!(saved.value, Some(Value::Int(1)));
+    let title = run_entry(&program, &store, "test::title", &[]).expect("title");
+    assert_eq!(title.value, Some(Value::Str("Small Gods".into())));
+}
+
+#[test]
+fn resource_constructor_participates_in_optional_coalesce_chains() {
+    let program = checked_program(
+        "resource Profile\n\
+         \x20\x20\x20\x20email: string\n\n\
+         fn email(): string\n\
+         \x20\x20\x20\x20return Profile()?.email ?? \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::email", &[]),
+        Ok(Some(Value::Str("none".into())))
+    );
+}
+
+#[test]
 fn copies_a_whole_resource() {
     let program = checked_program(BOOK_COPY);
     let store = RefCell::new(MemStore::new());
