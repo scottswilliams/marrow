@@ -15,12 +15,7 @@ product, so the boundary stays clear as it grows.
 
 ## Implementation Roadmap
 
-- [#1: Implement element-oriented collection loop semantics](https://github.com/scottswilliams/marrow/issues/1)
-  aligns collection iteration across the checker, runtime, LSP, docs, and tests:
-  - `for value in collection` yields each natural element.
-  - `for key, value in collection` yields the element address plus the element.
-  - `keys(collection)` yields collection addresses.
-  - Non-unique index branches and key-only collections remain key-only.
+No accepted implementation issues are currently open.
 
 ## Non-Goals
 
