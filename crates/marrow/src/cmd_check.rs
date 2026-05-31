@@ -216,7 +216,7 @@ impl Drop for ScratchDir {
 }
 
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
-/// checker over its source roots.
+/// checker over its source roots and configured test files.
 fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = match std::fs::read_to_string(&config_path) {

@@ -83,6 +83,56 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
 }
 
 #[test]
+fn analyze_project_reports_configured_test_file_parse_errors() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    let root = temp_project("analyze-test-parse", |root| {
+        write(root, "src/app.mw", "module app\n");
+        // A tab is a lexical error.
+        write(root, "tests/bad_test.mw", "pub fn t()\n\tapp::noop()\n");
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new()).expect("analyze");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        snapshot.report.diagnostics.iter().any(|d| {
+            d.code == "parse.syntax" && d.file.ends_with(Path::new("tests/bad_test.mw"))
+        }),
+        "configured test diagnostics should be included: {:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
+#[test]
+fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    let root = temp_project("analyze-unsaved-test-parse", |root| {
+        write(root, "src/app.mw", "module app\n");
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let path = root.join("tests/new_test.mw");
+    let sources = ProjectSources::new().with(&path, "pub fn t()\n\tapp::noop()\n");
+
+    let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "parse.syntax" && d.file == path),
+        "configured overlay test diagnostics should be included: {:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
+#[test]
 fn analysis_snapshot_retains_files_with_parse_errors() {
     use marrow_check::{ProjectSources, analyze_project};
 

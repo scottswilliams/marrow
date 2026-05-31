@@ -262,7 +262,7 @@ pub fn check_project_with_sources(
     config: &ProjectConfig,
     sources: &ProjectSources,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    analyze_project(project_root, config, sources)
+    analysis::analyze_source_project(project_root, config, sources)
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
@@ -457,23 +457,42 @@ pub fn check_tests(
     config: &ProjectConfig,
     project: &CheckedProgram,
 ) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
-    let files = discover_test_modules(project_root, config)?;
+    check_tests_with_sources(project_root, config, project, &ProjectSources::new())
+}
+
+/// Like [`check_tests`], but uses overlaid source text for selected test files and
+/// includes overlaid test files that match the configured `tests` patterns even
+/// when they are not on disk yet.
+pub fn check_tests_with_sources(
+    project_root: &Path,
+    config: &ProjectConfig,
+    project: &CheckedProgram,
+    sources: &ProjectSources,
+) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
+    let mut files = discover_test_modules(project_root, config)?;
+    for path in sources.paths() {
+        if let Some(file) = marrow_project::test_module_file(project_root, config, path) {
+            files.push(file);
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
     let mut report = CheckReport::default();
     let mut modules = Vec::new();
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
         Vec::new();
 
     for file in &files {
-        let Some(CheckedFile {
+        let Some(source) = read_source(&file.path, sources, &mut report.diagnostics) else {
+            continue;
+        };
+        let CheckedFile {
             parsed,
             resources,
             enums,
             functions,
             constants,
-        }) = check_file(&file.path, &mut report.diagnostics)
-        else {
-            continue;
-        };
+        } = check_file_source(&file.path, &source, &mut report.diagnostics);
 
         // A test file is a script: it is named from its path, never from a
         // declared `module`, so it can never shadow or duplicate a project
@@ -577,15 +596,6 @@ struct CheckedFile {
     enums: Vec<marrow_schema::EnumSchema>,
     functions: Vec<CheckedFunction>,
     constants: Vec<CheckedConst>,
-}
-
-/// Read one source file from disk, then parse and structurally check it. Returns
-/// `None` if the file cannot be read (an `io.read` diagnostic is recorded). This
-/// is the disk path used by [`check_tests`]; [`analyze_project`] reads through an
-/// overlay instead.
-fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Option<CheckedFile> {
-    let source = read_source(file_path, &ProjectSources::new(), diagnostics)?;
-    Some(check_file_source(file_path, &source, diagnostics))
 }
 
 /// Resolve a file's text: the overlay entry for `file_path` if `sources` carries
