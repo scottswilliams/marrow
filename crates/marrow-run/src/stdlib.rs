@@ -611,15 +611,13 @@ pub(crate) fn eval_conversion(
     }
 }
 
-/// Coerce to a bool: a bool is itself; an int or string is accepted only as a
-/// canonical boolean value (`0`/`false` → `false`, `1`/`true` → `true`).
+/// Coerce to a bool: a bool is itself; an int is accepted only as a canonical
+/// boolean value (`0` → `false`, `1` → `true`).
 pub(crate) fn convert_to_bool(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     let result = match &value {
         Value::Bool(_) => return Ok(value),
         Value::Int(0) => false,
         Value::Int(1) => true,
-        Value::Str(text) if text == "false" || text == "0" => false,
-        Value::Str(text) if text == "true" || text == "1" => true,
         _ => return Err(conversion_error("bool", span)),
     };
     Ok(Value::Bool(result))
@@ -651,9 +649,41 @@ pub(crate) fn convert_to_decimal(value: Value, span: SourceSpan) -> Result<Value
             .ok_or_else(|| conversion_error("decimal", span)),
         Value::Str(text) => match decode_value(text.as_bytes(), ScalarType::Decimal) {
             Some(SavedValue::Decimal(decimal)) => Ok(Value::Decimal(decimal)),
+            _ if canonical_decimal_text_shape(&text) => Err(decimal_overflow(span)),
             _ => Err(conversion_error("decimal", span)),
         },
         _ => Err(conversion_error("decimal", span)),
+    }
+}
+
+fn canonical_decimal_text_shape(text: &str) -> bool {
+    let text = text.strip_prefix('-').unwrap_or(text);
+    if text.is_empty() || text == "0" {
+        return false;
+    }
+    let (integer, fraction) = text
+        .split_once('.')
+        .map_or((text, None), |(integer, fraction)| {
+            (integer, Some(fraction))
+        });
+    if !canonical_integer_part(integer) {
+        return false;
+    }
+    let Some(fraction) = fraction else {
+        return true;
+    };
+    !fraction.is_empty()
+        && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        && !fraction.ends_with('0')
+}
+
+fn canonical_integer_part(text: &str) -> bool {
+    match text.as_bytes() {
+        [b'0'] => true,
+        [first, rest @ ..] if first.is_ascii_digit() && *first != b'0' => {
+            rest.iter().all(|byte| byte.is_ascii_digit())
+        }
+        _ => false,
     }
 }
 

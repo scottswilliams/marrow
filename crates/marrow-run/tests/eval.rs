@@ -833,12 +833,9 @@ fn temporal_conversions_validate_their_values() {
 }
 
 #[test]
-fn bool_conversion_accepts_canonical_int_and_string_forms() {
-    // `bool(...)` accepts `false`, `true`, `0`, and `1`, from both int and the
-    // canonical string forms.
-    let program = checked_program(
-        "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
-    );
+fn bool_conversion_accepts_canonical_int_forms() {
+    // `bool(...)` accepts only the canonical integer forms at runtime: 0 and 1.
+    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
     assert_eq!(
         run(&program, "test::b", &[Value::Int(0)]),
         Ok(Some(Value::Bool(false)))
@@ -847,24 +844,25 @@ fn bool_conversion_accepts_canonical_int_and_string_forms() {
         run(&program, "test::b", &[Value::Int(1)]),
         Ok(Some(Value::Bool(true)))
     );
-    assert_eq!(
-        run(&program, "test::bs", &[Value::Str("true".into())]),
-        Ok(Some(Value::Bool(true)))
-    );
-    assert_eq!(
-        run(&program, "test::bs", &[Value::Str("0".into())]),
-        Ok(Some(Value::Bool(false)))
-    );
 }
 
 #[test]
-fn bool_conversion_rejects_a_non_canonical_int() {
-    // Only `0` and `1` are canonical; `2` is a type error, not a coercion.
-    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
+fn bool_conversion_rejects_non_canonical_values() {
+    let program = checked_program(
+        "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
+    );
     assert_eq!(
         run(&program, "test::b", &[Value::Int(2)]).unwrap_err().code,
         RUN_TYPE
     );
+    for raw in ["true", "false", "1", "0"] {
+        assert_eq!(
+            run(&program, "test::bs", &[Value::Str(raw.into())])
+                .unwrap_err()
+                .code,
+            RUN_TYPE
+        );
+    }
 }
 
 #[test]
@@ -1084,6 +1082,36 @@ fn a_numeric_conversion_rejects_malformed_text() {
             .code,
         RUN_TYPE
     );
+}
+
+#[test]
+fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
+    let program = checked_program(
+        "fn d(v: string): decimal\n    return decimal(v)\n\
+         fn caught(v: string): string\n    try\n        var d: decimal = decimal(v)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("1.2.3".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+    for raw in [
+        "99999999999999999999999999999999999",
+        "0.11111111111111111111111111111111111",
+    ] {
+        let error = run(&program, "test::d", &[Value::Str(raw.into())]).unwrap_err();
+        assert_eq!(error.code, RUN_DECIMAL_OVERFLOW);
+        assert!(
+            error.message.contains("decimal arithmetic exceeded"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            run(&program, "test::caught", &[Value::Str(raw.into())]),
+            Ok(Some(Value::Str(RUN_DECIMAL_OVERFLOW.into())))
+        );
+    }
 }
 
 #[test]
@@ -1417,6 +1445,20 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
          \x20       return err.code\n\
          \x20   return \"none\"\n\
          \n\
+         pub fn parse_duration_code(): string\n\
+         \x20   try\n\
+         \x20       var d: duration = std::clock::parseDuration(\"nonsense\")\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn duration_conversion_code(raw: unknown): string\n\
+         \x20   try\n\
+         \x20       var d: duration = duration(raw)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
          pub fn instant_range_code(): string\n\
          \x20   try\n\
          \x20       var text: string = std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"9999-12-31T23:59:59Z\"), 1.day))\n\
@@ -1441,6 +1483,18 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
     );
     assert_eq!(
         run(&program, "test::parse_date_code", &[]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+    assert_eq!(
+        run(&program, "test::parse_duration_code", &[]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::duration_conversion_code",
+            &[Value::Str("nonsense".into())]
+        ),
         Ok(Some(Value::Str(RUN_TYPE.into())))
     );
     assert_eq!(

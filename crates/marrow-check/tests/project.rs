@@ -2698,6 +2698,61 @@ fn bytes_conversion_accepts_string_bytes_and_unknown_sources() {
 }
 
 #[test]
+fn conversion_calls_reject_known_unsupported_sources() {
+    let found = check_module(
+        "conv-known-bad-sources",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         fn dateFromInt(): date\n    return date(1)\n\n\
+         fn durationFromInt(): duration\n    return duration(1)\n\n\
+         fn boolFromString(): bool\n    return bool(\"true\")\n\n\
+         fn decimalFromBool(): decimal\n    return decimal(true)\n\n\
+         fn enumToInt(): int\n    return int(Color::green)\n\n\
+         fn enumToString(): string\n    return string(Color::green)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 6, "{found:#?}");
+    assert!(
+        found.iter().any(|d| d.message.contains("date")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("duration")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("bool")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("decimal")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("Color")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn interpolation_rejects_enum_values() {
+    let found = check_module(
+        "interp-enum",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         fn f(c: Color): string\n    return $\"c={c}\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("interpolation cannot render"),
+        "{}",
+        found[0].message
+    );
+    assert!(found[0].message.contains("Color"), "{}", found[0].message);
+}
+
+#[test]
 fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
     // `ErrorCode(raw)` is `ErrorCode`, matching the declared `ErrorCode` place —
     // the documented `const code: ErrorCode = ErrorCode(raw)` conversion checks

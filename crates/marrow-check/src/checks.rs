@@ -2505,8 +2505,8 @@ fn check_builtin_call_args(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [name] = segments else { return };
-    if name == "bytes" {
-        check_bytes_conversion_arg(arg_types, span, file, diagnostics);
+    if let Some(target) = ScalarType::from_scalar_name(name) {
+        check_conversion_arg(name, target, arg_types, span, file, diagnostics);
     }
 }
 
@@ -2539,29 +2539,77 @@ fn saved_layer_node<'p>(
     find_resource_schema(program, root)?.descend_layers(&layers)
 }
 
-fn check_bytes_conversion_arg(
+fn check_conversion_arg(
+    target_name: &str,
+    target: ScalarType,
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [arg_type] = arg_types else { return };
-    if matches!(
-        arg_type,
-        MarrowType::Unknown
-            | MarrowType::Primitive(ScalarType::Str)
-            | MarrowType::Primitive(ScalarType::Bytes)
-    ) {
+    if conversion_source_supported(target_name, target, arg_type) {
         return;
     }
     diagnostics.push(call_diagnostic(
         file,
         span,
         format!(
-            "`bytes` converts a `string` or `bytes` value, but this argument is `{}`",
-            marrow_type_name(arg_type)
+            "`{target_name}` cannot convert `{}`; supported sources are {}",
+            marrow_type_name(arg_type),
+            conversion_supported_sources(target_name, target)
         ),
     ));
+}
+
+fn conversion_source_supported(target_name: &str, target: ScalarType, source: &MarrowType) -> bool {
+    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
+    match source {
+        MarrowType::Unknown | MarrowType::Invalid => true,
+        MarrowType::Primitive(source) => match target_name {
+            "ErrorCode" => *source == Str,
+            "bool" => matches!(source, Bool | Int),
+            "string" => matches!(
+                source,
+                Str | Int | Decimal | Bool | Bytes | Date | Instant | Duration
+            ),
+            _ => match target {
+                Int => matches!(source, Int | Str | Decimal),
+                Decimal => matches!(source, Decimal | Int | Str),
+                Bytes => matches!(source, Bytes | Str),
+                Date => matches!(source, Date | Str),
+                Instant => matches!(source, Instant | Str),
+                Duration => matches!(source, Duration | Str),
+                Str => *source == Str,
+                Bool => matches!(source, Bool | Int),
+            },
+        },
+        MarrowType::Enum { .. }
+        | MarrowType::Error
+        | MarrowType::Identity(_)
+        | MarrowType::Resource(_)
+        | MarrowType::Sequence(_) => false,
+    }
+}
+
+fn conversion_supported_sources(target_name: &str, target: ScalarType) -> &'static str {
+    use ScalarType::{Bytes, Date, Decimal, Duration, Instant, Int};
+    match target_name {
+        "ErrorCode" => "`ErrorCode`, `string`, or `unknown`",
+        "bool" => "`bool`, `int`, or `unknown`",
+        "string" => {
+            "`string`, `int`, `decimal`, `bool`, `bytes`, `date`, `instant`, `duration`, or `unknown`"
+        }
+        _ => match target {
+            Int => "`int`, canonical integer `string`, integral `decimal`, or `unknown`",
+            Decimal => "`decimal`, `int`, canonical decimal `string`, or `unknown`",
+            Bytes => "`bytes`, UTF-8 `string`, or `unknown`",
+            Date => "`date`, canonical date `string`, or `unknown`",
+            Instant => "`instant`, canonical instant `string`, or `unknown`",
+            Duration => "`duration`, canonical duration `string`, or `unknown`",
+            _ => "`unknown`",
+        },
+    }
 }
 
 fn check_plain_call_modes(

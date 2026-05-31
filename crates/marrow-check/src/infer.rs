@@ -100,12 +100,17 @@ pub(crate) fn infer_type(
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
                     let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
-                    if matches!(ty, MarrowType::Primitive(ScalarType::Bytes)) {
+                    if matches!(
+                        ty,
+                        MarrowType::Primitive(ScalarType::Bytes) | MarrowType::Enum { .. }
+                    ) {
                         diagnostics.push(operator_diagnostic(
                             file,
                             expr.span(),
-                            "interpolation cannot render `bytes`; encode the bytes explicitly"
-                                .to_string(),
+                            format!(
+                                "interpolation cannot render `{}`; convert it explicitly",
+                                marrow_type_name(&ty)
+                            ),
                         ));
                     }
                 }
