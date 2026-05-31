@@ -434,6 +434,7 @@ pub(crate) fn eval_std(
 }
 
 /// Convert a string argument to bytes (`bytes(text)`): the string's UTF-8 bytes.
+/// A bytes value is already bytes and passes through unchanged.
 pub(crate) fn eval_bytes_conversion(
     args: &[Argument],
     span: SourceSpan,
@@ -444,18 +445,15 @@ pub(crate) fn eval_bytes_conversion(
     };
     match eval_expr(&arg.value, env)? {
         Value::Str(text) => Ok(Value::Bytes(text.into_bytes())),
-        _ => Err(type_error("`bytes` converts a string to bytes", span)),
+        Value::Bytes(bytes) => Ok(Value::Bytes(bytes)),
+        _ => Err(conversion_error("bytes", span)),
     }
 }
 
 /// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
 /// `instant`/`duration`): coerce a dynamically-typed value to the named type.
-/// `bool(...)` accepts the canonical boolean values
-/// `{false, true, 0, 1}` from a bool, int, or string; `int(...)`/`decimal(...)`
-/// parse canonical numeric text from a string (and raise a typed numeric error on
-/// malformed input). The remaining conversions validate that the value already
-/// has the named type (the `unknown` → concrete bridge); temporal text parsing
-/// lives in `std::clock`, not here.
+/// Text forms go through the same canonical scalar codec as saved values, so
+/// conversions accept only the spellings the store can round-trip exactly.
 pub(crate) fn eval_conversion(
     name: &str,
     args: &[Argument],
@@ -470,10 +468,10 @@ pub(crate) fn eval_conversion(
         "bool" => convert_to_bool(value, span),
         "int" => convert_to_int(value, span),
         "decimal" => convert_to_decimal(value, span),
-        "string" if matches!(value, Value::Str(_)) => Ok(value),
-        "date" if matches!(value, Value::Date(_)) => Ok(value),
-        "instant" if matches!(value, Value::Instant(_)) => Ok(value),
-        "duration" if matches!(value, Value::Duration(_)) => Ok(value),
+        "string" => convert_to_string(value, span),
+        "date" => convert_to_canonical_scalar(value, ScalarType::Date, "date", span),
+        "instant" => convert_to_canonical_scalar(value, ScalarType::Instant, "instant", span),
+        "duration" => convert_to_canonical_scalar(value, ScalarType::Duration, "duration", span),
         _ => Err(conversion_error(name, span)),
     }
 }
@@ -493,28 +491,77 @@ pub(crate) fn convert_to_bool(value: Value, span: SourceSpan) -> Result<Value, R
 }
 
 /// Coerce to an int: an int is itself; a string parses as a canonical `i64`
-/// (a malformed or out-of-range value is a typed numeric error).
+/// and an integral decimal converts when it fits in `i64`.
 pub(crate) fn convert_to_int(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     match value {
         Value::Int(_) => Ok(value),
-        Value::Str(text) => text
-            .parse::<i64>()
+        Value::Str(text) => match decode_value(text.as_bytes(), ScalarType::Int) {
+            Some(SavedValue::Int(n)) => Ok(Value::Int(n)),
+            _ => Err(conversion_error("int", span)),
+        },
+        Value::Decimal(decimal) if decimal.scale() == 0 => i64::try_from(decimal.coefficient())
             .map(Value::Int)
             .map_err(|_| conversion_error("int", span)),
         _ => Err(conversion_error("int", span)),
     }
 }
 
-/// Coerce to a decimal: a decimal is itself; a string parses as canonical decimal
-/// text (a malformed or out-of-envelope value is a typed numeric error).
+/// Coerce to a decimal: a decimal is itself; an integer becomes an exact decimal;
+/// a string parses as canonical decimal text.
 pub(crate) fn convert_to_decimal(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     match value {
         Value::Decimal(_) => Ok(value),
-        Value::Str(text) => Decimal::parse(&text)
+        Value::Int(n) => Decimal::from_parts(i128::from(n), 0)
             .map(Value::Decimal)
             .ok_or_else(|| conversion_error("decimal", span)),
+        Value::Str(text) => match decode_value(text.as_bytes(), ScalarType::Decimal) {
+            Some(SavedValue::Decimal(decimal)) => Ok(Value::Decimal(decimal)),
+            _ => Err(conversion_error("decimal", span)),
+        },
         _ => Err(conversion_error("decimal", span)),
     }
+}
+
+/// Coerce to a string from scalar values that have a canonical text form.
+pub(crate) fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let text = match value {
+        Value::Str(text) => text,
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Decimal(decimal) => decimal.to_text(),
+        Value::Bytes(bytes) => {
+            String::from_utf8(bytes).map_err(|_| conversion_error("string", span))?
+        }
+        Value::Date(days) => canonical_value_text(SavedValue::Date(days), span)?,
+        Value::Instant(nanos) => canonical_value_text(SavedValue::Instant(nanos), span)?,
+        Value::Duration(nanos) => canonical_value_text(SavedValue::Duration(nanos), span)?,
+        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => {
+            return Err(conversion_error("string", span));
+        }
+    };
+    Ok(Value::Str(text))
+}
+
+fn convert_to_canonical_scalar(
+    value: Value,
+    ty: ScalarType,
+    name: &str,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Date(_) if ty == ScalarType::Date => Ok(value),
+        Value::Instant(_) if ty == ScalarType::Instant => Ok(value),
+        Value::Duration(_) if ty == ScalarType::Duration => Ok(value),
+        Value::Str(text) => decode_value(text.as_bytes(), ty)
+            .map(saved_value_to_value)
+            .ok_or_else(|| conversion_error(name, span)),
+        _ => Err(conversion_error(name, span)),
+    }
+}
+
+fn canonical_value_text(value: SavedValue, span: SourceSpan) -> Result<String, RuntimeError> {
+    let bytes = encode_value(&value).map_err(|error| error.located(span))?;
+    Ok(String::from_utf8(bytes).expect("canonical scalar text is UTF-8"))
 }
 
 /// Evaluate `arg` and pull out one expected value shape, or a type error naming

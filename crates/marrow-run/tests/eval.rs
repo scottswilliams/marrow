@@ -15,6 +15,7 @@ use marrow_run::{
     SavedPathClass, Value, classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::{compile_enum, compile_resource};
+use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_key_value, encode_path};
@@ -867,6 +868,140 @@ fn decimal_conversion_parses_canonical_text() {
     assert_eq!(
         run(&program, "test::d", &[Value::Str("1.5".into())]),
         Ok(Some(Value::Str("1.5".into())))
+    );
+}
+
+#[test]
+fn conversion_builtins_accept_documented_sources() {
+    let program = checked_program(
+        "fn intFromDecimal(v: decimal): int\n    return int(v)\n\
+         fn decimalFromInt(v: int): string\n    return string(decimal(v))\n\
+         fn stringFromInt(v: int): string\n    return string(v)\n\
+         fn stringFromDecimal(v: decimal): string\n    return string(v)\n\
+         fn stringFromBool(v: bool): string\n    return string(v)\n\
+         fn stringFromBytes(v: bytes): string\n    return string(v)\n\
+         fn bytesFromBytes(v: bytes): bytes\n    return bytes(v)\n\
+         fn dateFromText(v: string): string\n    return string(date(v))\n\
+         fn instantFromText(v: string): string\n    return string(instant(v))\n\
+         fn durationFromText(v: string): string\n    return string(duration(v))\n",
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::intFromDecimal",
+            &[Value::Decimal(Decimal::parse("42").expect("decimal"))],
+        ),
+        Ok(Some(Value::Int(42)))
+    );
+    assert_eq!(
+        run(&program, "test::decimalFromInt", &[Value::Int(42)]),
+        Ok(Some(Value::Str("42".into())))
+    );
+    assert_eq!(
+        run(&program, "test::stringFromInt", &[Value::Int(-7)]),
+        Ok(Some(Value::Str("-7".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::stringFromDecimal",
+            &[Value::Decimal(Decimal::parse("1.5").expect("decimal"))],
+        ),
+        Ok(Some(Value::Str("1.5".into())))
+    );
+    assert_eq!(
+        run(&program, "test::stringFromBool", &[Value::Bool(true)]),
+        Ok(Some(Value::Str("true".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::stringFromBytes",
+            &[Value::Bytes("snow".as_bytes().to_vec())],
+        ),
+        Ok(Some(Value::Str("snow".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::bytesFromBytes",
+            &[Value::Bytes(vec![0, 1, 2])],
+        ),
+        Ok(Some(Value::Bytes(vec![0, 1, 2])))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::dateFromText",
+            &[Value::Str("2024-02-29".into())]
+        ),
+        Ok(Some(Value::Str("2024-02-29".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::instantFromText",
+            &[Value::Str("1970-01-01T00:00:00Z".into())],
+        ),
+        Ok(Some(Value::Str("1970-01-01T00:00:00Z".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::durationFromText",
+            &[Value::Str("PT90S".into())]
+        ),
+        Ok(Some(Value::Str("PT90S".into())))
+    );
+}
+
+#[test]
+fn documented_conversions_reject_invalid_dynamic_values() {
+    let program = checked_program(
+        "fn intFromDecimal(v: decimal): int\n    return int(v)\n\
+         fn stringFromBytes(v: bytes): string\n    return string(v)\n\
+         fn dateFromText(v: string): date\n    return date(v)\n",
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::intFromDecimal",
+            &[Value::Decimal(Decimal::parse("1.5").expect("decimal"))],
+        )
+        .unwrap_err()
+        .code,
+        RUN_TYPE
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::stringFromBytes",
+            &[Value::Bytes(vec![0xff])],
+        )
+        .unwrap_err()
+        .code,
+        RUN_TYPE
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::dateFromText",
+            &[Value::Str("2021-02-29".into())],
+        )
+        .unwrap_err()
+        .code,
+        RUN_TYPE
+    );
+}
+
+#[test]
+fn documented_conversion_failures_are_catchable_type_errors() {
+    let program = checked_program(
+        "fn code(v: bytes): string\n    try\n        return string(v)\n    catch err: Error\n        return err.code\n",
+    );
+    assert_eq!(
+        run(&program, "test::code", &[Value::Bytes(vec![0xff])]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
     );
 }
 
