@@ -375,10 +375,14 @@ pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -
             .iter()
             .all(|segment| matches!(segment, PathSegment::IndexKey(_)))
     {
-        if find_resource(program, root)
-            .is_some_and(|resource| resource.indexes.iter().any(|index| index.name == *name))
-        {
+        let Some(resource) = find_resource(program, root) else {
+            return SavedPathClass::Orphan;
+        };
+        if resource.indexes.iter().any(|index| index.name == *name) {
             return SavedPathClass::IndexMarker;
+        }
+        if arity == 0 {
+            return classify_member(program, root, after_identity);
         }
         return SavedPathClass::Orphan;
     }
