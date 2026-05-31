@@ -233,34 +233,59 @@ pub(crate) fn eval_statement(
             // applies its steps in place rather than opening its own (see
             // `WritePlan::commit`'s `in_txn`). The depth tracks nesting so an inner
             // block still counts as "in a transaction".
-            env.transaction_depth += 1;
+            let depth = env.enter_transaction();
             let result = eval_block(body, env);
-            env.transaction_depth -= 1;
+            env.leave_transaction();
             match result {
                 // A throw escapes the transaction, so it rolls back like an error
                 // rather than committing. If the rollback itself fails, the store
                 // is left in an indeterminate state — an integrity failure that
                 // must not be masked by a catchable throw, so surface it as a
                 // typed store error instead.
-                Ok(Flow::Throw(value)) => match env.store.borrow_mut().rollback() {
-                    Ok(()) => Ok(Flow::Throw(value)),
-                    Err(rb_err) => Err(rb_err.located(*span)),
-                },
+                Ok(Flow::Throw(value)) => {
+                    let rollback = env.store.borrow_mut().rollback();
+                    env.discard_required_entry_checks(depth);
+                    match rollback {
+                        Ok(()) => Ok(Flow::Throw(value)),
+                        Err(rb_err) => Err(rb_err.located(*span)),
+                    }
+                }
                 Ok(flow) => {
-                    env.store
-                        .borrow_mut()
-                        .commit()
-                        .map_err(|error| error.located(*span))?;
-                    Ok(flow)
+                    if depth == 1 {
+                        let validation = env.validate_required_entry_checks(depth, *span);
+                        if let Err(error) = validation {
+                            let rollback = env.store.borrow_mut().rollback();
+                            env.discard_required_entry_checks(depth);
+                            return match rollback {
+                                Ok(()) => Err(error),
+                                Err(rb_err) => Err(rb_err.located(*span)),
+                            };
+                        }
+                    }
+                    let commit = env.store.borrow_mut().commit();
+                    match commit {
+                        Ok(()) => {
+                            env.commit_required_entry_checks(depth);
+                            Ok(flow)
+                        }
+                        Err(error) => {
+                            env.discard_required_entry_checks(depth);
+                            Err(error.located(*span))
+                        }
+                    }
                 }
                 // The body errored, so the transaction rolls back. A failed
                 // rollback is a store-integrity error that supersedes the original
                 // cause (the staged writes may have partially survived), so report
                 // it; otherwise surface the original error as before.
-                Err(error) => match env.store.borrow_mut().rollback() {
-                    Ok(()) => Err(error),
-                    Err(rb_err) => Err(rb_err.located(*span)),
-                },
+                Err(error) => {
+                    let rollback = env.store.borrow_mut().rollback();
+                    env.discard_required_entry_checks(depth);
+                    match rollback {
+                        Ok(()) => Err(error),
+                        Err(rb_err) => Err(rb_err.located(*span)),
+                    }
+                }
             }
         }
         Statement::Throw { value, span } => {

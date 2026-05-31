@@ -23,14 +23,70 @@ pub(crate) struct Binding {
     pub(crate) mutable: bool,
 }
 
+/// Transaction state shared by every activation in one run.
+#[derive(Default)]
+pub(crate) struct TransactionState {
+    /// How many user `transaction` blocks are open right now. Nonzero means a
+    /// managed write's own steps already ride an open savepoint, so [`WritePlan`]
+    /// applies them in place instead of wrapping them in a redundant
+    /// begin/commit ([`WritePlan::commit`]'s `in_txn`).
+    pub(crate) depth: usize,
+    /// Entries touched by single-field writes inside transactions. Whole-record
+    /// and whole-entry writes validate their required fields while planning; these
+    /// deferred checks cover the transaction-only case where a block builds an
+    /// entry field by field and must leave it complete by commit.
+    pub(crate) required_entry_checks: Vec<RequiredEntryCheck>,
+    /// Entries where maintenance deliberately deleted a required field or
+    /// required-bearing group in the same transaction.
+    pub(crate) maintenance_required_deletes: Vec<RequiredEntryCheck>,
+    /// Required fields first created inside an open transaction. A later
+    /// maintenance delete of the same path must not count as repairing existing
+    /// invalid data.
+    pub(crate) created_required_paths: Vec<RequiredPath>,
+}
+
+/// A resource or keyed-group entry whose required fields must be checked before
+/// the surrounding transaction commits.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RequiredEntryCheck {
+    pub(crate) depth: usize,
+    pub(crate) root: String,
+    pub(crate) identity: Vec<SavedKey>,
+    pub(crate) layers: Vec<(String, Vec<SavedKey>)>,
+}
+
+impl RequiredEntryCheck {
+    fn same_entry(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.identity == other.identity
+            && self.entry_layers() == other.entry_layers()
+    }
+
+    fn entry_layers(&self) -> Vec<(String, Vec<SavedKey>)> {
+        self.layers
+            .iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .cloned()
+            .collect()
+    }
+}
+
+/// A required materialized field path created while a transaction is open.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RequiredPath {
+    pub(crate) depth: usize,
+    pub(crate) path: Vec<PathSegment>,
+}
+
 /// The ambient state every activation in a run shares: the checked program (to
-/// resolve calls), the saved-data store, and the host capabilities. All three
-/// are borrowed for the run's lifetime, so the context is cheap to copy.
-#[derive(Clone, Copy)]
+/// resolve calls), the saved-data store, the host capabilities, and run-global
+/// transaction bookkeeping.
+#[derive(Clone)]
 pub(crate) struct Context<'p> {
     pub(crate) program: &'p CheckedProgram,
     pub(crate) store: &'p RefCell<dyn Backend>,
     pub(crate) host: &'p Host,
+    pub(crate) transaction: Rc<RefCell<TransactionState>>,
 }
 
 /// A lexical environment: a stack of scopes, the ambient run context (program,
@@ -64,12 +120,9 @@ pub(crate) struct Env<'p> {
     /// [`evaluate_function`] path and any module with no imports, making expansion
     /// a strict no-op there.
     pub(crate) aliases: HashMap<String, Vec<String>>,
-    /// How many user `transaction` blocks are open right now. Nonzero means a
-    /// managed write's own steps already ride an open savepoint, so [`WritePlan`]
-    /// applies them in place instead of wrapping them in a redundant
-    /// begin/commit ([`WritePlan::commit`]'s `in_txn`). Incremented on entering a
-    /// `transaction` block and decremented as it commits or rolls back.
-    pub(crate) transaction_depth: usize,
+    /// Transaction state is shared across helper calls so writes in callees obey
+    /// the surrounding transaction's commit-time validation and savepoint rules.
+    pub(crate) transaction: Rc<RefCell<TransactionState>>,
     /// The opt-in statement debugger, installed only by
     /// [`run_entry_with_debugger`]; `None` for every ordinary run, where the
     /// per-statement check is a single `Option::is_none`. The hook is moved
@@ -115,7 +168,7 @@ impl<'p> Env<'p> {
             traversed_index_layers: Vec::new(),
             module: module.map_or("", |module| module.name.as_str()),
             aliases,
-            transaction_depth: 0,
+            transaction: Rc::clone(&ctx.transaction),
             hook,
             depth,
         }
@@ -183,8 +236,194 @@ impl<'p> Env<'p> {
                 hook.before_write(op, path, value, self.depth);
             }
         }
-        plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth > 0)
+        plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth() > 0)
             .map_err(|error| error.located(span))
+    }
+
+    pub(crate) fn transaction_depth(&self) -> usize {
+        self.transaction.borrow().depth
+    }
+
+    pub(crate) fn enter_transaction(&self) -> usize {
+        let mut transaction = self.transaction.borrow_mut();
+        transaction.depth += 1;
+        transaction.depth
+    }
+
+    pub(crate) fn leave_transaction(&self) {
+        let mut transaction = self.transaction.borrow_mut();
+        debug_assert!(transaction.depth > 0);
+        transaction.depth -= 1;
+    }
+
+    pub(crate) fn defer_required_entry_check(
+        &mut self,
+        root: &str,
+        identity: &[SavedKey],
+        layers: &[(&str, &[SavedKey])],
+    ) {
+        let depth = self.transaction_depth();
+        if depth == 0 {
+            return;
+        }
+        self.transaction
+            .borrow_mut()
+            .required_entry_checks
+            .push(RequiredEntryCheck {
+                depth,
+                root: root.to_string(),
+                identity: identity.to_vec(),
+                layers: layers
+                    .iter()
+                    .map(|(name, keys)| ((*name).to_string(), keys.to_vec()))
+                    .collect(),
+            });
+    }
+
+    pub(crate) fn note_maintenance_required_delete(
+        &mut self,
+        root: &str,
+        identity: &[SavedKey],
+        layers: &[(&str, &[SavedKey])],
+    ) {
+        let depth = self.transaction_depth();
+        if depth == 0 || !self.host.maintenance {
+            return;
+        }
+        self.transaction
+            .borrow_mut()
+            .maintenance_required_deletes
+            .push(RequiredEntryCheck {
+                depth,
+                root: root.to_string(),
+                identity: identity.to_vec(),
+                layers: layers
+                    .iter()
+                    .map(|(name, keys)| ((*name).to_string(), keys.to_vec()))
+                    .collect(),
+            });
+    }
+
+    pub(crate) fn note_created_required_path(&mut self, path: Vec<PathSegment>) {
+        let depth = self.transaction_depth();
+        if depth == 0 {
+            return;
+        }
+        self.transaction
+            .borrow_mut()
+            .created_required_paths
+            .push(RequiredPath { depth, path });
+    }
+
+    pub(crate) fn required_path_created_in_transaction(&self, path: &[PathSegment]) -> bool {
+        let depth = self.transaction_depth();
+        self.transaction
+            .borrow()
+            .created_required_paths
+            .iter()
+            .any(|created| created.depth <= depth && created.path == path)
+    }
+
+    pub(crate) fn validate_required_entry_checks(
+        &self,
+        depth: usize,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        let transaction = self.transaction.borrow();
+        let checks: Vec<RequiredEntryCheck> = transaction
+            .required_entry_checks
+            .iter()
+            .filter(|check| check.depth == depth)
+            .cloned()
+            .collect();
+        let maintenance_deletes: Vec<RequiredEntryCheck> = transaction
+            .maintenance_required_deletes
+            .iter()
+            .filter(|check| check.depth <= depth)
+            .cloned()
+            .collect();
+        drop(transaction);
+        let store = self.store.borrow();
+        for check in checks {
+            if maintenance_deletes
+                .iter()
+                .any(|deleted| deleted.same_entry(&check))
+            {
+                continue;
+            }
+            let exempt_layers: Vec<Vec<(String, Vec<SavedKey>)>> = maintenance_deletes
+                .iter()
+                .filter(|deleted| deleted.root == check.root && deleted.identity == check.identity)
+                .map(RequiredEntryCheck::entry_layers)
+                .collect();
+            let resource = find_resource(self.program, &check.root).ok_or_else(|| {
+                unsupported("validating required fields for this saved root", span)
+            })?;
+            let layer_refs: Vec<(&str, &[SavedKey])> = check
+                .layers
+                .iter()
+                .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+                .collect();
+            validate_required_fields_for_entry(
+                resource,
+                &check.identity,
+                &layer_refs,
+                &exempt_layers,
+                &*store,
+            )
+            .map_err(|error| write_fault(error, span))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_required_entry_checks(&mut self, depth: usize) {
+        let mut transaction = self.transaction.borrow_mut();
+        if depth > 1 {
+            for check in &mut transaction.required_entry_checks {
+                if check.depth == depth {
+                    check.depth -= 1;
+                }
+            }
+        } else {
+            transaction
+                .required_entry_checks
+                .retain(|check| check.depth < depth);
+        }
+        if depth > 1 {
+            for check in &mut transaction.maintenance_required_deletes {
+                if check.depth == depth {
+                    check.depth -= 1;
+                }
+            }
+        } else {
+            transaction
+                .maintenance_required_deletes
+                .retain(|check| check.depth < depth);
+        }
+        if depth > 1 {
+            for created in &mut transaction.created_required_paths {
+                if created.depth == depth {
+                    created.depth -= 1;
+                }
+            }
+        } else {
+            transaction
+                .created_required_paths
+                .retain(|created| created.depth < depth);
+        }
+    }
+
+    pub(crate) fn discard_required_entry_checks(&mut self, depth: usize) {
+        let mut transaction = self.transaction.borrow_mut();
+        transaction
+            .required_entry_checks
+            .retain(|check| check.depth < depth);
+        transaction
+            .maintenance_required_deletes
+            .retain(|check| check.depth < depth);
+        transaction
+            .created_required_paths
+            .retain(|created| created.depth < depth);
     }
 
     fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {

@@ -23,6 +23,7 @@ pub fn evaluate_function(
         program: &program,
         store: &store,
         host: &host,
+        transaction: Rc::new(RefCell::new(TransactionState::default())),
     };
     match invoke(
         ctx,
@@ -141,6 +142,7 @@ pub(crate) fn run_entry_impl<'p>(
         program,
         store,
         host,
+        transaction: Rc::new(RefCell::new(TransactionState::default())),
     };
     let value = match invoke(
         ctx,
@@ -1020,6 +1022,7 @@ pub(crate) fn eval_call(
         program: env.program,
         store: env.store,
         host: env.host,
+        transaction: Rc::clone(&env.transaction),
     };
     // Resolve the call from this activation's module: a bare name in its own
     // module, a qualified `mod::fn` elsewhere (which must be `pub`). The resolved
@@ -1103,6 +1106,7 @@ pub(crate) fn eval_call_with_modes<'p>(
         program: env.program,
         store: env.store,
         host: env.host,
+        transaction: Rc::clone(&env.transaction),
     };
     // Move the debugger hook into the callee and the depth one deeper, then move
     // the hook back so the caller keeps stepping after the call returns.

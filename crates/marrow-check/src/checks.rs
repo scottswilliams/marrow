@@ -2483,46 +2483,44 @@ pub(crate) fn check_call(
     }
     // Match each argument to its parameter — positional by position, named by name
     // (the parser guarantees positional arguments precede named ones) — flagging a
-    // named argument that names no parameter and an argument whose known primitive
-    // type differs from the parameter's.
+    // named argument that names no parameter, a parameter supplied more than once,
+    // and an argument whose known primitive type differs from the parameter's.
+    let callee = segments.join("::");
+    let mut supplied = vec![false; function.params.len()];
     for (index, (arg, arg_type)) in args.iter().zip(arg_types).enumerate() {
-        let param = match &arg.name {
+        let param_index = match &arg.name {
             Some(name) => {
-                let param = function.params.iter().find(|param| &param.name == name);
-                if param.is_none() {
+                let param_index = function.params.iter().position(|param| &param.name == name);
+                if param_index.is_none() {
                     diagnostics.push(call_diagnostic(
                         file,
                         span,
-                        format!(
-                            "function `{}` has no parameter `{name}`",
-                            segments.join("::")
-                        ),
+                        format!("function `{callee}` has no parameter `{name}`"),
                     ));
                 }
-                param
+                param_index
             }
-            None => function.params.get(index),
+            None => function.params.get(index).map(|_| index),
         };
         // Every concrete parameter type — scalar, identity, resource, sequence,
         // enum, or the checker-only `Error` — is checked nominally; an `unknown`
         // parameter places no constraint and is left to the runtime.
-        if let Some(param) = param {
-            check_call_mode(
-                &segments.join("::"),
-                arg,
-                param.mode,
-                span,
-                file,
-                diagnostics,
-            );
-            check_one_arg(
-                &segments.join("::"),
-                &param.ty,
-                arg_type,
-                span,
-                file,
-                diagnostics,
-            );
+        if let Some(param_index) = param_index {
+            let param = &function.params[param_index];
+            if supplied[param_index] {
+                diagnostics.push(call_diagnostic(
+                    file,
+                    span,
+                    format!(
+                        "function `{callee}` parameter `{}` is supplied more than once",
+                        param.name
+                    ),
+                ));
+                continue;
+            }
+            supplied[param_index] = true;
+            check_call_mode(&callee, arg, param.mode, span, file, diagnostics);
+            check_one_arg(&callee, &param.ty, arg_type, span, file, diagnostics);
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)

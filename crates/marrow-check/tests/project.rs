@@ -1750,6 +1750,20 @@ fn rejects_a_named_argument_that_is_not_a_parameter() {
 }
 
 #[test]
+fn rejects_duplicate_named_arguments() {
+    // The second `a:` cannot stand in for the missing `c:` parameter.
+    let found = check_module(
+        "call-duplicate-named",
+        "module m\n\
+         fn add(a: int, b: int, c: int): int\n    return a + b + c\n\n\
+         fn caller()\n    var x = add(a: 1, a: 2, b: 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("a"), "{found:#?}");
+}
+
+#[test]
 fn correct_calls_are_not_flagged() {
     // Positional and named calls that match the signature are accepted.
     let found = check_module(

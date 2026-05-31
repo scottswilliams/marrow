@@ -1108,6 +1108,7 @@ mod stdlib_table_tests {
                 program: &program,
                 store: &store,
                 host: &host,
+                transaction: Rc::new(RefCell::new(TransactionState::default())),
             };
             let mut env = Env::new(ctx, Rc::new(RefCell::new(String::new())), None, None, 1);
             let result = match entry.capability {

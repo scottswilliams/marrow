@@ -2947,6 +2947,82 @@ fn out_of_transaction_group_field_write_rejects_partial_required_record() {
 }
 
 #[test]
+fn transaction_commit_rejects_partial_required_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n\
+         \x20   required name: string\n\
+         \x20   shelf: string\n\n\
+         fn set_shelf(id: int)\n\
+         \x20   transaction\n\
+         \x20       ^items(id).shelf = \"fiction\"\n\n\
+         fn has_item(id: int): bool\n\
+         \x20   return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::set_shelf", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::has_item", &[Value::Int(1)])
+            .expect("presence check")
+            .value,
+        Some(Value::Bool(false)),
+        "the rejected transaction must roll back the partial record"
+    );
+}
+
+#[test]
+fn transaction_required_field_checks_cross_helper_calls() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n\
+         \x20   required name: string\n\
+         \x20   shelf: string\n\n\
+         fn set_shelf(id: int)\n\
+         \x20   ^items(id).shelf = \"fiction\"\n\n\
+         fn create(id: int)\n\
+         \x20   transaction\n\
+         \x20       set_shelf(id)\n\
+         \x20       ^items(id).name = \"Mort\"\n\n\
+         fn name_of(id: int): string\n\
+         \x20   return ^items(id).name\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::create", &[Value::Int(1)]).expect("commit");
+    assert_eq!(
+        run_entry(&program, &store, "test::name_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Mort".into()))
+    );
+}
+
+#[test]
+fn nested_transaction_defers_required_check_until_outer_commit() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n\
+         \x20   required name: string\n\
+         \x20   shelf: string\n\n\
+         fn create(id: int)\n\
+         \x20   transaction\n\
+         \x20       transaction\n\
+         \x20           ^items(id).shelf = \"fiction\"\n\
+         \x20       ^items(id).name = \"Mort\"\n\n\
+         fn name_of(id: int): string\n\
+         \x20   return ^items(id).name\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::create", &[Value::Int(1)]).expect("commit");
+    assert_eq!(
+        run_entry(&program, &store, "test::name_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Mort".into()))
+    );
+}
+
+#[test]
 fn a_mistyped_field_write_is_rejected() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn bad(id: int)\n    ^books(id).title = 5\n",
@@ -3583,6 +3659,100 @@ impl Backend for FailingRollbackStore {
     }
 }
 
+/// A backend that makes the first transaction commit fail after leaving one
+/// record partial. This models a fatal commit-path store problem while giving a
+/// following `finally` block a chance to expose leaked transaction bookkeeping.
+struct FailingFirstCommitStore {
+    inner: MemStore,
+    fail_next_commit: bool,
+}
+
+impl FailingFirstCommitStore {
+    fn new() -> Self {
+        Self {
+            inner: MemStore::new(),
+            fail_next_commit: true,
+        }
+    }
+}
+
+impl Backend for FailingFirstCommitStore {
+    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        Backend::read(&self.inner, path)
+    }
+    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        Backend::write(&mut self.inner, path, value)
+    }
+    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+        Backend::delete(&mut self.inner, path)
+    }
+    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
+        Backend::presence(&self.inner, path)
+    }
+    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        Backend::child_keys(&self.inner, path)
+    }
+    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
+        Backend::child_keys_rev(&self.inner, path)
+    }
+    fn next_sibling(
+        &self,
+        parent: &[u8],
+        after: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::next_sibling(&self.inner, parent, after)
+    }
+    fn prev_sibling(
+        &self,
+        parent: &[u8],
+        before: &[u8],
+    ) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::prev_sibling(&self.inner, parent, before)
+    }
+    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::first_child(&self.inner, parent)
+    }
+    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
+        Backend::last_child(&self.inner, parent)
+    }
+    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan(&self.inner, path, limit)
+    }
+    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        Backend::scan_after(&self.inner, path, cursor, limit)
+    }
+    fn roots(&self) -> Result<Vec<String>, StoreError> {
+        Backend::roots(&self.inner)
+    }
+    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        Backend::max_int_record_key(&self.inner, prefix)
+    }
+    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
+        Backend::max_int_index_key(&self.inner, prefix)
+    }
+    fn begin(&mut self) -> Result<(), StoreError> {
+        Backend::begin(&mut self.inner)
+    }
+    fn commit(&mut self) -> Result<(), StoreError> {
+        if self.fail_next_commit {
+            self.fail_next_commit = false;
+            let name_path = encode_path(&[
+                PathSegment::Root("items".into()),
+                PathSegment::RecordKey(SavedKey::Int(1)),
+                PathSegment::Field("name".into()),
+            ]);
+            Backend::delete(&mut self.inner, &name_path)?;
+            return Err(StoreError::Corruption {
+                message: "commit could not be applied".into(),
+            });
+        }
+        Backend::commit(&mut self.inner)
+    }
+    fn rollback(&mut self) -> Result<(), StoreError> {
+        Backend::rollback(&mut self.inner)
+    }
+}
+
 #[test]
 fn a_failed_rollback_after_an_error_surfaces_a_store_error() {
     // The body errors, so the transaction rolls back — but the rollback itself
@@ -3612,6 +3782,19 @@ fn a_failed_rollback_after_a_throw_surfaces_a_store_error() {
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_STORE),
         "a failed rollback after a throw must surface as a store error, got {result:?}"
+    );
+}
+
+#[test]
+fn a_failed_commit_clears_deferred_required_checks_before_finally() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn run_it()\n    try\n        transaction\n            ^items(1).name = \"ok\"\n            ^items(1).shelf = \"staged\"\n    finally\n        transaction\n            ^items(2).name = \"cleanup\"\n",
+    );
+    let store = RefCell::new(FailingFirstCommitStore::new());
+    let result = run_entry(&program, &store, "test::run_it", &[]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_STORE),
+        "the original commit failure should survive cleanup, got {result:?}"
     );
 }
 
@@ -8074,6 +8257,247 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
             .value,
         Some(Value::Bool(false)),
         "the required field is gone after a maintenance delete"
+    );
+}
+
+#[test]
+fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn repair(id: int)\n    transaction\n        ^books(id).shelf = \"legacy\"\n        delete ^books(id).title\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry_with_host(&program, &store, &host, "test::repair", &[Value::Int(1)])
+        .expect("maintenance transaction");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_title", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "maintenance still permits required-field repair deletes"
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::shelf_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("legacy".into())),
+        "the transaction's ordinary field write still committed"
+    );
+}
+
+#[test]
+fn maintenance_transaction_still_rejects_new_partial_required_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let result = run_entry_with_host(&program, &store, &host, "test::create", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_item", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "maintenance does not make a sparse field write a partial-record creator"
+    );
+}
+
+#[test]
+fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let result = run_entry_with_host(&program, &store, &host, "test::create", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_item", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "a no-op required delete is not a license to create partial data"
+    );
+}
+
+#[test]
+fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).name = \"temporary\"\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let result = run_entry_with_host(&program, &store, &host, "test::create", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_item", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "staged-only required data cannot mint a maintenance exemption"
+    );
+}
+
+#[test]
+fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partial_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    var item: Item\n    item.name = \"temporary\"\n    item.shelf = \"legacy\"\n    transaction\n        ^items(id) = item\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let result = run_entry_with_host(&program, &store, &host, "test::create", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_item", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "a whole-resource write cannot create then delete required data to bypass validation"
+    );
+}
+
+#[test]
+fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_entry() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    versions(version: int)\n        required title: string\n        note: string\n\nfn seed(id: int)\n    ^books(id).title = \"root\"\n\nfn create_version(id: int)\n    var version: Book\n    version.title = \"temporary\"\n    version.note = \"legacy\"\n    transaction\n        ^books(id).versions(1) = version\n        delete ^books(id).versions(1).title\n\nfn has_version(id: int): bool\n    return exists(^books(id).versions(1))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    let result = run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::create_version",
+        &[Value::Int(1)],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry_with_host(
+            &program,
+            &store,
+            &host,
+            "test::has_version",
+            &[Value::Int(1)]
+        )
+        .expect("read")
+        .value,
+        Some(Value::Bool(false)),
+        "a whole group-entry write cannot create then delete required data to bypass validation"
+    );
+}
+
+#[test]
+fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        transaction\n            ^items(id).name = \"temporary\"\n            ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    let result = run_entry_with_host(&program, &store, &host, "test::create", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_item", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false)),
+        "an outer transaction must still validate entries created by an inner commit"
+    );
+}
+
+#[test]
+fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writes() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    notes(note: string)\n        required text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn repair(id: int)\n    transaction\n        delete ^books(id).title\n        ^books(id).notes(\"n1\").text = \"indexed\"\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn note_text(id: int): string\n    return ^books(id).notes(\"n1\").text\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry_with_host(&program, &store, &host, "test::repair", &[Value::Int(1)])
+        .expect("parent maintenance delete should not block child validation");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_title", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::note_text", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("indexed".into()))
+    );
+}
+
+#[test]
+fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn inner_delete(id: int)\n    transaction\n        ^books(id).shelf = \"outer\"\n        transaction\n            delete ^books(id).title\n\nfn outer_delete(id: int)\n    transaction\n        delete ^books(id).title\n        transaction\n            ^books(id).shelf = \"inner\"\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let host = Host::new().with_maintenance();
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::inner_delete",
+        &[Value::Int(1)],
+    )
+    .expect("inner maintenance delete should satisfy outer validation");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_title", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::shelf_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("outer".into()))
+    );
+
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(2)]).expect("seed");
+    run_entry_with_host(
+        &program,
+        &store,
+        &host,
+        "test::outer_delete",
+        &[Value::Int(2)],
+    )
+    .expect("outer maintenance delete should satisfy inner validation");
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::has_title", &[Value::Int(2)])
+            .expect("read")
+            .value,
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run_entry_with_host(&program, &store, &host, "test::shelf_of", &[Value::Int(2)])
+            .expect("read")
+            .value,
+        Some(Value::Str("inner".into()))
     );
 }
 

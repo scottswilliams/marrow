@@ -56,7 +56,7 @@ pub(crate) use write::{
     plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
     plan_nested_identity_field_write, plan_nested_layer_identity_leaf_write,
     plan_nested_layer_leaf_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
-    validate_required_fields_after_field_write,
+    validate_required_fields_after_field_write, validate_required_fields_for_entry,
 };
 
 pub mod base64;

@@ -481,6 +481,89 @@ pub(crate) fn validate_required_fields_after_field_write(
     ensure_required_fields_present(entry_members, &entry_base, Some(&supplied_path), store)
 }
 
+/// Validate a touched resource or keyed-group entry as it exists now. Unlike
+/// [`validate_required_fields_after_field_write`], this runs after transaction
+/// writes are staged, so it reads every required field from the store and skips an
+/// entry that was deleted again before commit.
+pub(crate) fn validate_required_fields_for_entry(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+    exempt_layers: &[Vec<(String, Vec<SavedKey>)>],
+    store: &dyn Backend,
+) -> Result<(), WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let mut entry_base = identity_path(root, identity);
+    let mut layer_base = entry_base.clone();
+    let mut entry_members = schema.members.as_slice();
+    let mut lookup_members = entry_members;
+    let mut entry_layers: Vec<(String, Vec<SavedKey>)> = Vec::new();
+    let mut keyed_parents: Vec<(Vec<PathSegment>, &[Node])> = Vec::new();
+
+    for (name, key) in layers {
+        let declared = layer_in(lookup_members, name).ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
+        })?;
+        if matches!(declared.element, Element::Slot { .. }) {
+            return Err(WriteError {
+                code: WRITE_NOT_A_GROUP_LAYER,
+                message: format!("keyed layer `{name}` is a leaf, not a group"),
+            });
+        }
+        if key.len() != declared.key_params.len() {
+            return Err(WriteError {
+                code: WRITE_LAYER_KEY_ARITY,
+                message: format!(
+                    "keyed layer `{name}` expects {} key(s), got {}",
+                    declared.key_params.len(),
+                    key.len()
+                ),
+            });
+        }
+
+        layer_base.push(PathSegment::ChildLayer((*name).into()));
+        if declared.key_params.is_empty() {
+            lookup_members = &declared.members;
+            continue;
+        }
+
+        keyed_parents.push((entry_base.clone(), entry_members));
+        layer_base.extend(key.iter().cloned().map(PathSegment::IndexKey));
+        entry_base = layer_base.clone();
+        entry_layers.push(((*name).to_string(), key.to_vec()));
+        entry_members = &declared.members;
+        lookup_members = &declared.members;
+    }
+
+    if store.scan(&encode_path(&entry_base), 1)?.entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut parent_layers = Vec::new();
+    for (base, members) in keyed_parents {
+        if !entry_layers_exempt(exempt_layers, &parent_layers) {
+            ensure_required_fields_present(members, &base, None, store)?;
+        }
+        if let Some(next) = entry_layers.get(parent_layers.len()) {
+            parent_layers.push(next.clone());
+        }
+    }
+    if entry_layers_exempt(exempt_layers, &entry_layers) {
+        return Ok(());
+    }
+    ensure_required_fields_present(entry_members, &entry_base, None, store)
+}
+
+fn entry_layers_exempt(
+    exempt_layers: &[Vec<(String, Vec<SavedKey>)>],
+    layers: &[(String, Vec<SavedKey>)],
+) -> bool {
+    exempt_layers
+        .iter()
+        .any(|exempt| exempt.as_slice() == layers)
+}
+
 /// Plan a managed field delete: remove `field` of the resource at `identity`,
 /// leaving the resource's other fields in place, and tear down any index the
 /// field feeds. Validates that the field is declared (`WRITE_UNKNOWN_FIELD`),

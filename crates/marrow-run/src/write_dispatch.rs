@@ -47,6 +47,7 @@ pub(crate) fn write_saved_field(
 ) -> Result<(), RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("writing to this saved root", span))?;
+    let created_required_path = created_required_field_path(root, identity, &[], field, span, env)?;
     // A typed-reference field (`authorId: Author::Id`) stores the referenced
     // identity's canonical encoding; a scalar/enum field stores its saved value. An
     // unknown field falls through to `plan_field_write`, keeping its
@@ -54,7 +55,7 @@ pub(crate) fn write_saved_field(
     if let Some(LeafKind::Identity { arity, .. }) = resource_field_leaf(env.program, root, field) {
         let keys = identity_keys_of(value, span)?;
         let plan = plan_identity_field_write(resource, identity, field, &keys, arity);
-        let plan = if env.transaction_depth == 0 {
+        let plan = if env.transaction_depth() == 0 {
             let store = env.store.borrow();
             plan.and_then(|plan| {
                 validate_required_fields_after_field_write(
@@ -70,6 +71,10 @@ pub(crate) fn write_saved_field(
             plan
         };
         env.apply_plan(plan, span)?;
+        if let Some(path) = created_required_path {
+            env.note_created_required_path(path);
+        }
+        env.defer_required_entry_check(root, identity, &[]);
         return Ok(());
     }
     let saved = value_to_saved(value)
@@ -77,7 +82,7 @@ pub(crate) fn write_saved_field(
     let plan = {
         let store = env.store.borrow();
         plan_field_write(resource, identity, field, &saved, &*store).and_then(|plan| {
-            if env.transaction_depth == 0 {
+            if env.transaction_depth() == 0 {
                 validate_required_fields_after_field_write(
                     resource,
                     identity,
@@ -90,6 +95,10 @@ pub(crate) fn write_saved_field(
         })
     };
     env.apply_plan(plan, span)?;
+    if let Some(path) = created_required_path {
+        env.note_created_required_path(path);
+    }
+    env.defer_required_entry_check(root, identity, &[]);
     Ok(())
 }
 
@@ -195,6 +204,8 @@ pub(crate) fn write_nested_field(
         .map(|(name, keys)| (name.as_str(), keys.as_slice()))
         .collect();
     let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    let created_required_path =
+        created_required_field_path(root, identity, layers, field, span, env)?;
     // A typed-reference field inside a group entry stores the referenced identity's
     // canonical encoding; a scalar/enum field stores its saved value. An unknown
     // field falls through to keep its `write.unknown_field` diagnostic.
@@ -204,7 +215,7 @@ pub(crate) fn write_nested_field(
         let keys = identity_keys_of(value, span)?;
         let plan =
             plan_nested_identity_field_write(resource, identity, &layer_refs, field, &keys, arity);
-        let plan = if env.transaction_depth == 0 {
+        let plan = if env.transaction_depth() == 0 {
             let store = env.store.borrow();
             plan.and_then(|plan| {
                 validate_required_fields_after_field_write(
@@ -220,12 +231,16 @@ pub(crate) fn write_nested_field(
             plan
         };
         env.apply_plan(plan, span)?;
+        if let Some(path) = created_required_path {
+            env.note_created_required_path(path);
+        }
+        env.defer_required_entry_check(root, identity, &layer_refs);
         return Ok(());
     }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved);
-    let plan = if env.transaction_depth == 0 {
+    let plan = if env.transaction_depth() == 0 {
         let store = env.store.borrow();
         plan.and_then(|plan| {
             validate_required_fields_after_field_write(
@@ -241,6 +256,10 @@ pub(crate) fn write_nested_field(
         plan
     };
     env.apply_plan(plan, span)?;
+    if let Some(path) = created_required_path {
+        env.note_created_required_path(path);
+    }
+    env.defer_required_entry_check(root, identity, &layer_refs);
     Ok(())
 }
 
@@ -343,8 +362,22 @@ pub(crate) fn eval_group_entry_write(
         None => &[],
     };
     let value = resource_value_of(env.program, group_members, fields, span)?;
+    let entry_layers = vec![(layer.to_string(), layer_keys.clone())];
+    let created_required_paths = created_required_paths_for_value(
+        &root,
+        &identity,
+        &entry_layers,
+        group_members,
+        &value,
+        span,
+        env,
+    )?;
     let plan = plan_layer_group_write(resource, &identity, layer, &layer_keys, &value);
     env.apply_plan(plan, span)?;
+    for path in created_required_paths {
+        env.note_created_required_path(path);
+    }
+    env.defer_required_entry_check(&root, &identity, &[(layer, layer_keys.as_slice())]);
     Ok(())
 }
 
@@ -385,11 +418,24 @@ pub(crate) fn write_resource(
     // A whole-record write adds/replaces a key in the root's identity layer.
     env.guard_traversed_layer(&[PathSegment::Root(root.into())], span)?;
     let value = resource_value_of(env.program, &resource.members, fields, span)?;
+    let created_required_paths = created_required_paths_for_value(
+        root,
+        identity,
+        &[],
+        &resource.members,
+        &value,
+        span,
+        env,
+    )?;
     let plan = {
         let store = env.store.borrow();
         plan_resource_write(resource, identity, &value, &*store)
     };
     env.apply_plan(plan, span)?;
+    for path in created_required_paths {
+        env.note_created_required_path(path);
+    }
+    env.defer_required_entry_check(root, identity, &[]);
     Ok(())
 }
 
@@ -723,7 +769,8 @@ pub(crate) fn eval_field_delete(
             && declared.key_params.is_empty()
             && matches!(declared.element, Element::Group)
     }) {
-        if !env.host.maintenance && unkeyed_group_has_required_materialized_field(group) {
+        let deletes_required = unkeyed_group_has_required_materialized_field(group);
+        if !env.host.maintenance && deletes_required {
             return Err(raise_fault(
                 WRITE_REQUIRED_FIELD,
                 format!(
@@ -734,21 +781,27 @@ pub(crate) fn eval_field_delete(
             ));
         }
         let path = saved_segments(&root, &identity, &[(field.to_string(), Vec::new())], None);
+        let required_paths = required_paths_under_group(&root, &identity, &[], field, group);
+        let had_required_data = deletes_required
+            && env.host.maintenance
+            && required_delete_has_preexisting_data(&required_paths, span, env)?;
         env.store
             .borrow_mut()
             .delete(&encode_path(&path))
             .map_err(|error| error.located(span))?;
+        if had_required_data {
+            env.note_maintenance_required_delete(&root, &identity, &[]);
+        }
         return Ok(());
     }
     // Deleting a required field on its own would leave the resource invalid; it is
     // only allowed when the surrounding entry or whole resource is deleted, or
     // under an explicit maintenance run (repair may drop a required field).
-    if !env.host.maintenance
-        && resource.members.iter().any(|declared| {
-            declared.name == field
-                && matches!(declared.element, Element::Slot { required, .. } if required)
-        })
-    {
+    let deletes_required = resource.members.iter().any(|declared| {
+        declared.name == field
+            && matches!(declared.element, Element::Slot { required, .. } if required)
+    });
+    if !env.host.maintenance && deletes_required {
         return Err(raise_fault(
             WRITE_REQUIRED_FIELD,
             format!(
@@ -758,11 +811,18 @@ pub(crate) fn eval_field_delete(
             span,
         ));
     }
+    let path = saved_segments(&root, &identity, &[], Some(field));
+    let had_required_data = deletes_required
+        && env.host.maintenance
+        && required_delete_has_preexisting_data(std::slice::from_ref(&path), span, env)?;
     let plan = {
         let store = env.store.borrow();
         plan_field_delete(resource, &identity, field, &*store)
     };
     env.apply_plan(plan, span)?;
+    if had_required_data {
+        env.note_maintenance_required_delete(&root, &identity, &[]);
+    }
     Ok(())
 }
 
@@ -779,8 +839,13 @@ pub(crate) fn delete_nested_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    let layer_refs: Vec<(&str, &[SavedKey])> = layers
+        .iter()
+        .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+        .collect();
     if let Some(group) = nested_unkeyed_group(env.program, root, &layer_names, field) {
-        if !env.host.maintenance && unkeyed_group_has_required_materialized_field(group) {
+        let deletes_required = unkeyed_group_has_required_materialized_field(group);
+        if !env.host.maintenance && deletes_required {
             return Err(raise_fault(
                 WRITE_REQUIRED_FIELD,
                 format!(
@@ -793,18 +858,25 @@ pub(crate) fn delete_nested_field(
         let mut group_layers = layers.to_vec();
         group_layers.push((field.to_string(), Vec::new()));
         let path = saved_segments(root, identity, &group_layers, None);
+        let required_paths = required_paths_under_group(root, identity, layers, field, group);
+        let had_required_data = deletes_required
+            && env.host.maintenance
+            && required_delete_has_preexisting_data(&required_paths, span, env)?;
         env.store
             .borrow_mut()
             .delete(&encode_path(&path))
             .map_err(|error| error.located(span))?;
+        if had_required_data {
+            env.note_maintenance_required_delete(root, identity, &layer_refs);
+        }
         return Ok(());
     }
     if !resource_nested_member_exists(env.program, root, &layer_names, field) {
         return Err(unsupported("deleting this group field", span));
     }
-    if !env.host.maintenance
-        && nested_field_required(env.program, root, &layer_names, field).unwrap_or(false)
-    {
+    let deletes_required =
+        nested_field_required(env.program, root, &layer_names, field).unwrap_or(false);
+    if !env.host.maintenance && deletes_required {
         return Err(raise_fault(
             WRITE_REQUIRED_FIELD,
             format!(
@@ -815,11 +887,138 @@ pub(crate) fn delete_nested_field(
         ));
     }
     let path = saved_segments(root, identity, layers, Some(field));
+    let had_required_data = deletes_required
+        && env.host.maintenance
+        && required_delete_has_preexisting_data(std::slice::from_ref(&path), span, env)?;
     env.store
         .borrow_mut()
         .delete(&encode_path(&path))
         .map_err(|error| error.located(span))?;
+    if had_required_data {
+        env.note_maintenance_required_delete(root, identity, &layer_refs);
+    }
     Ok(())
+}
+
+fn created_required_field_path(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    field: &str,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
+    if env.transaction_depth() == 0 {
+        return Ok(None);
+    }
+    let layer_names: Vec<&str> = layers.iter().map(|(name, _)| name.as_str()).collect();
+    if !nested_field_required(env.program, root, &layer_names, field).unwrap_or(false) {
+        return Ok(None);
+    }
+    let path = saved_segments(root, identity, layers, Some(field));
+    let absent = env
+        .store
+        .borrow()
+        .read(&encode_path(&path))
+        .map_err(|error| error.located(span))?
+        .is_none();
+    Ok(absent.then_some(path))
+}
+
+fn created_required_paths_for_value(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    members: &[Node],
+    value: &ResourceValue,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<Vec<PathSegment>>, RuntimeError> {
+    if env.transaction_depth() == 0 {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    for field in crate::write::materialized_plain_fields(members) {
+        if !field.required || !resource_value_supplies(value, &field.path) {
+            continue;
+        }
+        let Some(path) = saved_materialized_field_path(root, identity, layers, &field.path) else {
+            continue;
+        };
+        if env
+            .store
+            .borrow()
+            .read(&encode_path(&path))
+            .map_err(|error| error.located(span))?
+            .is_none()
+        {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn resource_value_supplies(value: &ResourceValue, field: &[String]) -> bool {
+    let name = field.join(".");
+    value.fields.iter().any(|(field, _)| field == &name)
+        || value
+            .identities
+            .iter()
+            .any(|identity| identity.field == name)
+}
+
+fn required_delete_has_preexisting_data(
+    paths: &[Vec<PathSegment>],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<bool, RuntimeError> {
+    for path in paths {
+        if env.required_path_created_in_transaction(path) {
+            continue;
+        }
+        if env
+            .store
+            .borrow()
+            .read(&encode_path(path))
+            .map_err(|error| error.located(span))?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn required_paths_under_group(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    group_name: &str,
+    group: &Node,
+) -> Vec<Vec<PathSegment>> {
+    crate::write::materialized_plain_fields(&group.members)
+        .into_iter()
+        .filter(|field| field.required)
+        .filter_map(|field| {
+            let mut field_layers = layers.to_vec();
+            field_layers.push((group_name.to_string(), Vec::new()));
+            saved_materialized_field_path(root, identity, &field_layers, &field.path)
+        })
+        .collect()
+}
+
+fn saved_materialized_field_path(
+    root: &str,
+    identity: &[SavedKey],
+    layers: &[(String, Vec<SavedKey>)],
+    field: &[String],
+) -> Option<Vec<PathSegment>> {
+    let name = field.last()?;
+    let mut field_layers = layers.to_vec();
+    for group in &field[..field.len().saturating_sub(1)] {
+        field_layers.push((group.clone(), Vec::new()));
+    }
+    Some(saved_segments(root, identity, &field_layers, Some(name)))
 }
 
 fn nested_unkeyed_group<'a>(
