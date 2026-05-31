@@ -882,6 +882,71 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
 }
 
 #[test]
+fn reports_unexpected_indentation_after_simple_statements() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   print(\"kept\")\n\
+         \x20       print(\"over-indented\")\n",
+    );
+
+    assert!(
+        parsed.has_errors(),
+        "an unexpected nested line must not parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.span.line == 4
+                && diagnostic.message.contains("unexpected indentation")),
+        "expected a line-4 indentation diagnostic: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn parses_final_block_statement_without_trailing_newline() {
+    let parsed = parse_source("module app\nfn main()\n    if ready\n        return");
+
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "EOF should close the final newline/dedent sequence: {:#?}",
+        parsed.diagnostics
+    );
+    let main = parsed.file.function("main").expect("main function");
+    assert!(matches!(main.body.statements[0], Statement::If { .. }));
+}
+
+#[test]
+fn parses_trailing_comments_on_declaration_lines() {
+    let parsed = parse_source(
+        "module app ; module comment\n\
+         use std::math ; use comment\n\
+         const Max: int = 5 ; const comment\n\
+         resource Book at ^books(id: int) ; resource comment\n\
+         \x20   title: string ; field comment\n\
+         \x20   notes(noteId: string) ; group comment\n\
+         \x20       text: string ; nested field comment\n\
+         \x20   index byTitle(title) ; index comment\n\
+         enum Status ; enum comment\n\
+         \x20   active ; member comment\n\
+         fn main() ; function comment\n\
+         \x20   return ; statement comment\n",
+    );
+
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "declaration trailing comments should be trivia: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(parsed.file.resource("Book").is_some());
+    assert!(parsed.file.enum_decl("Status").is_some());
+    assert!(parsed.file.function("main").is_some());
+}
+
+#[test]
 fn surfaces_lexer_diagnostics_for_function_body_tokens() {
     let parsed = parse_source("module app\nfn main()\n    return a && b\n");
 
@@ -1720,6 +1785,39 @@ fn reserved_word_as_const_name_is_rejected() {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("`at` is a keyword")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn reserved_word_as_var_name_reports_variable_name_diagnostic() {
+    // `out` is reserved as a parameter-mode keyword. In a binding position the
+    // parser should diagnose the binding name itself, not drop the statement and
+    // cascade through the rest of the body.
+    let parsed = parse_source("module app\nfn f(): int\n    var out: int = 0\n    return out\n");
+
+    assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics[0]
+            .message
+            .contains("expected variable name"),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+    assert_eq!(parsed.diagnostics[0].span.line, 3);
+    assert!(
+        parsed.diagnostics[1]
+            .message
+            .contains("cannot be used as an expression"),
+        "{:#?}",
+        parsed.diagnostics[1]
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("expected a statement")),
         "{:#?}",
         parsed.diagnostics
     );

@@ -71,8 +71,8 @@ pub(crate) fn eval_next_id(
 }
 
 /// Evaluate `append(^root(key…).layer, value)`: write `value` at the next 1-based
-/// position of a keyed-leaf layer and return that position. Reuses the write
-/// planner's `next_layer_pos` (over the live store) and `plan_layer_leaf_write`.
+/// position of a keyed-leaf layer and return that position. The layer may sit
+/// directly under the record or below keyed group entries.
 pub(crate) fn eval_append(
     args: &[Argument],
     span: SourceSpan,
@@ -87,27 +87,288 @@ pub(crate) fn eval_append(
             span,
         });
     };
+    if let Expression::Name {
+        segments,
+        span: target_span,
+    } = &target.value
+        && let [name] = segments.as_slice()
+    {
+        if env.lookup(name).is_none() {
+            return Err(assign_error(name, AssignError::Unbound, *target_span));
+        }
+        let appended = eval_expr(&value.value, env)?;
+        let Some(Value::Sequence(mut items)) = env.lookup(name).cloned() else {
+            return Err(unsupported("appending to this path", span));
+        };
+        items.push(appended);
+        let pos = i64::try_from(items.len()).map_err(|_| overflow(span))?;
+        env.assign(name, Value::Sequence(items))
+            .map_err(|error| assign_error(name, error, *target_span))?;
+        return Ok(Value::Int(pos));
+    }
     let Expression::Field {
         base, name: layer, ..
     } = &target.value
     else {
         return Err(unsupported("appending to this path", span));
     };
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
+    let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("appending under this saved root", span))?;
     // Append adds a key to this layer's key set.
-    env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
+    env.guard_traversed_layer(
+        &nested_layer_prefix(&root, &identity, &parents, layer),
+        span,
+    )?;
     let saved = value_to_saved(eval_expr(&value.value, env)?)
         .ok_or_else(|| unsupported("appending a resource value", span))?;
     let pos = {
         let store = env.store.borrow();
-        next_layer_pos(resource, &identity, layer, &*store)
+        if parents.is_empty() {
+            next_layer_pos(resource, &identity, layer, &*store)
+        } else {
+            let parent_refs: Vec<(&str, &[SavedKey])> = parents
+                .iter()
+                .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+                .collect();
+            next_nested_layer_pos(resource, &identity, &parent_refs, layer, &*store)
+        }
     };
     let pos = pos.map_err(|error| write_fault(error, span))?;
-    let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved);
+    let plan = if parents.is_empty() {
+        plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
+    } else {
+        let parent_refs: Vec<(&str, &[SavedKey])> = parents
+            .iter()
+            .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+            .collect();
+        plan_nested_layer_leaf_write(
+            resource,
+            &identity,
+            &parent_refs,
+            layer,
+            &[SavedKey::Int(pos)],
+            &saved,
+        )
+    };
     env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))
+}
+
+pub(crate) fn eval_local_collection_read(
+    name: &str,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    match env.lookup(name).cloned() {
+        Some(Value::Sequence(items)) => read_local_sequence(items, args, span, env).map(Some),
+        Some(Value::LocalTree(entries)) => {
+            let keys = eval_local_keys(args, span, env)?;
+            entries
+                .into_iter()
+                .find(|entry| entry.keys == keys)
+                .map(|entry| entry.value)
+                .ok_or_else(|| {
+                    absent_read(ReadPosition::Value, "`local tree` is absent".into(), span)
+                })
+                .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn eval_local_collection_write(
+    name: &str,
+    args: &[Argument],
+    value: &Expression,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<bool, RuntimeError> {
+    match env.lookup(name).cloned() {
+        Some(Value::Sequence(mut items)) => {
+            let index = eval_local_sequence_index(args, span, env)?;
+            let value = eval_expr(value, env)?;
+            if index == items.len() {
+                items.push(value);
+            } else if let Some(slot) = items.get_mut(index) {
+                *slot = value;
+            } else {
+                return Err(unsupported(
+                    "writing a sparse local sequence position",
+                    span,
+                ));
+            }
+            env.assign(name, Value::Sequence(items))
+                .map_err(|error| assign_error(name, error, span))?;
+            Ok(true)
+        }
+        Some(Value::LocalTree(mut entries)) => {
+            let keys = eval_local_keys(args, span, env)?;
+            let value = eval_expr(value, env)?;
+            if let Some(entry) = entries.iter_mut().find(|entry| entry.keys == keys) {
+                entry.value = value;
+            } else {
+                entries.push(LocalTreeEntry { keys, value });
+                entries.sort_by_key(|entry| local_key_sort_key(&entry.keys));
+            }
+            env.assign(name, Value::LocalTree(entries))
+                .map_err(|error| assign_error(name, error, span))?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+pub(crate) fn local_collection_count(
+    value: Value,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Sequence(items) => i64::try_from(items.len())
+            .map(Value::Int)
+            .map_err(|_| overflow(span)),
+        Value::LocalTree(entries) => i64::try_from(entries.len())
+            .map(Value::Int)
+            .map_err(|_| overflow(span)),
+        _ => Err(unsupported("counting this value", span)),
+    }
+}
+
+pub(crate) fn enumerate_local_collection_dir(
+    value: Value,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut keys = match value {
+        Value::Sequence(items) => (1..=items.len())
+            .map(|pos| {
+                i64::try_from(pos)
+                    .map(Value::Int)
+                    .map_err(|_| overflow(span))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Value::LocalTree(entries) => {
+            let mut seen = Vec::<SavedKey>::new();
+            for entry in entries {
+                let Some(key) = entry.keys.first().cloned() else {
+                    continue;
+                };
+                if !seen.contains(&key) {
+                    seen.push(key);
+                }
+            }
+            seen.into_iter()
+                .map(saved_key_to_value)
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| unsupported("iterating keys of this type", span))?
+        }
+        _ => return Err(unsupported("keys over this value", span)),
+    };
+    if dir == Direction::Descending {
+        keys.reverse();
+    }
+    Ok(keys)
+}
+
+pub(crate) fn materialize_local_collection_dir(
+    value: Value,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    let mut rows = match value {
+        Value::Sequence(items) => items
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let pos = i64::try_from(index + 1).map_err(|_| overflow(span))?;
+                Ok((Value::Int(pos), value))
+            })
+            .collect::<Result<Vec<_>, RuntimeError>>()?,
+        Value::LocalTree(entries) => entries
+            .into_iter()
+            .map(|entry| {
+                let key = entry
+                    .keys
+                    .first()
+                    .cloned()
+                    .and_then(saved_key_to_value)
+                    .ok_or_else(|| unsupported("iterating keys of this type", span))?;
+                Ok((key, entry.value))
+            })
+            .collect::<Result<Vec<_>, RuntimeError>>()?,
+        _ => return Err(unsupported("values/entries over this value", span)),
+    };
+    if dir == Direction::Descending {
+        rows.reverse();
+    }
+    Ok(rows)
+}
+
+fn read_local_sequence(
+    items: Vec<Value>,
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let index = eval_local_sequence_index(args, span, env)?;
+    items.get(index).cloned().ok_or_else(|| {
+        absent_read(
+            ReadPosition::Value,
+            "`local sequence` is absent".into(),
+            span,
+        )
+    })
+}
+
+fn eval_local_sequence_index(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<usize, RuntimeError> {
+    let [arg] = args else {
+        return Err(type_error("a local sequence lookup takes one key", span));
+    };
+    if arg.mode.is_some() || arg.name.is_some() {
+        return Err(unsupported(
+            "named or out arguments in a local collection lookup",
+            span,
+        ));
+    }
+    let Value::Int(pos) = eval_expr(&arg.value, env)? else {
+        return Err(type_error("a local sequence key must be an int", span));
+    };
+    if pos < 1 {
+        return Err(type_error("a local sequence key must be positive", span));
+    }
+    usize::try_from(pos - 1).map_err(|_| overflow(span))
+}
+
+fn eval_local_keys(
+    args: &[Argument],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<SavedKey>, RuntimeError> {
+    args.iter()
+        .map(|arg| {
+            if arg.mode.is_some() || arg.name.is_some() {
+                return Err(unsupported(
+                    "named or out arguments in a local collection lookup",
+                    span,
+                ));
+            }
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("a key of this type", span))
+        })
+        .collect()
+}
+
+fn local_key_sort_key(keys: &[SavedKey]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for key in keys {
+        bytes.extend(encode_path(&[PathSegment::IndexKey(key.clone())]));
+    }
+    bytes
 }
 
 /// Evaluate `keys(<layer>)` as a value: enumerate the layer's child keys into a
@@ -127,6 +388,13 @@ pub(crate) fn eval_keys(
             span,
         });
     };
+    if !is_saved_path(&path.value) {
+        return Ok(Value::Sequence(enumerate_local_collection_dir(
+            eval_expr(&path.value, env)?,
+            Direction::Ascending,
+            span,
+        )?));
+    }
     check_key_collection(&path.value, span, env)?;
     Ok(Value::Sequence(enumerate_layer(&path.value, env)?))
 }
@@ -147,6 +415,17 @@ pub(crate) fn eval_values(
             span,
         });
     };
+    if !is_saved_path(&path.value) {
+        let values = materialize_local_collection_dir(
+            eval_expr(&path.value, env)?,
+            Direction::Ascending,
+            span,
+        )?
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect();
+        return Ok(Value::Sequence(values));
+    }
     let values = materialize_layer(&path.value, env)?
         .into_iter()
         .map(|(_, value)| value)
@@ -171,6 +450,17 @@ pub(crate) fn eval_entries(
             span,
         });
     };
+    if !is_saved_path(&path.value) {
+        let entries = materialize_local_collection_dir(
+            eval_expr(&path.value, env)?,
+            Direction::Ascending,
+            span,
+        )?
+        .into_iter()
+        .map(|(key, value)| Value::Sequence(vec![key, value]))
+        .collect();
+        return Ok(Value::Sequence(entries));
+    }
     let entries = materialize_layer(&path.value, env)?
         .into_iter()
         .map(|(key, value)| Value::Sequence(vec![key, value]))
@@ -201,7 +491,15 @@ pub(crate) fn eval_reversed(
     // `reversed(values(L))` / `reversed(entries(L))`: materialize the layer in
     // reverse key order, then shape the rows the way `values`/`entries` do.
     if let Some(inner) = values_or_entries(&arg.value) {
-        let rows = materialize_layer_dir(inner.layer, Direction::Descending, env)?;
+        let rows = if is_saved_path(inner.layer) {
+            materialize_layer_dir(inner.layer, Direction::Descending, env)?
+        } else {
+            materialize_local_collection_dir(
+                eval_expr(inner.layer, env)?,
+                Direction::Descending,
+                span,
+            )?
+        };
         return Ok(Value::Sequence(match inner.kind {
             MaterializeKind::Values => rows.into_iter().map(|(_, value)| value).collect(),
             MaterializeKind::Entries => rows
@@ -212,6 +510,13 @@ pub(crate) fn eval_reversed(
     }
     // `reversed(keys(L))`: addresses, descending.
     if let Some(layer) = keys_argument(&arg.value) {
+        if !is_saved_path(layer) {
+            return Ok(Value::Sequence(enumerate_local_collection_dir(
+                eval_expr(layer, env)?,
+                Direction::Descending,
+                span,
+            )?));
+        }
         check_key_collection(layer, span, env)?;
         return Ok(Value::Sequence(enumerate_layer_dir(
             layer,
@@ -222,6 +527,11 @@ pub(crate) fn eval_reversed(
     // `reversed(L)`: elements for value-bearing saved collections, identities for
     // key-only index branches.
     if is_saved_path(&arg.value) {
+        if let Some(values) =
+            unique_index_lookup_values(&arg.value, span, Direction::Descending, env)?
+        {
+            return Ok(Value::Sequence(values));
+        }
         if is_iterable_index_branch(&arg.value, env) {
             return Ok(Value::Sequence(enumerate_layer_dir(
                 &arg.value,
@@ -241,6 +551,16 @@ pub(crate) fn eval_reversed(
             items.reverse();
             Ok(Value::Sequence(items))
         }
+        Value::LocalTree(entries) => Ok(Value::Sequence(
+            materialize_local_collection_dir(
+                Value::LocalTree(entries),
+                Direction::Descending,
+                span,
+            )?
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect(),
+        )),
         _ => Err(unsupported(
             "reversing this value (expected an iterable)",
             span,
@@ -257,8 +577,8 @@ pub(crate) enum MaterializeKind {
 /// A `values(L)`/`entries(L)` wrapper recognized inside `reversed(...)`: the inner
 /// layer expression and which shape it materializes.
 pub(crate) struct ValuesOrEntries<'a> {
-    layer: &'a Expression,
-    kind: MaterializeKind,
+    pub(crate) layer: &'a Expression,
+    pub(crate) kind: MaterializeKind,
 }
 
 /// Classify a `values(<layer>)` or `entries(<layer>)` call, or `None` otherwise.
@@ -436,6 +756,9 @@ pub(crate) fn materialize_layer_dir(
     dir: Direction,
     env: &mut Env<'_>,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    if !is_saved_path(path) {
+        return materialize_local_collection_dir(eval_expr(path, env)?, dir, path.span());
+    }
     let keys = enumerate_layer_dir(path, dir, env)?;
     match path {
         // A primary keyed root: each child key is a record identity, materialized
@@ -453,22 +776,37 @@ pub(crate) fn materialize_layer_dir(
             base, name: layer, ..
         } => {
             let span = path.span();
-            let (root, identity) = lower(base, env)?.into_record(base.span())?;
+            let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
             keys.into_iter()
                 .map(|key| {
                     let layer_key = value_to_key(key.clone())
                         .ok_or_else(|| unsupported("a key of this type", span))?;
                     // Materializing a known-present child key: an absent entry is a
                     // plain fatal fault, not a catchable value-position read.
-                    let value = read_layer_entry(
-                        &root,
-                        &identity,
-                        layer,
-                        &[layer_key],
-                        ReadPosition::ArgSeed,
-                        span,
-                        env,
-                    )?;
+                    let value = if parents.is_empty() {
+                        read_layer_entry(
+                            &root,
+                            &identity,
+                            layer,
+                            &[layer_key],
+                            ReadPosition::ArgSeed,
+                            span,
+                            env,
+                        )?
+                    } else {
+                        read_layer_entry_at(
+                            LayerEntryAddress {
+                                root: &root,
+                                identity: &identity,
+                                parent_layers: &parents,
+                                layer,
+                                layer_keys: &[layer_key],
+                            },
+                            ReadPosition::ArgSeed,
+                            span,
+                            env,
+                        )?
+                    };
                     Ok((key, value))
                 })
                 .collect()

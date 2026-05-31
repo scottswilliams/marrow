@@ -8,11 +8,11 @@
 //! module. The artifact never affects diagnostics; it is a structured view of the
 //! same parse the checker already produced.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
-use marrow_syntax::{Block, ParamMode, SourceSpan, TypeRef};
+use marrow_syntax::{Block, Expression, ParamMode, SourceSpan, TypeRef};
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -63,6 +63,7 @@ pub struct CheckedModule {
     pub functions: Vec<CheckedFunction>,
     pub resources: Vec<marrow_schema::ResourceSchema>,
     pub enums: Vec<marrow_schema::EnumSchema>,
+    pub enum_public: HashMap<String, bool>,
 }
 
 /// A module-level constant. Its type is the resolved annotation when one was
@@ -71,6 +72,7 @@ pub struct CheckedModule {
 pub struct CheckedConst {
     pub name: String,
     pub ty: Option<MarrowType>,
+    pub value: Option<Expression>,
     pub span: SourceSpan,
 }
 
@@ -127,6 +129,14 @@ pub enum MarrowType {
         name: String,
     },
     Sequence(Box<MarrowType>),
+    LocalTree {
+        keys: Vec<MarrowType>,
+        value: Box<MarrowType>,
+    },
+    /// An expression whose own type check already produced a primary diagnostic.
+    /// It suppresses secondary "untyped value" hints while still keeping unknown
+    /// dynamic values distinct.
+    Invalid,
     Unknown,
 }
 

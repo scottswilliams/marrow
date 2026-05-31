@@ -418,6 +418,69 @@ pub fn plan_identity_field_write(
     })
 }
 
+/// Validate that a single-field write outside a user transaction would leave
+/// every required field populated for each entry it creates or updates.
+pub(crate) fn validate_required_fields_after_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+    field: &str,
+    store: &dyn Backend,
+) -> Result<(), WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let mut entry_base = identity_path(root, identity);
+    let mut layer_base = entry_base.clone();
+    let mut entry_members = schema.members.as_slice();
+    let mut lookup_members = entry_members;
+    let mut supplied_path = Vec::new();
+
+    for (name, key) in layers {
+        let declared = layer_in(lookup_members, name).ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
+        })?;
+        if matches!(declared.element, Element::Slot { .. }) {
+            return Err(WriteError {
+                code: WRITE_NOT_A_GROUP_LAYER,
+                message: format!("keyed layer `{name}` is a leaf, not a group"),
+            });
+        }
+        if key.len() != declared.key_params.len() {
+            return Err(WriteError {
+                code: WRITE_LAYER_KEY_ARITY,
+                message: format!(
+                    "keyed layer `{name}` expects {} key(s), got {}",
+                    declared.key_params.len(),
+                    key.len()
+                ),
+            });
+        }
+
+        layer_base.push(PathSegment::ChildLayer((*name).into()));
+        if declared.key_params.is_empty() {
+            supplied_path.push((*name).to_string());
+            lookup_members = &declared.members;
+            continue;
+        }
+
+        ensure_required_fields_present(entry_members, &entry_base, None, store)?;
+        layer_base.extend(key.iter().cloned().map(PathSegment::IndexKey));
+        entry_base = layer_base.clone();
+        entry_members = &declared.members;
+        lookup_members = &declared.members;
+        supplied_path.clear();
+    }
+
+    if field_slot(lookup_members, field).is_none() {
+        return Err(WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("resource `{}` has no field `{field}`", schema.name),
+        });
+    }
+    supplied_path.push(field.to_string());
+    ensure_required_fields_present(entry_members, &entry_base, Some(&supplied_path), store)
+}
+
 /// Plan a managed field delete: remove `field` of the resource at `identity`,
 /// leaving the resource's other fields in place, and tear down any index the
 /// field feeds. Validates that the field is declared (`WRITE_UNKNOWN_FIELD`),
@@ -649,6 +712,82 @@ pub fn plan_layer_identity_leaf_write(
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
             path: encode_path(&layer_leaf_path(root, identity, layer, key)),
+            value,
+        }],
+    })
+}
+
+/// Plan a keyed-leaf write below an already-keyed parent layer chain, e.g.
+/// `^root(identity).rows(row).fields(col) = value`. The parent chain must name
+/// group layers; the terminal `layer` must be a keyed leaf.
+pub fn plan_nested_layer_leaf_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    key: &[SavedKey],
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = find_nested_layer(schema, parents, layer)?;
+    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+        return Err(WriteError {
+            code: WRITE_NOT_A_LEAF_LAYER,
+            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+        });
+    };
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    check_type(layer, leaf_type, value)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&nested_layer_leaf_path(root, identity, parents, layer, key)),
+            value: encode_value(value)?,
+        }],
+    })
+}
+
+/// Plan a typed-reference keyed-leaf write below an already-keyed parent layer
+/// chain. The stored value is the referenced identity's canonical encoding.
+pub fn plan_nested_layer_identity_leaf_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    key: &[SavedKey],
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = find_nested_layer(schema, parents, layer)?;
+    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+        return Err(WriteError {
+            code: WRITE_NOT_A_LEAF_LAYER,
+            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+        });
+    };
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    let value = staged_identity_value(layer, leaf_type, keys, referenced_arity)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&nested_layer_leaf_path(root, identity, parents, layer, key)),
             value,
         }],
     })
@@ -980,6 +1119,30 @@ pub fn next_layer_pos(
     next_after(highest)
 }
 
+/// The next 1-based position for an `append` to a keyed layer below a keyed
+/// parent chain, e.g. `^root(identity).rows(row).fields`.
+pub fn next_nested_layer_pos(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    store: &dyn Backend,
+) -> Result<i64, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    find_nested_layer(schema, parents, layer)?;
+    let mut prefix = nested_layer_path(root, identity, parents);
+    prefix.push(PathSegment::ChildLayer(layer.into()));
+    let highest = store
+        .max_int_index_key(&encode_path(&prefix))
+        .map_err(|_| WriteError {
+            code: WRITE_STORE,
+            message: format!("could not read entries under keyed layer `{layer}`"),
+        })?
+        .filter(|&pos| pos >= 1)
+        .unwrap_or(0);
+    next_after(highest)
+}
+
 /// The supplied value for `field` in `value`, if any.
 fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a SavedValue> {
     value
@@ -1132,6 +1295,25 @@ fn find_layer<'a>(schema: &'a ResourceSchema, layer: &str) -> Result<&'a Node, W
     })
 }
 
+fn find_nested_layer<'a>(
+    schema: &'a ResourceSchema,
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+) -> Result<&'a Node, WriteError> {
+    let members = if parents.is_empty() {
+        &schema.members
+    } else {
+        &descend_group_layers(schema, parents)?.members
+    };
+    layer_in(members, layer).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_LAYER,
+        message: format!(
+            "keyed layer `{}` has no nested layer `{layer}`",
+            schema.name
+        ),
+    })
+}
+
 /// The layer node named `name` in `members`: a group or keyed leaf, never a plain
 /// field.
 fn layer_in<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
@@ -1169,6 +1351,46 @@ fn materialized_field_path(
     path
 }
 
+fn materialized_entry_field_path(base: &[PathSegment], field: &[String]) -> Vec<PathSegment> {
+    let mut path = base.to_vec();
+    for group in &field[..field.len().saturating_sub(1)] {
+        path.push(PathSegment::ChildLayer(group.clone()));
+    }
+    if let Some(name) = field.last() {
+        path.push(PathSegment::Field(name.clone()));
+    }
+    path
+}
+
+fn ensure_required_fields_present(
+    members: &[Node],
+    base: &[PathSegment],
+    supplied: Option<&[String]>,
+    store: &dyn Backend,
+) -> Result<(), WriteError> {
+    for field in materialized_plain_fields(members) {
+        if !field.required || supplied.is_some_and(|supplied| supplied == field.path.as_slice()) {
+            continue;
+        }
+        if store
+            .read(&encode_path(&materialized_entry_field_path(
+                base,
+                &field.path,
+            )))?
+            .is_none()
+        {
+            return Err(WriteError {
+                code: WRITE_REQUIRED_ABSENT,
+                message: format!(
+                    "required field `{}` is absent",
+                    materialized_field_name(&field.path)
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The encoded-path segments for a keyed-leaf entry,
 /// `^root(identity).layer(key…)`.
 fn layer_leaf_path(
@@ -1178,6 +1400,19 @@ fn layer_leaf_path(
     key: &[SavedKey],
 ) -> Vec<PathSegment> {
     nested_layer_path(root, identity, &[(layer, key)])
+}
+
+fn nested_layer_leaf_path(
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    key: &[SavedKey],
+) -> Vec<PathSegment> {
+    let mut path = nested_layer_path(root, identity, parents);
+    path.push(PathSegment::ChildLayer(layer.into()));
+    path.extend(key.iter().cloned().map(PathSegment::IndexKey));
+    path
 }
 
 /// The encoded-path segments for a (possibly nested) keyed group entry,

@@ -177,17 +177,27 @@ pub(crate) fn eval_identity_constructor(
             keys.push(key);
         }
     }
-    Ok(Value::Identity(keys))
+    Ok(identity_value(keys))
 }
 
-/// Whether `name` is a resource type declared in the program (for an
-/// uninitialized `var book: Book` to start as an empty resource value).
-pub(crate) fn is_resource_type(program: &CheckedProgram, name: &str) -> bool {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .any(|resource| resource.name == name)
+/// Whether `name` names a resource type (for an uninitialized `var book: Book`
+/// to start as an empty resource value).
+pub(crate) fn is_resource_type(program: &CheckedProgram, from_module: &str, name: &str) -> bool {
+    if !name.contains("::") {
+        return program
+            .modules
+            .iter()
+            .flat_map(|module| &module.resources)
+            .any(|resource| resource.name == name);
+    }
+    let segments: Vec<String> = name.split("::").map(str::to_string).collect();
+    matches!(
+        resolve(program, from_module, &segments, ResolvableKind::Resource),
+        Resolution::Found(Def {
+            item: DefItem::Resource(_),
+            ..
+        })
+    )
 }
 
 /// Whether an expression denotes a saved path (rooted at a `^root`), as opposed
@@ -267,6 +277,17 @@ pub(crate) fn resource_layer_leaf(
     layer: &str,
 ) -> Option<LeafKind> {
     let ty = find_resource(program, root)?.leaf_type(&[layer])?.clone();
+    leaf_kind(program, &ty)
+}
+
+/// The stored leaf kind of a keyed-leaf layer named by its full chain from the
+/// resource, e.g. `rows.fields` for `^table(id).rows(row).fields(col)`.
+pub(crate) fn resource_layer_leaf_chain(
+    program: &CheckedProgram,
+    root: &str,
+    layers: &[&str],
+) -> Option<LeafKind> {
+    let ty = find_resource(program, root)?.leaf_type(layers)?.clone();
     leaf_kind(program, &ty)
 }
 
@@ -365,10 +386,14 @@ pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -
             .iter()
             .all(|segment| matches!(segment, PathSegment::IndexKey(_)))
     {
-        if find_resource(program, root)
-            .is_some_and(|resource| resource.indexes.iter().any(|index| index.name == *name))
-        {
+        let Some(resource) = find_resource(program, root) else {
+            return SavedPathClass::Orphan;
+        };
+        if resource.indexes.iter().any(|index| index.name == *name) {
             return SavedPathClass::IndexMarker;
+        }
+        if arity == 0 {
+            return classify_member(program, root, after_identity);
         }
         return SavedPathClass::Orphan;
     }

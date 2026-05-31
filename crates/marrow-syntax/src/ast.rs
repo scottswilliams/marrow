@@ -24,6 +24,7 @@ pub struct SourceFile {
     pub module: Option<ModuleDecl>,
     pub uses: Vec<UseDecl>,
     pub declarations: Vec<Declaration>,
+    pub comments: Vec<Comment>,
 }
 
 impl SourceFile {
@@ -107,6 +108,7 @@ pub enum Expression {
     Call {
         callee: Box<Expression>,
         args: Vec<Argument>,
+        multiline: bool,
         span: SourceSpan,
     },
     /// Dotted field access, such as `book.title` or `^books(id)."old-title"`.
@@ -236,6 +238,7 @@ pub struct ResourceDecl {
     pub name: String,
     pub store: Option<SavedRoot>,
     pub members: Vec<ResourceMember>,
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
@@ -270,6 +273,7 @@ pub struct GroupDecl {
     pub name: String,
     pub keys: Vec<KeyParam>,
     pub members: Vec<ResourceMember>,
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
@@ -304,6 +308,7 @@ pub struct EnumDecl {
     pub public: bool,
     pub name: String,
     pub members: Vec<EnumMember>,
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
@@ -318,6 +323,7 @@ pub struct EnumMember {
     pub name: String,
     pub category: bool,
     pub members: Vec<EnumMember>,
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
@@ -325,20 +331,27 @@ pub struct EnumMember {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
     pub statements: Vec<Statement>,
-    /// Ordinary `;` comments inside this block, in source order. They are kept
-    /// as block-level trivia (not attached to statement nodes) so the formatter
+    /// Line comments inside this block, in source order. They are kept as
+    /// block-level trivia (not attached to statement nodes) so the formatter
     /// can re-emit them and `parse -> format` round-trips comments losslessly.
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
-/// An ordinary `;` comment retained as block trivia. `text` is the comment body
-/// with the leading `;` marker and surrounding whitespace removed.
+/// A line comment retained as block trivia. `text` is the comment body with the
+/// leading marker and surrounding whitespace removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comment {
     pub text: String,
     pub placement: CommentPlacement,
+    pub marker: CommentMarker,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentMarker {
+    Line,
+    Doc,
 }
 
 /// Where a retained comment sits relative to the statements of its block.

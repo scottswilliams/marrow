@@ -92,7 +92,17 @@ fn op_saved_get(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolE
 /// in Marrow order: each is a `{"key": …}` (a record/index key) or `{"name": …}`
 /// (a field, layer, or index name).
 fn op_saved_children(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
-    let path = encode_path(&request_path(request)?);
+    let segments = request_path(request)?;
+    if segments.is_empty() {
+        let children: Vec<Value> = store
+            .roots()
+            .map_err(store_error)?
+            .into_iter()
+            .map(|root| json!({ "name": root }))
+            .collect();
+        return Ok(json!({ "children": children }));
+    }
+    let path = encode_path(&segments);
     let children = store.child_keys(&path).map_err(store_error)?;
     let children: Vec<Value> = children.iter().map(encode_child).collect();
     Ok(json!({ "children": children }))
@@ -110,14 +120,7 @@ const MAX_WALK: usize = 10_000;
 /// [`MAX_WALK`].
 fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
     let path = encode_path(&request_path(request)?);
-    let limit = request
-        .get("limit")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| bad_request("`saved_walk` requires an integer `limit`"))?;
-    if limit == 0 {
-        return Err(bad_request("`saved_walk` requires a positive `limit`"));
-    }
-    let limit = limit.min(MAX_WALK as u64) as usize;
+    let limit = request_walk_limit(request)?;
     let cursor = request
         .get("cursor")
         .map(|value| decode_cursor(value, &path))
@@ -141,6 +144,39 @@ fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, Protocol
         )
         .collect();
     Ok(json!({ "entries": entries, "truncated": page.truncated, "nextCursor": next_cursor }))
+}
+
+fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
+    let value = request
+        .get("limit")
+        .ok_or_else(|| bad_request("`saved_walk` requires an integer `limit`"))?;
+    if let Some(limit) = value.as_u64() {
+        if limit == 0 {
+            return Err(bad_request(
+                "`saved_walk` requires a positive integer `limit`",
+            ));
+        }
+        return Ok(limit.min(MAX_WALK as u64) as usize);
+    }
+    if value.as_i64().is_some() {
+        return Err(bad_request(
+            "`saved_walk` requires a positive integer `limit`",
+        ));
+    }
+    let Some(number) = value.as_number() else {
+        return Err(bad_request("`saved_walk` requires an integer `limit`"));
+    };
+    if number
+        .as_f64()
+        .is_some_and(|value| value.is_finite() && value.fract() == 0.0 && value >= u64::MAX as f64)
+    {
+        return Ok(MAX_WALK);
+    }
+    let text = number.to_string();
+    if text.bytes().all(|byte| byte.is_ascii_digit()) && text != "0" {
+        return Ok(MAX_WALK);
+    }
+    Err(bad_request("`saved_walk` requires an integer `limit`"))
 }
 
 /// The decoded `path` of a request, or a `protocol.bad_request` error.
@@ -408,6 +444,13 @@ mod tests {
     }
 
     #[test]
+    fn saved_children_of_the_empty_path_lists_roots() {
+        let store = store_with_a_book();
+        let reply = handle_request(&store, &json!({ "op": "saved_children", "path": [] }));
+        assert_eq!(reply["ok"]["children"], json!([{"name": "books"}]));
+    }
+
+    #[test]
     fn a_bad_path_segment_is_a_bad_request() {
         let store = MemStore::new();
         let reply = handle_request(
@@ -560,6 +603,33 @@ mod tests {
             &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 0 }),
         );
         assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    }
+
+    #[test]
+    fn saved_walk_rejects_a_negative_limit_with_a_positive_integer_message() {
+        let store = store_with_a_book();
+        let reply = handle_request(
+            &store,
+            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": -1 }),
+        );
+        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+        assert_eq!(
+            reply["error"]["message"],
+            json!("`saved_walk` requires a positive integer `limit`")
+        );
+    }
+
+    #[test]
+    fn saved_walk_caps_an_over_u64_integer_limit() {
+        let store = store_with_two_books();
+        let request: Value = serde_json::from_str(
+            r#"{"op":"saved_walk","path":[{"root":"books"}],"limit":18446744073709551616}"#,
+        )
+        .expect("json integer beyond u64");
+        let reply = handle_request(&store, &request);
+        assert_eq!(reply["error"], Value::Null, "{reply}");
+        assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 2);
+        assert_eq!(reply["ok"]["truncated"], json!(false));
     }
 
     #[test]

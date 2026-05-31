@@ -8,11 +8,17 @@ use crate::{CheckFormat, report_check, report_io_error, report_project, report_s
 
 pub(crate) fn check(args: &[String]) -> ExitCode {
     let mut format = CheckFormat::Text;
+    let mut saw_format = false;
     let mut file = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
+                if saw_format {
+                    eprintln!("duplicate --format");
+                    return ExitCode::from(2);
+                }
+                saw_format = true;
                 index += 1;
                 let Some(value) = args.get(index) else {
                     eprintln!("missing value for --format");
@@ -210,7 +216,7 @@ impl Drop for ScratchDir {
 }
 
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
-/// checker over its source roots.
+/// checker over its source roots and configured test files.
 fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = match std::fs::read_to_string(&config_path) {
@@ -227,7 +233,7 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (report, _program) = match marrow_check::check_project(Path::new(dir), &config) {
+    let (mut report, program) = match marrow_check::check_project(Path::new(dir), &config) {
         Ok(result) => result,
         Err(error) => {
             report_simple_error(
@@ -238,6 +244,21 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if !report.has_errors() && !config.tests.is_empty() {
+        let (test_report, _test_modules) =
+            match marrow_check::check_tests(Path::new(dir), &config, &program) {
+                Ok(result) => result,
+                Err(error) => {
+                    report_simple_error(
+                        error.code,
+                        &format!("{}: {}", error.path.display(), error.message),
+                        format,
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+        report.diagnostics.extend(test_report.diagnostics);
+    }
 
     report_project(dir, &report, format);
     if report.has_errors() {

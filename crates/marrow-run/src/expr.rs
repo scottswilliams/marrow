@@ -102,17 +102,27 @@ pub(crate) fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, R
             right,
             span,
         } => eval_binary(*op, left, right, *span, env),
-        Expression::Call { callee, args, span } => match eval_call(callee, args, *span, env)? {
-            Some(value) => Ok(value),
-            None => Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_NO_VALUE,
-                message: "a call to a function that returns no value cannot be used as a value"
-                    .into(),
-                span: *span,
-            }),
-        },
+        Expression::Call {
+            callee, args, span, ..
+        } => {
+            if let Expression::Name { segments, .. } = callee.as_ref()
+                && let [name] = segments.as_slice()
+                && let Some(value) = eval_local_collection_read(name, args, *span, env)?
+            {
+                return Ok(value);
+            }
+            match eval_call(callee, args, *span, env)? {
+                Some(value) => Ok(value),
+                None => Err(RuntimeError {
+                    throw: None,
+                    origin: None,
+                    code: RUN_NO_VALUE,
+                    message: "a call to a function that returns no value cannot be used as a value"
+                        .into(),
+                    span: *span,
+                }),
+            }
+        }
         Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
         // A dotted field read: off a saved root (`^books(id).title`) it is a
         // saved read; off a local it reads the resource value's field.
@@ -182,30 +192,23 @@ pub(crate) fn eval_literal(
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
     match kind {
-        LiteralKind::Integer => text
-            .parse::<i64>()
-            .map(Value::Int)
-            .map_err(|_| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_OVERFLOW,
-                message: format!("integer literal `{text}` is out of range"),
+        LiteralKind::Integer => text.parse::<i64>().map(Value::Int).map_err(|_| {
+            raise_fault(
+                RUN_OVERFLOW,
+                format!("integer literal `{text}` is out of range"),
                 span,
-            }),
+            )
+        }),
         LiteralKind::Duration => eval_duration_literal(text, span),
         LiteralKind::Bool => Ok(Value::Bool(text == "true")),
         LiteralKind::String => eval_string_literal(text, span),
-        LiteralKind::Decimal => {
-            Decimal::parse(text)
-                .map(Value::Decimal)
-                .ok_or_else(|| RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_OVERFLOW,
-                    message: format!("decimal literal `{text}` is out of range"),
-                    span,
-                })
-        }
+        LiteralKind::Decimal => Decimal::parse(text).map(Value::Decimal).ok_or_else(|| {
+            raise_fault(
+                RUN_DECIMAL_OVERFLOW,
+                format!("decimal literal `{text}` is out of range"),
+                span,
+            )
+        }),
         LiteralKind::Bytes => eval_bytes_literal(text, span),
     }
 }
@@ -215,12 +218,12 @@ pub(crate) fn eval_literal(
 /// shape — digits, a dot, and a known unit — so only an out-of-range magnitude
 /// faults, sharing the int/decimal overflow path.
 fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
-    let overflow = || RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_OVERFLOW,
-        message: format!("duration literal `{text}` is out of range"),
-        span,
+    let overflow = || {
+        raise_fault(
+            RUN_OVERFLOW,
+            format!("duration literal `{text}` is out of range"),
+            span,
+        )
     };
     let (magnitude, unit) = text.split_once('.').expect("a duration literal has a dot");
     let magnitude: i128 = magnitude.parse().map_err(|_| overflow())?;
@@ -325,7 +328,7 @@ pub(crate) fn eval_unary(
             .ok_or_else(|| overflow(span)),
         (UnaryOp::Neg, Value::Decimal(d)) => Decimal::from_parts(-d.coefficient(), d.scale())
             .map(Value::Decimal)
-            .ok_or_else(|| overflow(span)),
+            .ok_or_else(|| decimal_overflow(span)),
         (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
         (UnaryOp::Neg, _) => Err(type_error("negation expects a number", span)),
         (UnaryOp::Not, _) => Err(type_error("`not` expects a boolean", span)),
@@ -413,7 +416,7 @@ pub(crate) fn eval_is(
 }
 
 /// Apply a checked numeric operation to two operands of the same numeric type —
-/// both integers or both decimals — mapping overflow to `run.overflow`. The
+/// both integers or both decimals — mapping overflow to a typed runtime fault. The
 /// checker rejects mixed int/decimal operands, so a mismatch here is a type error.
 pub(crate) fn numeric_op(
     left: &Expression,
@@ -429,7 +432,7 @@ pub(crate) fn numeric_op(
         }
         (Value::Decimal(a), Value::Decimal(b)) => decimal_op(a, b)
             .map(Value::Decimal)
-            .ok_or_else(|| overflow(span)),
+            .ok_or_else(|| decimal_overflow(span)),
         _ => Err(type_error(
             "arithmetic expects two operands of the same numeric type",
             span,
@@ -439,7 +442,7 @@ pub(crate) fn numeric_op(
 
 /// Divide two numeric operands as decimals (`/` always yields a decimal). A zero
 /// divisor is `run.divide_by_zero`; a result outside the decimal envelope is
-/// `run.overflow`.
+/// `run.decimal_overflow`.
 pub(crate) fn decimal_div(
     left: &Expression,
     right: &Expression,
@@ -449,18 +452,12 @@ pub(crate) fn decimal_div(
     let dividend = to_decimal(eval_expr(left, env)?, span)?;
     let divisor = to_decimal(eval_expr(right, env)?, span)?;
     if divisor.is_zero() {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_DIVIDE_BY_ZERO,
-            message: "division by zero".into(),
-            span,
-        });
+        return Err(divide_by_zero("division by zero", span));
     }
     dividend
         .checked_div(divisor)
         .map(Value::Decimal)
-        .ok_or_else(|| overflow(span))
+        .ok_or_else(|| decimal_overflow(span))
 }
 
 /// Coerce a numeric value to a decimal: an integer becomes an exact decimal, a

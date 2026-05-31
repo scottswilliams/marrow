@@ -79,6 +79,15 @@ fn reports_project_check_as_jsonl() {
 }
 
 #[test]
+fn rejects_duplicate_format_flag() {
+    let output = run_check(&["--format", "json", "--format", "text", "missing.mw"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--format"), "{stderr}");
+}
+
+#[test]
 fn surfaces_a_parse_error_in_a_project_file_with_its_path() {
     let root = temp_project("proj-parse", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
@@ -92,6 +101,62 @@ fn surfaces_a_parse_error_in_a_project_file_with_its_path() {
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("parse.syntax"), "{stderr}");
     assert!(stderr.contains("bad.mw"), "{stderr}");
+}
+
+#[test]
+fn project_check_reports_parse_errors_in_configured_tests() {
+    let root = temp_project("proj-test-parse", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn ok(): int\n    return 1\n",
+        );
+        write(
+            root,
+            "tests/broken_test.mw",
+            "pub fn broken()\n    var for: int = 1\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("broken_test.mw"), "{stderr}");
+}
+
+#[test]
+fn project_check_reports_type_errors_in_configured_tests() {
+    let root = temp_project("proj-test-type", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn ok(): int\n    return 1\n",
+        );
+        write(
+            root,
+            "tests/t_test.mw",
+            "pub fn bad(): int\n    return \"nope\"\n",
+        );
+    });
+    let output = run_check(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.return_type"), "{stderr}");
+    assert!(stderr.contains("t_test.mw"), "{stderr}");
 }
 
 #[test]

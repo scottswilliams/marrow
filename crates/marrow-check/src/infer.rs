@@ -53,29 +53,43 @@ pub(crate) fn local_binding(
 ) -> Option<(String, MarrowType)> {
     use marrow_syntax::Statement;
     let mut sink = Vec::new();
-    let (name, annotation, value_type) = match statement {
+    let (name, keys, annotation, value_type) = match statement {
         Statement::Const {
             name, ty, value, ..
         } => (
             name,
+            &[][..],
             ty,
             infer_type(program, value, scope, aliases, file, &mut sink),
         ),
         Statement::Var {
-            name, ty, value, ..
+            name,
+            keys,
+            ty,
+            value,
+            ..
         } => {
             let value_type = match value {
                 Some(value) => infer_type(program, value, scope, aliases, file, &mut sink),
                 None => MarrowType::Unknown,
             };
-            (name, ty, value_type)
+            (name, keys.as_slice(), ty, value_type)
         }
         _ => return None,
     };
-    Some((
-        name.clone(),
-        binding_type(annotation.as_ref(), value_type, program, aliases, file),
-    ))
+    let value = binding_type(annotation.as_ref(), value_type, program, aliases, file);
+    let ty = if keys.is_empty() {
+        value
+    } else {
+        MarrowType::LocalTree {
+            keys: keys
+                .iter()
+                .map(|key| MarrowType::resolve(&key.ty, TypeNames::default()))
+                .collect(),
+            value: Box::new(value),
+        }
+    };
+    Some((name.clone(), ty))
 }
 
 /// Infer an expression's type, recording a `check.operator_type` diagnostic for
@@ -99,7 +113,20 @@ pub(crate) fn infer_type(
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let marrow_syntax::InterpolationPart::Expr(expr) = part {
-                    infer_type(program, expr, scope, aliases, file, diagnostics);
+                    let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
+                    if matches!(
+                        ty,
+                        MarrowType::Primitive(ScalarType::Bytes) | MarrowType::Enum { .. }
+                    ) {
+                        diagnostics.push(operator_diagnostic(
+                            file,
+                            expr.span(),
+                            format!(
+                                "interpolation cannot render `{}`; convert it explicitly",
+                                marrow_type_name(&ty)
+                            ),
+                        ));
+                    }
                 }
             }
             MarrowType::Primitive(ScalarType::Str)
@@ -152,7 +179,9 @@ pub(crate) fn infer_type(
             }
             check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
         }
-        Expression::Call { callee, args, span } => {
+        Expression::Call {
+            callee, args, span, ..
+        } => {
             // Visit the callee subtree (it may hold nested calls, e.g. the
             // `^books(id)` inside `^books(id).tags(pos)`) and infer each argument
             // once. A bare single-segment callee names a function, not a value, so
@@ -166,6 +195,17 @@ pub(crate) fn infer_type(
                 .iter()
                 .map(|arg| infer_type(program, &arg.value, scope, aliases, file, diagnostics))
                 .collect();
+            if let Some(ty) = local_collection_access_type(
+                callee,
+                args,
+                &arg_types,
+                scope,
+                *span,
+                file,
+                diagnostics,
+            ) {
+                return ty;
+            }
             let call_type = check_call(
                 program,
                 callee,
@@ -185,7 +225,9 @@ pub(crate) fn infer_type(
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
             if matches!(call_type, MarrowType::Unknown) {
-                saved_leaf_type(program, callee)
+                count_builtin_type(program, callee, args)
+                    .or_else(|| saved_leaf_type(program, callee))
+                    .or_else(|| singleton_saved_leaf_type(program, callee))
                     .or_else(|| saved_index_identity_type(program, callee))
                     .or_else(|| saved_resource_type(program, callee))
                     .or_else(|| saved_group_entry_type(program, callee))
@@ -204,6 +246,7 @@ pub(crate) fn infer_type(
             // A field off a resource-typed local (`book.title`) resolves through the
             // resource's schema.
             saved_field_type(program, base, name)
+                .or_else(|| singleton_saved_group_field_type(program, base, name))
                 .or_else(|| saved_group_field_type(program, base, name))
                 .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
@@ -220,6 +263,16 @@ pub(crate) fn infer_type(
                 // Not an enum: a cross-module name or identity path stays unknown.
                 return MarrowType::Unknown;
             };
+            if let Some(private) = resolved.private {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_PRIVATE_ENUM,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!("enum `{private}` is private to its module; mark it `pub` to use it from another module"),
+                    span: *span,
+                });
+                return MarrowType::Invalid;
+            }
             let enum_name = &resolved.enum_name;
             match resolved.member {
                 MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
@@ -233,7 +286,7 @@ pub(crate) fn infer_type(
                         ),
                         span: *span,
                     });
-                    MarrowType::Unknown
+                    MarrowType::Invalid
                 }
                 MemberPathResolution::Found(_) => MarrowType::Enum {
                     module: resolved.module,
@@ -253,7 +306,7 @@ pub(crate) fn infer_type(
                         ),
                         span: *span,
                     });
-                    MarrowType::Unknown
+                    MarrowType::Invalid
                 }
                 MemberPathResolution::NotFound => {
                     diagnostics.push(CheckDiagnostic {
@@ -266,7 +319,7 @@ pub(crate) fn infer_type(
                         ),
                         span: *span,
                     });
-                    MarrowType::Unknown
+                    MarrowType::Invalid
                 }
             }
         }
@@ -277,6 +330,84 @@ pub(crate) fn infer_type(
         // multi-segment name has no known type.
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
+    }
+}
+
+fn local_collection_access_type(
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    scope: &[HashMap<String, MarrowType>],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return None;
+    };
+    let [name] = segments.as_slice() else {
+        return None;
+    };
+    match lookup_opt(scope, name)? {
+        MarrowType::Sequence(element) => {
+            check_local_key_count(name, 1, args.len(), span, file, diagnostics);
+            if let [arg_type] = arg_types
+                && !matches!(
+                    type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type),
+                    Some(true) | None
+                )
+            {
+                diagnostics.push(key_type_diagnostic(
+                    file,
+                    span,
+                    format!(
+                        "key `pos` expects `int`, but this value is `{}`",
+                        marrow_type_name(arg_type)
+                    ),
+                ));
+            }
+            Some(*element)
+        }
+        MarrowType::LocalTree { keys, value } => {
+            check_local_key_count(name, keys.len(), args.len(), span, file, diagnostics);
+            if keys.len() == arg_types.len() {
+                for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
+                    if matches!(type_compatible(expected, actual), Some(false)) {
+                        diagnostics.push(key_type_diagnostic(
+                            file,
+                            span,
+                            format!(
+                                "key {} expects `{}`, but this value is `{}`",
+                                index + 1,
+                                marrow_type_name(expected),
+                                marrow_type_name(actual)
+                            ),
+                        ));
+                    }
+                }
+            }
+            Some(*value)
+        }
+        _ => None,
+    }
+}
+
+fn check_local_key_count(
+    name: &str,
+    expected: usize,
+    actual: usize,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if expected != actual {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "local collection `{name}` expects {expected} key argument(s), but {actual} were given"
+            ),
+        ));
     }
 }
 
@@ -309,15 +440,18 @@ pub(crate) fn saved_field_type(
     field: &str,
 ) -> Option<MarrowType> {
     use marrow_syntax::Expression;
-    let root = match base {
+    let (root, bare_root) = match base {
         Expression::Call { callee, .. } => match callee.as_ref() {
-            Expression::SavedRoot { name, .. } => name,
+            Expression::SavedRoot { name, .. } => (name, false),
             _ => return None,
         },
-        Expression::SavedRoot { name, .. } => name,
+        Expression::SavedRoot { name, .. } => (name, true),
         _ => return None,
     };
     let resource = find_resource_schema(program, root)?;
+    if bare_root && saved_root_requires_keys(resource) {
+        return None;
+    }
     field_member_type(resource, &[field], resource_module(program, &resource.name))
 }
 
@@ -403,6 +537,15 @@ pub(crate) fn local_field_type(
             chain.push(field);
             field_member_type(resource, &chain, resource_module(program, &resource.name))
         }
+        MarrowType::Error => error_field_type(field),
+        _ => None,
+    }
+}
+
+fn error_field_type(field: &str) -> Option<MarrowType> {
+    match field {
+        "code" | "message" | "help" => Some(MarrowType::Primitive(ScalarType::Str)),
+        "data" => Some(MarrowType::Unknown),
         _ => None,
     }
 }
@@ -418,8 +561,32 @@ pub(crate) fn saved_group_field_type(
 ) -> Option<MarrowType> {
     let (root, mut chain) = saved_group_chain(base)?;
     let resource = find_resource_schema(program, root)?;
+    if starts_from_bare_keyed_root(program, base) {
+        return None;
+    }
     chain.push(field);
     field_member_type(resource, &chain, resource_module(program, &resource.name))
+}
+
+fn singleton_saved_group_field_type(
+    program: &CheckedProgram,
+    base: &marrow_syntax::Expression,
+    field: &str,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Call { callee, .. } = base else {
+        return None;
+    };
+    let (root, layer) = singleton_saved_layer(callee)?;
+    let resource = find_resource_schema(program, root)?;
+    let saved_root = resource.saved_root.as_ref()?;
+    if !saved_root.identity_keys.is_empty() {
+        return None;
+    }
+    field_member_type(
+        resource,
+        &[layer, field],
+        resource_module(program, &resource.name),
+    )
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -434,8 +601,11 @@ pub(crate) fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&st
         return saved_layer_chain(callee.as_ref());
     }
     // An unkeyed group hop `….name`: a field off the record or a deeper group.
-    let Expression::Field { base, name, .. } = expr else {
-        return None;
+    let (base, name) = match expr {
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            (base, name)
+        }
+        _ => return None,
     };
     match base.as_ref() {
         // The record base: `^root(key…)` (a call on the saved root) or the
@@ -451,8 +621,8 @@ pub(crate) fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&st
             _ => None,
         },
         Expression::SavedRoot { name: root, .. } => Some((root, vec![name])),
-        // A deeper unkeyed group `Field`: recurse and append this member.
-        Expression::Field { .. } => {
+        // A deeper unkeyed group hop: recurse and append this member.
+        Expression::Field { .. } | Expression::OptionalField { .. } => {
             let (root, mut members) = saved_group_chain(base)?;
             members.push(name);
             Some((root, members))
@@ -472,10 +642,36 @@ pub(crate) fn saved_leaf_type(
     leaf_member_type(resource, &layers, resource_module(program, &resource.name))
 }
 
-/// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
-/// nested one `^root(key…).layer(key…)….layer`, with the layer names ordered
-/// outermost first. Each `Field` peels one layer; its base is either the keyed
-/// record `^root(key…)` (a call on a saved root) or a deeper layer entry.
+fn singleton_saved_leaf_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let (root, layer) = singleton_saved_layer(callee)?;
+    let resource = find_resource_schema(program, root)?;
+    let saved_root = resource.saved_root.as_ref()?;
+    if !saved_root.identity_keys.is_empty() {
+        return None;
+    }
+    leaf_member_type(resource, &[layer], resource_module(program, &resource.name))
+}
+
+fn singleton_saved_layer(callee: &marrow_syntax::Expression) -> Option<(&str, &str)> {
+    let marrow_syntax::Expression::Field {
+        base, name: layer, ..
+    } = callee
+    else {
+        return None;
+    };
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return None;
+    };
+    Some((root, layer))
+}
+
+/// Extract `(root, [layer…])` from a keyed layer accessor `^root.layer`,
+/// `^root(key…).layer`, or a nested one `^root.layer(key…)….layer`, with the layer
+/// names ordered outermost first. Each `Field` peels one layer; its base is the
+/// singleton root, a keyed record, or a deeper layer entry.
 pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str>)> {
     use marrow_syntax::Expression;
     let Expression::Field {
@@ -484,6 +680,9 @@ pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&st
     else {
         return None;
     };
+    if let Expression::SavedRoot { name: root, .. } = base.as_ref() {
+        return Some((root, vec![layer]));
+    }
     let Expression::Call { callee, .. } = base.as_ref() else {
         return None;
     };
@@ -573,6 +772,82 @@ pub(crate) fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
     })
 }
 
+fn count_builtin_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return None;
+    };
+    let [arg] = args else {
+        return None;
+    };
+    if segments.as_slice() == ["count"]
+        && arg.mode.is_none()
+        && arg.name.is_none()
+        && is_saved_path_expression(program, &arg.value)
+    {
+        Some(MarrowType::Primitive(ScalarType::Int))
+    } else {
+        None
+    }
+}
+
+fn is_saved_path_expression(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::Call { callee, .. } => is_saved_path_callee(program, callee),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            !starts_from_bare_keyed_root(program, expr) && is_saved_path_expression(program, base)
+        }
+        _ => false,
+    }
+}
+
+fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match callee {
+        Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            match base.as_ref() {
+                Expression::SavedRoot { name: root, .. } => find_resource_schema(program, root)
+                    .is_some_and(|resource| {
+                        !saved_root_requires_keys(resource)
+                            || resource.indexes.iter().any(|index| &index.name == name)
+                    }),
+                _ => is_saved_path_expression(program, base),
+            }
+        }
+        _ => false,
+    }
+}
+
+fn starts_from_bare_keyed_root(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    starts_from_bare_saved_root(expr)
+        .and_then(|root| find_resource_schema(program, root))
+        .is_some_and(saved_root_requires_keys)
+}
+
+fn starts_from_bare_saved_root(expr: &marrow_syntax::Expression) -> Option<&str> {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { name, .. } => Some(name),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            starts_from_bare_saved_root(base)
+        }
+        _ => None,
+    }
+}
+
+fn saved_root_requires_keys(resource: &marrow_schema::ResourceSchema) -> bool {
+    resource
+        .saved_root
+        .as_ref()
+        .is_some_and(|saved_root| !saved_root.identity_keys.is_empty())
+}
+
 /// The `Resource::Id` identity type of the resource at saved root `root`, or
 /// `Unknown` when `root` names no keyed saved root.
 pub(crate) fn record_identity_type(program: &CheckedProgram, root: &str) -> MarrowType {
@@ -612,24 +887,30 @@ pub(crate) fn layer_key_type(
 /// ([`MarrowType::Identity`]). The resource *name* is module-scoped (own module
 /// first), so two modules can each declare a `Book`. Any other callee returns
 /// `None`, so a genuinely unresolved call is still reported.
-pub(crate) fn resource_constructor_type(
-    program: &CheckedProgram,
+pub(crate) fn resource_constructor_resource<'p>(
+    program: &'p CheckedProgram,
     from_module: &str,
     segments: &[String],
-) -> Option<MarrowType> {
+) -> Option<(MarrowType, &'p marrow_schema::ResourceSchema)> {
     match segments {
-        [name] => match resolve(program, from_module, segments, ResolvableKind::Resource) {
-            Resolution::Found(_) => Some(MarrowType::Resource(name.clone())),
+        [_] => match resolve(program, from_module, segments, ResolvableKind::Resource) {
+            Resolution::Found(Def {
+                item: DefItem::Resource(resource),
+                ..
+            }) => Some((MarrowType::Resource(resource.name.clone()), resource)),
             _ => None,
         },
-        [name, id] if id == "Id" => {
+        [.., id] if id == "Id" => {
             match resolve(
                 program,
                 from_module,
                 segments,
                 ResolvableKind::ResourceIdentity,
             ) {
-                Resolution::Found(_) => Some(MarrowType::Identity(name.clone())),
+                Resolution::Found(Def {
+                    item: DefItem::Resource(resource),
+                    ..
+                }) => Some((MarrowType::Identity(resource.name.clone()), resource)),
                 _ => None,
             }
         }

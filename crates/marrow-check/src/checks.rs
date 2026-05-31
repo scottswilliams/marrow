@@ -143,10 +143,18 @@ pub(crate) fn check_file_types(
     parsed: &marrow_syntax::ParsedSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    let has_parse_errors = parsed.has_errors();
     let FilePrelude {
         aliases,
         module_constants,
     } = file_prelude(program, file, parsed);
+    let annotation_context = TypeAnnotationContext {
+        program,
+        aliases: &aliases,
+        file,
+        resources: project_resources,
+        enums: project_enums,
+    };
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
@@ -154,9 +162,7 @@ pub(crate) fn check_file_types(
                     check_type_annotation(
                         &param.ty,
                         function.span,
-                        file,
-                        project_resources,
-                        project_enums,
+                        &annotation_context,
                         diagnostics,
                     );
                 }
@@ -164,11 +170,12 @@ pub(crate) fn check_file_types(
                     check_type_annotation(
                         return_type,
                         function.span,
-                        file,
-                        project_resources,
-                        project_enums,
+                        &annotation_context,
                         diagnostics,
                     );
+                }
+                if has_parse_errors {
+                    continue;
                 }
                 check_return_values(
                     file,
@@ -176,13 +183,7 @@ pub(crate) fn check_file_types(
                     function.return_type.is_some(),
                     diagnostics,
                 );
-                check_block_type_annotations(
-                    &function.body,
-                    file,
-                    project_resources,
-                    project_enums,
-                    diagnostics,
-                );
+                check_block_type_annotations(&function.body, &annotation_context, diagnostics);
                 check_function_types(
                     program,
                     file,
@@ -206,14 +207,7 @@ pub(crate) fn check_file_types(
             }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(ty) = &constant.ty {
-                    check_type_annotation(
-                        ty,
-                        constant.span,
-                        file,
-                        project_resources,
-                        project_enums,
-                        diagnostics,
-                    );
+                    check_type_annotation(ty, constant.span, &annotation_context, diagnostics);
                 }
             }
             // Resource and enum member types are validated by schema compilation.
@@ -226,21 +220,41 @@ pub(crate) fn check_file_types(
 /// does not recognize or uses unsupported map syntax outside saved-resource
 /// member sugar. Located at `span` (the declaration), since a type annotation
 /// carries no span of its own.
-pub(crate) fn check_type_annotation(
+struct TypeAnnotationContext<'a> {
+    program: &'a CheckedProgram,
+    aliases: &'a HashMap<String, Vec<String>>,
+    file: &'a Path,
+    resources: &'a HashSet<String>,
+    enums: &'a HashSet<String>,
+}
+
+fn check_type_annotation(
     ty: &marrow_syntax::TypeRef,
     span: SourceSpan,
-    file: &Path,
-    resources: &HashSet<String>,
-    enums: &HashSet<String>,
+    context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if let Some(private) =
+        private_enum_type_reference(ty, context.program, context.aliases, context.file)
+    {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_PRIVATE_ENUM,
+            severity: Severity::Error,
+            file: context.file.to_path_buf(),
+            message: format!(
+                "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+            ),
+            span,
+        });
+        return;
+    }
     if marrow_schema::contains_map_type_syntax(&ty.text)
-        || !MarrowType::names_known_type(ty, resources, enums)
+        || !MarrowType::names_known_type(ty, context.resources, context.enums)
     {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
-            file: file.to_path_buf(),
+            file: context.file.to_path_buf(),
             message: format!("unknown type `{}`", ty.text.trim()),
             span,
         });
@@ -249,21 +263,17 @@ pub(crate) fn check_type_annotation(
 
 fn check_block_type_annotations(
     block: &marrow_syntax::Block,
-    file: &Path,
-    resources: &HashSet<String>,
-    enums: &HashSet<String>,
+    context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for statement in &block.statements {
-        check_statement_type_annotations(statement, file, resources, enums, diagnostics);
+        check_statement_type_annotations(statement, context, diagnostics);
     }
 }
 
 fn check_statement_type_annotations(
     statement: &marrow_syntax::Statement,
-    file: &Path,
-    resources: &HashSet<String>,
-    enums: &HashSet<String>,
+    context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     use marrow_syntax::Statement;
@@ -271,14 +281,14 @@ fn check_statement_type_annotations(
         Statement::Const {
             ty: Some(ty), span, ..
         } => {
-            check_type_annotation(ty, *span, file, resources, enums, diagnostics);
+            check_type_annotation(ty, *span, context, diagnostics);
         }
         Statement::Var { keys, ty, span, .. } => {
             for key in keys {
-                check_type_annotation(&key.ty, *span, file, resources, enums, diagnostics);
+                check_type_annotation(&key.ty, *span, context, diagnostics);
             }
             if let Some(ty) = ty {
-                check_type_annotation(ty, *span, file, resources, enums, diagnostics);
+                check_type_annotation(ty, *span, context, diagnostics);
             }
         }
         Statement::If {
@@ -287,19 +297,19 @@ fn check_statement_type_annotations(
             else_block,
             ..
         } => {
-            check_block_type_annotations(then_block, file, resources, enums, diagnostics);
+            check_block_type_annotations(then_block, context, diagnostics);
             for else_if in else_ifs {
-                check_block_type_annotations(&else_if.block, file, resources, enums, diagnostics);
+                check_block_type_annotations(&else_if.block, context, diagnostics);
             }
             if let Some(block) = else_block {
-                check_block_type_annotations(block, file, resources, enums, diagnostics);
+                check_block_type_annotations(block, context, diagnostics);
             }
         }
         Statement::While { body, .. }
         | Statement::For { body, .. }
         | Statement::Transaction { body, .. }
         | Statement::Lock { body, .. } => {
-            check_block_type_annotations(body, file, resources, enums, diagnostics);
+            check_block_type_annotations(body, context, diagnostics);
         }
         Statement::Try {
             body,
@@ -307,27 +317,20 @@ fn check_statement_type_annotations(
             finally,
             ..
         } => {
-            check_block_type_annotations(body, file, resources, enums, diagnostics);
+            check_block_type_annotations(body, context, diagnostics);
             if let Some(catch) = catch {
                 if let Some(ty) = &catch.ty {
-                    check_type_annotation(
-                        ty,
-                        catch.block.span,
-                        file,
-                        resources,
-                        enums,
-                        diagnostics,
-                    );
+                    check_type_annotation(ty, catch.block.span, context, diagnostics);
                 }
-                check_block_type_annotations(&catch.block, file, resources, enums, diagnostics);
+                check_block_type_annotations(&catch.block, context, diagnostics);
             }
             if let Some(finally) = finally {
-                check_block_type_annotations(finally, file, resources, enums, diagnostics);
+                check_block_type_annotations(finally, context, diagnostics);
             }
         }
         Statement::Match { arms, .. } => {
             for arm in arms {
-                check_block_type_annotations(&arm.block, file, resources, enums, diagnostics);
+                check_block_type_annotations(&arm.block, context, diagnostics);
             }
         }
         _ => {}
@@ -534,6 +537,7 @@ pub(crate) fn check_statement_types(
             ty, value, span, ..
         } => {
             let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
             if let Some(ty) = ty {
                 check_assignment(
                     file,
@@ -551,7 +555,11 @@ pub(crate) fn check_statement_types(
             ty, value, span, ..
         } => {
             let value_type = match value {
-                Some(value) => infer_type(program, value, scope, aliases, file, diagnostics),
+                Some(value) => {
+                    let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+                    check_range_value(file, value, diagnostics);
+                    value_type
+                }
                 None => MarrowType::Unknown,
             };
             // An annotated initializer must match the declared type.
@@ -583,6 +591,7 @@ pub(crate) fn check_statement_types(
             // unknown and the assignment is left alone.
             let target_type = infer_type(program, target, scope, aliases, file, diagnostics);
             let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
             check_assignment(file, *span, &target_type, &value_type, diagnostics);
         }
         Statement::Delete { path, .. } => {
@@ -591,11 +600,18 @@ pub(crate) fn check_statement_types(
         Statement::Return { value, span } => {
             if let Some(value) = value {
                 let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+                check_range_value(file, value, diagnostics);
                 check_return_type(file, *span, return_type, &value_type, diagnostics);
             }
         }
-        Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
+        Statement::Throw { value, span } => {
+            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
+            check_throw_type(file, *span, &value_type, diagnostics);
+        }
+        Statement::Expr { value, .. } => {
             infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
         }
         Statement::If {
             condition,
@@ -606,6 +622,7 @@ pub(crate) fn check_statement_types(
         } => {
             if let Some(condition) = condition {
                 check_condition(program, file, condition, scope, aliases, diagnostics);
+                check_range_value(file, condition, diagnostics);
             }
             check_block_types(
                 program,
@@ -619,6 +636,7 @@ pub(crate) fn check_statement_types(
             for else_if in else_ifs {
                 if let Some(condition) = &else_if.condition {
                     check_condition(program, file, condition, scope, aliases, diagnostics);
+                    check_range_value(file, condition, diagnostics);
                 }
                 check_block_types(
                     program,
@@ -647,6 +665,7 @@ pub(crate) fn check_statement_types(
         } => {
             if let Some(condition) = condition {
                 check_condition(program, file, condition, scope, aliases, diagnostics);
+                check_range_value(file, condition, diagnostics);
             }
             check_block_types(
                 program,
@@ -668,6 +687,10 @@ pub(crate) fn check_statement_types(
             // Inferring the iterable here also operator-checks it; its diagnostics
             // belong to the type pass, so `for_frame` re-infers with a discard sink.
             infer_type(program, iterable, scope, aliases, file, diagnostics);
+            check_range_iterable_value_parts(file, iterable, diagnostics);
+            if let Some(step) = step {
+                check_range_value(file, step, diagnostics);
+            }
             check_range_header(
                 program,
                 file,
@@ -703,7 +726,9 @@ pub(crate) fn check_statement_types(
         }
         Statement::Lock { path, body, .. } => {
             if let Some(path) = path {
+                check_lock_target(program, file, path, diagnostics);
                 infer_type(program, path, scope, aliases, file, diagnostics);
+                check_range_value(file, path, diagnostics);
             }
             check_block_types(
                 program,
@@ -764,6 +789,9 @@ pub(crate) fn check_statement_types(
             span,
             ..
         } => {
+            if let Some(scrutinee) = scrutinee {
+                check_range_value(file, scrutinee, diagnostics);
+            }
             check_match(
                 program,
                 file,
@@ -900,6 +928,61 @@ fn is_saved_path_syntax(program: &CheckedProgram, expr: &marrow_syntax::Expressi
     }
 }
 
+fn check_lock_target(
+    program: &CheckedProgram,
+    file: &Path,
+    path: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !is_lockable_saved_path(program, path) {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_LOCK_TARGET,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: "`lock` target must be a saved root, record, or subtree".to_string(),
+            span: path.span(),
+        });
+    }
+}
+
+fn is_lockable_saved_path(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Call { callee, .. } => is_lockable_saved_call(program, callee),
+        Expression::Field { .. } => is_lockable_saved_field(program, expr),
+        _ => false,
+    }
+}
+
+fn is_lockable_saved_call(program: &CheckedProgram, callee: &marrow_syntax::Expression) -> bool {
+    use marrow_syntax::Expression;
+    match callee {
+        Expression::SavedRoot { .. } => true,
+        Expression::Field { .. } if saved_index_branch_type(program, callee).is_some() => true,
+        Expression::Field { .. } => {
+            let Some((root, layers)) = saved_layer_chain(callee) else {
+                return false;
+            };
+            find_resource_schema(program, root).is_some_and(|resource| {
+                resource.descend_layers(&layers).is_some() && resource.leaf_type(&layers).is_none()
+            })
+        }
+        _ => false,
+    }
+}
+
+fn is_lockable_saved_field(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+    let Some((root, chain)) = saved_group_chain(expr) else {
+        return false;
+    };
+    find_resource_schema(program, root).is_some_and(|resource| {
+        resource.field_type(&chain).is_none()
+            && (resource.descend_layers(&chain).is_some()
+                || chain.len() == 1 && resource.indexes.iter().any(|index| index.name == chain[0]))
+    })
+}
+
 fn saved_path_key_type(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
@@ -1000,6 +1083,66 @@ fn range_endpoints(
             ..
         } => Some((left, right)),
         _ => None,
+    }
+}
+
+/// Reject ranges outside `for` iterables. A range is a loop shape, not a value
+/// that can be stored, returned, thrown, passed, or evaluated for its own sake.
+pub(crate) fn check_range_value(
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::{BinaryOp, Expression, InterpolationPart};
+    match expr {
+        Expression::Binary {
+            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+            left,
+            right,
+            span,
+        } => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_RANGE_VALUE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: "a range can only be used as a `for` iterable".to_string(),
+                span: *span,
+            });
+            check_range_value(file, left, diagnostics);
+            check_range_value(file, right, diagnostics);
+        }
+        Expression::Binary { left, right, .. } => {
+            check_range_value(file, left, diagnostics);
+            check_range_value(file, right, diagnostics);
+        }
+        Expression::Unary { operand, .. } => check_range_value(file, operand, diagnostics),
+        Expression::Call { callee, args, .. } => {
+            check_range_value(file, callee, diagnostics);
+            for arg in args {
+                check_range_value(file, &arg.value, diagnostics);
+            }
+        }
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            check_range_value(file, base, diagnostics);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    check_range_value(file, expr, diagnostics);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn check_range_iterable_value_parts(
+    file: &Path,
+    iterable: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if range_endpoints(iterable).is_none() {
+        check_range_value(file, iterable, diagnostics);
     }
 }
 
@@ -1399,6 +1542,30 @@ pub(crate) fn check_condition(
     }
 }
 
+/// Flag a `throw` whose operand is known to be something other than `Error`.
+/// Unknown operands are left to the runtime backstop, as with other unresolved
+/// values in this pass.
+pub(crate) fn check_throw_type(
+    file: &Path,
+    span: SourceSpan,
+    value_type: &MarrowType,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    match value_type {
+        MarrowType::Error | MarrowType::Unknown => {}
+        _ => diagnostics.push(CheckDiagnostic {
+            code: CHECK_THROW_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "`throw` requires an `Error` value, found `{}`",
+                marrow_type_name(value_type)
+            ),
+            span,
+        }),
+    }
+}
+
 /// Flag a `return` value whose type does not match the function's declared
 /// return type. Fires only when both are known, incompatible primitives, so a
 /// void function (unknown return type), a non-primitive return (a resource or
@@ -1467,17 +1634,16 @@ pub(crate) fn check_assignment(
     };
     match compatible {
         Some(true) => {}
-        Some(false) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_ASSIGNMENT_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "expected `{}`, but the value is `{}`",
-                marrow_type_name(place),
-                marrow_type_name(value),
-            ),
-            span,
-        }),
+        Some(false) => {
+            let (expected, found) = mismatch_display(place, value);
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_ASSIGNMENT_TYPE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("expected `{expected}`, but the value is `{found}`"),
+                span,
+            });
+        }
         // A value the checker could not resolve, stored into a convertible place. An
         // untyped place (a sequence, `unknown`) has no conversion boundary and is
         // left alone.
@@ -1604,10 +1770,11 @@ pub(crate) fn check_keys_against(
 /// by position; named (composite) keys map to the declared key of the same name,
 /// so a swapped type under the right name is still caught. A wrong-scalar key, or
 /// a non-key value such as another identity, is a `check.key_type` — the same
-/// keyspace guard a record lookup passes. Arity and named/positional-mixing faults
-/// are left to the runtime constructor, which already reports them; this adds only
-/// the per-key type guard the constructor lacked.
+/// keyspace guard a record lookup passes. Malformed constructor argument shape
+/// (wrong count, mixed positional/named keys, unknown key names, duplicate key
+/// names, or missing named keys) is a `check.call_argument`.
 pub(crate) fn check_identity_constructor_keys(
+    label: &str,
     keys: &[marrow_schema::KeyDef],
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
@@ -1615,34 +1782,96 @@ pub(crate) fn check_identity_constructor_keys(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let all_named = !args.is_empty() && args.iter().all(|arg| arg.name.is_some());
-    for (position, key) in keys.iter().enumerate() {
-        // A named key binds to the argument that names it; a positional key binds by
-        // position. A missing argument is an arity/name fault the runtime reports, so
-        // the per-key type guard simply skips it here.
-        let arg_type = if all_named {
-            args.iter()
-                .position(|arg| arg.name.as_deref() == Some(key.name.as_str()))
-                .and_then(|index| arg_types.get(index))
-        } else {
-            arg_types.get(position)
-        };
-        let Some(arg_type) = arg_type else {
-            continue;
-        };
-        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
-        if type_compatible(&expected, arg_type) == Some(false) {
-            diagnostics.push(key_type_diagnostic(
+    let named = args.iter().filter(|arg| arg.name.is_some()).count();
+    if named != 0 && named != args.len() {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!("`{label}` takes either positional or named keys, not both"),
+        ));
+        return;
+    }
+
+    if named == 0 {
+        if keys.len() != args.len() {
+            diagnostics.push(call_diagnostic(
                 file,
                 span,
                 format!(
-                    "identity key `{}` expects `{}`, but this value is `{}`",
-                    key.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
+                    "`{label}` expects {} key argument(s), but {} were given",
+                    keys.len(),
+                    args.len(),
                 ),
             ));
+            return;
         }
+        for (key, arg_type) in keys.iter().zip(arg_types) {
+            check_identity_key_type(key, arg_type, span, file, diagnostics);
+        }
+        return;
+    }
+
+    let mut supplied = vec![false; keys.len()];
+    let mut malformed_names = false;
+    for (arg, arg_type) in args.iter().zip(arg_types) {
+        let Some(name) = &arg.name else {
+            continue;
+        };
+        let Some(index) = keys.iter().position(|key| &key.name == name) else {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` has no identity key `{name}`"),
+            ));
+            malformed_names = true;
+            continue;
+        };
+        if supplied[index] {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("identity key `{name}` is supplied more than once"),
+            ));
+            malformed_names = true;
+            continue;
+        }
+        supplied[index] = true;
+        check_identity_key_type(&keys[index], arg_type, span, file, diagnostics);
+    }
+
+    if malformed_names {
+        return;
+    }
+    for (key, supplied) in keys.iter().zip(supplied) {
+        if !supplied {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` requires identity key `{}`", key.name),
+            ));
+        }
+    }
+}
+
+fn check_identity_key_type(
+    key: &marrow_schema::KeyDef,
+    arg_type: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+    if type_compatible(&expected, arg_type) == Some(false) {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "identity key `{}` expects `{}`, but this value is `{}`",
+                key.name,
+                marrow_type_name(&expected),
+                marrow_type_name(arg_type),
+            ),
+        ));
     }
 }
 
@@ -1672,6 +1901,9 @@ pub(crate) fn check_unary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::UnaryOp;
+    if matches!(operand, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     // A concrete non-scalar operand — an identity, record, sequence, or the
     // checker-only `Error` — has no unary operator, so flag it as an operator
     // misuse rather than silently passing it through. This must precede the
@@ -1687,7 +1919,7 @@ pub(crate) fn check_unary(
                 marrow_type_name(operand),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     let Some(operand) = as_primitive(operand) else {
         return MarrowType::Unknown;
@@ -1723,6 +1955,9 @@ pub(crate) fn check_binary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::BinaryOp;
+    if matches!(left, MarrowType::Invalid) || matches!(right, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     // `Error` is a concrete type, not an untyped one: no binary operator applies to
     // it, so flag it as an operator misuse rather than silently passing it through
     // (matching the unary case). This must come before the `as_primitive` gate,
@@ -1736,7 +1971,7 @@ pub(crate) fn check_binary(
                 binary_symbol(op)
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     // Equality is decided over concrete non-scalar types before the `as_primitive`
     // gate, which would otherwise drop them to `Unknown`. Whole records and
@@ -1765,7 +2000,7 @@ pub(crate) fn check_binary(
                 marrow_type_name(right),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     let (Some(left), Some(right)) = (as_primitive(left), as_primitive(right)) else {
         return MarrowType::Unknown;
@@ -1859,13 +2094,24 @@ pub(crate) fn check_equality(
         Some(MarrowType::Primitive(ScalarType::Bool))
     };
     match (left, right) {
+        (MarrowType::Invalid, _) | (_, MarrowType::Invalid) => None,
         // An untyped operand defers: the scalar path handles untyped values.
         (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
         // Whole records and sequences have no equality at all.
-        (MarrowType::Resource(_) | MarrowType::GroupEntry { .. } | MarrowType::Sequence(_), _)
-        | (_, MarrowType::Resource(_) | MarrowType::GroupEntry { .. } | MarrowType::Sequence(_)) => {
-            reject(diagnostics)
-        }
+        (
+            MarrowType::Resource(_)
+            | MarrowType::GroupEntry { .. }
+            | MarrowType::Sequence(_)
+            | MarrowType::LocalTree { .. },
+            _,
+        )
+        | (
+            _,
+            MarrowType::Resource(_)
+            | MarrowType::GroupEntry { .. }
+            | MarrowType::Sequence(_)
+            | MarrowType::LocalTree { .. },
+        ) => reject(diagnostics),
         // Identities compare nominally: equatable only against the same resource.
         (MarrowType::Identity(a), MarrowType::Identity(b)) => {
             if a == b {
@@ -1908,6 +2154,9 @@ pub(crate) fn check_coalesce(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
+    if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     if !is_path_read(left) {
         diagnostics.push(operator_diagnostic(
             file,
@@ -1994,13 +2243,13 @@ pub(crate) fn operator_diagnostic(
 /// Validate a call against the user function it resolves to and return that
 /// function's declared return type (or [`MarrowType::Unknown`]). Only a plain
 /// name call that resolves to a declared function is checked; a builtin, std
-/// helper, `Error` constructor, out/inout call, key-lookup (non-name callee), or
+/// helper, `Error` constructor, key-lookup (non-name callee), or
 /// unresolved name is left alone — mirroring the runtime's dispatch order — so the
 /// check never fires on a non-function or a call the checker cannot resolve.
 ///
-/// It flags the argument count (every parameter is required), a named argument
-/// that names no parameter, and an argument whose type does not match its
-/// parameter (only when both are known, incompatible primitives, like operators).
+/// It flags the argument count (every parameter is required), named arguments that
+/// name no parameter, out/inout marker mismatches, non-place out/inout arguments,
+/// and arguments whose type does not match the corresponding parameter.
 // Each argument is an independent input threaded through the type-check pipeline
 // (program/aliases/file/diagnostics are the cross-cutting context every node
 // carries, like `scope`); bundling them would not aid clarity here.
@@ -2016,6 +2265,7 @@ pub(crate) fn check_call(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        check_plain_call_modes("call", args, span, file, diagnostics);
         return MarrowType::Unknown;
     };
     // Expand a short-form leading segment through the file's imports once, up front,
@@ -2023,9 +2273,6 @@ pub(crate) fn check_call(
     // like `shelf::books::add`. All downstream resolution uses the expanded form.
     let expanded = expand_alias(segments, aliases);
     let segments = expanded.as_slice();
-    if args.iter().any(|arg| arg.mode.is_some()) {
-        return MarrowType::Unknown;
-    }
     // `nextId(^root)` needs the argument *expression* (the `^root`), not just its
     // type, to know which resource is allocated — so it is handled here, before the
     // generic builtin branch typed only from `arg_types`. It types to `Resource::Id`
@@ -2034,6 +2281,7 @@ pub(crate) fn check_call(
     if let [name] = segments
         && name == "nextId"
     {
+        check_plain_call_modes(name, args, span, file, diagnostics);
         return check_next_id(program, args, span, file, diagnostics);
     }
     // `reversed` needs the argument expression for saved collections, whose element
@@ -2044,21 +2292,38 @@ pub(crate) fn check_call(
     if let [name] = segments {
         match name.as_str() {
             "reversed" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
                 check_arity(name, 1, args, span, file, diagnostics);
                 return reversed_type(program, args, arg_types);
             }
             "next" | "prev" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
                 check_arity(name, 1, args, span, file, diagnostics);
-                return check_neighbor(program, name, args, span, file, diagnostics);
+                return check_neighbor(program, name, args, arg_types, span, file, diagnostics);
+            }
+            "values" | "entries" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
+                check_arity(name, 1, args, span, file, diagnostics);
+                check_value_materialization_args(program, name, args, span, file, diagnostics);
+                return MarrowType::Unknown;
+            }
+            "append" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
+                check_arity(name, 2, args, span, file, diagnostics);
+                check_append_args(program, args, span, file, diagnostics);
+                check_append(program, args, span, file, diagnostics);
+                return MarrowType::Primitive(ScalarType::Int);
             }
             _ => {}
         }
     }
-    // Builtins dispatch before user functions. For std helpers the signatures are
-    // fixed, so argument types and arity are checked here the
-    // same way user-function arguments are; other builtins leave their arguments to
-    // the runtime. A std helper's return type feeds the surrounding type checks.
+    // Builtins dispatch before user functions. Std helpers have fixed signatures,
+    // and a few single-name builtins have static shape rules; the rest leave their
+    // arguments to the runtime. A std helper's return type feeds the surrounding
+    // type checks.
     if is_builtin_call(segments) {
+        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
+        check_builtin_call_args(segments, arg_types, span, file, diagnostics);
         if let Some(params) = std_call_params(segments) {
             check_args_against(
                 &segments.join("::"),
@@ -2086,15 +2351,13 @@ pub(crate) fn check_call(
     // `Book::Id(...)` is the identity constructor even if `Book::Id` could also
     // spell a qualified resource name. Keep the checker aligned with runtime
     // dispatch, where identity constructors run before resource values.
-    if let Some(ty @ MarrowType::Identity(_)) =
-        resource_constructor_type(program, from_module, segments)
+    if let Some((ty @ MarrowType::Identity(_), resource)) =
+        resource_constructor_resource(program, from_module, segments)
     {
-        if let [name, id] = segments
-            && id == "Id"
-            && let Some(resource) = resolve::resolve_resource_by_name_any(program, name)
-            && let Some(saved_root) = &resource.saved_root
-        {
+        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
+        if let Some(saved_root) = &resource.saved_root {
             check_identity_constructor_keys(
+                &format!("{}::Id", resource.name),
                 &saved_root.identity_keys,
                 args,
                 arg_types,
@@ -2114,6 +2377,7 @@ pub(crate) fn check_call(
         ..
     }) = resolve(program, from_module, segments, ResolvableKind::Resource)
     {
+        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
         let resource_names: Vec<String> = module
             .resources
             .iter()
@@ -2243,6 +2507,14 @@ pub(crate) fn check_call(
         // enum, or the checker-only `Error` — is checked nominally; an `unknown`
         // parameter places no constraint and is left to the runtime.
         if let Some(param) = param {
+            check_call_mode(
+                &segments.join("::"),
+                arg,
+                param.mode,
+                span,
+                file,
+                diagnostics,
+            );
             check_one_arg(
                 &segments.join("::"),
                 &param.ty,
@@ -2254,6 +2526,228 @@ pub(crate) fn check_call(
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+fn check_builtin_call_args(
+    segments: &[String],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [name] = segments else { return };
+    if let Some(target) = ScalarType::from_scalar_name(name) {
+        check_conversion_arg(name, target, arg_types, span, file, diagnostics);
+    }
+}
+
+fn check_value_materialization_args(
+    program: &CheckedProgram,
+    name: &str,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [arg] = args else { return };
+    if arg.mode.is_some() || arg.name.is_some() || !is_saved_index_branch_path(program, &arg.value)
+    {
+        return;
+    }
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_COLLECTION_UNSUPPORTED,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: format!("`{name}` cannot materialize values from an index branch; use `keys`"),
+        span,
+    });
+}
+
+fn check_append_args(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [target, _value] = args else { return };
+    let Some(node) = saved_layer_node(program, &target.value) else {
+        return;
+    };
+    if matches!(node.element, marrow_schema::Element::Group) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            "`append` target must be a keyed leaf layer, but this path names a group layer"
+                .to_string(),
+        ));
+    }
+}
+
+fn saved_layer_node<'p>(
+    program: &'p CheckedProgram,
+    expr: &marrow_syntax::Expression,
+) -> Option<&'p marrow_schema::Node> {
+    let (root, layers) = saved_group_chain(expr)?;
+    find_resource_schema(program, root)?.descend_layers(&layers)
+}
+
+fn check_conversion_arg(
+    target_name: &str,
+    target: ScalarType,
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [arg_type] = arg_types else { return };
+    if conversion_source_supported(target_name, target, arg_type) {
+        return;
+    }
+    diagnostics.push(call_diagnostic(
+        file,
+        span,
+        format!(
+            "`{target_name}` cannot convert `{}`; supported sources are {}",
+            marrow_type_name(arg_type),
+            conversion_supported_sources(target_name, target)
+        ),
+    ));
+}
+
+fn conversion_source_supported(target_name: &str, target: ScalarType, source: &MarrowType) -> bool {
+    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
+    match source {
+        MarrowType::Unknown | MarrowType::Invalid => true,
+        MarrowType::Primitive(source) => match target_name {
+            "ErrorCode" => *source == Str,
+            "bool" => matches!(source, Bool | Int),
+            "string" => matches!(
+                source,
+                Str | Int | Decimal | Bool | Bytes | Date | Instant | Duration
+            ),
+            _ => match target {
+                Int => matches!(source, Int | Str | Decimal),
+                Decimal => matches!(source, Decimal | Int | Str),
+                Bytes => matches!(source, Bytes | Str),
+                Date => matches!(source, Date | Str),
+                Instant => matches!(source, Instant | Str),
+                Duration => matches!(source, Duration | Str),
+                Str => *source == Str,
+                Bool => matches!(source, Bool | Int),
+            },
+        },
+        MarrowType::Enum { .. }
+        | MarrowType::Error
+        | MarrowType::GroupEntry { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::LocalTree { .. }
+        | MarrowType::Resource(_)
+        | MarrowType::Sequence(_) => false,
+    }
+}
+
+fn conversion_supported_sources(target_name: &str, target: ScalarType) -> &'static str {
+    use ScalarType::{Bytes, Date, Decimal, Duration, Instant, Int};
+    match target_name {
+        "ErrorCode" => "`ErrorCode`, `string`, or `unknown`",
+        "bool" => "`bool`, `int`, or `unknown`",
+        "string" => {
+            "`string`, `int`, `decimal`, `bool`, `bytes`, `date`, `instant`, `duration`, or `unknown`"
+        }
+        _ => match target {
+            Int => "`int`, canonical integer `string`, integral `decimal`, or `unknown`",
+            Decimal => "`decimal`, `int`, canonical decimal `string`, or `unknown`",
+            Bytes => "`bytes`, UTF-8 `string`, or `unknown`",
+            Date => "`date`, canonical date `string`, or `unknown`",
+            Instant => "`instant`, canonical instant `string`, or `unknown`",
+            Duration => "`duration`, canonical duration `string`, or `unknown`",
+            _ => "`unknown`",
+        },
+    }
+}
+
+fn check_plain_call_modes(
+    label: &str,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for arg in args {
+        if let Some(mode) = arg.mode {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!(
+                    "argument to `{label}` cannot be passed as {}",
+                    arg_mode_name(mode)
+                ),
+            ));
+        }
+    }
+}
+
+fn check_call_mode(
+    label: &str,
+    arg: &marrow_syntax::Argument,
+    param_mode: Option<marrow_syntax::ParamMode>,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !call_modes_match(arg.mode, param_mode) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "argument to `{label}` must be passed as {}",
+                call_mode_expectation(param_mode)
+            ),
+        ));
+    }
+    if arg.mode.is_some() && !crate::rules::is_assignable(&arg.value) {
+        diagnostics.push(CheckDiagnostic {
+            code: crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: "out/inout argument is not a writable place".to_string(),
+            span: arg.value.span(),
+        });
+    }
+}
+
+fn arg_mode_name(mode: marrow_syntax::ArgMode) -> &'static str {
+    match mode {
+        marrow_syntax::ArgMode::Out => "`out`",
+        marrow_syntax::ArgMode::InOut => "`inout`",
+    }
+}
+
+fn call_modes_match(
+    arg: Option<marrow_syntax::ArgMode>,
+    param: Option<marrow_syntax::ParamMode>,
+) -> bool {
+    matches!(
+        (arg, param),
+        (None, None)
+            | (
+                Some(marrow_syntax::ArgMode::Out),
+                Some(marrow_syntax::ParamMode::Out)
+            )
+            | (
+                Some(marrow_syntax::ArgMode::InOut),
+                Some(marrow_syntax::ParamMode::InOut)
+            )
+    )
+}
+
+fn call_mode_expectation(mode: Option<marrow_syntax::ParamMode>) -> &'static str {
+    match mode {
+        Some(marrow_syntax::ParamMode::Out) => "`out`",
+        Some(marrow_syntax::ParamMode::InOut) => "`inout`",
+        None => "a plain argument",
+    }
 }
 
 fn reversed_type(
@@ -2474,6 +2968,7 @@ pub(crate) fn check_neighbor(
     program: &CheckedProgram,
     which: &str,
     args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -2483,9 +2978,21 @@ pub(crate) fn check_neighbor(
         return MarrowType::Unknown;
     };
     match &arg.value {
-        // A bare primary keyed root `^root`: its first/last record is sought, so a
-        // composite identity is fine here (no single key level is anchored).
-        Expression::SavedRoot { name: root, .. } => record_identity_type(program, root),
+        // A bare primary keyed root `^root`: its first/last record is sought. A
+        // composite identity has no single returned key value, so reject it before
+        // the runtime can degrade the identity to one component.
+        Expression::SavedRoot { name: root, .. } => {
+            if composite_identity(program, root) {
+                return neighbor_unsupported(
+                    which,
+                    "a composite-identity root (scope a single key level)",
+                    span,
+                    file,
+                    diagnostics,
+                );
+            }
+            record_identity_type(program, root)
+        }
         Expression::Call { callee, .. } => match callee.as_ref() {
             // `^root(id…)`: a keyed record. `next`/`prev` anchor at one key level, so
             // a composite multi-key identity is out of scope — reject it statically.
@@ -2514,7 +3021,45 @@ pub(crate) fn check_neighbor(
         },
         // A bare child layer `^root(id…).layer`: navigate among the layer's keys.
         Expression::Field { .. } => layer_key_type(program, &arg.value),
+        _ if matches!(arg_types.first(), Some(MarrowType::Identity(_))) => neighbor_unsupported(
+            which,
+            "an identity value (use a saved place)",
+            span,
+            file,
+            diagnostics,
+        ),
         _ => MarrowType::Unknown,
+    }
+}
+
+/// Check `append(layer, value)` against the statically declared layer key kind.
+/// `append` allocates an integer position, so accepting a string- or bool-keyed
+/// layer would create stored keys the schema cannot address.
+pub(crate) fn check_append(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [target, _] = args else {
+        return;
+    };
+    if target.mode.is_some() || target.name.is_some() {
+        return;
+    }
+    let Some(key_type) = saved_path_key_type(program, &target.value) else {
+        return;
+    };
+    if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
+                marrow_type_name(&key_type)
+            ),
+        ));
     }
 }
 

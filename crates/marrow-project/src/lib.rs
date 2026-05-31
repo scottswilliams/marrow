@@ -263,6 +263,37 @@ pub fn discover_test_modules(
     Ok(files)
 }
 
+/// Return the test module file for `path` when it is a `.mw` file selected by one
+/// of the project's `tests` patterns. This mirrors [`discover_test_modules`] for
+/// overlay paths that may not exist on disk yet.
+pub fn test_module_file(
+    project_root: &Path,
+    config: &ProjectConfig,
+    path: &Path,
+) -> Option<ModuleFile> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("mw") {
+        return None;
+    }
+    if !path.starts_with(project_root) {
+        return None;
+    }
+    for pattern in &config.tests {
+        let (base, recursive) = test_pattern_base(pattern);
+        let target = project_root.join(base);
+        let selected = if target.extension().and_then(|ext| ext.to_str()) == Some("mw") {
+            path == target
+        } else if recursive {
+            path.starts_with(&target)
+        } else {
+            path.parent() == Some(target.as_path())
+        };
+        if selected {
+            return Some(module_file(project_root, path.to_path_buf()));
+        }
+    }
+    None
+}
+
 /// The base path of a `tests` pattern and whether its directory is walked
 /// recursively, with the trailing glob tail removed. A double-star tail
 /// (`/**/*.mw`, `/**`) recurses; a single-star tail (`/*.mw`) matches only the

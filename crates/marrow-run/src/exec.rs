@@ -58,7 +58,8 @@ pub(crate) fn eval_statement(
             span,
         } => {
             if !keys.is_empty() {
-                return Err(unsupported("a keyed local variable", *span));
+                env.bind(name.clone(), Value::LocalTree(Vec::new()), true);
+                return Ok(Flow::Normal);
             }
             let value = match value {
                 Some(expr) => eval_expr(expr, env)?,
@@ -68,7 +69,7 @@ pub(crate) fn eval_statement(
                 // `var n: int` then `f(out n)` pattern) is usable before its first
                 // assignment.
                 None => match ty.as_ref().map(Type::resolve) {
-                    Some(Type::Named(name)) if is_resource_type(env.program, &name) => {
+                    Some(Type::Named(name)) if is_resource_type(env.program, env.module, &name) => {
                         Value::Resource(Vec::new())
                     }
                     Some(ty) => default_value(&ty).ok_or_else(|| {
@@ -100,6 +101,12 @@ pub(crate) fn eval_statement(
             } else if let Expression::SavedRoot { .. } = target {
                 eval_resource_write(target, value, *span, env)?;
             } else if let Expression::Call { callee, args, .. } = target {
+                if let Expression::Name { segments, .. } = callee.as_ref()
+                    && let [name] = segments.as_slice()
+                    && eval_local_collection_write(name, args, value, *span, env)?
+                {
+                    return Ok(Flow::Normal);
+                }
                 // `^root(key…).layer(key…) = v` (callee is a saved layer field) is a
                 // whole-group-entry write; `^root(key…) = v` (callee is the saved
                 // root) is a whole-resource write.
@@ -153,7 +160,10 @@ pub(crate) fn eval_statement(
         Statement::Expr { value, .. } => {
             // A call statement may invoke a function that returns nothing; only a
             // call in value position requires a return value.
-            if let Expression::Call { callee, args, span } = value {
+            if let Expression::Call {
+                callee, args, span, ..
+            } = value
+            {
                 eval_call(callee, args, *span, env)?;
             } else {
                 eval_expr(value, env)?;
@@ -413,13 +423,26 @@ pub(crate) fn iterate_saved_layer(
     env: &mut Env<'_>,
     loop_body: impl FnOnce(&mut Env<'_>) -> Result<Flow, RuntimeError>,
 ) -> Result<Flow, RuntimeError> {
-    let pushed = prefix.is_some();
+    let mut pushed = false;
+    let mut pushed_index = false;
     if let Some(prefix) = prefix {
-        env.traversed_layers.push(encode_path(&prefix));
+        let is_index = prefix
+            .iter()
+            .any(|segment| matches!(segment, PathSegment::Index(_)));
+        let encoded = encode_path(&prefix);
+        env.traversed_layers.push(encoded.clone());
+        pushed = true;
+        if is_index {
+            env.traversed_index_layers.push(encoded);
+            pushed_index = true;
+        }
     }
     let result = loop_body(env);
     if pushed {
         env.traversed_layers.pop();
+    }
+    if pushed_index {
+        env.traversed_index_layers.pop();
     }
     result
 }
@@ -780,10 +803,22 @@ pub(crate) fn eval_collection(
     // through to `eval_expr`, which shapes those rows.
     if let Some(inner) = reversed_argument(iterable) {
         if let Some(layer) = keys_argument(inner) {
+            if !is_saved_path(layer) {
+                return enumerate_local_collection_dir(
+                    eval_expr(layer, env)?,
+                    Direction::Descending,
+                    iterable.span(),
+                );
+            }
             check_key_collection(layer, iterable.span(), env)?;
             return enumerate_layer_dir(layer, Direction::Descending, env);
         }
         if is_saved_path(inner) {
+            if let Some(values) =
+                unique_index_lookup_values(inner, iterable.span(), Direction::Descending, env)?
+            {
+                return Ok(values);
+            }
             if is_iterable_index_branch(inner, env) {
                 return enumerate_layer_dir(inner, Direction::Descending, env);
             }
@@ -792,10 +827,22 @@ pub(crate) fn eval_collection(
         }
     }
     if let Some(path) = keys_argument(iterable) {
+        if !is_saved_path(path) {
+            return enumerate_local_collection_dir(
+                eval_expr(path, env)?,
+                Direction::Ascending,
+                iterable.span(),
+            );
+        }
         check_key_collection(path, iterable.span(), env)?;
         return enumerate_layer(path, env);
     }
     if is_saved_path(iterable) {
+        if let Some(values) =
+            unique_index_lookup_values(iterable, iterable.span(), Direction::Ascending, env)?
+        {
+            return Ok(values);
+        }
         if is_iterable_index_branch(iterable, env) {
             return enumerate_layer(iterable, env);
         }
@@ -804,6 +851,7 @@ pub(crate) fn eval_collection(
     }
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
+        Value::LocalTree(entries) => Ok(entries.into_iter().map(|entry| entry.value).collect()),
         _ => Err(unsupported("iterating this value", iterable.span())),
     }
 }
@@ -817,6 +865,15 @@ fn eval_collection_entries(
         && keys_argument(inner).is_none()
     {
         return materialize_entry_pairs(materialize_layer_dir(inner, Direction::Descending, env)?);
+    }
+    if let Some(inner) = values_or_entries(iterable)
+        && !is_saved_path(inner.layer)
+    {
+        return materialize_entry_pairs(materialize_local_collection_dir(
+            eval_expr(inner.layer, env)?,
+            Direction::Ascending,
+            iterable.span(),
+        )?);
     }
     if is_saved_path(iterable) {
         return materialize_entry_pairs(materialize_layer(iterable, env)?);

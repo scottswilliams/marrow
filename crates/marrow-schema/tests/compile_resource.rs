@@ -994,6 +994,20 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn index_arg_naming_nested_leaf_is_an_error() {
+    // A bare leaf inside an unkeyed group is a nested field, not an unknown name.
+    let source = "\
+resource Book at ^books(id: int)
+    location
+        shelf: string
+    index byShelf(shelf, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NESTED_INDEX_ARG]);
+    assert!(errors[0].message.contains("shelf"));
+}
+
+#[test]
 fn duplicate_identity_key_name_is_an_error() {
     // Identity keys must have distinct names; two `studentId` keys are
     // unaddressable.
@@ -1239,4 +1253,34 @@ resource Order at ^orders(id: int)
     );
     let errors = check_saved_named_fields(&decl, &[]);
     assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn a_qualified_named_saved_field_is_not_a_schema_local_error() {
+    let short_alias = resource(
+        "\
+module a
+use pkg::kinds
+resource Saved at ^saved(id: int)
+    required k: kinds::Color
+",
+    );
+    let short_errors = check_saved_named_fields(&short_alias, &[]);
+    assert!(
+        short_errors.is_empty(),
+        "the schema-only gate cannot reject a qualified enum name: {short_errors:#?}"
+    );
+
+    let full_path = resource(
+        "\
+module a
+resource Saved at ^saved(id: int)
+    required k: pkg::kinds::Color
+",
+    );
+    let full_errors = check_saved_named_fields(&full_path, &[]);
+    assert!(
+        full_errors.is_empty(),
+        "the schema-only gate cannot reject a fully qualified enum name: {full_errors:#?}"
+    );
 }

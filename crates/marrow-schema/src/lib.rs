@@ -78,12 +78,13 @@ impl Type {
 
     /// The scalar a stored field of this type encodes as: a plain scalar's own
     /// type, or `int` for an enum field, whose value is the selected member's
-    /// declaration-order ordinal. A saved field that is a bare [`Type::Named`] is
-    /// always an enum: [`check_saved_named_fields`] rejects any other bare name
-    /// (an undefined name or a resource type) at compile time, so by the time a
-    /// `Named` field reaches the store it stores its ordinal as an `int`. The
-    /// storage boundary — value type-checks, field reads, whole-resource reads —
-    /// uses this.
+    /// declaration-order ordinal. A saved field that is an unqualified
+    /// [`Type::Named`] is always an enum: [`check_saved_named_fields`] rejects
+    /// any other unqualified name (an undefined name or a resource type) at
+    /// compile time. Qualified names need project context, but once a `Named`
+    /// field reaches the store it stores its ordinal as an `int`. The storage
+    /// boundary — value type-checks, field reads, whole-resource reads — uses
+    /// this.
     pub fn stored_scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
@@ -944,10 +945,10 @@ fn is_supported_map_member(field: &FieldDecl) -> bool {
             .unwrap_or(false)
 }
 
-/// Reject every managed saved field whose type is a bare name that is not one of
-/// `enums`. A bare [`Type::Named`] reaches a stored scalar only as an enum (its
-/// member ordinal); an undefined name or a resource type has no stored scalar
-/// form. The caller resolves enum names cross-declaration and passes them here,
+/// Reject every managed saved field whose type is an unqualified name that is
+/// not one of `enums`. An unqualified [`Type::Named`] reaches a stored scalar
+/// only as an enum (its member ordinal); an undefined name or a resource type
+/// has no stored scalar form. Qualified names need import and project context,
 /// since [`compile_resource`] compiles one resource without that context. A
 /// local (non-saved) resource is exempt — only saved fields lower into the store.
 pub fn check_saved_named_fields(decl: &ResourceDecl, enums: &[String]) -> Vec<SchemaError> {
@@ -977,7 +978,7 @@ fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec
                 Type::resolve(&field.ty)
             };
             if let Type::Named(name) = ty
-                && !enums.iter().any(|enum_name| enum_name == &name)
+                && !is_declared_or_qualified_enum_name(&name, enums)
             {
                 errors.push(SchemaError {
                     code: SCHEMA_NON_ENUM_NAMED_FIELD,
@@ -999,6 +1000,10 @@ fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec
     }
 }
 
+fn is_declared_or_qualified_enum_name(name: &str, enums: &[String]) -> bool {
+    name.contains("::") || enums.iter().any(|enum_name| enum_name == name)
+}
+
 /// The span of a top-level member named `name`, if one exists. Identity keys,
 /// fields, layers, and index names share the resource namespace, so an identity
 /// key may not reuse any of them.
@@ -1009,9 +1014,10 @@ fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<Sourc
         .map(member_span)
 }
 
-/// Resolve each top-level index argument against the resource. Arguments may
-/// name an identity key, a top-level unkeyed field, or a nested scalar field
-/// reached through unkeyed groups; they do not walk keyed child layers. Each
+/// Resolve each index argument against the resource. Implemented indexes may
+/// name an identity key or a top-level unkeyed field. Nested scalar fields
+/// reached through unkeyed groups are recognized only to report the unsupported
+/// nested-index diagnostic; indexes do not walk keyed child layers. Each
 /// unresolved argument is reported at its index's span, in index then argument
 /// order.
 ///
@@ -1042,6 +1048,17 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
         }
         for arg in &index.args {
             match index_arg_type(arg, keys, &decl.members) {
+                None if has_nested_unkeyed_field_named(arg, &decl.members) => {
+                    errors.push(SchemaError {
+                        code: SCHEMA_NESTED_INDEX_ARG,
+                        message: format!(
+                            "index `{}` argument `{arg}` names a field nested through an \
+                             unkeyed group, which the write planner does not maintain",
+                            index.name
+                        ),
+                        span: index.span,
+                    });
+                }
                 None => errors.push(SchemaError {
                     code: SCHEMA_UNKNOWN_INDEX_ARG,
                     message: format!(
@@ -1134,6 +1151,29 @@ fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> O
             resolve_field_type(rest, &group.members)
         }
         _ => None,
+    })
+}
+
+/// Does a bare index argument name a scalar field below at least one unkeyed
+/// group? The argument is still unsupported, but it is a nested-field request
+/// rather than an unknown name.
+fn has_nested_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
+    !name.contains('.')
+        && members.iter().any(|member| match member {
+            ResourceMember::Group(group) if group.keys.is_empty() => {
+                has_unkeyed_field_named(name, &group.members)
+            }
+            _ => false,
+        })
+}
+
+fn has_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
+    members.iter().any(|member| match member {
+        ResourceMember::Field(field) => field.keys.is_empty() && field.name == name,
+        ResourceMember::Group(group) if group.keys.is_empty() => {
+            has_unkeyed_field_named(name, &group.members)
+        }
+        _ => false,
     })
 }
 

@@ -991,6 +991,9 @@ impl UseWalker<'_, '_> {
         };
         let resolved =
             resolve_enum_member_path(self.builder.program, &expr, self.aliases, self.file)?;
+        if resolved.private.is_some() {
+            return None;
+        }
         let marrow_schema::MemberPathResolution::Found(ordinal) = resolved.member else {
             return None;
         };

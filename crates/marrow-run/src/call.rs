@@ -35,6 +35,7 @@ pub fn evaluate_function(
         function.span,
         args,
         &[],
+        &[],
         // No debugger; the entry activation is depth 1.
         None,
         1,
@@ -45,10 +46,11 @@ pub fn evaluate_function(
             Completion::Faulted {
                 error,
                 code,
+                span,
                 origin,
             },
             ..,
-        ) => Err(reraise_fault(error, code, function.span, origin)),
+        ) => Err(reraise_fault(error, code, span, origin)),
     }
 }
 
@@ -149,6 +151,7 @@ pub(crate) fn run_entry_impl<'p>(
         function.span,
         args,
         &[],
+        &[],
         hook,
         1,
     )? {
@@ -160,11 +163,12 @@ pub(crate) fn run_entry_impl<'p>(
             Completion::Faulted {
                 error,
                 code,
+                span,
                 origin,
             },
             ..,
         ) => {
-            return Err(reraise_fault(error, code, function.span, origin));
+            return Err(reraise_fault(error, code, span, origin));
         }
     };
     Ok(RunOutput {
@@ -186,13 +190,14 @@ pub(crate) enum Completion {
         /// the deepest (raising) file rather than re-deriving it at each frame.
         origin: Option<FileId>,
     },
-    /// A recoverable fault (e.g. `write.unique_conflict`, `run.absent_element`)
-    /// that escaped a called function uncaught. It crosses the call boundary as a
-    /// catchable error like a throw, but keeps its own dotted `code` so an
-    /// uncaught fault surfaces with that code, not `run.uncaught_error`.
+    /// A catchable fault (e.g. `write.unique_conflict`, `run.overflow`,
+    /// `run.absent_element`) that escaped a called function uncaught. It crosses
+    /// the call boundary as a catchable error like a throw, but keeps its own
+    /// dotted `code` and source span so an uncaught fault surfaces as itself.
     Faulted {
         error: Value,
         code: &'static str,
+        span: SourceSpan,
         origin: Option<FileId>,
     },
 }
@@ -207,6 +212,10 @@ pub(crate) type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut
 /// the body returned normally — a throw or fault skips write-back). Shared by
 /// [`evaluate_function`], [`run_entry`], and call evaluation; non-`out`/`inout`
 /// calls pass an empty `writeback`.
+///
+/// `traversed_layers` carries the caller's active saved-layer traversal guards
+/// across helper calls, so dynamic writes are checked the same way direct writes
+/// in the loop body are checked.
 ///
 /// The optional `hook` is the opt-in debugger; it is moved into this activation
 /// and, on every non-fatal outcome, moved back out in the returned tuple so the
@@ -226,6 +235,7 @@ pub(crate) fn invoke<'p>(
     span: SourceSpan,
     args: &[Value],
     writeback: &[&str],
+    traversed_layers: &[Vec<u8>],
     hook: Option<&'p mut dyn StepHook>,
     depth: usize,
 ) -> Result<Activation<'p>, RuntimeError> {
@@ -241,7 +251,16 @@ pub(crate) fn invoke<'p>(
         ));
     }
     let mut env = Env::new(ctx, output, module, hook, depth);
+    env.traversed_layers = traversed_layers.to_vec();
     env.push_scope();
+    if let Some(module) = module {
+        for constant in &module.constants {
+            if let Some(value) = &constant.value {
+                let value = eval_expr(value, &mut env)?;
+                env.bind(constant.name.clone(), value, false);
+            }
+        }
+    }
     for (name, arg) in param_names.iter().zip(args) {
         // `out`/`inout` parameters are reassignable inside the callee; plain
         // parameters are read-only.
@@ -294,11 +313,13 @@ pub(crate) fn invoke<'p>(
         Err(RuntimeError {
             throw: Some(error),
             code,
+            span,
             origin,
             ..
         }) => Completion::Faulted {
             error: *error,
             code,
+            span,
             origin: origin.or_else(here),
         },
         Err(fatal) => return Err(fatal.with_origin_from(env.program, module)),
@@ -660,7 +681,14 @@ fn value_matches_type(program: &CheckedProgram, expected: &MarrowType, value: &V
                 .all(|item| value_matches_type(program, element, item)),
             _ => false,
         },
+        MarrowType::LocalTree { value: element, .. } => match value {
+            Value::LocalTree(entries) => entries
+                .iter()
+                .all(|entry| value_matches_type(program, element, &entry.value)),
+            _ => false,
+        },
         MarrowType::Error => matches!(value, Value::Resource(_)),
+        MarrowType::Invalid => true,
         MarrowType::Unknown => true,
     }
 }
@@ -675,7 +703,7 @@ fn value_scalar_type(value: &Value) -> Option<ScalarType> {
         Value::Duration(_) => Some(ScalarType::Duration),
         Value::Decimal(_) => Some(ScalarType::Decimal),
         Value::Bytes(_) => Some(ScalarType::Bytes),
-        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => None,
     }
 }
 
@@ -929,8 +957,8 @@ pub(crate) fn eval_call(
                 "nextId" => return eval_next_id(args, span, env).map(Some),
                 "append" => return eval_append(args, span, env).map(Some),
                 "bytes" => return eval_bytes_conversion(args, span, env).map(Some),
-                "int" | "decimal" | "string" | "bool" | "date" | "instant" | "duration" => {
-                    return eval_conversion(name, args, span, env).map(Some);
+                other if ScalarType::from_scalar_name(other).is_some() => {
+                    return eval_conversion(other, args, span, env).map(Some);
                 }
                 // `keys(<layer>)` materializes the layer's child keys as a sequence
                 // value. Direct loops use this enumeration only for address-only
@@ -1009,6 +1037,7 @@ pub(crate) fn eval_call(
     // Move the debugger hook into the callee and the depth one deeper, then move
     // the hook back so the caller keeps stepping after the call returns.
     let depth = env.depth;
+    let traversed_layers = env.traversed_layers.clone();
     let (completion, _, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
@@ -1018,6 +1047,7 @@ pub(crate) fn eval_call(
         function.span,
         &values,
         &[],
+        &traversed_layers,
         env.hook.take(),
         depth + 1,
     )?;
@@ -1039,8 +1069,9 @@ pub(crate) fn complete_call(
         Completion::Faulted {
             error,
             code,
+            span: fault_span,
             origin,
-        } => Err(reraise_fault(error, code, span, origin)),
+        } => Err(reraise_fault(error, code, fault_span, origin)),
     }
 }
 
@@ -1076,6 +1107,7 @@ pub(crate) fn eval_call_with_modes<'p>(
     // Move the debugger hook into the callee and the depth one deeper, then move
     // the hook back so the caller keeps stepping after the call returns.
     let depth = env.depth;
+    let traversed_layers = env.traversed_layers.clone();
     let (completion, finals, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
@@ -1085,6 +1117,7 @@ pub(crate) fn eval_call_with_modes<'p>(
         function.span,
         &values,
         &writeback,
+        &traversed_layers,
         env.hook.take(),
         depth + 1,
     )?;

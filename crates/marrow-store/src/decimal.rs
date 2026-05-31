@@ -126,14 +126,21 @@ impl Decimal {
 
     /// Exact product, or `None` if it overflows the envelope.
     pub fn checked_mul(self, other: Decimal) -> Option<Decimal> {
-        let coefficient = self.coefficient.checked_mul(other.coefficient)?;
-        Decimal::from_parts(coefficient, self.scale + other.scale)
+        if self.coefficient == 0 || other.coefficient == 0 {
+            return Some(Decimal::ZERO);
+        }
+        let negative = (self.coefficient < 0) != (other.coefficient < 0);
+        let digits = multiply_digits(
+            &abs_coefficient_digits(self.coefficient),
+            &abs_coefficient_digits(other.coefficient),
+        );
+        exact_digits_to_decimal(digits, self.scale + other.scale, negative)
     }
 
-    /// Quotient rounded half-to-even to at most 34 significant digits
-    /// (decimal128). `None` if the divisor is zero or the result falls outside the
-    /// envelope; a caller that needs to tell those apart checks [`Decimal::is_zero`]
-    /// on the divisor first.
+    /// Quotient rounded half-to-even into the decimal envelope. `None` if the
+    /// divisor is zero or the rounded result falls outside the envelope; a caller
+    /// that needs to tell those apart checks [`Decimal::is_zero`] on the divisor
+    /// first.
     pub fn checked_div(self, divisor: Decimal) -> Option<Decimal> {
         if divisor.coefficient == 0 {
             return None;
@@ -148,7 +155,7 @@ impl Decimal {
         // Produce the quotient's significant digits (most significant first) by
         // long division — the remainder stays below `by`, so nothing overflows —
         // together with the power of ten of the leading digit.
-        let precision = MAX_DIGITS as usize;
+        let precision = MAX_DIGITS as usize + 1;
         let mut digits: Vec<u8> = Vec::new();
         let mut leading_power: i32;
         let integer = dividend / by; // <= dividend, so at most 34 digits
@@ -172,42 +179,23 @@ impl Decimal {
                 leading_power -= 1;
             }
         }
-        // Generate one digit past the precision so the last can be rounded.
-        while digits.len() <= precision && rem != 0 {
+        // Generate one guard digit past the maximum significant precision. The
+        // remaining `rem` is a sticky bit for half-even ties beyond that guard.
+        while digits.len() < precision && rem != 0 {
             rem *= 10;
             digits.push((rem / by) as u8);
             rem %= by;
         }
         let inexact = rem != 0;
 
-        if digits.len() > precision {
-            let dropped = digits.pop().expect("a digit past the precision");
-            let round_up =
-                dropped > 5 || (dropped == 5 && (inexact || digits[precision - 1] % 2 == 1));
-            if round_up {
-                round_up_last(&mut digits, &mut leading_power);
-            }
-        }
-        // Trailing zeros carry no precision; drop them for a canonical coefficient.
-        while digits.len() > 1 && *digits.last().expect("non-empty digits") == 0 {
-            digits.pop();
-        }
-
-        let mut coefficient: i128 = 0;
-        for &digit in &digits {
-            coefficient = coefficient * 10 + i128::from(digit); // <= 34 digits, fits
-        }
-        if negative {
-            coefficient = -coefficient;
-        }
         // value = coefficient * 10^(power), shifted by the operands' scales.
         let power =
             leading_power - (digits.len() as i32 - 1) + divisor.scale as i32 - self.scale as i32;
         if power >= 0 {
-            let scaled = coefficient.checked_mul(10i128.checked_pow(power as u32)?)?;
-            Decimal::from_parts(scaled, 0)
+            digits.extend(std::iter::repeat_n(0, power as usize));
+            round_digits_to_envelope(digits, 0, negative, inexact)
         } else {
-            Decimal::from_parts(coefficient, power.unsigned_abs())
+            round_digits_to_envelope(digits, power.unsigned_abs(), negative, inexact)
         }
     }
 
@@ -290,10 +278,95 @@ fn scaled_coefficient(coefficient: i128, power: u32) -> Option<i128> {
     coefficient.checked_mul(10i128.checked_pow(power)?)
 }
 
-/// Add one to the least significant digit, propagating the carry. A carry out of
-/// the most significant digit prepends a `1`, raising `leading_power`, and drops
-/// the now-extra last digit to keep the digit count.
-fn round_up_last(digits: &mut Vec<u8>, leading_power: &mut i32) {
+fn exact_digits_to_decimal(mut digits: Vec<u8>, mut scale: u32, negative: bool) -> Option<Decimal> {
+    digits = trim_leading_zeros(digits);
+    if digits == [0] {
+        return Some(Decimal::ZERO);
+    }
+    while scale > 0 && digits.last() == Some(&0) {
+        digits.pop();
+        scale -= 1;
+    }
+    if digits.len() as u32 > MAX_DIGITS || scale > MAX_DIGITS {
+        return None;
+    }
+    let mut coefficient = digits_to_i128(&digits)?;
+    if negative {
+        coefficient = coefficient.checked_neg()?;
+    }
+    Some(Decimal { coefficient, scale })
+}
+
+/// Round a finite coefficient digit string into the 34-digit / 34-place envelope.
+///
+/// `digits * 10^-scale` is the exact magnitude. `sticky` says there are further
+/// nonzero digits beyond `digits`, used only when the dropped part is exactly half.
+fn round_digits_to_envelope(
+    digits: Vec<u8>,
+    scale: u32,
+    negative: bool,
+    sticky: bool,
+) -> Option<Decimal> {
+    let digits = trim_leading_zeros(digits);
+    if digits == [0] {
+        return Some(Decimal::ZERO);
+    }
+    let integer_digits = (digits.len() as i64 - i64::from(scale)).max(0) as u32;
+    if integer_digits > MAX_DIGITS {
+        return None;
+    }
+    let significant_excess = (digits.len() as u32).saturating_sub(MAX_DIGITS);
+    let scale_excess = scale.saturating_sub(MAX_DIGITS);
+    let drop = significant_excess.max(scale_excess);
+    let rounded = round_least_significant_digits(digits, drop as usize, sticky);
+    let mut coefficient = digits_to_i128(&rounded)?;
+    if negative {
+        coefficient = coefficient.checked_neg()?;
+    }
+    Decimal::from_parts(coefficient, scale.checked_sub(drop)?)
+}
+
+fn round_least_significant_digits(digits: Vec<u8>, drop: usize, sticky: bool) -> Vec<u8> {
+    if drop == 0 {
+        return trim_leading_zeros(digits);
+    }
+    let split = digits.len().saturating_sub(drop);
+    let mut kept = digits[..split].to_vec();
+    let dropped = &digits[split..];
+    let last_kept_is_odd = kept.last().is_some_and(|digit| digit % 2 == 1);
+    let round_up = match cmp_dropped_to_half(dropped, drop) {
+        Ordering::Greater => true,
+        Ordering::Equal => sticky || last_kept_is_odd,
+        Ordering::Less => false,
+    };
+    if round_up {
+        increment_digits(&mut kept);
+    }
+    trim_leading_zeros(kept)
+}
+
+fn cmp_dropped_to_half(dropped: &[u8], drop: usize) -> Ordering {
+    if dropped.len() < drop {
+        return Ordering::Less;
+    }
+    match dropped[0].cmp(&5) {
+        Ordering::Equal => {
+            if dropped[1..].iter().any(|digit| *digit != 0) {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        }
+        ordering => ordering,
+    }
+}
+
+/// Add one to the least significant digit, propagating the carry.
+fn increment_digits(digits: &mut Vec<u8>) {
+    if digits.is_empty() {
+        digits.push(1);
+        return;
+    }
     for digit in digits.iter_mut().rev() {
         if *digit == 9 {
             *digit = 0;
@@ -303,8 +376,52 @@ fn round_up_last(digits: &mut Vec<u8>, leading_power: &mut i32) {
         }
     }
     digits.insert(0, 1);
-    *leading_power += 1;
-    digits.pop();
+}
+
+fn multiply_digits(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut product = vec![0u16; left.len() + right.len()];
+    for (left_index, left_digit) in left.iter().rev().enumerate() {
+        for (right_index, right_digit) in right.iter().rev().enumerate() {
+            product[left_index + right_index] += u16::from(*left_digit) * u16::from(*right_digit);
+        }
+    }
+    let mut carry = 0u16;
+    for value in &mut product {
+        let total = *value + carry;
+        *value = total % 10;
+        carry = total / 10;
+    }
+    while carry > 0 {
+        product.push(carry % 10);
+        carry /= 10;
+    }
+    let digits = product.into_iter().rev().map(|digit| digit as u8).collect();
+    trim_leading_zeros(digits)
+}
+
+fn abs_coefficient_digits(coefficient: i128) -> Vec<u8> {
+    coefficient
+        .unsigned_abs()
+        .to_string()
+        .bytes()
+        .map(|byte| byte - b'0')
+        .collect()
+}
+
+fn digits_to_i128(digits: &[u8]) -> Option<i128> {
+    let mut value = 0i128;
+    for digit in digits {
+        value = value.checked_mul(10)?.checked_add(i128::from(*digit))?;
+    }
+    Some(value)
+}
+
+fn trim_leading_zeros(digits: Vec<u8>) -> Vec<u8> {
+    let first_nonzero = digits.iter().position(|digit| *digit != 0);
+    match first_nonzero {
+        Some(index) => digits[index..].to_vec(),
+        None => vec![0],
+    }
 }
 
 /// Strip a trailing-zero scale to reach canonical form; zero normalizes to scale 0.
@@ -392,6 +509,27 @@ mod tests {
     }
 
     #[test]
+    fn multiplication_rejects_products_that_do_not_fit_exactly() {
+        let a = dec("0.123456789012345678");
+        assert!(
+            a.checked_mul(a).is_none(),
+            "product needs 36 fractional places"
+        );
+
+        let tiny = dec("0.0000000000000000001");
+        assert!(
+            tiny.checked_mul(tiny).is_none(),
+            "product needs 38 fractional places"
+        );
+
+        let third = dec("1").checked_div(dec("3")).unwrap();
+        assert!(
+            third.checked_mul(third).is_none(),
+            "product of rounded quotient still must fit exactly"
+        );
+    }
+
+    #[test]
     fn arithmetic_outside_the_envelope_is_none() {
         let big = dec(&"9".repeat(34));
         assert!(big.checked_add(dec("1")).is_none(), "sum exceeds 34 digits");
@@ -461,6 +599,14 @@ mod tests {
         assert_eq!(
             dec("2").checked_div(dec("3")).unwrap().to_text(),
             format!("0.{}7", "6".repeat(33))
+        );
+    }
+
+    #[test]
+    fn sub_one_division_rounds_to_the_fractional_envelope() {
+        assert_eq!(
+            dec("1").checked_div(dec("62")).unwrap().to_text(),
+            "0.0161290322580645161290322580645161"
         );
     }
 

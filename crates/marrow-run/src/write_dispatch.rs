@@ -54,6 +54,21 @@ pub(crate) fn write_saved_field(
     if let Some(LeafKind::Identity { arity, .. }) = resource_field_leaf(env.program, root, field) {
         let keys = identity_keys_of(value, span)?;
         let plan = plan_identity_field_write(resource, identity, field, &keys, arity);
+        let plan = if env.transaction_depth == 0 {
+            let store = env.store.borrow();
+            plan.and_then(|plan| {
+                validate_required_fields_after_field_write(
+                    resource,
+                    identity,
+                    &[],
+                    field,
+                    &*store,
+                )?;
+                Ok(plan)
+            })
+        } else {
+            plan
+        };
         env.apply_plan(plan, span)?;
         return Ok(());
     }
@@ -61,7 +76,18 @@ pub(crate) fn write_saved_field(
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_field_write(resource, identity, field, &saved, &*store)
+        plan_field_write(resource, identity, field, &saved, &*store).and_then(|plan| {
+            if env.transaction_depth == 0 {
+                validate_required_fields_after_field_write(
+                    resource,
+                    identity,
+                    &[],
+                    field,
+                    &*store,
+                )?;
+            }
+            Ok(plan)
+        })
     };
     env.apply_plan(plan, span)?;
     Ok(())
@@ -138,13 +164,7 @@ pub(crate) fn eval_raw_field_write(
     }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a raw segment", span))?;
-    let bytes = encode_value(&saved).map_err(|error| RuntimeError {
-        throw: None,
-        origin: None,
-        code: error.code(),
-        message: error.to_string(),
-        span,
-    })?;
+    let bytes = encode_value(&saved).map_err(|error| error.located(span))?;
     env.store
         .borrow_mut()
         .write(&encode_path(&path), bytes)
@@ -184,12 +204,42 @@ pub(crate) fn write_nested_field(
         let keys = identity_keys_of(value, span)?;
         let plan =
             plan_nested_identity_field_write(resource, identity, &layer_refs, field, &keys, arity);
+        let plan = if env.transaction_depth == 0 {
+            let store = env.store.borrow();
+            plan.and_then(|plan| {
+                validate_required_fields_after_field_write(
+                    resource,
+                    identity,
+                    &layer_refs,
+                    field,
+                    &*store,
+                )?;
+                Ok(plan)
+            })
+        } else {
+            plan
+        };
         env.apply_plan(plan, span)?;
         return Ok(());
     }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved);
+    let plan = if env.transaction_depth == 0 {
+        let store = env.store.borrow();
+        plan.and_then(|plan| {
+            validate_required_fields_after_field_write(
+                resource,
+                identity,
+                &layer_refs,
+                field,
+                &*store,
+            )?;
+            Ok(plan)
+        })
+    } else {
+        plan
+    };
     env.apply_plan(plan, span)?;
     Ok(())
 }
@@ -206,39 +256,77 @@ pub(crate) fn eval_group_entry_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let (root, identity) = lower(record, env)?.into_record(record.span())?;
+    let (root, identity, parents) = lower(record, env)?.into_layers(record.span())?;
     // A keyed-entry write adds/replaces a key in this layer's key set.
-    env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
+    env.guard_traversed_layer(
+        &nested_layer_prefix(&root, &identity, &parents, layer),
+        span,
+    )?;
     // A declared keyed LEAF (e.g. `tags(pos: int): string`) takes a scalar value
     // written at the keyed path, sharing the write planner's keyed-leaf write path with
     // `append`; an identity-typed keyed leaf stores the referenced identity. A keyed
     // GROUP takes a whole-entry resource value.
-    if let Some(leaf) = resource_layer_leaf(env.program, &root, layer) {
+    let layer_names: Vec<&str> = parents
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .chain(std::iter::once(layer))
+        .collect();
+    if let Some(leaf) = resource_layer_leaf_chain(env.program, &root, &layer_names) {
         let resource = find_resource(env.program, &root)
             .ok_or_else(|| unsupported("writing to this saved root", span))?;
-        let expected = layer_key_params(env.program, &root, &[layer]);
+        let expected = layer_key_params(env.program, &root, &layer_names);
         let value = eval_expr(value, env)?;
         let layer_keys = lower_keys(keys, span, false, expected, env)?;
+        let parent_refs: Vec<(&str, &[SavedKey])> = parents
+            .iter()
+            .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+            .collect();
         let plan = match leaf {
             LeafKind::Identity { arity, .. } => {
                 let identity_keys = identity_keys_of(value, span)?;
-                plan_layer_identity_leaf_write(
-                    resource,
-                    &identity,
-                    layer,
-                    &layer_keys,
-                    &identity_keys,
-                    arity,
-                )
+                if parents.is_empty() {
+                    plan_layer_identity_leaf_write(
+                        resource,
+                        &identity,
+                        layer,
+                        &layer_keys,
+                        &identity_keys,
+                        arity,
+                    )
+                } else {
+                    plan_nested_layer_identity_leaf_write(
+                        resource,
+                        &identity,
+                        &parent_refs,
+                        layer,
+                        &layer_keys,
+                        &identity_keys,
+                        arity,
+                    )
+                }
             }
             LeafKind::Scalar(_) => {
                 let saved = value_to_saved(value)
                     .ok_or_else(|| unsupported("writing a resource value to a keyed leaf", span))?;
-                plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved)
+                if parents.is_empty() {
+                    plan_layer_leaf_write(resource, &identity, layer, &layer_keys, &saved)
+                } else {
+                    plan_nested_layer_leaf_write(
+                        resource,
+                        &identity,
+                        &parent_refs,
+                        layer,
+                        &layer_keys,
+                        &saved,
+                    )
+                }
             }
         };
         env.apply_plan(plan, span)?;
         return Ok(());
+    }
+    if !parents.is_empty() {
+        return Err(unsupported("assigning a nested group entry", span));
     }
     let Value::Resource(fields) = eval_expr(value, env)? else {
         return Err(unsupported(
@@ -419,7 +507,18 @@ pub(crate) fn eval_layer_merge(
 /// the prefix [`traversed_layer_prefix`] produces for a loop over that layer, so
 /// [`Env::guard_traversed_layer`] can compare them.
 pub(crate) fn layer_prefix(root: &str, identity: &[SavedKey], layer: &str) -> Vec<PathSegment> {
-    saved_segments(root, identity, &[(layer.to_string(), Vec::new())], None)
+    nested_layer_prefix(root, identity, &[], layer)
+}
+
+pub(crate) fn nested_layer_prefix(
+    root: &str,
+    identity: &[SavedKey],
+    parents: &[(String, Vec<SavedKey>)],
+    layer: &str,
+) -> Vec<PathSegment> {
+    let mut levels = parents.to_vec();
+    levels.push((layer.to_string(), Vec::new()));
+    saved_segments(root, identity, &levels, None)
 }
 
 /// Lower a materialized resource value's present fields to a `ResourceValue` for
@@ -790,12 +889,9 @@ pub(crate) fn eval_layer_entry_delete(
         return Err(unsupported("deleting this layer entry", span));
     }
     // Deleting an entry changes the innermost layer's key set, so guard against
-    // that layer's prefix. A direct layer of the record (empty chain) uses the
-    // record-level prefix; a nested layer is not reachable by a top-level loop, so
-    // the guard there is moot.
-    if chain.is_empty() {
-        env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
-    }
+    // that layer's prefix whether it sits directly under the record or below
+    // keyed group entries.
+    env.guard_traversed_layer(&nested_layer_prefix(&root, &identity, &chain, layer), span)?;
     // The full level chain to the entry: the lowered group chain plus the terminal
     // keyed layer being deleted.
     let mut levels = chain;

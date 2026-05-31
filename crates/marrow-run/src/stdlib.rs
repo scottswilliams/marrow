@@ -30,13 +30,7 @@ pub(crate) fn eval_output(
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("`{name}` takes one argument"),
-            span,
-        });
+        return Err(type_error(&format!("`{name}` takes one argument"), span));
     };
     let text = render(eval_expr(&arg.value, env)?, span)?;
     let mut output = env.output.borrow_mut();
@@ -54,13 +48,7 @@ pub(crate) fn eval_exists(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`exists` takes one argument".into(),
-            span,
-        });
+        return Err(type_error("`exists` takes one argument", span));
     };
     Ok(Value::Bool(saved_path_present(&arg.value, span, env)?))
 }
@@ -75,22 +63,18 @@ pub(crate) fn eval_count(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`count` takes one argument".into(),
-            span,
-        });
+        return Err(type_error("`count` takes one argument", span));
     };
-    if let Some(segments) = unique_index_lookup_path(&arg.value, env)? {
-        let present = env
-            .store
-            .borrow()
-            .read(&encode_path(&segments))
-            .map_err(|error| error.located(span))?
-            .is_some();
-        return Ok(Value::Int(present as i64));
+    if !is_saved_path(&arg.value) {
+        return local_collection_count(eval_expr(&arg.value, env)?, span);
+    }
+    if is_keyed_primary_root(&arg.value, env) {
+        let count =
+            i64::try_from(enumerate_layer(&arg.value, env)?.len()).map_err(|_| overflow(span))?;
+        return Ok(Value::Int(count));
+    }
+    if let Some(values) = unique_index_lookup_values(&arg.value, span, Direction::Ascending, env)? {
+        return Ok(Value::Int(values.len() as i64));
     }
     // A non-unique index branch `^root.index(args…)` addresses an
     // `Index`/`IndexKey` layer that has no record/layer segment form. Count its
@@ -116,6 +100,14 @@ pub(crate) fn eval_count(
             .is_some() as usize
     };
     Ok(Value::Int(count as i64))
+}
+
+fn is_keyed_primary_root(expr: &Expression, env: &Env<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::SavedRoot { name, .. }
+            if root_identity_arity(env.program, name).is_some_and(|arity| arity > 0)
+    )
 }
 
 /// Whether `expr` is any declared index lookup `^root.index(args…)` — a `Call`
@@ -146,13 +138,17 @@ fn index_branch_schema<'a>(
     expr: &Expression,
     env: &'a Env<'_>,
 ) -> Option<(&'a ResourceSchema, &'a IndexSchema)> {
-    let Expression::Call { callee, .. } = expr else {
-        return None;
+    let (base, name) = match expr {
+        Expression::Field { base, name, .. } => (base.as_ref(), name),
+        Expression::Call { callee, .. } => {
+            let Expression::Field { base, name, .. } = callee.as_ref() else {
+                return None;
+            };
+            (base.as_ref(), name)
+        }
+        _ => return None,
     };
-    let Expression::Field { base, name, .. } = callee.as_ref() else {
-        return None;
-    };
-    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+    let Expression::SavedRoot { name: root, .. } = base else {
         return None;
     };
     let resource = find_resource(env.program, root)?;
@@ -164,7 +160,24 @@ pub(crate) fn unique_index_lookup_path(
     expr: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
-    let Expression::Call { callee, args, span } = expr else {
+    Ok(unique_index_lookup(expr, env)?.map(|lookup| lookup.segments))
+}
+
+pub(crate) struct UniqueIndexLookup {
+    pub(crate) segments: Vec<PathSegment>,
+    pub(crate) identity_arity: usize,
+    pub(crate) index_name: String,
+    pub(crate) remaining_key_depth: usize,
+}
+
+pub(crate) fn unique_index_lookup(
+    expr: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Option<UniqueIndexLookup>, RuntimeError> {
+    let Expression::Call {
+        callee, args, span, ..
+    } = expr
+    else {
         return Ok(None);
     };
     let Expression::Field { base, name, .. } = callee.as_ref() else {
@@ -173,18 +186,26 @@ pub(crate) fn unique_index_lookup_path(
     let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
         return Ok(None);
     };
-    let Some((root_name, index_name)) = (|| {
+    let Some((root_name, identity_arity, index_name, index_arg_count)) = (|| {
         let resource = find_resource(env.program, root)?;
         let index = resource.indexes.iter().find(|index| &index.name == name)?;
         if !index.unique {
             return None;
         }
         let saved_root = resource.saved_root.as_ref()?;
-        Some((saved_root.root.clone(), index.name.clone()))
+        Some((
+            saved_root.root.clone(),
+            saved_root.identity_keys.len(),
+            index.name.clone(),
+            index.args.len(),
+        ))
     })() else {
         return Ok(None);
     };
-    let mut segments = vec![PathSegment::Root(root_name), PathSegment::Index(index_name)];
+    let mut segments = vec![
+        PathSegment::Root(root_name),
+        PathSegment::Index(index_name.clone()),
+    ];
     for arg in args {
         if arg.mode.is_some() || arg.name.is_some() {
             return Err(unsupported(
@@ -197,7 +218,108 @@ pub(crate) fn unique_index_lookup_path(
                 .ok_or_else(|| unsupported("an index key of this type", *span))?,
         ));
     }
-    Ok(Some(segments))
+    Ok(Some(UniqueIndexLookup {
+        segments,
+        identity_arity,
+        index_name,
+        remaining_key_depth: index_arg_count.saturating_sub(args.len()),
+    }))
+}
+
+pub(crate) fn unique_index_lookup_values(
+    expr: &Expression,
+    span: SourceSpan,
+    dir: Direction,
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<Value>>, RuntimeError> {
+    let Some(lookup) = unique_index_lookup(expr, env)? else {
+        return Ok(None);
+    };
+    if lookup.remaining_key_depth > 0 {
+        return collect_unique_index_values(
+            &lookup.segments,
+            lookup.remaining_key_depth,
+            &lookup,
+            dir,
+            span,
+            env,
+        )
+        .map(Some);
+    }
+    read_unique_index_value(&lookup.segments, &lookup, span, env)
+        .map(|value| Some(value.map_or_else(Vec::new, |value| vec![value])))
+}
+
+fn collect_unique_index_values(
+    prefix: &[PathSegment],
+    depth: usize,
+    lookup: &UniqueIndexLookup,
+    dir: Direction,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    let children = {
+        let store = env.store.borrow();
+        let encoded = encode_path(prefix);
+        match dir {
+            Direction::Ascending => store.child_keys(&encoded),
+            Direction::Descending => store.child_keys_rev(&encoded),
+        }
+        .map_err(|error| error.located(span))?
+    };
+    let mut values = Vec::new();
+    for child in children {
+        let ChildSegment::Key(key) = child else {
+            continue;
+        };
+        let mut path = prefix.to_vec();
+        path.push(PathSegment::IndexKey(key));
+        if depth <= 1 {
+            if let Some(value) = read_unique_index_value(&path, lookup, span, env)? {
+                values.push(value);
+            }
+        } else {
+            values.extend(collect_unique_index_values(
+                &path,
+                depth - 1,
+                lookup,
+                dir,
+                span,
+                env,
+            )?);
+        }
+    }
+    Ok(values)
+}
+
+fn read_unique_index_value(
+    segments: &[PathSegment],
+    lookup: &UniqueIndexLookup,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    let bytes = env
+        .store
+        .borrow()
+        .read(&encode_path(segments))
+        .map_err(|error| error.located(span))?;
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let identity =
+        crate::write::decode_identity_arity(&bytes, lookup.identity_arity).ok_or_else(|| {
+            RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_TYPE,
+                message: format!(
+                    "the `{}` index entry did not decode to an identity",
+                    lookup.index_name
+                ),
+                span,
+            }
+        })?;
+    Ok(Some(identity_value(identity)))
 }
 
 /// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,
@@ -214,81 +336,50 @@ pub(crate) fn eval_assert(
     match op {
         "isTrue" | "isFalse" => {
             let [arg] = args else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: format!("`std::assert::{op}` takes one boolean"),
+                return Err(type_error(
+                    &format!("`std::assert::{op}` takes one boolean"),
                     span,
-                });
+                ));
             };
             let Value::Bool(actual) = eval_expr(&arg.value, env)? else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: format!("`std::assert::{op}` takes a boolean"),
+                return Err(type_error(
+                    &format!("`std::assert::{op}` takes a boolean"),
                     span,
-                });
+                ));
             };
             if actual != (op == "isTrue") {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_ASSERT,
-                    message: format!("assertion failed: {op}({actual})"),
+                return Err(raise_fault(
+                    RUN_ASSERT,
+                    format!("assertion failed: {op}({actual})"),
                     span,
-                });
+                ));
             }
             Ok(None)
         }
         "absent" => {
             let [arg] = args else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: "`std::assert::absent` takes one path".into(),
-                    span,
-                });
+                return Err(type_error("`std::assert::absent` takes one path", span));
             };
             if saved_path_present(&arg.value, span, env)? {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_ASSERT,
-                    message: "assertion failed: expected the path to be absent".into(),
+                return Err(raise_fault(
+                    RUN_ASSERT,
+                    "assertion failed: expected the path to be absent".into(),
                     span,
-                });
+                ));
             }
             Ok(None)
         }
         "fail" => {
             let [arg] = args else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: "`std::assert::fail` takes one message".into(),
-                    span,
-                });
+                return Err(type_error("`std::assert::fail` takes one message", span));
             };
             let Value::Str(message) = eval_expr(&arg.value, env)? else {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: "`std::assert::fail` takes a string message".into(),
+                return Err(type_error(
+                    "`std::assert::fail` takes a string message",
                     span,
-                });
+                ));
             };
-            Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_ASSERT,
-                message,
-                span,
-            })
+            Err(raise_fault(RUN_ASSERT, message, span))
         }
         other => Err(unsupported(&format!("std::assert::{other}"), span)),
     }
@@ -483,6 +574,7 @@ pub(crate) fn eval_std(
 }
 
 /// Convert a string argument to bytes (`bytes(text)`): the string's UTF-8 bytes.
+/// A bytes value is already bytes and passes through unchanged.
 pub(crate) fn eval_bytes_conversion(
     args: &[Argument],
     span: SourceSpan,
@@ -493,18 +585,16 @@ pub(crate) fn eval_bytes_conversion(
     };
     match eval_expr(&arg.value, env)? {
         Value::Str(text) => Ok(Value::Bytes(text.into_bytes())),
-        _ => Err(type_error("`bytes` converts a string to bytes", span)),
+        Value::Bytes(bytes) => Ok(Value::Bytes(bytes)),
+        _ => Err(conversion_error("bytes", span)),
     }
 }
 
 /// Evaluate a scalar conversion builtin (`int`/`decimal`/`string`/`bool`/`date`/
-/// `instant`/`duration`): coerce a dynamically-typed value to the named type.
-/// `bool(...)` accepts the canonical boolean values
-/// `{false, true, 0, 1}` from a bool, int, or string; `int(...)`/`decimal(...)`
-/// parse canonical numeric text from a string (and raise a typed numeric error on
-/// malformed input). The remaining conversions validate that the value already
-/// has the named type (the `unknown` → concrete bridge); temporal text parsing
-/// lives in `std::clock`, not here.
+/// `instant`/`duration`/`ErrorCode`): coerce a dynamically-typed value to the
+/// named type.
+/// Text forms with a scalar codec go through the same canonical path as saved
+/// values, while `ErrorCode` validates the documented lowercase dotted form.
 pub(crate) fn eval_conversion(
     name: &str,
     args: &[Argument],
@@ -519,51 +609,159 @@ pub(crate) fn eval_conversion(
         "bool" => convert_to_bool(value, span),
         "int" => convert_to_int(value, span),
         "decimal" => convert_to_decimal(value, span),
-        "string" if matches!(value, Value::Str(_)) => Ok(value),
-        "date" if matches!(value, Value::Date(_)) => Ok(value),
-        "instant" if matches!(value, Value::Instant(_)) => Ok(value),
-        "duration" if matches!(value, Value::Duration(_)) => Ok(value),
+        "string" => convert_to_string(value, span),
+        "date" => convert_to_canonical_scalar(value, ScalarType::Date, "date", span),
+        "instant" => convert_to_canonical_scalar(value, ScalarType::Instant, "instant", span),
+        "duration" => convert_to_canonical_scalar(value, ScalarType::Duration, "duration", span),
+        "ErrorCode" => convert_to_error_code(value, span),
         _ => Err(conversion_error(name, span)),
     }
 }
 
-/// Coerce to a bool: a bool is itself; an int or string is accepted only as a
-/// canonical boolean value (`0`/`false` → `false`, `1`/`true` → `true`).
+/// Coerce to a bool: a bool is itself; an int is accepted only as a canonical
+/// boolean value (`0` → `false`, `1` → `true`).
 pub(crate) fn convert_to_bool(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     let result = match &value {
         Value::Bool(_) => return Ok(value),
         Value::Int(0) => false,
         Value::Int(1) => true,
-        Value::Str(text) if text == "false" || text == "0" => false,
-        Value::Str(text) if text == "true" || text == "1" => true,
         _ => return Err(conversion_error("bool", span)),
     };
     Ok(Value::Bool(result))
 }
 
 /// Coerce to an int: an int is itself; a string parses as a canonical `i64`
-/// (a malformed or out-of-range value is a typed numeric error).
+/// and an integral decimal converts when it fits in `i64`.
 pub(crate) fn convert_to_int(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     match value {
         Value::Int(_) => Ok(value),
-        Value::Str(text) => text
-            .parse::<i64>()
+        Value::Str(text) => match decode_value(text.as_bytes(), ScalarType::Int) {
+            Some(SavedValue::Int(n)) => Ok(Value::Int(n)),
+            _ => Err(conversion_error("int", span)),
+        },
+        Value::Decimal(decimal) if decimal.scale() == 0 => i64::try_from(decimal.coefficient())
             .map(Value::Int)
             .map_err(|_| conversion_error("int", span)),
         _ => Err(conversion_error("int", span)),
     }
 }
 
-/// Coerce to a decimal: a decimal is itself; a string parses as canonical decimal
-/// text (a malformed or out-of-envelope value is a typed numeric error).
+/// Coerce to a decimal: a decimal is itself; an integer becomes an exact decimal;
+/// a string parses as canonical decimal text.
 pub(crate) fn convert_to_decimal(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     match value {
         Value::Decimal(_) => Ok(value),
-        Value::Str(text) => Decimal::parse(&text)
+        Value::Int(n) => Decimal::from_parts(i128::from(n), 0)
             .map(Value::Decimal)
             .ok_or_else(|| conversion_error("decimal", span)),
+        Value::Str(text) => match decode_value(text.as_bytes(), ScalarType::Decimal) {
+            Some(SavedValue::Decimal(decimal)) => Ok(Value::Decimal(decimal)),
+            _ if canonical_decimal_text_shape(&text) => Err(decimal_overflow(span)),
+            _ => Err(conversion_error("decimal", span)),
+        },
         _ => Err(conversion_error("decimal", span)),
     }
+}
+
+fn canonical_decimal_text_shape(text: &str) -> bool {
+    let text = text.strip_prefix('-').unwrap_or(text);
+    if text.is_empty() || text == "0" {
+        return false;
+    }
+    let (integer, fraction) = text
+        .split_once('.')
+        .map_or((text, None), |(integer, fraction)| {
+            (integer, Some(fraction))
+        });
+    if !canonical_integer_part(integer) {
+        return false;
+    }
+    let Some(fraction) = fraction else {
+        return true;
+    };
+    !fraction.is_empty()
+        && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        && !fraction.ends_with('0')
+}
+
+fn canonical_integer_part(text: &str) -> bool {
+    match text.as_bytes() {
+        [b'0'] => true,
+        [first, rest @ ..] if first.is_ascii_digit() && *first != b'0' => {
+            rest.iter().all(|byte| byte.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+/// Coerce to a string from scalar values that have a canonical text form.
+pub(crate) fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let text = match value {
+        Value::Str(text) => text,
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Decimal(decimal) => decimal.to_text(),
+        Value::Bytes(bytes) => {
+            String::from_utf8(bytes).map_err(|_| conversion_error("string", span))?
+        }
+        Value::Date(days) => canonical_value_text(SavedValue::Date(days), span)?,
+        Value::Instant(nanos) => canonical_value_text(SavedValue::Instant(nanos), span)?,
+        Value::Duration(nanos) => canonical_value_text(SavedValue::Duration(nanos), span)?,
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => {
+            return Err(conversion_error("string", span));
+        }
+    };
+    Ok(Value::Str(text))
+}
+
+fn convert_to_error_code(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Str(text) if is_error_code_text(&text) => Ok(Value::Str(text)),
+        _ => Err(conversion_error("ErrorCode", span)),
+    }
+}
+
+fn is_error_code_text(text: &str) -> bool {
+    let mut saw_dot = false;
+    let mut segment_has_char = false;
+    for byte in text.bytes() {
+        match byte {
+            b'.' => {
+                if !segment_has_char {
+                    return false;
+                }
+                saw_dot = true;
+                segment_has_char = false;
+            }
+            b'a'..=b'z' | b'0'..=b'9' | b'_' => {
+                segment_has_char = true;
+            }
+            _ => return false,
+        }
+    }
+    saw_dot && segment_has_char
+}
+
+fn convert_to_canonical_scalar(
+    value: Value,
+    ty: ScalarType,
+    name: &str,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Date(_) if ty == ScalarType::Date => Ok(value),
+        Value::Instant(_) if ty == ScalarType::Instant => Ok(value),
+        Value::Duration(_) if ty == ScalarType::Duration => Ok(value),
+        Value::Str(text) => decode_value(text.as_bytes(), ty)
+            .map(saved_value_to_value)
+            .ok_or_else(|| conversion_error(name, span)),
+        _ => Err(conversion_error(name, span)),
+    }
+}
+
+fn canonical_value_text(value: SavedValue, span: SourceSpan) -> Result<String, RuntimeError> {
+    let bytes = encode_value(&value).map_err(|error| error.located(span))?;
+    Ok(String::from_utf8(bytes).expect("canonical scalar text is UTF-8"))
 }
 
 /// Evaluate `arg` and pull out one expected value shape, or a type error naming
@@ -655,13 +853,7 @@ pub(crate) fn eval_text(
 /// and the `i64::MIN % -1` overflow.
 pub(crate) fn int_remainder(a: i64, b: i64, span: SourceSpan) -> Result<i64, RuntimeError> {
     if b == 0 {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_DIVIDE_BY_ZERO,
-            message: "integer remainder by zero".into(),
-            span,
-        });
+        return Err(divide_by_zero("integer remainder by zero", span));
     }
     a.checked_rem(b).ok_or_else(|| overflow(span))
 }

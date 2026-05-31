@@ -32,8 +32,9 @@ pub use enums::resolve_match_enums;
 // resolvable across the boundary without per-call qualification.
 pub(crate) use checks::*;
 pub(crate) use enums::{
-    check_is, check_match, collect_enum_names, join_or, normalize_program_enum_types,
-    normalize_program_enum_types_against, resolve_enum_member_path, resolve_type,
+    check_is, check_match, collect_enum_names, join_or, normalize_program_named_types,
+    normalize_program_named_types_against, private_enum_type_reference, resolve_enum_member_path,
+    resolve_type,
 };
 pub(crate) use infer::*;
 pub use marrow_schema::{IndexSchema, ResourceSchema};
@@ -97,6 +98,10 @@ pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// so it is not callable from another module. Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: the name resolves, the visibility does not.
 pub const CHECK_PRIVATE_FUNCTION: &str = "check.private_function";
+/// A cross-module enum reference names an enum that exists but is not `pub`.
+/// Distinct from [`CHECK_UNKNOWN_TYPE`] and [`CHECK_UNKNOWN_ENUM_MEMBER`]: the
+/// enum resolves, the visibility does not.
+pub const CHECK_PRIVATE_ENUM: &str = "check.private_enum";
 /// A bare call names a `pub` function reachable in two or more modules, so the
 /// bare name cannot pick one — it must be qualified (`module::fn`). Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: candidates exist, the bare spelling is ambiguous.
@@ -113,6 +118,12 @@ pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_sing
 /// single key position to seek). The runtime would reject these with an
 /// uncatchable `run.unsupported` fault; the checker catches it before a run.
 pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
+/// `values`/`entries` is applied to an address-only collection such as a
+/// non-unique index branch. These shapes are valid for key traversal, but they do
+/// not have materialized values distinct from their keys.
+pub const CHECK_COLLECTION_UNSUPPORTED: &str = "check.collection_unsupported";
+/// A `lock` target is not a saved root, record, or subtree.
+pub const CHECK_LOCK_TARGET: &str = "check.lock_target";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
@@ -124,6 +135,13 @@ pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// wrong-direction step that would never run, or a step appears on a non-range
 /// iterable.
 pub const CHECK_RANGE: &str = "check.range";
+/// A range expression is used as an ordinary value. Ranges only exist as `for`
+/// iterables.
+pub const CHECK_RANGE_VALUE: &str = "check.range_value";
+/// A `throw` operand is known not to be an `Error` value.
+pub const CHECK_THROW_TYPE: &str = "check.throw_type";
+/// A `try` block has neither a `catch` nor a `finally` clause.
+pub const CHECK_TRY_HANDLER: &str = "check.try_handler";
 /// A qualified name `Enum::member` names a known enum but not one of its members.
 pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
 /// A bare `Enum::member` literal names a member that exists under more than one
@@ -253,7 +271,7 @@ pub fn check_project_with_sources(
     config: &ProjectConfig,
     sources: &ProjectSources,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    analyze_project(project_root, config, sources)
+    analysis::analyze_source_project(project_root, config, sources)
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
@@ -285,6 +303,16 @@ fn resource_module<'p>(program: &'p CheckedProgram, name: &str) -> &'p str {
                 .any(|resource| resource.name == name)
         })
         .map_or("", |module| module.name.as_str())
+}
+
+fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<String, bool> {
+    file.declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Enum(decl) => Some((decl.name.clone(), decl.public)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The qualified name of the program module whose source is `file`, if any. The
@@ -343,29 +371,31 @@ fn is_builtin_call(segments: &[String]) -> bool {
         // The single-name builtins, grouped by purpose. Each
         // dispatches before user-function resolution at runtime, so none is ever a
         // declared program function.
-        [name] => {
-            matches!(
-                name.as_str(),
-                // presence and reads
-                "exists"
-                // tree traversal
-                | "keys" | "values" | "entries" | "count"
-                // ordered navigation
-                | "reversed" | "next" | "prev"
-                // sequence updates and id allocation
-                | "append" | "nextId"
-                // write and print
-                | "write" | "print"
-                // error constructor
-                | "Error" // conversions: the nine storable scalars, by canonical name.
-            ) || ScalarType::from_scalar_name(name).is_some()
-        }
+        [name] => is_builtin_name(name),
         // A `std::module::op` builtin must name a real std module, mirroring
         // import resolution (`is_std_module`/`std_modules`); an unknown submodule
         // is not a builtin, so it is reported like a rejected `use std::bogus`.
         [first, module, _] => first == "std" && std_modules().contains(&module.as_str()),
         _ => false,
     }
+}
+
+fn is_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        // presence and reads
+        "exists"
+        // tree traversal
+        | "keys" | "values" | "entries" | "count"
+        // ordered navigation
+        | "reversed" | "next" | "prev"
+        // sequence updates and id allocation
+        | "append" | "nextId"
+        // write and print
+        | "write" | "print"
+        // error constructor
+        | "Error" // conversions: the nine storable scalars, by canonical name.
+    ) || ScalarType::from_scalar_name(name).is_some()
 }
 
 /// The return type of a single-name data builtin: `exists(path): bool` and
@@ -448,23 +478,42 @@ pub fn check_tests(
     config: &ProjectConfig,
     project: &CheckedProgram,
 ) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
-    let files = discover_test_modules(project_root, config)?;
+    check_tests_with_sources(project_root, config, project, &ProjectSources::new())
+}
+
+/// Like [`check_tests`], but uses overlaid source text for selected test files and
+/// includes overlaid test files that match the configured `tests` patterns even
+/// when they are not on disk yet.
+pub fn check_tests_with_sources(
+    project_root: &Path,
+    config: &ProjectConfig,
+    project: &CheckedProgram,
+    sources: &ProjectSources,
+) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
+    let mut files = discover_test_modules(project_root, config)?;
+    for path in sources.paths() {
+        if let Some(file) = marrow_project::test_module_file(project_root, config, path) {
+            files.push(file);
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
     let mut report = CheckReport::default();
     let mut modules = Vec::new();
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
         Vec::new();
 
     for file in &files {
-        let Some(CheckedFile {
+        let Some(source) = read_source(&file.path, sources, &mut report.diagnostics) else {
+            continue;
+        };
+        let CheckedFile {
             parsed,
             resources,
             enums,
             functions,
             constants,
-        }) = check_file(&file.path, &mut report.diagnostics)
-        else {
-            continue;
-        };
+        } = check_file_source(&file.path, &source, &mut report.diagnostics);
 
         // A test file is a script: it is named from its path, never from a
         // declared `module`, so it can never shadow or duplicate a project
@@ -484,6 +533,7 @@ pub fn check_tests(
                 functions,
                 resources,
                 enums,
+                enum_public: enum_visibility(&parsed.file),
             });
         }
         parsed_files.push((file, parsed));
@@ -515,13 +565,12 @@ pub fn check_tests(
     let mut combined = CheckedProgram {
         modules: project.modules.iter().cloned().chain(modules).collect(),
     };
-    // Stamp cross-module enum signature slots in the test modules with their true
-    // owner — resolved against the combined program — before the type pass reads
-    // them, so a test's argument against a qualified or foreign enum parameter is
-    // gated on the parameter's real identity rather than a per-file `Unknown`. The
-    // project modules carry the project's own normalized signatures already.
+    // Stamp cross-module named-type signature slots in the test modules with their
+    // true owner — resolved against the combined program — before the type pass
+    // reads them. The project modules carry the project's own normalized
+    // signatures already.
     let resolver = combined.clone();
-    normalize_program_enum_types_against(&mut combined, &resolver, &parsed_files);
+    normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
     let project_resources: HashSet<String> = combined
         .modules
         .iter()
@@ -568,15 +617,6 @@ struct CheckedFile {
     enums: Vec<marrow_schema::EnumSchema>,
     functions: Vec<CheckedFunction>,
     constants: Vec<CheckedConst>,
-}
-
-/// Read one source file from disk, then parse and structurally check it. Returns
-/// `None` if the file cannot be read (an `io.read` diagnostic is recorded). This
-/// is the disk path used by [`check_tests`]; [`analyze_project`] reads through an
-/// overlay instead.
-fn check_file(file_path: &Path, diagnostics: &mut Vec<CheckDiagnostic>) -> Option<CheckedFile> {
-    let source = read_source(file_path, &ProjectSources::new(), diagnostics)?;
-    Some(check_file_source(file_path, &source, diagnostics))
 }
 
 /// Resolve a file's text: the overlay entry for `file_path` if `sources` carries
@@ -671,7 +711,7 @@ fn check_file_source(
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
-                rules::check_function_body(file_path, &function.body, diagnostics);
+                rules::check_function_body(file_path, function, diagnostics);
                 functions.push(checked_function(function, names));
             }
             marrow_syntax::Declaration::Resource(resource) => {
@@ -718,6 +758,7 @@ fn check_file_source(
                         .ty
                         .as_ref()
                         .map(|ty| MarrowType::resolve(ty, names)),
+                    value: constant.value.clone(),
                     span: constant.span,
                 });
             }
@@ -966,10 +1007,22 @@ fn check_duplicate_declarations(
     introduced.sort_by_key(|(_, span, _)| (span.line, span.start_byte));
 
     let mut first_seen: HashMap<&str, SourceSpan> = HashMap::new();
-    for (name, span, _kind) in &introduced {
+    for (name, span, kind) in &introduced {
         // The parser leaves a failed declaration with an empty name; do not
         // treat those as colliding with each other.
         if name.is_empty() {
+            continue;
+        }
+        if *kind != "import" && is_builtin_name(name) {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_DUPLICATE_DECLARATION,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "`{name}` is a builtin name and cannot be used as a module-level {kind}"
+                ),
+                span: *span,
+            });
             continue;
         }
         match first_seen.get(name) {

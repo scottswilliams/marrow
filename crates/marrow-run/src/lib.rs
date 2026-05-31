@@ -38,7 +38,9 @@ pub(crate) use marrow_schema::{
 pub(crate) use marrow_store::Decimal;
 pub(crate) use marrow_store::backend::{Backend, Presence, StoreError};
 pub(crate) use marrow_store::mem::MemStore;
-pub(crate) use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+pub(crate) use marrow_store::path::{
+    ChildSegment, PathSegment, SavedKey, decode_path, encode_path,
+};
 pub(crate) use marrow_store::value::{
     SavedValue, ScalarType, ValueError, decode_value, encode_value,
 };
@@ -49,10 +51,12 @@ pub(crate) use marrow_syntax::{
 pub(crate) use write::{
     ResourceValue, SuppliedIdentity, WRITE_RAW_DECLARED_FIELD, WRITE_RAW_REQUIRES_MAINTENANCE,
     WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity,
-    next_id, next_layer_pos, plan_field_delete, plan_field_write, plan_identity_field_write,
-    plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_nested_field_write, plan_nested_identity_field_write,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    next_id, next_layer_pos, next_nested_layer_pos, plan_field_delete, plan_field_write,
+    plan_identity_field_write, plan_layer_group_write, plan_layer_identity_leaf_write,
+    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
+    plan_nested_identity_field_write, plan_nested_layer_identity_leaf_write,
+    plan_nested_layer_leaf_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
+    validate_required_fields_after_field_write,
 };
 
 pub mod base64;
@@ -89,9 +93,10 @@ pub(crate) use write_dispatch::*;
 
 pub use call::{evaluate_function, run_entry, run_entry_with_debugger, run_entry_with_host};
 pub use error::{
-    RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE,
-    RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
+    RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO,
+    RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_STORE,
+    RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION,
+    RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{Frame, Host, StepHook};
 pub use schema_query::{SavedPathClass, classify_saved_path, identity_leaf_key_mismatch};

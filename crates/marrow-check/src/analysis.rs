@@ -25,11 +25,28 @@ pub struct AnalyzedFile {
     pub parsed: marrow_syntax::ParsedSource,
 }
 
-/// The IDE-grade analysis core shared by [`check_project`]: discover, read (from
-/// `sources` overlay or disk), parse, and check every `.mw` file, returning the
-/// diagnostics and best-effort program plus every parsed file (error files
-/// included). Fails only when a source root cannot be walked.
+/// The IDE-grade analysis core: discover, read (from `sources` overlay or disk),
+/// parse, and check source-root files plus configured test files, returning the
+/// diagnostics and best-effort source program plus every parsed source file
+/// (error files included). Fails only when a configured source or test directory
+/// cannot be walked.
 pub fn analyze_project(
+    project_root: &Path,
+    config: &ProjectConfig,
+    sources: &ProjectSources,
+) -> Result<AnalysisSnapshot, DiscoverError> {
+    let mut snapshot = analyze_source_project(project_root, config, sources)?;
+    if !snapshot.report.has_errors() {
+        let (test_report, _test_modules) =
+            crate::check_tests_with_sources(project_root, config, &snapshot.program, sources)?;
+        snapshot.report.diagnostics.extend(test_report.diagnostics);
+    }
+    Ok(snapshot)
+}
+
+/// Source-root-only analysis shared by [`check_project`]. Runtime entry points use
+/// this so configured test files do not block running the checked source program.
+pub(crate) fn analyze_source_project(
     project_root: &Path,
     config: &ProjectConfig,
     sources: &ProjectSources,
@@ -176,6 +193,7 @@ pub fn analyze_project(
                                 functions,
                                 resources,
                                 enums,
+                                enum_public: enum_visibility(&parsed.file),
                             });
                         }
                     }
@@ -223,6 +241,7 @@ pub fn analyze_project(
                 functions,
                 resources,
                 enums,
+                enum_public: enum_visibility(&parsed.file),
             });
         }
 
@@ -270,13 +289,9 @@ pub fn analyze_project(
         .collect();
     let project_enums = collect_enum_names(&parsed_files);
 
-    // Stamp each cross-module enum signature slot with its enum's true owner, now
-    // that the whole program is known, before any pass reads parameter types. The
-    // argument check reads each callee's stored parameter type to decide whether to
-    // run the nominal enum gate; a qualified or foreign enum parameter resolves to
-    // `Unknown` per-file, so it must be normalized before the type pass runs or a
-    // wrong-enum argument slips through unchecked.
-    normalize_program_enum_types(&mut program, &parsed_files);
+    // Stamp each cross-module named-type signature slot with its true owner, now
+    // that the whole program is known, before any pass reads parameter types.
+    normalize_program_named_types(&mut program, &parsed_files);
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     check_resolved_files(

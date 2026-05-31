@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn temp_dir(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -45,10 +45,34 @@ const SRC: &str = "module app\n\
                    \x20\x20\x20\x20print($\"value={^counter(1).value}\")\n";
 
 fn native_project(name: &str) -> PathBuf {
+    native_project_with_source(name, SRC)
+}
+
+fn native_project_with_source(name: &str, source: &str) -> PathBuf {
     let root = temp_dir(name);
     write(&root, "marrow.json", CONFIG);
-    write(&root, "src/app.mw", SRC);
+    write(&root, "src/app.mw", source);
     root
+}
+
+fn many_counter_records_source(count: usize) -> String {
+    let mut source = String::from(
+        "module app\n\
+         \n\
+         resource Counter at ^counter(id: int)\n\
+         \x20\x20\x20\x20required value: int\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var c: Counter\n",
+    );
+    for id in 0..count {
+        source.push_str(&format!(
+            "\x20\x20\x20\x20c.value = {id}\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^counter({id}) = c\n"
+        ));
+    }
+    source
 }
 
 #[test]
@@ -100,6 +124,69 @@ fn restore_refuses_a_non_empty_target() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert!(stderr.contains("restore.not_empty"), "{stderr}");
+}
+
+#[test]
+fn backup_reports_missing_archive_parent_as_write_error() {
+    let project = native_project("backup-missing-parent");
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project
+        .join("missing")
+        .join("parent")
+        .join("data.archive")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let output = marrow(&["backup", &dir, &archive]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("io.write"), "{stderr}");
+    assert!(stderr.contains("failed to write"), "{stderr}");
+    assert!(!stderr.contains("io.read"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn backup_reports_archive_body_write_failure_as_write_error() {
+    let source = many_counter_records_source(3000);
+    let project = native_project_with_source("backup-body-write-failure", &source);
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("archive.fifo");
+    let arc = archive.to_str().unwrap().to_string();
+    let seeded = marrow(&["run", "--entry", "app::seed", &dir]);
+    assert_eq!(seeded.status.code(), Some(0), "{seeded:?}");
+    let mkfifo = Command::new("mkfifo")
+        .arg(&archive)
+        .output()
+        .expect("run mkfifo");
+    assert!(mkfifo.status.success(), "{mkfifo:?}");
+    let mut reader = Command::new("dd")
+        .arg(format!("if={arc}"))
+        .arg("bs=20")
+        .arg("count=1")
+        .arg("of=/dev/null")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start fifo reader");
+
+    let output = marrow(&["backup", &dir, &arc]);
+    let reader_status = reader.wait().expect("wait for fifo reader");
+    fs::remove_dir_all(&project).ok();
+
+    assert!(
+        reader_status.success(),
+        "fifo reader should consume exactly the archive header"
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("io.write"), "{stderr}");
+    assert!(stderr.contains("failed to write"), "{stderr}");
+    assert!(!stderr.contains("store.io"), "{stderr}");
+    assert!(!stderr.contains("io.read"), "{stderr}");
 }
 
 #[test]

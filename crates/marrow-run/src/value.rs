@@ -27,14 +27,15 @@ pub enum Value {
     /// An ordered, in-memory `sequence[T]` value, e.g. from `std::text::split`.
     /// Iterated by a `for` loop; not itself a scalar saved value.
     Sequence(Vec<Value>),
+    LocalTree(Vec<LocalTreeEntry>),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
     Resource(Vec<(String, Value)>),
-    /// A resource identity (`Book::Id(17)`, `Enrollment::Id(...)`): its lowered
-    /// key segments in declared identity-key order. Produced by an identity
-    /// constructor and spliced back into the saved path at a keyed lookup. It is
-    /// opaque — not a saved field value, not rendered, not iterated.
+    /// A composite resource identity (`Enrollment::Id(...)`): its lowered key
+    /// segments in declared identity-key order. Single-key identities use their
+    /// key's scalar value, matching `nextId` and root traversal. Composite
+    /// identities use this wrapper so a keyed lookup can splice all segments.
     ///
     /// The owning resource is not carried here: two identities with the same key
     /// scalars are byte-identical, so `Book::Id(1)` and `Magazine::Id(1)` are one
@@ -64,6 +65,7 @@ impl Value {
             Value::Duration(n) => format!("duration({n})"),
             Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
+            Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
             // Preview the present field names, in schema order, without recursing
             // into their values (which could be large or nested resources).
             Value::Resource(fields) => {
@@ -112,6 +114,22 @@ pub(crate) fn saved_key_to_value(key: SavedKey) -> Option<Value> {
     }
 }
 
+/// The runtime value for an identity's lowered keys. Single-key identities use
+/// the key's scalar shape, matching `nextId` and root traversal; composite
+/// identities need the opaque wrapper so they can splice all key segments later.
+pub(crate) fn identity_value(keys: Vec<SavedKey>) -> Value {
+    match keys.as_slice() {
+        [SavedKey::Int(n)] => Value::Int(*n),
+        [SavedKey::Bool(b)] => Value::Bool(*b),
+        [SavedKey::Str(s)] => Value::Str(s.clone()),
+        [SavedKey::Bytes(bytes)] => Value::Bytes(bytes.clone()),
+        [SavedKey::Instant(n)] => Value::Instant(*n),
+        [SavedKey::Date(d)] => Value::Date(*d),
+        [SavedKey::Duration(n)] => Value::Duration(*n),
+        _ => Value::Identity(keys),
+    }
+}
+
 /// Convert a runtime value to the saved value a managed write stores. Total over
 /// the scalar values; trees and identities have no scalar saved form. The write
 /// planner checks the value against the field's declared type.
@@ -125,9 +143,11 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Duration(n) => SavedValue::Duration(n),
         Value::Decimal(d) => SavedValue::Decimal(d),
         Value::Bytes(b) => SavedValue::Bytes(b),
-        // A whole sequence or resource is a tree, not a scalar saved value; an
-        // identity is opaque and is not stored as a field value.
-        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => return None,
+        // A whole local tree, sequence, or resource is not a scalar saved value;
+        // an identity is opaque and is not stored as a field value.
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => {
+            return None;
+        }
     })
 }
 
@@ -171,18 +191,25 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
         // An identity is not a single key — lowering splices its segments in
         // before reaching here.
         Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
+        Value::LocalTree(_) => None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTreeEntry {
+    pub keys: Vec<SavedKey>,
+    pub value: Value,
 }
 
 /// Decode a stored leaf's bytes to its runtime value by the leaf's kind: a scalar
 /// leaf through the canonical scalar codec, a typed-reference leaf through
-/// `decode_identity` against the referenced identity arity, yielding a
-/// [`Value::Identity`]. `None` when the bytes are not a canonical form for the leaf.
+/// `decode_identity` against the referenced identity arity. `None` when the bytes
+/// are not a canonical form for the leaf.
 pub(crate) fn decode_leaf(bytes: &[u8], leaf: &LeafKind) -> Option<Value> {
     match leaf {
         LeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
         LeafKind::Identity { arity, .. } => {
-            decode_identity_arity(bytes, *arity).map(Value::Identity)
+            decode_identity_arity(bytes, *arity).map(identity_value)
         }
     }
 }
@@ -213,6 +240,7 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Decimal(d) => d.to_text(),
         Value::Bytes(_) => return Err(unsupported("rendering a bytes value", span)),
         Value::Sequence(_) => return Err(unsupported("rendering a sequence value", span)),
+        Value::LocalTree(_) => return Err(unsupported("rendering a local tree value", span)),
         Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
         Value::Date(_) => return Err(unsupported("rendering a date value", span)),
         Value::Duration(_) => return Err(unsupported("rendering a duration value", span)),

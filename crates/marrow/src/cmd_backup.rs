@@ -4,6 +4,8 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use marrow_store::backend::StoreError;
+
 use crate::{CheckFormat, load_config, open_owned_store, report_io_error, report_simple_error};
 
 /// Parse exactly two positional paths (a project directory and an archive) for
@@ -39,6 +41,28 @@ fn plural(count: u64) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
+fn report_archive_write_error(archive: &str, error: &std::io::Error) {
+    report_archive_write_message(archive, &error.to_string());
+}
+
+fn report_archive_write_message(archive: &str, message: &str) {
+    report_simple_error(
+        "io.write",
+        &format!("failed to write {archive}: {message}"),
+        CheckFormat::Text,
+    );
+}
+
+fn report_backup_error(archive: &str, error: StoreError) {
+    match error {
+        StoreError::Io {
+            op: "backup",
+            message,
+        } => report_archive_write_message(archive, &message),
+        error => report_simple_error(error.code(), &error.to_string(), CheckFormat::Text),
+    }
+}
+
 /// Back up a project's saved data to a portable archive:
 /// `marrow backup <projectdir> <archive>`.
 pub(crate) fn backup(args: &[String]) -> ExitCode {
@@ -57,7 +81,7 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     let file = match std::fs::File::create(&archive) {
         Ok(file) => file,
         Err(error) => {
-            report_io_error(&archive, &error, CheckFormat::Text);
+            report_archive_write_error(&archive, &error);
             return ExitCode::FAILURE;
         }
     };
@@ -65,12 +89,12 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     let count = match marrow_store::archive::write_archive(&*store, &mut writer) {
         Ok(count) => count,
         Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            report_backup_error(&archive, error);
             return ExitCode::FAILURE;
         }
     };
     if let Err(error) = writer.flush() {
-        report_io_error(&archive, &error, CheckFormat::Text);
+        report_archive_write_error(&archive, &error);
         return ExitCode::FAILURE;
     }
     println!("backed up {count} record{} to {archive}", plural(count));

@@ -49,6 +49,27 @@ choose memory-optimized structures for common access patterns. Code still
 depends on Marrow's typed tree behavior, not on a particular in-memory data
 structure.
 
+## Nested index arguments
+
+Declared indexes currently accept identity keys and top-level fields only. A
+future extension may allow indexes to target scalar fields nested through
+unkeyed groups:
+
+```mw
+resource Book at ^books(id: int)
+    location
+        shelf: string
+
+    index byShelf(location.shelf, id)
+```
+
+That extension needs schema resolution and generated write planning to move in
+lockstep: writes to the nested field, writes to the containing group, sparse
+presence changes, rebuilds, and unique-conflict checks must all maintain the
+generated index tree. Dotted paths are the expected spelling because they name
+the containing groups. A bare leaf shorthand such as `shelf` would need an
+explicit ambiguity rule before it could become part of the language.
+
 ## Collection spellings
 
 A designed extension adds `map[K, V]` and `set[K]` as spellings for two common
@@ -114,3 +135,27 @@ reached through paths. A local or scratch `map` or `set` has no portable saved
 form, so an implementation may choose memory-optimized structures for it; code
 still depends on Marrow's typed tree behavior, not on a particular in-memory
 data structure.
+
+## Local Tree Writes
+
+Local sequence and keyed-tree variables support the same path-shaped reads and
+writes as saved trees, without saved lifetime or backend capability checks:
+
+```mw
+var tags: sequence[string]
+const first = append(tags, "fiction")
+tags(first + 1) = "paperback"
+
+var scores(playerId: string): int
+scores(playerId) = (scores(playerId) ?? 0) + 1
+```
+
+A local subscript such as `scores(playerId)` is a typed path. It can be read,
+assigned, defaulted with `??`, tested with `exists(...)`, deleted, traversed,
+or merged according to the same presence and type rules as any other tree path.
+The checker rejects keys whose static type does not match the declared layer.
+
+`append(localSequence, value)` writes one greater than the highest populated
+positive integer key in that local tree and returns the key it wrote. It skips
+holes for the same reason saved sequence append skips holes: sequence positions
+are stable tree keys, not dense array indexes.

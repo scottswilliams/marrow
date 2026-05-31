@@ -9,12 +9,13 @@ use marrow_check::{
     CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
 };
 use marrow_run::{
-    Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP,
-    RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
-    RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, SavedPathClass, Value,
-    classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
+    Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO,
+    RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE,
+    RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput,
+    SavedPathClass, Value, classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
 use marrow_schema::{compile_enum, compile_resource};
+use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_key_value, encode_path};
@@ -132,6 +133,7 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
             functions,
             resources,
             enums,
+            enum_public: HashMap::new(),
         }],
     }
 }
@@ -195,6 +197,7 @@ fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
             functions,
             resources,
             enums,
+            enum_public: HashMap::new(),
         });
     }
     CheckedProgram { modules }
@@ -276,6 +279,17 @@ fn decimal_division_rounds_half_even() {
     assert_eq!(
         run(&program, "test::f", &[]).unwrap(),
         Some(Value::Str(format!("0.{}", "3".repeat(34))))
+    );
+}
+
+#[test]
+fn decimal_multiplication_must_fit_exactly() {
+    let program = checked_program(
+        "pub fn f(): decimal\n    return 0.123456789012345678 * 0.123456789012345678\n",
+    );
+    assert_eq!(
+        run(&program, "test::f", &[]).unwrap_err().code,
+        RUN_DECIMAL_OVERFLOW
     );
 }
 
@@ -514,6 +528,71 @@ fn iterates_a_sequence_counting_its_elements() {
     assert_eq!(
         run(&program, "test::count", &[]).unwrap(),
         Some(Value::Int(4))
+    );
+}
+
+#[test]
+fn append_grows_a_local_sequence() {
+    let program = checked_program(
+        "pub fn grow(): int\n\
+         \x20   var order: sequence[int]\n\
+         \x20   const first: int = append(order, 10)\n\
+         \x20   const second: int = append(order, 20)\n\
+         \x20   var total = first * 100 + second * 10 + count(order)\n\
+         \x20   for value in order\n\
+         \x20       total = total + value\n\
+         \x20   return total\n",
+    );
+    assert_eq!(
+        run(&program, "test::grow", &[]).unwrap(),
+        Some(Value::Int(152))
+    );
+}
+
+#[test]
+fn reads_and_writes_a_local_sequence_by_position() {
+    let program = checked_program(
+        "pub fn seq_index(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(1) = xs(1) + 5\n\
+         \x20   return xs(1)\n",
+    );
+    assert_eq!(
+        run(&program, "test::seq_index", &[]).unwrap(),
+        Some(Value::Int(15))
+    );
+}
+
+#[test]
+fn reads_writes_and_iterates_a_local_keyed_tree() {
+    let program = checked_program(
+        "pub fn keyed(): int\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var total = count(scores)\n\
+         \x20   for value in values(scores)\n\
+         \x20       total = total * 10 + value\n\
+         \x20   return total + scores(\"p2\")\n",
+    );
+    assert_eq!(
+        run(&program, "test::keyed", &[]).unwrap(),
+        Some(Value::Int(340))
+    );
+}
+
+#[test]
+fn reads_and_writes_a_multi_key_local_tree() {
+    let program = checked_program(
+        "pub fn keyed(day: date): int\n\
+         \x20   var counts(day: date, category: string): int\n\
+         \x20   counts(day, \"open\") = 3\n\
+         \x20   return counts(day, \"open\")\n",
+    );
+    assert_eq!(
+        run(&program, "test::keyed", &[Value::Date(1)]).unwrap(),
+        Some(Value::Int(3))
     );
 }
 
@@ -801,12 +880,9 @@ fn temporal_conversions_validate_their_values() {
 }
 
 #[test]
-fn bool_conversion_accepts_canonical_int_and_string_forms() {
-    // `bool(...)` accepts `false`, `true`, `0`, and `1`, from both int and the
-    // canonical string forms.
-    let program = checked_program(
-        "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
-    );
+fn bool_conversion_accepts_canonical_int_forms() {
+    // `bool(...)` accepts only the canonical integer forms at runtime: 0 and 1.
+    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
     assert_eq!(
         run(&program, "test::b", &[Value::Int(0)]),
         Ok(Some(Value::Bool(false)))
@@ -815,24 +891,25 @@ fn bool_conversion_accepts_canonical_int_and_string_forms() {
         run(&program, "test::b", &[Value::Int(1)]),
         Ok(Some(Value::Bool(true)))
     );
-    assert_eq!(
-        run(&program, "test::bs", &[Value::Str("true".into())]),
-        Ok(Some(Value::Bool(true)))
-    );
-    assert_eq!(
-        run(&program, "test::bs", &[Value::Str("0".into())]),
-        Ok(Some(Value::Bool(false)))
-    );
 }
 
 #[test]
-fn bool_conversion_rejects_a_non_canonical_int() {
-    // Only `0` and `1` are canonical; `2` is a type error, not a coercion.
-    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
+fn bool_conversion_rejects_non_canonical_values() {
+    let program = checked_program(
+        "fn b(v: int): bool\n    return bool(v)\nfn bs(v: string): bool\n    return bool(v)\n",
+    );
     assert_eq!(
         run(&program, "test::b", &[Value::Int(2)]).unwrap_err().code,
         RUN_TYPE
     );
+    for raw in ["true", "false", "1", "0"] {
+        assert_eq!(
+            run(&program, "test::bs", &[Value::Str(raw.into())])
+                .unwrap_err()
+                .code,
+            RUN_TYPE
+        );
+    }
 }
 
 #[test]
@@ -860,6 +937,182 @@ fn decimal_conversion_parses_canonical_text() {
 }
 
 #[test]
+fn error_code_conversion_validates_and_returns_text() {
+    let program = checked_program(
+        "fn code(): string\n\
+         \x20   const code: ErrorCode = ErrorCode(\"x.y\")\n\
+         \x20   if code == ErrorCode(\"x.y\")\n\
+         \x20       return string(code)\n\
+         \x20   return \"mismatch\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::code", &[]),
+        Ok(Some(Value::Str("x.y".into())))
+    );
+}
+
+#[test]
+fn error_code_conversion_accepts_dynamic_text() {
+    let program =
+        checked_program("fn code(raw: string): string\n    return string(ErrorCode(raw))\n");
+    assert_eq!(
+        run(&program, "test::code", &[Value::Str("app.missing".into())]),
+        Ok(Some(Value::Str("app.missing".into())))
+    );
+}
+
+#[test]
+fn error_code_conversion_failures_are_catchable_type_errors() {
+    let program = checked_program(
+        "fn code(raw: string): string\n\
+         \x20   try\n\
+         \x20       return string(ErrorCode(raw))\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n",
+    );
+    for raw in ["Bad.Code", "missing_dot"] {
+        assert_eq!(
+            run(&program, "test::code", &[Value::Str(raw.into())]),
+            Ok(Some(Value::Str(RUN_TYPE.into())))
+        );
+    }
+}
+
+#[test]
+fn conversion_builtins_accept_documented_sources() {
+    let program = checked_program(
+        "fn intFromDecimal(v: decimal): int\n    return int(v)\n\
+         fn decimalFromInt(v: int): string\n    return string(decimal(v))\n\
+         fn stringFromInt(v: int): string\n    return string(v)\n\
+         fn stringFromDecimal(v: decimal): string\n    return string(v)\n\
+         fn stringFromBool(v: bool): string\n    return string(v)\n\
+         fn stringFromBytes(v: bytes): string\n    return string(v)\n\
+         fn bytesFromBytes(v: bytes): bytes\n    return bytes(v)\n\
+         fn dateFromText(v: string): string\n    return string(date(v))\n\
+         fn instantFromText(v: string): string\n    return string(instant(v))\n\
+         fn durationFromText(v: string): string\n    return string(duration(v))\n",
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::intFromDecimal",
+            &[Value::Decimal(Decimal::parse("42").expect("decimal"))],
+        ),
+        Ok(Some(Value::Int(42)))
+    );
+    assert_eq!(
+        run(&program, "test::decimalFromInt", &[Value::Int(42)]),
+        Ok(Some(Value::Str("42".into())))
+    );
+    assert_eq!(
+        run(&program, "test::stringFromInt", &[Value::Int(-7)]),
+        Ok(Some(Value::Str("-7".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::stringFromDecimal",
+            &[Value::Decimal(Decimal::parse("1.5").expect("decimal"))],
+        ),
+        Ok(Some(Value::Str("1.5".into())))
+    );
+    assert_eq!(
+        run(&program, "test::stringFromBool", &[Value::Bool(true)]),
+        Ok(Some(Value::Str("true".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::stringFromBytes",
+            &[Value::Bytes("snow".as_bytes().to_vec())],
+        ),
+        Ok(Some(Value::Str("snow".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::bytesFromBytes",
+            &[Value::Bytes(vec![0, 1, 2])],
+        ),
+        Ok(Some(Value::Bytes(vec![0, 1, 2])))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::dateFromText",
+            &[Value::Str("2024-02-29".into())]
+        ),
+        Ok(Some(Value::Str("2024-02-29".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::instantFromText",
+            &[Value::Str("1970-01-01T00:00:00Z".into())],
+        ),
+        Ok(Some(Value::Str("1970-01-01T00:00:00Z".into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::durationFromText",
+            &[Value::Str("PT90S".into())]
+        ),
+        Ok(Some(Value::Str("PT90S".into())))
+    );
+}
+
+#[test]
+fn documented_conversions_reject_invalid_dynamic_values() {
+    let program = checked_program(
+        "fn intFromDecimal(v: decimal): int\n    return int(v)\n\
+         fn stringFromBytes(v: bytes): string\n    return string(v)\n\
+         fn dateFromText(v: string): date\n    return date(v)\n",
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::intFromDecimal",
+            &[Value::Decimal(Decimal::parse("1.5").expect("decimal"))],
+        )
+        .unwrap_err()
+        .code,
+        RUN_TYPE
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::stringFromBytes",
+            &[Value::Bytes(vec![0xff])],
+        )
+        .unwrap_err()
+        .code,
+        RUN_TYPE
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::dateFromText",
+            &[Value::Str("2021-02-29".into())],
+        )
+        .unwrap_err()
+        .code,
+        RUN_TYPE
+    );
+}
+
+#[test]
+fn documented_conversion_failures_are_catchable_type_errors() {
+    let program = checked_program(
+        "fn code(v: bytes): string\n    try\n        return string(v)\n    catch err: Error\n        return err.code\n",
+    );
+    assert_eq!(
+        run(&program, "test::code", &[Value::Bytes(vec![0xff])]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+}
+
+#[test]
 fn a_numeric_conversion_rejects_malformed_text() {
     // Malformed text is a typed numeric error, not a silent zero.
     let program = checked_program("fn n(v: string): int\n    return int(v)\n");
@@ -876,6 +1129,36 @@ fn a_numeric_conversion_rejects_malformed_text() {
             .code,
         RUN_TYPE
     );
+}
+
+#[test]
+fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
+    let program = checked_program(
+        "fn d(v: string): decimal\n    return decimal(v)\n\
+         fn caught(v: string): string\n    try\n        var d: decimal = decimal(v)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::d", &[Value::Str("1.2.3".into())])
+            .unwrap_err()
+            .code,
+        RUN_TYPE
+    );
+    for raw in [
+        "99999999999999999999999999999999999",
+        "0.11111111111111111111111111111111111",
+    ] {
+        let error = run(&program, "test::d", &[Value::Str(raw.into())]).unwrap_err();
+        assert_eq!(error.code, RUN_DECIMAL_OVERFLOW);
+        assert!(
+            error.message.contains("decimal arithmetic exceeded"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            run(&program, "test::caught", &[Value::Str(raw.into())]),
+            Ok(Some(Value::Str(RUN_DECIMAL_OVERFLOW.into())))
+        );
+    }
 }
 
 #[test]
@@ -1020,6 +1303,8 @@ fn a_nested_group_field_round_trips() {
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20required text: string\n\
          \n\
          pub fn seed()\n\
+         \x20\x20\x20\x20^books(1).title = \"root\"\n\
+         \x20\x20\x20\x20^books(1).versions(2).title = \"version\"\n\
          \x20\x20\x20\x20^books(1).versions(2).comments(3).text = \"deep\"\n\
          \n\
          pub fn comment(): string\n\
@@ -1174,14 +1459,98 @@ fn finally_runs_on_success_and_on_throw() {
 }
 
 #[test]
-fn a_runtime_fault_in_try_is_not_caught() {
-    // `catch` handles thrown Errors, not runtime faults; the fault propagates.
+fn a_runtime_fault_in_try_is_caught() {
     let program = checked_program(
         "pub fn f(): int\n    try\n        return 1 / 0\n    catch err: Error\n        return 2\n",
     );
+    assert_eq!(run(&program, "test::f", &[]), Ok(Some(Value::Int(2))));
+}
+
+#[test]
+fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
+    let program = checked_program(
+        "pub fn overflow_code(): string\n\
+         \x20   try\n\
+         \x20       var x: int = 9223372036854775807\n\
+         \x20       x = x + 1\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn remainder_code(): string\n\
+         \x20   try\n\
+         \x20       var z: int = 0\n\
+         \x20       var y: int = 5 % z\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn parse_date_code(): string\n\
+         \x20   try\n\
+         \x20       var d: date = std::clock::parseDate(\"2023-02-29\")\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn parse_duration_code(): string\n\
+         \x20   try\n\
+         \x20       var d: duration = std::clock::parseDuration(\"nonsense\")\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn duration_conversion_code(raw: unknown): string\n\
+         \x20   try\n\
+         \x20       var d: duration = duration(raw)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn instant_range_code(): string\n\
+         \x20   try\n\
+         \x20       var text: string = std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"9999-12-31T23:59:59Z\"), 1.day))\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn decimal_overflow_code(): string\n\
+         \x20   try\n\
+         \x20       var x: decimal = 9999999999999999999999999999999999.0 * 9999999999999999999999999999999999.0\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n",
+    );
     assert_eq!(
-        run(&program, "test::f", &[]).unwrap_err().code,
-        RUN_DIVIDE_BY_ZERO
+        run(&program, "test::overflow_code", &[]),
+        Ok(Some(Value::Str(RUN_OVERFLOW.into())))
+    );
+    assert_eq!(
+        run(&program, "test::remainder_code", &[]),
+        Ok(Some(Value::Str(RUN_DIVIDE_BY_ZERO.into())))
+    );
+    assert_eq!(
+        run(&program, "test::parse_date_code", &[]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+    assert_eq!(
+        run(&program, "test::parse_duration_code", &[]),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+    assert_eq!(
+        run(
+            &program,
+            "test::duration_conversion_code",
+            &[Value::Str("nonsense".into())]
+        ),
+        Ok(Some(Value::Str(RUN_TYPE.into())))
+    );
+    assert_eq!(
+        run(&program, "test::instant_range_code", &[]),
+        Ok(Some(Value::Str("value.range".into())))
+    );
+    assert_eq!(
+        run(&program, "test::decimal_overflow_code", &[]),
+        Ok(Some(Value::Str("run.decimal_overflow".into())))
     );
 }
 
@@ -1247,28 +1616,22 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
 #[test]
 fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
     // After a caller catches a callee's throw, the pending throw is cleared, so a
-    // later genuine fault (divide-by-zero) is NOT mistaken for a catchable throw.
+    // later fault is caught with its own Error value rather than the stale throw.
     let program = checked_program(
         "fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        return 1 / 0\n    catch boom: Error\n        return 99\n    return 0\n",
     );
-    assert_eq!(
-        run(&program, "test::check", &[]).unwrap_err().code,
-        RUN_DIVIDE_BY_ZERO
-    );
+    assert_eq!(run(&program, "test::check", &[]), Ok(Some(Value::Int(99))));
 }
 
 #[test]
 fn a_throwing_finally_does_not_leak_a_pending_throw() {
     // A `finally` throwing over a call-propagated throw must not leave that throw
-    // stashed: after an outer `catch` swallows the finally throw, a later fault
-    // still faults rather than being caught with the stale error.
+    // stashed: after an outer `catch` swallows the finally throw, a later fault is
+    // caught with its own Error value rather than the stale throw.
     let program = checked_program(
         "fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        return 1 / 0\n    catch boom: Error\n        return 99\n    return 0\n",
     );
-    assert_eq!(
-        run(&program, "test::leak", &[]).unwrap_err().code,
-        RUN_DIVIDE_BY_ZERO
-    );
+    assert_eq!(run(&program, "test::leak", &[]), Ok(Some(Value::Int(99))));
 }
 
 #[test]
@@ -1352,6 +1715,18 @@ fn an_inout_parameter_mutates_a_local_resource() {
     assert_eq!(
         run(&program, "test::main", &[]),
         Ok(Some(Value::Str("Small Gods".into())))
+    );
+}
+
+#[test]
+fn an_uninitialized_qualified_resource_var_starts_empty() {
+    let program = checked_program_modules(&[
+        "module library\nresource Book\n    title: string\n",
+        "module app\nuse library\npub fn main(): string\n    var book: library::Book\n    book.title = \"draft\"\n    return book.title\n",
+    ]);
+    assert_eq!(
+        run(&program, "app::main", &[]),
+        Ok(Some(Value::Str("draft".into())))
     );
 }
 
@@ -1860,7 +2235,7 @@ fn detects_an_over_envelope_decimal_literal() {
     let f = function("fn f(): decimal\n    return 9.9999999999999999999999999999999999\n");
     let result = evaluate_function(&f, &[]);
     assert!(
-        matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
+        matches!(result, Err(ref error) if error.code == RUN_DECIMAL_OVERFLOW),
         "{result:?}"
     );
 }
@@ -2394,16 +2769,13 @@ fn values_and_entries_over_an_index_branch_are_unsupported() {
 }
 
 #[test]
-fn a_unique_index_lookup_is_not_a_collection_loop() {
+fn a_unique_index_lookup_loop_skips_an_absent_entry() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn f()\n    for id in ^books.byIsbn(\"978-0\")\n        print($\"{id}\")\n",
     );
 
-    let result = run(&program, "test::f", &[]);
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
-        "{result:?}"
-    );
+    let outcome = run_full(&program, "test::f", &[]).expect("run");
+    assert_eq!(outcome.output, "");
 }
 
 #[test]
@@ -2519,6 +2891,59 @@ fn a_field_write_updates_saved_data() {
     // Read it back through the runtime against the same store.
     let outcome = run_entry(&program, &store, "test::title_of", &[Value::Int(1)]).expect("read");
     assert_eq!(outcome.value, Some(Value::Str("Mort".into())));
+}
+
+#[test]
+fn out_of_transaction_field_write_rejects_partial_required_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n\
+         \x20   required name: string\n\
+         \x20   shelf: string\n\n\
+         fn set_shelf(id: int)\n\
+         \x20   ^items(id).shelf = \"fiction\"\n\n\
+         fn has_item(id: int): bool\n\
+         \x20   return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::set_shelf", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::has_item", &[Value::Int(1)])
+            .expect("presence check")
+            .value,
+        Some(Value::Bool(false)),
+        "the rejected sparse write must leave no partial record"
+    );
+}
+
+#[test]
+fn out_of_transaction_group_field_write_rejects_partial_required_record() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   binding\n\
+         \x20       cover: string\n\n\
+         fn set_cover(id: int)\n\
+         \x20   ^books(id).binding.cover = \"hard\"\n\n\
+         fn has_book(id: int): bool\n\
+         \x20   return exists(^books(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::set_cover", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::has_book", &[Value::Int(1)])
+            .expect("presence check")
+            .value,
+        Some(Value::Bool(false)),
+        "the rejected group-field write must leave no partial record"
+    );
 }
 
 #[test]
@@ -3331,7 +3756,7 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
         )
         .expect("read")
         .value,
-        Some(Value::Identity(vec![SavedKey::Int(1)])),
+        Some(Value::Int(1)),
         "the unique index still points at book 1",
     );
 }
@@ -3692,6 +4117,21 @@ fn count_on(shelf: string): int
         c = c + 1
     return c
 
+fn count_via_bare_index(): int
+    var c = 0
+    for shelf in ^books.byShelf
+        for id in ^books.byShelf(shelf)
+            c = c + 1
+    return c
+
+fn reshelve_while_iterating()
+    for id in keys(^books.byShelf(\"fiction\"))
+        ^books(id).shelf = \"history\"
+
+fn reshelve_while_iterating_direct()
+    for id in ^books.byShelf(\"fiction\")
+        ^books(id).shelf = \"history\"
+
 fn titles_on(shelf: string)
     for id in ^books.byShelf(shelf)
         print(^books(id).title)
@@ -3731,6 +4171,88 @@ fn iterates_index_keys() {
     assert_eq!(count("fiction"), Some(Value::Int(2)));
     assert_eq!(count("history"), Some(Value::Int(1)));
     assert_eq!(count("romance"), Some(Value::Int(0)));
+}
+
+#[test]
+fn bare_index_iteration_yields_first_level_keys() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str, shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str(shelf.into()),
+            ],
+        )
+        .expect("add");
+    };
+    add(1, "Mort", "fiction");
+    add(2, "Sourcery", "fiction");
+    add(3, "Guards", "history");
+
+    let outcome = run_entry(&program, &store, "test::count_via_bare_index", &[]).expect("run");
+    assert_eq!(outcome.value, Some(Value::Int(3)));
+}
+
+#[test]
+fn updating_an_indexed_field_while_iterating_that_index_faults() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str("fiction".into()),
+            ],
+        )
+        .expect("add");
+    }
+
+    let error = run_entry(&program, &store, "test::reshelve_while_iterating", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
+    let remaining = run_entry(
+        &program,
+        &store,
+        "test::count_on",
+        &[Value::Str("fiction".into())],
+    )
+    .expect("count")
+    .value;
+    assert_eq!(remaining, Some(Value::Int(2)));
+}
+
+#[test]
+fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("fiction".into()),
+        ],
+    )
+    .expect("add");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::reshelve_while_iterating_direct",
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
 }
 
 #[test]
@@ -3872,6 +4394,40 @@ fn constructs_a_qualified_resource_value() {
 }
 
 #[test]
+fn resource_constructor_value_can_be_saved() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20author: string\n\n\
+         fn save(): int\n\
+         \x20\x20\x20\x20const draft = Book(title: \"Small Gods\", author: \"Pratchett\")\n\
+         \x20\x20\x20\x20^books(1) = draft\n\
+         \x20\x20\x20\x20return count(^books)\n\n\
+         fn title(): string\n\
+         \x20\x20\x20\x20return ^books(1).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let saved = run_entry(&program, &store, "test::save", &[]).expect("save");
+    assert_eq!(saved.value, Some(Value::Int(1)));
+    let title = run_entry(&program, &store, "test::title", &[]).expect("title");
+    assert_eq!(title.value, Some(Value::Str("Small Gods".into())));
+}
+
+#[test]
+fn resource_constructor_participates_in_optional_coalesce_chains() {
+    let program = checked_program(
+        "resource Profile\n\
+         \x20\x20\x20\x20email: string\n\n\
+         fn email(): string\n\
+         \x20\x20\x20\x20return Profile()?.email ?? \"none\"\n",
+    );
+    assert_eq!(
+        run(&program, "test::email", &[]),
+        Ok(Some(Value::Str("none".into())))
+    );
+}
+
+#[test]
 fn copies_a_whole_resource() {
     let program = checked_program(BOOK_COPY);
     let store = RefCell::new(MemStore::new());
@@ -3952,6 +4508,31 @@ fn whole_resource_write_copies_unkeyed_group_fields() {
             .expect("read")
             .value,
         Some(Value::Str("Sam".into()))
+    );
+}
+
+#[test]
+fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   binding\n\
+         \x20       cover: string\n\
+         \x20       spine: string\n\n\
+         fn save(id: int)\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"Small Gods\"\n\
+         \x20   ^books(id) = book\n\n\
+         fn title_of(id: int): string\n\
+         \x20   return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[Value::Int(1)]).expect("write");
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Small Gods".into()))
     );
 }
 
@@ -4448,9 +5029,10 @@ fn group_field_path(id: i64, layer: &str, key: SavedKey, field: &str) -> Vec<u8>
 #[test]
 fn a_group_entry_field_write_lands_in_saved_data() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
     );
     let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(5)]).expect("seed");
     run_entry(
         &program,
         &store,
@@ -4674,6 +5256,9 @@ resource Book at ^books(id: int)
     versions(version: int)
         required title: string
 
+fn seed(id: int, t: string)
+    ^books(id).title = t
+
 fn set_version_title(id: int, v: int, t: string)
     ^books(id).versions(v).title = t
 
@@ -4685,6 +5270,13 @@ fn version_title(id: int, v: int): string
 fn reads_a_field_from_a_group_entry() {
     let program = checked_program(BOOK_VERSIONS);
     let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[Value::Int(1), Value::Str("root".into())],
+    )
+    .expect("seed");
     run_entry(
         &program,
         &store,
@@ -4981,6 +5573,9 @@ resource Settings at ^settings
     theme: string
     required maxLoans: int
 
+fn setMaxLoans(n: int)
+    ^settings.maxLoans = n
+
 fn setTheme(t: string)
     ^settings.theme = t
 
@@ -4998,6 +5593,7 @@ fn restore(s: Settings)
 fn singleton_field_read_and_write() {
     let program = checked_program(SETTINGS);
     let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::setMaxLoans", &[Value::Int(5)]).expect("setMaxLoans");
     run_entry(
         &program,
         &store,
@@ -5208,6 +5804,10 @@ fn countKeysByIsbn(isbn: string): int
     for id in keys(^books.byIsbn(isbn))
         c = c + 1
     return c
+
+fn iterTitlesByIsbn(isbn: string)
+    for id in ^books.byIsbn(isbn)
+        print(^books(id).title)
 ";
 
 #[test]
@@ -5278,6 +5878,41 @@ fn unique_index_presence_and_count_follow_the_lookup_value() {
 }
 
 #[test]
+fn unique_index_lookup_iteration_yields_the_stored_identity() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::register",
+        &[
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("register");
+
+    let present = run_entry(
+        &program,
+        &store,
+        "test::iterTitlesByIsbn",
+        &[Value::Str("978-0".into())],
+    )
+    .expect("present unique lookup iterates");
+    assert_eq!(present.output, "Mort\n");
+
+    let absent = run_entry(
+        &program,
+        &store,
+        "test::iterTitlesByIsbn",
+        &[Value::Str("missing".into())],
+    )
+    .expect("absent unique lookup is an empty iteration");
+    assert_eq!(absent.output, "");
+}
+
+#[test]
 fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     let program = checked_program(BOOK_ISBN);
     let store = RefCell::new(MemStore::new());
@@ -5301,6 +5936,78 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     )
     .unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+}
+
+const ITEM_UNIQUE_BRANCH: &str = "\
+resource Item at ^items(id: int)
+    required title: string
+    series: string
+    code: string
+
+    index bySeriesCode(series, code) unique
+
+fn add(id: int, series: string, code: string, title: string)
+    ^items(id).title = title
+    ^items(id).series = series
+    ^items(id).code = code
+
+fn hasSeries(series: string): bool
+    return exists(^items.bySeriesCode(series))
+
+fn countSeries(series: string): int
+    return count(^items.bySeriesCode(series))
+
+fn iterSeries(series: string)
+    for id in ^items.bySeriesCode(series)
+        print(^items(id).title)
+";
+
+#[test]
+fn unique_index_prefix_branch_presence_count_and_iteration_agree() {
+    let program = checked_program(ITEM_UNIQUE_BRANCH);
+    let store = RefCell::new(MemStore::new());
+    for (id, code, title) in [(1, "b", "Beta"), (2, "a", "Alpha")] {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str("s1".into()),
+                Value::Str(code.into()),
+                Value::Str(title.into()),
+            ],
+        )
+        .expect("add");
+    }
+
+    let call = |entry: &str, series: &str| {
+        run_entry(&program, &store, entry, &[Value::Str(series.into())])
+            .expect(entry)
+            .value
+    };
+    assert_eq!(call("test::hasSeries", "s1"), Some(Value::Bool(true)));
+    assert_eq!(call("test::countSeries", "s1"), Some(Value::Int(2)));
+
+    let present = run_entry(
+        &program,
+        &store,
+        "test::iterSeries",
+        &[Value::Str("s1".into())],
+    )
+    .expect("present branch iterates");
+    assert_eq!(present.output, "Alpha\nBeta\n");
+
+    assert_eq!(call("test::hasSeries", "missing"), Some(Value::Bool(false)));
+    assert_eq!(call("test::countSeries", "missing"), Some(Value::Int(0)));
+    let absent = run_entry(
+        &program,
+        &store,
+        "test::iterSeries",
+        &[Value::Str("missing".into())],
+    )
+    .expect("absent branch is empty");
+    assert_eq!(absent.output, "");
 }
 
 /// A non-unique index in value position has no single identity to yield; the
@@ -5797,9 +6504,65 @@ fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
 }
 
 #[test]
+fn traversal_faults_are_not_catchable_errors() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear(): string\n    try\n        for id in keys(^books)\n            delete ^books(id)\n        return \"completed\"\n    catch error: Error\n        return error.code\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::clear", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
 fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::grow", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    append(^books(1).tags, \"x\")\n\nfn grow()\n    append(^books(1).tags, \"y\")\n\nfn walk()\n    for tag in ^books(1).tags\n        grow()\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::walk", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn helper_deleting_from_the_root_being_traversed_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn walk()\n    for id in keys(^books)\n        remove(id)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::walk", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -6509,10 +7272,58 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
         Some(Value::Int(1))
     );
     assert!(matches!(call("test::countRecord", &[Value::Int(1)]), Some(Value::Int(n)) if n >= 1));
-    // A primary root keeps its existing read/child-keys count: it walks the root's
-    // immediate children, which includes the declared `byShelf` index node beside
-    // the three record keys. This fix does not touch the primary-root path.
-    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(4)));
+    // A primary root counts the record identities that direct iteration yields,
+    // not generated index branches stored beside the records.
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(3)));
+}
+
+#[test]
+fn count_over_an_indexed_root_ignores_populated_index_branches() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\nfn countRoot(): int\n    return count(^books)\n\nfn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let call =
+        |entry: &str, args: &[Value]| run_entry(&program, &store, entry, args).expect(entry).value;
+
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(0)));
+    call(
+        "test::add",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("fiction".into()),
+        ],
+    );
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(1)));
+    assert_eq!(call("test::iterRoot", &[]), Some(Value::Int(1)));
+
+    call(
+        "test::addIsbn",
+        &[Value::Int(1), Value::Str("ISBN-1".into())],
+    );
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(1)));
+    assert_eq!(call("test::iterRoot", &[]), Some(Value::Int(1)));
+}
+
+#[test]
+fn count_over_a_composite_root_matches_direct_iteration() {
+    let program = checked_program(
+        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\nfn put(x: int, y: int, value: int)\n    ^cells(Cell::Id(x: x, y: y)).value = value\n\nfn countRoot(): int\n    return count(^cells)\n\nfn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
+        run_entry(
+            &program,
+            &store,
+            "test::put",
+            &[Value::Int(x), Value::Int(y), Value::Int(value)],
+        )
+        .expect("put");
+    }
+    let call = |entry: &str| run_entry(&program, &store, entry, &[]).expect(entry).value;
+    assert_eq!(call("test::countRoot"), Some(Value::Int(3)));
+    assert_eq!(call("test::iterRoot"), Some(Value::Int(3)));
 }
 
 /// A resource carrying both a keyed-leaf layer (`tags(pos: int): string`) and a
@@ -6661,6 +7472,156 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     assert_eq!(
         call("test::topLevelCount", &[Value::Int(1)]),
         Some(Value::Int(1))
+    );
+}
+
+const NESTED_KEYED_LAYERS: &str = "\
+resource Table at ^tables(name: string)
+    rows(row: int)
+        fields(col: int): string
+        cells(col: int)
+            value: string
+
+fn setField(table: string, row: int, col: int, value: string)
+    ^tables(table).rows(row).fields(col) = value
+
+fn addField(table: string, row: int, value: string): int
+    return append(^tables(table).rows(row).fields, value)
+
+fn fieldAt(table: string, row: int, col: int): string
+    return ^tables(table).rows(row).fields(col)
+
+fn seedCells()
+    ^tables(\"t\").rows(1).cells(1).value = \"a\"
+    ^tables(\"t\").rows(1).cells(2).value = \"b\"
+
+fn countCells(): int
+    return count(^tables(\"t\").rows(1).cells)
+
+fn iterateCells(): int
+    var total: int = 0
+    for cell in ^tables(\"t\").rows(1).cells
+        total = total + 1
+    return total
+
+fn cellEntries()
+    for col, cell in entries(^tables(\"t\").rows(1).cells)
+        print($\"{col}={cell.value}\")
+
+fn mutateNestedLeafDuringTraversal()
+    for col in keys(^tables(\"t\").rows(1).fields)
+        ^tables(\"t\").rows(1).fields(3) = \"c\"
+";
+
+#[test]
+fn nested_keyed_leaf_entries_write_append_and_read_back() {
+    let program = checked_program(NESTED_KEYED_LAYERS);
+    let store = RefCell::new(MemStore::new());
+
+    run_entry(
+        &program,
+        &store,
+        "test::setField",
+        &[
+            Value::Str("t".into()),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Str("a".into()),
+        ],
+    )
+    .expect("nested keyed-leaf write");
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::fieldAt",
+            &[Value::Str("t".into()), Value::Int(1), Value::Int(1)]
+        )
+        .expect("read nested keyed leaf")
+        .value,
+        Some(Value::Str("a".into()))
+    );
+
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::addField",
+            &[
+                Value::Str("t".into()),
+                Value::Int(1),
+                Value::Str("b".into())
+            ]
+        )
+        .expect("append nested keyed leaf")
+        .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::fieldAt",
+            &[Value::Str("t".into()), Value::Int(1), Value::Int(2)]
+        )
+        .expect("read appended nested keyed leaf")
+        .value,
+        Some(Value::Str("b".into()))
+    );
+}
+
+#[test]
+fn nested_keyed_group_layers_iterate_and_materialize_entries() {
+    let program = checked_program(NESTED_KEYED_LAYERS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seedCells", &[]).expect("seed cells");
+
+    assert_eq!(
+        run_entry(&program, &store, "test::countCells", &[])
+            .expect("count nested cells")
+            .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::iterateCells", &[])
+            .expect("iterate nested cells")
+            .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::cellEntries", &[])
+            .expect("entries over nested cells")
+            .output,
+        "1=a\n2=b\n"
+    );
+}
+
+#[test]
+fn writing_a_nested_keyed_leaf_while_traversing_it_is_a_traversal_fault() {
+    let program = checked_program(NESTED_KEYED_LAYERS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::setField",
+        &[
+            Value::Str("t".into()),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Str("a".into()),
+        ],
+    )
+    .expect("seed field");
+
+    let result = run_entry(
+        &program,
+        &store,
+        "test::mutateNestedLeafDuringTraversal",
+        &[],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{result:?}"
     );
 }
 
@@ -7531,13 +8492,13 @@ fn a_matching_scalar_spliced_identity_still_writes() {
     );
 }
 
-/// An identity cannot be one component among raw keys: `^books(id, 5)` mixing the
-/// spliced identity with a trailing raw key is rejected as unsupported.
+/// A composite identity cannot be one component among raw keys: `^pairs(id, 5)`
+/// mixing the spliced identity with a trailing raw key is rejected as unsupported.
 #[test]
 fn an_identity_mixed_with_a_raw_key_is_rejected() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn save()\n    const id = Book::Id(7)\n    ^books(id, 5).title = \"a\"\n",
+        "resource Pair at ^pairs(a: int, b: int)\n    required title: string\n\n\
+         fn save()\n    const id = Pair::Id(7, 8)\n    ^pairs(id, 5).title = \"a\"\n",
     );
     let result = run(&program, "test::save", &[]);
     assert!(
@@ -7995,6 +8956,7 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
                 functions,
                 resources: Vec::new(),
                 enums: Vec::new(),
+                enum_public: HashMap::new(),
             }
         })
         .collect();
@@ -8113,6 +9075,25 @@ fn an_enum_field_stores_its_ordinal_and_reads_back() {
             .expect("compare")
             .value,
         Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
+    let program = checked_program_typed(
+        "enum Kind\n    number\n    plus\n\n\
+         resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
+         pub fn readBack(): int\n    \
+         ^session.cursor = 1\n    \
+         ^session.kinds(1) = Kind::plus\n    \
+         match ^session.kinds(1)\n        number\n            return 0\n        plus\n            return 1\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    assert_eq!(
+        run_entry(&program, &store, "test::readBack", &[])
+            .expect("keyed enum leaf match runs")
+            .value,
+        Some(Value::Int(1))
     );
 }
 
@@ -8359,7 +9340,7 @@ fn is_with_a_full_path_to_a_duplicated_leaf_is_exact() {
 }
 
 #[test]
-fn fatal_fault_in_entry_module_carries_its_file_id() {
+fn uncaught_fault_in_entry_module_carries_its_file_id() {
     // A divide-by-zero raised in the entry module's own body stamps that
     // module's file id (index 0), so a renderer can name the file it lives in.
     let program = multi_module_program(&[("a", "pub fn boom(): int\n    return 1 / 0\n")]);
@@ -8373,10 +9354,10 @@ fn fatal_fault_in_entry_module_carries_its_file_id() {
 }
 
 #[test]
-fn fatal_fault_in_cross_module_callee_carries_the_callee_file_id() {
+fn uncaught_fault_in_cross_module_callee_carries_the_callee_file_id() {
     // The entry `a::run` calls `b::boom`, which divides by zero. The fault is
-    // fatal, so it bubbles through every frame unchanged — its origin must be
-    // `b`'s file (index 1), the frame that raised it, not the entry's `a`.
+    // uncaught, so its origin must be `b`'s file (index 1), the frame that
+    // raised it, not the entry's `a`.
     let program = multi_module_program(&[
         ("a", "pub fn run(): int\n    return b::boom()\n"),
         ("b", "pub fn boom(): int\n    return 1 / 0\n"),
@@ -8421,9 +9402,9 @@ fn bare_program_fault_leaves_origin_none() {
 
 #[test]
 fn outer_frame_does_not_overwrite_inner_origin() {
-    // `a::outer` calls `a::mid` calls `b::boom`. The fatal fault crosses three
-    // frames in two modules; the deepest (`b`, index 1) wins and the outer `a`
-    // frames must not overwrite it.
+    // `a::outer` calls `a::mid` calls `b::boom`. The uncaught fault crosses
+    // three frames in two modules; the deepest (`b`, index 1) wins and the outer
+    // `a` frames must not overwrite it.
     let program = multi_module_program(&[
         (
             "a",
@@ -8472,8 +9453,8 @@ fn an_identity_field_round_trips_through_saved_data() {
 
 #[test]
 fn a_stored_identity_field_reads_back_the_identity_value() {
-    // Reading the field directly yields a `Value::Identity` carrying the referenced
-    // resource's key segments, not a bare scalar.
+    // The stored leaf carries the referenced identity's key segments, not a plain
+    // scalar field encoding.
     let program = checked_program(
         "resource Author at ^authors(id: int)\n\
          \x20   name: string\n\
@@ -8578,6 +9559,66 @@ fn equality_on_two_identities_of_the_same_resource_evaluates() {
     assert_eq!(
         run(&program, "test::different", &[]).unwrap(),
         Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn single_key_identity_constructor_behaves_like_other_identity_origins() {
+    let program = checked_program(
+        "resource Doc at ^docs(id: int)\n\
+         \x20   title: string\n\
+         \n\
+         pub fn ctorInt(): int\n\
+         \x20   return int(Doc::Id(99))\n\
+         \n\
+         pub fn ctorString(): string\n\
+         \x20   return string(Doc::Id(99))\n\
+         \n\
+         pub fn ctorRender(): string\n\
+         \x20   return $\"id={Doc::Id(99)}\"\n\
+         \n\
+         pub fn mixedEq(): bool\n\
+         \x20   const id = nextId(^docs)\n\
+         \x20   return id == Doc::Id(1)\n",
+    );
+    assert_eq!(
+        run(&program, "test::ctorInt", &[]).unwrap(),
+        Some(Value::Int(99))
+    );
+    assert_eq!(
+        run(&program, "test::ctorString", &[]).unwrap(),
+        Some(Value::Str("99".into()))
+    );
+    assert_eq!(
+        run(&program, "test::ctorRender", &[]).unwrap(),
+        Some(Value::Str("id=99".into()))
+    );
+    assert_eq!(
+        run(&program, "test::mixedEq", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn unique_index_identity_compares_with_the_allocated_identity() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required isbn: string\n\
+         \x20   index byIsbn(isbn) unique\n\
+         \n\
+         pub fn seed(): bool\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"T\"\n\
+         \x20   b.isbn = \"I-1\"\n\
+         \x20   const id = nextId(^books)\n\
+         \x20   ^books(id) = b\n\
+         \x20   const found = ^books.byIsbn(\"I-1\")\n\
+         \x20   return id == found and found == Book::Id(1)\n",
+    );
+    assert_eq!(
+        run(&program, "test::seed", &[]).unwrap(),
+        Some(Value::Bool(true))
     );
 }
 

@@ -219,6 +219,29 @@ fn reversed_preserves_the_sequence_element_type() {
     );
 }
 
+#[test]
+fn local_collections_can_be_subscripted() {
+    let root = temp_project("program-local-collection-subscript", |root| {
+        write(
+            root,
+            "src/shelf/local.mw",
+            "module shelf::local\n\
+             fn keyed(today: date): int\n\
+             \x20   var counts(day: date, category: string): int\n\
+             \x20   counts(today, \"open\") = 3\n\
+             \x20   return counts(today, \"open\")\n\
+             fn seqIndex(): int\n\
+             \x20   var xs: sequence[int]\n\
+             \x20   xs(1) = 10\n\
+             \x20   return xs(1)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 /// `next(^root(id))` over a keyed root types to the resource identity, so
 /// `^root(next(^root(id))).field` reads the neighbor's field and checks clean —
 /// the navigated neighbor is a `Resource::Id`. `prev` mirrors it.
@@ -323,6 +346,58 @@ fn next_over_a_composite_identity_record_is_flagged() {
     );
 }
 
+#[test]
+fn next_over_a_bare_composite_identity_root_is_flagged() {
+    let root = temp_project("program-next-bare-composite", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required grade: string\n\
+             fn step()\n\
+             \x20   const n = next(^enrollments)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn next_over_a_bare_identity_value_is_flagged() {
+    let root = temp_project("program-next-identity-value", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             fn step(id: Book::Id)\n\
+             \x20   const n = next(id)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 /// `next`/`prev` over an index branch is statically unsupported the same way: an
 /// index branch inspects identities, with no single key position to seek.
 #[test]
@@ -351,6 +426,29 @@ fn next_over_an_index_branch_is_flagged() {
         "{:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn keys_over_composite_identity_index_bind_reconstructed_identities() {
+    let root = temp_project("program-composite-index-keys", |root| {
+        write(
+            root,
+            "src/school/registrar.mw",
+            "module school::registrar\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required credits: int\n\
+             \x20   index byStudent(studentId, courseId)\n\
+             fn total(studentId: string): int\n\
+             \x20   var credits = 0\n\
+             \x20   for id in keys(^enrollments.byStudent(studentId))\n\
+             \x20       credits = credits + ^enrollments(id).credits\n\
+             \x20   return credits\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 /// `use std::clock` lets a short-form `clock::now()` resolve and type to its
@@ -1085,6 +1183,145 @@ fn same_resource_identity_checks_clean() {
     fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
+    let root = temp_project("program-id-qualified", |root| {
+        write(
+            root,
+            "src/store.mw",
+            "module store\n\
+             resource Item at ^items(id: int)\n\
+             \x20   required name: string\n\
+             pub fn add(name: string): Item::Id\n\
+             \x20   const id: Item::Id = nextId(^items)\n\
+             \x20   ^items(id).name = name\n\
+             \x20   return id\n\
+             pub fn nameOf(id: Item::Id): string\n\
+             \x20   return ^items(id).name\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             use store\n\
+             pub fn demo(): string\n\
+             \x20   const id: store::Item::Id = store::add(\"widget\")\n\
+             \x20   return store::nameOf(id)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
+    let root = temp_project("program-resource-qualified", |root| {
+        write(
+            root,
+            "src/audit/log.mw",
+            "module audit::log\n\
+             resource Event at ^events(id: int)\n\
+             \x20   required actor: string\n",
+        );
+        write(
+            root,
+            "src/audit/query.mw",
+            "module audit::query\n\
+             use audit::log\n\
+             pub fn actor(): string\n\
+             \x20   const id: log::Event::Id = nextId(^events)\n\
+             \x20   ^events(id).actor = \"scott\"\n\
+             \x20   const ev: log::Event = ^events(id)\n\
+             \x20   return ev.actor\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn qualified_identity_constructor_resolves_and_checks_clean() {
+    let root = temp_project("program-id-qualified-ctor", |root| {
+        write(
+            root,
+            "src/store.mw",
+            "module store\n\
+             resource Item at ^items(id: int)\n\
+             \x20   required name: string\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             use store\n\
+             pub fn fromKey(): store::Item::Id\n\
+             \x20   return store::Item::Id(1)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn identity_constructor_key_shape_errors_are_checked_statically() {
+    let root = temp_project("program-id-ctor-static", |root| {
+        write(
+            root,
+            "src/school/registrar.mw",
+            "module school::registrar\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required credits: int\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             use school::registrar\n\
+             fn wrongType()\n\
+             \x20   const id = registrar::Enrollment::Id(studentId: 1, courseId: 2)\n\
+             fn missingKey()\n\
+             \x20   const id = registrar::Enrollment::Id(studentId: \"only-one\")\n\
+             fn tooMany()\n\
+             \x20   const id = registrar::Enrollment::Id(\"s\", \"c\", \"extra\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.key_type"),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "check.call_argument")
+            .count()
+            >= 2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "check.unresolved_call"),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 // --- Equality, coalesce, and unary over concrete non-scalar types ---

@@ -120,6 +120,33 @@ fn a_truncated_restore_rolls_the_target_back_whole() {
 }
 
 #[test]
+fn an_archive_with_trailing_records_after_count_is_rejected() {
+    let mut source = MemStore::new();
+    source.write(&book_title(1), encoded(&SavedValue::Str("Dune".into())));
+    source.write(&book_title(2), encoded(&SavedValue::Str("Sand".into())));
+    let mut archive = Vec::new();
+    assert_eq!(write_archive(&source, &mut archive).expect("write"), 2);
+    // The little-endian record count starts after the 8-byte magic and 4-byte
+    // version. Forcing it down to 1 leaves one whole record as trailing bytes.
+    archive[12] = 1;
+
+    let mut target = MemStore::new();
+    target.write(&book_title(9), encoded(&SavedValue::Str("Keep".into())));
+    let before = target.scan(&[], usize::MAX);
+
+    let result = read_archive(&mut Cursor::new(&archive), &mut target);
+    assert!(
+        matches!(result, Err(StoreError::Corruption { .. })),
+        "an archive with body bytes after its declared record count is corrupt: {result:?}"
+    );
+    assert_eq!(
+        target.scan(&[], usize::MAX),
+        before,
+        "restore rolls back instead of committing a declared-count prefix"
+    );
+}
+
+#[test]
 fn equal_data_produces_identical_archives() {
     // The archive is the store's ordered stream behind a fixed header, so equal
     // data always serializes to identical bytes.

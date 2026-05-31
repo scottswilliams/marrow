@@ -12,6 +12,7 @@ pub(crate) fn test(args: &[String]) -> ExitCode {
     let mut dir = None;
     let mut trace = false;
     let mut format = CheckFormat::Text;
+    let mut saw_format = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -19,6 +20,11 @@ pub(crate) fn test(args: &[String]) -> ExitCode {
             // attributed to the test by name.
             "--trace" => trace = true,
             "--format" => {
+                if saw_format {
+                    eprintln!("duplicate --format");
+                    return ExitCode::from(2);
+                }
+                saw_format = true;
                 index += 1;
                 let Some(value) = args.get(index) else {
                     eprintln!("missing value for --format");

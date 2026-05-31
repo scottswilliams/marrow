@@ -72,6 +72,60 @@ fn entry_flag_overrides_the_default_entry() {
 }
 
 #[test]
+fn bare_entry_flag_resolves_the_first_matching_function() {
+    let root = temp_project("run-bare-entry", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "src/util.mw",
+            "module util\n\npub fn helper(): int\n    print(\"helper ran\")\n    return 1\n",
+        );
+    });
+    let output = run_run(&["--entry", "helper", root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "helper ran\n");
+}
+
+#[test]
+fn run_rejects_duplicate_format_flag() {
+    let output = run_run(&["--format", "json", "--format", "text", "missing-project"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--format"), "{stderr}");
+}
+
+#[test]
+fn module_constants_are_bound_at_runtime() {
+    let root = temp_project("run-module-const", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             const Base: int = 40\n\
+             const Offset = 2\n\
+             const Label = \"answer\"\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20print($\"{Label}={Base + Offset}\")\n",
+        );
+    });
+    let output = run_run(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "answer=42\n");
+}
+
+#[test]
 fn native_store_persists_writes_across_runs() {
     let root = temp_project("run-native", |root| {
         write(
@@ -292,7 +346,7 @@ fn maintenance_flag_gates_a_whole_root_drop() {
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\n\
              pub fn drop_root()\n\
              \x20\x20\x20\x20delete ^books\n\n\
-             pub fn count()\n\
+             pub fn countRecords()\n\
              \x20\x20\x20\x20var c = 0\n\
              \x20\x20\x20\x20for book in ^books\n\
              \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
@@ -318,7 +372,7 @@ fn maintenance_flag_gates_a_whole_root_drop() {
     assert_eq!(allowed.status.code(), Some(0), "allowed: {allowed:?}");
 
     // After the drop, no records remain.
-    let after = run_run(&["--entry", "app::count", &dir]);
+    let after = run_run(&["--entry", "app::countRecords", &dir]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(after.status.code(), Some(0), "count: {after:?}");
     let after_out = String::from_utf8(after.stdout).expect("stdout utf8");
@@ -471,23 +525,25 @@ fn equality_on_a_saved_enum_field_dispatches_through_the_real_pipeline() {
 }
 
 #[test]
-fn a_qualified_enum_member_literal_evaluates_to_its_ordinal() {
-    // A `mod::Enum::member` value evaluates to that enum's ordinal at runtime: in
-    // module `b`, `Status::open` is ordinal 0 and `Status::closed` is ordinal 1.
-    // Module `a` reads them by their qualified spelling and prints both ordinals.
+fn a_qualified_enum_member_literal_resolves_to_the_owning_enum() {
+    // A `mod::Enum::member` value must evaluate as that module's enum. Module
+    // `a` passes both qualified members to `b::rank`, whose match dispatch proves
+    // they resolved as `b::Status` rather than an unsupported qualified name.
     let root = temp_project("run-enum-qualified-member", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n\n\
+             pub fn rank(s: b::Status): int\n    \
+             match s\n        open\n            return 0\n        closed\n            return 1\n",
         );
         write(
             root,
             "src/a.mw",
             "module a\nuse b\n\
              pub fn show()\n    \
-             print($\"{b::Status::open}\")\n    print($\"{b::Status::closed}\")\n",
+             print($\"{b::rank(b::Status::open)}\")\n    print($\"{b::rank(b::Status::closed)}\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();
@@ -548,7 +604,9 @@ fn alias_module_sources(root: &Path) {
     write(
         root,
         "src/a/b/c.mw",
-        "module a::b::c\npub enum Status\n    active\n    archived\n",
+        "module a::b::c\npub enum Status\n    active\n    archived\n\n\
+         pub fn marker(s: a::b::c::Status): int\n    \
+         match s\n        active\n            return 0\n        archived\n            return 9\n",
     );
 }
 
@@ -623,11 +681,10 @@ fn an_aliased_enum_literal_checks_and_runs() {
 #[test]
 fn an_aliased_enum_literal_binds_to_the_imported_module_not_a_top_level_homonym() {
     // A real top-level `module c` also declares `Status`, with members in the
-    // opposite order so the ordinals differ: `a::b::c`'s `active` is 0, top-level
-    // `c`'s `active` is 1. Under `use a::b::c`, `c::Status::active` must bind to
-    // the imported `a::b::c` (ordinal 0), not the homonymous top-level `c`.
-    // Without alias expansion the runtime literal binds to the top-level `c` and
-    // evaluates to 1. Printing the literal's ordinal isolates which module bound.
+    // opposite member meaning. Under `use a::b::c`, both `c::marker` and
+    // `c::Status::active` must bind to imported `a::b::c`, not the homonymous
+    // top-level `c`. Without alias expansion both bind to top-level `c` and print
+    // 1 instead of 0.
     let root = temp_project("run-alias-literal-homonym", |root| {
         write(
             root,
@@ -638,21 +695,22 @@ fn an_aliased_enum_literal_binds_to_the_imported_module_not_a_top_level_homonym(
         write(
             root,
             "src/c.mw",
-            "module c\npub enum Status\n    archived\n    active\n",
+            "module c\npub enum Status\n    archived\n    active\n\n\
+             pub fn marker(s: c::Status): int\n    \
+             match s\n        active\n            return 1\n        archived\n            return 8\n",
         );
         write(
             root,
             "src/app.mw",
             "module app\nuse a::b::c\n\
-             pub fn main()\n    print($\"{c::Status::active}\")\n",
+             pub fn main()\n    print($\"{c::marker(c::Status::active)}\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();
     let run = run_run(&[&dir]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(run.status.code(), Some(0), "run: {run:?}");
-    // `a::b::c`'s `active` is ordinal 0; the top-level `c`'s is 1. The imported
-    // module must win.
+    // The imported module returns 0; the top-level homonym returns 1.
     let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
     assert_eq!(stdout, "0\n", "literal bound to the wrong module");
 }
@@ -804,7 +862,7 @@ fn an_absent_element_fault_is_located() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("src/app.mw:6:") && stderr.contains("run.absent_element:"),
+        stderr.contains("src/app.mw:7:") && stderr.contains("run.absent_element:"),
         "absent_element must be located, got: {stderr}"
     );
 }

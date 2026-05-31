@@ -272,6 +272,25 @@ fn formats_const_declaration_with_docs() {
 }
 
 #[test]
+fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
+    let source = "module app\n\
+         ;; First paragraph.\n\
+         ;;\n\
+         ;; Second paragraph.\n\
+         const MaxLoans: int = 5\n";
+    let expected = ";; First paragraph.\n\
+         ;;\n\
+         ;; Second paragraph.\n\
+         const MaxLoans: int = 5";
+    let formatted = format_decl(source, 0);
+    assert_eq!(formatted, expected);
+    assert!(
+        formatted.lines().all(|line| !line.ends_with(' ')),
+        "formatter output contains trailing whitespace:\n{formatted:?}"
+    );
+}
+
+#[test]
 fn formats_resource_declaration_with_members() {
     let source = "module app\n\
          resource Book at ^books(id: int)\n\
@@ -419,6 +438,22 @@ fn preserves_leading_standalone_and_trailing_comments() {
 }
 
 #[test]
+fn preserves_body_doc_comments_as_ordinary_comments() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   ;; first comment\n\
+         \x20   print(\"a\")\n\
+         \x20   ;; second comment\n\
+         \x20   print(\"b\")\n";
+    let expected = "\
+         \x20   ; first comment\n\
+         \x20   print(\"a\")\n\
+         \x20   ; second comment\n\
+         \x20   print(\"b\")";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
 fn preserves_comments_in_nested_blocks() {
     let source = "module app\n\
          fn run(n: int)\n\
@@ -496,4 +531,66 @@ fn documented_parameter_signature_round_trips() {
     assert!(once.contains(";; second line"));
     assert!(once.contains("book: int,"));
     assert!(once.contains("shelf: string,"));
+}
+
+#[test]
+fn preserves_top_level_and_member_line_comments() {
+    let source = "module app\n\
+         ; shared constants\n\
+         const Max:int=5\n\
+         ; stored records\n\
+         resource Book\n\
+         \x20   ; visible label\n\
+         \x20   title: string\n";
+    let expected = "module app\n\
+         \n\
+         ; shared constants\n\
+         const Max: int = 5\n\
+         \n\
+         ; stored records\n\
+         resource Book\n\
+         \x20   ; visible label\n\
+         \x20   title: string\n";
+
+    assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
+    let source = "module app\n\
+         ;; Module overview.\n\
+         ;;\n\
+         \n\
+         ;; Stored books.\n\
+         resource Book\n\
+         \x20   title: string\n";
+    let expected = "module app\n\
+         \n\
+         ;; Module overview.\n\
+         ;;\n\
+         \n\
+         ;; Stored books.\n\
+         resource Book\n\
+         \x20   title: string\n";
+
+    assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn preserves_multiline_trailing_comma_calls() {
+    let source = "module app\n\
+         fn fail()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   )\n";
+    let expected = "module app\n\
+         \n\
+         fn fail()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   )\n";
+
+    assert_eq!(format_source(source), expected);
 }

@@ -20,9 +20,13 @@ fn write(root: &Path, relative: &str, contents: &str) {
 }
 
 fn run_test(dir: &Path) -> std::process::Output {
+    run_test_args(&[dir.to_str().expect("project path utf8")])
+}
+
+fn run_test_args(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .arg("test")
-        .arg(dir)
+        .args(args)
         .output()
         .expect("run marrow test")
 }
@@ -57,6 +61,15 @@ fn runs_passing_tests_and_reports_a_summary() {
         stdout.contains("1 test: 1 passed, 0 failed, 0 errored"),
         "{stdout}"
     );
+}
+
+#[test]
+fn test_rejects_duplicate_format_flag() {
+    let output = run_test_args(&["--format", "json", "--format", "text", "missing-project"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--format"), "{stderr}");
 }
 
 #[test]

@@ -83,6 +83,56 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
 }
 
 #[test]
+fn analyze_project_reports_configured_test_file_parse_errors() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    let root = temp_project("analyze-test-parse", |root| {
+        write(root, "src/app.mw", "module app\n");
+        // A tab is a lexical error.
+        write(root, "tests/bad_test.mw", "pub fn t()\n\tapp::noop()\n");
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new()).expect("analyze");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        snapshot.report.diagnostics.iter().any(|d| {
+            d.code == "parse.syntax" && d.file.ends_with(Path::new("tests/bad_test.mw"))
+        }),
+        "configured test diagnostics should be included: {:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
+#[test]
+fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    let root = temp_project("analyze-unsaved-test-parse", |root| {
+        write(root, "src/app.mw", "module app\n");
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let path = root.join("tests/new_test.mw");
+    let sources = ProjectSources::new().with(&path, "pub fn t()\n\tapp::noop()\n");
+
+    let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "parse.syntax" && d.file == path),
+        "configured overlay test diagnostics should be included: {:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
+#[test]
 fn analysis_snapshot_retains_files_with_parse_errors() {
     use marrow_check::{ProjectSources, analyze_project};
 
@@ -400,6 +450,30 @@ fn a_category_is_not_selectable_in_value_position() {
 }
 
 #[test]
+fn a_category_member_error_does_not_emit_an_untyped_return_hint() {
+    let report = check_module_report(
+        "category-no-untyped-cascade",
+        &format!(
+            "{}\
+             fn f(): Cat\n    \
+             return Cat::tiger\n",
+            cat_enum()
+        ),
+    );
+    assert_eq!(
+        with_code(&report, "check.category_not_selectable").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn a_match_with_a_category_arm_covers_its_subtree() {
     // A `tiger` arm covers both `bengal` and `siberian`; with `housecat` covered,
     // the match is exhaustive over the selectable leaves.
@@ -602,6 +676,29 @@ fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
         errors[0].message.contains("tiger::paw") && errors[0].message.contains("lion::paw"),
         "{:#?}",
         errors[0].message
+    );
+}
+
+#[test]
+fn an_ambiguous_enum_member_does_not_emit_an_untyped_return_hint() {
+    let report = check_module_report(
+        "dup-value-bare-no-untyped-cascade",
+        &format!(
+            "{}\
+             fn a(): Cat\n    return Cat::paw\n",
+            duplicate_paw_enum()
+        ),
+    );
+    assert_eq!(
+        with_code(&report, "check.ambiguous_member").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
     );
 }
 
@@ -1390,6 +1487,17 @@ fn rejects_concatenation_of_non_strings() {
 }
 
 #[test]
+fn bytes_interpolation_is_a_check_error() {
+    let found = check_module(
+        "interp-bytes",
+        "module m\nfn f(): string\n    const b: bytes = b\"hi\"\n    return $\"<{b}>\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("bytes"), "{}", found[0].message);
+}
+
+#[test]
 fn rejects_a_logical_operator_on_a_non_bool() {
     // `and` needs bool operands; `true and 1` mixes in an int.
     let found = check_script(
@@ -1652,6 +1760,142 @@ fn correct_calls_are_not_flagged() {
         "check.call_argument",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn out_and_inout_calls_keep_their_declared_return_types() {
+    let report = check_module_report(
+        "out-inout-return-types",
+        "module m\n\
+         fn parse(out value: int): bool\n    value = 7\n    return true\n\
+         fn take(inout remaining: int, unit: int): string\n    remaining = remaining - unit\n    return \"ok\"\n\n\
+         fn caller(): string\n    var n: int = 0\n    if parse(out n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn out_parameters_must_be_assigned_before_returning() {
+    let found = check_module(
+        "out-assignment",
+        "module m\n\
+         fn never_set(out value: int)\n    const ignore: int = 1\n",
+        "check.out_parameter_assignment",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn read_only_parameters_are_not_assignment_targets() {
+    let found = check_module(
+        "readonly-param",
+        "module m\n\
+         fn bump(value: int): int\n    value = value + 1\n    return value\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn read_only_parameter_checks_respect_local_shadowing() {
+    let report = check_module_report(
+        "readonly-param-shadow",
+        "module m\n\
+         fn set_to(out value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(out value)\n        return value\n    return value\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn read_only_parameters_are_not_out_or_inout_arguments() {
+    let found = check_module(
+        "readonly-param-out-arg",
+        "module m\n\
+         fn set_to(out value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    set_to(out value)\n    return value\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn out_parameters_can_be_assigned_by_out_calls() {
+    let report = check_module_report(
+        "out-call-assigns-out-param",
+        "module m\n\
+         fn set_to(out value: int)\n    value = 1\n\
+         fn relay(out value: int)\n    set_to(out value)\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn short_circuit_rhs_out_calls_do_not_assign_out_parameters() {
+    let found = check_module(
+        "out-call-short-circuit-rhs",
+        "module m\n\
+         fn set_to(out value: int): bool\n    value = 1\n    return true\n\
+         fn relay_and(out value: int)\n    if false and set_to(out value)\n        return\n\
+         fn relay_or(out value: int)\n    if true or set_to(out value)\n        return\n",
+        "check.out_parameter_assignment",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn finally_assignment_counts_before_try_return_completes() {
+    let report = check_module_report(
+        "out-finally-assigns-before-return",
+        "module m\n\
+         fn relay(out value: int)\n    try\n        return\n    finally\n        value = 1\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn out_and_inout_call_markers_must_match_parameters() {
+    let missing = check_module(
+        "out-marker-missing",
+        "module m\n\
+         fn set_to(out value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    set_to(n, src)\n    return n\n",
+        "check.call_argument",
+    );
+    assert_eq!(missing.len(), 1, "{missing:#?}");
+
+    let wrong = check_module(
+        "inout-marker-wrong",
+        "module m\n\
+         fn add(inout value: int, src: int)\n    value = value + src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    add(out n, src)\n    return n\n",
+        "check.call_argument",
+    );
+    assert_eq!(wrong.len(), 1, "{wrong:#?}");
+}
+
+#[test]
+fn out_and_inout_arguments_must_be_writable_places() {
+    let found = check_module(
+        "out-literal",
+        "module m\n\
+         fn set_to(out value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    set_to(out 5, src)\n    return src\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn out_and_inout_markers_are_rejected_on_plain_call_targets() {
+    let found = check_module(
+        "out-marker-plain-calls",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\
+         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(out 5)\n    const len: int = std::text::length(out s)\n    const book_id: Book::Id = Book::Id(out id)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
 }
 
 #[test]
@@ -1982,6 +2226,44 @@ fn supported_collection_wrappers_bind_their_documented_shapes() {
 }
 
 #[test]
+fn layer_key_traversal_binds_declared_key_types() {
+    let report = check_module_report(
+        "layer-key-traversal-types",
+        "module m\n\
+         resource Run at ^runs(id: int)\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\n\
+         fn f(id: Run::Id)\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn composite_root_traversal_binds_addressable_identities() {
+    let report = check_module_report(
+        "composite-root-traversal-id",
+        "module m\n\
+         resource Cell at ^cells(x: int, y: int)\n    required v: int\n\n\
+         fn f()\n    for id, cell in ^cells\n        const same: int = ^cells(id).v\n        const copy: int = cell.v\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn index_branches_reject_value_materialization_wrappers() {
+    for wrapper in ["values", "entries"] {
+        let found = check_module(
+            &format!("index-{wrapper}-unsupported"),
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+                 fn f()\n    for item in {wrapper}(^books.byShelf(\"fiction\"))\n        write($\"{{item}}\")\n",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{wrapper}: {found:#?}");
+    }
+}
+
+#[test]
 fn reversed_saved_collection_expressions_type_element_sequences() {
     let found = check_module(
         "reversed-saved-expressions",
@@ -2299,6 +2581,38 @@ fn exists_and_append_builtin_return_types_feed_checks() {
 }
 
 #[test]
+fn append_to_a_group_layer_is_a_check_error() {
+    let found = check_module(
+        "append-group-layer",
+        "module m\n\
+         resource Log at ^log(name: string)\n    items(pos: int)\n        required n: int\n\n\
+         fn add(name: string): int\n    return append(^log(name).items, 1)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("leaf layer"),
+        "{}",
+        found[0].message
+    );
+}
+
+#[test]
+fn append_to_a_keyed_leaf_layer_still_checks_clean() {
+    let report = check_module_report(
+        "append-leaf-layer",
+        "module m\n\
+         resource Log at ^log(name: string)\n    items(pos: int): int\n\n\
+         fn add(name: string): int\n    return append(^log(name).items, 1)\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn coalesce_yields_the_default_type() {
     // `path ?? default` types to the path's leaf-or-default type; with a string
     // default it is `string`, so `+ 1` is string-plus-int.
@@ -2430,6 +2744,89 @@ fn a_conversion_into_a_matching_annotated_place_is_not_flagged() {
 }
 
 #[test]
+fn bytes_conversion_rejects_a_known_non_string_source() {
+    let found = check_module(
+        "bytes-conv-int",
+        "module m\nfn f(): bytes\n    return bytes(int(9))\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("bytes"), "{}", found[0].message);
+    assert!(found[0].message.contains("string"), "{}", found[0].message);
+}
+
+#[test]
+fn bytes_conversion_accepts_string_bytes_and_unknown_sources() {
+    let report = check_module_report(
+        "bytes-conv-ok",
+        "module m\n\
+         fn fromString(s: string): bytes\n    return bytes(s)\n\n\
+         fn fromBytes(b: bytes): bytes\n    return bytes(b)\n\n\
+         fn fromUnknown(raw: unknown): bytes\n    return bytes(raw)\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn conversion_calls_reject_known_unsupported_sources() {
+    let found = check_module(
+        "conv-known-bad-sources",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         fn dateFromInt(): date\n    return date(1)\n\n\
+         fn durationFromInt(): duration\n    return duration(1)\n\n\
+         fn boolFromString(): bool\n    return bool(\"true\")\n\n\
+         fn decimalFromBool(): decimal\n    return decimal(true)\n\n\
+         fn enumToInt(): int\n    return int(Color::green)\n\n\
+         fn enumToString(): string\n    return string(Color::green)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 6, "{found:#?}");
+    assert!(
+        found.iter().any(|d| d.message.contains("date")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("duration")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("bool")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("decimal")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("Color")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn interpolation_rejects_enum_values() {
+    let found = check_module(
+        "interp-enum",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         fn f(c: Color): string\n    return $\"c={c}\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("interpolation cannot render"),
+        "{}",
+        found[0].message
+    );
+    assert!(found[0].message.contains("Color"), "{}", found[0].message);
+}
+
+#[test]
 fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
     // `ErrorCode(raw)` is `ErrorCode`, matching the declared `ErrorCode` place —
     // the documented `const code: ErrorCode = ErrorCode(raw)` conversion checks
@@ -2440,6 +2837,57 @@ fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_count_builtin_result_is_an_int() {
+    let report = check_module_report(
+        "count-result-int",
+        "module m\n\
+         resource Book at ^books(id: int)\n    tags(pos: int): string\n\n\
+         fn countBooks(): int\n    return count(^books)\n\n\
+         fn countTags(id: Book::Id): int\n    return count(^books(id).tags)\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn type_surface_count_of_a_non_path_is_not_an_int() {
+    let found = check_module(
+        "count-non-path",
+        "module m\nfn f(): int\n    return count(1)\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn type_surface_caught_error_fields_have_declared_types() {
+    let report = check_module_report(
+        "caught-error-fields",
+        "module m\n\
+         fn f()\n\
+         \x20   try\n        throw Error(code: \"x.y\", message: \"boom\")\n\
+         \x20   catch err: Error\n\
+         \x20       const code: ErrorCode = err.code\n\
+         \x20       const message: string = err.message\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn type_surface_ledger_reads_and_traversals_have_concrete_types() {
+    let report = check_module_report(
+        "ledger-type-surfaces",
+        "module m\n\
+         resource Account at ^accounts(code: string)\n    required name: string\n    amounts(pos: int): decimal\n\n\
+         fn sumAmounts(code: Account::Id): decimal\n    var sum: decimal = 0.0\n    for amount in values(^accounts(code).amounts)\n        sum = sum + amount\n    return sum\n\n\
+         fn countAccounts(): int\n    return count(^accounts)\n\n\
+         fn ids()\n    for code in keys(^accounts)\n        const typed: Account::Id = code\n\n\
+         fn accounts()\n    for account in ^accounts\n        const name: string = account.name\n\n\
+         fn handle(): bool\n    try\n        throw Error(code: \"x.y\", message: \"m\")\n    catch err: Error\n        return err.code == ErrorCode(\"x.y\")\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -2487,6 +2935,30 @@ fn a_singleton_field_read_in_a_typed_place_is_not_an_untyped_value() {
 }
 
 #[test]
+fn type_surface_singleton_keyed_leaf_read_feeds_type_checks() {
+    let found = check_module(
+        "singleton-keyed-leaf",
+        "module m\n\
+         resource Settings at ^settings\n    counts(name: string): int\n\n\
+         fn f(name: string): int\n    return ^settings.counts(name)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_singleton_keyed_group_field_read_feeds_type_checks() {
+    let found = check_module(
+        "singleton-keyed-group-field",
+        "module m\n\
+         resource Settings at ^settings\n    tokens(pos: int)\n        kind: string\n\n\
+         fn f(pos: int): string\n    return ^settings.tokens(pos).kind\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn a_singleton_whole_read_and_write_are_not_flagged() {
     // `var s: Settings = ^settings` and `^settings = s` address the keyless
     // root directly; neither should raise a false unresolved or type diagnostic.
@@ -2527,6 +2999,32 @@ fn a_correctly_typed_unkeyed_group_field_read_is_not_flagged() {
         "check.return_type",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_optional_group_field_read_preserves_the_leaf_type() {
+    let found = check_module(
+        "optional-group-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20   binding\n        cover: string\n\n\
+         fn cover(id: Book::Id): string\n    return ^books(id)?.binding?.cover\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn type_surface_optional_keyed_root_chain_is_not_a_typed_leaf() {
+    let found = check_module(
+        "optional-keyed-root-chain",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20   binding\n        cover: string\n\n\
+         fn cover(): string\n    return ^books?.binding?.cover\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -2925,6 +3423,69 @@ fn an_identity_constructor_rejects_a_wrong_typed_named_composite_key() {
          resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
          fn f()\n    const id = Pair::Id(a: 7, b: 9)\n",
         "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_the_wrong_key_count() {
+    let found = check_module(
+        "ctor-key-count",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         fn f()\n    const id = Author::Id()\n    const extra = Author::Id(1, 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_requires_missing_named_keys() {
+    let found = check_module(
+        "ctor-named-missing-key",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("b"), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_unknown_named_keys() {
+    let found = check_module(
+        "ctor-named-unknown-key",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7, c: \"x\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("c"), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_duplicate_named_keys() {
+    let found = check_module(
+        "ctor-named-duplicate-key",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7, a: 8)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("a"), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_mixed_positional_and_named_keys() {
+    let found = check_module(
+        "ctor-mixed-keys",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(7, b: \"x\")\n",
+        "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
@@ -3332,8 +3893,8 @@ fn check_tests_catches_a_wrong_enum_to_a_qualified_project_parameter() {
     let report = check_tests_report(
         "check-tests-enum-arg",
         "module app\n\
-         enum Status\n    active\n    archived\n\n\
-         enum Color\n    red\n    green\n\n\
+         pub enum Status\n    active\n    archived\n\n\
+         pub enum Color\n    red\n    green\n\n\
          pub fn dispatch(s: app::Status): int\n    \
          match s\n        active\n            return 1\n        archived\n            return 2\n",
         "pub fn t()\n    var n = app::dispatch(app::Color::green)\n",
@@ -3481,6 +4042,53 @@ fn catch_with_error_type_and_bare_catch_are_allowed() {
 }
 
 #[test]
+fn throw_requires_an_error_value() {
+    let found = check_script(
+        "throw-non-error",
+        "fn f()\n    throw \"oops\"\n",
+        "check.throw_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn throwing_an_error_value_is_allowed() {
+    let found = check_script(
+        "throw-error",
+        "fn f()\n    throw Error(code: \"test.error\", message: \"oops\")\n",
+        "check.throw_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn try_requires_a_catch_or_finally_clause() {
+    let found = check_script(
+        "bare-try",
+        "fn f()\n    try\n        write(\"x\")\n",
+        "check.try_handler",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn try_with_catch_or_finally_is_allowed() {
+    let with_catch = check_script(
+        "try-catch",
+        "fn f()\n    try\n        write(\"x\")\n    catch e\n        return\n",
+        "check.try_handler",
+    );
+    assert!(with_catch.is_empty(), "{with_catch:#?}");
+
+    let with_finally = check_script(
+        "try-finally",
+        "fn f()\n    try\n        write(\"x\")\n    finally\n        write(\"done\")\n",
+        "check.try_handler",
+    );
+    assert!(with_finally.is_empty(), "{with_finally:#?}");
+}
+
+#[test]
 fn call_shaped_assignment_target_is_rejected() {
     // `f(x) = y`: a call on a bare name is not a writable place.
     let found = check_script(
@@ -3620,12 +4228,36 @@ fn appending_to_the_sequence_a_loop_traverses_is_rejected() {
 }
 
 #[test]
+fn appending_to_a_string_keyed_layer_is_rejected() {
+    let found = check_module(
+        "append-string-keyed",
+        "module m\n\
+         resource Doc at ^docs(id: int)\n    required title: string\n    scores(who: string): int\n\n\
+         fn f()\n    append(^docs(1).scores, 7)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn writing_a_keyed_leaf_the_loop_traverses_is_rejected() {
     let found = check_module(
         "loop-write-leaf",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
          fn f()\n    for pos in keys(^books(1).tags)\n        ^books(1).tags(pos) = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn reversed_loop_mutating_the_traversed_layer_is_rejected() {
+    let found = check_module(
+        "loop-reversed-append-seq",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         fn f()\n    for tag in reversed(^books(1).tags)\n        append(^books(1).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -3671,6 +4303,31 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn lock_targets_must_be_saved_roots_records_or_subtrees() {
+    let found = check_module(
+        "lock-targets",
+        "module m\n\
+         resource Cell at ^cells(id: int)\n    required v: int\n\
+         fn lockLocal()\n    var x: int = 1\n    lock x\n        x = 2\n\
+         fn lockField(id: int)\n    lock ^cells(id).v\n        ^cells(id).v = 2\n\
+         fn lockLiteral()\n    lock 5\n        print(\"nope\")\n",
+        "check.lock_target",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+}
+
+#[test]
+fn saved_root_record_and_group_lock_targets_are_allowed() {
+    let report = check_module_report(
+        "lock-targets-ok",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    notes(pos: int)\n        body: string\n\
+         fn ok(id: int, pos: int)\n    lock ^books\n        print(\"root\")\n    lock ^books(id)\n        print(\"record\")\n    lock ^books(id).notes\n        print(\"layer\")\n    lock ^books(id).notes(pos)\n        ^books(id).notes(pos).body = \"x\"\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 // --- W1 unified resolver: module-aware, visibility-aware call resolution ---
@@ -3749,6 +4406,60 @@ fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
         "a private function resolves by name, so it is not also unresolved: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn cross_module_use_of_a_private_enum_is_a_visibility_error() {
+    let root = temp_project("cross-private-enum", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             enum Hidden\n    one\n    two\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\n\
+             fn f(): a::Hidden\n    return a::Hidden::one\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.private_enum");
+    assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
+    assert!(
+        found
+            .iter()
+            .all(|diagnostic| diagnostic.message.contains("a::Hidden")),
+        "{found:#?}"
+    );
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn cross_module_use_of_a_public_enum_checks_clean() {
+    let root = temp_project("cross-public-enum", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             pub enum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\n\
+             fn f(): a::Status\n    return a::Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -3934,6 +4645,28 @@ fn comparing_two_different_enums_is_an_operator_error() {
 }
 
 #[test]
+fn enum_operator_errors_do_not_emit_untyped_return_hints() {
+    let report = check_module_report(
+        "enum-operator-no-untyped-cascade",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn ordered(): bool\n    return Status::active < Status::archived\n\n\
+         fn added(): Status\n    return Status::active + Status::archived\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.operator_type").len(),
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn an_exhaustive_match_over_an_enum_checks_clean() {
     let report = check_module_report(
         "match-ok",
@@ -4092,6 +4825,29 @@ fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
 }
 
 #[test]
+fn assignment_between_same_named_enums_qualifies_the_message() {
+    let root = temp_project("enum-same-name-assign-message", |root| {
+        write(root, "src/a.mw", "module a\npub enum Color\n    red\n");
+        write(root, "src/b.mw", "module b\npub enum Color\n    blue\n");
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             fn f()\n    var c: a::Color = a::Color::red\n    c = b::Color::blue\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.assignment_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        found[0].message.contains("a::Color") && found[0].message.contains("b::Color"),
+        "{}",
+        found[0].message
+    );
+}
+
+#[test]
 fn writing_a_different_enum_into_an_enum_saved_field_is_a_check_error() {
     // The saved field `state: Status` is written a `Color` value: a nominal
     // mismatch at the saved-field write boundary.
@@ -4105,6 +4861,25 @@ fn writing_a_different_enum_into_an_enum_saved_field_is_a_check_error() {
         "check.assignment_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_qualified_enum_saved_field_declaration_checks_clean() {
+    let root = temp_project("qualified-enum-saved-field", |root| {
+        write(
+            root,
+            "src/pkg/kinds.mw",
+            "module pkg::kinds\n\nenum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\nuse pkg::kinds\n\nresource Saved at ^saved(id: int)\n    required k: kinds::Color\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -4154,6 +4929,24 @@ fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
 }
 
 #[test]
+fn a_singleton_keyed_enum_leaf_read_types_as_that_enum() {
+    let report = check_module_report(
+        "enum-singleton-keyed-leaf-read",
+        "module m\n\
+         enum Kind\n    number\n    plus\n\n\
+         resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
+         fn readBack(): int\n    \
+         var k: Kind = ^session.kinds(1)\n    \
+         match ^session.kinds(1)\n        number\n            return 0\n        plus\n            return 1\n",
+    );
+    assert!(
+        !report.has_errors(),
+        "a keyed enum leaf under a singleton saved root must read as its enum: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
     // `s: b::Status` is a qualified enum annotation. The match over it must resolve
     // to `b::Status` and enforce exhaustiveness; missing `closed` is a check error,
@@ -4162,7 +4955,7 @@ fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,
@@ -4188,12 +4981,12 @@ fn passing_a_third_modules_enum_to_a_qualified_parameter_is_a_check_error() {
         write(
             root,
             "src/a.mw",
-            "module a\nenum Status\n    active\n    archived\n",
+            "module a\npub enum Status\n    active\n    archived\n",
         );
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n\n\
+            "module b\npub enum Status\n    open\n    closed\n\n\
              pub fn classify(s: Status): int\n    \
              match s\n        open\n            return 1\n        closed\n            return 2\n",
         );
@@ -4227,7 +5020,7 @@ fn a_bare_foreign_only_enum_annotation_resolves_to_the_real_owner_not_a_phantom(
         write(
             root,
             "src/a.mw",
-            "module a\nenum Status\n    active\n    archived\n",
+            "module a\npub enum Status\n    active\n    archived\n",
         );
         write(
             root,
@@ -4264,7 +5057,7 @@ fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4290,7 +5083,7 @@ fn passing_a_raw_scalar_to_a_qualified_enum_parameter_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4365,7 +5158,7 @@ fn a_wrong_enum_to_a_qualified_parameter_in_an_equality_body_is_a_check_error() 
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn isActive(s: b::Status): bool\n    return s == b::Status::active\n",
         );
         write(
@@ -4394,7 +5187,7 @@ fn a_wrong_enum_to_a_qualified_parameter_inside_a_loop_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4420,7 +5213,7 @@ fn passing_the_matching_enum_to_a_qualified_parameter_checks_clean() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4486,7 +5279,7 @@ fn a_qualified_enum_var_annotation_accepts_the_same_qualified_member() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,
@@ -4509,7 +5302,7 @@ fn a_match_over_a_qualified_member_typed_local_dispatches_clean() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,

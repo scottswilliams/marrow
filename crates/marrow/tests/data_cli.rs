@@ -164,6 +164,43 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
 }
 
 #[test]
+fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
+    let project = temp_dir("data-integrity-singleton-members");
+    write(
+        &project,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         use std::clock\n\n\
+         resource Settings at ^settings\n\
+         \x20\x20\x20\x20maxLoans: int\n\
+         \x20\x20\x20\x20theme: string\n\n\
+         resource Hits at ^hits\n\
+         \x20\x20\x20\x20when(moment: instant): int\n\n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20^settings.maxLoans = 5\n\
+         \x20\x20\x20\x20^settings.theme = \"dark\"\n\
+         \x20\x20\x20\x20^hits.when(std::clock::parseInstant(\"2020-01-01T00:00:00Z\")) = 1\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0)
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(stdout.contains("integrity verified"), "{stdout}");
+}
+
+#[test]
 fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     use marrow_store::path::{PathSegment, SavedKey, encode_path};
 

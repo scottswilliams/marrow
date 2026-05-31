@@ -73,6 +73,18 @@ fn a_range_loop_variable_is_typed_as_its_endpoint() {
 }
 
 #[test]
+fn a_range_cannot_initialize_a_local_constant() {
+    let codes = codes(&module("    const r = 1..10\n"));
+    assert!(codes.iter().any(|c| c == "check.range_value"), "{codes:?}");
+}
+
+#[test]
+fn a_bare_range_expression_statement_is_rejected() {
+    let codes = codes(&module("    1..10\n"));
+    assert!(codes.iter().any(|c| c == "check.range_value"), "{codes:?}");
+}
+
+#[test]
 fn misusing_the_loop_variable_as_a_wrong_type_is_a_check_error() {
     // `i` is an int; concatenating it as a string is an operator error, which only
     // fires because the loop variable carries its endpoint type.
