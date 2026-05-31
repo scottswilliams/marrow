@@ -143,6 +143,7 @@ pub(crate) fn check_file_types(
     parsed: &marrow_syntax::ParsedSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    let has_parse_errors = parsed.has_errors();
     let FilePrelude {
         aliases,
         module_constants,
@@ -172,6 +173,9 @@ pub(crate) fn check_file_types(
                         &annotation_context,
                         diagnostics,
                     );
+                }
+                if has_parse_errors {
+                    continue;
                 }
                 check_return_values(
                     file,

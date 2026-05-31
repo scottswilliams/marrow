@@ -371,29 +371,31 @@ fn is_builtin_call(segments: &[String]) -> bool {
         // The single-name builtins, grouped by purpose. Each
         // dispatches before user-function resolution at runtime, so none is ever a
         // declared program function.
-        [name] => {
-            matches!(
-                name.as_str(),
-                // presence and reads
-                "exists"
-                // tree traversal
-                | "keys" | "values" | "entries" | "count"
-                // ordered navigation
-                | "reversed" | "next" | "prev"
-                // sequence updates and id allocation
-                | "append" | "nextId"
-                // write and print
-                | "write" | "print"
-                // error constructor
-                | "Error" // conversions: the nine storable scalars, by canonical name.
-            ) || ScalarType::from_scalar_name(name).is_some()
-        }
+        [name] => is_builtin_name(name),
         // A `std::module::op` builtin must name a real std module, mirroring
         // import resolution (`is_std_module`/`std_modules`); an unknown submodule
         // is not a builtin, so it is reported like a rejected `use std::bogus`.
         [first, module, _] => first == "std" && std_modules().contains(&module.as_str()),
         _ => false,
     }
+}
+
+fn is_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        // presence and reads
+        "exists"
+        // tree traversal
+        | "keys" | "values" | "entries" | "count"
+        // ordered navigation
+        | "reversed" | "next" | "prev"
+        // sequence updates and id allocation
+        | "append" | "nextId"
+        // write and print
+        | "write" | "print"
+        // error constructor
+        | "Error" // conversions: the nine storable scalars, by canonical name.
+    ) || ScalarType::from_scalar_name(name).is_some()
 }
 
 /// The return type of a single-name data builtin: `exists(path): bool` and
@@ -1006,10 +1008,22 @@ fn check_duplicate_declarations(
     introduced.sort_by_key(|(_, span, _)| (span.line, span.start_byte));
 
     let mut first_seen: HashMap<&str, SourceSpan> = HashMap::new();
-    for (name, span, _kind) in &introduced {
+    for (name, span, kind) in &introduced {
         // The parser leaves a failed declaration with an empty name; do not
         // treat those as colliding with each other.
         if name.is_empty() {
+            continue;
+        }
+        if *kind != "import" && is_builtin_name(name) {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_DUPLICATE_DECLARATION,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "`{name}` is a builtin name and cannot be used as a module-level {kind}"
+                ),
+                span: *span,
+            });
             continue;
         }
         match first_seen.get(name) {

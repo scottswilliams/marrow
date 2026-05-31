@@ -456,6 +456,15 @@ impl<'a> ExprParser<'a> {
                 }
             }
             TokenKind::InterpolationStart => self.interpolation_expr(),
+            TokenKind::Keyword(_) => {
+                let keyword = token.text(self.source);
+                self.error(
+                    token.span,
+                    format!("`{keyword}` is a keyword and cannot be used as an expression"),
+                    Some("choose an identifier that is not reserved".to_string()),
+                );
+                None
+            }
             _ => None,
         }
     }

@@ -1791,6 +1791,39 @@ fn reserved_word_as_const_name_is_rejected() {
 }
 
 #[test]
+fn reserved_word_as_var_name_reports_variable_name_diagnostic() {
+    // `out` is reserved as a parameter-mode keyword. In a binding position the
+    // parser should diagnose the binding name itself, not drop the statement and
+    // cascade through the rest of the body.
+    let parsed = parse_source("module app\nfn f(): int\n    var out: int = 0\n    return out\n");
+
+    assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics[0]
+            .message
+            .contains("expected variable name"),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+    assert_eq!(parsed.diagnostics[0].span.line, 3);
+    assert!(
+        parsed.diagnostics[1]
+            .message
+            .contains("cannot be used as an expression"),
+        "{:#?}",
+        parsed.diagnostics[1]
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("expected a statement")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn rejects_malformed_type_annotations() {
     for source in [
         "module app\nconst Max: = 1\n",

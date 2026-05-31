@@ -54,6 +54,34 @@ fn check_reports_parse_diagnostics() {
 }
 
 #[test]
+fn check_reserved_word_binding_reports_parse_errors_without_control_flow_cascade() {
+    let dir = temp_project_dir("reserved-binding");
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("src/m.mw"),
+        "module m\n\npub fn f(): int\n    var out: int = 0\n    return out\n",
+    )
+    .expect("write source");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&dir)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_dir_all(&dir).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("expected variable name"), "{stderr}");
+    assert!(
+        stderr.contains("cannot be used as an expression"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("expected a statement"), "{stderr}");
+    assert!(!stderr.contains("check.missing_return"), "{stderr}");
+}
+
+#[test]
 fn check_reports_obsolete_operators_in_function_bodies() {
     let path = temp_source(
         "obsolete-op-body",
@@ -327,4 +355,29 @@ fn check_rejects_a_project_with_two_module_less_scripts() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("check.multiple_scripts"), "{stderr}");
+}
+
+#[test]
+fn check_rejects_module_declarations_named_like_builtins() {
+    let dir = temp_project_dir("builtin-shadow");
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("src/app.mw"),
+        "module app\n\nfn exists(x: int): int\n    return x\n\nconst keys = 1\n",
+    )
+    .expect("write source");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&dir)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_dir_all(&dir).ok();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.duplicate_declaration"), "{stderr}");
+    assert!(stderr.contains("builtin"), "{stderr}");
+    assert!(stderr.contains("exists"), "{stderr}");
+    assert!(stderr.contains("keys"), "{stderr}");
 }

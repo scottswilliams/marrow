@@ -2159,6 +2159,20 @@ fn parse_const_or_var(
     let keyword = line[0];
     let name_token = line.get(1)?;
     if name_token.kind != TokenKind::Identifier {
+        if matches!(name_token.kind, TokenKind::Keyword(_)) {
+            let kind = if is_var { "variable" } else { "const" };
+            diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                kind: "parse",
+                severity: Severity::Error,
+                message: format!(
+                    "expected {kind} name; `{}` is a keyword",
+                    name_token.text(source)
+                ),
+                help: Some("choose an identifier that is not reserved".to_string()),
+                span: name_token.span,
+            });
+        }
         return None;
     }
     let name = name_token.text(source).to_string();
