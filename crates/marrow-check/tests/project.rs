@@ -2840,6 +2840,21 @@ fn type_surface_caught_error_fields_have_declared_types() {
 }
 
 #[test]
+fn type_surface_ledger_reads_and_traversals_have_concrete_types() {
+    let report = check_module_report(
+        "ledger-type-surfaces",
+        "module m\n\
+         resource Account at ^accounts(code: string)\n    required name: string\n    amounts(pos: int): decimal\n\n\
+         fn sumAmounts(code: Account::Id): decimal\n    var sum: decimal = 0.0\n    for amount in values(^accounts(code).amounts)\n        sum = sum + amount\n    return sum\n\n\
+         fn countAccounts(): int\n    return count(^accounts)\n\n\
+         fn ids()\n    for code in keys(^accounts)\n        const typed: Account::Id = code\n\n\
+         fn accounts()\n    for account in ^accounts\n        const name: string = account.name\n\n\
+         fn handle(): bool\n    try\n        throw Error(code: \"x.y\", message: \"m\")\n    catch err: Error\n        return err.code == ErrorCode(\"x.y\")\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn a_group_field_read_feeds_type_checks() {
     // `^books(1).versions(2).title` is `string` from the group schema, but `f`
     // returns `int`.

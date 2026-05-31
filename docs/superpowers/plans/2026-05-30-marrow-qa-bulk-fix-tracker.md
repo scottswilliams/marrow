@@ -13,6 +13,5 @@ Source ledgers:
 
 | Package | Area | Count | Design Input | Conflict Watch | Finding IDs |
 |---|---|---:|---|---|---|
-| P8 | Type surfaces for reads and traversal | 2 | No | `element-loop-semantics`, `lsp-check-diagnostics` | `algo-fizzbuzz#3`, `app-double-entry-ledger#3` |
 
-Open issue count: 2.
+Open issue count: 0.
