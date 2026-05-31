@@ -74,6 +74,11 @@ pub(crate) fn eval_count(
             _ => Err(unsupported("counting this value", span)),
         };
     }
+    if is_keyed_primary_root(&arg.value, env) {
+        let count =
+            i64::try_from(enumerate_layer(&arg.value, env)?.len()).map_err(|_| overflow(span))?;
+        return Ok(Value::Int(count));
+    }
     if let Some(values) = unique_index_lookup_values(&arg.value, span, Direction::Ascending, env)? {
         return Ok(Value::Int(values.len() as i64));
     }
@@ -101,6 +106,14 @@ pub(crate) fn eval_count(
             .is_some() as usize
     };
     Ok(Value::Int(count as i64))
+}
+
+fn is_keyed_primary_root(expr: &Expression, env: &Env<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::SavedRoot { name, .. }
+            if root_identity_arity(env.program, name).is_some_and(|arity| arity > 0)
+    )
 }
 
 /// Whether `expr` is any declared index lookup `^root.index(args…)` — a `Call`

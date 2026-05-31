@@ -118,6 +118,10 @@ pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_sing
 /// single key position to seek). The runtime would reject these with an
 /// uncatchable `run.unsupported` fault; the checker catches it before a run.
 pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
+/// `values`/`entries` is applied to an address-only collection such as a
+/// non-unique index branch. These shapes are valid for key traversal, but they do
+/// not have materialized values distinct from their keys.
+pub const CHECK_COLLECTION_UNSUPPORTED: &str = "check.collection_unsupported";
 /// A `lock` target is not a saved root, record, or subtree.
 pub const CHECK_LOCK_TARGET: &str = "check.lock_target";
 /// A numeric literal is provably outside its type's range: an integer literal

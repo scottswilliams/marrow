@@ -7149,10 +7149,58 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
         Some(Value::Int(1))
     );
     assert!(matches!(call("test::countRecord", &[Value::Int(1)]), Some(Value::Int(n)) if n >= 1));
-    // A primary root keeps its existing read/child-keys count: it walks the root's
-    // immediate children, which includes the declared `byShelf` index node beside
-    // the three record keys. This fix does not touch the primary-root path.
-    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(4)));
+    // A primary root counts the record identities that direct iteration yields,
+    // not generated index branches stored beside the records.
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(3)));
+}
+
+#[test]
+fn count_over_an_indexed_root_ignores_populated_index_branches() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\nfn countRoot(): int\n    return count(^books)\n\nfn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let call =
+        |entry: &str, args: &[Value]| run_entry(&program, &store, entry, args).expect(entry).value;
+
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(0)));
+    call(
+        "test::add",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("fiction".into()),
+        ],
+    );
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(1)));
+    assert_eq!(call("test::iterRoot", &[]), Some(Value::Int(1)));
+
+    call(
+        "test::addIsbn",
+        &[Value::Int(1), Value::Str("ISBN-1".into())],
+    );
+    assert_eq!(call("test::countRoot", &[]), Some(Value::Int(1)));
+    assert_eq!(call("test::iterRoot", &[]), Some(Value::Int(1)));
+}
+
+#[test]
+fn count_over_a_composite_root_matches_direct_iteration() {
+    let program = checked_program(
+        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\nfn put(x: int, y: int, value: int)\n    ^cells(Cell::Id(x: x, y: y)).value = value\n\nfn countRoot(): int\n    return count(^cells)\n\nfn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
+        run_entry(
+            &program,
+            &store,
+            "test::put",
+            &[Value::Int(x), Value::Int(y), Value::Int(value)],
+        )
+        .expect("put");
+    }
+    let call = |entry: &str| run_entry(&program, &store, entry, &[]).expect(entry).value;
+    assert_eq!(call("test::countRoot"), Some(Value::Int(3)));
+    assert_eq!(call("test::iterRoot"), Some(Value::Int(3)));
 }
 
 /// A resource carrying both a keyed-leaf layer (`tags(pos: int): string`) and a

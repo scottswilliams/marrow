@@ -2190,6 +2190,44 @@ fn supported_collection_wrappers_bind_their_documented_shapes() {
 }
 
 #[test]
+fn layer_key_traversal_binds_declared_key_types() {
+    let report = check_module_report(
+        "layer-key-traversal-types",
+        "module m\n\
+         resource Run at ^runs(id: int)\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\n\
+         fn f(id: Run::Id)\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn composite_root_traversal_binds_addressable_identities() {
+    let report = check_module_report(
+        "composite-root-traversal-id",
+        "module m\n\
+         resource Cell at ^cells(x: int, y: int)\n    required v: int\n\n\
+         fn f()\n    for id, cell in ^cells\n        const same: int = ^cells(id).v\n        const copy: int = cell.v\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn index_branches_reject_value_materialization_wrappers() {
+    for wrapper in ["values", "entries"] {
+        let found = check_module(
+            &format!("index-{wrapper}-unsupported"),
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+                 fn f()\n    for item in {wrapper}(^books.byShelf(\"fiction\"))\n        write($\"{{item}}\")\n",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{wrapper}: {found:#?}");
+    }
+}
+
+#[test]
 fn reversed_saved_collection_expressions_type_element_sequences() {
     let found = check_module(
         "reversed-saved-expressions",

@@ -2272,6 +2272,12 @@ pub(crate) fn check_call(
                 check_arity(name, 1, args, span, file, diagnostics);
                 return check_neighbor(program, name, args, arg_types, span, file, diagnostics);
             }
+            "values" | "entries" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
+                check_arity(name, 1, args, span, file, diagnostics);
+                check_value_materialization_args(program, name, args, span, file, diagnostics);
+                return MarrowType::Unknown;
+            }
             "append" => {
                 check_plain_call_modes(name, args, span, file, diagnostics);
                 check_arity(name, 2, args, span, file, diagnostics);
@@ -2508,6 +2514,28 @@ fn check_builtin_call_args(
     if let Some(target) = ScalarType::from_scalar_name(name) {
         check_conversion_arg(name, target, arg_types, span, file, diagnostics);
     }
+}
+
+fn check_value_materialization_args(
+    program: &CheckedProgram,
+    name: &str,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [arg] = args else { return };
+    if arg.mode.is_some() || arg.name.is_some() || !is_saved_index_branch_path(program, &arg.value)
+    {
+        return;
+    }
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_COLLECTION_UNSUPPORTED,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: format!("`{name}` cannot materialize values from an index branch; use `keys`"),
+        span,
+    });
 }
 
 fn check_append_args(
