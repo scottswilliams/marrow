@@ -55,9 +55,9 @@ struct StmtParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     pos: usize,
-    /// Ordinary `;` comments for the block currently being parsed, in source
-    /// order. Each nested block swaps in a fresh accumulator (see
-    /// `parse_nested_block`) so a comment lands in the block it appears in.
+    /// Line comments for the block currently being parsed, in source order.
+    /// Each nested block swaps in a fresh accumulator (see `parse_nested_block`)
+    /// so a comment lands in the block it appears in.
     comments: Vec<Comment>,
     /// Parse errors for statement lines the body parser cannot structure, so a
     /// malformed statement becomes a deterministic diagnostic instead of being
@@ -67,17 +67,9 @@ struct StmtParser<'a> {
 
 impl<'a> StmtParser<'a> {
     fn new(source: &'a str, tokens: &[Token]) -> Self {
-        // Drop doc comments (they attach to declarations, not body statements)
-        // but keep ordinary `;` comments in the stream: they are collected as
-        // block trivia during parsing so the formatter can re-emit them.
-        let tokens = tokens
-            .iter()
-            .copied()
-            .filter(|token| token.kind != TokenKind::DocComment)
-            .collect();
         Self {
             source,
-            tokens,
+            tokens: tokens.to_vec(),
             pos: 0,
             comments: Vec::new(),
             diagnostics: Vec::new(),
@@ -119,7 +111,7 @@ impl<'a> StmtParser<'a> {
                 TokenKind::Newline => {
                     self.advance();
                 }
-                TokenKind::Comment => self.take_own_line_comment(),
+                kind if is_line_comment(kind) => self.take_own_line_comment(),
                 TokenKind::Indent => {
                     // A stray nested block (e.g. under a swallowed compound
                     // statement). Skip it rather than mis-parse.
@@ -188,12 +180,12 @@ impl<'a> StmtParser<'a> {
         statement
     }
 
-    /// If the token just before `line_end` is a trailing `;` comment, record it
-    /// as a `Trailing` comment for the current block and return the index that
+    /// If the token just before `line_end` is a trailing comment, record it as
+    /// a `Trailing` comment for the current block and return the index that
     /// excludes it; otherwise return `line_end` unchanged. `line_end` is the
     /// index of the `NEWLINE`/`INDENT`/`DEDENT` that ends the current line.
     fn split_trailing_comment(&mut self, line_end: usize) -> usize {
-        if line_end > self.pos && self.tokens[line_end - 1].kind == TokenKind::Comment {
+        if line_end > self.pos && is_line_comment(self.tokens[line_end - 1].kind) {
             let token = self.tokens[line_end - 1];
             self.comments.push(comment_from_token(
                 self.source,
@@ -398,7 +390,7 @@ impl<'a> StmtParser<'a> {
                     TokenKind::Newline => {
                         self.advance();
                     }
-                    TokenKind::Comment => self.take_own_line_comment(),
+                    kind if is_line_comment(kind) => self.take_own_line_comment(),
                     // A stray nested block under an arm header is skipped rather
                     // than mis-parsed; the arm header itself opens its own block.
                     TokenKind::Indent => {
@@ -490,7 +482,7 @@ impl<'a> StmtParser<'a> {
                     break;
                 }
                 TokenKind::Indent | TokenKind::Dedent => break,
-                TokenKind::Comment => {
+                kind if is_line_comment(kind) => {
                     let token = self.advance();
                     self.comments.push(comment_from_token(
                         self.source,
@@ -2358,7 +2350,11 @@ fn line_span(tokens: &[Token]) -> SourceSpan {
     }
 }
 
-/// Build a `Comment` from a `;` comment token, stripping the leading marker and
+fn is_line_comment(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Comment | TokenKind::DocComment)
+}
+
+/// Build a `Comment` from a line comment token, stripping the leading marker and
 /// surrounding whitespace so the formatter renders a canonical `; text` line.
 fn comment_from_token(source: &str, token: Token, placement: CommentPlacement) -> Comment {
     let text = token

@@ -272,6 +272,25 @@ fn formats_const_declaration_with_docs() {
 }
 
 #[test]
+fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
+    let source = "module app\n\
+         ;; First paragraph.\n\
+         ;;\n\
+         ;; Second paragraph.\n\
+         const MaxLoans: int = 5\n";
+    let expected = ";; First paragraph.\n\
+         ;;\n\
+         ;; Second paragraph.\n\
+         const MaxLoans: int = 5";
+    let formatted = format_decl(source, 0);
+    assert_eq!(formatted, expected);
+    assert!(
+        formatted.lines().all(|line| !line.ends_with(' ')),
+        "formatter output contains trailing whitespace:\n{formatted:?}"
+    );
+}
+
+#[test]
 fn formats_resource_declaration_with_members() {
     let source = "module app\n\
          resource Book at ^books(id: int)\n\
@@ -415,6 +434,22 @@ fn preserves_leading_standalone_and_trailing_comments() {
          \x20   const total: int = 0\n\
          \x20   print(total) ; show it\n\
          \x20   ; nothing left to do";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
+fn preserves_body_doc_comments_as_ordinary_comments() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   ;; first comment\n\
+         \x20   print(\"a\")\n\
+         \x20   ;; second comment\n\
+         \x20   print(\"b\")\n";
+    let expected = "\
+         \x20   ; first comment\n\
+         \x20   print(\"a\")\n\
+         \x20   ; second comment\n\
+         \x20   print(\"b\")";
     assert_eq!(format_function_body(source), expected);
 }
 

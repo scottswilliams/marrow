@@ -28,10 +28,10 @@ const INDENT: &str = "    ";
 /// Formatting normalizes layout (indentation, blank lines, doc-comment
 /// spacing), so the output is not byte-identical to arbitrary input but is a
 /// stable fixed point: `format_source(format_source(s)) == format_source(s)`.
-/// Ordinary `;` comments inside function bodies are retained as block trivia
-/// and re-emitted (see `format_block`). A comment in the middle of a value that
-/// spans several lines inside open delimiters is the one position the
-/// expression parser does not carry through.
+/// Line comments inside function bodies are retained as block trivia and
+/// re-emitted (see `format_block`). A comment in the middle of a value that
+/// spans several lines inside open delimiters is the one position the expression
+/// parser does not carry through.
 pub fn format_source(source: &str) -> String {
     let parsed = crate::parse_source(source);
     let file = &parsed.file;
@@ -241,7 +241,13 @@ fn format_return_type(return_type: &Option<TypeRef>) -> String {
 fn format_docs(docs: &[String], level: usize) -> String {
     let pad = INDENT.repeat(level);
     docs.iter()
-        .map(|doc| format!("{pad};; {doc}\n"))
+        .map(|doc| {
+            if doc.is_empty() {
+                format!("{pad};;\n")
+            } else {
+                format!("{pad};; {doc}\n")
+            }
+        })
         .collect::<String>()
 }
 
@@ -249,10 +255,10 @@ fn format_docs(docs: &[String], level: usize) -> String {
 /// per line, joined by newlines (no trailing newline). Nested blocks indent one
 /// level deeper.
 ///
-/// Ordinary `;` comments retained on the block are re-emitted so `parse ->
-/// format` round-trips them: own-line comments appear on their own line at the
-/// block indent, in source order between statements; a trailing comment is
-/// appended to the line of the statement it sits on.
+/// Line comments retained on the block are re-emitted so `parse -> format`
+/// round-trips them: own-line comments appear on their own line at the block
+/// indent, in source order between statements; a trailing comment is appended to
+/// the line of the statement it sits on.
 pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String {
     let mut lines: Vec<String> = Vec::new();
     // Comments are kept in source order; walk them in step with the statements.

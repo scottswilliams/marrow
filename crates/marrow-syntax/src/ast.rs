@@ -325,15 +325,15 @@ pub struct EnumMember {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
     pub statements: Vec<Statement>,
-    /// Ordinary `;` comments inside this block, in source order. They are kept
-    /// as block-level trivia (not attached to statement nodes) so the formatter
+    /// Line comments inside this block, in source order. They are kept as
+    /// block-level trivia (not attached to statement nodes) so the formatter
     /// can re-emit them and `parse -> format` round-trips comments losslessly.
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
-/// An ordinary `;` comment retained as block trivia. `text` is the comment body
-/// with the leading `;` marker and surrounding whitespace removed.
+/// A line comment retained as block trivia. `text` is the comment body with the
+/// leading marker and surrounding whitespace removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comment {
     pub text: String,
