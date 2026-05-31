@@ -238,6 +238,39 @@ fn maps_an_unknown_entry_to_a_runtime_code() {
 }
 
 #[test]
+fn run_cli_executes_element_oriented_collection_loops() {
+    let root = temp_project("run-element-loops", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20required title: string\n\
+             \x20\x20\x20\x20tags: sequence[string]\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^books(2).title = \"Sourcery\"\n\
+             \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20const tag: int = append(^books(1).tags, \"fiction\")\n\
+             \x20\x20\x20\x20for book in ^books\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print(book.title)\n\
+             \x20\x20\x20\x20for tag in ^books(1).tags\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print(tag)\n",
+        );
+    });
+    let output = run_run(&[root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "Mort\nSourcery\nfiction\n");
+}
+
+#[test]
 fn maintenance_flag_gates_a_whole_root_drop() {
     // A whole managed-root drop (`delete ^books`) is maintenance work. The
     // ordinary `marrow run` cannot reach it (rejected with the maintenance code);

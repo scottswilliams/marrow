@@ -5339,16 +5339,24 @@ fn a_non_unique_index_in_value_position_is_rejected() {
 const ENROLLMENT_STATUS: &str = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
+    student: string
+    course: string
 
     index byStatus(status, studentId, courseId)
 
 fn enroll(s: string, c: string, st: string)
     const id = Enrollment::Id(studentId: s, courseId: c)
     ^enrollments(id).status = st
+    ^enrollments(id).student = s
+    ^enrollments(id).course = c
 
 fn activeStatuses()
     for id in keys(^enrollments.byStatus(\"active\"))
         print(^enrollments(id).status)
+
+fn activeEnrollmentsDirect()
+    for id in ^enrollments.byStatus(\"active\")
+        print($\"{^enrollments(id).student}:{^enrollments(id).course}\")
 ";
 
 #[test]
@@ -5368,14 +5376,39 @@ fn traverses_a_composite_identity_index() {
         )
         .expect("enroll");
     };
+    enroll("student-1", "course-8", "active");
     enroll("student-1", "course-9", "active");
-    enroll("student-2", "course-9", "active");
-    enroll("student-3", "course-9", "dropped");
+    enroll("student-1", "course-7", "dropped");
 
     // Each reconstructed identity addresses its record: every active enrollment
     // reads back `active`. Two such entries exist, in (studentId, courseId) order.
     let outcome = run_entry(&program, &store, "test::activeStatuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\nactive\n");
+}
+
+#[test]
+fn direct_composite_identity_index_loop_yields_identities() {
+    let program = checked_program(ENROLLMENT_STATUS);
+    let store = RefCell::new(MemStore::new());
+    let enroll = |s: &str, c: &str, st: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::enroll",
+            &[
+                Value::Str(s.into()),
+                Value::Str(c.into()),
+                Value::Str(st.into()),
+            ],
+        )
+        .expect("enroll");
+    };
+    enroll("student-1", "course-8", "active");
+    enroll("student-1", "course-9", "active");
+    enroll("student-1", "course-7", "dropped");
+
+    let outcome = run_entry(&program, &store, "test::activeEnrollmentsDirect", &[]).expect("run");
+    assert_eq!(outcome.output, "student-1:course-8\nstudent-1:course-9\n");
 }
 
 // --- Unified saved-layer enumeration ---
@@ -5702,6 +5735,49 @@ fn iterates_a_keyed_child_tree() {
     // Bare child-layer iteration yields values in key order.
     let outcome = run_entry(&program, &store, "test::scores", &[]).expect("run");
     assert_eq!(outcome.output, "10\n7\n");
+}
+
+/// A keyed group layer iterates materialized entries, with two-name loops
+/// preserving the group address alongside the entry value.
+const BOOK_VERSION_LOOPS: &str = "\
+resource Book at ^books(id: int)
+    required title: string
+
+    versions(v: int)
+        required title: string
+
+fn seed()
+    ^books(1).title = \"Mort\"
+    ^books(1).versions(2).title = \"second\"
+    ^books(1).versions(1).title = \"first\"
+
+fn versionTitles()
+    for version in ^books(1).versions
+        print(version.title)
+
+fn versionEntries()
+    for v, version in ^books(1).versions
+        print($\"{v}: {version.title}\")
+";
+
+#[test]
+fn keyed_group_layer_loop_yields_materialized_entries() {
+    let program = checked_program(BOOK_VERSION_LOOPS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let outcome = run_entry(&program, &store, "test::versionTitles", &[]).expect("run");
+    assert_eq!(outcome.output, "first\nsecond\n");
+}
+
+#[test]
+fn two_name_keyed_group_layer_loop_yields_key_and_entry() {
+    let program = checked_program(BOOK_VERSION_LOOPS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let outcome = run_entry(&program, &store, "test::versionEntries", &[]).expect("run");
+    assert_eq!(outcome.output, "1: first\n2: second\n");
 }
 
 #[test]
