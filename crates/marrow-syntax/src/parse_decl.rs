@@ -1694,7 +1694,7 @@ fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<String>> {
         }
     }
     // A trailing `::` (an even count of tokens) leaves a separator with no segment.
-    if tokens.len() % 2 == 0 {
+    if tokens.len().is_multiple_of(2) {
         return None;
     }
     Some(segments)
