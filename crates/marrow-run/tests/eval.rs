@@ -550,6 +550,53 @@ fn append_grows_a_local_sequence() {
 }
 
 #[test]
+fn reads_and_writes_a_local_sequence_by_position() {
+    let program = checked_program(
+        "pub fn seq_index(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(1) = xs(1) + 5\n\
+         \x20   return xs(1)\n",
+    );
+    assert_eq!(
+        run(&program, "test::seq_index", &[]).unwrap(),
+        Some(Value::Int(15))
+    );
+}
+
+#[test]
+fn reads_writes_and_iterates_a_local_keyed_tree() {
+    let program = checked_program(
+        "pub fn keyed(): int\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var total = count(scores)\n\
+         \x20   for value in values(scores)\n\
+         \x20       total = total * 10 + value\n\
+         \x20   return total + scores(\"p2\")\n",
+    );
+    assert_eq!(
+        run(&program, "test::keyed", &[]).unwrap(),
+        Some(Value::Int(340))
+    );
+}
+
+#[test]
+fn reads_and_writes_a_multi_key_local_tree() {
+    let program = checked_program(
+        "pub fn keyed(day: date): int\n\
+         \x20   var counts(day: date, category: string): int\n\
+         \x20   counts(day, \"open\") = 3\n\
+         \x20   return counts(day, \"open\")\n",
+    );
+    assert_eq!(
+        run(&program, "test::keyed", &[Value::Date(1)]).unwrap(),
+        Some(Value::Int(3))
+    );
+}
+
+#[test]
 fn std_math_decimal_helpers() {
     // absDecimal yields a decimal; floor rounds toward negative infinity to an int.
     let program = checked_program(

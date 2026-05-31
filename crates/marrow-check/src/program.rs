@@ -123,6 +123,10 @@ pub enum MarrowType {
         name: String,
     },
     Sequence(Box<MarrowType>),
+    LocalTree {
+        keys: Vec<MarrowType>,
+        value: Box<MarrowType>,
+    },
     /// An expression whose own type check already produced a primary diagnostic.
     /// It suppresses secondary "untyped value" hints while still keeping unknown
     /// dynamic values distinct.

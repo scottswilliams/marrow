@@ -66,13 +66,7 @@ pub(crate) fn eval_count(
         return Err(type_error("`count` takes one argument", span));
     };
     if !is_saved_path(&arg.value) {
-        return match eval_expr(&arg.value, env)? {
-            Value::Sequence(items) => {
-                let count = i64::try_from(items.len()).map_err(|_| overflow(span))?;
-                Ok(Value::Int(count))
-            }
-            _ => Err(unsupported("counting this value", span)),
-        };
+        return local_collection_count(eval_expr(&arg.value, env)?, span);
     }
     if is_keyed_primary_root(&arg.value, env) {
         let count =
@@ -713,7 +707,7 @@ pub(crate) fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value,
         Value::Date(days) => canonical_value_text(SavedValue::Date(days), span)?,
         Value::Instant(nanos) => canonical_value_text(SavedValue::Instant(nanos), span)?,
         Value::Duration(nanos) => canonical_value_text(SavedValue::Duration(nanos), span)?,
-        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => {
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => {
             return Err(conversion_error("string", span));
         }
     };

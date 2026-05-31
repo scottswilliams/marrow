@@ -87,6 +87,7 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
         MarrowType::Identity(_)
             | MarrowType::Resource(_)
             | MarrowType::Sequence(_)
+            | MarrowType::LocalTree { .. }
             | MarrowType::Enum { .. }
     )
 }
@@ -117,6 +118,24 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
         MarrowType::Enum { .. } => Some(actual == expected),
         MarrowType::Sequence(element) => match actual {
             MarrowType::Sequence(other) => type_compatible(element, other),
+            _ => Some(false),
+        },
+        MarrowType::LocalTree { keys, value } => match actual {
+            MarrowType::LocalTree {
+                keys: other_keys,
+                value: other_value,
+            } if keys.len() == other_keys.len() => {
+                let keys_match = keys
+                    .iter()
+                    .zip(other_keys)
+                    .all(|(expected, actual)| type_compatible(expected, actual) == Some(true));
+                if keys_match {
+                    type_compatible(value, other_value)
+                } else {
+                    Some(false)
+                }
+            }
+            MarrowType::LocalTree { .. } => Some(false),
             _ => Some(false),
         },
         MarrowType::Error => Some(matches!(actual, MarrowType::Error)),
@@ -222,6 +241,7 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
         MarrowType::Resource(resource) => resource.clone(),
         MarrowType::Enum { name, .. } => name.clone(),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
+        MarrowType::LocalTree { value, .. } => format!("tree[{}]", marrow_type_name(value)),
         MarrowType::Invalid => "value".to_string(),
         MarrowType::Unknown => "value".to_string(),
     }

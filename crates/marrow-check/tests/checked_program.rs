@@ -219,6 +219,29 @@ fn reversed_preserves_the_sequence_element_type() {
     );
 }
 
+#[test]
+fn local_collections_can_be_subscripted() {
+    let root = temp_project("program-local-collection-subscript", |root| {
+        write(
+            root,
+            "src/shelf/local.mw",
+            "module shelf::local\n\
+             fn keyed(today: date): int\n\
+             \x20   var counts(day: date, category: string): int\n\
+             \x20   counts(today, \"open\") = 3\n\
+             \x20   return counts(today, \"open\")\n\
+             fn seqIndex(): int\n\
+             \x20   var xs: sequence[int]\n\
+             \x20   xs(1) = 10\n\
+             \x20   return xs(1)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
 /// `next(^root(id))` over a keyed root types to the resource identity, so
 /// `^root(next(^root(id))).field` reads the neighbor's field and checks clean —
 /// the navigated neighbor is a `Resource::Id`. `prev` mirrors it.

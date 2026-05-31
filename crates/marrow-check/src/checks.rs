@@ -2085,8 +2085,10 @@ pub(crate) fn check_equality(
         // An untyped operand defers: the scalar path handles untyped values.
         (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
         // Whole records and sequences have no equality at all.
-        (MarrowType::Resource(_) | MarrowType::Sequence(_), _)
-        | (_, MarrowType::Resource(_) | MarrowType::Sequence(_)) => reject(diagnostics),
+        (MarrowType::Resource(_) | MarrowType::Sequence(_) | MarrowType::LocalTree { .. }, _)
+        | (_, MarrowType::Resource(_) | MarrowType::Sequence(_) | MarrowType::LocalTree { .. }) => {
+            reject(diagnostics)
+        }
         // Identities compare nominally: equatable only against the same resource.
         (MarrowType::Identity(a), MarrowType::Identity(b)) => {
             if a == b {
@@ -2619,6 +2621,7 @@ fn conversion_source_supported(target_name: &str, target: ScalarType, source: &M
         MarrowType::Enum { .. }
         | MarrowType::Error
         | MarrowType::Identity(_)
+        | MarrowType::LocalTree { .. }
         | MarrowType::Resource(_)
         | MarrowType::Sequence(_) => false,
     }

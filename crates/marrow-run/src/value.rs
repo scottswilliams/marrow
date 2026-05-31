@@ -27,6 +27,7 @@ pub enum Value {
     /// An ordered, in-memory `sequence[T]` value, e.g. from `std::text::split`.
     /// Iterated by a `for` loop; not itself a scalar saved value.
     Sequence(Vec<Value>),
+    LocalTree(Vec<LocalTreeEntry>),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
@@ -64,6 +65,7 @@ impl Value {
             Value::Duration(n) => format!("duration({n})"),
             Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
+            Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
             // Preview the present field names, in schema order, without recursing
             // into their values (which could be large or nested resources).
             Value::Resource(fields) => {
@@ -141,9 +143,11 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Duration(n) => SavedValue::Duration(n),
         Value::Decimal(d) => SavedValue::Decimal(d),
         Value::Bytes(b) => SavedValue::Bytes(b),
-        // A whole sequence or resource is a tree, not a scalar saved value; an
-        // identity is opaque and is not stored as a field value.
-        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => return None,
+        // A whole local tree, sequence, or resource is not a scalar saved value;
+        // an identity is opaque and is not stored as a field value.
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => {
+            return None;
+        }
     })
 }
 
@@ -187,7 +191,14 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
         // An identity is not a single key — lowering splices its segments in
         // before reaching here.
         Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
+        Value::LocalTree(_) => None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTreeEntry {
+    pub keys: Vec<SavedKey>,
+    pub value: Value,
 }
 
 /// Decode a stored leaf's bytes to its runtime value by the leaf's kind: a scalar
@@ -229,6 +240,7 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Decimal(d) => d.to_text(),
         Value::Bytes(_) => return Err(unsupported("rendering a bytes value", span)),
         Value::Sequence(_) => return Err(unsupported("rendering a sequence value", span)),
+        Value::LocalTree(_) => return Err(unsupported("rendering a local tree value", span)),
         Value::Instant(_) => return Err(unsupported("rendering an instant value", span)),
         Value::Date(_) => return Err(unsupported("rendering a date value", span)),
         Value::Duration(_) => return Err(unsupported("rendering a duration value", span)),

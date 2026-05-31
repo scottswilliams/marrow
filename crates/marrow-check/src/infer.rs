@@ -53,29 +53,43 @@ pub(crate) fn local_binding(
 ) -> Option<(String, MarrowType)> {
     use marrow_syntax::Statement;
     let mut sink = Vec::new();
-    let (name, annotation, value_type) = match statement {
+    let (name, keys, annotation, value_type) = match statement {
         Statement::Const {
             name, ty, value, ..
         } => (
             name,
+            &[][..],
             ty,
             infer_type(program, value, scope, aliases, file, &mut sink),
         ),
         Statement::Var {
-            name, ty, value, ..
+            name,
+            keys,
+            ty,
+            value,
+            ..
         } => {
             let value_type = match value {
                 Some(value) => infer_type(program, value, scope, aliases, file, &mut sink),
                 None => MarrowType::Unknown,
             };
-            (name, ty, value_type)
+            (name, keys.as_slice(), ty, value_type)
         }
         _ => return None,
     };
-    Some((
-        name.clone(),
-        binding_type(annotation.as_ref(), value_type, program, aliases, file),
-    ))
+    let value = binding_type(annotation.as_ref(), value_type, program, aliases, file);
+    let ty = if keys.is_empty() {
+        value
+    } else {
+        MarrowType::LocalTree {
+            keys: keys
+                .iter()
+                .map(|key| MarrowType::resolve(&key.ty, TypeNames::default()))
+                .collect(),
+            value: Box::new(value),
+        }
+    };
+    Some((name.clone(), ty))
 }
 
 /// Infer an expression's type, recording a `check.operator_type` diagnostic for
@@ -181,6 +195,17 @@ pub(crate) fn infer_type(
                 .iter()
                 .map(|arg| infer_type(program, &arg.value, scope, aliases, file, diagnostics))
                 .collect();
+            if let Some(ty) = local_collection_access_type(
+                callee,
+                args,
+                &arg_types,
+                scope,
+                *span,
+                file,
+                diagnostics,
+            ) {
+                return ty;
+            }
             let call_type = check_call(
                 program,
                 callee,
@@ -305,6 +330,84 @@ pub(crate) fn infer_type(
         // multi-segment name has no known type.
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
+    }
+}
+
+fn local_collection_access_type(
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    scope: &[HashMap<String, MarrowType>],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return None;
+    };
+    let [name] = segments.as_slice() else {
+        return None;
+    };
+    match lookup_opt(scope, name)? {
+        MarrowType::Sequence(element) => {
+            check_local_key_count(name, 1, args.len(), span, file, diagnostics);
+            if let [arg_type] = arg_types
+                && !matches!(
+                    type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type),
+                    Some(true) | None
+                )
+            {
+                diagnostics.push(key_type_diagnostic(
+                    file,
+                    span,
+                    format!(
+                        "key `pos` expects `int`, but this value is `{}`",
+                        marrow_type_name(arg_type)
+                    ),
+                ));
+            }
+            Some(*element)
+        }
+        MarrowType::LocalTree { keys, value } => {
+            check_local_key_count(name, keys.len(), args.len(), span, file, diagnostics);
+            if keys.len() == arg_types.len() {
+                for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
+                    if matches!(type_compatible(expected, actual), Some(false)) {
+                        diagnostics.push(key_type_diagnostic(
+                            file,
+                            span,
+                            format!(
+                                "key {} expects `{}`, but this value is `{}`",
+                                index + 1,
+                                marrow_type_name(expected),
+                                marrow_type_name(actual)
+                            ),
+                        ));
+                    }
+                }
+            }
+            Some(*value)
+        }
+        _ => None,
+    }
+}
+
+fn check_local_key_count(
+    name: &str,
+    expected: usize,
+    actual: usize,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if expected != actual {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "local collection `{name}` expects {expected} key argument(s), but {actual} were given"
+            ),
+        ));
     }
 }
 

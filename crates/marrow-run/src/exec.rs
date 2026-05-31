@@ -58,7 +58,8 @@ pub(crate) fn eval_statement(
             span,
         } => {
             if !keys.is_empty() {
-                return Err(unsupported("a keyed local variable", *span));
+                env.bind(name.clone(), Value::LocalTree(Vec::new()), true);
+                return Ok(Flow::Normal);
             }
             let value = match value {
                 Some(expr) => eval_expr(expr, env)?,
@@ -100,6 +101,12 @@ pub(crate) fn eval_statement(
             } else if let Expression::SavedRoot { .. } = target {
                 eval_resource_write(target, value, *span, env)?;
             } else if let Expression::Call { callee, args, .. } = target {
+                if let Expression::Name { segments, .. } = callee.as_ref()
+                    && let [name] = segments.as_slice()
+                    && eval_local_collection_write(name, args, value, *span, env)?
+                {
+                    return Ok(Flow::Normal);
+                }
                 // `^root(key…).layer(key…) = v` (callee is a saved layer field) is a
                 // whole-group-entry write; `^root(key…) = v` (callee is the saved
                 // root) is a whole-resource write.
@@ -796,6 +803,13 @@ pub(crate) fn eval_collection(
     // through to `eval_expr`, which shapes those rows.
     if let Some(inner) = reversed_argument(iterable) {
         if let Some(layer) = keys_argument(inner) {
+            if !is_saved_path(layer) {
+                return enumerate_local_collection_dir(
+                    eval_expr(layer, env)?,
+                    Direction::Descending,
+                    iterable.span(),
+                );
+            }
             check_key_collection(layer, iterable.span(), env)?;
             return enumerate_layer_dir(layer, Direction::Descending, env);
         }
@@ -813,6 +827,13 @@ pub(crate) fn eval_collection(
         }
     }
     if let Some(path) = keys_argument(iterable) {
+        if !is_saved_path(path) {
+            return enumerate_local_collection_dir(
+                eval_expr(path, env)?,
+                Direction::Ascending,
+                iterable.span(),
+            );
+        }
         check_key_collection(path, iterable.span(), env)?;
         return enumerate_layer(path, env);
     }
@@ -830,6 +851,7 @@ pub(crate) fn eval_collection(
     }
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
+        Value::LocalTree(entries) => Ok(entries.into_iter().map(|entry| entry.value).collect()),
         _ => Err(unsupported("iterating this value", iterable.span())),
     }
 }
@@ -843,6 +865,15 @@ fn eval_collection_entries(
         && keys_argument(inner).is_none()
     {
         return materialize_entry_pairs(materialize_layer_dir(inner, Direction::Descending, env)?);
+    }
+    if let Some(inner) = values_or_entries(iterable)
+        && !is_saved_path(inner.layer)
+    {
+        return materialize_entry_pairs(materialize_local_collection_dir(
+            eval_expr(inner.layer, env)?,
+            Direction::Ascending,
+            iterable.span(),
+        )?);
     }
     if is_saved_path(iterable) {
         return materialize_entry_pairs(materialize_layer(iterable, env)?);

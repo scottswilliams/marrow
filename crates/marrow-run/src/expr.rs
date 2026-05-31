@@ -104,17 +104,25 @@ pub(crate) fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, R
         } => eval_binary(*op, left, right, *span, env),
         Expression::Call {
             callee, args, span, ..
-        } => match eval_call(callee, args, *span, env)? {
-            Some(value) => Ok(value),
-            None => Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_NO_VALUE,
-                message: "a call to a function that returns no value cannot be used as a value"
-                    .into(),
-                span: *span,
-            }),
-        },
+        } => {
+            if let Expression::Name { segments, .. } = callee.as_ref()
+                && let [name] = segments.as_slice()
+                && let Some(value) = eval_local_collection_read(name, args, *span, env)?
+            {
+                return Ok(value);
+            }
+            match eval_call(callee, args, *span, env)? {
+                Some(value) => Ok(value),
+                None => Err(RuntimeError {
+                    throw: None,
+                    origin: None,
+                    code: RUN_NO_VALUE,
+                    message: "a call to a function that returns no value cannot be used as a value"
+                        .into(),
+                    span: *span,
+                }),
+            }
+        }
         Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
         // A dotted field read: off a saved root (`^books(id).title`) it is a
         // saved read; off a local it reads the resource value's field.

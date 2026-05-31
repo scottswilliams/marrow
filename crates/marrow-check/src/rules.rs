@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use marrow_schema::Type;
 use marrow_syntax::{
     BinaryOp, Block, CatchClause, Expression, FunctionDecl, InterpolationPart, ParamMode, Severity,
     SourceSpan, Statement, format_expression,
@@ -46,7 +47,13 @@ pub(crate) fn check_function_body(
         .filter(|param| param.mode.is_none())
         .map(|param| param.name.clone())
         .collect();
-    walk_block(file, &function.body, &read_only_params, out);
+    walk_block(
+        file,
+        &function.body,
+        &read_only_params,
+        &HashSet::new(),
+        out,
+    );
     check_out_parameters_assigned(file, function, out);
     walk_loop_control_flow(file, &function.body, 0, &mut Vec::new(), out);
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
@@ -102,13 +109,19 @@ fn walk_block(
     file: &Path,
     block: &Block,
     read_only_params: &HashSet<String>,
+    inherited_local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
     let mut read_only_params = read_only_params.clone();
+    let mut local_collections = inherited_local_collections.clone();
     for statement in &block.statements {
-        walk_statement(file, statement, &read_only_params, out);
+        walk_statement(file, statement, &read_only_params, &local_collections, out);
         if let Some(name) = statement_binding_name(statement) {
             read_only_params.remove(name);
+            local_collections.remove(name);
+        }
+        if let Some(name) = local_collection_binding_name(statement) {
+            local_collections.insert(name);
         }
     }
 }
@@ -117,12 +130,13 @@ fn walk_statement(
     file: &Path,
     statement: &Statement,
     read_only_params: &HashSet<String>,
+    local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
     check_statement_out_argument_targets(file, statement, read_only_params, out);
     match statement {
         Statement::Assign { target, .. } | Statement::Merge { target, .. } => {
-            check_assignment_target(file, target, read_only_params, out);
+            check_assignment_target(file, target, read_only_params, local_collections, out);
         }
         Statement::If {
             then_block,
@@ -130,18 +144,26 @@ fn walk_statement(
             else_block,
             ..
         } => {
-            walk_block(file, then_block, read_only_params, out);
+            walk_block(file, then_block, read_only_params, local_collections, out);
             for else_if in else_ifs {
-                walk_block(file, &else_if.block, read_only_params, out);
+                walk_block(
+                    file,
+                    &else_if.block,
+                    read_only_params,
+                    local_collections,
+                    out,
+                );
             }
             if let Some(block) = else_block {
-                walk_block(file, block, read_only_params, out);
+                walk_block(file, block, read_only_params, local_collections, out);
             }
         }
         Statement::While { body, .. }
         | Statement::For { body, .. }
         | Statement::Transaction { body, .. }
-        | Statement::Lock { body, .. } => walk_block(file, body, read_only_params, out),
+        | Statement::Lock { body, .. } => {
+            walk_block(file, body, read_only_params, local_collections, out)
+        }
         Statement::Try {
             body,
             catch,
@@ -156,21 +178,21 @@ fn walk_statement(
                     "a `try` block must have a `catch` or `finally` clause",
                 ));
             }
-            walk_block(file, body, read_only_params, out);
+            walk_block(file, body, read_only_params, local_collections, out);
             if let Some(catch) = catch {
                 check_catch(file, catch, out);
-                walk_block(file, &catch.block, read_only_params, out);
+                walk_block(file, &catch.block, read_only_params, local_collections, out);
             }
             if let Some(finally) = finally {
                 // The finally block is also an ordinary block for the other
                 // rules, plus the escaping-control-flow rule.
-                walk_block(file, finally, read_only_params, out);
+                walk_block(file, finally, read_only_params, local_collections, out);
                 walk_finally(file, finally, 0, &mut Vec::new(), out);
             }
         }
         Statement::Match { arms, .. } => {
             for arm in arms {
-                walk_block(file, &arm.block, read_only_params, out);
+                walk_block(file, &arm.block, read_only_params, local_collections, out);
             }
         }
         _ => {}
@@ -308,9 +330,10 @@ fn check_assignment_target(
     file: &Path,
     target: &Expression,
     read_only_params: &HashSet<String>,
+    local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    if !is_assignable(target) {
+    if !is_assignable(target) && !is_local_collection_lookup(target, local_collections) {
         out.push(diagnostic(
             CHECK_INVALID_ASSIGN_TARGET,
             file,
@@ -330,6 +353,34 @@ fn check_assignment_target(
             &format!("parameter `{name}` is read-only"),
         ));
     }
+}
+
+fn local_collection_binding_name(statement: &Statement) -> Option<String> {
+    let Statement::Var { name, keys, ty, .. } = statement else {
+        return None;
+    };
+    if !keys.is_empty()
+        || ty
+            .as_ref()
+            .is_some_and(|ty| matches!(Type::resolve(ty), Type::Sequence(_)))
+    {
+        Some(name.clone())
+    } else {
+        None
+    }
+}
+
+fn is_local_collection_lookup(target: &Expression, local_collections: &HashSet<String>) -> bool {
+    let Expression::Call { callee, .. } = target else {
+        return false;
+    };
+    let Expression::Name { segments, .. } = callee.as_ref() else {
+        return false;
+    };
+    let [name] = segments.as_slice() else {
+        return false;
+    };
+    local_collections.contains(name)
 }
 
 fn check_out_parameters_assigned(
@@ -1051,8 +1102,8 @@ fn is_saved_path(expr: &Expression) -> bool {
 }
 
 /// A writable place: a bare name, a saved root, a field of a place, or a key
-/// lookup on a saved place. A parenthesized suffix on a bare name is a function
-/// call, not a place, so `f(x)` is rejected while `^books(id).title` is allowed.
+/// lookup on a saved place. Local collection lookups are scope-sensitive and are
+/// handled by `check_assignment_target`.
 pub(crate) fn is_assignable(target: &Expression) -> bool {
     match target {
         Expression::Name { segments, .. } => segments.len() == 1,
@@ -1075,7 +1126,7 @@ fn place_root_name(expr: &Expression) -> Option<&str> {
 }
 
 /// The callee of a key-lookup place: a saved root, a field of a place, or a
-/// further key lookup. A bare name callee is a function call, not a place.
+/// further key lookup.
 fn is_key_lookup_target(callee: &Expression) -> bool {
     match callee {
         Expression::SavedRoot { .. } => true,

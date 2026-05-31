@@ -679,6 +679,12 @@ fn value_matches_type(program: &CheckedProgram, expected: &MarrowType, value: &V
                 .all(|item| value_matches_type(program, element, item)),
             _ => false,
         },
+        MarrowType::LocalTree { value: element, .. } => match value {
+            Value::LocalTree(entries) => entries
+                .iter()
+                .all(|entry| value_matches_type(program, element, &entry.value)),
+            _ => false,
+        },
         MarrowType::Error => matches!(value, Value::Resource(_)),
         MarrowType::Invalid => true,
         MarrowType::Unknown => true,
@@ -695,7 +701,7 @@ fn value_scalar_type(value: &Value) -> Option<ScalarType> {
         Value::Duration(_) => Some(ScalarType::Duration),
         Value::Decimal(_) => Some(ScalarType::Decimal),
         Value::Bytes(_) => Some(ScalarType::Bytes),
-        Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => None,
     }
 }
 
