@@ -2340,6 +2340,7 @@ fn expr_of(
 fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
     let start = tokens[0].span.start_byte;
     let end = tokens[tokens.len() - 1].span.end_byte;
+    let span = join_spans(tokens[0].span, tokens[tokens.len() - 1].span);
     // A type is a qualified name, optionally wrapped in `sequence[...]`, so no
     // interior whitespace is significant. A type that wraps across physical lines
     // inside its brackets is stored by its canonical single-line spelling, with
@@ -2348,7 +2349,7 @@ fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
         .chars()
         .filter(|ch| !ch.is_whitespace())
         .collect();
-    TypeRef { text }
+    TypeRef { text, span }
 }
 
 fn line_span(tokens: &[Token]) -> SourceSpan {

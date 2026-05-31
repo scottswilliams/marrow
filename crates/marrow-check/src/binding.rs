@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_syntax::{
     Block, Declaration, EnumMember, Expression, MatchArm, ParsedSource, ResourceDecl,
-    ResourceMember, SourceSpan, Statement,
+    ResourceMember, SourceSpan, Statement, TypeRef,
 };
 
 use crate::MarrowType;
@@ -503,14 +503,15 @@ impl<'p> IndexBuilder<'p> {
     /// reconstructed lexical scope.
     fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource, source: &str) {
         let module = Self::module_name(parsed);
+        let prelude = file_prelude(self.program, file, parsed);
 
         for declaration in &parsed.file.declarations {
+            self.collect_type_refs(file, declaration, source, &prelude.aliases);
             if let Declaration::Function(function) = declaration {
                 // The function body runs under a scope of its parameters over the
                 // module's bindings. Parameters have no AST span, so a parameter
                 // binding is defined here at the function span and tracked by name.
                 let mut scope: Vec<HashMap<String, DefId>> = vec![HashMap::new()];
-                let prelude = file_prelude(self.program, file, parsed);
                 let mut type_scope: Vec<HashMap<String, MarrowType>> =
                     vec![prelude.module_constants.clone()];
                 for param in &function.params {
@@ -537,6 +538,95 @@ impl<'p> IndexBuilder<'p> {
                 };
                 walker.walk_block(&function.body, &mut scope, &mut type_scope);
             }
+        }
+    }
+
+    fn collect_type_refs(
+        &mut self,
+        file: &Path,
+        declaration: &Declaration,
+        source: &str,
+        aliases: &HashMap<String, Vec<String>>,
+    ) {
+        match declaration {
+            Declaration::Const(constant) => {
+                if let Some(ty) = &constant.ty {
+                    self.collect_type_ref(file, source, aliases, ty);
+                }
+            }
+            Declaration::Resource(resource) => {
+                if let Some(store) = &resource.store {
+                    self.collect_key_type_refs(file, source, aliases, &store.keys);
+                }
+                self.collect_resource_member_type_refs(file, source, aliases, &resource.members);
+            }
+            Declaration::Function(function) => {
+                for param in &function.params {
+                    self.collect_type_ref(file, source, aliases, &param.ty);
+                }
+                if let Some(ty) = &function.return_type {
+                    self.collect_type_ref(file, source, aliases, ty);
+                }
+            }
+            Declaration::Enum(_) => {}
+        }
+    }
+
+    fn collect_resource_member_type_refs(
+        &mut self,
+        file: &Path,
+        source: &str,
+        aliases: &HashMap<String, Vec<String>>,
+        members: &[ResourceMember],
+    ) {
+        for member in members {
+            match member {
+                ResourceMember::Field(field) => {
+                    self.collect_key_type_refs(file, source, aliases, &field.keys);
+                    self.collect_type_ref(file, source, aliases, &field.ty);
+                }
+                ResourceMember::Group(group) => {
+                    self.collect_key_type_refs(file, source, aliases, &group.keys);
+                    self.collect_resource_member_type_refs(file, source, aliases, &group.members);
+                }
+                ResourceMember::Index(_) => {}
+            }
+        }
+    }
+
+    fn collect_key_type_refs(
+        &mut self,
+        file: &Path,
+        source: &str,
+        aliases: &HashMap<String, Vec<String>>,
+        keys: &[marrow_syntax::KeyParam],
+    ) {
+        for key in keys {
+            self.collect_type_ref(file, source, aliases, &key.ty);
+        }
+    }
+
+    fn collect_type_ref(
+        &mut self,
+        file: &Path,
+        source: &str,
+        aliases: &HashMap<String, Vec<String>>,
+        ty: &TypeRef,
+    ) {
+        let resolved = resolve_type(ty, self.program, aliases, file);
+        let Some((enum_module, enum_name)) = enum_identity(&resolved) else {
+            return;
+        };
+        let Some(def) = self
+            .module_scope
+            .enums
+            .get(&(enum_module.to_string(), enum_name.to_string()))
+            .copied()
+        else {
+            return;
+        };
+        if let Some(span) = type_ref_enum_leaf_span(source, ty, enum_name) {
+            self.use_of(def, file, span, SymbolKind::Enum);
         }
     }
 
@@ -587,8 +677,15 @@ impl UseWalker<'_, '_> {
     ) {
         match statement {
             Statement::Const {
-                name, value, span, ..
+                name,
+                ty,
+                value,
+                span,
+                ..
             } => {
+                if let Some(ty) = ty {
+                    self.resolve_type_ref(ty);
+                }
                 // The initializer is in the scope *before* the binding, so resolve
                 // it first, then bind the name for later statements.
                 self.walk_expr(value, scope);
@@ -605,8 +702,19 @@ impl UseWalker<'_, '_> {
                 }
             }
             Statement::Var {
-                name, value, span, ..
+                name,
+                keys,
+                ty,
+                value,
+                span,
+                ..
             } => {
+                for key in keys {
+                    self.resolve_type_ref(&key.ty);
+                }
+                if let Some(ty) = ty {
+                    self.resolve_type_ref(ty);
+                }
                 if let Some(value) = value {
                     self.walk_expr(value, scope);
                 }
@@ -710,6 +818,9 @@ impl UseWalker<'_, '_> {
             } => {
                 self.walk_block(body, scope, type_scope);
                 if let Some(clause) = catch {
+                    if let Some(ty) = &clause.ty {
+                        self.resolve_type_ref(ty);
+                    }
                     // The caught error is bound for the catch block only.
                     let mut frame = HashMap::new();
                     let mut type_frame = HashMap::new();
@@ -760,6 +871,11 @@ impl UseWalker<'_, '_> {
             },
             RenameSafety::SourceOnly,
         )
+    }
+
+    fn resolve_type_ref(&mut self, ty: &TypeRef) {
+        self.builder
+            .collect_type_ref(self.file, self.source, self.aliases, ty);
     }
 
     /// Walk an expression, attributing each name/call/saved read to its definition.
@@ -1127,6 +1243,26 @@ fn bind_type(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowTy
     if let Some(frame) = scope.last_mut() {
         frame.insert(name.to_string(), ty);
     }
+}
+
+fn enum_identity(ty: &MarrowType) -> Option<(&str, &str)> {
+    match ty {
+        MarrowType::Enum { module, name } => Some((module, name)),
+        MarrowType::Sequence(element) => enum_identity(element),
+        _ => None,
+    }
+}
+
+fn type_ref_enum_leaf_span(source: &str, ty: &TypeRef, enum_name: &str) -> Option<SourceSpan> {
+    let end_byte = ty.span.end_byte.min(source.len());
+    let text = source.get(ty.span.start_byte..end_byte)?;
+    let offset = text.rfind(enum_name)?;
+    let start_byte = ty.span.start_byte + offset;
+    Some(source_span_at(
+        source,
+        start_byte,
+        start_byte + enum_name.len(),
+    ))
 }
 
 fn qualified_segment_spans(

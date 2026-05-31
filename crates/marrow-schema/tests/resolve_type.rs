@@ -7,11 +7,12 @@
 //! that stay `Named` for the checker to resolve against the project.
 
 use marrow_schema::{ScalarType, Type};
-use marrow_syntax::TypeRef;
+use marrow_syntax::{SourceSpan, TypeRef};
 
 fn resolve(text: &str) -> Type {
     Type::resolve(&TypeRef {
         text: text.to_string(),
+        span: SourceSpan::default(),
     })
 }
 

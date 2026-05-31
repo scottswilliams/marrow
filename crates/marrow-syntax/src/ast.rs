@@ -546,6 +546,7 @@ pub struct KeyParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeRef {
     pub text: String,
+    pub span: SourceSpan,
 }
 
 impl fmt::Display for TypeRef {
