@@ -416,13 +416,26 @@ pub(crate) fn iterate_saved_layer(
     env: &mut Env<'_>,
     loop_body: impl FnOnce(&mut Env<'_>) -> Result<Flow, RuntimeError>,
 ) -> Result<Flow, RuntimeError> {
-    let pushed = prefix.is_some();
+    let mut pushed = false;
+    let mut pushed_index = false;
     if let Some(prefix) = prefix {
-        env.traversed_layers.push(encode_path(&prefix));
+        let is_index = prefix
+            .iter()
+            .any(|segment| matches!(segment, PathSegment::Index(_)));
+        let encoded = encode_path(&prefix);
+        env.traversed_layers.push(encoded.clone());
+        pushed = true;
+        if is_index {
+            env.traversed_index_layers.push(encoded);
+            pushed_index = true;
+        }
     }
     let result = loop_body(env);
     if pushed {
         env.traversed_layers.pop();
+    }
+    if pushed_index {
+        env.traversed_index_layers.pop();
     }
     result
 }

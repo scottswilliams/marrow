@@ -131,13 +131,17 @@ fn index_branch_schema<'a>(
     expr: &Expression,
     env: &'a Env<'_>,
 ) -> Option<(&'a ResourceSchema, &'a IndexSchema)> {
-    let Expression::Call { callee, .. } = expr else {
-        return None;
+    let (base, name) = match expr {
+        Expression::Field { base, name, .. } => (base.as_ref(), name),
+        Expression::Call { callee, .. } => {
+            let Expression::Field { base, name, .. } = callee.as_ref() else {
+                return None;
+            };
+            (base.as_ref(), name)
+        }
+        _ => return None,
     };
-    let Expression::Field { base, name, .. } = callee.as_ref() else {
-        return None;
-    };
-    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+    let Expression::SavedRoot { name: root, .. } = base else {
         return None;
     };
     let resource = find_resource(env.program, root)?;

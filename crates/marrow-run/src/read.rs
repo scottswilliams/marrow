@@ -25,6 +25,19 @@ pub(crate) fn traversed_layer_prefix(
     }
     match path {
         Expression::SavedRoot { name, .. } => Ok(Some(vec![PathSegment::Root(name.clone())])),
+        // A bare index `^root.index` traverses the first stored index-key level.
+        Expression::Field { base, name, .. }
+            if matches!(base.as_ref(), Expression::SavedRoot { .. })
+                && is_index_branch(path, env) =>
+        {
+            let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+                return Ok(None);
+            };
+            Ok(Some(vec![
+                PathSegment::Root(root.clone()),
+                PathSegment::Index(name.clone()),
+            ]))
+        }
         // An index branch `^root.index(args…)`: the prefix is the root, index name,
         // and the supplied index-key args (the levels below are reconstructed
         // identities, so the traversed layer is the branch the args reach).
@@ -175,6 +188,12 @@ pub(crate) fn enumerate_layer_dir(
         } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
             enumerate_index_branch(callee, args, dir, *span, env)
         }
+        Expression::Field { base, .. }
+            if matches!(base.as_ref(), Expression::SavedRoot { .. })
+                && is_iterable_index_branch(path, env) =>
+        {
+            enumerate_index_branch(path, &[], dir, path.span(), env)
+        }
         Expression::Field { .. } => enumerate_child_layer(path, dir, env),
         other => Err(unsupported("iterating this saved path", other.span())),
     }
@@ -219,10 +238,26 @@ pub(crate) fn enumerate_index_branch(
                 .ok_or_else(|| unsupported("an index key of this type", span))?,
         ));
     }
-    let schema = find_resource(env.program, root)
-        .and_then(|resource| resource.indexes.iter().find(|i| &i.name == index))
+    let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("iterating this saved path", span))?;
-    let depth = schema.args.len().saturating_sub(args.len());
+    let schema = resource
+        .indexes
+        .iter()
+        .find(|i| &i.name == index && !i.unique)
+        .ok_or_else(|| unsupported("iterating this saved path", span))?;
+    if args.len() > schema.args.len() {
+        return Err(unsupported("iterating this saved path", span));
+    }
+    let identity_arity = resource
+        .saved_root
+        .as_ref()
+        .map_or(0, |root| root.identity_keys.len());
+    let identity_start = schema.args.len().saturating_sub(identity_arity);
+    let depth = if args.len() < identity_start {
+        1
+    } else {
+        schema.args.len().saturating_sub(args.len())
+    };
     collect_child_identities(&prefix, depth, &[], PathSegment::IndexKey, dir, span, env)
 }
 

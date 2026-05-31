@@ -4016,6 +4016,21 @@ fn count_on(shelf: string): int
         c = c + 1
     return c
 
+fn count_via_bare_index(): int
+    var c = 0
+    for shelf in ^books.byShelf
+        for id in ^books.byShelf(shelf)
+            c = c + 1
+    return c
+
+fn reshelve_while_iterating()
+    for id in keys(^books.byShelf(\"fiction\"))
+        ^books(id).shelf = \"history\"
+
+fn reshelve_while_iterating_direct()
+    for id in ^books.byShelf(\"fiction\")
+        ^books(id).shelf = \"history\"
+
 fn titles_on(shelf: string)
     for id in ^books.byShelf(shelf)
         print(^books(id).title)
@@ -4055,6 +4070,88 @@ fn iterates_index_keys() {
     assert_eq!(count("fiction"), Some(Value::Int(2)));
     assert_eq!(count("history"), Some(Value::Int(1)));
     assert_eq!(count("romance"), Some(Value::Int(0)));
+}
+
+#[test]
+fn bare_index_iteration_yields_first_level_keys() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str, shelf: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str(shelf.into()),
+            ],
+        )
+        .expect("add");
+    };
+    add(1, "Mort", "fiction");
+    add(2, "Sourcery", "fiction");
+    add(3, "Guards", "history");
+
+    let outcome = run_entry(&program, &store, "test::count_via_bare_index", &[]).expect("run");
+    assert_eq!(outcome.value, Some(Value::Int(3)));
+}
+
+#[test]
+fn updating_an_indexed_field_while_iterating_that_index_faults() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Str("fiction".into()),
+            ],
+        )
+        .expect("add");
+    }
+
+    let error = run_entry(&program, &store, "test::reshelve_while_iterating", &[]).unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
+    let remaining = run_entry(
+        &program,
+        &store,
+        "test::count_on",
+        &[Value::Str("fiction".into())],
+    )
+    .expect("count")
+    .value;
+    assert_eq!(remaining, Some(Value::Int(2)));
+}
+
+#[test]
+fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
+    let program = checked_program(BOOK_SHELF);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::add",
+        &[
+            Value::Int(1),
+            Value::Str("Mort".into()),
+            Value::Str("fiction".into()),
+        ],
+    )
+    .expect("add");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::reshelve_while_iterating_direct",
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
 }
 
 #[test]
