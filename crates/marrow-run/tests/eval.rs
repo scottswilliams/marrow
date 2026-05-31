@@ -530,6 +530,24 @@ fn iterates_a_sequence_counting_its_elements() {
 }
 
 #[test]
+fn append_grows_a_local_sequence() {
+    let program = checked_program(
+        "pub fn grow(): int\n\
+         \x20   var order: sequence[int]\n\
+         \x20   const first: int = append(order, 10)\n\
+         \x20   const second: int = append(order, 20)\n\
+         \x20   var total = first * 100 + second * 10 + count(order)\n\
+         \x20   for value in order\n\
+         \x20       total = total + value\n\
+         \x20   return total\n",
+    );
+    assert_eq!(
+        run(&program, "test::grow", &[]).unwrap(),
+        Some(Value::Int(152))
+    );
+}
+
+#[test]
 fn std_math_decimal_helpers() {
     // absDecimal yields a decimal; floor rounds toward negative infinity to an int.
     let program = checked_program(

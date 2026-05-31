@@ -87,6 +87,25 @@ pub(crate) fn eval_append(
             span,
         });
     };
+    if let Expression::Name {
+        segments,
+        span: target_span,
+    } = &target.value
+        && let [name] = segments.as_slice()
+    {
+        if env.lookup(name).is_none() {
+            return Err(assign_error(name, AssignError::Unbound, *target_span));
+        }
+        let appended = eval_expr(&value.value, env)?;
+        let Some(Value::Sequence(mut items)) = env.lookup(name).cloned() else {
+            return Err(unsupported("appending to this path", span));
+        };
+        items.push(appended);
+        let pos = i64::try_from(items.len()).map_err(|_| overflow(span))?;
+        env.assign(name, Value::Sequence(items))
+            .map_err(|error| assign_error(name, error, *target_span))?;
+        return Ok(Value::Int(pos));
+    }
     let Expression::Field {
         base, name: layer, ..
     } = &target.value

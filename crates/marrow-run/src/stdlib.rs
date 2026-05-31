@@ -65,6 +65,15 @@ pub(crate) fn eval_count(
     let [arg] = args else {
         return Err(type_error("`count` takes one argument", span));
     };
+    if !is_saved_path(&arg.value) {
+        return match eval_expr(&arg.value, env)? {
+            Value::Sequence(items) => {
+                let count = i64::try_from(items.len()).map_err(|_| overflow(span))?;
+                Ok(Value::Int(count))
+            }
+            _ => Err(unsupported("counting this value", span)),
+        };
+    }
     if let Some(values) = unique_index_lookup_values(&arg.value, span, Direction::Ascending, env)? {
         return Ok(Value::Int(values.len() as i64));
     }
@@ -154,7 +163,9 @@ pub(crate) fn unique_index_lookup(
     expr: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Option<UniqueIndexLookup>, RuntimeError> {
-    let Expression::Call { callee, args, span } = expr else {
+    let Expression::Call {
+        callee, args, span, ..
+    } = expr else {
         return Ok(None);
     };
     let Expression::Field { base, name, .. } = callee.as_ref() else {
