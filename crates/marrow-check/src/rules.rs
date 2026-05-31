@@ -5,10 +5,12 @@
 //! values that are not constant expressions. They do not need type or effect
 //! facts, so they run directly on each declaration.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use marrow_syntax::{
-    Block, CatchClause, Expression, InterpolationPart, Severity, Statement, format_expression,
+    BinaryOp, Block, CatchClause, Expression, FunctionDecl, InterpolationPart, ParamMode, Severity,
+    SourceSpan, Statement, format_expression,
 };
 
 use crate::CheckDiagnostic;
@@ -23,6 +25,8 @@ pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
 pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
 /// An assignment or merge target is not a writable place.
 pub const CHECK_INVALID_ASSIGN_TARGET: &str = "check.invalid_assign_target";
+/// An `out` parameter can return normally without being assigned.
+pub const CHECK_OUT_PARAMETER_ASSIGNMENT: &str = "check.out_parameter_assignment";
 /// A `const` value is not a constant expression.
 pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 /// A loop over a saved layer mutates that same layer (a direct write, delete,
@@ -31,10 +35,21 @@ pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = "check.loop_mutates_traversed_layer";
 
 /// Apply every structural statement rule to one function body.
-pub(crate) fn check_function_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
-    walk_block(file, body, out);
-    walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
-    walk_loop_layer_mutations(file, body, &mut Vec::new(), out);
+pub(crate) fn check_function_body(
+    file: &Path,
+    function: &FunctionDecl,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    let read_only_params: HashSet<String> = function
+        .params
+        .iter()
+        .filter(|param| param.mode.is_none())
+        .map(|param| param.name.clone())
+        .collect();
+    walk_block(file, &function.body, &read_only_params, out);
+    check_out_parameters_assigned(file, function, out);
+    walk_loop_control_flow(file, &function.body, 0, &mut Vec::new(), out);
+    walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
 }
 
 /// A `const` value must be a compile-time constant expression: literals and
@@ -82,23 +97,31 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
 /// Walk a block applying the catch and assign-target rules to each statement,
 /// recursing into nested blocks. A `try`'s `finally` block is handed to the
 /// dedicated finally walk.
-fn walk_block(file: &Path, block: &Block, out: &mut Vec<CheckDiagnostic>) {
+fn walk_block(
+    file: &Path,
+    block: &Block,
+    read_only_params: &HashSet<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    let mut read_only_params = read_only_params.clone();
     for statement in &block.statements {
-        walk_statement(file, statement, out);
+        walk_statement(file, statement, &read_only_params, out);
+        if let Some(name) = statement_binding_name(statement) {
+            read_only_params.remove(name);
+        }
     }
 }
 
-fn walk_statement(file: &Path, statement: &Statement, out: &mut Vec<CheckDiagnostic>) {
+fn walk_statement(
+    file: &Path,
+    statement: &Statement,
+    read_only_params: &HashSet<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    check_statement_out_argument_targets(file, statement, read_only_params, out);
     match statement {
-        Statement::Assign { target, .. } | Statement::Merge { target, .. }
-            if !is_assignable(target) =>
-        {
-            out.push(diagnostic(
-                CHECK_INVALID_ASSIGN_TARGET,
-                file,
-                target,
-                "assignment target is not a writable place",
-            ));
+        Statement::Assign { target, .. } | Statement::Merge { target, .. } => {
+            check_assignment_target(file, target, read_only_params, out);
         }
         Statement::If {
             then_block,
@@ -106,42 +129,525 @@ fn walk_statement(file: &Path, statement: &Statement, out: &mut Vec<CheckDiagnos
             else_block,
             ..
         } => {
-            walk_block(file, then_block, out);
+            walk_block(file, then_block, read_only_params, out);
             for else_if in else_ifs {
-                walk_block(file, &else_if.block, out);
+                walk_block(file, &else_if.block, read_only_params, out);
             }
             if let Some(block) = else_block {
-                walk_block(file, block, out);
+                walk_block(file, block, read_only_params, out);
             }
         }
         Statement::While { body, .. }
         | Statement::For { body, .. }
         | Statement::Transaction { body, .. }
-        | Statement::Lock { body, .. } => walk_block(file, body, out),
+        | Statement::Lock { body, .. } => walk_block(file, body, read_only_params, out),
         Statement::Try {
             body,
             catch,
             finally,
             ..
         } => {
-            walk_block(file, body, out);
+            walk_block(file, body, read_only_params, out);
             if let Some(catch) = catch {
                 check_catch(file, catch, out);
-                walk_block(file, &catch.block, out);
+                walk_block(file, &catch.block, read_only_params, out);
             }
             if let Some(finally) = finally {
                 // The finally block is also an ordinary block for the other
                 // rules, plus the escaping-control-flow rule.
-                walk_block(file, finally, out);
+                walk_block(file, finally, read_only_params, out);
                 walk_finally(file, finally, 0, &mut Vec::new(), out);
             }
         }
         Statement::Match { arms, .. } => {
             for arm in arms {
-                walk_block(file, &arm.block, out);
+                walk_block(file, &arm.block, read_only_params, out);
             }
         }
         _ => {}
+    }
+}
+
+fn check_statement_out_argument_targets(
+    file: &Path,
+    statement: &Statement,
+    read_only_params: &HashSet<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    match statement {
+        Statement::Const { value, .. }
+        | Statement::Throw { value, .. }
+        | Statement::Expr { value, .. } => {
+            check_expr_out_argument_targets(file, value, read_only_params, out);
+        }
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            check_expr_out_argument_targets(file, target, read_only_params, out);
+            check_expr_out_argument_targets(file, value, read_only_params, out);
+        }
+        Statement::Var { value, .. } => {
+            if let Some(value) = value {
+                check_expr_out_argument_targets(file, value, read_only_params, out);
+            }
+        }
+        Statement::Delete { path, .. } => {
+            check_expr_out_argument_targets(file, path, read_only_params, out);
+        }
+        Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                check_expr_out_argument_targets(file, value, read_only_params, out);
+            }
+        }
+        Statement::If {
+            condition,
+            else_ifs,
+            ..
+        } => {
+            if let Some(condition) = condition {
+                check_expr_out_argument_targets(file, condition, read_only_params, out);
+            }
+            for else_if in else_ifs {
+                if let Some(condition) = &else_if.condition {
+                    check_expr_out_argument_targets(file, condition, read_only_params, out);
+                }
+            }
+        }
+        Statement::While { condition, .. } => {
+            if let Some(condition) = condition {
+                check_expr_out_argument_targets(file, condition, read_only_params, out);
+            }
+        }
+        Statement::For { iterable, step, .. } => {
+            check_expr_out_argument_targets(file, iterable, read_only_params, out);
+            if let Some(step) = step {
+                check_expr_out_argument_targets(file, step, read_only_params, out);
+            }
+        }
+        Statement::Lock { path, .. } => {
+            if let Some(path) = path {
+                check_expr_out_argument_targets(file, path, read_only_params, out);
+            }
+        }
+        Statement::Match { scrutinee, .. } => {
+            if let Some(scrutinee) = scrutinee {
+                check_expr_out_argument_targets(file, scrutinee, read_only_params, out);
+            }
+        }
+        Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Transaction { .. }
+        | Statement::Try { .. } => {}
+    }
+}
+
+fn check_expr_out_argument_targets(
+    file: &Path,
+    expr: &Expression,
+    read_only_params: &HashSet<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    match expr {
+        Expression::Call { callee, args, .. } => {
+            check_expr_out_argument_targets(file, callee, read_only_params, out);
+            for arg in args {
+                if arg.mode.is_some() {
+                    check_read_only_out_argument(file, &arg.value, read_only_params, out);
+                }
+                check_expr_out_argument_targets(file, &arg.value, read_only_params, out);
+            }
+        }
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            check_expr_out_argument_targets(file, base, read_only_params, out);
+        }
+        Expression::Unary { operand, .. } => {
+            check_expr_out_argument_targets(file, operand, read_only_params, out);
+        }
+        Expression::Binary { left, right, .. } => {
+            check_expr_out_argument_targets(file, left, read_only_params, out);
+            check_expr_out_argument_targets(file, right, read_only_params, out);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    check_expr_out_argument_targets(file, expr, read_only_params, out);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn check_read_only_out_argument(
+    file: &Path,
+    value: &Expression,
+    read_only_params: &HashSet<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    if is_assignable(value)
+        && let Some(name) = place_root_name(value)
+        && read_only_params.contains(name)
+    {
+        out.push(diagnostic(
+            CHECK_INVALID_ASSIGN_TARGET,
+            file,
+            value,
+            &format!("parameter `{name}` is read-only"),
+        ));
+    }
+}
+
+fn check_assignment_target(
+    file: &Path,
+    target: &Expression,
+    read_only_params: &HashSet<String>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    if !is_assignable(target) {
+        out.push(diagnostic(
+            CHECK_INVALID_ASSIGN_TARGET,
+            file,
+            target,
+            "assignment target is not a writable place",
+        ));
+        return;
+    }
+
+    if let Some(name) = place_root_name(target)
+        && read_only_params.contains(name)
+    {
+        out.push(diagnostic(
+            CHECK_INVALID_ASSIGN_TARGET,
+            file,
+            target,
+            &format!("parameter `{name}` is read-only"),
+        ));
+    }
+}
+
+fn check_out_parameters_assigned(
+    file: &Path,
+    function: &FunctionDecl,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    let out_params: HashSet<String> = function
+        .params
+        .iter()
+        .filter(|param| matches!(param.mode, Some(ParamMode::Out)))
+        .map(|param| param.name.clone())
+        .collect();
+    if out_params.is_empty() {
+        return;
+    }
+
+    let initial = OutState {
+        assigned: HashSet::new(),
+        visible: out_params.clone(),
+    };
+    let flow = walk_out_block(file, &function.body, &out_params, vec![initial], out);
+    let mut reported = HashSet::new();
+    for state in flow.fallthrough.into_iter().chain(flow.returns) {
+        for name in &out_params {
+            if !state.assigned.contains(name) && reported.insert(name.clone()) {
+                out.push(out_assignment_diagnostic(file, function.span, name));
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct OutState {
+    assigned: HashSet<String>,
+    visible: HashSet<String>,
+}
+
+#[derive(Default)]
+struct OutFlow {
+    fallthrough: Vec<OutState>,
+    returns: Vec<OutState>,
+}
+
+impl OutFlow {
+    fn append(&mut self, other: OutFlow) {
+        self.fallthrough.extend(other.fallthrough);
+        self.returns.extend(other.returns);
+    }
+}
+
+fn walk_out_block(
+    file: &Path,
+    block: &Block,
+    out_params: &HashSet<String>,
+    mut states: Vec<OutState>,
+    out: &mut Vec<CheckDiagnostic>,
+) -> OutFlow {
+    let mut returns = Vec::new();
+    for statement in &block.statements {
+        let mut next = Vec::new();
+        for state in states {
+            let flow = walk_out_statement(file, statement, out_params, state, out);
+            next.extend(flow.fallthrough);
+            returns.extend(flow.returns);
+        }
+        if let Some(name) = statement_binding_name(statement) {
+            for state in &mut next {
+                state.visible.remove(name);
+            }
+        }
+        states = next;
+        if states.is_empty() {
+            break;
+        }
+    }
+    OutFlow {
+        fallthrough: states,
+        returns,
+    }
+}
+
+fn walk_out_statement(
+    file: &Path,
+    statement: &Statement,
+    out_params: &HashSet<String>,
+    mut state: OutState,
+    out: &mut Vec<CheckDiagnostic>,
+) -> OutFlow {
+    match statement {
+        Statement::Const { value, .. } | Statement::Throw { value, .. } => {
+            mark_expr_out_assignments(value, &mut state);
+            if matches!(statement, Statement::Throw { .. }) {
+                OutFlow::default()
+            } else {
+                OutFlow {
+                    fallthrough: vec![state],
+                    returns: Vec::new(),
+                }
+            }
+        }
+        Statement::Var { value, .. } => {
+            if let Some(value) = value {
+                mark_expr_out_assignments(value, &mut state);
+            }
+            OutFlow {
+                fallthrough: vec![state],
+                returns: Vec::new(),
+            }
+        }
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            mark_expr_out_assignments(target, &mut state);
+            mark_expr_out_assignments(value, &mut state);
+            mark_place_assignment(target, &mut state);
+            OutFlow {
+                fallthrough: vec![state],
+                returns: Vec::new(),
+            }
+        }
+        Statement::Delete { path, .. } => {
+            mark_expr_out_assignments(path, &mut state);
+            OutFlow {
+                fallthrough: vec![state],
+                returns: Vec::new(),
+            }
+        }
+        Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                mark_expr_out_assignments(value, &mut state);
+            }
+            OutFlow {
+                fallthrough: Vec::new(),
+                returns: vec![state],
+            }
+        }
+        Statement::Break { .. } | Statement::Continue { .. } => OutFlow::default(),
+        Statement::Expr { value, .. } => {
+            mark_expr_out_assignments(value, &mut state);
+            OutFlow {
+                fallthrough: vec![state],
+                returns: Vec::new(),
+            }
+        }
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            if let Some(condition) = condition {
+                mark_expr_out_assignments(condition, &mut state);
+            }
+            let mut flow = walk_out_block(file, then_block, out_params, vec![state.clone()], out);
+            for else_if in else_ifs {
+                let mut else_if_state = state.clone();
+                if let Some(condition) = &else_if.condition {
+                    mark_expr_out_assignments(condition, &mut else_if_state);
+                }
+                flow.append(walk_out_block(
+                    file,
+                    &else_if.block,
+                    out_params,
+                    vec![else_if_state],
+                    out,
+                ));
+            }
+            if let Some(block) = else_block {
+                flow.append(walk_out_block(file, block, out_params, vec![state], out));
+            } else {
+                flow.fallthrough.push(state);
+            }
+            flow
+        }
+        Statement::While {
+            condition, body, ..
+        } => {
+            if let Some(condition) = condition {
+                mark_expr_out_assignments(condition, &mut state);
+            }
+            let mut flow = walk_out_block(file, body, out_params, vec![state.clone()], out);
+            flow.fallthrough.push(state);
+            flow
+        }
+        Statement::For {
+            iterable,
+            step,
+            body,
+            ..
+        } => {
+            mark_expr_out_assignments(iterable, &mut state);
+            if let Some(step) = step {
+                mark_expr_out_assignments(step, &mut state);
+            }
+            let mut flow = walk_out_block(file, body, out_params, vec![state.clone()], out);
+            flow.fallthrough.push(state);
+            flow
+        }
+        Statement::Transaction { body, .. } => {
+            walk_out_block(file, body, out_params, vec![state], out)
+        }
+        Statement::Lock { path, body, .. } => {
+            if let Some(path) = path {
+                mark_expr_out_assignments(path, &mut state);
+            }
+            walk_out_block(file, body, out_params, vec![state], out)
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            let mut flow = walk_out_block(file, body, out_params, vec![state.clone()], out);
+            if let Some(catch) = catch {
+                flow.append(walk_out_block(
+                    file,
+                    &catch.block,
+                    out_params,
+                    vec![state],
+                    out,
+                ));
+            }
+            if let Some(finally) = finally {
+                apply_finally(file, finally, out_params, flow, out)
+            } else {
+                flow
+            }
+        }
+        Statement::Match {
+            scrutinee, arms, ..
+        } => {
+            if let Some(scrutinee) = scrutinee {
+                mark_expr_out_assignments(scrutinee, &mut state);
+            }
+            let mut flow = OutFlow::default();
+            for arm in arms {
+                flow.append(walk_out_block(
+                    file,
+                    &arm.block,
+                    out_params,
+                    vec![state.clone()],
+                    out,
+                ));
+            }
+            flow
+        }
+    }
+}
+
+fn apply_finally(
+    file: &Path,
+    finally: &Block,
+    out_params: &HashSet<String>,
+    flow: OutFlow,
+    out: &mut Vec<CheckDiagnostic>,
+) -> OutFlow {
+    let fallthrough = walk_out_block(file, finally, out_params, flow.fallthrough, out);
+    let returns = walk_out_block(file, finally, out_params, flow.returns, out);
+    OutFlow {
+        fallthrough: fallthrough.fallthrough,
+        returns: fallthrough
+            .returns
+            .into_iter()
+            .chain(returns.fallthrough)
+            .chain(returns.returns)
+            .collect(),
+    }
+}
+
+fn mark_expr_out_assignments(expr: &Expression, state: &mut OutState) {
+    match expr {
+        Expression::Call { callee, args, .. } => {
+            mark_expr_out_assignments(callee, state);
+            for arg in args {
+                mark_expr_out_assignments(&arg.value, state);
+                if arg.mode.is_some() {
+                    mark_place_assignment(&arg.value, state);
+                }
+            }
+        }
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            mark_expr_out_assignments(base, state);
+        }
+        Expression::Unary { operand, .. } => mark_expr_out_assignments(operand, state),
+        Expression::Binary {
+            op, left, right, ..
+        } => {
+            mark_expr_out_assignments(left, state);
+            if !matches!(op, BinaryOp::And | BinaryOp::Or) {
+                mark_expr_out_assignments(right, state);
+            }
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    mark_expr_out_assignments(expr, state);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn mark_place_assignment(target: &Expression, state: &mut OutState) {
+    if is_assignable(target)
+        && let Some(name) = place_root_name(target)
+        && state.visible.contains(name)
+    {
+        state.assigned.insert(name.to_string());
+    }
+}
+
+fn out_assignment_diagnostic(file: &Path, span: SourceSpan, name: &str) -> CheckDiagnostic {
+    CheckDiagnostic {
+        code: CHECK_OUT_PARAMETER_ASSIGNMENT,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: format!("out parameter `{name}` must be assigned before returning"),
+        span,
+    }
+}
+
+fn statement_binding_name(statement: &Statement) -> Option<&str> {
+    match statement {
+        Statement::Const { name, .. } | Statement::Var { name, .. } => Some(name),
+        _ => None,
     }
 }
 
@@ -524,13 +1030,24 @@ fn is_saved_path(expr: &Expression) -> bool {
 /// A writable place: a bare name, a saved root, a field of a place, or a key
 /// lookup on a saved place. A parenthesized suffix on a bare name is a function
 /// call, not a place, so `f(x)` is rejected while `^books(id).title` is allowed.
-fn is_assignable(target: &Expression) -> bool {
+pub(crate) fn is_assignable(target: &Expression) -> bool {
     match target {
         Expression::Name { segments, .. } => segments.len() == 1,
         Expression::SavedRoot { .. } => true,
         Expression::Field { base, .. } => is_assignable(base),
         Expression::Call { callee, .. } => is_key_lookup_target(callee),
         _ => false,
+    }
+}
+
+fn place_root_name(expr: &Expression) -> Option<&str> {
+    match expr {
+        Expression::Name { segments, .. } if segments.len() == 1 => Some(&segments[0]),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            place_root_name(base)
+        }
+        Expression::Call { callee, .. } => place_root_name(callee),
+        _ => None,
     }
 }
 

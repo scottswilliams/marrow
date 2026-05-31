@@ -1885,13 +1885,13 @@ pub(crate) fn operator_diagnostic(
 /// Validate a call against the user function it resolves to and return that
 /// function's declared return type (or [`MarrowType::Unknown`]). Only a plain
 /// name call that resolves to a declared function is checked; a builtin, std
-/// helper, `Error` constructor, out/inout call, key-lookup (non-name callee), or
+/// helper, `Error` constructor, key-lookup (non-name callee), or
 /// unresolved name is left alone — mirroring the runtime's dispatch order — so the
 /// check never fires on a non-function or a call the checker cannot resolve.
 ///
-/// It flags the argument count (every parameter is required), a named argument
-/// that names no parameter, and an argument whose type does not match its
-/// parameter (only when both are known, incompatible primitives, like operators).
+/// It flags the argument count (every parameter is required), named arguments that
+/// name no parameter, out/inout marker mismatches, non-place out/inout arguments,
+/// and arguments whose type does not match the corresponding parameter.
 // Each argument is an independent input threaded through the type-check pipeline
 // (program/aliases/file/diagnostics are the cross-cutting context every node
 // carries, like `scope`); bundling them would not aid clarity here.
@@ -1907,6 +1907,7 @@ pub(crate) fn check_call(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        check_plain_call_modes("call", args, span, file, diagnostics);
         return MarrowType::Unknown;
     };
     // Expand a short-form leading segment through the file's imports once, up front,
@@ -1914,9 +1915,6 @@ pub(crate) fn check_call(
     // like `shelf::books::add`. All downstream resolution uses the expanded form.
     let expanded = expand_alias(segments, aliases);
     let segments = expanded.as_slice();
-    if args.iter().any(|arg| arg.mode.is_some()) {
-        return MarrowType::Unknown;
-    }
     // `nextId(^root)` needs the argument *expression* (the `^root`), not just its
     // type, to know which resource is allocated — so it is handled here, before the
     // generic builtin branch typed only from `arg_types`. It types to `Resource::Id`
@@ -1925,6 +1923,7 @@ pub(crate) fn check_call(
     if let [name] = segments
         && name == "nextId"
     {
+        check_plain_call_modes(name, args, span, file, diagnostics);
         return check_next_id(program, args, span, file, diagnostics);
     }
     // `reversed` needs the argument expression for saved collections, whose element
@@ -1935,10 +1934,12 @@ pub(crate) fn check_call(
     if let [name] = segments {
         match name.as_str() {
             "reversed" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
                 check_arity(name, 1, args, span, file, diagnostics);
                 return reversed_type(program, args, arg_types);
             }
             "next" | "prev" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
                 check_arity(name, 1, args, span, file, diagnostics);
                 return check_neighbor(program, name, args, span, file, diagnostics);
             }
@@ -1950,6 +1951,7 @@ pub(crate) fn check_call(
     // same way user-function arguments are; other builtins leave their arguments to
     // the runtime. A std helper's return type feeds the surrounding type checks.
     if is_builtin_call(segments) {
+        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
         if let Some(params) = std_call_params(segments) {
             check_args_against(
                 &segments.join("::"),
@@ -1980,6 +1982,7 @@ pub(crate) fn check_call(
     if let Some(ty @ MarrowType::Identity(_)) =
         resource_constructor_type(program, from_module, segments)
     {
+        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
         if let [name, id] = segments
             && id == "Id"
             && let Some(resource) = resolve::resolve_resource_by_name_any(program, name)
@@ -2005,6 +2008,7 @@ pub(crate) fn check_call(
         ..
     }) = resolve(program, from_module, segments, ResolvableKind::Resource)
     {
+        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
         let resource_names: Vec<String> = module
             .resources
             .iter()
@@ -2134,6 +2138,14 @@ pub(crate) fn check_call(
         // enum, or the checker-only `Error` — is checked nominally; an `unknown`
         // parameter places no constraint and is left to the runtime.
         if let Some(param) = param {
+            check_call_mode(
+                &segments.join("::"),
+                arg,
+                param.mode,
+                span,
+                file,
+                diagnostics,
+            );
             check_one_arg(
                 &segments.join("::"),
                 &param.ty,
@@ -2145,6 +2157,89 @@ pub(crate) fn check_call(
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
+}
+
+fn check_plain_call_modes(
+    label: &str,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for arg in args {
+        if let Some(mode) = arg.mode {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!(
+                    "argument to `{label}` cannot be passed as {}",
+                    arg_mode_name(mode)
+                ),
+            ));
+        }
+    }
+}
+
+fn check_call_mode(
+    label: &str,
+    arg: &marrow_syntax::Argument,
+    param_mode: Option<marrow_syntax::ParamMode>,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !call_modes_match(arg.mode, param_mode) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "argument to `{label}` must be passed as {}",
+                call_mode_expectation(param_mode)
+            ),
+        ));
+    }
+    if arg.mode.is_some() && !crate::rules::is_assignable(&arg.value) {
+        diagnostics.push(CheckDiagnostic {
+            code: crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: "out/inout argument is not a writable place".to_string(),
+            span: arg.value.span(),
+        });
+    }
+}
+
+fn arg_mode_name(mode: marrow_syntax::ArgMode) -> &'static str {
+    match mode {
+        marrow_syntax::ArgMode::Out => "`out`",
+        marrow_syntax::ArgMode::InOut => "`inout`",
+    }
+}
+
+fn call_modes_match(
+    arg: Option<marrow_syntax::ArgMode>,
+    param: Option<marrow_syntax::ParamMode>,
+) -> bool {
+    matches!(
+        (arg, param),
+        (None, None)
+            | (
+                Some(marrow_syntax::ArgMode::Out),
+                Some(marrow_syntax::ParamMode::Out)
+            )
+            | (
+                Some(marrow_syntax::ArgMode::InOut),
+                Some(marrow_syntax::ParamMode::InOut)
+            )
+    )
+}
+
+fn call_mode_expectation(mode: Option<marrow_syntax::ParamMode>) -> &'static str {
+    match mode {
+        Some(marrow_syntax::ParamMode::Out) => "`out`",
+        Some(marrow_syntax::ParamMode::InOut) => "`inout`",
+        None => "a plain argument",
+    }
 }
 
 fn reversed_type(

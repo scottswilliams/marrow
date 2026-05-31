@@ -1630,6 +1630,142 @@ fn correct_calls_are_not_flagged() {
 }
 
 #[test]
+fn out_and_inout_calls_keep_their_declared_return_types() {
+    let report = check_module_report(
+        "out-inout-return-types",
+        "module m\n\
+         fn parse(out value: int): bool\n    value = 7\n    return true\n\
+         fn take(inout remaining: int, unit: int): string\n    remaining = remaining - unit\n    return \"ok\"\n\n\
+         fn caller(): string\n    var n: int = 0\n    if parse(out n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn out_parameters_must_be_assigned_before_returning() {
+    let found = check_module(
+        "out-assignment",
+        "module m\n\
+         fn never_set(out value: int)\n    const ignore: int = 1\n",
+        "check.out_parameter_assignment",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn read_only_parameters_are_not_assignment_targets() {
+    let found = check_module(
+        "readonly-param",
+        "module m\n\
+         fn bump(value: int): int\n    value = value + 1\n    return value\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn read_only_parameter_checks_respect_local_shadowing() {
+    let report = check_module_report(
+        "readonly-param-shadow",
+        "module m\n\
+         fn set_to(out value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(out value)\n        return value\n    return value\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn read_only_parameters_are_not_out_or_inout_arguments() {
+    let found = check_module(
+        "readonly-param-out-arg",
+        "module m\n\
+         fn set_to(out value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    set_to(out value)\n    return value\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn out_parameters_can_be_assigned_by_out_calls() {
+    let report = check_module_report(
+        "out-call-assigns-out-param",
+        "module m\n\
+         fn set_to(out value: int)\n    value = 1\n\
+         fn relay(out value: int)\n    set_to(out value)\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn short_circuit_rhs_out_calls_do_not_assign_out_parameters() {
+    let found = check_module(
+        "out-call-short-circuit-rhs",
+        "module m\n\
+         fn set_to(out value: int): bool\n    value = 1\n    return true\n\
+         fn relay_and(out value: int)\n    if false and set_to(out value)\n        return\n\
+         fn relay_or(out value: int)\n    if true or set_to(out value)\n        return\n",
+        "check.out_parameter_assignment",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn finally_assignment_counts_before_try_return_completes() {
+    let report = check_module_report(
+        "out-finally-assigns-before-return",
+        "module m\n\
+         fn relay(out value: int)\n    try\n        return\n    finally\n        value = 1\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn out_and_inout_call_markers_must_match_parameters() {
+    let missing = check_module(
+        "out-marker-missing",
+        "module m\n\
+         fn set_to(out value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    set_to(n, src)\n    return n\n",
+        "check.call_argument",
+    );
+    assert_eq!(missing.len(), 1, "{missing:#?}");
+
+    let wrong = check_module(
+        "inout-marker-wrong",
+        "module m\n\
+         fn add(inout value: int, src: int)\n    value = value + src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    add(out n, src)\n    return n\n",
+        "check.call_argument",
+    );
+    assert_eq!(wrong.len(), 1, "{wrong:#?}");
+}
+
+#[test]
+fn out_and_inout_arguments_must_be_writable_places() {
+    let found = check_module(
+        "out-literal",
+        "module m\n\
+         fn set_to(out value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    set_to(out 5, src)\n    return src\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn out_and_inout_markers_are_rejected_on_plain_call_targets() {
+    let found = check_module(
+        "out-marker-plain-calls",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\
+         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(out 5)\n    const len: int = std::text::length(out s)\n    const book_id: Book::Id = Book::Id(out id)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+}
+
+#[test]
 fn a_builtin_call_is_not_arity_checked_and_an_unknown_call_is_not_a_mismatch() {
     // `print` is a builtin (dispatched before user functions) and `mystery` does
     // not resolve to a declared function; neither is an arity/argument mismatch.

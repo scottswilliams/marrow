@@ -671,7 +671,7 @@ fn check_file_source(
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
-                rules::check_function_body(file_path, &function.body, diagnostics);
+                rules::check_function_body(file_path, function, diagnostics);
                 functions.push(checked_function(function, names));
             }
             marrow_syntax::Declaration::Resource(resource) => {
