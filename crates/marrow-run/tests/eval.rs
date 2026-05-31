@@ -2604,16 +2604,13 @@ fn values_and_entries_over_an_index_branch_are_unsupported() {
 }
 
 #[test]
-fn a_unique_index_lookup_is_not_a_collection_loop() {
+fn a_unique_index_lookup_loop_skips_an_absent_entry() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn f()\n    for id in ^books.byIsbn(\"978-0\")\n        print($\"{id}\")\n",
     );
 
-    let result = run(&program, "test::f", &[]);
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
-        "{result:?}"
-    );
+    let outcome = run_full(&program, "test::f", &[]).expect("run");
+    assert_eq!(outcome.output, "");
 }
 
 #[test]
@@ -5418,6 +5415,10 @@ fn countKeysByIsbn(isbn: string): int
     for id in keys(^books.byIsbn(isbn))
         c = c + 1
     return c
+
+fn iterTitlesByIsbn(isbn: string)
+    for id in ^books.byIsbn(isbn)
+        print(^books(id).title)
 ";
 
 #[test]
@@ -5488,6 +5489,41 @@ fn unique_index_presence_and_count_follow_the_lookup_value() {
 }
 
 #[test]
+fn unique_index_lookup_iteration_yields_the_stored_identity() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::register",
+        &[
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("register");
+
+    let present = run_entry(
+        &program,
+        &store,
+        "test::iterTitlesByIsbn",
+        &[Value::Str("978-0".into())],
+    )
+    .expect("present unique lookup iterates");
+    assert_eq!(present.output, "Mort\n");
+
+    let absent = run_entry(
+        &program,
+        &store,
+        "test::iterTitlesByIsbn",
+        &[Value::Str("missing".into())],
+    )
+    .expect("absent unique lookup is an empty iteration");
+    assert_eq!(absent.output, "");
+}
+
+#[test]
 fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     let program = checked_program(BOOK_ISBN);
     let store = RefCell::new(MemStore::new());
@@ -5511,6 +5547,78 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     )
     .unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+}
+
+const ITEM_UNIQUE_BRANCH: &str = "\
+resource Item at ^items(id: int)
+    required title: string
+    series: string
+    code: string
+
+    index bySeriesCode(series, code) unique
+
+fn add(id: int, series: string, code: string, title: string)
+    ^items(id).title = title
+    ^items(id).series = series
+    ^items(id).code = code
+
+fn hasSeries(series: string): bool
+    return exists(^items.bySeriesCode(series))
+
+fn countSeries(series: string): int
+    return count(^items.bySeriesCode(series))
+
+fn iterSeries(series: string)
+    for id in ^items.bySeriesCode(series)
+        print(^items(id).title)
+";
+
+#[test]
+fn unique_index_prefix_branch_presence_count_and_iteration_agree() {
+    let program = checked_program(ITEM_UNIQUE_BRANCH);
+    let store = RefCell::new(MemStore::new());
+    for (id, code, title) in [(1, "b", "Beta"), (2, "a", "Alpha")] {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[
+                Value::Int(id),
+                Value::Str("s1".into()),
+                Value::Str(code.into()),
+                Value::Str(title.into()),
+            ],
+        )
+        .expect("add");
+    }
+
+    let call = |entry: &str, series: &str| {
+        run_entry(&program, &store, entry, &[Value::Str(series.into())])
+            .expect(entry)
+            .value
+    };
+    assert_eq!(call("test::hasSeries", "s1"), Some(Value::Bool(true)));
+    assert_eq!(call("test::countSeries", "s1"), Some(Value::Int(2)));
+
+    let present = run_entry(
+        &program,
+        &store,
+        "test::iterSeries",
+        &[Value::Str("s1".into())],
+    )
+    .expect("present branch iterates");
+    assert_eq!(present.output, "Alpha\nBeta\n");
+
+    assert_eq!(call("test::hasSeries", "missing"), Some(Value::Bool(false)));
+    assert_eq!(call("test::countSeries", "missing"), Some(Value::Int(0)));
+    let absent = run_entry(
+        &program,
+        &store,
+        "test::iterSeries",
+        &[Value::Str("missing".into())],
+    )
+    .expect("absent branch is empty");
+    assert_eq!(absent.output, "");
 }
 
 /// A non-unique index in value position has no single identity to yield; the

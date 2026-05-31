@@ -222,6 +222,11 @@ pub(crate) fn eval_reversed(
     // `reversed(L)`: elements for value-bearing saved collections, identities for
     // key-only index branches.
     if is_saved_path(&arg.value) {
+        if let Some(values) =
+            unique_index_lookup_values(&arg.value, span, Direction::Descending, env)?
+        {
+            return Ok(Value::Sequence(values));
+        }
         if is_iterable_index_branch(&arg.value, env) {
             return Ok(Value::Sequence(enumerate_layer_dir(
                 &arg.value,

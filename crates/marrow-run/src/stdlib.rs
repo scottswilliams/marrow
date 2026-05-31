@@ -65,14 +65,8 @@ pub(crate) fn eval_count(
     let [arg] = args else {
         return Err(type_error("`count` takes one argument", span));
     };
-    if let Some(segments) = unique_index_lookup_path(&arg.value, env)? {
-        let present = env
-            .store
-            .borrow()
-            .read(&encode_path(&segments))
-            .map_err(|error| error.located(span))?
-            .is_some();
-        return Ok(Value::Int(present as i64));
+    if let Some(values) = unique_index_lookup_values(&arg.value, span, Direction::Ascending, env)? {
+        return Ok(Value::Int(values.len() as i64));
     }
     // A non-unique index branch `^root.index(args…)` addresses an
     // `Index`/`IndexKey` layer that has no record/layer segment form. Count its
@@ -146,6 +140,20 @@ pub(crate) fn unique_index_lookup_path(
     expr: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
+    Ok(unique_index_lookup(expr, env)?.map(|lookup| lookup.segments))
+}
+
+pub(crate) struct UniqueIndexLookup {
+    pub(crate) segments: Vec<PathSegment>,
+    pub(crate) identity_arity: usize,
+    pub(crate) index_name: String,
+    pub(crate) remaining_key_depth: usize,
+}
+
+pub(crate) fn unique_index_lookup(
+    expr: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Option<UniqueIndexLookup>, RuntimeError> {
     let Expression::Call { callee, args, span } = expr else {
         return Ok(None);
     };
@@ -155,18 +163,26 @@ pub(crate) fn unique_index_lookup_path(
     let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
         return Ok(None);
     };
-    let Some((root_name, index_name)) = (|| {
+    let Some((root_name, identity_arity, index_name, index_arg_count)) = (|| {
         let resource = find_resource(env.program, root)?;
         let index = resource.indexes.iter().find(|index| &index.name == name)?;
         if !index.unique {
             return None;
         }
         let saved_root = resource.saved_root.as_ref()?;
-        Some((saved_root.root.clone(), index.name.clone()))
+        Some((
+            saved_root.root.clone(),
+            saved_root.identity_keys.len(),
+            index.name.clone(),
+            index.args.len(),
+        ))
     })() else {
         return Ok(None);
     };
-    let mut segments = vec![PathSegment::Root(root_name), PathSegment::Index(index_name)];
+    let mut segments = vec![
+        PathSegment::Root(root_name),
+        PathSegment::Index(index_name.clone()),
+    ];
     for arg in args {
         if arg.mode.is_some() || arg.name.is_some() {
             return Err(unsupported(
@@ -179,7 +195,108 @@ pub(crate) fn unique_index_lookup_path(
                 .ok_or_else(|| unsupported("an index key of this type", *span))?,
         ));
     }
-    Ok(Some(segments))
+    Ok(Some(UniqueIndexLookup {
+        segments,
+        identity_arity,
+        index_name,
+        remaining_key_depth: index_arg_count.saturating_sub(args.len()),
+    }))
+}
+
+pub(crate) fn unique_index_lookup_values(
+    expr: &Expression,
+    span: SourceSpan,
+    dir: Direction,
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<Value>>, RuntimeError> {
+    let Some(lookup) = unique_index_lookup(expr, env)? else {
+        return Ok(None);
+    };
+    if lookup.remaining_key_depth > 0 {
+        return collect_unique_index_values(
+            &lookup.segments,
+            lookup.remaining_key_depth,
+            &lookup,
+            dir,
+            span,
+            env,
+        )
+        .map(Some);
+    }
+    read_unique_index_value(&lookup.segments, &lookup, span, env)
+        .map(|value| Some(value.map_or_else(Vec::new, |value| vec![value])))
+}
+
+fn collect_unique_index_values(
+    prefix: &[PathSegment],
+    depth: usize,
+    lookup: &UniqueIndexLookup,
+    dir: Direction,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    let children = {
+        let store = env.store.borrow();
+        let encoded = encode_path(prefix);
+        match dir {
+            Direction::Ascending => store.child_keys(&encoded),
+            Direction::Descending => store.child_keys_rev(&encoded),
+        }
+        .map_err(|error| error.located(span))?
+    };
+    let mut values = Vec::new();
+    for child in children {
+        let ChildSegment::Key(key) = child else {
+            continue;
+        };
+        let mut path = prefix.to_vec();
+        path.push(PathSegment::IndexKey(key));
+        if depth <= 1 {
+            if let Some(value) = read_unique_index_value(&path, lookup, span, env)? {
+                values.push(value);
+            }
+        } else {
+            values.extend(collect_unique_index_values(
+                &path,
+                depth - 1,
+                lookup,
+                dir,
+                span,
+                env,
+            )?);
+        }
+    }
+    Ok(values)
+}
+
+fn read_unique_index_value(
+    segments: &[PathSegment],
+    lookup: &UniqueIndexLookup,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    let bytes = env
+        .store
+        .borrow()
+        .read(&encode_path(segments))
+        .map_err(|error| error.located(span))?;
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let identity =
+        crate::write::decode_identity_arity(&bytes, lookup.identity_arity).ok_or_else(|| {
+            RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_TYPE,
+                message: format!(
+                    "the `{}` index entry did not decode to an identity",
+                    lookup.index_name
+                ),
+                span,
+            }
+        })?;
+    Ok(Some(Value::Identity(identity)))
 }
 
 /// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,

@@ -784,6 +784,11 @@ pub(crate) fn eval_collection(
             return enumerate_layer_dir(layer, Direction::Descending, env);
         }
         if is_saved_path(inner) {
+            if let Some(values) =
+                unique_index_lookup_values(inner, iterable.span(), Direction::Descending, env)?
+            {
+                return Ok(values);
+            }
             if is_iterable_index_branch(inner, env) {
                 return enumerate_layer_dir(inner, Direction::Descending, env);
             }
@@ -796,6 +801,11 @@ pub(crate) fn eval_collection(
         return enumerate_layer(path, env);
     }
     if is_saved_path(iterable) {
+        if let Some(values) =
+            unique_index_lookup_values(iterable, iterable.span(), Direction::Ascending, env)?
+        {
+            return Ok(values);
+        }
         if is_iterable_index_branch(iterable, env) {
             return enumerate_layer(iterable, env);
         }
