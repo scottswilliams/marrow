@@ -857,6 +857,20 @@ resource Book at ^books(id: int)
 }
 
 #[test]
+fn index_arg_naming_nested_leaf_is_an_error() {
+    // A bare leaf inside an unkeyed group is a nested field, not an unknown name.
+    let source = "\
+resource Book at ^books(id: int)
+    location
+        shelf: string
+    index byShelf(shelf, id)
+";
+    let (_, errors) = compile_resource(&resource(source));
+    assert_eq!(codes(&errors), [SCHEMA_NESTED_INDEX_ARG]);
+    assert!(errors[0].message.contains("shelf"));
+}
+
+#[test]
 fn duplicate_identity_key_name_is_an_error() {
     // Identity keys must have distinct names; two `studentId` keys are
     // unaddressable.

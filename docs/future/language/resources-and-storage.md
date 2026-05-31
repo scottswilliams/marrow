@@ -49,6 +49,27 @@ choose memory-optimized structures for common access patterns. Code still
 depends on Marrow's typed tree behavior, not on a particular in-memory data
 structure.
 
+## Nested index arguments
+
+Declared indexes currently accept identity keys and top-level fields only. A
+future extension may allow indexes to target scalar fields nested through
+unkeyed groups:
+
+```mw
+resource Book at ^books(id: int)
+    location
+        shelf: string
+
+    index byShelf(location.shelf, id)
+```
+
+That extension needs schema resolution and generated write planning to move in
+lockstep: writes to the nested field, writes to the containing group, sparse
+presence changes, rebuilds, and unique-conflict checks must all maintain the
+generated index tree. Dotted paths are the expected spelling because they name
+the containing groups. A bare leaf shorthand such as `shelf` would need an
+explicit ambiguity rule before it could become part of the language.
+
 ## Collection spellings
 
 A designed extension adds `map[K, V]` and `set[K]` as spellings for two common

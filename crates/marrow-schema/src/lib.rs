@@ -874,9 +874,10 @@ fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<Sourc
         .map(member_span)
 }
 
-/// Resolve each top-level index argument against the resource. Arguments may
-/// name an identity key, a top-level unkeyed field, or a nested scalar field
-/// reached through unkeyed groups; they do not walk keyed child layers. Each
+/// Resolve each index argument against the resource. Implemented indexes may
+/// name an identity key or a top-level unkeyed field. Nested scalar fields
+/// reached through unkeyed groups are recognized only to report the unsupported
+/// nested-index diagnostic; indexes do not walk keyed child layers. Each
 /// unresolved argument is reported at its index's span, in index then argument
 /// order.
 ///
@@ -907,6 +908,17 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
         }
         for arg in &index.args {
             match index_arg_type(arg, keys, &decl.members) {
+                None if has_nested_unkeyed_field_named(arg, &decl.members) => {
+                    errors.push(SchemaError {
+                        code: SCHEMA_NESTED_INDEX_ARG,
+                        message: format!(
+                            "index `{}` argument `{arg}` names a field nested through an \
+                             unkeyed group, which the write planner does not maintain",
+                            index.name
+                        ),
+                        span: index.span,
+                    });
+                }
                 None => errors.push(SchemaError {
                     code: SCHEMA_UNKNOWN_INDEX_ARG,
                     message: format!(
@@ -996,6 +1008,29 @@ fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> O
             resolve_field_type(rest, &group.members)
         }
         _ => None,
+    })
+}
+
+/// Does a bare index argument name a scalar field below at least one unkeyed
+/// group? The argument is still unsupported, but it is a nested-field request
+/// rather than an unknown name.
+fn has_nested_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
+    !name.contains('.')
+        && members.iter().any(|member| match member {
+            ResourceMember::Group(group) if group.keys.is_empty() => {
+                has_unkeyed_field_named(name, &group.members)
+            }
+            _ => false,
+        })
+}
+
+fn has_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
+    members.iter().any(|member| match member {
+        ResourceMember::Field(field) => field.keys.is_empty() && field.name == name,
+        ResourceMember::Group(group) if group.keys.is_empty() => {
+            has_unkeyed_field_named(name, &group.members)
+        }
+        _ => false,
     })
 }
 
