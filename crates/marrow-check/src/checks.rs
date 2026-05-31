@@ -437,6 +437,7 @@ pub(crate) fn check_statement_types(
             ty, value, span, ..
         } => {
             let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
             if let Some(ty) = ty {
                 check_assignment(
                     file,
@@ -454,7 +455,11 @@ pub(crate) fn check_statement_types(
             ty, value, span, ..
         } => {
             let value_type = match value {
-                Some(value) => infer_type(program, value, scope, aliases, file, diagnostics),
+                Some(value) => {
+                    let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+                    check_range_value(file, value, diagnostics);
+                    value_type
+                }
                 None => MarrowType::Unknown,
             };
             // An annotated initializer must match the declared type.
@@ -486,6 +491,7 @@ pub(crate) fn check_statement_types(
             // unknown and the assignment is left alone.
             let target_type = infer_type(program, target, scope, aliases, file, diagnostics);
             let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
             check_assignment(file, *span, &target_type, &value_type, diagnostics);
         }
         Statement::Delete { path, .. } => {
@@ -494,11 +500,18 @@ pub(crate) fn check_statement_types(
         Statement::Return { value, span } => {
             if let Some(value) = value {
                 let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+                check_range_value(file, value, diagnostics);
                 check_return_type(file, *span, return_type, &value_type, diagnostics);
             }
         }
-        Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
+        Statement::Throw { value, span } => {
+            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
+            check_throw_type(file, *span, &value_type, diagnostics);
+        }
+        Statement::Expr { value, .. } => {
             infer_type(program, value, scope, aliases, file, diagnostics);
+            check_range_value(file, value, diagnostics);
         }
         Statement::If {
             condition,
@@ -509,6 +522,7 @@ pub(crate) fn check_statement_types(
         } => {
             if let Some(condition) = condition {
                 check_condition(program, file, condition, scope, aliases, diagnostics);
+                check_range_value(file, condition, diagnostics);
             }
             check_block_types(
                 program,
@@ -522,6 +536,7 @@ pub(crate) fn check_statement_types(
             for else_if in else_ifs {
                 if let Some(condition) = &else_if.condition {
                     check_condition(program, file, condition, scope, aliases, diagnostics);
+                    check_range_value(file, condition, diagnostics);
                 }
                 check_block_types(
                     program,
@@ -550,6 +565,7 @@ pub(crate) fn check_statement_types(
         } => {
             if let Some(condition) = condition {
                 check_condition(program, file, condition, scope, aliases, diagnostics);
+                check_range_value(file, condition, diagnostics);
             }
             check_block_types(
                 program,
@@ -571,6 +587,10 @@ pub(crate) fn check_statement_types(
             // Inferring the iterable here also operator-checks it; its diagnostics
             // belong to the type pass, so `for_frame` re-infers with a discard sink.
             infer_type(program, iterable, scope, aliases, file, diagnostics);
+            check_range_iterable_value_parts(file, iterable, diagnostics);
+            if let Some(step) = step {
+                check_range_value(file, step, diagnostics);
+            }
             check_range_header(
                 program,
                 file,
@@ -608,6 +628,7 @@ pub(crate) fn check_statement_types(
             if let Some(path) = path {
                 check_lock_target(program, file, path, diagnostics);
                 infer_type(program, path, scope, aliases, file, diagnostics);
+                check_range_value(file, path, diagnostics);
             }
             check_block_types(
                 program,
@@ -668,6 +689,9 @@ pub(crate) fn check_statement_types(
             span,
             ..
         } => {
+            if let Some(scrutinee) = scrutinee {
+                check_range_value(file, scrutinee, diagnostics);
+            }
             check_match(
                 program,
                 file,
@@ -957,6 +981,66 @@ fn range_endpoints(
             ..
         } => Some((left, right)),
         _ => None,
+    }
+}
+
+/// Reject ranges outside `for` iterables. A range is a loop shape, not a value
+/// that can be stored, returned, thrown, passed, or evaluated for its own sake.
+pub(crate) fn check_range_value(
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::{BinaryOp, Expression, InterpolationPart};
+    match expr {
+        Expression::Binary {
+            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+            left,
+            right,
+            span,
+        } => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_RANGE_VALUE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: "a range can only be used as a `for` iterable".to_string(),
+                span: *span,
+            });
+            check_range_value(file, left, diagnostics);
+            check_range_value(file, right, diagnostics);
+        }
+        Expression::Binary { left, right, .. } => {
+            check_range_value(file, left, diagnostics);
+            check_range_value(file, right, diagnostics);
+        }
+        Expression::Unary { operand, .. } => check_range_value(file, operand, diagnostics),
+        Expression::Call { callee, args, .. } => {
+            check_range_value(file, callee, diagnostics);
+            for arg in args {
+                check_range_value(file, &arg.value, diagnostics);
+            }
+        }
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            check_range_value(file, base, diagnostics);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    check_range_value(file, expr, diagnostics);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn check_range_iterable_value_parts(
+    file: &Path,
+    iterable: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if range_endpoints(iterable).is_none() {
+        check_range_value(file, iterable, diagnostics);
     }
 }
 
@@ -1353,6 +1437,30 @@ pub(crate) fn check_condition(
             span,
         }),
         _ => {}
+    }
+}
+
+/// Flag a `throw` whose operand is known to be something other than `Error`.
+/// Unknown operands are left to the runtime backstop, as with other unresolved
+/// values in this pass.
+pub(crate) fn check_throw_type(
+    file: &Path,
+    span: SourceSpan,
+    value_type: &MarrowType,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    match value_type {
+        MarrowType::Error | MarrowType::Unknown => {}
+        _ => diagnostics.push(CheckDiagnostic {
+            code: CHECK_THROW_TYPE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "`throw` requires an `Error` value, found `{}`",
+                marrow_type_name(value_type)
+            ),
+            span,
+        }),
     }
 }
 

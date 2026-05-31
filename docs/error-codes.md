@@ -156,6 +156,8 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |
 | `check.catch_type` | A `catch` annotation is not `Error`. |
+| `check.throw_type` | A `throw` operand is known not to be an `Error` value. |
+| `check.try_handler` | A `try` block has neither a `catch` nor a `finally` clause. |
 | `check.match_requires_enum` | A `match` scrutinee is not an enum value, or names an enum the project does not declare. |
 | `check.unknown_enum_member` | A `match` arm path, or an `Enum::member` reference, walks to no member the enum declares. |
 | `check.duplicate_match_arm` | Two `match` arms cover the same member — a repeated arm, or a leaf already covered by an enclosing category arm. |
@@ -170,6 +172,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
 | `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (a number for `int`/`decimal`, a positive duration for `date`/`instant`). `decimal` and `instant` require an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
+| `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
 
 ### `schema.*` — kind `check`
 

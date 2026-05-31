@@ -126,6 +126,13 @@ pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// wrong-direction step that would never run, or a step appears on a non-range
 /// iterable.
 pub const CHECK_RANGE: &str = "check.range";
+/// A range expression is used as an ordinary value. Ranges only exist as `for`
+/// iterables.
+pub const CHECK_RANGE_VALUE: &str = "check.range_value";
+/// A `throw` operand is known not to be an `Error` value.
+pub const CHECK_THROW_TYPE: &str = "check.throw_type";
+/// A `try` block has neither a `catch` nor a `finally` clause.
+pub const CHECK_TRY_HANDLER: &str = "check.try_handler";
 /// A qualified name `Enum::member` names a known enum but not one of its members.
 pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
 /// A bare `Enum::member` literal names a member that exists under more than one

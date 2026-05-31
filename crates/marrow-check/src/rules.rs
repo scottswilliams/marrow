@@ -13,7 +13,7 @@ use marrow_syntax::{
     SourceSpan, Statement, format_expression,
 };
 
-use crate::CheckDiagnostic;
+use crate::{CHECK_TRY_HANDLER, CheckDiagnostic};
 
 /// A `finally` block must not let control flow escape it via `return`, `break`,
 /// or `continue`.
@@ -65,6 +65,7 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
         ));
     }
     check_literal_ranges(file, value, out);
+    crate::check_range_value(file, value, out);
 }
 
 /// Range-check every literal inside a `const` value so an out-of-range integer or
@@ -147,6 +148,14 @@ fn walk_statement(
             finally,
             ..
         } => {
+            if catch.is_none() && finally.is_none() {
+                out.push(diagnostic_at(
+                    CHECK_TRY_HANDLER,
+                    file,
+                    statement,
+                    "a `try` block must have a `catch` or `finally` clause",
+                ));
+            }
             walk_block(file, body, read_only_params, out);
             if let Some(catch) = catch {
                 check_catch(file, catch, out);

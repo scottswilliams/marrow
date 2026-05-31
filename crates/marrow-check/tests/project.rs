@@ -3754,6 +3754,53 @@ fn catch_with_error_type_and_bare_catch_are_allowed() {
 }
 
 #[test]
+fn throw_requires_an_error_value() {
+    let found = check_script(
+        "throw-non-error",
+        "fn f()\n    throw \"oops\"\n",
+        "check.throw_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn throwing_an_error_value_is_allowed() {
+    let found = check_script(
+        "throw-error",
+        "fn f()\n    throw Error(code: \"test.error\", message: \"oops\")\n",
+        "check.throw_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn try_requires_a_catch_or_finally_clause() {
+    let found = check_script(
+        "bare-try",
+        "fn f()\n    try\n        write(\"x\")\n",
+        "check.try_handler",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn try_with_catch_or_finally_is_allowed() {
+    let with_catch = check_script(
+        "try-catch",
+        "fn f()\n    try\n        write(\"x\")\n    catch e\n        return\n",
+        "check.try_handler",
+    );
+    assert!(with_catch.is_empty(), "{with_catch:#?}");
+
+    let with_finally = check_script(
+        "try-finally",
+        "fn f()\n    try\n        write(\"x\")\n    finally\n        write(\"done\")\n",
+        "check.try_handler",
+    );
+    assert!(with_finally.is_empty(), "{with_finally:#?}");
+}
+
+#[test]
 fn call_shaped_assignment_target_is_rejected() {
     // `f(x) = y`: a call on a bare name is not a writable place.
     let found = check_script(
