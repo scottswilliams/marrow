@@ -450,6 +450,30 @@ fn a_category_is_not_selectable_in_value_position() {
 }
 
 #[test]
+fn a_category_member_error_does_not_emit_an_untyped_return_hint() {
+    let report = check_module_report(
+        "category-no-untyped-cascade",
+        &format!(
+            "{}\
+             fn f(): Cat\n    \
+             return Cat::tiger\n",
+            cat_enum()
+        ),
+    );
+    assert_eq!(
+        with_code(&report, "check.category_not_selectable").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn a_match_with_a_category_arm_covers_its_subtree() {
     // A `tiger` arm covers both `bengal` and `siberian`; with `housecat` covered,
     // the match is exhaustive over the selectable leaves.
@@ -652,6 +676,29 @@ fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
         errors[0].message.contains("tiger::paw") && errors[0].message.contains("lion::paw"),
         "{:#?}",
         errors[0].message
+    );
+}
+
+#[test]
+fn an_ambiguous_enum_member_does_not_emit_an_untyped_return_hint() {
+    let report = check_module_report(
+        "dup-value-bare-no-untyped-cascade",
+        &format!(
+            "{}\
+             fn a(): Cat\n    return Cat::paw\n",
+            duplicate_paw_enum()
+        ),
+    );
+    assert_eq!(
+        with_code(&report, "check.ambiguous_member").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
     );
 }
 
@@ -3655,8 +3702,8 @@ fn check_tests_catches_a_wrong_enum_to_a_qualified_project_parameter() {
     let report = check_tests_report(
         "check-tests-enum-arg",
         "module app\n\
-         enum Status\n    active\n    archived\n\n\
-         enum Color\n    red\n    green\n\n\
+         pub enum Status\n    active\n    archived\n\n\
+         pub enum Color\n    red\n    green\n\n\
          pub fn dispatch(s: app::Status): int\n    \
          match s\n        active\n            return 1\n        archived\n            return 2\n",
         "pub fn t()\n    var n = app::dispatch(app::Color::green)\n",
@@ -4135,6 +4182,60 @@ fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
 }
 
 #[test]
+fn cross_module_use_of_a_private_enum_is_a_visibility_error() {
+    let root = temp_project("cross-private-enum", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             enum Hidden\n    one\n    two\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\n\
+             fn f(): a::Hidden\n    return a::Hidden::one\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.private_enum");
+    assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
+    assert!(
+        found
+            .iter()
+            .all(|diagnostic| diagnostic.message.contains("a::Hidden")),
+        "{found:#?}"
+    );
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn cross_module_use_of_a_public_enum_checks_clean() {
+    let root = temp_project("cross-public-enum", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             pub enum Status\n    active\n    archived\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\n\
+             fn f(): a::Status\n    return a::Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn same_named_resources_constructor_resolves_by_module() {
     // Both modules declare a resource named `Book`. A constructor is the resource
     // NAME, which is module-scoped: a bare `Book(...)` in `zzz` constructs the
@@ -4317,6 +4418,28 @@ fn comparing_two_different_enums_is_an_operator_error() {
 }
 
 #[test]
+fn enum_operator_errors_do_not_emit_untyped_return_hints() {
+    let report = check_module_report(
+        "enum-operator-no-untyped-cascade",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn ordered(): bool\n    return Status::active < Status::archived\n\n\
+         fn added(): Status\n    return Status::active + Status::archived\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.operator_type").len(),
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn an_exhaustive_match_over_an_enum_checks_clean() {
     let report = check_module_report(
         "match-ok",
@@ -4475,6 +4598,29 @@ fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
 }
 
 #[test]
+fn assignment_between_same_named_enums_qualifies_the_message() {
+    let root = temp_project("enum-same-name-assign-message", |root| {
+        write(root, "src/a.mw", "module a\npub enum Color\n    red\n");
+        write(root, "src/b.mw", "module b\npub enum Color\n    blue\n");
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             fn f()\n    var c: a::Color = a::Color::red\n    c = b::Color::blue\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    let found = with_code(&report, "check.assignment_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        found[0].message.contains("a::Color") && found[0].message.contains("b::Color"),
+        "{}",
+        found[0].message
+    );
+}
+
+#[test]
 fn writing_a_different_enum_into_an_enum_saved_field_is_a_check_error() {
     // The saved field `state: Status` is written a `Color` value: a nominal
     // mismatch at the saved-field write boundary.
@@ -4556,6 +4702,24 @@ fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
 }
 
 #[test]
+fn a_singleton_keyed_enum_leaf_read_types_as_that_enum() {
+    let report = check_module_report(
+        "enum-singleton-keyed-leaf-read",
+        "module m\n\
+         enum Kind\n    number\n    plus\n\n\
+         resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
+         fn readBack(): int\n    \
+         var k: Kind = ^session.kinds(1)\n    \
+         match ^session.kinds(1)\n        number\n            return 0\n        plus\n            return 1\n",
+    );
+    assert!(
+        !report.has_errors(),
+        "a keyed enum leaf under a singleton saved root must read as its enum: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
     // `s: b::Status` is a qualified enum annotation. The match over it must resolve
     // to `b::Status` and enforce exhaustiveness; missing `closed` is a check error,
@@ -4564,7 +4728,7 @@ fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,
@@ -4590,12 +4754,12 @@ fn passing_a_third_modules_enum_to_a_qualified_parameter_is_a_check_error() {
         write(
             root,
             "src/a.mw",
-            "module a\nenum Status\n    active\n    archived\n",
+            "module a\npub enum Status\n    active\n    archived\n",
         );
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n\n\
+            "module b\npub enum Status\n    open\n    closed\n\n\
              pub fn classify(s: Status): int\n    \
              match s\n        open\n            return 1\n        closed\n            return 2\n",
         );
@@ -4629,7 +4793,7 @@ fn a_bare_foreign_only_enum_annotation_resolves_to_the_real_owner_not_a_phantom(
         write(
             root,
             "src/a.mw",
-            "module a\nenum Status\n    active\n    archived\n",
+            "module a\npub enum Status\n    active\n    archived\n",
         );
         write(
             root,
@@ -4666,7 +4830,7 @@ fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4692,7 +4856,7 @@ fn passing_a_raw_scalar_to_a_qualified_enum_parameter_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4767,7 +4931,7 @@ fn a_wrong_enum_to_a_qualified_parameter_in_an_equality_body_is_a_check_error() 
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn isActive(s: b::Status): bool\n    return s == b::Status::active\n",
         );
         write(
@@ -4796,7 +4960,7 @@ fn a_wrong_enum_to_a_qualified_parameter_inside_a_loop_is_a_check_error() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4822,7 +4986,7 @@ fn passing_the_matching_enum_to_a_qualified_parameter_checks_clean() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    active\n    archived\n\n\
+            "module b\npub enum Status\n    active\n    archived\n\n\
              pub fn dispatch(s: b::Status): int\n    \
              match s\n        active\n            return 1\n        archived\n            return 2\n",
         );
@@ -4888,7 +5052,7 @@ fn a_qualified_enum_var_annotation_accepts_the_same_qualified_member() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,
@@ -4911,7 +5075,7 @@ fn a_match_over_a_qualified_member_typed_local_dispatches_clean() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,

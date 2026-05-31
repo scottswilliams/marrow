@@ -101,7 +101,9 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
 /// a value satisfies an enum place only when it is the same enum, by owning module
 /// and name, so two same-named enums in different modules never alias.
 pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
-    if matches!(actual, MarrowType::Unknown) {
+    if matches!(expected, MarrowType::Invalid)
+        || matches!(actual, MarrowType::Unknown | MarrowType::Invalid)
+    {
         return None;
     }
     match expected {
@@ -118,6 +120,7 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
             _ => Some(false),
         },
         MarrowType::Error => Some(matches!(actual, MarrowType::Error)),
+        MarrowType::Invalid => None,
         MarrowType::Unknown => None,
     }
 }
@@ -219,6 +222,7 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
         MarrowType::Resource(resource) => resource.clone(),
         MarrowType::Enum { name, .. } => name.clone(),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
+        MarrowType::Invalid => "value".to_string(),
         MarrowType::Unknown => "value".to_string(),
     }
 }

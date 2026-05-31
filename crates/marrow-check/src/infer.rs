@@ -233,6 +233,16 @@ pub(crate) fn infer_type(
                 // Not an enum: a cross-module name or identity path stays unknown.
                 return MarrowType::Unknown;
             };
+            if let Some(private) = resolved.private {
+                diagnostics.push(CheckDiagnostic {
+                    code: CHECK_PRIVATE_ENUM,
+                    severity: Severity::Error,
+                    file: file.to_path_buf(),
+                    message: format!("enum `{private}` is private to its module; mark it `pub` to use it from another module"),
+                    span: *span,
+                });
+                return MarrowType::Invalid;
+            }
             let enum_name = &resolved.enum_name;
             match resolved.member {
                 MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
@@ -246,7 +256,7 @@ pub(crate) fn infer_type(
                         ),
                         span: *span,
                     });
-                    MarrowType::Unknown
+                    MarrowType::Invalid
                 }
                 MemberPathResolution::Found(_) => MarrowType::Enum {
                     module: resolved.module,
@@ -266,7 +276,7 @@ pub(crate) fn infer_type(
                         ),
                         span: *span,
                     });
-                    MarrowType::Unknown
+                    MarrowType::Invalid
                 }
                 MemberPathResolution::NotFound => {
                     diagnostics.push(CheckDiagnostic {
@@ -279,7 +289,7 @@ pub(crate) fn infer_type(
                         ),
                         span: *span,
                     });
-                    MarrowType::Unknown
+                    MarrowType::Invalid
                 }
             }
         }
@@ -540,10 +550,10 @@ fn singleton_saved_layer(callee: &marrow_syntax::Expression) -> Option<(&str, &s
     Some((root, layer))
 }
 
-/// Extract `(root, [layer…])` from a keyed layer accessor `^root(key…).layer` or a
-/// nested one `^root(key…).layer(key…)….layer`, with the layer names ordered
-/// outermost first. Each `Field` peels one layer; its base is either the keyed
-/// record `^root(key…)` (a call on a saved root) or a deeper layer entry.
+/// Extract `(root, [layer…])` from a keyed layer accessor `^root.layer`,
+/// `^root(key…).layer`, or a nested one `^root.layer(key…)….layer`, with the layer
+/// names ordered outermost first. Each `Field` peels one layer; its base is the
+/// singleton root, a keyed record, or a deeper layer entry.
 pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str>)> {
     use marrow_syntax::Expression;
     let Expression::Field {
@@ -552,6 +562,9 @@ pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&st
     else {
         return None;
     };
+    if let Expression::SavedRoot { name: root, .. } = base.as_ref() {
+        return Some((root, vec![layer]));
+    }
     let Expression::Call { callee, .. } = base.as_ref() else {
         return None;
     };

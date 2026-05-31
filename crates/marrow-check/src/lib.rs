@@ -33,7 +33,8 @@ pub use enums::resolve_match_enums;
 pub(crate) use checks::*;
 pub(crate) use enums::{
     check_is, check_match, collect_enum_names, join_or, normalize_program_enum_types,
-    normalize_program_enum_types_against, resolve_enum_member_path, resolve_type,
+    normalize_program_enum_types_against, private_enum_type_reference, resolve_enum_member_path,
+    resolve_type,
 };
 pub(crate) use infer::*;
 pub use marrow_schema::{IndexSchema, ResourceSchema};
@@ -97,6 +98,10 @@ pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
 /// so it is not callable from another module. Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: the name resolves, the visibility does not.
 pub const CHECK_PRIVATE_FUNCTION: &str = "check.private_function";
+/// A cross-module enum reference names an enum that exists but is not `pub`.
+/// Distinct from [`CHECK_UNKNOWN_TYPE`] and [`CHECK_UNKNOWN_ENUM_MEMBER`]: the
+/// enum resolves, the visibility does not.
+pub const CHECK_PRIVATE_ENUM: &str = "check.private_enum";
 /// A bare call names a `pub` function reachable in two or more modules, so the
 /// bare name cannot pick one — it must be qualified (`module::fn`). Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: candidates exist, the bare spelling is ambiguous.
@@ -294,6 +299,16 @@ fn resource_module<'p>(program: &'p CheckedProgram, name: &str) -> &'p str {
                 .any(|resource| resource.name == name)
         })
         .map_or("", |module| module.name.as_str())
+}
+
+fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<String, bool> {
+    file.declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Enum(decl) => Some((decl.name.clone(), decl.public)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The qualified name of the program module whose source is `file`, if any. The
@@ -512,6 +527,7 @@ pub fn check_tests_with_sources(
                 functions,
                 resources,
                 enums,
+                enum_public: enum_visibility(&parsed.file),
             });
         }
         parsed_files.push((file, parsed));

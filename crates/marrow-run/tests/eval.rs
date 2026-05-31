@@ -133,6 +133,7 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
             functions,
             resources,
             enums,
+            enum_public: HashMap::new(),
         }],
     }
 }
@@ -196,6 +197,7 @@ fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
             functions,
             resources,
             enums,
+            enum_public: HashMap::new(),
         });
     }
     CheckedProgram { modules }
@@ -8406,6 +8408,7 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
                 functions,
                 resources: Vec::new(),
                 enums: Vec::new(),
+                enum_public: HashMap::new(),
             }
         })
         .collect();
@@ -8524,6 +8527,25 @@ fn an_enum_field_stores_its_ordinal_and_reads_back() {
             .expect("compare")
             .value,
         Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
+    let program = checked_program_typed(
+        "enum Kind\n    number\n    plus\n\n\
+         resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
+         pub fn readBack(): int\n    \
+         ^session.cursor = 1\n    \
+         ^session.kinds(1) = Kind::plus\n    \
+         match ^session.kinds(1)\n        number\n            return 0\n        plus\n            return 1\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    assert_eq!(
+        run_entry(&program, &store, "test::readBack", &[])
+            .expect("keyed enum leaf match runs")
+            .value,
+        Some(Value::Int(1))
     );
 }
 

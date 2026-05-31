@@ -8,7 +8,7 @@
 //! module. The artifact never affects diagnostics; it is a structured view of the
 //! same parse the checker already produced.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
@@ -63,6 +63,7 @@ pub struct CheckedModule {
     pub functions: Vec<CheckedFunction>,
     pub resources: Vec<marrow_schema::ResourceSchema>,
     pub enums: Vec<marrow_schema::EnumSchema>,
+    pub enum_public: HashMap<String, bool>,
 }
 
 /// A module-level constant. Its type is the resolved annotation when one was
@@ -122,6 +123,10 @@ pub enum MarrowType {
         name: String,
     },
     Sequence(Box<MarrowType>),
+    /// An expression whose own type check already produced a primary diagnostic.
+    /// It suppresses secondary "untyped value" hints while still keeping unknown
+    /// dynamic values distinct.
+    Invalid,
     Unknown,
 }
 

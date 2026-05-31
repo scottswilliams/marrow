@@ -672,6 +672,7 @@ fn value_matches_type(program: &CheckedProgram, expected: &MarrowType, value: &V
             _ => false,
         },
         MarrowType::Error => matches!(value, Value::Resource(_)),
+        MarrowType::Invalid => true,
         MarrowType::Unknown => true,
     }
 }

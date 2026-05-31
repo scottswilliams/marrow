@@ -147,6 +147,13 @@ pub(crate) fn check_file_types(
         aliases,
         module_constants,
     } = file_prelude(program, file, parsed);
+    let annotation_context = TypeAnnotationContext {
+        program,
+        aliases: &aliases,
+        file,
+        resources: project_resources,
+        enums: project_enums,
+    };
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
@@ -154,9 +161,7 @@ pub(crate) fn check_file_types(
                     check_type_annotation(
                         &param.ty,
                         function.span,
-                        file,
-                        project_resources,
-                        project_enums,
+                        &annotation_context,
                         diagnostics,
                     );
                 }
@@ -164,9 +169,7 @@ pub(crate) fn check_file_types(
                     check_type_annotation(
                         return_type,
                         function.span,
-                        file,
-                        project_resources,
-                        project_enums,
+                        &annotation_context,
                         diagnostics,
                     );
                 }
@@ -176,6 +179,7 @@ pub(crate) fn check_file_types(
                     function.return_type.is_some(),
                     diagnostics,
                 );
+                check_block_type_annotations(&function.body, &annotation_context, diagnostics);
                 check_function_types(
                     program,
                     file,
@@ -199,14 +203,7 @@ pub(crate) fn check_file_types(
             }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(ty) = &constant.ty {
-                    check_type_annotation(
-                        ty,
-                        constant.span,
-                        file,
-                        project_resources,
-                        project_enums,
-                        diagnostics,
-                    );
+                    check_type_annotation(ty, constant.span, &annotation_context, diagnostics);
                 }
             }
             // Resource and enum member types are validated by schema compilation.
@@ -218,22 +215,118 @@ pub(crate) fn check_file_types(
 /// Record a `check.unknown_type` diagnostic when `ty` names a type the checker
 /// does not recognize. Located at `span` (the declaration), since a type
 /// annotation carries no span of its own.
-pub(crate) fn check_type_annotation(
+struct TypeAnnotationContext<'a> {
+    program: &'a CheckedProgram,
+    aliases: &'a HashMap<String, Vec<String>>,
+    file: &'a Path,
+    resources: &'a HashSet<String>,
+    enums: &'a HashSet<String>,
+}
+
+fn check_type_annotation(
     ty: &marrow_syntax::TypeRef,
     span: SourceSpan,
-    file: &Path,
-    resources: &HashSet<String>,
-    enums: &HashSet<String>,
+    context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if !MarrowType::names_known_type(ty, resources, enums) {
+    if let Some(private) =
+        private_enum_type_reference(ty, context.program, context.aliases, context.file)
+    {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_PRIVATE_ENUM,
+            severity: Severity::Error,
+            file: context.file.to_path_buf(),
+            message: format!(
+                "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+            ),
+            span,
+        });
+        return;
+    }
+    if !MarrowType::names_known_type(ty, context.resources, context.enums) {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
-            file: file.to_path_buf(),
+            file: context.file.to_path_buf(),
             message: format!("unknown type `{}`", ty.text.trim()),
             span,
         });
+    }
+}
+
+fn check_block_type_annotations(
+    block: &marrow_syntax::Block,
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for statement in &block.statements {
+        check_statement_type_annotations(statement, context, diagnostics);
+    }
+}
+
+fn check_statement_type_annotations(
+    statement: &marrow_syntax::Statement,
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::Const {
+            ty: Some(ty), span, ..
+        } => {
+            check_type_annotation(ty, *span, context, diagnostics);
+        }
+        Statement::Var { keys, ty, span, .. } => {
+            for key in keys {
+                check_type_annotation(&key.ty, *span, context, diagnostics);
+            }
+            if let Some(ty) = ty {
+                check_type_annotation(ty, *span, context, diagnostics);
+            }
+        }
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            check_block_type_annotations(then_block, context, diagnostics);
+            for else_if in else_ifs {
+                check_block_type_annotations(&else_if.block, context, diagnostics);
+            }
+            if let Some(block) = else_block {
+                check_block_type_annotations(block, context, diagnostics);
+            }
+        }
+        Statement::While { body, .. }
+        | Statement::For { body, .. }
+        | Statement::Transaction { body, .. }
+        | Statement::Lock { body, .. } => {
+            check_block_type_annotations(body, context, diagnostics);
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            check_block_type_annotations(body, context, diagnostics);
+            if let Some(catch) = catch {
+                if let Some(ty) = &catch.ty {
+                    check_type_annotation(ty, catch.block.span, context, diagnostics);
+                }
+                check_block_type_annotations(&catch.block, context, diagnostics);
+            }
+            if let Some(finally) = finally {
+                check_block_type_annotations(finally, context, diagnostics);
+            }
+        }
+        Statement::Match { arms, .. } => {
+            for arm in arms {
+                check_block_type_annotations(&arm.block, context, diagnostics);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1524,17 +1617,16 @@ pub(crate) fn check_assignment(
 ) {
     match type_compatible(place, value) {
         Some(true) => {}
-        Some(false) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_ASSIGNMENT_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "expected `{}`, but the value is `{}`",
-                marrow_type_name(place),
-                marrow_type_name(value),
-            ),
-            span,
-        }),
+        Some(false) => {
+            let (expected, found) = mismatch_display(place, value);
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_ASSIGNMENT_TYPE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("expected `{expected}`, but the value is `{found}`"),
+                span,
+            });
+        }
         // A value the checker could not resolve, stored into a convertible place. An
         // untyped place (a sequence, `unknown`) has no conversion boundary and is
         // left alone.
@@ -1792,6 +1884,9 @@ pub(crate) fn check_unary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::UnaryOp;
+    if matches!(operand, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     // A concrete non-scalar operand — an identity, record, sequence, or the
     // checker-only `Error` — has no unary operator, so flag it as an operator
     // misuse rather than silently passing it through. This must precede the
@@ -1807,7 +1902,7 @@ pub(crate) fn check_unary(
                 marrow_type_name(operand),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     let Some(operand) = as_primitive(operand) else {
         return MarrowType::Unknown;
@@ -1843,6 +1938,9 @@ pub(crate) fn check_binary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::BinaryOp;
+    if matches!(left, MarrowType::Invalid) || matches!(right, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     // `Error` is a concrete type, not an untyped one: no binary operator applies to
     // it, so flag it as an operator misuse rather than silently passing it through
     // (matching the unary case). This must come before the `as_primitive` gate,
@@ -1856,7 +1954,7 @@ pub(crate) fn check_binary(
                 binary_symbol(op)
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     // Equality is decided over concrete non-scalar types before the `as_primitive`
     // gate, which would otherwise drop them to `Unknown`. Whole records and
@@ -1885,7 +1983,7 @@ pub(crate) fn check_binary(
                 marrow_type_name(right),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     let (Some(left), Some(right)) = (as_primitive(left), as_primitive(right)) else {
         return MarrowType::Unknown;
@@ -1979,6 +2077,7 @@ pub(crate) fn check_equality(
         Some(MarrowType::Primitive(ScalarType::Bool))
     };
     match (left, right) {
+        (MarrowType::Invalid, _) | (_, MarrowType::Invalid) => None,
         // An untyped operand defers: the scalar path handles untyped values.
         (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
         // Whole records and sequences have no equality at all.
@@ -2026,6 +2125,9 @@ pub(crate) fn check_coalesce(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
+    if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     if !is_path_read(left) {
         diagnostics.push(operator_diagnostic(
             file,

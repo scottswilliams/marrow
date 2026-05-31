@@ -193,6 +193,7 @@ pub(crate) fn analyze_source_project(
                                 functions,
                                 resources,
                                 enums,
+                                enum_public: enum_visibility(&parsed.file),
                             });
                         }
                     }
@@ -240,6 +241,7 @@ pub(crate) fn analyze_source_project(
                 functions,
                 resources,
                 enums,
+                enum_public: enum_visibility(&parsed.file),
             });
         }
 

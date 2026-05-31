@@ -501,7 +501,7 @@ fn a_qualified_enum_member_literal_evaluates_to_its_ordinal() {
         write(
             root,
             "src/b.mw",
-            "module b\nenum Status\n    open\n    closed\n",
+            "module b\npub enum Status\n    open\n    closed\n",
         );
         write(
             root,
