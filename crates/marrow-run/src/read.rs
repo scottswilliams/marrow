@@ -418,8 +418,9 @@ pub(crate) fn eval_optional_field(
 
 /// Read a resource identity from a declared index lookup `^root.index(args…)`.
 /// A unique index stores the owning identity at the lookup path, so reading it
-/// decodes back to a [`Value::Identity`]. A non-unique index has no single
-/// identity to yield in value position; iterate it with `keys(...)` instead.
+/// decodes back to the resource's runtime identity value. A non-unique index has
+/// no single identity to yield in value position; iterate it with `keys(...)`
+/// instead.
 pub(crate) fn eval_index_lookup(
     resource: &ResourceSchema,
     index: &IndexSchema,
@@ -475,7 +476,7 @@ pub(crate) fn eval_index_lookup(
         ));
     };
     decode_identity(&bytes, root)
-        .map(Value::Identity)
+        .map(identity_value)
         .ok_or_else(|| RuntimeError {
             throw: None,
             origin: None,

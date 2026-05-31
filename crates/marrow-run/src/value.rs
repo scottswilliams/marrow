@@ -31,10 +31,10 @@ pub enum Value {
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write or `merge`.
     Resource(Vec<(String, Value)>),
-    /// A resource identity (`Book::Id(17)`, `Enrollment::Id(...)`): its lowered
-    /// key segments in declared identity-key order. Produced by an identity
-    /// constructor and spliced back into the saved path at a keyed lookup. It is
-    /// opaque — not a saved field value, not rendered, not iterated.
+    /// A composite resource identity (`Enrollment::Id(...)`): its lowered key
+    /// segments in declared identity-key order. Single-key identities use their
+    /// key's scalar value, matching `nextId` and root traversal. Composite
+    /// identities use this wrapper so a keyed lookup can splice all segments.
     ///
     /// The owning resource is not carried here: two identities with the same key
     /// scalars are byte-identical, so `Book::Id(1)` and `Magazine::Id(1)` are one
@@ -112,6 +112,22 @@ pub(crate) fn saved_key_to_value(key: SavedKey) -> Option<Value> {
     }
 }
 
+/// The runtime value for an identity's lowered keys. Single-key identities use
+/// the key's scalar shape, matching `nextId` and root traversal; composite
+/// identities need the opaque wrapper so they can splice all key segments later.
+pub(crate) fn identity_value(keys: Vec<SavedKey>) -> Value {
+    match keys.as_slice() {
+        [SavedKey::Int(n)] => Value::Int(*n),
+        [SavedKey::Bool(b)] => Value::Bool(*b),
+        [SavedKey::Str(s)] => Value::Str(s.clone()),
+        [SavedKey::Bytes(bytes)] => Value::Bytes(bytes.clone()),
+        [SavedKey::Instant(n)] => Value::Instant(*n),
+        [SavedKey::Date(d)] => Value::Date(*d),
+        [SavedKey::Duration(n)] => Value::Duration(*n),
+        _ => Value::Identity(keys),
+    }
+}
+
 /// Convert a runtime value to the saved value a managed write stores. Total over
 /// the scalar values; trees and identities have no scalar saved form. The write
 /// planner checks the value against the field's declared type.
@@ -176,13 +192,13 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
 
 /// Decode a stored leaf's bytes to its runtime value by the leaf's kind: a scalar
 /// leaf through the canonical scalar codec, a typed-reference leaf through
-/// `decode_identity` against the referenced identity arity, yielding a
-/// [`Value::Identity`]. `None` when the bytes are not a canonical form for the leaf.
+/// `decode_identity` against the referenced identity arity. `None` when the bytes
+/// are not a canonical form for the leaf.
 pub(crate) fn decode_leaf(bytes: &[u8], leaf: &LeafKind) -> Option<Value> {
     match leaf {
         LeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
         LeafKind::Identity { arity, .. } => {
-            decode_identity_arity(bytes, *arity).map(Value::Identity)
+            decode_identity_arity(bytes, *arity).map(identity_value)
         }
     }
 }

@@ -177,7 +177,7 @@ pub(crate) fn eval_identity_constructor(
             keys.push(key);
         }
     }
-    Ok(Value::Identity(keys))
+    Ok(identity_value(keys))
 }
 
 /// Whether `name` names a resource type (for an uninitialized `var book: Book`

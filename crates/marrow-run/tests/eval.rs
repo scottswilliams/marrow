@@ -3709,7 +3709,7 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
         )
         .expect("read")
         .value,
-        Some(Value::Identity(vec![SavedKey::Int(1)])),
+        Some(Value::Int(1)),
         "the unique index still points at book 1",
     );
 }
@@ -8219,13 +8219,13 @@ fn a_matching_scalar_spliced_identity_still_writes() {
     );
 }
 
-/// An identity cannot be one component among raw keys: `^books(id, 5)` mixing the
-/// spliced identity with a trailing raw key is rejected as unsupported.
+/// A composite identity cannot be one component among raw keys: `^pairs(id, 5)`
+/// mixing the spliced identity with a trailing raw key is rejected as unsupported.
 #[test]
 fn an_identity_mixed_with_a_raw_key_is_rejected() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn save()\n    const id = Book::Id(7)\n    ^books(id, 5).title = \"a\"\n",
+        "resource Pair at ^pairs(a: int, b: int)\n    required title: string\n\n\
+         fn save()\n    const id = Pair::Id(7, 8)\n    ^pairs(id, 5).title = \"a\"\n",
     );
     let result = run(&program, "test::save", &[]);
     assert!(
@@ -9180,8 +9180,8 @@ fn an_identity_field_round_trips_through_saved_data() {
 
 #[test]
 fn a_stored_identity_field_reads_back_the_identity_value() {
-    // Reading the field directly yields a `Value::Identity` carrying the referenced
-    // resource's key segments, not a bare scalar.
+    // The stored leaf carries the referenced identity's key segments, not a plain
+    // scalar field encoding.
     let program = checked_program(
         "resource Author at ^authors(id: int)\n\
          \x20   name: string\n\
@@ -9286,6 +9286,66 @@ fn equality_on_two_identities_of_the_same_resource_evaluates() {
     assert_eq!(
         run(&program, "test::different", &[]).unwrap(),
         Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn single_key_identity_constructor_behaves_like_other_identity_origins() {
+    let program = checked_program(
+        "resource Doc at ^docs(id: int)\n\
+         \x20   title: string\n\
+         \n\
+         pub fn ctorInt(): int\n\
+         \x20   return int(Doc::Id(99))\n\
+         \n\
+         pub fn ctorString(): string\n\
+         \x20   return string(Doc::Id(99))\n\
+         \n\
+         pub fn ctorRender(): string\n\
+         \x20   return $\"id={Doc::Id(99)}\"\n\
+         \n\
+         pub fn mixedEq(): bool\n\
+         \x20   const id = nextId(^docs)\n\
+         \x20   return id == Doc::Id(1)\n",
+    );
+    assert_eq!(
+        run(&program, "test::ctorInt", &[]).unwrap(),
+        Some(Value::Int(99))
+    );
+    assert_eq!(
+        run(&program, "test::ctorString", &[]).unwrap(),
+        Some(Value::Str("99".into()))
+    );
+    assert_eq!(
+        run(&program, "test::ctorRender", &[]).unwrap(),
+        Some(Value::Str("id=99".into()))
+    );
+    assert_eq!(
+        run(&program, "test::mixedEq", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn unique_index_identity_compares_with_the_allocated_identity() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required isbn: string\n\
+         \x20   index byIsbn(isbn) unique\n\
+         \n\
+         pub fn seed(): bool\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"T\"\n\
+         \x20   b.isbn = \"I-1\"\n\
+         \x20   const id = nextId(^books)\n\
+         \x20   ^books(id) = b\n\
+         \x20   const found = ^books.byIsbn(\"I-1\")\n\
+         \x20   return id == found and found == Book::Id(1)\n",
+    );
+    assert_eq!(
+        run(&program, "test::seed", &[]).unwrap(),
+        Some(Value::Bool(true))
     );
 }
 

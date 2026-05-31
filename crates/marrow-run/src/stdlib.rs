@@ -325,7 +325,7 @@ fn read_unique_index_value(
                 span,
             }
         })?;
-    Ok(Some(Value::Identity(identity)))
+    Ok(Some(identity_value(identity)))
 }
 
 /// Evaluate a `std::assert::*` testing builtin (`isTrue`, `isFalse`, `absent`,
