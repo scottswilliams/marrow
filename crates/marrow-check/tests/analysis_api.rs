@@ -196,6 +196,36 @@ fn scope_at_includes_a_loop_binding_typed_to_the_element() {
 }
 
 #[test]
+fn scope_at_includes_a_saved_group_loop_binding_typed_to_the_entry() {
+    let source = "module m\n\
+        resource Book at ^books(id: int)\n    \
+        versions(version: int)\n        \
+        required title: string\n\
+        fn f(id: Book::Id)\n    \
+        for n, version in ^books(id).versions\n        \
+        print(version.title)\n";
+    let (program, parsed, path) = analyze("scope-at-saved-group-loop", source);
+    let offset = source.find("print(version.title)").expect("loop body");
+
+    let bindings = scope_at(&program, &path, &parsed, offset);
+    let ty_of = |want: &str| {
+        bindings
+            .iter()
+            .find(|(name, _)| name == want)
+            .map(|(_, ty)| ty)
+    };
+    assert_eq!(ty_of("n"), Some(&MarrowType::Primitive(ScalarType::Int)));
+    assert_eq!(
+        ty_of("version"),
+        Some(&MarrowType::GroupEntry {
+            resource: "Book".to_string(),
+            layers: vec!["versions".to_string()],
+        }),
+        "{bindings:?}"
+    );
+}
+
+#[test]
 fn scope_at_includes_a_catch_binding_typed_error() {
     // A `catch` clause binds an `Error` value for the duration of its block;
     // reconstructing the cursor scope inside the catch must push that frame.

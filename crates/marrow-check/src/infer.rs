@@ -337,13 +337,11 @@ pub(crate) fn saved_resource_type(
 }
 
 /// The record type of a whole group-entry access `^root(key…).layer(key…)` whose
-/// terminal layer is a keyed GROUP (not a leaf): the owning resource. A group entry
-/// is a record value — read as a `Value::Resource`, written from one — so it shares
-/// the resource type, which gives an `unknown`-typed whole-entry write the same
-/// conversion boundary a whole-resource write has (a raw scalar or foreign identity
-/// must not silently land in one of the entry's typed fields). `callee` is the layer
-/// field `^root(key…)….layer`. A leaf layer is handled by `saved_leaf_type`; only a
-/// group entry reaches here.
+/// terminal layer is a keyed GROUP (not a leaf). A group entry is layer-specific:
+/// field reads resolve through its saved layer chain, and it is not a general
+/// value of the owning resource type. `callee` is the layer field
+/// `^root(key…)….layer`. A leaf layer is handled by `saved_leaf_type`; only a group
+/// entry reaches here.
 pub(crate) fn saved_group_entry_type(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
@@ -355,7 +353,10 @@ pub(crate) fn saved_group_entry_type(
     resource
         .descend_layers(&layers)
         .filter(|node| matches!(node.element, marrow_schema::Element::Group))
-        .map(|_| MarrowType::Resource(resource.name.clone()))
+        .map(|_| MarrowType::GroupEntry {
+            resource: resource.name.clone(),
+            layers: layers.iter().map(|layer| (*layer).to_string()).collect(),
+        })
 }
 
 /// The identity type of a unique-index lookup `^root.uniqueIndex(args)`: the
@@ -388,11 +389,22 @@ pub(crate) fn local_field_type(
     base_type: &MarrowType,
     field: &str,
 ) -> Option<MarrowType> {
-    let MarrowType::Resource(name) = base_type else {
-        return None;
-    };
-    let resource = resolve::resolve_resource_by_name_any(program, name)?;
-    field_member_type(resource, &[field], resource_module(program, &resource.name))
+    match base_type {
+        MarrowType::Resource(name) => {
+            let resource = resolve::resolve_resource_by_name_any(program, name)?;
+            field_member_type(resource, &[field], resource_module(program, &resource.name))
+        }
+        MarrowType::GroupEntry {
+            resource: name,
+            layers,
+        } => {
+            let resource = resolve::resolve_resource_by_name_any(program, name)?;
+            let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
+            chain.push(field);
+            field_member_type(resource, &chain, resource_module(program, &resource.name))
+        }
+        _ => None,
+    }
 }
 
 /// The declared type of a group field read at any nesting depth, reached through

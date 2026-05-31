@@ -294,7 +294,7 @@ fn maintenance_flag_gates_a_whole_root_drop() {
              \x20\x20\x20\x20delete ^books\n\n\
              pub fn count()\n\
              \x20\x20\x20\x20var c = 0\n\
-             \x20\x20\x20\x20for id in ^books\n\
+             \x20\x20\x20\x20for book in ^books\n\
              \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
              \x20\x20\x20\x20print($\"count={c}\")\n",
         );

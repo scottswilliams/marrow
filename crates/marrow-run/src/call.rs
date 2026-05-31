@@ -640,7 +640,9 @@ fn value_matches_type(program: &CheckedProgram, expected: &MarrowType, value: &V
                 .map_or(0, |root| root.identity_keys.len());
             identity_value_matches(program, resource, arity, value)
         }
-        MarrowType::Resource(_) => matches!(value, Value::Resource(_)),
+        MarrowType::Resource(_) | MarrowType::GroupEntry { .. } => {
+            matches!(value, Value::Resource(_))
+        }
         MarrowType::Enum { module, name } => {
             let Value::Int(ordinal) = value else {
                 return false;
@@ -1183,6 +1185,13 @@ mod default_value_tests {
             empty
         );
         assert_eq!(out_seed(&MarrowType::Resource("Book".into())), empty);
+        assert_eq!(
+            out_seed(&MarrowType::GroupEntry {
+                resource: "Book".into(),
+                layers: vec!["versions".into()],
+            }),
+            empty
+        );
         assert_eq!(out_seed(&MarrowType::Identity("Book".into())), empty);
         assert_eq!(out_seed(&MarrowType::Error), empty);
         assert_eq!(out_seed(&MarrowType::Unknown), empty);

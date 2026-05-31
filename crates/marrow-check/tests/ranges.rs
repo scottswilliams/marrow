@@ -172,7 +172,7 @@ fn a_variable_direction_range_is_not_flagged() {
 #[test]
 fn a_step_on_a_non_range_iterable_is_a_check_error() {
     let codes = codes(
-        "module m\nresource Book at ^books(id: int)\n    required title: string\nfn f()\n    for id in ^books by 1\n        var x = id\n",
+        "module m\nresource Book at ^books(id: int)\n    required title: string\nfn f()\n    for book in ^books by 1\n        var x = book.title\n",
     );
     assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
 }

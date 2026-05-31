@@ -109,6 +109,12 @@ pub enum MarrowType {
     Error,
     /// A resource declared in the same module, by name.
     Resource(String),
+    /// A saved keyed-group entry, identified by its owning resource and group
+    /// layer chain.
+    GroupEntry {
+        resource: String,
+        layers: Vec<String>,
+    },
     /// A resource identity such as `Book::Id`, carrying the resource name.
     Identity(String),
     /// An enum, identified by its owning module and bare name. Identity is

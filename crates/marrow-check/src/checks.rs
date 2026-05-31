@@ -938,7 +938,9 @@ fn saved_path_direct_value_type(
                 .filter(|root| !root.identity_keys.is_empty())?;
             Some(MarrowType::Resource(resource.name.clone()))
         }
-        Expression::Field { .. } => saved_leaf_type(program, path).or(Some(MarrowType::Unknown)),
+        Expression::Field { .. } => saved_leaf_type(program, path)
+            .or_else(|| saved_group_entry_type(program, path))
+            .or(Some(MarrowType::Unknown)),
         _ => None,
     }
 }
@@ -1447,7 +1449,9 @@ pub(crate) fn check_return_type(
 /// `Unknown` value stored into a place with a conversion boundary (a scalar, an
 /// identity, an enum, a whole resource) is a `check.untyped_value` error (strict
 /// typing: dynamic data must be converted before typed use). An untyped place (a
-/// sequence, `unknown`) is left alone.
+/// sequence, `unknown`) is left alone. A whole group-entry assignment may take a
+/// value of the owning resource type because the runtime writes matching fields
+/// from that resource value into the addressed group entry.
 pub(crate) fn check_assignment(
     file: &Path,
     span: SourceSpan,
@@ -1455,7 +1459,13 @@ pub(crate) fn check_assignment(
     value: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    match type_compatible(place, value) {
+    let compatible = match (place, value) {
+        (MarrowType::GroupEntry { resource, .. }, MarrowType::Resource(value_resource)) => {
+            Some(resource == value_resource)
+        }
+        _ => type_compatible(place, value),
+    };
+    match compatible {
         Some(true) => {}
         Some(false) => diagnostics.push(CheckDiagnostic {
             code: CHECK_ASSIGNMENT_TYPE,
@@ -1852,8 +1862,10 @@ pub(crate) fn check_equality(
         // An untyped operand defers: the scalar path handles untyped values.
         (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
         // Whole records and sequences have no equality at all.
-        (MarrowType::Resource(_) | MarrowType::Sequence(_), _)
-        | (_, MarrowType::Resource(_) | MarrowType::Sequence(_)) => reject(diagnostics),
+        (MarrowType::Resource(_) | MarrowType::GroupEntry { .. } | MarrowType::Sequence(_), _)
+        | (_, MarrowType::Resource(_) | MarrowType::GroupEntry { .. } | MarrowType::Sequence(_)) => {
+            reject(diagnostics)
+        }
         // Identities compare nominally: equatable only against the same resource.
         (MarrowType::Identity(a), MarrowType::Identity(b)) => {
             if a == b {

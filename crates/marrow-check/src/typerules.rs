@@ -86,6 +86,7 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
         ty,
         MarrowType::Identity(_)
             | MarrowType::Resource(_)
+            | MarrowType::GroupEntry { .. }
             | MarrowType::Sequence(_)
             | MarrowType::Enum { .. }
     )
@@ -112,6 +113,13 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
         MarrowType::Resource(resource) => {
             Some(matches!(actual, MarrowType::Resource(other) if other == resource))
         }
+        MarrowType::GroupEntry { resource, layers } => Some(matches!(
+            actual,
+            MarrowType::GroupEntry {
+                resource: other,
+                layers: other_layers,
+            } if other == resource && other_layers == layers
+        )),
         MarrowType::Enum { .. } => Some(actual == expected),
         MarrowType::Sequence(element) => match actual {
             MarrowType::Sequence(other) => type_compatible(element, other),
@@ -144,6 +152,7 @@ pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
             | MarrowType::Enum { .. }
             | MarrowType::Identity(_)
             | MarrowType::Resource(_)
+            | MarrowType::GroupEntry { .. }
     )
 }
 
@@ -217,6 +226,7 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
         MarrowType::Error => "Error".to_string(),
         MarrowType::Identity(resource) => format!("{resource}::Id"),
         MarrowType::Resource(resource) => resource.clone(),
+        MarrowType::GroupEntry { resource, .. } => resource.clone(),
         MarrowType::Enum { name, .. } => name.clone(),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
         MarrowType::Unknown => "value".to_string(),

@@ -1889,6 +1889,17 @@ fn a_sequence_layer_loop_binds_element_values() {
 }
 
 #[test]
+fn a_keyed_group_layer_loop_binds_group_entry_values() {
+    let report = check_module_report(
+        "group-layer-loop-elements",
+        "module m\n\
+         resource Book at ^books(id: int)\n    versions(version: int)\n        required title: string\n\n\
+         fn titles(id: Book::Id)\n    for version in ^books(id).versions\n        var title: string = version.title\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn a_single_name_entries_loop_does_not_bind_the_key_type() {
     let found = check_module(
         "single-name-entries",
@@ -2976,7 +2987,7 @@ fn a_typed_whole_group_entry_write_is_not_an_untyped_value() {
     // A whole-group-entry write of a value typed as the owning resource (a
     // `Book`-typed local or another read group entry) is the nominal match, not the
     // untyped-value path.
-    let found = check_module(
+    let report = check_module_report(
         "whole-group-entry-typed-ok",
         "module m\n\
          resource Book at ^books(id: int)\n\
@@ -2985,9 +2996,56 @@ fn a_typed_whole_group_entry_write_is_not_an_untyped_value() {
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
          fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(0) = b\n\n\
          fn copy()\n    ^books(1).chapters(1) = ^books(1).chapters(0)\n",
-        "check.untyped_value",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_group_entry_does_not_flow_as_a_whole_resource() {
+    let source = "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
+         fn takesBook(book: Book)\n    print(book.title)\n\n\
+         fn returnsBook(id: Book::Id): Book\n    for version in ^books(id).versions\n        return version\n    return ^books(id)\n\n\
+         fn pass(id: Book::Id)\n    for version in ^books(id).versions\n        takesBook(version)\n\n\
+         fn assign(id: Book::Id)\n    for version in ^books(id).versions\n        var book: Book = version\n";
+
+    let returns = check_module(
+        "group-entry-not-resource-return",
+        source,
+        "check.return_type",
+    );
+    assert_eq!(returns.len(), 1, "{returns:#?}");
+    let args = check_module(
+        "group-entry-not-resource-arg",
+        source,
+        "check.call_argument",
+    );
+    assert_eq!(args.len(), 1, "{args:#?}");
+    let assignments = check_module(
+        "group-entry-not-resource-assignment",
+        source,
+        "check.assignment_type",
+    );
+    assert_eq!(assignments.len(), 1, "{assignments:#?}");
+}
+
+#[test]
+fn a_whole_group_entry_write_rejects_a_different_group_layer() {
+    let found = check_module(
+        "whole-group-entry-different-layer",
+        "module m\n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20chapters(pos: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
+         fn copy()\n    ^books(1).chapters(1) = ^books(1).versions(1)\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -3533,6 +3591,18 @@ fn deleting_the_root_a_loop_traverses_is_rejected() {
     );
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(found[0].span.line, 7, "{:#?}", found[0]);
+}
+
+#[test]
+fn deleting_a_reversed_key_loop_traverses_is_rejected() {
+    let found = check_module(
+        "loop-reversed-delete-root",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]

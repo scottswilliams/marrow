@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use marrow_check::binding::{RenameSafety, SymbolKind};
-use marrow_check::{ProjectSources, analyze_project, build_binding_index};
+use marrow_check::{AnalysisSnapshot, ProjectSources, analyze_project, build_binding_index};
+use marrow_syntax::Statement;
 
 fn temp_root(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -28,6 +29,11 @@ fn analyze(
     name: &str,
     files: &[(&str, &str)],
 ) -> (marrow_check::binding::BindingIndex, Vec<PathBuf>) {
+    let (snapshot, paths) = analyze_snapshot(name, files);
+    (build_binding_index(&snapshot), paths)
+}
+
+fn analyze_snapshot(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot, Vec<PathBuf>) {
     let root = temp_root(name);
     let mut sources = ProjectSources::new();
     let mut paths = Vec::new();
@@ -40,7 +46,7 @@ fn analyze(
     }
     let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
     std::fs::remove_dir_all(&root).ok();
-    (build_binding_index(&snapshot), paths)
+    (snapshot, paths)
 }
 
 /// The byte offset of the `n`-th (0-based) occurrence of `needle` in `source`,
@@ -630,6 +636,142 @@ fn a_match_arm_resolves_through_a_sequence_enum_loop_binding() {
         def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
         "definition span covers the enum member declaration: {def:?}",
     );
+}
+
+#[test]
+fn a_match_arm_resolves_through_a_saved_enum_layer_loop_binding() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        resource Book at ^books(id: int)\n    \
+        states(pos: int): Status\n\
+        fn classify(id: Book::Id): int\n    \
+        for s in ^books(id).states\n        \
+        match s\n            \
+        active\n                \
+        return 1\n            \
+        archived\n                \
+        return 2\n    \
+        return 0\n";
+    let (snapshot, paths) =
+        analyze_snapshot("enum-match-saved-layer-loop", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n                return 1")
+        .expect("active match arm");
+    let def = index
+        .definition(file, arm_use)
+        .expect("match arm from saved enum layer loop binding resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("active\n").expect("active declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+}
+
+#[test]
+fn a_match_arm_resolves_through_a_two_name_saved_enum_layer_loop_binding() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        resource Book at ^books(id: int)\n    \
+        states(pos: int): Status\n\
+        fn classify(id: Book::Id): int\n    \
+        for pos, s in ^books(id).states\n        \
+        match s\n            \
+        active\n                \
+        return pos\n            \
+        archived\n                \
+        return 0\n    \
+        return 0\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "enum-match-two-name-saved-layer-loop",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let file = &paths[0];
+
+    let arm_use = source
+        .rfind("active\n                return pos")
+        .expect("active match arm");
+    let def = index
+        .definition(file, arm_use)
+        .expect("match arm from two-name saved enum layer loop binding resolves");
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+
+    let member_decl = source.find("active\n").expect("active declaration");
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+}
+
+#[test]
+fn a_saved_enum_layer_loop_match_records_its_scrutinee_enum() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        resource Book at ^books(id: int)\n    \
+        states(pos: int): Status\n\
+        fn classify(id: Book::Id): int\n    \
+        for s in ^books(id).states\n        \
+        match s\n            \
+        active\n                \
+        return 1\n            \
+        archived\n                \
+        return 2\n    \
+        return 0\n";
+    let (snapshot, _) = analyze_snapshot("enum-match-saved-layer-stamp", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let function = snapshot.program.modules[0]
+        .functions
+        .iter()
+        .find(|function| function.name == "classify")
+        .expect("classify function");
+    let loop_body = function
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            Statement::For { body, .. } => Some(body),
+            _ => None,
+        })
+        .expect("saved layer loop");
+    let (enum_module, enum_name) = loop_body
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            Statement::Match {
+                enum_module,
+                enum_name,
+                ..
+            } => Some((enum_module.as_deref(), enum_name.as_deref())),
+            _ => None,
+        })
+        .expect("match in loop body");
+
+    assert_eq!((enum_module, enum_name), (Some("m"), Some("Status")));
 }
 
 #[test]

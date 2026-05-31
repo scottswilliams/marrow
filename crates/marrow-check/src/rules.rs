@@ -428,15 +428,17 @@ fn walk_loop_layer_mutations(
 
 /// The saved layer a `for` loop traverses, as canonical text, or `None` for a
 /// loop over a range or a local value. A loop traverses a saved layer only when
-/// its iterable is a saved path directly or wrapped in `keys`/`values`/`entries`;
-/// iterating a local (the "collect keys first" pattern) traverses no saved layer.
+/// its iterable is a saved path directly or wrapped in collection views such as
+/// `keys`, `values`, `entries`, or `reversed`; iterating a local (the "collect keys
+/// first" pattern) traverses no saved layer.
 fn traversed_layer(iterable: &Expression) -> Option<String> {
     let path = traversal_argument(iterable).unwrap_or(iterable);
     is_saved_path(path).then(|| format_expression(path))
 }
 
-/// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
-/// expression. These wrap a saved layer without changing which layer is traversed.
+/// The innermost saved collection argument of traversal-preserving wrappers, or
+/// `None` for any other expression. These wrappers change traversal shape or order,
+/// not which saved layer is traversed.
 fn traversal_argument(expr: &Expression) -> Option<&Expression> {
     let Expression::Call { callee, args, .. } = expr else {
         return None;
@@ -444,11 +446,18 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
     let Expression::Name { segments, .. } = callee.as_ref() else {
         return None;
     };
-    if segments.len() != 1 || !matches!(segments[0].as_str(), "keys" | "values" | "entries") {
+    if segments.len() != 1
+        || !matches!(
+            segments[0].as_str(),
+            "keys" | "values" | "entries" | "reversed"
+        )
+    {
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        [arg] if arg.mode.is_none() && arg.name.is_none() => {
+            Some(traversal_argument(&arg.value).unwrap_or(&arg.value))
+        }
         _ => None,
     }
 }

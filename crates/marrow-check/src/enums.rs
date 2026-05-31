@@ -357,15 +357,7 @@ pub(crate) fn resolve_block_matches(
                 body,
                 ..
             } => {
-                let element = match infer_only(program, iterable, scope, aliases, file) {
-                    MarrowType::Sequence(element) if binding.second.is_none() => *element,
-                    _ => MarrowType::Unknown,
-                };
-                let mut frame = HashMap::new();
-                frame.insert(binding.first.clone(), element);
-                if let Some(second) = &binding.second {
-                    frame.insert(second.clone(), MarrowType::Unknown);
-                }
+                let frame = for_frame(program, binding, iterable, scope, aliases, file);
                 scope.push(frame);
                 resolve_block_matches(body, program, aliases, scope, file);
                 scope.pop();
