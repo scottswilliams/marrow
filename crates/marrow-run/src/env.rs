@@ -173,6 +173,7 @@ impl<'p> Env<'p> {
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
         let plan = plan.map_err(|error| write_fault(error, span))?;
+        self.guard_plan_traversal(&plan, span)?;
         self.guard_generated_index_mutations(&plan, span)?;
         // Offer each staged operation to an installed write observer before it
         // lands, in commit order. An ordinary run has no hook, so this is a single
@@ -184,6 +185,42 @@ impl<'p> Env<'p> {
         }
         plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth > 0)
             .map_err(|error| error.located(span))
+    }
+
+    fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {
+        if self.traversed_layers.is_empty() {
+            return Ok(());
+        }
+        for (op, path, _) in plan.steps() {
+            let path = decode_path(path).ok_or_else(|| RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_STORE,
+                message: "planned write path is malformed".into(),
+                span,
+            })?;
+            for layer in &self.traversed_layers {
+                let layer = decode_path(layer).ok_or_else(|| RuntimeError {
+                    throw: None,
+                    origin: None,
+                    code: RUN_STORE,
+                    message: "active traversal path is malformed".into(),
+                    span,
+                })?;
+                if plan_step_changes_layer_keys(op, &path, &layer, self, span)? {
+                    return Err(RuntimeError {
+                        throw: None,
+                        origin: None,
+                        code: RUN_TRAVERSAL,
+                        message: "this write changes the saved layer a loop is traversing; \
+                                  collect the keys into a local sequence first"
+                            .into(),
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn guard_generated_index_mutations(
@@ -252,5 +289,34 @@ impl<'p> Env<'p> {
             }
         }
         Err(AssignError::Unbound)
+    }
+}
+
+fn plan_step_changes_layer_keys(
+    op: WriteOp,
+    path: &[PathSegment],
+    layer: &[PathSegment],
+    env: &Env<'_>,
+    span: SourceSpan,
+) -> Result<bool, RuntimeError> {
+    let Some(child) = path.get(layer.len()) else {
+        return Ok(false);
+    };
+    if path[..layer.len()] != *layer
+        || !matches!(child, PathSegment::RecordKey(_) | PathSegment::IndexKey(_))
+    {
+        return Ok(false);
+    }
+    let child_path = encode_path(&path[..=layer.len()]);
+    match op {
+        WriteOp::Write => {
+            let presence = env
+                .store
+                .borrow()
+                .presence(&child_path)
+                .map_err(|error| error.located(span))?;
+            Ok(matches!(presence, Presence::Absent))
+        }
+        WriteOp::Delete => Ok(path.len() == layer.len() + 1),
     }
 }

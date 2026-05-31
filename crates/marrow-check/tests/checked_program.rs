@@ -323,6 +323,58 @@ fn next_over_a_composite_identity_record_is_flagged() {
     );
 }
 
+#[test]
+fn next_over_a_bare_composite_identity_root_is_flagged() {
+    let root = temp_project("program-next-bare-composite", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required grade: string\n\
+             fn step()\n\
+             \x20   const n = next(^enrollments)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn next_over_a_bare_identity_value_is_flagged() {
+    let root = temp_project("program-next-identity-value", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             fn step(id: Book::Id)\n\
+             \x20   const n = next(id)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 /// `next`/`prev` over an index branch is statically unsupported the same way: an
 /// index branch inspects identities, with no single key position to seek.
 #[test]
@@ -351,6 +403,29 @@ fn next_over_an_index_branch_is_flagged() {
         "{:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn keys_over_composite_identity_index_bind_reconstructed_identities() {
+    let root = temp_project("program-composite-index-keys", |root| {
+        write(
+            root,
+            "src/school/registrar.mw",
+            "module school::registrar\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required credits: int\n\
+             \x20   index byStudent(studentId, courseId)\n\
+             fn total(studentId: string): int\n\
+             \x20   var credits = 0\n\
+             \x20   for id in keys(^enrollments.byStudent(studentId))\n\
+             \x20       credits = credits + ^enrollments(id).credits\n\
+             \x20   return credits\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 /// `use std::clock` lets a short-form `clock::now()` resolve and type to its

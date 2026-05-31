@@ -6355,6 +6355,48 @@ fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
 }
 
 #[test]
+fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    append(^books(1).tags, \"x\")\n\nfn grow()\n    append(^books(1).tags, \"y\")\n\nfn walk()\n    for tag in ^books(1).tags\n        grow()\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::walk", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn helper_deleting_from_the_root_being_traversed_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn walk()\n    for id in keys(^books)\n        remove(id)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::walk", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
+fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let faulted = run_entry(&program, &store, "test::grow", &[]);
+    assert!(
+        matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{faulted:?}"
+    );
+}
+
+#[test]
 fn collecting_keys_first_then_deleting_is_allowed() {
     // The documented safe pattern: snapshot the keys into a local, then iterate the
     // local and delete. The loop traverses a local value, so no traversal fault.

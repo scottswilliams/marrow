@@ -38,7 +38,9 @@ pub(crate) use marrow_schema::{
 pub(crate) use marrow_store::Decimal;
 pub(crate) use marrow_store::backend::{Backend, Presence, StoreError};
 pub(crate) use marrow_store::mem::MemStore;
-pub(crate) use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+pub(crate) use marrow_store::path::{
+    ChildSegment, PathSegment, SavedKey, decode_path, encode_path,
+};
 pub(crate) use marrow_store::value::{
     SavedValue, ScalarType, ValueError, decode_value, encode_value,
 };

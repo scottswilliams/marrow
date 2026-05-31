@@ -4025,12 +4025,36 @@ fn appending_to_the_sequence_a_loop_traverses_is_rejected() {
 }
 
 #[test]
+fn appending_to_a_string_keyed_layer_is_rejected() {
+    let found = check_module(
+        "append-string-keyed",
+        "module m\n\
+         resource Doc at ^docs(id: int)\n    required title: string\n    scores(who: string): int\n\n\
+         fn f()\n    append(^docs(1).scores, 7)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn writing_a_keyed_leaf_the_loop_traverses_is_rejected() {
     let found = check_module(
         "loop-write-leaf",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
          fn f()\n    for pos in keys(^books(1).tags)\n        ^books(1).tags(pos) = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn reversed_loop_mutating_the_traversed_layer_is_rejected() {
+    let found = check_module(
+        "loop-reversed-append-seq",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         fn f()\n    for tag in reversed(^books(1).tags)\n        append(^books(1).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

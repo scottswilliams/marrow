@@ -2270,7 +2270,14 @@ pub(crate) fn check_call(
             "next" | "prev" => {
                 check_plain_call_modes(name, args, span, file, diagnostics);
                 check_arity(name, 1, args, span, file, diagnostics);
-                return check_neighbor(program, name, args, span, file, diagnostics);
+                return check_neighbor(program, name, args, arg_types, span, file, diagnostics);
+            }
+            "append" => {
+                check_plain_call_modes(name, args, span, file, diagnostics);
+                check_arity(name, 2, args, span, file, diagnostics);
+                check_append_args(program, args, span, file, diagnostics);
+                check_append(program, args, span, file, diagnostics);
+                return MarrowType::Primitive(ScalarType::Int);
             }
             _ => {}
         }
@@ -2281,7 +2288,7 @@ pub(crate) fn check_call(
     // type checks.
     if is_builtin_call(segments) {
         check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
-        check_builtin_call_args(program, segments, args, arg_types, span, file, diagnostics);
+        check_builtin_call_args(segments, arg_types, span, file, diagnostics);
         if let Some(params) = std_call_params(segments) {
             check_args_against(
                 &segments.join("::"),
@@ -2491,19 +2498,15 @@ pub(crate) fn check_call(
 }
 
 fn check_builtin_call_args(
-    program: &CheckedProgram,
     segments: &[String],
-    args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [name] = segments else { return };
-    match name.as_str() {
-        "append" => check_append_args(program, args, span, file, diagnostics),
-        "bytes" => check_bytes_conversion_arg(arg_types, span, file, diagnostics),
-        _ => {}
+    if name == "bytes" {
+        check_bytes_conversion_arg(arg_types, span, file, diagnostics);
     }
 }
 
@@ -2862,6 +2865,7 @@ pub(crate) fn check_neighbor(
     program: &CheckedProgram,
     which: &str,
     args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -2871,9 +2875,21 @@ pub(crate) fn check_neighbor(
         return MarrowType::Unknown;
     };
     match &arg.value {
-        // A bare primary keyed root `^root`: its first/last record is sought, so a
-        // composite identity is fine here (no single key level is anchored).
-        Expression::SavedRoot { name: root, .. } => record_identity_type(program, root),
+        // A bare primary keyed root `^root`: its first/last record is sought. A
+        // composite identity has no single returned key value, so reject it before
+        // the runtime can degrade the identity to one component.
+        Expression::SavedRoot { name: root, .. } => {
+            if composite_identity(program, root) {
+                return neighbor_unsupported(
+                    which,
+                    "a composite-identity root (scope a single key level)",
+                    span,
+                    file,
+                    diagnostics,
+                );
+            }
+            record_identity_type(program, root)
+        }
         Expression::Call { callee, .. } => match callee.as_ref() {
             // `^root(id…)`: a keyed record. `next`/`prev` anchor at one key level, so
             // a composite multi-key identity is out of scope — reject it statically.
@@ -2902,7 +2918,45 @@ pub(crate) fn check_neighbor(
         },
         // A bare child layer `^root(id…).layer`: navigate among the layer's keys.
         Expression::Field { .. } => layer_key_type(program, &arg.value),
+        _ if matches!(arg_types.first(), Some(MarrowType::Identity(_))) => neighbor_unsupported(
+            which,
+            "an identity value (use a saved place)",
+            span,
+            file,
+            diagnostics,
+        ),
         _ => MarrowType::Unknown,
+    }
+}
+
+/// Check `append(layer, value)` against the statically declared layer key kind.
+/// `append` allocates an integer position, so accepting a string- or bool-keyed
+/// layer would create stored keys the schema cannot address.
+pub(crate) fn check_append(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [target, _] = args else {
+        return;
+    };
+    if target.mode.is_some() || target.name.is_some() {
+        return;
+    }
+    let Some(key_type) = saved_path_key_type(program, &target.value) else {
+        return;
+    };
+    if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
+                marrow_type_name(&key_type)
+            ),
+        ));
     }
 }
 

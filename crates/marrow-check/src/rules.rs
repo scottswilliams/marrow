@@ -946,12 +946,21 @@ fn walk_loop_layer_mutations(
 /// its iterable is a saved path directly or wrapped in `keys`/`values`/`entries`;
 /// iterating a local (the "collect keys first" pattern) traverses no saved layer.
 fn traversed_layer(iterable: &Expression) -> Option<String> {
-    let path = traversal_argument(iterable).unwrap_or(iterable);
+    let path = traversal_path(iterable);
     is_saved_path(path).then(|| format_expression(path))
 }
 
-/// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
-/// expression. These wrap a saved layer without changing which layer is traversed.
+/// Peel traversal-preserving wrappers until the saved layer expression remains.
+fn traversal_path(expr: &Expression) -> &Expression {
+    match traversal_argument(expr) {
+        Some(inner) => traversal_path(inner),
+        None => expr,
+    }
+}
+
+/// The sole argument of a `keys`/`values`/`entries`/`reversed` call, or `None` for
+/// any other expression. These wrap a saved layer without changing which layer is
+/// traversed.
 fn traversal_argument(expr: &Expression) -> Option<&Expression> {
     let Expression::Call { callee, args, .. } = expr else {
         return None;
@@ -959,7 +968,12 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
     let Expression::Name { segments, .. } = callee.as_ref() else {
         return None;
     };
-    if segments.len() != 1 || !matches!(segments[0].as_str(), "keys" | "values" | "entries") {
+    if segments.len() != 1
+        || !matches!(
+            segments[0].as_str(),
+            "keys" | "values" | "entries" | "reversed"
+        )
+    {
         return None;
     }
     match args.as_slice() {
