@@ -51,10 +51,11 @@ pub(crate) use marrow_syntax::{
 pub(crate) use write::{
     ResourceValue, SuppliedIdentity, WRITE_RAW_DECLARED_FIELD, WRITE_RAW_REQUIRES_MAINTENANCE,
     WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity,
-    next_id, next_layer_pos, plan_field_delete, plan_field_write, plan_identity_field_write,
-    plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
-    plan_layer_merge, plan_nested_field_write, plan_nested_identity_field_write,
-    plan_resource_delete, plan_resource_merge, plan_resource_write,
+    next_id, next_layer_pos, next_nested_layer_pos, plan_field_delete, plan_field_write,
+    plan_identity_field_write, plan_layer_group_write, plan_layer_identity_leaf_write,
+    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
+    plan_nested_identity_field_write, plan_nested_layer_identity_leaf_write,
+    plan_nested_layer_leaf_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
     validate_required_fields_after_field_write,
 };
 

@@ -717,6 +717,82 @@ pub fn plan_layer_identity_leaf_write(
     })
 }
 
+/// Plan a keyed-leaf write below an already-keyed parent layer chain, e.g.
+/// `^root(identity).rows(row).fields(col) = value`. The parent chain must name
+/// group layers; the terminal `layer` must be a keyed leaf.
+pub fn plan_nested_layer_leaf_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    key: &[SavedKey],
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = find_nested_layer(schema, parents, layer)?;
+    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+        return Err(WriteError {
+            code: WRITE_NOT_A_LEAF_LAYER,
+            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+        });
+    };
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    check_type(layer, leaf_type, value)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&nested_layer_leaf_path(root, identity, parents, layer, key)),
+            value: encode_value(value)?,
+        }],
+    })
+}
+
+/// Plan a typed-reference keyed-leaf write below an already-keyed parent layer
+/// chain. The stored value is the referenced identity's canonical encoding.
+pub fn plan_nested_layer_identity_leaf_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    key: &[SavedKey],
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<WritePlan, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let declared = find_nested_layer(schema, parents, layer)?;
+    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+        return Err(WriteError {
+            code: WRITE_NOT_A_LEAF_LAYER,
+            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+        });
+    };
+    if key.len() != declared.key_params.len() {
+        return Err(WriteError {
+            code: WRITE_LAYER_KEY_ARITY,
+            message: format!(
+                "keyed layer `{layer}` expects {} key(s), got {}",
+                declared.key_params.len(),
+                key.len()
+            ),
+        });
+    }
+    let value = staged_identity_value(layer, leaf_type, keys, referenced_arity)?;
+    Ok(WritePlan {
+        steps: vec![PlanStep::Write {
+            path: encode_path(&nested_layer_leaf_path(root, identity, parents, layer, key)),
+            value,
+        }],
+    })
+}
+
 /// The staged bytes for a typed-reference leaf: the referenced identity's canonical
 /// encoding. `ty` must be an identity type, and `keys` must have the referenced
 /// resource's identity arity, so the stored bytes round-trip through
@@ -1043,6 +1119,30 @@ pub fn next_layer_pos(
     next_after(highest)
 }
 
+/// The next 1-based position for an `append` to a keyed layer below a keyed
+/// parent chain, e.g. `^root(identity).rows(row).fields`.
+pub fn next_nested_layer_pos(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    store: &dyn Backend,
+) -> Result<i64, WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    find_nested_layer(schema, parents, layer)?;
+    let mut prefix = nested_layer_path(root, identity, parents);
+    prefix.push(PathSegment::ChildLayer(layer.into()));
+    let highest = store
+        .max_int_index_key(&encode_path(&prefix))
+        .map_err(|_| WriteError {
+            code: WRITE_STORE,
+            message: format!("could not read entries under keyed layer `{layer}`"),
+        })?
+        .filter(|&pos| pos >= 1)
+        .unwrap_or(0);
+    next_after(highest)
+}
+
 /// The supplied value for `field` in `value`, if any.
 fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a SavedValue> {
     value
@@ -1195,6 +1295,25 @@ fn find_layer<'a>(schema: &'a ResourceSchema, layer: &str) -> Result<&'a Node, W
     })
 }
 
+fn find_nested_layer<'a>(
+    schema: &'a ResourceSchema,
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+) -> Result<&'a Node, WriteError> {
+    let members = if parents.is_empty() {
+        &schema.members
+    } else {
+        &descend_group_layers(schema, parents)?.members
+    };
+    layer_in(members, layer).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_LAYER,
+        message: format!(
+            "keyed layer `{}` has no nested layer `{layer}`",
+            schema.name
+        ),
+    })
+}
+
 /// The layer node named `name` in `members`: a group or keyed leaf, never a plain
 /// field.
 fn layer_in<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
@@ -1281,6 +1400,19 @@ fn layer_leaf_path(
     key: &[SavedKey],
 ) -> Vec<PathSegment> {
     nested_layer_path(root, identity, &[(layer, key)])
+}
+
+fn nested_layer_leaf_path(
+    root: &SavedRootSchema,
+    identity: &[SavedKey],
+    parents: &[(&str, &[SavedKey])],
+    layer: &str,
+    key: &[SavedKey],
+) -> Vec<PathSegment> {
+    let mut path = nested_layer_path(root, identity, parents);
+    path.push(PathSegment::ChildLayer(layer.into()));
+    path.extend(key.iter().cloned().map(PathSegment::IndexKey));
+    path
 }
 
 /// The encoded-path segments for a (possibly nested) keyed group entry,

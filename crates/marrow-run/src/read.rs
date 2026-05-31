@@ -70,13 +70,9 @@ pub(crate) fn traversed_layer_prefix(
         Expression::Field {
             base, name: layer, ..
         } => {
-            let (root, identity) = lower(base, env)?.into_record(base.span())?;
-            Ok(Some(saved_segments(
-                &root,
-                &identity,
-                &[(layer.clone(), Vec::new())],
-                None,
-            )))
+            let (root, identity, mut layers) = lower(base, env)?.into_layers(base.span())?;
+            layers.push((layer.clone(), Vec::new()));
+            Ok(Some(saved_segments(&root, &identity, &layers, None)))
         }
         _ => Ok(None),
     }
@@ -276,8 +272,9 @@ pub(crate) fn enumerate_child_layer(
         return Err(unsupported("iterating this saved path", path.span()));
     };
     let span = path.span();
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    let prefix = saved_segments(&root, &identity, &[(layer.clone(), Vec::new())], None);
+    let (root, identity, mut layers) = lower(base, env)?.into_layers(base.span())?;
+    layers.push((layer.clone(), Vec::new()));
+    let prefix = saved_segments(&root, &identity, &layers, None);
     collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, dir, span, env)
 }
 
@@ -505,18 +502,38 @@ pub(crate) fn eval_saved_layer_read(
     else {
         return Err(unsupported("this read", span));
     };
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    let expected = layer_key_params(env.program, &root, &[layer]);
+    let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
+    let layer_names: Vec<&str> = parents
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .chain(std::iter::once(layer.as_str()))
+        .collect();
+    let expected = layer_key_params(env.program, &root, &layer_names);
     let layer_keys = lower_keys(keys, span, false, expected, env)?;
-    read_layer_entry(
-        &root,
-        &identity,
-        layer,
-        &layer_keys,
-        ReadPosition::Value,
-        span,
-        env,
-    )
+    if parents.is_empty() {
+        read_layer_entry(
+            &root,
+            &identity,
+            layer,
+            &layer_keys,
+            ReadPosition::Value,
+            span,
+            env,
+        )
+    } else {
+        read_layer_entry_at(
+            LayerEntryAddress {
+                root: &root,
+                identity: &identity,
+                parent_layers: &parents,
+                layer,
+                layer_keys: &layer_keys,
+            },
+            ReadPosition::Value,
+            span,
+            env,
+        )
+    }
 }
 
 /// Read one keyed-layer entry from a lowered record identity and layer keys. A
@@ -532,16 +549,42 @@ pub(crate) fn read_layer_entry(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let entry = saved_segments(
-        root,
-        identity,
-        &[(layer.to_string(), layer_keys.to_vec())],
-        None,
-    );
+    read_layer_entry_at(
+        LayerEntryAddress {
+            root,
+            identity,
+            parent_layers: &[],
+            layer,
+            layer_keys,
+        },
+        position,
+        span,
+        env,
+    )
+}
+
+pub(crate) struct LayerEntryAddress<'a> {
+    pub(crate) root: &'a str,
+    pub(crate) identity: &'a [SavedKey],
+    pub(crate) parent_layers: &'a [(String, Vec<SavedKey>)],
+    pub(crate) layer: &'a str,
+    pub(crate) layer_keys: &'a [SavedKey],
+}
+
+pub(crate) fn read_layer_entry_at(
+    address: LayerEntryAddress<'_>,
+    position: ReadPosition,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let mut chain = address.parent_layers.to_vec();
+    chain.push((address.layer.to_string(), address.layer_keys.to_vec()));
+    let entry = saved_segments(address.root, address.identity, &chain, None);
+    let layer_names: Vec<&str> = chain.iter().map(|(name, _)| name.as_str()).collect();
 
     // A leaf layer reads one value; a group layer materializes its entry.
-    let Some(leaf) = resource_layer_leaf(env.program, root, layer) else {
-        return read_group_entry(root, layer, &entry, span, env);
+    let Some(leaf) = resource_layer_leaf_chain(env.program, address.root, &layer_names) else {
+        return read_group_entry_chain(address.root, &layer_names, &entry, span, env);
     };
     let bytes = env
         .store
@@ -551,7 +594,7 @@ pub(crate) fn read_layer_entry(
     let Some(bytes) = bytes else {
         return Err(absent_read(
             position,
-            format!("`{layer}` entry is absent"),
+            format!("`{}` entry is absent", address.layer),
             span,
         ));
     };
@@ -559,7 +602,10 @@ pub(crate) fn read_layer_entry(
         throw: None,
         origin: None,
         code: RUN_TYPE,
-        message: format!("stored value in `{layer}` did not decode to a runtime value"),
+        message: format!(
+            "stored value in `{}` did not decode to a runtime value",
+            address.layer
+        ),
         span,
     })
 }
@@ -568,9 +614,9 @@ pub(crate) fn read_layer_entry(
 /// lowered into `entry`) as a [`Value::Resource`]: each present member field, in
 /// declaration order, decoded by its type; sparse members are omitted. Mirrors a
 /// whole-resource read scoped to one group entry.
-pub(crate) fn read_group_entry(
+pub(crate) fn read_group_entry_chain(
     root: &str,
-    layer: &str,
+    layers: &[&str],
     entry: &[PathSegment],
     span: SourceSpan,
     env: &mut Env<'_>,
@@ -578,7 +624,7 @@ pub(crate) fn read_group_entry(
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("reading this saved root", span))?;
     let declared = resource
-        .descend_layers(&[layer])
+        .descend_layers(layers)
         .filter(|node| matches!(node.element, Element::Group))
         .ok_or_else(|| unsupported("reading this layer", span))?;
     let store = env.store.borrow();

@@ -280,6 +280,17 @@ pub(crate) fn resource_layer_leaf(
     leaf_kind(program, &ty)
 }
 
+/// The stored leaf kind of a keyed-leaf layer named by its full chain from the
+/// resource, e.g. `rows.fields` for `^table(id).rows(row).fields(col)`.
+pub(crate) fn resource_layer_leaf_chain(
+    program: &CheckedProgram,
+    root: &str,
+    layers: &[&str],
+) -> Option<LeafKind> {
+    let ty = find_resource(program, root)?.leaf_type(layers)?.clone();
+    leaf_kind(program, &ty)
+}
+
 /// The stored leaf kind of a scalar member field inside a saved root's GROUP layer,
 /// at any nesting depth (e.g. the `string` of
 /// `versions(version: int).comments(pos: int).text`). `layers` names the group

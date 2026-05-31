@@ -71,8 +71,8 @@ pub(crate) fn eval_next_id(
 }
 
 /// Evaluate `append(^root(key…).layer, value)`: write `value` at the next 1-based
-/// position of a keyed-leaf layer and return that position. Reuses the write
-/// planner's `next_layer_pos` (over the live store) and `plan_layer_leaf_write`.
+/// position of a keyed-leaf layer and return that position. The layer may sit
+/// directly under the record or below keyed group entries.
 pub(crate) fn eval_append(
     args: &[Argument],
     span: SourceSpan,
@@ -112,19 +112,45 @@ pub(crate) fn eval_append(
     else {
         return Err(unsupported("appending to this path", span));
     };
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
+    let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
     let resource = find_resource(env.program, &root)
         .ok_or_else(|| unsupported("appending under this saved root", span))?;
     // Append adds a key to this layer's key set.
-    env.guard_traversed_layer(&layer_prefix(&root, &identity, layer), span)?;
+    env.guard_traversed_layer(
+        &nested_layer_prefix(&root, &identity, &parents, layer),
+        span,
+    )?;
     let saved = value_to_saved(eval_expr(&value.value, env)?)
         .ok_or_else(|| unsupported("appending a resource value", span))?;
     let pos = {
         let store = env.store.borrow();
-        next_layer_pos(resource, &identity, layer, &*store)
+        if parents.is_empty() {
+            next_layer_pos(resource, &identity, layer, &*store)
+        } else {
+            let parent_refs: Vec<(&str, &[SavedKey])> = parents
+                .iter()
+                .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+                .collect();
+            next_nested_layer_pos(resource, &identity, &parent_refs, layer, &*store)
+        }
     };
     let pos = pos.map_err(|error| write_fault(error, span))?;
-    let plan = plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved);
+    let plan = if parents.is_empty() {
+        plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
+    } else {
+        let parent_refs: Vec<(&str, &[SavedKey])> = parents
+            .iter()
+            .map(|(name, keys)| (name.as_str(), keys.as_slice()))
+            .collect();
+        plan_nested_layer_leaf_write(
+            resource,
+            &identity,
+            &parent_refs,
+            layer,
+            &[SavedKey::Int(pos)],
+            &saved,
+        )
+    };
     env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))
 }
@@ -750,22 +776,37 @@ pub(crate) fn materialize_layer_dir(
             base, name: layer, ..
         } => {
             let span = path.span();
-            let (root, identity) = lower(base, env)?.into_record(base.span())?;
+            let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
             keys.into_iter()
                 .map(|key| {
                     let layer_key = value_to_key(key.clone())
                         .ok_or_else(|| unsupported("a key of this type", span))?;
                     // Materializing a known-present child key: an absent entry is a
                     // plain fatal fault, not a catchable value-position read.
-                    let value = read_layer_entry(
-                        &root,
-                        &identity,
-                        layer,
-                        &[layer_key],
-                        ReadPosition::ArgSeed,
-                        span,
-                        env,
-                    )?;
+                    let value = if parents.is_empty() {
+                        read_layer_entry(
+                            &root,
+                            &identity,
+                            layer,
+                            &[layer_key],
+                            ReadPosition::ArgSeed,
+                            span,
+                            env,
+                        )?
+                    } else {
+                        read_layer_entry_at(
+                            LayerEntryAddress {
+                                root: &root,
+                                identity: &identity,
+                                parent_layers: &parents,
+                                layer,
+                                layer_keys: &[layer_key],
+                            },
+                            ReadPosition::ArgSeed,
+                            span,
+                            env,
+                        )?
+                    };
                     Ok((key, value))
                 })
                 .collect()

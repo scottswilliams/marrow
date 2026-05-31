@@ -7399,6 +7399,156 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     );
 }
 
+const NESTED_KEYED_LAYERS: &str = "\
+resource Table at ^tables(name: string)
+    rows(row: int)
+        fields(col: int): string
+        cells(col: int)
+            value: string
+
+fn setField(table: string, row: int, col: int, value: string)
+    ^tables(table).rows(row).fields(col) = value
+
+fn addField(table: string, row: int, value: string): int
+    return append(^tables(table).rows(row).fields, value)
+
+fn fieldAt(table: string, row: int, col: int): string
+    return ^tables(table).rows(row).fields(col)
+
+fn seedCells()
+    ^tables(\"t\").rows(1).cells(1).value = \"a\"
+    ^tables(\"t\").rows(1).cells(2).value = \"b\"
+
+fn countCells(): int
+    return count(^tables(\"t\").rows(1).cells)
+
+fn iterateCells(): int
+    var total: int = 0
+    for cell in ^tables(\"t\").rows(1).cells
+        total = total + 1
+    return total
+
+fn cellEntries()
+    for col, cell in entries(^tables(\"t\").rows(1).cells)
+        print($\"{col}={cell.value}\")
+
+fn mutateNestedLeafDuringTraversal()
+    for col in keys(^tables(\"t\").rows(1).fields)
+        ^tables(\"t\").rows(1).fields(3) = \"c\"
+";
+
+#[test]
+fn nested_keyed_leaf_entries_write_append_and_read_back() {
+    let program = checked_program(NESTED_KEYED_LAYERS);
+    let store = RefCell::new(MemStore::new());
+
+    run_entry(
+        &program,
+        &store,
+        "test::setField",
+        &[
+            Value::Str("t".into()),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Str("a".into()),
+        ],
+    )
+    .expect("nested keyed-leaf write");
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::fieldAt",
+            &[Value::Str("t".into()), Value::Int(1), Value::Int(1)]
+        )
+        .expect("read nested keyed leaf")
+        .value,
+        Some(Value::Str("a".into()))
+    );
+
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::addField",
+            &[
+                Value::Str("t".into()),
+                Value::Int(1),
+                Value::Str("b".into())
+            ]
+        )
+        .expect("append nested keyed leaf")
+        .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            "test::fieldAt",
+            &[Value::Str("t".into()), Value::Int(1), Value::Int(2)]
+        )
+        .expect("read appended nested keyed leaf")
+        .value,
+        Some(Value::Str("b".into()))
+    );
+}
+
+#[test]
+fn nested_keyed_group_layers_iterate_and_materialize_entries() {
+    let program = checked_program(NESTED_KEYED_LAYERS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seedCells", &[]).expect("seed cells");
+
+    assert_eq!(
+        run_entry(&program, &store, "test::countCells", &[])
+            .expect("count nested cells")
+            .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::iterateCells", &[])
+            .expect("iterate nested cells")
+            .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::cellEntries", &[])
+            .expect("entries over nested cells")
+            .output,
+        "1=a\n2=b\n"
+    );
+}
+
+#[test]
+fn writing_a_nested_keyed_leaf_while_traversing_it_is_a_traversal_fault() {
+    let program = checked_program(NESTED_KEYED_LAYERS);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::setField",
+        &[
+            Value::Str("t".into()),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Str("a".into()),
+        ],
+    )
+    .expect("seed field");
+
+    let result = run_entry(
+        &program,
+        &store,
+        "test::mutateNestedLeafDuringTraversal",
+        &[],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_TRAVERSAL),
+        "{result:?}"
+    );
+}
+
 /// `values`/`entries` over a primary root materialize whole records; over a
 /// keyed/sequence layer they materialize each entry's value. `entries` feeds the
 /// two-name `for id, x in entries(...)` binding.

@@ -14,6 +14,5 @@ Source ledgers:
 | Package | Area | Count | Design Input | Conflict Watch | Finding IDs |
 |---|---|---:|---|---|---|
 | P8 | Type surfaces for reads and traversal | 2 | No | `element-loop-semantics`, `lsp-check-diagnostics` | `algo-fizzbuzz#3`, `app-double-entry-ledger#3` |
-| P11 | Traversal, neighbors, mutation guards | 2 | No | `element-loop-semantics`, `saved-walk-cursor` | `algo-csv-splitter#1`, `algo-csv-splitter#2` |
 
-Open issue count: 4.
+Open issue count: 2.
