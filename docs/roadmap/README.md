@@ -10,8 +10,17 @@ inspection tools, language server, and data server. The language reference in
 
 Surfaces that are designed and normative but not yet implemented live under
 [`../future/`](../future/), the future counterpart of this reference. This page
-records the non-goals that bound the product, so the boundary stays clear as it
-grows.
+records accepted implementation issues and the non-goals that bound the
+product, so the boundary stays clear as it grows.
+
+## Implementation Roadmap
+
+- [#1: Implement element-oriented collection loop semantics](https://github.com/scottswilliams/marrow/issues/1)
+  aligns collection iteration across the checker, runtime, LSP, docs, and tests:
+  - `for value in collection` yields each natural element.
+  - `for key, value in collection` yields the element address plus the element.
+  - `keys(collection)` yields collection addresses.
+  - Non-unique index branches and key-only collections remain key-only.
 
 ## Non-Goals
 
