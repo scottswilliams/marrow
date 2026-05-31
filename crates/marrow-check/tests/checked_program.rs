@@ -1185,6 +1185,145 @@ fn same_resource_identity_checks_clean() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
+#[test]
+fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
+    let root = temp_project("program-id-qualified", |root| {
+        write(
+            root,
+            "src/store.mw",
+            "module store\n\
+             resource Item at ^items(id: int)\n\
+             \x20   required name: string\n\
+             pub fn add(name: string): Item::Id\n\
+             \x20   const id: Item::Id = nextId(^items)\n\
+             \x20   ^items(id).name = name\n\
+             \x20   return id\n\
+             pub fn nameOf(id: Item::Id): string\n\
+             \x20   return ^items(id).name\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             use store\n\
+             pub fn demo(): string\n\
+             \x20   const id: store::Item::Id = store::add(\"widget\")\n\
+             \x20   return store::nameOf(id)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
+    let root = temp_project("program-resource-qualified", |root| {
+        write(
+            root,
+            "src/audit/log.mw",
+            "module audit::log\n\
+             resource Event at ^events(id: int)\n\
+             \x20   required actor: string\n",
+        );
+        write(
+            root,
+            "src/audit/query.mw",
+            "module audit::query\n\
+             use audit::log\n\
+             pub fn actor(): string\n\
+             \x20   const id: log::Event::Id = nextId(^events)\n\
+             \x20   ^events(id).actor = \"scott\"\n\
+             \x20   const ev: log::Event = ^events(id)\n\
+             \x20   return ev.actor\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn qualified_identity_constructor_resolves_and_checks_clean() {
+    let root = temp_project("program-id-qualified-ctor", |root| {
+        write(
+            root,
+            "src/store.mw",
+            "module store\n\
+             resource Item at ^items(id: int)\n\
+             \x20   required name: string\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             use store\n\
+             pub fn fromKey(): store::Item::Id\n\
+             \x20   return store::Item::Id(1)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn identity_constructor_key_shape_errors_are_checked_statically() {
+    let root = temp_project("program-id-ctor-static", |root| {
+        write(
+            root,
+            "src/school/registrar.mw",
+            "module school::registrar\n\
+             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             \x20   required credits: int\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             use school::registrar\n\
+             fn wrongType()\n\
+             \x20   const id = registrar::Enrollment::Id(studentId: 1, courseId: 2)\n\
+             fn missingKey()\n\
+             \x20   const id = registrar::Enrollment::Id(studentId: \"only-one\")\n\
+             fn tooMany()\n\
+             \x20   const id = registrar::Enrollment::Id(\"s\", \"c\", \"extra\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.key_type"),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "check.call_argument")
+            .count()
+            >= 2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "check.unresolved_call"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 // --- Equality, coalesce, and unary over concrete non-scalar types ---
 
 /// Two resources and a sequence-yielding helper, for the operator-soundness tests

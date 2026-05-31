@@ -1,30 +1,29 @@
-//! Enum resolution and `match` checking, plus the cross-module enum-signature
+//! Enum resolution and `match` checking, plus cross-module named-type
 //! normalization the call boundary relies on.
 
 use super::*;
 
-/// Re-resolve every enum-typed signature slot in the assembled program against the
-/// whole project, so a parameter, return, or constant annotation carries its
-/// enum's true `{module, name}` owner.
+/// Re-resolve every named signature slot in the assembled program against the
+/// whole project, so a parameter, return, or constant annotation carries its true
+/// enum owner or resource identity.
 ///
 /// Each module's signatures are first resolved per-file against that module's own
 /// names, which cannot place a qualified `mod::Status` or a bare name owned by
 /// another module. This pass revisits those slots with the full program in hand —
-/// the same `resolve_type` the in-body checks use — so a cross-module enum
-/// parameter is the same `Enum { module, name }` value its caller's argument is,
-/// and the call boundary compares like for like. Non-enum slots are left untouched.
-pub(crate) fn normalize_program_enum_types(
+/// the same `resolve_type` the in-body checks use — so cross-module enum and
+/// resource annotations compare like for like at calls, returns, and constants.
+pub(crate) fn normalize_program_named_types(
     program: &mut CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
 ) {
     let resolver = program.clone();
-    normalize_program_enum_types_against(program, &resolver, parsed_files);
+    normalize_program_named_types_against(program, &resolver, parsed_files);
 }
 
-/// As [`normalize_program_enum_types`], but resolving against an explicit
-/// `resolver` program. Test modules normalize against the combined project so an
-/// enum a test file imports from a project module resolves to that module.
-pub(crate) fn normalize_program_enum_types_against(
+/// As [`normalize_program_named_types`], but resolving against an explicit
+/// `resolver` program. Test modules normalize against the combined project so a
+/// named type a test file imports from a project module resolves to that module.
+pub(crate) fn normalize_program_named_types_against(
     program: &mut CheckedProgram,
     resolver: &CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
@@ -36,9 +35,9 @@ pub(crate) fn normalize_program_enum_types_against(
         else {
             continue;
         };
-        // The file's import aliases, so an enum annotation qualified by a short
-        // alias (`c::Status` under `use a::b::c`) resolves to the imported module —
-        // the same expansion call dispatch applies. Built once, before the mutable
+        // The file's import aliases, so an annotation qualified by a short alias
+        // (`c::Status` under `use a::b::c`) resolves to the imported module — the
+        // same expansion call dispatch applies. Built once, before the mutable
         // borrow of the module's functions and constants.
         let aliases = build_alias_map(&module.imports);
         for function in &mut module.functions {
@@ -46,18 +45,12 @@ pub(crate) fn normalize_program_enum_types_against(
                 continue;
             };
             for (param, param_decl) in function.params.iter_mut().zip(&decl.params) {
-                if let Some(enum_type) =
-                    resolve_enum_annotation(&param_decl.ty, resolver, &aliases, &file.path)
-                {
-                    param.ty = enum_type;
-                }
+                param.ty = resolve_type(&param_decl.ty, resolver, &aliases, &file.path);
             }
             if let (Some(return_type), Some(return_ref)) =
                 (function.return_type.as_mut(), decl.return_type.as_ref())
-                && let Some(enum_type) =
-                    resolve_enum_annotation(return_ref, resolver, &aliases, &file.path)
             {
-                *return_type = enum_type;
+                *return_type = resolve_type(return_ref, resolver, &aliases, &file.path);
             }
         }
         for constant in &mut module.constants {
@@ -75,11 +68,7 @@ pub(crate) fn normalize_program_enum_types_against(
             else {
                 continue;
             };
-            if let Some(enum_type) =
-                resolve_enum_annotation(const_ref, resolver, &aliases, &file.path)
-            {
-                constant.ty = Some(enum_type);
-            }
+            constant.ty = Some(resolve_type(const_ref, resolver, &aliases, &file.path));
         }
     }
 }
@@ -722,6 +711,9 @@ pub(crate) fn resolve_type(
     if let Some(enum_type) = resolve_enum_annotation(ty, program, aliases, file) {
         return enum_type;
     }
+    if let Some(resource_type) = resolve_resource_annotation(ty, program, aliases, file) {
+        return resource_type;
+    }
     let resources: Vec<String> = program
         .modules
         .iter()
@@ -740,6 +732,74 @@ pub(crate) fn resolve_type(
             enums: &[],
         },
     )
+}
+
+/// Resolve a resource or resource-identity type annotation to the resource's
+/// canonical checker type. Qualified spellings (`module::Book` and
+/// `module::Book::Id`) use the same import-alias expansion as calls, so an alias
+/// can name a module without minting a second nominal type.
+fn resolve_resource_annotation(
+    ty: &marrow_syntax::TypeRef,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<MarrowType> {
+    resolve_resource_type(&Type::resolve(ty), program, aliases, file)
+}
+
+fn resolve_resource_type(
+    ty: &Type,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<MarrowType> {
+    match ty {
+        Type::Sequence(element) => resolve_resource_type(element, program, aliases, file)
+            .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
+        Type::Identity(resource) => {
+            let mut segments = split_type_path(resource);
+            segments.push("Id".to_string());
+            resolve_resource_path(
+                program,
+                aliases,
+                file,
+                &segments,
+                ResolvableKind::ResourceIdentity,
+            )
+            .map(|resource| MarrowType::Identity(resource.name.clone()))
+        }
+        Type::Named(name) => {
+            let segments = split_type_path(name);
+            resolve_resource_path(program, aliases, file, &segments, ResolvableKind::Resource)
+                .map(|resource| MarrowType::Resource(resource.name.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn split_type_path(path: &str) -> Vec<String> {
+    path.split("::").map(str::to_string).collect()
+}
+
+fn resolve_resource_path<'p>(
+    program: &'p CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    segments: &[String],
+    kind: ResolvableKind,
+) -> Option<&'p ResourceSchema> {
+    match resolve(
+        program,
+        module_of_file(program, file).unwrap_or_default(),
+        &expand_alias(segments, aliases),
+        kind,
+    ) {
+        Resolution::Found(Def {
+            item: DefItem::Resource(resource),
+            ..
+        }) => Some(resource),
+        _ => None,
+    }
 }
 
 /// Resolve an enum type annotation to its `Enum { module, name }` identity by the

@@ -2328,17 +2328,13 @@ pub(crate) fn check_call(
     // `Book::Id(...)` is the identity constructor even if `Book::Id` could also
     // spell a qualified resource name. Keep the checker aligned with runtime
     // dispatch, where identity constructors run before resource values.
-    if let Some(ty @ MarrowType::Identity(_)) =
-        resource_constructor_type(program, from_module, segments)
+    if let Some((ty @ MarrowType::Identity(_), resource)) =
+        resource_constructor_resource(program, from_module, segments)
     {
         check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
-        if let [name, id] = segments
-            && id == "Id"
-            && let Some(resource) = resolve::resolve_resource_by_name_any(program, name)
-            && let Some(saved_root) = &resource.saved_root
-        {
+        if let Some(saved_root) = &resource.saved_root {
             check_identity_constructor_keys(
-                &format!("{name}::Id"),
+                &format!("{}::Id", resource.name),
                 &saved_root.identity_keys,
                 args,
                 arg_types,

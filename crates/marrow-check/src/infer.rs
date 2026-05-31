@@ -877,24 +877,30 @@ pub(crate) fn layer_key_type(
 /// ([`MarrowType::Identity`]). The resource *name* is module-scoped (own module
 /// first), so two modules can each declare a `Book`. Any other callee returns
 /// `None`, so a genuinely unresolved call is still reported.
-pub(crate) fn resource_constructor_type(
-    program: &CheckedProgram,
+pub(crate) fn resource_constructor_resource<'p>(
+    program: &'p CheckedProgram,
     from_module: &str,
     segments: &[String],
-) -> Option<MarrowType> {
+) -> Option<(MarrowType, &'p marrow_schema::ResourceSchema)> {
     match segments {
-        [name] => match resolve(program, from_module, segments, ResolvableKind::Resource) {
-            Resolution::Found(_) => Some(MarrowType::Resource(name.clone())),
+        [_] => match resolve(program, from_module, segments, ResolvableKind::Resource) {
+            Resolution::Found(Def {
+                item: DefItem::Resource(resource),
+                ..
+            }) => Some((MarrowType::Resource(resource.name.clone()), resource)),
             _ => None,
         },
-        [name, id] if id == "Id" => {
+        [.., id] if id == "Id" => {
             match resolve(
                 program,
                 from_module,
                 segments,
                 ResolvableKind::ResourceIdentity,
             ) {
-                Resolution::Found(_) => Some(MarrowType::Identity(name.clone())),
+                Resolution::Found(Def {
+                    item: DefItem::Resource(resource),
+                    ..
+                }) => Some((MarrowType::Identity(resource.name.clone()), resource)),
                 _ => None,
             }
         }

@@ -95,10 +95,25 @@ pub fn resolve<'p>(
     // module — it is the resource name. Resolve it by name (module-scoped) before
     // the generic module/leaf split treats `Book` as a module qualifier.
     if kind == ResolvableKind::ResourceIdentity
-        && let [name, id] = path
+        && let Some(id) = path.last()
         && id == "Id"
     {
-        return resolve_resource_by_name(program, from_module, name, kind);
+        if let [name, _] = path {
+            return resolve_resource_by_name(program, from_module, name, kind);
+        }
+        let aliases = build_alias_map(&module_imports(program, from_module));
+        let expanded = expand_alias(path, &aliases);
+        if expanded.len() >= 3
+            && expanded.last().is_some_and(|last| last == "Id")
+            && let Some(resource) = expanded.get(expanded.len() - 2)
+        {
+            return resolve_qualified(
+                program,
+                &expanded[..expanded.len() - 2].join("::"),
+                resource,
+                kind,
+            );
+        }
     }
 
     let aliases = build_alias_map(&module_imports(program, from_module));

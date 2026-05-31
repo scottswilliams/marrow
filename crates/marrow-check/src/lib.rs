@@ -32,8 +32,8 @@ pub use enums::resolve_match_enums;
 // resolvable across the boundary without per-call qualification.
 pub(crate) use checks::*;
 pub(crate) use enums::{
-    check_is, check_match, collect_enum_names, join_or, normalize_program_enum_types,
-    normalize_program_enum_types_against, private_enum_type_reference, resolve_enum_member_path,
+    check_is, check_match, collect_enum_names, join_or, normalize_program_named_types,
+    normalize_program_named_types_against, private_enum_type_reference, resolve_enum_member_path,
     resolve_type,
 };
 pub(crate) use infer::*;
@@ -565,13 +565,12 @@ pub fn check_tests_with_sources(
     let mut combined = CheckedProgram {
         modules: project.modules.iter().cloned().chain(modules).collect(),
     };
-    // Stamp cross-module enum signature slots in the test modules with their true
-    // owner — resolved against the combined program — before the type pass reads
-    // them, so a test's argument against a qualified or foreign enum parameter is
-    // gated on the parameter's real identity rather than a per-file `Unknown`. The
-    // project modules carry the project's own normalized signatures already.
+    // Stamp cross-module named-type signature slots in the test modules with their
+    // true owner — resolved against the combined program — before the type pass
+    // reads them. The project modules carry the project's own normalized
+    // signatures already.
     let resolver = combined.clone();
-    normalize_program_enum_types_against(&mut combined, &resolver, &parsed_files);
+    normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
     let project_resources: HashSet<String> = combined
         .modules
         .iter()

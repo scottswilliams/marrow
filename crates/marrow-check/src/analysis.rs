@@ -289,13 +289,9 @@ pub(crate) fn analyze_source_project(
         .collect();
     let project_enums = collect_enum_names(&parsed_files);
 
-    // Stamp each cross-module enum signature slot with its enum's true owner, now
-    // that the whole program is known, before any pass reads parameter types. The
-    // argument check reads each callee's stored parameter type to decide whether to
-    // run the nominal enum gate; a qualified or foreign enum parameter resolves to
-    // `Unknown` per-file, so it must be normalized before the type pass runs or a
-    // wrong-enum argument slips through unchecked.
-    normalize_program_enum_types(&mut program, &parsed_files);
+    // Stamp each cross-module named-type signature slot with its true owner, now
+    // that the whole program is known, before any pass reads parameter types.
+    normalize_program_named_types(&mut program, &parsed_files);
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     check_resolved_files(
