@@ -28,7 +28,7 @@ The right side is not evaluated if the left side decides the result.
 
 ## Loops
 
-Range loops use common modern range syntax:
+Range loops use range syntax:
 
 ```mw
 for i in 1..10

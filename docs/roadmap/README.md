@@ -26,15 +26,10 @@ product, so the boundary stays clear as it grows.
 
 Marrow stays a local language/database kernel. It does not aim to become these:
 
-- bundled external database adapters;
-- alternate language modes, or compatibility paths for Classic M, globals,
-  routines, or Postgres;
 - a second storage query language;
 - an ORM layer or an automatic migration engine;
 - a migration DSL before ordinary functions in maintenance mode prove
   insufficient;
 - a hidden migration ledger inside the database kernel;
 - unchecked dynamic `any` (`unknown` marks dynamic boundaries);
-- an HTTP framework contract;
 - a built-in users, roles, and permissions system;
-- an external package registry.
