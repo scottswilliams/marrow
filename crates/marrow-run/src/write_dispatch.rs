@@ -54,6 +54,21 @@ pub(crate) fn write_saved_field(
     if let Some(LeafKind::Identity { arity, .. }) = resource_field_leaf(env.program, root, field) {
         let keys = identity_keys_of(value, span)?;
         let plan = plan_identity_field_write(resource, identity, field, &keys, arity);
+        let plan = if env.transaction_depth == 0 {
+            let store = env.store.borrow();
+            plan.and_then(|plan| {
+                validate_required_fields_after_field_write(
+                    resource,
+                    identity,
+                    &[],
+                    field,
+                    &*store,
+                )?;
+                Ok(plan)
+            })
+        } else {
+            plan
+        };
         env.apply_plan(plan, span)?;
         return Ok(());
     }
@@ -61,7 +76,18 @@ pub(crate) fn write_saved_field(
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = {
         let store = env.store.borrow();
-        plan_field_write(resource, identity, field, &saved, &*store)
+        plan_field_write(resource, identity, field, &saved, &*store).and_then(|plan| {
+            if env.transaction_depth == 0 {
+                validate_required_fields_after_field_write(
+                    resource,
+                    identity,
+                    &[],
+                    field,
+                    &*store,
+                )?;
+            }
+            Ok(plan)
+        })
     };
     env.apply_plan(plan, span)?;
     Ok(())
@@ -178,12 +204,42 @@ pub(crate) fn write_nested_field(
         let keys = identity_keys_of(value, span)?;
         let plan =
             plan_nested_identity_field_write(resource, identity, &layer_refs, field, &keys, arity);
+        let plan = if env.transaction_depth == 0 {
+            let store = env.store.borrow();
+            plan.and_then(|plan| {
+                validate_required_fields_after_field_write(
+                    resource,
+                    identity,
+                    &layer_refs,
+                    field,
+                    &*store,
+                )?;
+                Ok(plan)
+            })
+        } else {
+            plan
+        };
         env.apply_plan(plan, span)?;
         return Ok(());
     }
     let saved = value_to_saved(value)
         .ok_or_else(|| unsupported("writing a resource value to a field", span))?;
     let plan = plan_nested_field_write(resource, identity, &layer_refs, field, &saved);
+    let plan = if env.transaction_depth == 0 {
+        let store = env.store.borrow();
+        plan.and_then(|plan| {
+            validate_required_fields_after_field_write(
+                resource,
+                identity,
+                &layer_refs,
+                field,
+                &*store,
+            )?;
+            Ok(plan)
+        })
+    } else {
+        plan
+    };
     env.apply_plan(plan, span)?;
     Ok(())
 }

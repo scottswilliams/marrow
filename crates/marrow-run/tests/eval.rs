@@ -1184,6 +1184,8 @@ fn a_nested_group_field_round_trips() {
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20required text: string\n\
          \n\
          pub fn seed()\n\
+         \x20\x20\x20\x20^books(1).title = \"root\"\n\
+         \x20\x20\x20\x20^books(1).versions(2).title = \"version\"\n\
          \x20\x20\x20\x20^books(1).versions(2).comments(3).text = \"deep\"\n\
          \n\
          pub fn comment(): string\n\
@@ -2747,6 +2749,59 @@ fn a_field_write_updates_saved_data() {
 }
 
 #[test]
+fn out_of_transaction_field_write_rejects_partial_required_record() {
+    let program = checked_program(
+        "resource Item at ^items(id: int)\n\
+         \x20   required name: string\n\
+         \x20   shelf: string\n\n\
+         fn set_shelf(id: int)\n\
+         \x20   ^items(id).shelf = \"fiction\"\n\n\
+         fn has_item(id: int): bool\n\
+         \x20   return exists(^items(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::set_shelf", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::has_item", &[Value::Int(1)])
+            .expect("presence check")
+            .value,
+        Some(Value::Bool(false)),
+        "the rejected sparse write must leave no partial record"
+    );
+}
+
+#[test]
+fn out_of_transaction_group_field_write_rejects_partial_required_record() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   binding\n\
+         \x20       cover: string\n\n\
+         fn set_cover(id: int)\n\
+         \x20   ^books(id).binding.cover = \"hard\"\n\n\
+         fn has_book(id: int): bool\n\
+         \x20   return exists(^books(id))\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::set_cover", &[Value::Int(1)]);
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.required_absent"),
+        "{result:?}"
+    );
+    assert_eq!(
+        run_entry(&program, &store, "test::has_book", &[Value::Int(1)])
+            .expect("presence check")
+            .value,
+        Some(Value::Bool(false)),
+        "the rejected group-field write must leave no partial record"
+    );
+}
+
+#[test]
 fn a_mistyped_field_write_is_rejected() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn bad(id: int)\n    ^books(id).title = 5\n",
@@ -4181,6 +4236,31 @@ fn whole_resource_write_copies_unkeyed_group_fields() {
 }
 
 #[test]
+fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   binding\n\
+         \x20       cover: string\n\
+         \x20       spine: string\n\n\
+         fn save(id: int)\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"Small Gods\"\n\
+         \x20   ^books(id) = book\n\n\
+         fn title_of(id: int): string\n\
+         \x20   return ^books(id).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::save", &[Value::Int(1)]).expect("write");
+    assert_eq!(
+        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("Small Gods".into()))
+    );
+}
+
+#[test]
 fn saved_source_merge_copies_unkeyed_group_fields() {
     let program = checked_program(PATIENT_WITH_GROUP);
     let store = RefCell::new(MemStore::new());
@@ -4673,9 +4753,10 @@ fn group_field_path(id: i64, layer: &str, key: SavedKey, field: &str) -> Vec<u8>
 #[test]
 fn a_group_entry_field_write_lands_in_saved_data() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
     );
     let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[Value::Int(5)]).expect("seed");
     run_entry(
         &program,
         &store,
@@ -4899,6 +4980,9 @@ resource Book at ^books(id: int)
     versions(version: int)
         required title: string
 
+fn seed(id: int, t: string)
+    ^books(id).title = t
+
 fn set_version_title(id: int, v: int, t: string)
     ^books(id).versions(v).title = t
 
@@ -4910,6 +4994,13 @@ fn version_title(id: int, v: int): string
 fn reads_a_field_from_a_group_entry() {
     let program = checked_program(BOOK_VERSIONS);
     let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::seed",
+        &[Value::Int(1), Value::Str("root".into())],
+    )
+    .expect("seed");
     run_entry(
         &program,
         &store,
@@ -5206,6 +5297,9 @@ resource Settings at ^settings
     theme: string
     required maxLoans: int
 
+fn setMaxLoans(n: int)
+    ^settings.maxLoans = n
+
 fn setTheme(t: string)
     ^settings.theme = t
 
@@ -5223,6 +5317,7 @@ fn restore(s: Settings)
 fn singleton_field_read_and_write() {
     let program = checked_program(SETTINGS);
     let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::setMaxLoans", &[Value::Int(5)]).expect("setMaxLoans");
     run_entry(
         &program,
         &store,

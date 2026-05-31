@@ -418,6 +418,69 @@ pub fn plan_identity_field_write(
     })
 }
 
+/// Validate that a single-field write outside a user transaction would leave
+/// every required field populated for each entry it creates or updates.
+pub(crate) fn validate_required_fields_after_field_write(
+    schema: &ResourceSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+    field: &str,
+    store: &dyn Backend,
+) -> Result<(), WriteError> {
+    let root = resolve_saved_root(schema, identity)?;
+    let mut entry_base = identity_path(root, identity);
+    let mut layer_base = entry_base.clone();
+    let mut entry_members = schema.members.as_slice();
+    let mut lookup_members = entry_members;
+    let mut supplied_path = Vec::new();
+
+    for (name, key) in layers {
+        let declared = layer_in(lookup_members, name).ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_LAYER,
+            message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
+        })?;
+        if matches!(declared.element, Element::Slot { .. }) {
+            return Err(WriteError {
+                code: WRITE_NOT_A_GROUP_LAYER,
+                message: format!("keyed layer `{name}` is a leaf, not a group"),
+            });
+        }
+        if key.len() != declared.key_params.len() {
+            return Err(WriteError {
+                code: WRITE_LAYER_KEY_ARITY,
+                message: format!(
+                    "keyed layer `{name}` expects {} key(s), got {}",
+                    declared.key_params.len(),
+                    key.len()
+                ),
+            });
+        }
+
+        layer_base.push(PathSegment::ChildLayer((*name).into()));
+        if declared.key_params.is_empty() {
+            supplied_path.push((*name).to_string());
+            lookup_members = &declared.members;
+            continue;
+        }
+
+        ensure_required_fields_present(entry_members, &entry_base, None, store)?;
+        layer_base.extend(key.iter().cloned().map(PathSegment::IndexKey));
+        entry_base = layer_base.clone();
+        entry_members = &declared.members;
+        lookup_members = &declared.members;
+        supplied_path.clear();
+    }
+
+    if field_slot(lookup_members, field).is_none() {
+        return Err(WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("resource `{}` has no field `{field}`", schema.name),
+        });
+    }
+    supplied_path.push(field.to_string());
+    ensure_required_fields_present(entry_members, &entry_base, Some(&supplied_path), store)
+}
+
 /// Plan a managed field delete: remove `field` of the resource at `identity`,
 /// leaving the resource's other fields in place, and tear down any index the
 /// field feeds. Validates that the field is declared (`WRITE_UNKNOWN_FIELD`),
@@ -1167,6 +1230,46 @@ fn materialized_field_path(
         path.push(PathSegment::Field(name.clone()));
     }
     path
+}
+
+fn materialized_entry_field_path(base: &[PathSegment], field: &[String]) -> Vec<PathSegment> {
+    let mut path = base.to_vec();
+    for group in &field[..field.len().saturating_sub(1)] {
+        path.push(PathSegment::ChildLayer(group.clone()));
+    }
+    if let Some(name) = field.last() {
+        path.push(PathSegment::Field(name.clone()));
+    }
+    path
+}
+
+fn ensure_required_fields_present(
+    members: &[Node],
+    base: &[PathSegment],
+    supplied: Option<&[String]>,
+    store: &dyn Backend,
+) -> Result<(), WriteError> {
+    for field in materialized_plain_fields(members) {
+        if !field.required || supplied.is_some_and(|supplied| supplied == field.path.as_slice()) {
+            continue;
+        }
+        if store
+            .read(&encode_path(&materialized_entry_field_path(
+                base,
+                &field.path,
+            )))?
+            .is_none()
+        {
+            return Err(WriteError {
+                code: WRITE_REQUIRED_ABSENT,
+                message: format!(
+                    "required field `{}` is absent",
+                    materialized_field_name(&field.path)
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The encoded-path segments for a keyed-leaf entry,
