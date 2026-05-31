@@ -141,7 +141,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.missing_return` | A value-returning function can reach the end of its body without returning. |
 | `check.operator_type` | An operator is applied to operands whose types it does not accept. |
 | `check.condition_type` | An `if`/`while` condition is not a `bool`. |
-| `check.call_argument` | A call passes the wrong number of arguments, or names a parameter that does not exist. |
+| `check.call_argument` | A call or constructor passes the wrong number of arguments, names a parameter or key that does not exist, omits a required key, or supplies one more than once. |
 | `check.return_type` | A `return` value's type does not match the function's declared return type. |
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |

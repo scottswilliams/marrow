@@ -3116,6 +3116,69 @@ fn an_identity_constructor_rejects_a_wrong_typed_named_composite_key() {
 }
 
 #[test]
+fn an_identity_constructor_rejects_the_wrong_key_count() {
+    let found = check_module(
+        "ctor-key-count",
+        "module m\n\
+         resource Author at ^authors(id: int)\n    name: string\n\n\
+         fn f()\n    const id = Author::Id()\n    const extra = Author::Id(1, 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_requires_missing_named_keys() {
+    let found = check_module(
+        "ctor-named-missing-key",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("b"), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_unknown_named_keys() {
+    let found = check_module(
+        "ctor-named-unknown-key",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7, c: \"x\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("c"), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_duplicate_named_keys() {
+    let found = check_module(
+        "ctor-named-duplicate-key",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(a: 7, a: 8)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("a"), "{found:#?}");
+}
+
+#[test]
+fn an_identity_constructor_rejects_mixed_positional_and_named_keys() {
+    let found = check_module(
+        "ctor-mixed-keys",
+        "module m\n\
+         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
+         fn f()\n    const id = Pair::Id(7, b: \"x\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn an_unknown_value_into_a_whole_resource_is_an_untyped_value() {
     // `^books(1) = x` writes a whole `Book`. A dynamic `unknown` value carries no
     // type, so its fields could spill a raw scalar or a foreign identity into a

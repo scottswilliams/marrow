@@ -1553,10 +1553,11 @@ pub(crate) fn check_keys_against(
 /// by position; named (composite) keys map to the declared key of the same name,
 /// so a swapped type under the right name is still caught. A wrong-scalar key, or
 /// a non-key value such as another identity, is a `check.key_type` — the same
-/// keyspace guard a record lookup passes. Arity and named/positional-mixing faults
-/// are left to the runtime constructor, which already reports them; this adds only
-/// the per-key type guard the constructor lacked.
+/// keyspace guard a record lookup passes. Malformed constructor argument shape
+/// (wrong count, mixed positional/named keys, unknown key names, duplicate key
+/// names, or missing named keys) is a `check.call_argument`.
 pub(crate) fn check_identity_constructor_keys(
+    label: &str,
     keys: &[marrow_schema::KeyDef],
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
@@ -1564,34 +1565,96 @@ pub(crate) fn check_identity_constructor_keys(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let all_named = !args.is_empty() && args.iter().all(|arg| arg.name.is_some());
-    for (position, key) in keys.iter().enumerate() {
-        // A named key binds to the argument that names it; a positional key binds by
-        // position. A missing argument is an arity/name fault the runtime reports, so
-        // the per-key type guard simply skips it here.
-        let arg_type = if all_named {
-            args.iter()
-                .position(|arg| arg.name.as_deref() == Some(key.name.as_str()))
-                .and_then(|index| arg_types.get(index))
-        } else {
-            arg_types.get(position)
-        };
-        let Some(arg_type) = arg_type else {
-            continue;
-        };
-        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
-        if type_compatible(&expected, arg_type) == Some(false) {
-            diagnostics.push(key_type_diagnostic(
+    let named = args.iter().filter(|arg| arg.name.is_some()).count();
+    if named != 0 && named != args.len() {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!("`{label}` takes either positional or named keys, not both"),
+        ));
+        return;
+    }
+
+    if named == 0 {
+        if keys.len() != args.len() {
+            diagnostics.push(call_diagnostic(
                 file,
                 span,
                 format!(
-                    "identity key `{}` expects `{}`, but this value is `{}`",
-                    key.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
+                    "`{label}` expects {} key argument(s), but {} were given",
+                    keys.len(),
+                    args.len(),
                 ),
             ));
+            return;
         }
+        for (key, arg_type) in keys.iter().zip(arg_types) {
+            check_identity_key_type(key, arg_type, span, file, diagnostics);
+        }
+        return;
+    }
+
+    let mut supplied = vec![false; keys.len()];
+    let mut malformed_names = false;
+    for (arg, arg_type) in args.iter().zip(arg_types) {
+        let Some(name) = &arg.name else {
+            continue;
+        };
+        let Some(index) = keys.iter().position(|key| &key.name == name) else {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` has no identity key `{name}`"),
+            ));
+            malformed_names = true;
+            continue;
+        };
+        if supplied[index] {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("identity key `{name}` is supplied more than once"),
+            ));
+            malformed_names = true;
+            continue;
+        }
+        supplied[index] = true;
+        check_identity_key_type(&keys[index], arg_type, span, file, diagnostics);
+    }
+
+    if malformed_names {
+        return;
+    }
+    for (key, supplied) in keys.iter().zip(supplied) {
+        if !supplied {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`{label}` requires identity key `{}`", key.name),
+            ));
+        }
+    }
+}
+
+fn check_identity_key_type(
+    key: &marrow_schema::KeyDef,
+    arg_type: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+    if type_compatible(&expected, arg_type) == Some(false) {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "identity key `{}` expects `{}`, but this value is `{}`",
+                key.name,
+                marrow_type_name(&expected),
+                marrow_type_name(arg_type),
+            ),
+        ));
     }
 }
 
@@ -2045,6 +2108,7 @@ pub(crate) fn check_call(
             && let Some(saved_root) = &resource.saved_root
         {
             check_identity_constructor_keys(
+                &format!("{name}::Id"),
                 &saved_root.identity_keys,
                 args,
                 arg_types,
