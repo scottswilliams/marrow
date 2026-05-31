@@ -25,6 +25,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use marrow_schema::Type as SchemaType;
 use marrow_syntax::{
     Block, Declaration, EnumMember, Expression, MatchArm, ParsedSource, ResourceDecl,
     ResourceMember, SourceSpan, Statement, TypeRef,
@@ -33,9 +34,9 @@ use marrow_syntax::{
 use crate::MarrowType;
 use crate::enums::resolve_enum;
 use crate::{
-    AnalysisSnapshot, CheckedProgram, expand_module_alias, file_prelude, find_resource_schema,
-    for_frame, infer_only, local_binding, resolve_enum_member_path, resolve_function_in_module,
-    resolve_type,
+    AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
+    expand_module_alias, file_prelude, find_resource_schema, for_frame, infer_only, local_binding,
+    resolve, resolve_enum_member_path, resolve_function_in_module, resolve_type,
 };
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
@@ -227,10 +228,10 @@ struct IndexBuilder<'p> {
 struct ModuleScope {
     /// `module name -> (const name -> DefId)`.
     constants: HashMap<String, HashMap<String, DefId>>,
-    /// `resource name -> DefId` for the resource type symbol.
-    resources: HashMap<String, DefId>,
-    /// `resource name -> DefId` for the generated identity symbol.
-    identities: HashMap<String, DefId>,
+    /// `(module name, resource name) -> DefId` for the resource type symbol.
+    resources: HashMap<(String, String), DefId>,
+    /// `(module name, resource name) -> DefId` for the generated identity symbol.
+    identities: HashMap<(String, String), DefId>,
     /// `(module name, function name) -> DefId`, the function's definition.
     functions: HashMap<(String, String), DefId>,
     /// `(module name, enum name) -> DefId`, the enum's definition.
@@ -332,7 +333,7 @@ impl<'p> IndexBuilder<'p> {
                         .insert((module.clone(), function.name.clone()), id);
                 }
                 Declaration::Resource(resource) => {
-                    self.collect_resource(file, resource);
+                    self.collect_resource(file, &module, resource);
                 }
                 Declaration::Enum(enum_decl) => {
                     let id = self.define(
@@ -388,9 +389,9 @@ impl<'p> IndexBuilder<'p> {
     /// Collect a resource definition: the resource type, its generated identity,
     /// and its saved members (fields, groups/layers, indexes). The resource and
     /// identity are data-backed exactly when the resource has a saved root.
-    /// Resources resolve project-wide by name (like the checker's
-    /// `find_resource_schema`), so they are not scoped to the declaring module.
-    fn collect_resource(&mut self, file: &Path, resource: &ResourceDecl) {
+    /// Resources and identities are keyed by their declaring module plus source
+    /// name; use sites choose the module through the checker resolver.
+    fn collect_resource(&mut self, file: &Path, module: &str, resource: &ResourceDecl) {
         let saved_root = resource.store.as_ref().map(|store| store.root.clone());
         let type_safety = match &saved_root {
             // A saved resource's root name is part of the on-disk path; the type
@@ -409,7 +410,7 @@ impl<'p> IndexBuilder<'p> {
         );
         self.module_scope
             .resources
-            .insert(resource.name.clone(), resource_id);
+            .insert((module.to_string(), resource.name.clone()), resource_id);
         // The generated `Type::Id` identity shares the resource's declaration site
         // and saved-data backing.
         let identity_id = self.define(
@@ -422,7 +423,7 @@ impl<'p> IndexBuilder<'p> {
         );
         self.module_scope
             .identities
-            .insert(resource.name.clone(), identity_id);
+            .insert((module.to_string(), resource.name.clone()), identity_id);
 
         if let Some(root) = &saved_root {
             self.collect_members(file, root, &mut Vec::new(), &resource.members);
@@ -506,7 +507,7 @@ impl<'p> IndexBuilder<'p> {
         let prelude = file_prelude(self.program, file, parsed);
 
         for declaration in &parsed.file.declarations {
-            self.collect_type_refs(file, declaration, source, &prelude.aliases);
+            self.collect_type_refs(file, declaration, source, &prelude.aliases, &module);
             if let Declaration::Function(function) = declaration {
                 // The function body runs under a scope of its parameters over the
                 // module's bindings. Parameters have no AST span, so a parameter
@@ -547,25 +548,32 @@ impl<'p> IndexBuilder<'p> {
         declaration: &Declaration,
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
+        module: &str,
     ) {
         match declaration {
             Declaration::Const(constant) => {
                 if let Some(ty) = &constant.ty {
-                    self.collect_type_ref(file, source, aliases, ty);
+                    self.collect_type_ref(file, source, aliases, module, ty);
                 }
             }
             Declaration::Resource(resource) => {
                 if let Some(store) = &resource.store {
-                    self.collect_key_type_refs(file, source, aliases, &store.keys);
+                    self.collect_key_type_refs(file, source, aliases, module, &store.keys);
                 }
-                self.collect_resource_member_type_refs(file, source, aliases, &resource.members);
+                self.collect_resource_member_type_refs(
+                    file,
+                    source,
+                    aliases,
+                    module,
+                    &resource.members,
+                );
             }
             Declaration::Function(function) => {
                 for param in &function.params {
-                    self.collect_type_ref(file, source, aliases, &param.ty);
+                    self.collect_type_ref(file, source, aliases, module, &param.ty);
                 }
                 if let Some(ty) = &function.return_type {
-                    self.collect_type_ref(file, source, aliases, ty);
+                    self.collect_type_ref(file, source, aliases, module, ty);
                 }
             }
             Declaration::Enum(_) => {}
@@ -577,17 +585,24 @@ impl<'p> IndexBuilder<'p> {
         file: &Path,
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
+        module: &str,
         members: &[ResourceMember],
     ) {
         for member in members {
             match member {
                 ResourceMember::Field(field) => {
-                    self.collect_key_type_refs(file, source, aliases, &field.keys);
-                    self.collect_type_ref(file, source, aliases, &field.ty);
+                    self.collect_key_type_refs(file, source, aliases, module, &field.keys);
+                    self.collect_type_ref(file, source, aliases, module, &field.ty);
                 }
                 ResourceMember::Group(group) => {
-                    self.collect_key_type_refs(file, source, aliases, &group.keys);
-                    self.collect_resource_member_type_refs(file, source, aliases, &group.members);
+                    self.collect_key_type_refs(file, source, aliases, module, &group.keys);
+                    self.collect_resource_member_type_refs(
+                        file,
+                        source,
+                        aliases,
+                        module,
+                        &group.members,
+                    );
                 }
                 ResourceMember::Index(_) => {}
             }
@@ -599,10 +614,11 @@ impl<'p> IndexBuilder<'p> {
         file: &Path,
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
+        module: &str,
         keys: &[marrow_syntax::KeyParam],
     ) {
         for key in keys {
-            self.collect_type_ref(file, source, aliases, &key.ty);
+            self.collect_type_ref(file, source, aliases, module, &key.ty);
         }
     }
 
@@ -611,22 +627,86 @@ impl<'p> IndexBuilder<'p> {
         file: &Path,
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
+        module: &str,
         ty: &TypeRef,
     ) {
         let resolved = resolve_type(ty, self.program, aliases, file);
-        let Some((enum_module, enum_name)) = enum_identity(&resolved) else {
+        if let Some((enum_module, enum_name)) = enum_identity(&resolved) {
+            let Some(def) = self
+                .module_scope
+                .enums
+                .get(&(enum_module.to_string(), enum_name.to_string()))
+                .copied()
+            else {
+                return;
+            };
+            if let Some(span) = type_ref_enum_leaf_span(source, ty, enum_name) {
+                self.use_of(def, file, span, SymbolKind::Enum);
+            }
             return;
-        };
-        let Some(def) = self
-            .module_scope
-            .enums
-            .get(&(enum_module.to_string(), enum_name.to_string()))
-            .copied()
-        else {
-            return;
-        };
-        if let Some(span) = type_ref_enum_leaf_span(source, ty, enum_name) {
-            self.use_of(def, file, span, SymbolKind::Enum);
+        }
+        self.collect_resource_type_ref(file, source, aliases, module, ty);
+    }
+
+    fn collect_resource_type_ref(
+        &mut self,
+        file: &Path,
+        source: &str,
+        aliases: &HashMap<String, Vec<String>>,
+        module: &str,
+        ty: &TypeRef,
+    ) {
+        self.collect_resource_schema_type_ref(
+            file,
+            source,
+            aliases,
+            module,
+            ty,
+            &SchemaType::resolve(ty),
+        );
+    }
+
+    fn collect_resource_schema_type_ref(
+        &mut self,
+        file: &Path,
+        source: &str,
+        aliases: &HashMap<String, Vec<String>>,
+        module: &str,
+        ty: &TypeRef,
+        schema_type: &SchemaType,
+    ) {
+        match schema_type {
+            SchemaType::Sequence(element) => {
+                self.collect_resource_schema_type_ref(file, source, aliases, module, ty, element);
+            }
+            SchemaType::Identity(resource) => {
+                let mut segments = split_type_path(resource);
+                segments.push("Id".to_string());
+                let resolved_segments = expand_alias(&segments, aliases);
+                if let Some(def) = self.module_scope.resolved_resource(
+                    self.program,
+                    module,
+                    &resolved_segments,
+                    ResolvableKind::ResourceIdentity,
+                ) && let Some(span) = type_ref_path_tail_span(source, ty, &segments, 2)
+                {
+                    self.use_of(def, file, span, SymbolKind::ResourceIdentity);
+                }
+            }
+            SchemaType::Named(resource) => {
+                let segments = split_type_path(resource);
+                let resolved_segments = expand_alias(&segments, aliases);
+                if let Some(def) = self.module_scope.resolved_resource(
+                    self.program,
+                    module,
+                    &resolved_segments,
+                    ResolvableKind::Resource,
+                ) && let Some(span) = type_ref_path_tail_span(source, ty, &segments, 1)
+                {
+                    self.use_of(def, file, span, SymbolKind::Resource);
+                }
+            }
+            SchemaType::Scalar(_) | SchemaType::Unknown => {}
         }
     }
 
@@ -875,7 +955,7 @@ impl UseWalker<'_, '_> {
 
     fn resolve_type_ref(&mut self, ty: &TypeRef) {
         self.builder
-            .collect_type_ref(self.file, self.source, self.aliases, ty);
+            .collect_type_ref(self.file, self.source, self.aliases, self.module, ty);
     }
 
     /// Walk an expression, attributing each name/call/saved read to its definition.
@@ -945,20 +1025,31 @@ impl UseWalker<'_, '_> {
                     .use_of(id, self.file, span, SymbolKind::ModuleConst);
                 return;
             }
-            if let Some(id) = self.builder.module_scope.resources.get(name).copied() {
+            if let Some(id) = self.builder.module_scope.resolved_resource(
+                self.builder.program,
+                self.module,
+                segments,
+                ResolvableKind::Resource,
+            ) {
                 self.builder
                     .use_of(id, self.file, span, SymbolKind::Resource);
             }
             return;
         }
-        // A qualified name: a `Resource::Id` identity, or an imported alias used as
-        // a module qualifier resolves through the resource table by leaf.
-        if let [resource, id] = segments
-            && id == "Id"
-            && let Some(def) = self.builder.module_scope.identities.get(resource).copied()
+        // A qualified name: `Resource::Id` or `module::Resource::Id` names the
+        // generated identity, with module aliases expanded by the checker resolver.
+        let resolved_segments = expand_alias(segments, self.aliases);
+        if segments.last().is_some_and(|segment| segment == "Id")
+            && let Some(def) = self.builder.module_scope.resolved_resource(
+                self.builder.program,
+                self.module,
+                &resolved_segments,
+                ResolvableKind::ResourceIdentity,
+            )
         {
+            let use_span = path_tail_span(self.source, span, segments, 2).unwrap_or(span);
             self.builder
-                .use_of(def, self.file, span, SymbolKind::ResourceIdentity);
+                .use_of(def, self.file, use_span, SymbolKind::ResourceIdentity);
             return;
         }
         if let Some(resolved) = self.resolve_enum_member(segments) {
@@ -1157,6 +1248,36 @@ impl UseWalker<'_, '_> {
         else {
             return false;
         };
+        // Constructors are call-shaped but name resources, not functions. Resolve
+        // them with the same module-aware resource resolver used by the checker,
+        // including the identity-precedence path for `Book::Id(...)`.
+        let resolved_segments = expand_alias(segments, self.aliases);
+        if segments.last().is_some_and(|segment| segment == "Id")
+            && let Some(def) = self.builder.module_scope.resolved_resource(
+                self.builder.program,
+                self.module,
+                &resolved_segments,
+                ResolvableKind::ResourceIdentity,
+            )
+        {
+            let use_span =
+                path_tail_span(self.source, *callee_span, segments, 2).unwrap_or(*callee_span);
+            self.builder
+                .use_of(def, self.file, use_span, SymbolKind::ResourceIdentity);
+            return true;
+        }
+        if let Some(def) = self.builder.module_scope.resolved_resource(
+            self.builder.program,
+            self.module,
+            &resolved_segments,
+            ResolvableKind::Resource,
+        ) {
+            let use_span =
+                path_tail_span(self.source, *callee_span, segments, 1).unwrap_or(*callee_span);
+            self.builder
+                .use_of(def, self.file, use_span, SymbolKind::Resource);
+            return true;
+        }
         // Marrow has no first-class functions, so a bare name in callee position
         // resolves as a function (not a value). Resolve through the same unified
         // resolver the checker's `check_call` uses, from this file's module, so a
@@ -1173,15 +1294,6 @@ impl UseWalker<'_, '_> {
         {
             self.builder
                 .use_of(def, self.file, *callee_span, SymbolKind::Function);
-            return true;
-        }
-        // A constructor `Book(..)`/`Book::Id(..)` names a resource/identity, not a
-        // function; resolve it as a name so it still counts as a reference.
-        if let [name] = segments.as_slice()
-            && let Some(def) = self.builder.module_scope.resources.get(name).copied()
-        {
-            self.builder
-                .use_of(def, self.file, *callee_span, SymbolKind::Resource);
             return true;
         }
         false
@@ -1223,6 +1335,29 @@ impl ModuleScope {
             .and_then(|consts| consts.get(name))
             .copied()
     }
+
+    fn resolved_resource(
+        &self,
+        program: &CheckedProgram,
+        from_module: &str,
+        segments: &[String],
+        kind: ResolvableKind,
+    ) -> Option<DefId> {
+        let Resolution::Found(Def {
+            module,
+            item: DefItem::Resource(resource),
+            ..
+        }) = resolve(program, from_module, segments, kind)
+        else {
+            return None;
+        };
+        let key = (module.name.clone(), resource.name.clone());
+        match kind {
+            ResolvableKind::Resource => self.resources.get(&key).copied(),
+            ResolvableKind::ResourceIdentity => self.identities.get(&key).copied(),
+            ResolvableKind::Function => None,
+        }
+    }
 }
 
 /// Look up a name in a scope stack, innermost frame first, so an inner binding
@@ -1256,6 +1391,10 @@ fn enum_identity(ty: &MarrowType) -> Option<(&str, &str)> {
     }
 }
 
+fn split_type_path(path: &str) -> Vec<String> {
+    path.split("::").map(str::to_string).collect()
+}
+
 fn type_ref_enum_leaf_span(source: &str, ty: &TypeRef, enum_name: &str) -> Option<SourceSpan> {
     let end_byte = ty.span.end_byte.min(source.len());
     let text = source.get(ty.span.start_byte..end_byte)?;
@@ -1266,6 +1405,28 @@ fn type_ref_enum_leaf_span(source: &str, ty: &TypeRef, enum_name: &str) -> Optio
         start_byte,
         start_byte + enum_name.len(),
     ))
+}
+
+fn type_ref_path_tail_span(
+    source: &str,
+    ty: &TypeRef,
+    segments: &[String],
+    tail_segments: usize,
+) -> Option<SourceSpan> {
+    path_tail_span(source, ty.span, segments, tail_segments)
+}
+
+fn path_tail_span(
+    source: &str,
+    span: SourceSpan,
+    segments: &[String],
+    tail_segments: usize,
+) -> Option<SourceSpan> {
+    let segment_spans = qualified_segment_spans(source, span, segments)?;
+    let start_index = segments.len().checked_sub(tail_segments)?;
+    let start_byte = segment_spans.get(start_index)?.start_byte;
+    let end_byte = segment_spans.last()?.end_byte;
+    Some(source_span_at(source, start_byte, end_byte))
 }
 
 fn qualified_segment_spans(

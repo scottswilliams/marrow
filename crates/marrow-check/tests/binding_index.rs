@@ -940,6 +940,257 @@ fn map_sugar_does_not_create_enum_annotation_references() {
 }
 
 #[test]
+fn qualified_resource_constructor_uses_qualified_module_resource() {
+    let state = "module shelf::state\n\
+        resource Book at ^state_books(id: int)\n    \
+        required title: string\n";
+    let app = "module shelf::app\n\
+        use shelf::state\n\
+        resource Book at ^app_books(code: string)\n    \
+        required subtitle: string\n\
+        fn make()\n    \
+        const b = state::Book(title: \"x\")\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "qualified-resource-constructor",
+        &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let state_file = &paths[0];
+    let app_file = &paths[1];
+
+    let book_leaf = app.find("state::Book").expect("qualified constructor") + "state::".len();
+    let def = index
+        .definition(app_file, book_leaf + 1)
+        .expect("qualified resource constructor resolves");
+    assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
+    assert_eq!(def.file, *state_file, "{def:?}");
+}
+
+#[test]
+fn qualified_resource_identity_constructor_uses_qualified_module_identity() {
+    let state = "module shelf::state\n\
+        resource Book at ^state_books(id: int)\n    \
+        required title: string\n";
+    let app = "module shelf::app\n\
+        use shelf::state\n\
+        resource Book at ^app_books(code: string)\n    \
+        required subtitle: string\n\
+        fn make()\n    \
+        const id = state::Book::Id(1)\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "qualified-resource-identity-constructor",
+        &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let state_file = &paths[0];
+    let app_file = &paths[1];
+
+    let callee = app
+        .find("state::Book::Id")
+        .expect("qualified identity constructor");
+    let book_def = index
+        .definition(app_file, callee + "state::".len() + 1)
+        .expect("resource segment resolves to the generated identity");
+    assert_eq!(book_def.kind, SymbolKind::ResourceIdentity, "{book_def:?}");
+    assert_eq!(book_def.file, *state_file, "{book_def:?}");
+
+    let id_def = index
+        .definition(app_file, callee + "state::Book::".len() + 1)
+        .expect("identity segment resolves to the generated identity");
+    assert_eq!(id_def, book_def, "{id_def:?}");
+}
+
+#[test]
+fn bare_resource_constructor_prefers_current_module_resource() {
+    let state = "module shelf::state\n\
+        resource Book at ^state_books(id: int)\n    \
+        required title: string\n";
+    let app = "module shelf::app\n\
+        use shelf::state\n\
+        resource Book at ^app_books(code: string)\n    \
+        required subtitle: string\n\
+        fn make()\n    \
+        const b = Book(subtitle: \"b\")\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "bare-resource-constructor-current-module",
+        &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let app_file = &paths[1];
+
+    let book = app.find("Book(subtitle").expect("bare constructor");
+    let def = index
+        .definition(app_file, book + 1)
+        .expect("bare resource constructor resolves");
+    assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
+    assert_eq!(def.file, *app_file, "{def:?}");
+}
+
+#[test]
+fn qualified_resource_identity_type_ref_uses_qualified_module_identity() {
+    let state = "module shelf::state\n\
+        resource Book at ^state_books(id: int)\n    \
+        required title: string\n";
+    let app = "module shelf::app\n\
+        use shelf::state\n\
+        resource Book at ^app_books(code: string)\n    \
+        required subtitle: string\n\
+        fn load(ids: sequence[state::Book::Id])\n    \
+        return\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "qualified-resource-identity-type-ref",
+        &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let state_file = &paths[0];
+    let app_file = &paths[1];
+
+    let identity = app
+        .find("state::Book::Id")
+        .expect("qualified identity type ref");
+    let def = index
+        .definition(app_file, identity + "state::Book::".len() + 1)
+        .expect("qualified identity type annotation resolves");
+    assert_eq!(def.kind, SymbolKind::ResourceIdentity, "{def:?}");
+    assert_eq!(def.file, *state_file, "{def:?}");
+}
+
+#[test]
+fn alias_qualified_id_call_prefers_imported_function_over_local_resource_identity() {
+    let imported = "module shelf::book\n\
+        pub fn Id(): int\n    \
+        return 1\n";
+    let trap = "module traps\n\
+        resource book at ^local_books(id: int)\n    \
+        required title: string\n";
+    let app = "module app\n\
+        use shelf::book\n\
+        fn run(): int\n    \
+        return book::Id()\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "alias-id-call-imported-function",
+        &[
+            ("src/shelf/book.mw", imported),
+            ("src/traps.mw", trap),
+            ("src/app.mw", app),
+        ],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let imported_file = &paths[0];
+    let app_file = &paths[2];
+
+    let call = app.find("book::Id").expect("aliased function call");
+    let def = index
+        .definition(app_file, call + "book::".len() + 1)
+        .expect("aliased call resolves");
+    assert_eq!(def.kind, SymbolKind::Function, "{def:?}");
+    assert_eq!(def.file, *imported_file, "{def:?}");
+}
+
+#[test]
+fn alias_qualified_id_call_prefers_imported_resource_over_local_resource_identity() {
+    let imported = "module shelf::book\n\
+        resource Id at ^imported_ids(id: int)\n    \
+        required title: string\n";
+    let trap = "module traps\n\
+        resource book at ^local_books(id: int)\n    \
+        required title: string\n";
+    let app = "module app\n\
+        use shelf::book\n\
+        fn make()\n    \
+        const value = book::Id(title: \"x\")\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "alias-id-call-imported-resource",
+        &[
+            ("src/shelf/book.mw", imported),
+            ("src/traps.mw", trap),
+            ("src/app.mw", app),
+        ],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let imported_file = &paths[0];
+    let app_file = &paths[2];
+
+    let call = app.find("book::Id").expect("aliased resource constructor");
+    let def = index
+        .definition(app_file, call + "book::".len() + 1)
+        .expect("aliased constructor resolves");
+    assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
+    assert_eq!(def.file, *imported_file, "{def:?}");
+}
+
+#[test]
+fn alias_qualified_identity_type_ref_expands_alias_before_resource_identity_lookup() {
+    let trap = "module traps\n\
+        resource book at ^trap_books(id: int)\n    \
+        required title: string\n";
+    let identity_owner = "module shelf\n\
+        resource book at ^shelf_books(id: int)\n    \
+        required title: string\n";
+    let imported_module = "module shelf::book\n\
+        pub fn marker(): int\n    \
+        return 1\n";
+    let app = "module app\n\
+        use shelf::book\n\
+        fn load(value: book::Id)\n    \
+        return\n";
+    let (snapshot, paths) = analyze_snapshot(
+        "alias-id-type-ref-imported-identity",
+        &[
+            ("src/traps.mw", trap),
+            ("src/shelf.mw", identity_owner),
+            ("src/shelf/book.mw", imported_module),
+            ("src/app.mw", app),
+        ],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let index = build_binding_index(&snapshot);
+    let identity_file = &paths[1];
+    let app_file = &paths[3];
+
+    let type_ref = app.find("book::Id").expect("aliased identity type ref");
+    let def = index
+        .definition(app_file, type_ref + "book::".len() + 1)
+        .expect("aliased type ref resolves");
+    assert_eq!(def.kind, SymbolKind::ResourceIdentity, "{def:?}");
+    assert_eq!(def.file, *identity_file, "{def:?}");
+}
+
+#[test]
 fn a_saved_field_name_is_saved_data_backed_and_unsafe() {
     // `title` is a stored field of the saved `Book` resource; its on-disk path is
     // `^books(id).title`, so renaming the source name orphans saved data.
