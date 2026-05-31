@@ -1064,3 +1064,33 @@ resource Order at ^orders(id: int)
         "a local resource has no saved fields to reject"
     );
 }
+
+#[test]
+fn a_qualified_named_saved_field_is_not_a_schema_local_error() {
+    let short_alias = resource(
+        "\
+module a
+use pkg::kinds
+resource Saved at ^saved(id: int)
+    required k: kinds::Color
+",
+    );
+    let short_errors = check_saved_named_fields(&short_alias, &[]);
+    assert!(
+        short_errors.is_empty(),
+        "the schema-only gate cannot reject a qualified enum name: {short_errors:#?}"
+    );
+
+    let full_path = resource(
+        "\
+module a
+resource Saved at ^saved(id: int)
+    required k: pkg::kinds::Color
+",
+    );
+    let full_errors = check_saved_named_fields(&full_path, &[]);
+    assert!(
+        full_errors.is_empty(),
+        "the schema-only gate cannot reject a fully qualified enum name: {full_errors:#?}"
+    );
+}

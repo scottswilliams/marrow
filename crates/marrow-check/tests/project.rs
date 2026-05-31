@@ -4394,6 +4394,25 @@ fn writing_a_different_enum_into_an_enum_saved_field_is_a_check_error() {
 }
 
 #[test]
+fn a_qualified_enum_saved_field_declaration_checks_clean() {
+    let root = temp_project("qualified-enum-saved-field", |root| {
+        write(
+            root,
+            "src/pkg/kinds.mw",
+            "module pkg::kinds\n\nenum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\nuse pkg::kinds\n\nresource Saved at ^saved(id: int)\n    required k: kinds::Color\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn reading_an_enum_saved_field_types_as_that_enum() {
     // A read of `^orders(1).state` (an enum-typed saved field) must type as
     // `Status`: comparing it against the *same* enum is clean. Before the field

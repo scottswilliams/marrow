@@ -21,6 +21,6 @@ Source ledgers:
 | P9 | Local collections | 11 | No | `element-loop-semantics`, `feat-defaults` | `algo-collatz#1`, `algo-collatz#2`, `algo-date-daycount-leap#5`, `algo-insertion-sort#1`, `algo-palindrome-utf8#1`, `algo-roman-numerals#4`, `app-calendar-scheduler#4`, `apps:app-ttl-cache#1`, `app-dependency-graph#4`, `app-dependency-graph#5`, `app-audit-log#5` |
 | P10 | Saved storage, indexes, presence | 9 | No | `unkeyed-required-fields`, `saved-walk-cursor`, `element-loop-semantics` | `app-calendar-scheduler#1`, `app-mini-spreadsheet#0`, `app-url-shortener#3`, `cluster-indexes#1`, `cluster-saved-encoding-integrity#1`, `cluster-sparse-presence#0`, `cluster-sparse-presence#1`, `cluster-sparse-presence#2`, `fuzz-9#1` |
 | P11 | Traversal, neighbors, mutation guards | 10 | No | `element-loop-semantics`, `saved-walk-cursor` | `algo-csv-splitter#1`, `algo-csv-splitter#2`, `app-registrar-composite-id#1`, `app-library-catalog#7`, `cluster-controlflow-errors#3`, `cluster-sequences-traversal#0`, `cluster-sequences-traversal#1`, `cluster-sequences-traversal#2`, `cluster-sequences-traversal#3`, `fuzz-9#0` |
-| P12 | Enums | 4 | Maybe | `enum-binding-index`, `enum-segment-precision` | `app-expression-interpreter#2`, `app-expression-interpreter#4`, `cluster-enums#2`, `cluster-enums#3` |
+| P12 | Enums | 3 | Maybe | `enum-binding-index`, `enum-segment-precision` | `app-expression-interpreter#2`, `cluster-enums#2`, `cluster-enums#3` |
 
-Open issue count: 96.
+Open issue count: 95.

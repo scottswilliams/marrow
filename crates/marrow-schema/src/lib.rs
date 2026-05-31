@@ -78,12 +78,13 @@ impl Type {
 
     /// The scalar a stored field of this type encodes as: a plain scalar's own
     /// type, or `int` for an enum field, whose value is the selected member's
-    /// declaration-order ordinal. A saved field that is a bare [`Type::Named`] is
-    /// always an enum: [`check_saved_named_fields`] rejects any other bare name
-    /// (an undefined name or a resource type) at compile time, so by the time a
-    /// `Named` field reaches the store it stores its ordinal as an `int`. The
-    /// storage boundary — value type-checks, field reads, whole-resource reads —
-    /// uses this.
+    /// declaration-order ordinal. A saved field that is an unqualified
+    /// [`Type::Named`] is always an enum: [`check_saved_named_fields`] rejects
+    /// any other unqualified name (an undefined name or a resource type) at
+    /// compile time. Qualified names need project context, but once a `Named`
+    /// field reaches the store it stores its ordinal as an `int`. The storage
+    /// boundary — value type-checks, field reads, whole-resource reads — uses
+    /// this.
     pub fn stored_scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
@@ -822,10 +823,10 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
     }
 }
 
-/// Reject every managed saved field whose type is a bare name that is not one of
-/// `enums`. A bare [`Type::Named`] reaches a stored scalar only as an enum (its
-/// member ordinal); an undefined name or a resource type has no stored scalar
-/// form. The caller resolves enum names cross-declaration and passes them here,
+/// Reject every managed saved field whose type is an unqualified name that is
+/// not one of `enums`. An unqualified [`Type::Named`] reaches a stored scalar
+/// only as an enum (its member ordinal); an undefined name or a resource type
+/// has no stored scalar form. Qualified names need import and project context,
 /// since [`compile_resource`] compiles one resource without that context. A
 /// local (non-saved) resource is exempt — only saved fields lower into the store.
 pub fn check_saved_named_fields(decl: &ResourceDecl, enums: &[String]) -> Vec<SchemaError> {
@@ -842,7 +843,7 @@ fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec
     match member {
         ResourceMember::Field(field) => {
             if let Type::Named(name) = Type::resolve(&field.ty)
-                && !enums.iter().any(|enum_name| enum_name == &name)
+                && !is_declared_or_qualified_enum_name(&name, enums)
             {
                 errors.push(SchemaError {
                     code: SCHEMA_NON_ENUM_NAMED_FIELD,
@@ -862,6 +863,10 @@ fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec
         }
         ResourceMember::Index(_) => {}
     }
+}
+
+fn is_declared_or_qualified_enum_name(name: &str, enums: &[String]) -> bool {
+    name.contains("::") || enums.iter().any(|enum_name| enum_name == name)
 }
 
 /// The span of a top-level member named `name`, if one exists. Identity keys,
