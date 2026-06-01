@@ -402,9 +402,9 @@ pub(crate) fn bind_arguments(
 
 /// Like [`bind_arguments`], but also resolves each `out`/`inout` argument to the
 /// [`Place`] to write back to (param-order-aligned: `Some` for a moded argument,
-/// `None` otherwise) and validates that argument and parameter modes agree. An
-/// `inout` place is read now to seed the parameter; an `out` parameter is seeded
-/// with a type-directed default it is expected to overwrite.
+/// `None` otherwise) and validates that argument and parameter modes agree.
+/// Local `inout` places are read now to seed the parameter; an `out` parameter is
+/// seeded with a type-directed default it is expected to overwrite.
 pub(crate) fn bind_arguments_with_modes(
     params: &[CheckedParam],
     args: &[Argument],
@@ -429,6 +429,9 @@ pub(crate) fn bind_arguments_with_modes(
         let entry = match arg.mode {
             None => (eval_expr(&arg.value, env)?, None),
             Some(ArgMode::InOut) => {
+                if is_saved_path(&arg.value) {
+                    return Err(unsupported("saved `inout`", span));
+                }
                 let place = resolve_place(&arg.value, span, env)?;
                 let current = place.read(span, env)?;
                 (current, Some(place))
@@ -756,10 +759,10 @@ pub(crate) fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> boo
 }
 
 /// A resolved assignable place for an `out`/`inout` argument, captured before the
-/// call (its saved identity keys evaluated once) so it can be read for `inout` and
-/// written back without re-evaluating those keys. A saved target is held as a
-/// lowered [`SavedPath`] with a known terminal, so reads and write-backs route
-/// through the same path model a direct read or assignment uses.
+/// call (its saved identity keys evaluated once) so local `inout` can be read and
+/// write-back does not re-evaluate those keys. A saved target is held as a
+/// lowered [`SavedPath`] with a known terminal, so `out` write-back routes
+/// through the same path model a direct assignment uses.
 pub(crate) enum Place {
     /// A bare local variable: `n` or `book`.
     Local(String),
@@ -773,7 +776,7 @@ pub(crate) enum Place {
 
 /// Resolve an `out`/`inout` argument expression to its [`Place`], evaluating any
 /// saved identity keys now. Supports a bare local, a field of a local resource, a
-/// saved scalar field, and a whole saved resource; other shapes defer.
+/// saved scalar field, and a whole saved resource for `out`; other shapes defer.
 pub(crate) fn resolve_place(
     expr: &Expression,
     span: SourceSpan,
@@ -821,9 +824,7 @@ pub(crate) fn resolve_place(
 }
 
 impl Place {
-    /// The current value at this place, to seed an `inout` parameter. An absent
-    /// saved element is a plain fatal fault here ([`ReadPosition::ArgSeed`]):
-    /// argument binding is not value position.
+    /// The current local value at this place, to seed an `inout` parameter.
     pub(crate) fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         match self {
             Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
@@ -834,7 +835,7 @@ impl Place {
                 span,
             }),
             Place::LocalField { base, field } => read_local_field(base, field, span, env),
-            Place::Saved(path) => path.read(ReadPosition::ArgSeed, span, env),
+            Place::Saved(_) => Err(unsupported("saved `inout`", span)),
         }
     }
 
@@ -892,8 +893,7 @@ pub(crate) fn out_seed(ty: &MarrowType) -> Value {
 
 /// Evaluate a call to a program function, returning its returned value (or
 /// `None` for a function that returns nothing). Arguments may be positional or
-/// named, and `out`/`inout` arguments write back to an assignable place (a local
-/// or a saved path) after the call.
+/// named; local `inout` and supported `out` arguments write back after the call.
 pub(crate) fn eval_call(
     callee: &Expression,
     args: &[Argument],
@@ -1085,10 +1085,10 @@ pub(crate) fn complete_call(
 }
 
 /// Evaluate a program-function call that has `out`/`inout` arguments. Each moded
-/// argument resolves to an assignable [`Place`] (a local or a saved path) that is
-/// read (for `inout`) to seed the parameter and written back after the callee
-/// returns normally; the callee's throw or fault skips write-back. The argument's
-/// mode must match the parameter's.
+/// argument resolves to an assignable [`Place`]; local `inout` places are read to
+/// seed the parameter, and all supported moded places are written back after the
+/// callee returns normally. The callee's throw or fault skips write-back. The
+/// argument's mode must match the parameter's.
 pub(crate) fn eval_call_with_modes<'p>(
     module: &'p CheckedModule,
     function: &'p CheckedFunction,

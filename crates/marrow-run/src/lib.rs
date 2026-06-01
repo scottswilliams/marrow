@@ -5,14 +5,13 @@
 //! conditionals, `while`/`for` loops, interpolation, and calls between
 //! functions. It reads saved data (fields and keyed-leaf entries) and writes it
 //! through the managed-write layer (`^books(id).field = …`, `delete`, `append`),
-//! groups writes in a `transaction` (commit/rollback with read-your-writes),
-//! guards a block with `lock` (a scope released on every exit under the
-//! single-writer profile), and provides the
+//! groups writes in a `transaction` (commit/rollback with read-your-writes), and
+//! provides the
 //! `print`/`write`/`exists`/`nextId`/`append` builtins, the `?.` optional read
 //! and `??` absence-default, the
 //! `std::assert`/`std::text`/`std::math` library helpers, and the
 //! `std::clock::now()` and `std::env` host capabilities. Whole-resource writes,
-//! `merge`, index traversal, and structured errors build on the same spine.
+//! index traversal, and structured errors build on the same spine.
 //!
 //! The evaluator is carved into sibling modules along the call spine
 //! (`expr`/`call`/`exec`/`read`/`write_dispatch`/`path`) plus its leaf
@@ -53,10 +52,10 @@ pub(crate) use write::{
     WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity,
     next_id, next_layer_pos, next_nested_layer_pos, plan_field_delete, plan_field_write,
     plan_identity_field_write, plan_layer_group_write, plan_layer_identity_leaf_write,
-    plan_layer_leaf_write, plan_layer_merge, plan_nested_field_write,
-    plan_nested_identity_field_write, plan_nested_layer_identity_leaf_write,
-    plan_nested_layer_leaf_write, plan_resource_delete, plan_resource_merge, plan_resource_write,
-    validate_required_fields_after_field_write, validate_required_fields_for_entry,
+    plan_layer_leaf_write, plan_nested_field_write, plan_nested_identity_field_write,
+    plan_nested_layer_identity_leaf_write, plan_nested_layer_leaf_write, plan_resource_delete,
+    plan_resource_write, validate_required_fields_after_field_write,
+    validate_required_fields_for_entry,
 };
 
 pub mod base64;

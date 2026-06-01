@@ -1888,66 +1888,20 @@ fn an_io_error_raises_a_catchable_error() {
     assert_eq!(code, Some(Value::Str("io.read".into())));
 }
 
-/// A resource and helpers exercising `out`/`inout` write-back to saved places.
+/// A resource and helper exercising `out` write-back to saved places.
 const SAVED_MODE_SAMPLE: &str = "\
 resource Account at ^accts(id: int)
     balance: int
 
-resource Book at ^books(id: int)
-    title: string
-
-fn addOne(inout n: int)
-    n = n + 1
-
 fn give(out n: int)
     n = 7
-
-fn setTitle(inout book: Book)
-    book.title = \"renamed\"
-
-fn bad(inout n: int)
-    n = 99
-    throw Error(code: \"x\", message: \"boom\")
-
-pub fn seedAccount()
-    ^accts(1).balance = 41
-
-pub fn bump()
-    addOne(inout ^accts(1).balance)
 
 pub fn produce()
     give(out ^accts(1).balance)
 
 pub fn balanceOf(): int
     return ^accts(1).balance
-
-pub fn seedBook()
-    ^books(1).title = \"draft\"
-
-pub fn rename()
-    setTitle(inout ^books(1))
-
-pub fn titleOf(): string
-    return ^books(1).title
-
-pub fn tryBump()
-    try
-        bad(inout ^accts(1).balance)
-    catch err: Error
-        write(\"caught\")
 ";
-
-#[test]
-fn inout_writes_back_to_a_saved_field() {
-    let program = checked_program(SAVED_MODE_SAMPLE);
-    let store = RefCell::new(MemStore::new());
-    run_entry(&program, &store, "test::seedAccount", &[]).expect("seed");
-    run_entry(&program, &store, "test::bump", &[]).expect("bump");
-    let balance = run_entry(&program, &store, "test::balanceOf", &[])
-        .expect("read")
-        .value;
-    assert_eq!(balance, Some(Value::Int(42)));
-}
 
 #[test]
 fn out_creates_a_saved_field() {
@@ -1962,61 +1916,41 @@ fn out_creates_a_saved_field() {
 }
 
 #[test]
-fn inout_writes_back_to_a_whole_saved_resource() {
-    let program = checked_program(SAVED_MODE_SAMPLE);
+fn saved_inout_is_runtime_unsupported_and_does_not_write_back() {
+    let program = checked_program(
+        "resource Account at ^accts(id: int)\n    balance: int\n\nfn addOne(inout n: int)\n    n = n + 1\n\npub fn seedAccount()\n    ^accts(1).balance = 41\n\npub fn bump()\n    addOne(inout ^accts(1).balance)\n\npub fn balanceOf(): int\n    return ^accts(1).balance\n",
+    );
     let store = RefCell::new(MemStore::new());
-    run_entry(&program, &store, "test::seedBook", &[]).expect("seed");
-    run_entry(&program, &store, "test::rename", &[]).expect("rename");
-    let title = run_entry(&program, &store, "test::titleOf", &[])
+    run_entry(&program, &store, "test::seedAccount", &[]).expect("seed");
+    let result = run_entry(&program, &store, "test::bump", &[]);
+    assert_eq!(
+        result.as_ref().map(|_| ()).map_err(|error| error.code),
+        Err(RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+    let balance = run_entry(&program, &store, "test::balanceOf", &[])
         .expect("read")
         .value;
-    assert_eq!(title, Some(Value::Str("renamed".into())));
+    assert_eq!(balance, Some(Value::Int(41)));
 }
 
-/// A resource with a `versions(version)` group layer, for `out`/`inout` into a
-/// field inside a keyed group entry (a saved path with a layer chain ending at a
-/// field).
+/// A resource with a `versions(version)` group layer, for `out` into a field
+/// inside a keyed group entry.
 const GROUP_FIELD_MODE_SAMPLE: &str = "\
 resource Book at ^books(id: int)
     title: string
     versions(version: int)
         title: string
 
-fn addBang(inout t: string)
-    t = t _ \"!\"
-
 fn makeTitle(out t: string)
     t = \"made\"
-
-pub fn seed()
-    ^books(1).versions(2).title = \"v\"
-
-pub fn bump()
-    addBang(inout ^books(1).versions(2).title)
 
 pub fn produce()
     makeTitle(out ^books(1).versions(3).title)
 
-pub fn versionTitle(): string
-    return ^books(1).versions(2).title
-
 pub fn producedTitle(): string
     return ^books(1).versions(3).title
 ";
-
-#[test]
-fn inout_writes_back_to_a_group_entry_field() {
-    // `inout ^books(id).versions(v).title` — a field inside a keyed group entry as
-    // an inout target: read the current value, mutate, write back.
-    let program = checked_program(GROUP_FIELD_MODE_SAMPLE);
-    let store = RefCell::new(MemStore::new());
-    run_entry(&program, &store, "test::seed", &[]).expect("seed");
-    run_entry(&program, &store, "test::bump", &[]).expect("bump");
-    let title = run_entry(&program, &store, "test::versionTitle", &[])
-        .expect("read")
-        .value;
-    assert_eq!(title, Some(Value::Str("v!".into())));
-}
 
 #[test]
 fn out_creates_a_group_entry_field() {
@@ -2031,17 +1965,35 @@ fn out_creates_a_group_entry_field() {
 }
 
 #[test]
-fn a_saved_write_back_is_skipped_when_the_callee_throws() {
-    let program = checked_program(SAVED_MODE_SAMPLE);
+fn saved_inout_is_runtime_unsupported_before_reading_the_place() {
+    let program = checked_program(
+        "resource Account at ^accts(id: int)\n    balance: int\n\nfn addOne(inout n: int)\n    n = n + 1\n\npub fn bump()\n    addOne(inout ^accts(1).balance)\n",
+    );
     let store = RefCell::new(MemStore::new());
-    run_entry(&program, &store, "test::seedAccount", &[]).expect("seed");
-    // The callee mutates the inout saved field then throws; the throw is caught,
-    // and the write-back is skipped, so the stored balance is unchanged.
-    run_entry(&program, &store, "test::tryBump", &[]).expect("caught");
-    let balance = run_entry(&program, &store, "test::balanceOf", &[])
+    let result = run_entry(&program, &store, "test::bump", &[]);
+    assert_eq!(
+        result.as_ref().map(|_| ()).map_err(|error| error.code),
+        Err(RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn saved_inout_is_runtime_unsupported_before_evaluating_keys() {
+    let program = checked_program(
+        "resource Account at ^accts(id: int)\n    balance: int\n\nfn addOne(inout n: int)\n    n = n + 1\n\nfn touch(): int\n    ^accts(99).balance = 123\n    return 1\n\npub fn bump()\n    addOne(inout ^accts(touch()).balance)\n\npub fn touched(): bool\n    return exists(^accts(99).balance)\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    let result = run_entry(&program, &store, "test::bump", &[]);
+    assert_eq!(
+        result.as_ref().map(|_| ()).map_err(|error| error.code),
+        Err(RUN_UNSUPPORTED),
+        "{result:?}"
+    );
+    let touched = run_entry(&program, &store, "test::touched", &[])
         .expect("read")
         .value;
-    assert_eq!(balance, Some(Value::Int(41)));
+    assert_eq!(touched, Some(Value::Bool(false)));
 }
 
 #[test]
@@ -4210,27 +4162,6 @@ fn reads_inside_a_transaction_see_earlier_writes() {
 }
 
 #[test]
-fn a_lock_block_runs_its_body_and_releases_on_exit() {
-    // `lock` type-checks as a scope guarding its body. Under the single-writer
-    // profile it runs the block (writes land, a `return` exits) rather than
-    // failing with run.unsupported.
-    let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int): string\n    lock ^books(id)\n        ^books(id).title = \"kept\"\n        return ^books(id).title\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
-    );
-    let store = RefCell::new(MemStore::new());
-    let outcome =
-        run_entry(&program, &store, "test::save", &[Value::Int(1)]).expect("lock body runs");
-    assert_eq!(outcome.value, Some(Value::Str("kept".into())));
-    // The write inside the lock persisted after the lock released.
-    assert_eq!(
-        run_entry(&program, &store, "test::title_of", &[Value::Int(1)])
-            .expect("run")
-            .value,
-        Some(Value::Str("kept".into()))
-    );
-}
-
-#[test]
 fn append_writes_at_the_next_position() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n",
@@ -4762,9 +4693,6 @@ fn read(id: int): Patient
 fn copy(from: int, to: int)
     ^patients(to) = ^patients(from)
 
-fn merge_from(from: int, to: int)
-    merge ^patients(to) = ^patients(from)
-
 fn first_of(id: int): string
     return ^patients(id).name.first
 ";
@@ -4831,26 +4759,6 @@ fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups()
             .expect("read")
             .value,
         Some(Value::Str("Small Gods".into()))
-    );
-}
-
-#[test]
-fn saved_source_merge_copies_unkeyed_group_fields() {
-    let program = checked_program(PATIENT_WITH_GROUP);
-    let store = RefCell::new(MemStore::new());
-    seed_patient_name_field(&store, 1, "first", "Sam");
-    run_entry(
-        &program,
-        &store,
-        "test::merge_from",
-        &[Value::Int(1), Value::Int(2)],
-    )
-    .expect("merge");
-    assert_eq!(
-        run_entry(&program, &store, "test::first_of", &[Value::Int(2)])
-            .expect("read")
-            .value,
-        Some(Value::Str("Sam".into()))
     );
 }
 
@@ -4934,164 +4842,29 @@ fn reads_a_local_resource_field() {
 }
 
 #[test]
-fn merge_updates_supplied_fields_and_keeps_the_rest() {
+fn merge_is_runtime_unsupported_if_it_reaches_run() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn move_to(id: int, s: string)\n    var patch: Book\n    patch.shelf = s\n    merge ^books(id) = patch\n\nfn title_of(id: int): string\n    return ^books(id).title\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int)\n    var book: Book\n    book.title = \"Mort\"\n    merge ^books(id) = book\n",
     );
     let store = RefCell::new(MemStore::new());
-    seed_field(&store, 1, "title", "Mort");
-    seed_field(&store, 1, "shelf", "fiction");
-    // Merge a patch that supplies only `shelf`.
-    run_entry(
-        &program,
-        &store,
-        "test::move_to",
-        &[Value::Int(1), Value::Str("history".into())],
-    )
-    .expect("merge");
-    let read = |entry: &str| {
-        run_entry(&program, &store, entry, &[Value::Int(1)])
-            .expect("run")
-            .value
-    };
+    let result = run_entry(&program, &store, "test::save", &[Value::Int(1)]);
     assert_eq!(
-        read("test::shelf_of"),
-        Some(Value::Str("history".into())),
-        "shelf updated"
-    );
-    assert_eq!(
-        read("test::title_of"),
-        Some(Value::Str("Mort".into())),
-        "title kept"
+        result.as_ref().map(|_| ()).map_err(|error| error.code),
+        Err(RUN_UNSUPPORTED),
+        "{result:?}"
     );
 }
 
 #[test]
-fn merge_into_a_local_overlays_source_fields_and_keeps_the_rest() {
-    // `merge draft = ^books(id)` overlays the saved record's populated fields onto
-    // the local `draft`, leaving draft's other fields in place. The seeded record
-    // has only `title`, so the merge sets draft.title but keeps draft.shelf.
+fn lock_is_runtime_unsupported_if_it_reaches_run() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn draft_title(id: int): string\n    var draft: Book\n    draft.shelf = \"local-shelf\"\n    merge draft = ^books(id)\n    return draft.title\n\nfn draft_shelf(id: int): string\n    var draft: Book\n    draft.shelf = \"local-shelf\"\n    merge draft = ^books(id)\n    return draft.shelf\n",
+        "resource Book at ^books(id: int)\n    title: string\n\nfn f(): int\n    lock ^books(1)\n        return 1\n    return 2\n",
     );
-    let store = RefCell::new(MemStore::new());
-    seed_field(&store, 1, "title", "Mort");
-    let read = |entry: &str| {
-        run_entry(&program, &store, entry, &[Value::Int(1)])
-            .expect("run")
-            .value
-    };
+    let result = run(&program, "test::f", &[]);
     assert_eq!(
-        read("test::draft_title"),
-        Some(Value::Str("Mort".into())),
-        "the source's populated field overlays the local"
-    );
-    assert_eq!(
-        read("test::draft_shelf"),
-        Some(Value::Str("local-shelf".into())),
-        "a local field the source does not supply is kept"
-    );
-}
-
-/// A `Book` with a shelf index AND a `tags` child layer, plus a `copy` that
-/// merges one saved record onto another (`merge ^books(to) = ^books(from)`).
-const BOOK_TREE_MERGE: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    shelf: string
-    tags(pos: int): string
-
-    index byShelf(shelf, id)
-
-fn add(id: int, t: string, s: string)
-    ^books(id).title = t
-    ^books(id).shelf = s
-
-fn add_tag(id: int, tag: string): int
-    return append(^books(id).tags, tag)
-
-fn copy(from: int, to: int)
-    merge ^books(to) = ^books(from)
-
-fn tag_of(id: int, pos: int): string
-    return ^books(id).tags(pos)
-
-fn ids_on(shelf: string)
-    for id in keys(^books.byShelf(shelf))
-        print($\"{id}\")
-";
-
-#[test]
-fn a_tree_shaped_merge_copies_a_child_layer_and_moves_the_index() {
-    // Source (1) is on the fiction shelf with a tag; target (2) starts on the
-    // history shelf with no tags. `merge ^books(2) = ^books(1)` copies the tag
-    // onto the target AND moves the target's index entry to the merged shelf.
-    let program = checked_program(BOOK_TREE_MERGE);
-    let store = RefCell::new(MemStore::new());
-    let add = |id: i64, title: &str, shelf: &str| {
-        run_entry(
-            &program,
-            &store,
-            "test::add",
-            &[
-                Value::Int(id),
-                Value::Str(title.into()),
-                Value::Str(shelf.into()),
-            ],
-        )
-        .expect("add");
-    };
-    add(1, "Mort", "fiction");
-    add(2, "Reaper", "history");
-    run_entry(
-        &program,
-        &store,
-        "test::add_tag",
-        &[Value::Int(1), Value::Str("favorite".into())],
-    )
-    .expect("tag source");
-
-    run_entry(
-        &program,
-        &store,
-        "test::copy",
-        &[Value::Int(1), Value::Int(2)],
-    )
-    .expect("merge");
-
-    // The source's child-layer entry is copied onto the target.
-    assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            "test::tag_of",
-            &[Value::Int(2), Value::Int(1)],
-        )
-        .expect("read copied tag")
-        .value,
-        Some(Value::Str("favorite".into())),
-    );
-    // The index reflects the merged shelf: the target is now on fiction (with the
-    // source), and nothing is left on history — no stray entry.
-    let ids_on = |shelf: &str| {
-        run_entry(
-            &program,
-            &store,
-            "test::ids_on",
-            &[Value::Str(shelf.into())],
-        )
-        .expect("read index")
-        .output
-    };
-    assert_eq!(
-        ids_on("fiction"),
-        "1\n2\n",
-        "both records on the merged shelf"
-    );
-    assert_eq!(
-        ids_on("history"),
-        "",
-        "no stray index entry on the old shelf"
+        result.as_ref().map(|_| ()).map_err(|error| error.code),
+        Err(RUN_UNSUPPORTED),
+        "{result:?}"
     );
 }
 
@@ -5502,49 +5275,6 @@ fn the_reference_sample_runs_on_native_storage() {
         .expect("the sample's main runs on native storage");
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.output, "1: Small Gods\n");
-}
-
-#[test]
-fn a_layer_merge_copies_tags_between_records() {
-    // The sample's `copyTags`: build a source layer with `append`, copy it onto
-    // another record with `merge`, and read the copies back as keyed-leaf entries.
-    let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, tag: string): int\n    return append(^books(id).tags, tag)\n\nfn copy_tags(from: int, to: int)\n    merge ^books(to).tags = ^books(from).tags\n\nfn tag_of(id: int, pos: int): string\n    return ^books(id).tags(pos)\n",
-    );
-    let store = RefCell::new(MemStore::new());
-    run_entry(
-        &program,
-        &store,
-        "test::add_tag",
-        &[Value::Int(1), Value::Str("favorite".into())],
-    )
-    .expect("tag 1");
-    run_entry(
-        &program,
-        &store,
-        "test::add_tag",
-        &[Value::Int(1), Value::Str("gift".into())],
-    )
-    .expect("tag 2");
-    run_entry(
-        &program,
-        &store,
-        "test::copy_tags",
-        &[Value::Int(1), Value::Int(2)],
-    )
-    .expect("copy tags");
-    let tag_of = |pos: i64| {
-        run_entry(
-            &program,
-            &store,
-            "test::tag_of",
-            &[Value::Int(2), Value::Int(pos)],
-        )
-        .expect("read tag")
-        .value
-    };
-    assert_eq!(tag_of(1), Some(Value::Str("favorite".into())));
-    assert_eq!(tag_of(2), Some(Value::Str("gift".into())));
 }
 
 const BOOK_VERSIONS: &str = "\

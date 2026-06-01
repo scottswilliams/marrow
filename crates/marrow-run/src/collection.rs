@@ -4,12 +4,12 @@ use crate::*;
 
 /// Where a saved read sits, which decides how an absent element fails. A
 /// value-position read (`^book(id).title` used as a value) raises a catchable
-/// `run.absent_element` fault a `try`/`catch` can bind; an `inout`/`out` seed
-/// read is argument binding, not value position, so it stays a plain fatal fault.
+/// `run.absent_element` fault a `try`/`catch` can bind; materialization after an
+/// address/key has already been chosen stays a plain fatal fault.
 #[derive(Clone, Copy)]
 pub(crate) enum ReadPosition {
     Value,
-    ArgSeed,
+    Materialization,
 }
 
 /// The order a saved-layer walk yields its children. `for`/`keys`/`values`/
@@ -243,7 +243,7 @@ pub(crate) fn stream_child_segment(kind: StreamChildKind, key: SavedKey) -> Path
 }
 
 /// The absent-element error for a read at `position`: catchable in value
-/// position, plain fatal as an argument seed.
+/// position, plain fatal during materialization.
 pub(crate) fn absent_read(
     position: ReadPosition,
     message: String,
@@ -251,7 +251,7 @@ pub(crate) fn absent_read(
 ) -> RuntimeError {
     match position {
         ReadPosition::Value => raise_fault(RUN_ABSENT, message, span),
-        ReadPosition::ArgSeed => RuntimeError::fault(RUN_ABSENT, message, span),
+        ReadPosition::Materialization => RuntimeError::fault(RUN_ABSENT, message, span),
     }
 }
 
@@ -1002,7 +1002,7 @@ pub(crate) fn materialize_layer_dir(
                             &identity,
                             layer,
                             &[layer_key],
-                            ReadPosition::ArgSeed,
+                            ReadPosition::Materialization,
                             span,
                             env,
                         )?
@@ -1015,7 +1015,7 @@ pub(crate) fn materialize_layer_dir(
                                 layer,
                                 layer_keys: &[layer_key],
                             },
-                            ReadPosition::ArgSeed,
+                            ReadPosition::Materialization,
                             span,
                             env,
                         )?

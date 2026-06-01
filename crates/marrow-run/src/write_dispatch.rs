@@ -36,7 +36,7 @@ pub(crate) fn eval_saved_field_write(
 
 /// Apply a managed top-level field write from a pre-lowered identity and an
 /// already-evaluated value, driving the write planner's `plan_field_write` and
-/// committing. Shared by [`eval_saved_field_write`] and `out`/`inout` write-back.
+/// committing. Shared by [`eval_saved_field_write`] and saved `out` write-back.
 pub(crate) fn write_saved_field(
     root: &str,
     identity: &[SavedKey],
@@ -185,9 +185,9 @@ pub(crate) fn eval_raw_field_write(
 /// `^root(key…).layer(key…)….field = value`, a single-field update at any nesting
 /// depth (e.g. `^books(id).versions(v).comments(c).text`) that leaves the entry's
 /// other members in place. Driven from a lowered path's group chain by both a
-/// direct write and an `out`/`inout` place write via [`SavedPath::write`]. Groups
-/// carry no generated indexes, so this is a plain replace-in-place write through
-/// the write planner's `plan_nested_field_write`.
+/// direct write and saved `out` write-back via [`SavedPath::write`]. Groups carry
+/// no generated indexes, so this is a plain replace-in-place write through the
+/// write planner's `plan_nested_field_write`.
 pub(crate) fn write_nested_field(
     root: &str,
     identity: &[SavedKey],
@@ -399,7 +399,7 @@ pub(crate) fn eval_resource_write(
 /// Apply a whole-resource write from a pre-lowered identity and an
 /// already-evaluated [`Value::Resource`], driving
 /// the write planner's `plan_resource_write` (replace semantics) and committing.
-/// Shared by [`eval_resource_write`] and `out`/`inout` write-back.
+/// Shared by [`eval_resource_write`] and saved `out` write-back.
 pub(crate) fn write_resource(
     root: &str,
     identity: &[SavedKey],
@@ -439,123 +439,10 @@ pub(crate) fn write_resource(
     Ok(())
 }
 
-/// Apply a managed merge `merge ^root(key…) = value`: drives
-/// the write planner's `plan_resource_merge` (copy supplied fields, keep absent ones)
-/// and commits. When the source is another saved record of the same root
-/// (`merge ^root(to) = ^root(from)`), this is a tree-shaped merge: its child-layer
-/// subtrees are copied too, so the source identity is lowered and passed through.
-/// A local-value source (`merge ^root(id) = patch`) carries only top-level fields.
-pub(crate) fn eval_resource_merge(
-    target: &Expression,
-    value: &Expression,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    let (root, identity) = lower(target, env)?.into_record(target.span())?;
-    // A saved-record source contributes its child-layer subtrees; lower its
-    // identity (rejecting a cross-root merge) before reading its scalar fields.
-    let source = if is_saved_path(value) {
-        let (source_root, source_identity) = lower(value, env)?.into_record(value.span())?;
-        if source_root != root {
-            return Err(unsupported("merging across saved roots", span));
-        }
-        Some(source_identity)
-    } else {
-        None
-    };
-    let Value::Resource(fields) = eval_expr(value, env)? else {
-        return Err(unsupported("merging a non-resource value", span));
-    };
-    let resource = find_resource(env.program, &root)
-        .ok_or_else(|| unsupported("merging this saved root", span))?;
-    // A whole-record merge can create a new identity in the root's identity layer.
-    env.guard_traversed_layer(&[PathSegment::Root(root.clone())], span)?;
-    let value = resource_value_of(env.program, &resource.members, fields, span)?;
-    let plan = {
-        let store = env.store.borrow();
-        plan_resource_merge(resource, &identity, &value, source.as_deref(), &*store)
-    };
-    env.apply_plan(plan, span)?;
-    Ok(())
-}
-
-/// Apply a merge into a local resource var `merge draft = source`: overlay each
-/// populated source field onto the local binding, leaving the local's other
-/// fields in place: a `merge` preserves fields the source does not supply. The
-/// local is ordinary program
-/// state, so this is a sequence of local-field writes, not a managed saved write.
-pub(crate) fn eval_local_merge(
-    target: &str,
-    value: &Expression,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    let Value::Resource(fields) = eval_expr(value, env)? else {
-        return Err(unsupported("merging a non-resource value", span));
-    };
-    if env.lookup(target).is_none() {
-        return Err(unsupported("merging into an unbound local", span));
-    }
-    for (field, value) in fields {
-        write_local_field(target, &field, value, span, env)?;
-    }
-    Ok(())
-}
-
-/// Apply a keyed-layer merge `merge ^root(to).layer = ^root(from).layer`: copy
-/// the source layer's entries over the target layer (an overlay, leaving target
-/// entries the source does not cover in place). Both sides must name the same
-/// layer of the same saved root. Drives the write planner's `plan_layer_merge`, which
-/// reads the source subtree, then commits.
-pub(crate) fn eval_layer_merge(
-    target_record: &Expression,
-    layer: &str,
-    value: &Expression,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    // The source is a saved layer path `^root(from).layer` naming the same root
-    // and layer as the target.
-    let Expression::Field {
-        base: source_record,
-        name: source_layer,
-        ..
-    } = value
-    else {
-        return Err(unsupported("merging this value into a layer", span));
-    };
-    if source_layer.as_str() != layer {
-        return Err(unsupported(
-            "merging between differently named layers",
-            span,
-        ));
-    }
-    let (to_root, to_identity) = lower(target_record, env)?.into_record(target_record.span())?;
-    let (from_root, from_identity) =
-        lower(source_record, env)?.into_record(source_record.span())?;
-    if from_root != to_root {
-        return Err(unsupported("merging a layer across saved roots", span));
-    }
-    let resource = find_resource(env.program, &to_root)
-        .ok_or_else(|| unsupported("merging into this saved root", span))?;
-    // A layer merge overlays entries into the target layer's key set.
-    env.guard_traversed_layer(&layer_prefix(&to_root, &to_identity, layer), span)?;
-    let plan = {
-        let store = env.store.borrow();
-        plan_layer_merge(resource, &from_identity, &to_identity, layer, &*store)
-    };
-    env.apply_plan(plan, span)?;
-    Ok(())
-}
-
-/// The encoded-path prefix of a keyed child layer `^root(identity…).layer` — the
-/// layer whose child keys an entry write, append, or layer merge changes. Matches
-/// the prefix [`traversed_layer_prefix`] produces for a loop over that layer, so
+/// The encoded-path prefix of a keyed child layer — the layer whose child keys
+/// an entry write or append changes. Matches the prefix
+/// [`traversed_layer_prefix`] produces for a loop over that layer, so
 /// [`Env::guard_traversed_layer`] can compare them.
-pub(crate) fn layer_prefix(root: &str, identity: &[SavedKey], layer: &str) -> Vec<PathSegment> {
-    nested_layer_prefix(root, identity, &[], layer)
-}
-
 pub(crate) fn nested_layer_prefix(
     root: &str,
     identity: &[SavedKey],
@@ -675,9 +562,9 @@ pub(crate) fn eval_delete(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    // Read the target shape to dispatch, mirroring the merge target-shape pattern:
-    // a `.field` off a saved record is a field delete (top-level, or a group-entry
-    // field via `is_group_base`); a `.layer(key…)` call off a saved record is a
+    // Read the target shape to dispatch: a `.field` off a saved record is a field
+    // delete (top-level, or a group-entry field via `is_group_base`); a
+    // `.layer(key…)` call off a saved record is a
     // keyed-entry subtree delete; anything else (`^root(key…)` or a singleton
     // `^settings`) is the whole-record delete handled below.
     if let Expression::Field { base, name, .. } = path

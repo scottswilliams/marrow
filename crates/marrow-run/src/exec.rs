@@ -129,27 +129,7 @@ pub(crate) fn eval_statement(
             eval_delete(path, *span, env)?;
             Ok(Flow::Normal)
         }
-        Statement::Merge {
-            target,
-            value,
-            span,
-        } => {
-            // A `.layer` off a saved record is a keyed-layer merge; a bare local
-            // name is a merge into a local resource var; a `^root(key…)` target is
-            // a whole-resource saved merge.
-            if let Expression::Field { base, name, .. } = target
-                && is_saved_path(base)
-            {
-                eval_layer_merge(base, name, value, *span, env)?;
-            } else if let Expression::Name { segments, .. } = target
-                && let [name] = segments.as_slice()
-            {
-                eval_local_merge(name, value, *span, env)?;
-            } else {
-                eval_resource_merge(target, value, *span, env)?;
-            }
-            Ok(Flow::Normal)
-        }
+        Statement::Merge { span, .. } => Err(unsupported("source-level `merge`", *span)),
         Statement::Return { value, .. } => {
             let value = value
                 .as_ref()
@@ -339,14 +319,7 @@ pub(crate) fn eval_statement(
                 None => handled,
             }
         }
-        Statement::Lock { body, .. } => {
-            // A single-writer capability profile holds no contended lock, so there
-            // is no lock state to acquire or release: `lock` is just its body. The
-            // body runs in `eval_block`, which pops its scope on every exit
-            // (including errors). The target path only matters for coordinating
-            // concurrent writers, so it is not read here.
-            eval_block(body, env)
-        }
+        Statement::Lock { span, .. } => Err(unsupported("source-level `lock`", *span)),
     }
 }
 
@@ -920,7 +893,7 @@ fn stream_value_for_key(
                     identity,
                     layer,
                     &[layer_key],
-                    ReadPosition::ArgSeed,
+                    ReadPosition::Materialization,
                     span,
                     env,
                 )
@@ -933,7 +906,7 @@ fn stream_value_for_key(
                         layer,
                         layer_keys: &[layer_key],
                     },
-                    ReadPosition::ArgSeed,
+                    ReadPosition::Materialization,
                     span,
                     env,
                 )

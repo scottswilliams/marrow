@@ -120,7 +120,7 @@ pub const RUN_ASSERT: &str = "run.assertion";
 /// handle it. The fault message carries the error's own code and message.
 pub const RUN_UNCAUGHT_THROW: &str = "run.uncaught_error";
 
-/// A write, delete, append, or merge changed the saved layer a loop was actively
+/// A write, delete, or append changed the saved layer a loop was actively
 /// traversing. The static rule `check.loop_mutates_traversed_layer` catches the
 /// obvious cases; this is the dynamic guard for a path the checker cannot prove.
 pub const RUN_TRAVERSAL: &str = "run.traversal";

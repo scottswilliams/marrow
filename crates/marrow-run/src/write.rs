@@ -6,8 +6,8 @@
 //! is visible, so a rejected write leaves the store untouched and a committed
 //! one is internally coherent.
 //!
-//! It covers whole-resource writes, single-field writes, deletes, and merges
-//! over materialized resource fields, keeping generated indexes (unique and
+//! It covers whole-resource writes, single-field writes, and deletes over
+//! materialized resource fields, keeping generated indexes (unique and
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
@@ -608,115 +608,6 @@ pub fn plan_field_delete(
     Ok(WritePlan { steps })
 }
 
-/// Plan a managed merge: copy the supplied fields of `value` over the resource
-/// already stored at `identity`, leaving stored fields the merge does not supply
-/// untouched (a partial update, not a replace). A field the merge does not
-/// supply is left as stored; clearing a field is `delete`, not `merge`. Validates supplied
-/// field types and that every required field is populated AFTER the merge
-/// (supplied here or already stored), and rejects a unique conflict, before
-/// staging. Generated index entries are kept coherent against the EFFECTIVE
-/// (merged-over-stored) resource: an entry whose key is unchanged is left in
-/// place, one whose key changes is moved. `store` is read, not written.
-pub fn plan_resource_merge(
-    schema: &ResourceSchema,
-    identity: &[SavedKey],
-    value: &ResourceValue,
-    source: Option<&[SavedKey]>,
-    store: &dyn Backend,
-) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
-
-    // Validate the supplied fields and collect the ones to write. A required
-    // field the merge does not supply must already be stored — the resulting
-    // resource must still satisfy required fields.
-    let mut to_write: Vec<(Vec<String>, Vec<u8>)> = Vec::new();
-    for field in materialized_plain_fields(&schema.members) {
-        let name = materialized_field_name(&field.path);
-        match supplied_field(value, &name, field.ty)? {
-            Some(bytes) => to_write.push((field.path, bytes)),
-            None if field.required
-                && store
-                    .read(&encode_path(&materialized_field_path(
-                        root,
-                        identity,
-                        &field.path,
-                    )))?
-                    .is_none() =>
-            {
-                return Err(WriteError {
-                    code: WRITE_REQUIRED_ABSENT,
-                    message: format!("required field `{name}` is absent and not already stored"),
-                });
-            }
-            None => {}
-        }
-    }
-
-    // Reject a unique-index conflict on the effective resource before staging.
-    for index in &schema.indexes {
-        if index.unique {
-            let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)?;
-            check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
-        }
-    }
-
-    // Stage the field overwrites — no subtree clear, so untouched fields remain.
-    let mut steps = Vec::new();
-    for (path, bytes) in to_write {
-        steps.push(PlanStep::Write {
-            path: encode_path(&materialized_field_path(root, identity, &path)),
-            value: bytes,
-        });
-    }
-
-    // Reconcile each index against the effective resource: an unchanged key is
-    // left alone (so an entry resting on an untouched field survives), a changed
-    // key moves.
-    for index in &schema.indexes {
-        let old_keys = stored_index_keys(&index.args, root, identity, schema, store)?;
-        let new_keys = effective_index_keys(&index.args, root, identity, value, schema, store)?;
-        if old_keys == new_keys {
-            continue;
-        }
-        if let Some(old_keys) = &old_keys {
-            steps.push(PlanStep::Delete {
-                path: encode_path(&index_path(root, &index.name, old_keys)),
-            });
-        }
-        if let Some(new_keys) = &new_keys {
-            steps.push(PlanStep::Write {
-                path: encode_path(&index_path(root, &index.name, new_keys)),
-                value: index_entry_value(index.unique, identity),
-            });
-        }
-    }
-
-    // A merge copies a whole tree, not just the top-level scalars. When the source
-    // is a saved identity, overlay each of its child-layer subtrees (history,
-    // sequences, keyed trees) onto the matching target layer, reusing the layer
-    // overlay so target entries the source does not cover are preserved. The
-    // overlay reads the source subtree at plan time, before any target change.
-    // Generated indexes do not span child layers, so this needs no index work.
-    if let Some(source) = source {
-        if source.len() != root.identity_keys.len() {
-            return Err(WriteError {
-                code: WRITE_IDENTITY_MISMATCH,
-                message: format!(
-                    "resource `{}` expects {} source identity key(s), got {}",
-                    schema.name,
-                    root.identity_keys.len(),
-                    source.len()
-                ),
-            });
-        }
-        for layer in keyed_layer_paths(&schema.members) {
-            let layer_plan = plan_layer_path_merge(root, source, identity, &layer, store)?;
-            steps.extend(layer_plan.steps);
-        }
-    }
-    Ok(WritePlan { steps })
-}
-
 /// Plan a keyed-leaf write: set the entry at `^root(identity).layer(key)` to
 /// `value`. `layer` must be a declared keyed LEAF (e.g. `tags(pos: int):
 /// string`), `key` must match the layer's key arity, and `value` must match the
@@ -1033,71 +924,6 @@ pub fn plan_layer_group_write(
     Ok(WritePlan { steps })
 }
 
-/// Plan a keyed-layer merge: copy every entry of the source layer
-/// `^root(from).layer` over the target layer `^root(to).layer`, leaving target
-/// entries the source does not supply in place (an overlay, not a replace).
-/// Both records belong to the same
-/// resource and layer; the source subtree is read from `store` before any target
-/// change. Generated indexes do not span keyed child layers, so there is no index
-/// maintenance. Returns a [`WriteError`] if the resource has no saved root, an
-/// identity arity is wrong, or the layer is unknown.
-pub fn plan_layer_merge(
-    schema: &ResourceSchema,
-    from: &[SavedKey],
-    to: &[SavedKey],
-    layer: &str,
-    store: &dyn Backend,
-) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, from)?;
-    if to.len() != root.identity_keys.len() {
-        return Err(WriteError {
-            code: WRITE_IDENTITY_MISMATCH,
-            message: format!(
-                "resource `{}` expects {} identity key(s), got {}",
-                schema.name,
-                root.identity_keys.len(),
-                to.len()
-            ),
-        });
-    }
-    find_layer(schema, layer)?;
-    plan_layer_path_merge(root, from, to, &[layer.to_string()], store)
-}
-
-fn plan_layer_path_merge(
-    root: &SavedRootSchema,
-    from: &[SavedKey],
-    to: &[SavedKey],
-    layers: &[String],
-    store: &dyn Backend,
-) -> Result<WritePlan, WriteError> {
-    let mut source = identity_path(root, from);
-    for layer in layers {
-        source.push(PathSegment::ChildLayer(layer.clone()));
-    }
-    let source = encode_path(&source);
-    let mut target = identity_path(root, to);
-    for layer in layers {
-        target.push(PathSegment::ChildLayer(layer.clone()));
-    }
-    let target = encode_path(&target);
-
-    // Overlay: copy each source entry to the matching target path — the suffix
-    // after the layer prefix (keys and any nested fields) is identical — and
-    // leave target entries the source does not cover untouched.
-    let page = store.scan(&source, usize::MAX)?;
-    let mut steps = Vec::with_capacity(page.entries.len());
-    for (path, value) in page.entries {
-        let mut target_path = target.clone();
-        target_path.extend_from_slice(&path[source.len()..]);
-        steps.push(PlanStep::Write {
-            path: target_path,
-            value,
-        });
-    }
-    Ok(WritePlan { steps })
-}
-
 /// A resource's saved root, or `WRITE_NO_SAVED_ROOT` when it has none (a local or
 /// singleton resource). Shared by [`resolve_saved_root`] (which adds an arity
 /// check against a supplied identity) and [`next_id`] (which has no identity).
@@ -1327,31 +1153,6 @@ fn collect_materialized_plain_fields<'a>(
 
 fn materialized_field_name(path: &[String]) -> String {
     path.join(".")
-}
-
-fn keyed_layer_paths(members: &[Node]) -> Vec<Vec<String>> {
-    let mut paths = Vec::new();
-    collect_keyed_layer_paths(members, &mut Vec::new(), &mut paths);
-    paths
-}
-
-fn collect_keyed_layer_paths(
-    members: &[Node],
-    prefix: &mut Vec<String>,
-    paths: &mut Vec<Vec<String>>,
-) {
-    for node in members {
-        if node.is_plain_field() {
-            continue;
-        }
-        prefix.push(node.name.clone());
-        if node.key_params.is_empty() {
-            collect_keyed_layer_paths(&node.members, prefix, paths);
-        } else {
-            paths.push(prefix.clone());
-        }
-        prefix.pop();
-    }
 }
 
 /// The plain field members of `members` (top-level or a group's), as
@@ -1668,27 +1469,6 @@ fn field_write_index_keys(
             } else {
                 stored_arg_key(arg, root, identity, schema, store)
             }
-        })
-        .collect()
-}
-
-/// Resolve an index's argument names to the key values of the EFFECTIVE resource
-/// after a merge: a field argument the merge supplies takes that value; any
-/// other argument (an identity key, or a field the merge leaves untouched) keeps
-/// its stored value. Returns `None` if any argument is absent or has no key
-/// encoding, so no entry is written.
-fn effective_index_keys(
-    args: &[String],
-    root: &SavedRootSchema,
-    identity: &[SavedKey],
-    value: &ResourceValue,
-    schema: &ResourceSchema,
-    store: &dyn Backend,
-) -> Result<Option<Vec<SavedKey>>, StoreError> {
-    args.iter()
-        .map(|arg| match supplied_value(value, arg) {
-            Some(saved) => Ok(saved.as_key()),
-            None => stored_arg_key(arg, root, identity, schema, store),
         })
         .collect()
 }

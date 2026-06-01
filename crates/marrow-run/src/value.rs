@@ -30,7 +30,7 @@ pub enum Value {
     LocalTree(Vec<LocalTreeEntry>),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
-    /// write or `merge`.
+    /// write.
     Resource(Vec<(String, Value)>),
     /// A composite resource identity (`Enrollment::Id(...)`): its lowered key
     /// segments in declared identity-key order. Single-key identities use their

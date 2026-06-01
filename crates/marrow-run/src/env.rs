@@ -100,7 +100,7 @@ pub(crate) struct Env<'p> {
     pub(crate) host: &'p Host,
     pub(crate) output: Rc<RefCell<String>>,
     /// Encoded path prefixes of the saved layers loops are actively traversing,
-    /// innermost last. A write/delete/append/merge whose affected layer is in this
+    /// innermost last. A write/delete/append whose affected layer is in this
     /// set mutates a layer being iterated, which is a [`RUN_TRAVERSAL`] fault.
     pub(crate) traversed_layers: Vec<Vec<u8>>,
     /// Encoded prefixes for active generated-index traversals. Managed field and
@@ -175,7 +175,7 @@ impl<'p> Env<'p> {
     }
 
     /// Fault if `affected` (an encoded saved-layer prefix) is a layer a loop is
-    /// actively traversing. Called before a write/delete/append/merge commits, so
+    /// actively traversing. Called before a write/delete/append commits, so
     /// a self-mutating traversal stops before it changes the iterated key set.
     pub(crate) fn guard_traversed_layer(
         &self,

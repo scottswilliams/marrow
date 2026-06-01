@@ -5,7 +5,7 @@ use crate::*;
 /// A saved path lowered from its source expression: the saved root, the record
 /// identity keys, the chain of group/keyed-layer levels from outermost to
 /// innermost, and how the path terminates. One [`lower`] pass walks the call/field
-/// spine once and produces this; every saved record write, delete, merge, layer
+/// spine once and produces this; every saved record write, delete, layer
 /// read, and traversal then consumes these fields directly.
 ///
 /// Callers always peel the trailing scalar field off the spine before lowering its
@@ -40,7 +40,7 @@ pub(crate) enum Terminal {
 impl SavedPath {
     /// The saved root and identity of a path that must be a plain record address —
     /// no layer chain and no index branch. Callers that only accept `^root` or
-    /// `^root(id…)` (a record write, delete, merge, or layer base) use this to keep
+    /// `^root(id…)` (a record write, delete, or layer base) use this to keep
     /// their "this saved path isn't supported here" rejection.
     pub(crate) fn into_record(
         self,
@@ -100,7 +100,7 @@ impl SavedPath {
     /// scalar field (top-level or inside the group chain), decoding it with the
     /// field's declared type; a `Terminal::Record` reads the whole record. An
     /// unpopulated element raises an absent-element fault, catchable or fatal per
-    /// `position`. Shared by value-position field reads and `out`/`inout` seeds.
+    /// `position`.
     pub(crate) fn read(
         &self,
         position: ReadPosition,
@@ -150,7 +150,7 @@ impl SavedPath {
 
     /// Write `value` to this lowered path, routing a scalar field or whole-record
     /// write the same way a direct assignment to the path would. Shared by direct
-    /// saved writes and `out`/`inout` write-back.
+    /// saved writes and saved `out` write-back.
     pub(crate) fn write(
         self,
         value: Value,

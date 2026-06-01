@@ -692,8 +692,7 @@ pub(crate) fn eval_resource_read(
 
 /// Read a whole resource from a pre-lowered identity into a materialized
 /// [`Value::Resource`]: direct plain fields and unkeyed-group descendants in
-/// schema order, with sparse fields and empty groups omitted. Shared by
-/// [`eval_resource_read`] and `out`/`inout` place reads.
+/// schema order, with sparse fields and empty groups omitted.
 pub(crate) fn read_resource(
     root: &str,
     identity: &[SavedKey],
