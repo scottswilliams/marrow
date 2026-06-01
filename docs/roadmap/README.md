@@ -15,7 +15,10 @@ product, so the boundary stays clear as it grows.
 
 ## Implementation Roadmap
 
-No accepted implementation issues are currently open.
+The active implementation control surface is
+[`prototype-to-v1-execution-plan.md`](prototype-to-v1-execution-plan.md). It
+maps the accepted Marrow ADR packet to file-disjoint lanes, review gates,
+deletion targets, and verification commands for the v0.1 rewrite.
 
 Closed implementation records:
 
