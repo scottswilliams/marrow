@@ -71,9 +71,11 @@ Never run broad cargo gates in parallel against the same target directory.
 ## Central Tracking
 
 This document is the durable implementation tracker. Do not create a second
-roadmap in chat, memories, scratch files, or ADRs. Each orchestrated lane updates
-this document when the lane changes the plan, the next queue, the quality gate,
-or a deletion target.
+roadmap in chat, memories, scratch files, or ADRs. Per-lane orchestration plans
+live under [`lanes/`](lanes/); each lane file is the owner-facing tracker for one
+orchestrator. This central file owns the queue, dependency graph, global gates,
+and cross-lane collision map. Lane files own file lists, split safety, TDD
+starts, review prompts, and deletion ledgers.
 
 Tracking is forward-only:
 
@@ -88,9 +90,31 @@ Current queue:
 
 | Order | Lane | Why It Is Next | Must Prove |
 | --- | --- | --- | --- |
-| 1 | Lane 4: Checked Model Nucleus | Gives runtime, tools, and evolution a single checked fact source. | Checked facts carry typed identities, effects, and source spans without runtime syntax re-resolution. |
-| 2 | Lane 5: Resource/Store Surface, Schema Split, And Store-Owned Indexes | Aligns the language and schema model with the accepted split resource/store design. | Resource types, stores, indexes, and `Id(^store)` stop sharing the old resource-owned identity foundation. |
-| 3 | Lane 6: Catalog Identity Binding | Durable identity must move out of source spelling before tree-cell storage and evolution can be production foundations. | Physical data identity no longer depends on source spelling, `@id`, source-order enum ordinals, or regenerated IDs. |
+| 1 | [Lane 5: Resource/Store Surface, Schema Split, And Store-Owned Indexes](lanes/lane-05-resource-store-surface.md) | Aligns the language and schema model with the accepted split resource/store design. | Resource types, stores, indexes, and `Id(^store)` stop sharing the old resource-owned identity foundation. |
+| 2 | [Lane 6: Catalog Identity Binding And Presence Ledger](lanes/lane-06-catalog-presence-ledger.md) | Durable identity, the accepted catalog file, and the proof-discharge ledger must exist before tree-cell storage and activation can be production foundations. | Physical data identity no longer depends on source spelling, `@id`, source-order enum ordinals, regenerated IDs, or ad hoc read-presence checks. |
+| 3 | [Lane 7: Tree-Cell Store And Engine Profile](lanes/lane-07-tree-cell-store-engine.md) | The store can move to stable-ID key space only after resource/store identity and catalog bindings are named. | Physical keys derive from stable catalog IDs, typed key values, and the reserved placement prefix, not source names. |
+
+## Parallel Orchestrator Split
+
+Assign one lead orchestrator per lane file. Parallelize design scans, review,
+and file-disjoint implementation; sequence production code when two lanes would
+edit the checker/schema identity surface.
+
+| Track | Lane Plan | Can Start Now | Code Timing | Collision Boundary |
+| --- | --- | --- | --- | --- |
+| Resource/store | [Lane 5](lanes/lane-05-resource-store-surface.md) | Yes | First production code lane | Owns syntax, schema, and the store-aware checked-facts bridge; no catalog/presence checker edits in parallel. |
+| Catalog/presence | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Design and review only | Code after Lane 5 store facts integrate | Owns accepted catalog metadata and read-proof ledger; no store physical key edits. |
+| Tree-cell store | [Lane 7](lanes/lane-07-tree-cell-store-engine.md) | Read-only planning and engine-substrate checks only | Production key work after Lane 6 | Owns store backend/tree-cell code; no checker/catalog ownership. |
+| Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Inventory and design only | Code after store facts, presence ledger, and tree-cell address API exist | Owns runtime checked execution; no syntax-body compatibility path survives. |
+| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Witness matrix design only | Code after catalog, proof ledger, store, and runtime facts exist | Owns one proof-discharge pipeline with command-specific surfaces. |
+| Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the typed backup manifest first, then adapters and rendering; no tool-local semantic classifiers. |
+| Hardening | [Lane 11](lanes/lane-11-rust-hardening.md) | Read-only scans anytime | Final fixes after owning lanes land, except truly file-disjoint style fixes | Owns deletion proof, not postponed semantic rewrites. |
+
+Lane 5 may split internally into syntax/schema and checked-facts tasks, but one
+orchestrator owns both so the project does not grow a compatibility shim between
+resource/store identity and checker facts. Lane 6 similarly owns both catalog
+binding and the ADR 0210 presence ledger so read totality is not duplicated
+across modules.
 
 ## Prototype Removal Controls
 
@@ -165,6 +189,7 @@ The following foundations are mandatory before dependent breadth work:
 | Foundation | Must Be True Before | Weak Foundation To Remove |
 | --- | --- | --- |
 | Checked facts and IDs are authoritative | runtime, tools, evolution | runtime/source/tool re-resolution |
+| Presence proof ledger exists | activation, evolution, runtime reads, tools | scattered absence/read-totality classifiers |
 | Catalog identity exists and owns durable IDs | tree-cell storage, backup, evolution | `@id`, source spelling, regenerated IDs |
 | Resource/store split is internal model | runtime writes, indexes, references | fused resource/root/schema ownership |
 | Store-owned indexes are explicit facts | index maintenance, durable traversal, backup | resource-owned production indexes |
@@ -246,10 +271,11 @@ path it replaces. Examples:
 | ADR 0203 | source-native evolution, witnesses, compatibility windows, approvals | catalog, evolution, tooling |
 | ADR 0204 | engine contract, tree cells, transactions, commit metadata, backup | tree-cell store, runtime, backup |
 | ADR 0205 | shared facts, local generations, raw debug only | tools and protocols |
-| ADR 0206 | catalog lifecycle and identity binding | catalog |
-| ADR 0207 | store-owned indexes, index key laws, durable traversal, internal range iterators, platform bounded scans, sequence laws | resource/store parser and schema, catalog, tree-cell store, checked model, runtime, backup |
-| ADR 0208 | physical key/value encoding, stable-ID key space, enum-member identity encoding, and ordered scalar laws | catalog, tree-cell store, enum storage, backup |
-| ADR 0209 | reserved typed ephemeral roots, future checked `~` effect class | parser reservation, checked-effect model |
+| ADR 0206 | catalog lifecycle, identity binding, and committed accepted catalog file | catalog |
+| ADR 0207 | store-owned indexes, index key laws, durable traversal, collections-as-trees, internal range iterators, platform bounded scans, sequence laws | resource/store parser and schema, catalog, tree-cell store, checked model, runtime, backup |
+| ADR 0208 | physical key/value encoding, stable-ID key space, reserved placement prefix, enum-member identity encoding, and ordered scalar laws | catalog, tree-cell store, enum storage, backup |
+| ADR 0209 | reserved typed ephemeral roots, future checked `~` effect class | Lane 5 parser reservation and rejection, Lane 8 checked-effect/runtime absence |
+| ADR 0210 | presence proof sources, discharge ledger, and activation gate | checked model, catalog, data-attached check, runtime, tooling |
 | ADR 0303 | Rust style and de-slopification | all Rust lanes, hardening |
 
 ## Prototype Inventory And Outcomes
@@ -281,7 +307,7 @@ plan
   -> shared fixture skeleton
   -> checked model nucleus
   -> resource/store parser, schema, and store-owned indexes
-  -> catalog identity binding
+  -> catalog identity binding and presence ledger
   -> tree-cell store and engine profile
   -> runtime checked execution and write planner
   -> source-native evolution
@@ -299,6 +325,9 @@ Current hotspot map:
   `binding.rs`, and `program.rs` move together behind the checked-model lane.
 - `crates/marrow-schema/src/lib.rs` is the collision point for resource/store,
   enum storage, indexes, stable IDs, and requiredness. Sequence those changes.
+- `crates/marrow-check/src/facts.rs` and read typing are shared by resource/store
+  facts and the ADR 0210 presence ledger. Do not run Lane 5 checked-facts work
+  beside Lane 6 presence-ledger code.
 - `crates/marrow-run/src/call.rs`, `exec.rs`, `expr.rs`, `path.rs`,
   `schema_query.rs`, `write.rs`, and `write_dispatch.rs` form one vertical
   runtime replacement lane; do not split them into competing adapters.
@@ -494,6 +523,13 @@ Production behavior:
 - `~` is reserved for future typed ephemeral roots. The v1 checked-effect model
   leaves room to distinguish future ephemeral reads and writes, but no `~`
   declaration or runtime behavior is implemented in v1.
+- The ADR 0210 proof ledger is not scattered into Lane 4 after the fact. Lane 6
+  owns the first production ledger and makes runtime, evolution, and tools
+  consume it.
+- Because Lane 4 has already landed, active follow-up work owns ADR 0209 in two
+  places: Lane 5 reserves and rejects `~` source forms, and Lane 8 proves the
+  checked-effect/runtime path has no production `~` behavior while retaining a
+  named future effect slot.
 
 Fixture/oracle:
 
@@ -539,13 +575,22 @@ Production behavior:
 - Split `resource` and `store` declarations are the internal model.
 - The concise `resource Book at ^books(id: int)` form desugars to a resource and
   store when kept for ergonomics.
-- `Id(^store)` is the canonical identity type; aliases like `Book::Id` are
-  store-declared aliases, not automatic resource identity.
+- `Id(^store)` is the canonical identity type. `Book::Id` is not automatic
+  resource identity; any surviving alias must be explicitly store-declared,
+  absent from canonical fixtures by default, and reviewed as compatibility
+  surface.
 - Declared indexes belong to stores. Concise-form indexes are desugared into the
   generated store; production resource schemas do not own indexes as resource
   members.
 - Unmarked fields are optional by default, `required` is explicit, and defaults
   make reads total without forcing physical storage.
+- Collections materialize as local trees, sequences, and keyed layers rather
+  than a flat in-memory list type.
+- Future placement and partition syntax remains reserved; Lane 5 does not add a
+  source-level placement surface.
+- ADR 0209 typed ephemeral root syntax is reserved and rejected in v0.1. Lane 5
+  rejects source forms such as `cache ~...`, `ensure ~...`, `Id(~...)`, and
+  top-level `~` roots instead of parsing them as production features.
 
 Fixture/oracle:
 
@@ -555,6 +600,8 @@ Fixture/oracle:
 - Parser/schema tests for `store ^books(id: int): Book` with `index` and
   `unique index`; tests proving indexes are store-owned and source resource
   declarations cannot own production indexes except through concise desugaring.
+- Parser/checker tests proving ADR 0209 `~` root forms are reserved and rejected,
+  with no formatter output that presents them as v0.1 surface.
 - Schema tests for indexed component laws: absent indexed components produce no
   entry unless the index declares a default, non-unique indexes include the store
   key tie-breaker, and composite index components preserve declared order.
@@ -580,12 +627,14 @@ Review lenses:
 - Soundness reviewer attacks cross-module resources, aliases, and identity
   confusion.
 
-## Lane 6: Catalog Identity Binding
+## Lane 6: Catalog Identity Binding And Presence Ledger
 
 Files:
 
 - new catalog modules under `crates/marrow-check/src/` or
   `crates/marrow-schema/src/`, chosen by the checked-model boundary
+- `crates/marrow-check/src/facts.rs` and analysis/check modules for the
+  per-read presence proof ledger
 - `crates/marrow-project/src/lib.rs` if project catalog metadata enters config
 - `crates/marrow-check/tests/project.rs`
 - `crates/marrow/tests/check_project_cli.rs`
@@ -596,8 +645,13 @@ Production behavior:
 
 - Source-only check proposes catalog changes without mutating accepted catalog
   metadata.
-- Accepted catalog metadata records stable IDs, aliases, lifecycle state,
-  catalog epoch, and digest.
+- Accepted catalog metadata is a generated file committed in the project source
+  tree. It records stable IDs, aliases, lifecycle state, catalog epoch, and
+  digest.
+- The checked program records, per read, the proof source that admits it:
+  declaration, narrowing, or pending attached-data proof.
+- Source-only checks discharge declaration and narrowing proofs and leave
+  attached-data obligations pending for activation.
 - Data-attached checks compare source, accepted catalog, store snapshot, data
   snapshot, and engine profile before activation.
 - Renames require source-native intent and preserve stable identity only when
@@ -611,16 +665,23 @@ Fixture/oracle:
 - Accepted rename preserves stable identity without moving data cells.
 - Fresh clone and source rollback fixtures fail or bind through explicit
   catalog metadata.
+- A bare maybe-present read with no read-site resolution produces a source-check
+  diagnostic. Positive tests prove `??`, `else`, `if let`, `if exists`, and
+  optional chaining flow through the single proof ledger rather than duplicating
+  read-totality classifiers. Attached-data obligations remain explicit pending
+  facts until the data-attached check discharges them.
 
 Deletion targets:
 
-- Source annotations as required stable ID storage.
+- Source `@id` annotations and metadata as source identity storage. Canonical
+  source rejects or deletes `@id` entirely; allowed matches are rejection tests
+  or historical/debug docs only.
 - Any code that regenerates IDs to make a diff clean.
 
 Review lenses:
 
 - Soundness reviewer attacks branch conflicts, stale catalog epochs, alias
-  reuse, and source rollback.
+  reuse, source rollback, and reads whose proof was inferred outside the ledger.
 - Idiom reviewer checks catalog metadata remains compiler/tooling
   infrastructure, not source syntax.
 
@@ -630,7 +691,9 @@ Depends on:
 
 - Lane 5 and Lane 6 producing the logical address, stable ID, catalog epoch, and
   key profile. Before that point, store work is limited to read-only design,
-  conformance notes, and tests that do not change production physical keys.
+  conformance notes, and engine-substrate checks that do not encode Marrow
+  identity: ordered bytes, snapshots, one-writer behavior, rollback, typed
+  engine errors, and read-only opens.
 
 Files:
 
@@ -651,6 +714,8 @@ Production behavior:
 - Marrow tree-cell layer owns node, leaf, index, sequence, catalog/meta, and
   blob/chunk cells.
 - Physical keys derive from stable IDs and typed key values, not source names.
+- The key profile reserves the empty placement prefix from ADR 0208 without
+  exposing placement syntax in v0.1.
 - Commit metadata records commit id, catalog epoch, layout epoch, engine profile
   digest, changed roots, and changed indexes.
 - Read-only opens are actually read-only and cannot accidentally acquire writer
@@ -658,15 +723,21 @@ Production behavior:
 
 Fixture/oracle:
 
-- Store conformance for snapshots, one-writer behavior, rollback, commit
-  metadata, node-cell existence, leaf absence, source-rename-stable physical
-  keys, enum reorder, range-iterator traversal, and sequence state.
-- Index conformance for absent components, non-unique tie-breakers, composite key
-  ordering, binary string ordering, enum-reorder-stable meaning, unique duplicate
-  rollback, duplicate build failure before publish, index build invisibility
-  before verify, and data/index atomicity in one transaction.
-- Typed-reference encoding proves an `Id(^authors)` value stores store identity
-  plus key, not a raw scalar key, and remains stable across source renames.
+- Early engine-substrate conformance covers snapshots, one-writer behavior,
+  rollback, typed engine errors, and read-only opens without constructing stable
+  IDs, typed references, source-renamed keys, index cells, catalog epochs, or
+  tree-cell physical addresses.
+- Post-Lane-6 store conformance covers commit metadata, node-cell existence,
+  leaf absence, source-rename-stable physical keys, enum reorder,
+  range-iterator traversal, and sequence state.
+- Post-Lane-6 index conformance covers absent components, non-unique
+  tie-breakers, composite key ordering, binary string ordering,
+  enum-reorder-stable meaning, unique duplicate rollback, duplicate build
+  failure before publish, index build invisibility before verify, and data/index
+  atomicity in one transaction.
+- Post-Lane-6 typed-reference encoding proves an `Id(^authors)` value stores
+  store identity plus key, not a raw scalar key, and remains stable across
+  source renames.
 - Crash/repair fixtures for clean commit, rollback, missing commit metadata,
   ambiguous commit refusal or read-only repair, and corrupt catalog/meta cells.
 
@@ -697,12 +768,20 @@ Production behavior:
 
 - Runtime entry accepts checked executable facts or IR, not syntax bodies.
 - Saved reads and writes use checked durable places.
+- Runtime consumes the checked-program presence ledger for read totality and
+  activation status; it does not recompute presence from syntax or store shape.
+- The checked-effect model retains a named future slot for ADR 0209 ephemeral
+  reads and writes, but runtime exposes no production `~` root behavior.
 - Assignments, `edit`, `delete`, and assertions lower to write plans with
   explicit planner effects.
 - Root assignment is exact and exposes subtree clearing effects.
 - Field/path assignment and `edit` preserve omitted data and update indexes.
 - Irreversible host effects are forbidden inside rollback-sensitive
   transactions.
+- Local runtime materialization preserves tree, sequence, and keyed-layer
+  shapes; no production runtime path invents a flat list collection model.
+- The checked-effect model leaves a named future slot for principal or request
+  context effects, but v0.1 does not implement users, roles, or permissions.
 - `lock` is not a source-level production primitive unless a later reviewed lane
   defines semantics beyond the one-writer transaction model.
 
@@ -710,6 +789,8 @@ Fixture/oracle:
 
 - Architecture test proving production runtime cannot execute raw syntax and no
   production `CheckedFunction.body: Block` bridge remains.
+- Architecture test proving accidental `cache ~`, `ensure ~`, `Id(~...)`, or
+  production `~` root behavior is absent from runtime execution.
 - Runtime fixtures for exact root assignment, field assignment, `edit`, delete,
   existence assertions, transactions, nested rollback, optional/default reads,
   missing required production data, index maintenance, unique-index duplicate
@@ -748,7 +829,10 @@ Files:
 Production behavior:
 
 - `marrow check`, data-attached check, `catalog preview`, `catalog accept`,
-  `evolve preview`, `evolve apply`, and repair semantics are distinct.
+  `evolve preview`, `evolve apply`, and repair are command surfaces over one
+  proof-discharge pipeline. The commands differ in authority and side effects,
+  but they consume the same catalog, proof-ledger, witness, snapshot, and engine
+  classifications.
 - Preview is read-only and produces an exact witness.
 - Apply consumes only the exact witness and aborts on source, catalog, snapshot,
   engine, affected-ID, or count drift.
@@ -803,14 +887,20 @@ Production behavior:
 
 - CLI, LSP, data tools, serve, backup, restore, and future adapters render
   shared compiler/runtime facts.
+- Diagnostic and activation details render the shared presence ledger instead
+  of rediscovering read totality in each tool.
 - Raw physical keys and backend bytes are debug/admin only and disabled as
   stable production APIs.
-- Data previews stream bounded chunks and are snapshot-bound.
+- Data previews stream bounded chunks, preserve tree/sequence/keyed-layer
+  shapes, and are snapshot-bound.
 - Internal/tool continuations are catalog-epoch and snapshot bound; source
   language cursor/window values are not v0.1 surface.
 - Backup is a typed Marrow artifact that validates source, catalog, data,
   engine profile, checksums, layout, codecs, indexes, and sequence state before
   activation.
+- Lane 10 owns the minimum typed backup manifest and production backup/restore
+  API as its first phase. Later adapter work consumes that manifest instead of
+  defining backup semantics in CLI, serve, or LSP code.
 - Runtime generation and stale-writer facts exist for local activation.
 - Raw data inspection, raw serve operations, and raw archive import/export are
   explicit debug/admin surfaces, not the default production contract.
@@ -876,34 +966,37 @@ Review lenses:
 - Soundness reviewer checks removed paths are not still reachable.
 - Idiom reviewer checks code is smaller, clearer, and aligned with Rust style.
 
-## First Four Implementation Lanes
+## Next Implementation Lanes
 
 Start in this order:
 
-1. **V0.1 surface decision slice.** This resolves the exact language choices
-   that rejection must encode.
-2. **Prototype rejection and docs alignment.** This fixes the public contract
-   before code begins to move and gives later lanes a stable target.
-3. **Shared v0.1 fixture skeleton.** This prevents the rewrite from growing
-   disconnected test replicas without faking future capabilities.
-4. **Checked model nucleus.** This unlocks resource/store, runtime, tooling,
-   and evolution replacement lanes.
+1. **Resource/store surface and schema split.** This moves identity and indexes
+   onto stores and migrates typed references to `Id(^store)`.
+2. **Catalog identity binding and presence ledger.** This introduces the
+   committed accepted catalog file and the ADR 0210 proof-discharge facts that
+   activation, runtime, tools, and evolution share.
+3. **Tree-cell store and engine profile.** This moves physical data identity to
+   stable catalog IDs, typed key values, and the reserved placement prefix.
 
 Store conformance planning can happen in parallel after the fixture skeleton,
-but store code that changes physical key or address shape waits until the
-catalog and tree-cell address shape is fixed.
+but early executable checks are limited to engine-substrate behavior that does
+not construct Marrow identity. Store code or tests that encode physical keys,
+typed references, index cells, catalog epochs, or tree-cell addresses wait until
+the catalog and tree-cell address shape is fixed.
 
 ## Open Design Review Points
 
 These points require senior review before their lane edits production code, but
 they do not need new ADRs:
 
-- The project file location and format for accepted catalog metadata.
+- The default project path and on-disk format for accepted catalog metadata.
+- The minimal source-check proof ledger shape for declaration, narrowing, and
+  pending attached-data obligations.
 - The minimum checked IR shape that deletes syntax-body execution without
   inventing a low-level bytecode.
 - The exact tree-cell physical key version and layout profile boundaries.
-- The minimum typed backup manifest that is v0.1 portable without implementing
-  engine recompile.
+- The Lane 10 minimum typed backup manifest that is v0.1 portable without
+  implementing engine recompile.
 - The local runtime-generation state machine needed for stale-writer fencing
   without prematurely building a server.
 
@@ -918,9 +1011,12 @@ This plan is complete only when:
   to this plan;
 - every prototype-only production path is deleted or limited to an explicit
   debug/admin surface;
-- source, catalog, data snapshot, and redb engine profile compile together;
+- source, accepted catalog file, data snapshot, and redb engine profile compile
+  together;
 - resources and stores are distinct in the model;
 - durable identity survives source rename/reorder through catalog decisions;
+- presence proofs are recorded in one checked-program ledger and activation
+  fails until every proof obligation is discharged;
 - runtime executes checked facts/IR only;
 - transactions, snapshots, rollback, backup, restore, durable traversal, and
   internal bounded-scan continuations are covered by production-pipeline

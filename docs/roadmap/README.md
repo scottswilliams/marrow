@@ -20,6 +20,10 @@ The active implementation plan and forward tracker is
 maps the accepted Marrow ADR packet to file-disjoint lanes, review gates,
 deletion targets, and verification commands for the v0.1 rewrite.
 
+The per-orchestrator tracking plans live under [`lanes/`](lanes/). Start new
+implementation orchestrators from those files so worktree ownership, target
+directories, dependencies, deletion ledgers, and review prompts stay consistent.
+
 Closed implementation records:
 
 - [#1 Implement element-oriented collection loop semantics](https://github.com/scottswilliams/marrow/issues/1)
