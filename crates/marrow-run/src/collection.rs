@@ -563,11 +563,24 @@ pub(crate) fn eval_reversed(
             span,
         });
     };
+    if let Some(taken) = take_argument(&arg.value)
+        && is_saved_path(taken.layer)
+    {
+        let mut items = eval_collection(&arg.value, env)?;
+        items.reverse();
+        return Ok(Value::Sequence(items));
+    }
     // `reversed(values(L))` / `reversed(entries(L))`: materialize the layer in
     // reverse key order, then shape the rows the way `values`/`entries` do.
     if let Some(inner) = values_or_entries(&arg.value) {
         let rows = if is_saved_path(inner.layer) {
-            materialize_layer_dir(inner.layer, Direction::Descending, env)?
+            if take_argument(inner.layer).is_some() {
+                let mut rows = materialize_layer(inner.layer, env)?;
+                rows.reverse();
+                rows
+            } else {
+                materialize_layer_dir(inner.layer, Direction::Descending, env)?
+            }
         } else {
             materialize_local_collection_dir(
                 eval_expr(inner.layer, env)?,
@@ -593,6 +606,11 @@ pub(crate) fn eval_reversed(
             )?));
         }
         check_key_collection(layer, span, env)?;
+        if take_argument(layer).is_some() {
+            let mut keys = enumerate_layer(layer, env)?;
+            keys.reverse();
+            return Ok(Value::Sequence(keys));
+        }
         return Ok(Value::Sequence(enumerate_layer_dir(
             layer,
             Direction::Descending,
@@ -831,10 +849,30 @@ pub(crate) fn materialize_layer_dir(
     dir: Direction,
     env: &mut Env<'_>,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
-    if !is_saved_path(path) {
-        return materialize_local_collection_dir(eval_expr(path, env)?, dir, path.span());
+    materialize_layer_dir_limited(path, dir, None, env)
+}
+
+pub(crate) fn materialize_layer_dir_limited(
+    path: &Expression,
+    dir: Direction,
+    limit: Option<usize>,
+    env: &mut Env<'_>,
+) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    if let Some(taken) = take_argument(path) {
+        if !is_saved_path(taken.layer) {
+            return Err(unsupported("iterating this value", path.span()));
+        }
+        let limit = eval_take_limit(&taken, env)?;
+        return materialize_layer_dir_limited(taken.layer, dir, Some(limit), env);
     }
-    let keys = enumerate_layer_dir(path, dir, env)?;
+    if !is_saved_path(path) {
+        let mut rows = materialize_local_collection_dir(eval_expr(path, env)?, dir, path.span())?;
+        if let Some(limit) = limit {
+            rows.truncate(limit);
+        }
+        return Ok(rows);
+    }
+    let keys = enumerate_layer_dir_limited(path, dir, limit, env)?;
     match path {
         // A primary keyed root: each child key is a record identity, materialized
         // by a whole-record read.

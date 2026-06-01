@@ -5,21 +5,20 @@ use crate::*;
 /// The encoded path prefix of the saved layer a `for` iterable traverses, or
 /// `None` for a range or a local value (which traverse no saved layer). A saved
 /// layer is traversed only when the iterable is a saved path directly or wrapped
-/// in `keys`/`values`/`entries`; iterating a local — the "collect keys first"
-/// pattern — has no saved layer to guard. The prefix is the path whose child keys
-/// the loop walks: `[Root]` for a primary root, `[Root, Index, IndexKey…]` for an
-/// index branch, `[Root, RecordKey…, ChildLayer]` for a keyed/sequence layer. It
-/// matches the prefix [`enumerate_layer`] reads children under, so a mutation that
-/// changes that layer is caught by [`Env::guard_traversed_layer`].
+/// in traversal shapers such as `keys(...)`, `values(...)`, `entries(...)`, or
+/// `.take(...)`; iterating a local — the "collect keys first" pattern — has no
+/// saved layer to guard. The prefix is the path whose child keys the loop walks:
+/// `[Root]` for a primary root, `[Root, Index, IndexKey…]` for an index branch,
+/// `[Root, RecordKey…, ChildLayer]` for a keyed/sequence layer. It matches the
+/// prefix [`enumerate_layer`] reads children under, so a mutation that changes
+/// that layer is caught by [`Env::guard_traversed_layer`].
 pub(crate) fn traversed_layer_prefix(
     iterable: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
-    // `reversed(...)` traverses the same layer (just backward), so unwrap it the
-    // same way `keys`/`values`/`entries` are — the guarded prefix is unchanged by
-    // direction. A `reversed(keys(L))` peels both wrappers.
-    let unwrapped = reversed_argument(iterable).unwrap_or(iterable);
-    let path = traversal_argument(unwrapped).unwrap_or(unwrapped);
+    // Traversal wrappers change order or row shape, not the stored layer whose
+    // child keys the loop walks. Peel them until the saved path itself is visible.
+    let path = traversal_path(iterable);
     if !is_saved_path(path) {
         return Ok(None);
     }
@@ -78,6 +77,24 @@ pub(crate) fn traversed_layer_prefix(
     }
 }
 
+fn traversal_path(mut expr: &Expression) -> &Expression {
+    loop {
+        if let Some(inner) = reversed_argument(expr) {
+            expr = inner;
+            continue;
+        }
+        if let Some(inner) = traversal_argument(expr) {
+            expr = inner;
+            continue;
+        }
+        if let Some(taken) = take_argument(expr) {
+            expr = taken.layer;
+            continue;
+        }
+        return expr;
+    }
+}
+
 /// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
 /// expression. These wrap a saved layer without changing which layer is traversed.
 pub(crate) fn traversal_argument(expr: &Expression) -> Option<&Expression> {
@@ -94,6 +111,54 @@ pub(crate) fn traversal_argument(expr: &Expression) -> Option<&Expression> {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
+}
+
+pub(crate) struct TakeArgument<'a> {
+    pub(crate) layer: &'a Expression,
+    pub(crate) bound: &'a Expression,
+    pub(crate) span: SourceSpan,
+}
+
+/// The `path.take(n)` traversal bound, or `None` for any other expression.
+pub(crate) fn take_argument(expr: &Expression) -> Option<TakeArgument<'_>> {
+    let Expression::Call {
+        callee, args, span, ..
+    } = expr
+    else {
+        return None;
+    };
+    let Expression::Field {
+        base, name, quoted, ..
+    } = callee.as_ref()
+    else {
+        return None;
+    };
+    if *quoted || name != "take" {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] if arg.mode.is_none() && arg.name.is_none() && take_argument(base).is_none() => {
+            Some(TakeArgument {
+                layer: base,
+                bound: &arg.value,
+                span: *span,
+            })
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn eval_take_limit(
+    taken: &TakeArgument<'_>,
+    env: &mut Env<'_>,
+) -> Result<usize, RuntimeError> {
+    let Value::Int(limit) = eval_expr(taken.bound, env)? else {
+        return Err(type_error("`.take` bound must be an int", taken.span));
+    };
+    if limit < 0 {
+        return Err(type_error("`.take` bound cannot be negative", taken.span));
+    }
+    usize::try_from(limit).map_err(|_| overflow(taken.span))
 }
 
 /// The single argument of a `reversed(<iterable>)` call, or `None` for any other
@@ -160,6 +225,22 @@ pub(crate) fn enumerate_layer_dir(
     dir: Direction,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
+    enumerate_layer_dir_limited(path, dir, None, env)
+}
+
+pub(crate) fn enumerate_layer_dir_limited(
+    path: &Expression,
+    dir: Direction,
+    limit: Option<usize>,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    if let Some(taken) = take_argument(path) {
+        let limit = eval_take_limit(&taken, env)?;
+        if !is_saved_path(taken.layer) {
+            return Err(unsupported("iterating this value", path.span()));
+        }
+        return enumerate_layer_dir_limited(taken.layer, dir, Some(limit), env);
+    }
     match path {
         // A primary keyed root: its immediate children are the record-key segments
         // of the (possibly composite) identity. A keyless singleton has none.
@@ -175,22 +256,33 @@ pub(crate) fn enumerate_layer_dir(
                 None => return Err(unsupported("iterating this saved path", *span)),
             };
             let prefix = vec![PathSegment::Root(name.clone())];
-            collect_child_identities(&prefix, arity, &[], PathSegment::RecordKey, dir, *span, env)
+            collect_child_identities(
+                &prefix,
+                arity,
+                &[],
+                ChildIdentityWalk {
+                    make_segment: PathSegment::RecordKey,
+                    dir,
+                    limit,
+                    span: *span,
+                },
+                env,
+            )
         }
         // An index branch `^root.index(args…)` (a `Call` whose callee is a `.index`
         // off a saved root) or a keyed/sequence child layer `^root(id…).layer`.
         Expression::Call {
             callee, args, span, ..
         } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
-            enumerate_index_branch(callee, args, dir, *span, env)
+            enumerate_index_branch(callee, args, dir, limit, *span, env)
         }
         Expression::Field { base, .. }
             if matches!(base.as_ref(), Expression::SavedRoot { .. })
                 && is_iterable_index_branch(path, env) =>
         {
-            enumerate_index_branch(path, &[], dir, path.span(), env)
+            enumerate_index_branch(path, &[], dir, limit, path.span(), env)
         }
-        Expression::Field { .. } => enumerate_child_layer(path, dir, env),
+        Expression::Field { .. } => enumerate_child_layer(path, dir, limit, env),
         other => Err(unsupported("iterating this saved path", other.span())),
     }
 }
@@ -203,6 +295,7 @@ pub(crate) fn enumerate_index_branch(
     callee: &Expression,
     args: &[Argument],
     dir: Direction,
+    limit: Option<usize>,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
@@ -254,7 +347,18 @@ pub(crate) fn enumerate_index_branch(
     } else {
         schema.args.len().saturating_sub(args.len())
     };
-    collect_child_identities(&prefix, depth, &[], PathSegment::IndexKey, dir, span, env)
+    collect_child_identities(
+        &prefix,
+        depth,
+        &[],
+        ChildIdentityWalk {
+            make_segment: PathSegment::IndexKey,
+            dir,
+            limit,
+            span,
+        },
+        env,
+    )
 }
 
 /// Enumerate the child keys of a keyed/sequence child layer `^root(id…).layer`.
@@ -263,6 +367,7 @@ pub(crate) fn enumerate_index_branch(
 pub(crate) fn enumerate_child_layer(
     path: &Expression,
     dir: Direction,
+    limit: Option<usize>,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
     let Expression::Field {
@@ -275,7 +380,26 @@ pub(crate) fn enumerate_child_layer(
     let (root, identity, mut layers) = lower(base, env)?.into_layers(base.span())?;
     layers.push((layer.clone(), Vec::new()));
     let prefix = saved_segments(&root, &identity, &layers, None);
-    collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, dir, span, env)
+    collect_child_identities(
+        &prefix,
+        1,
+        &[],
+        ChildIdentityWalk {
+            make_segment: PathSegment::IndexKey,
+            dir,
+            limit,
+            span,
+        },
+        env,
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChildIdentityWalk {
+    make_segment: fn(SavedKey) -> PathSegment,
+    dir: Direction,
+    limit: Option<usize>,
+    span: SourceSpan,
 }
 
 /// Collect the identities reachable below `prefix`, descending `depth` remaining
@@ -289,34 +413,23 @@ pub(crate) fn collect_child_identities(
     prefix: &[PathSegment],
     depth: usize,
     keys: &[SavedKey],
-    make_segment: fn(SavedKey) -> PathSegment,
-    dir: Direction,
-    span: SourceSpan,
+    walk: ChildIdentityWalk,
     env: &Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    let children = {
-        let store = env.store.borrow();
-        let encoded = encode_path(prefix);
-        // `reversed(...)` walks the store's double-ended range backward, so a
-        // composite identity descends in reverse at every level — a true reverse,
-        // not the outermost component flipped over an ascending tail.
-        match dir {
-            Direction::Ascending => store.child_keys(&encoded),
-            Direction::Descending => store.child_keys_rev(&encoded),
-        }
-        .map_err(|_| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_STORE,
-            message: "could not read the keys at this path".into(),
-            span,
-        })?
-    };
     let mut values = Vec::new();
-    for child in children {
-        let ChildSegment::Key(key) = child else {
+    if walk.limit == Some(0) {
+        return Ok(values);
+    }
+    let parent = encode_path(prefix);
+    let mut child = seek_child(&parent, None, walk.dir, walk.span, env)?;
+    while let Some(child_segment) = child {
+        let ChildSegment::Key(key) = child_segment else {
+            let anchor = child_segment_anchor(&child_segment);
+            child = seek_child(&parent, Some(&anchor), walk.dir, walk.span, env)?;
             continue;
         };
+        let anchor = encode_path(&[(walk.make_segment)(key.clone())]);
+        child = seek_child(&parent, Some(&anchor), walk.dir, walk.span, env)?;
         let mut keys = keys.to_vec();
         keys.push(key.clone());
         if depth <= 1 {
@@ -324,25 +437,60 @@ pub(crate) fn collect_child_identities(
             // composite one reconstructs its full `Value::Identity`.
             values.push(if keys.len() == 1 {
                 saved_key_to_value(key)
-                    .ok_or_else(|| unsupported("iterating keys of this type", span))?
+                    .ok_or_else(|| unsupported("iterating keys of this type", walk.span))?
             } else {
                 Value::Identity(keys)
             });
         } else {
             let mut prefix = prefix.to_vec();
-            prefix.push(make_segment(key));
+            prefix.push((walk.make_segment)(key));
+            let remaining = walk.limit.map(|limit| limit.saturating_sub(values.len()));
             values.extend(collect_child_identities(
                 &prefix,
                 depth - 1,
                 &keys,
-                make_segment,
-                dir,
-                span,
+                ChildIdentityWalk {
+                    limit: remaining,
+                    ..walk
+                },
                 env,
             )?);
         }
+        if walk.limit.is_some_and(|limit| values.len() >= limit) {
+            break;
+        }
     }
     Ok(values)
+}
+
+fn seek_child(
+    parent: &[u8],
+    anchor: Option<&[u8]>,
+    dir: Direction,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Option<ChildSegment>, RuntimeError> {
+    let store = env.store.borrow();
+    let result = match (anchor, dir) {
+        (None, Direction::Ascending) => store.first_child(parent),
+        (None, Direction::Descending) => store.last_child(parent),
+        (Some(anchor), Direction::Ascending) => store.next_sibling(parent, anchor),
+        (Some(anchor), Direction::Descending) => store.prev_sibling(parent, anchor),
+    };
+    result.map_err(|_| RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_STORE,
+        message: "could not read the keys at this path".into(),
+        span,
+    })
+}
+
+fn child_segment_anchor(child: &ChildSegment) -> Vec<u8> {
+    match child {
+        ChildSegment::Key(key) => encode_path(&[PathSegment::IndexKey(key.clone())]),
+        ChildSegment::Name(name) => encode_path(&[PathSegment::Field(name.clone())]),
+    }
 }
 
 /// Read a scalar field off a saved record, e.g. `^books(id).title`. Lowers the

@@ -118,9 +118,10 @@ for pos in keys(^books(id).tags.take(100))
     write($"{pos}")
 ```
 
-Iterating a saved layer reads the layer's child keys up front, before the first
-body runs — `O(n)` in the number of children. Element and two-variable loops also
-read the values they yield. `keys(...)` reads only the addresses.
+Saved-layer iteration walks child keys in stored order. Unbounded collection
+materialization can visit the whole layer; `.take(n)` limits the walked prefix to
+at most `n` children. Element and two-variable loops also read the values they
+yield. `keys(...)` reads only the addresses.
 
 `while` loops use a boolean condition:
 
