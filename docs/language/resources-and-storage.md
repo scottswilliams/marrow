@@ -295,10 +295,12 @@ for id in ^books
     print(^books(id).title)
 ```
 
-Materialization is explicit: `for id in ^books` streams identities, while
-`collect(values(^books))` builds an in-memory list and may warn. The concern is
-not large loops but hidden ones — an access that hides traversal with no matching
-index is what the checker flags.
+Materialization stays in the tree model: `for id in ^books` streams identities,
+and holding a result means building a local tree — a `sequence` or keyed layer,
+the same shape you would save. There is no flat in-memory list and no
+in-memory-versus-saved distinction; `^` is the only difference between a local
+tree and a saved one. The concern is not large loops but hidden ones — an access
+that hides traversal with no matching index is what the checker flags.
 
 Marrow does not add a separate storage query language. If code needs a new lookup
 path, add an index to the resource and rebuild the generated tree when existing
