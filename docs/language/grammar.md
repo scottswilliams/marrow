@@ -209,7 +209,9 @@ statement       =
       const_stmt
     | var_stmt
     | assignment_stmt
+    | edit_stmt
     | delete_stmt
+    | assert_stmt
     | if_stmt
     | match_stmt
     | while_stmt
@@ -223,12 +225,21 @@ statement       =
     | expression_stmt
     ;
 
-const_stmt      = "const" identifier type_annotation? "=" expression NEWLINE ;
+const_stmt      =
+    "const" identifier type_annotation? "=" expression binding_tail ;
 var_stmt        =
-    "var" identifier key_params? type_annotation? ("=" expression)? NEWLINE ;
+    "var" identifier key_params? type_annotation? ("=" expression)? binding_tail ;
+
+binding_tail    = NEWLINE | else_bind ;
+else_bind       = "else" ( divergent | NEWLINE block ) ;
+divergent       =
+    ("return" expression? | "throw" expression
+     | "break" identifier? | "continue" identifier?) NEWLINE ;
 
 assignment_stmt = assignable "=" expression NEWLINE ;
+edit_stmt       = "edit" assignable NEWLINE block ;
 delete_stmt     = "delete" path_expr NEWLINE ;
+assert_stmt     = "assert" expression NEWLINE ;
 return_stmt     = "return" expression? NEWLINE ;
 break_stmt      = "break" identifier? NEWLINE ;
 continue_stmt   = "continue" identifier? NEWLINE ;
@@ -237,13 +248,22 @@ throw_stmt      = "throw" expression NEWLINE ;
 expression_stmt = expression NEWLINE ;
 ```
 
+An `edit place` block groups field and path assignments under one root,
+preserving omitted fields and children. `assert exists(place)` and
+`assert not exists(place)` state existence preconditions. A binding `else` (on
+`const`/`var`) and `if let` resolve a maybe-present read: they bind the value when
+present, and the `else` branch must diverge (`return`, `throw`, `break`, or
+`continue`).
+
 ## Conditionals And Loops
 
 ```ebnf
-if_stmt         =
+if_stmt         = if_cond | if_let ;
+if_cond         =
     "if" expression NEWLINE block
     else_if_clause*
     else_clause? ;
+if_let          = "if" "let" identifier "=" expression NEWLINE block else_clause? ;
 
 else_if_clause  = "else" "if" expression NEWLINE block ;
 else_clause     = "else" NEWLINE block ;
@@ -335,8 +355,10 @@ field_name      = identifier | string_lit ;
 
 `??` is non-associative: `a ?? b ?? c` is rejected. It binds tighter than `==`,
 so `name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. Its left operand
-must be a path read or a `?.` chain; that constraint is enforced by the checker,
-not the grammar.
+must be a maybe-present read — a path read (including a keyed child such as
+`^patients(id).visits(date)`), a `?.` chain, or a maybe-present builtin result
+such as `next`/`prev`; that constraint is enforced by the checker, not the
+grammar.
 
 `is` is the enum-subtree test: `value is Enum::member` is `true` when the value is
 at or under that member, exact for a concrete leaf. It is a reserved word, sits

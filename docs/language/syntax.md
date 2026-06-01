@@ -332,7 +332,7 @@ Marrow reserves:
 module use pub fn resource at index unique
 required
 enum match is
-const var if let else while for in break continue return delete edit merge
+const var if let else while for in break continue return delete edit assert merge
 transaction lock try catch finally throw out inout true false
 not and or
 int decimal bool string bytes date instant duration
