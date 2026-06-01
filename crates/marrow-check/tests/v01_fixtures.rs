@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_check::check_project;
 use marrow_project::parse_config;
-use marrow_schema::Element;
+use marrow_schema::NodeKind;
 
 const LIBRARY_SOURCE: &str = include_str!("../../../fixtures/v01/library.mw");
 
@@ -83,7 +83,7 @@ fn v01_library_fixture_checks_clean_and_exposes_current_identity_bridge() {
         .find(|member| member.name == "author")
         .expect("author member");
     assert!(
-        matches!(author.element, Element::Slot { required: true, .. }),
+        matches!(author.kind, NodeKind::Slot { required: true, .. }),
         "author is the required relationship field"
     );
     assert_eq!(

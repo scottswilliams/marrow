@@ -124,7 +124,7 @@ impl fmt::Display for Type {
 /// Members are kept in source order in one `Vec` rather than a map: a resource
 /// has few members, lookups are linear, and order matches the declaration and
 /// inspect output. Fields and keyed layers interleave as declared; consumers
-/// that want only one kind filter `members` by [`Element`].
+/// that want only one kind filter `members` by [`NodeKind`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceSchema {
     pub name: String,
@@ -144,8 +144,8 @@ impl ResourceSchema {
     /// shape, resolves to `None`.
     ///
     /// A keyed-leaf layer read at the same position is [`Self::leaf_type`]; the two
-    /// differ only in whether the terminal name is a field (a [`Element::Slot`]) or
-    /// a group (a [`Element::Group`]) to descend, so both share the one walk.
+    /// differ only in whether the terminal name is a field (a [`NodeKind::Slot`]) or
+    /// a group (a [`NodeKind::Group`]) to descend, so both share the one walk.
     pub fn field_type(&self, chain: &[&str]) -> Option<&Type> {
         let (&leaf, groups) = chain.split_last()?;
         // No lead names is a top-level field; otherwise descend the lead names as
@@ -163,9 +163,9 @@ impl ResourceSchema {
     /// for an empty chain, an unknown layer, or a group layer (which has members,
     /// not a leaf value).
     pub fn leaf_type(&self, layers: &[&str]) -> Option<&Type> {
-        match &self.descend_layers(layers)?.element {
-            Element::Slot { ty, .. } => Some(ty),
-            Element::Group => None,
+        match &self.descend_layers(layers)?.kind {
+            NodeKind::Slot { ty, .. } => Some(ty),
+            NodeKind::Group => None,
         }
     }
 
@@ -188,8 +188,8 @@ impl ResourceSchema {
 /// parameters. A keyed leaf or a group of the same name is not a plain field, so
 /// it resolves to `None`.
 fn plain_field<'a>(members: &'a [Node], name: &str) -> Option<&'a Type> {
-    members.iter().find_map(|node| match &node.element {
-        Element::Slot { ty, .. } if node.name == name && node.key_params.is_empty() => Some(ty),
+    members.iter().find_map(|node| match &node.kind {
+        NodeKind::Slot { ty, .. } if node.name == name && node.key_params.is_empty() => Some(ty),
         _ => None,
     })
 }
@@ -208,14 +208,14 @@ impl Node {
     /// group are layers, not plain fields. The write planner and whole-resource
     /// read use this to pick out the fields they materialize.
     pub fn is_plain_field(&self) -> bool {
-        self.key_params.is_empty() && matches!(self.element, Element::Slot { .. })
+        self.key_params.is_empty() && matches!(self.kind, NodeKind::Slot { .. })
     }
 
     /// The type of this node when it is a plain field, else `None`. Lets a caller
     /// select plain fields and bind their type in one pass.
     pub fn plain_field_type(&self) -> Option<&Type> {
-        match &self.element {
-            Element::Slot { ty, .. } if self.key_params.is_empty() => Some(ty),
+        match &self.kind {
+            NodeKind::Slot { ty, .. } if self.key_params.is_empty() => Some(ty),
             _ => None,
         }
     }
@@ -262,7 +262,7 @@ pub struct KeyDef {
 }
 
 /// One node of the resource tree: a top-level field, a keyed leaf, or a group,
-/// distinguished by its [`Element`]. The recursive `members` are filled only for
+/// distinguished by its [`NodeKind`]. The recursive `members` are filled only for
 /// a group; a keyed leaf carries `key_params` and an empty `members`; a
 /// top-level field carries neither key params nor members.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,9 +271,9 @@ pub struct Node {
     pub docs: Vec<String>,
     /// Empty for a top-level field; non-empty for any keyed leaf or keyed group.
     pub key_params: Vec<KeyDef>,
-    /// Empty for any [`Element::Slot`]; the nested nodes for an [`Element::Group`].
+    /// Empty for any [`NodeKind::Slot`]; the nested nodes for an [`NodeKind::Group`].
     pub members: Vec<Node>,
-    pub element: Element,
+    pub kind: NodeKind,
 }
 
 /// What a [`Node`] holds: a scalar value (`Slot`) or nested members (`Group`).
@@ -282,7 +282,7 @@ pub struct Node {
 /// a `Slot` with non-empty `key_params`. A group (`notes(noteId: string)` /
 /// `versions(version)` / an unkeyed `name`) is a `Group` with nested `members`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Element {
+pub enum NodeKind {
     /// A scalar value: a top-level field or a keyed leaf. `required` varies only
     /// on a top-level/group field; a keyed leaf never exposes it (always false).
     Slot { ty: Type, required: bool },
@@ -1397,7 +1397,7 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar
                 docs: group.docs.clone(),
                 key_params: group.keys.iter().map(key_def).collect(),
                 members: group_members(group, errors, map_sugar),
-                element: Element::Group,
+                kind: NodeKind::Group,
             }
         }
         ResourceMember::Index(_) => unreachable!("indexes are not compiled to nodes"),
@@ -1412,7 +1412,7 @@ fn slot_node(field: &FieldDecl, ty: Type, key_params: Vec<KeyDef>, required: boo
         docs: field.docs.clone(),
         key_params,
         members: Vec::new(),
-        element: Element::Slot { ty, required },
+        kind: NodeKind::Slot { ty, required },
     }
 }
 

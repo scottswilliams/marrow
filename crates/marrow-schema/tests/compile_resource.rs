@@ -6,7 +6,7 @@
 //! the structural errors the compiler reports.
 
 use marrow_schema::{
-    Element, Node, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_IN_GROUP,
+    Node, NodeKind, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_IN_GROUP,
     SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NON_ENUM_NAMED_FIELD,
     SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
@@ -55,7 +55,7 @@ fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
     schema
         .members
         .iter()
-        .filter(|node| node.key_params.is_empty() && matches!(node.element, Element::Slot { .. }))
+        .filter(|node| node.key_params.is_empty() && matches!(node.kind, NodeKind::Slot { .. }))
 }
 
 /// The canonical `Book` resource.
@@ -100,7 +100,7 @@ fn book_top_level_fields() {
     );
 
     let required: Vec<&str> = top_level_fields(&schema)
-        .filter(|f| matches!(f.element, Element::Slot { required, .. } if required))
+        .filter(|f| matches!(f.kind, NodeKind::Slot { required, .. } if required))
         .map(|f| f.name.as_str())
         .collect();
     assert_eq!(required, ["title", "author", "shelf", "currentVersion"]);
@@ -108,7 +108,7 @@ fn book_top_level_fields() {
     let loaned_to = top_level_fields(&schema)
         .find(|f| f.name == "loanedTo")
         .expect("loanedTo field");
-    let Element::Slot { ty, required } = &loaned_to.element else {
+    let NodeKind::Slot { ty, required } = &loaned_to.kind else {
         panic!("loanedTo is a slot");
     };
     assert!(!required, "loanedTo is sparse");
@@ -126,7 +126,7 @@ fn book_tags_is_a_keyed_leaf() {
     assert_eq!(tags.key_params[0].name, "pos");
     assert_eq!(tags.key_params[0].ty, Type::Scalar(ScalarType::Int));
     assert!(
-        matches!(&tags.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str))
+        matches!(&tags.kind, NodeKind::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str))
     );
     assert!(tags.members.is_empty(), "a keyed leaf has no members");
 }
@@ -139,13 +139,13 @@ fn book_notes_is_a_group() {
     assert_eq!(notes.key_params[0].name, "noteId");
     assert_eq!(notes.key_params[0].ty, Type::Scalar(ScalarType::Str));
     assert!(
-        matches!(notes.element, Element::Group),
+        matches!(notes.kind, NodeKind::Group),
         "a group has no leaf type"
     );
 
     assert_eq!(notes.members.len(), 1);
     let text = &notes.members[0];
-    let Element::Slot { ty, required } = &text.element else {
+    let NodeKind::Slot { ty, required } = &text.kind else {
         panic!("notes.text should be a field");
     };
     assert_eq!(text.name, "text");
@@ -160,14 +160,14 @@ fn book_versions_is_a_history_group() {
     assert_eq!(versions.key_params.len(), 1);
     assert_eq!(versions.key_params[0].name, "version");
     assert_eq!(versions.key_params[0].ty, Type::Scalar(ScalarType::Int));
-    assert!(matches!(versions.element, Element::Group));
+    assert!(matches!(versions.kind, NodeKind::Group));
 
     let fields: Vec<(&str, bool, String)> = versions
         .members
         .iter()
-        .map(|member| match &member.element {
-            Element::Slot { ty, required } => (member.name.as_str(), *required, ty.to_string()),
-            Element::Group => panic!("unexpected nested group `{}`", member.name),
+        .map(|member| match &member.kind {
+            NodeKind::Slot { ty, required } => (member.name.as_str(), *required, ty.to_string()),
+            NodeKind::Group => panic!("unexpected nested group `{}`", member.name),
         })
         .collect();
     assert_eq!(
@@ -328,7 +328,7 @@ resource Book at ^books(id: int)
     assert_eq!(tags.key_params[0].name, "pos");
     assert_eq!(tags.key_params[0].ty, Type::Scalar(ScalarType::Int));
     assert!(
-        matches!(&tags.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str))
+        matches!(&tags.kind, NodeKind::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str))
     );
     assert!(tags.members.is_empty(), "a keyed leaf has no members");
 }
@@ -377,7 +377,7 @@ resource Book at ^books(id: int)
     let versions = layer(&schema, "versions");
     let notes = &versions.members[0];
     assert!(
-        matches!(&notes.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str)),
+        matches!(&notes.kind, NodeKind::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Str)),
         "notes should desugar to a nested keyed-leaf layer"
     );
     assert_eq!(notes.name, "notes");
@@ -397,7 +397,7 @@ resource Book at ^books(id: int)
     let versions = layer(&schema, "versions");
     let scores = &versions.members[0];
     assert!(
-        matches!(&scores.element, Element::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Int)),
+        matches!(&scores.kind, NodeKind::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Int)),
         "scores should desugar to a nested keyed-leaf layer"
     );
     assert_eq!(scores.name, "scores");
@@ -954,10 +954,7 @@ resource Patient at ^patients(id: string)
         .iter()
         .find(|node| node.name == "first")
         .expect("nested first field");
-    assert!(matches!(
-        first.element,
-        Element::Slot { required: true, .. }
-    ));
+    assert!(matches!(first.kind, NodeKind::Slot { required: true, .. }));
 }
 
 #[test]

@@ -665,7 +665,7 @@ pub(crate) fn read_group_entry_chain(
         .ok_or_else(|| unsupported("reading this saved root", span))?;
     let declared = resource
         .descend_layers(layers)
-        .filter(|node| matches!(node.element, Element::Group))
+        .filter(|node| matches!(node.kind, NodeKind::Group))
         .ok_or_else(|| unsupported("reading this layer", span))?;
     let store = env.store.borrow();
     let fields =
@@ -752,7 +752,7 @@ fn materialize_resource_members(
                 span,
             })?;
             fields.push((node.name.clone(), value));
-        } else if node.key_params.is_empty() && matches!(node.element, Element::Group) {
+        } else if node.key_params.is_empty() && matches!(node.kind, NodeKind::Group) {
             let mut group_prefix = prefix.to_vec();
             group_prefix.push(PathSegment::ChildLayer(node.name.clone()));
             let nested =

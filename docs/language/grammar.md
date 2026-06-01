@@ -487,4 +487,4 @@ These rules are part of the grammar contract:
 - `keys`, `values`, and `entries` expose address-only, element-only, and
   address-plus-element traversal as expression forms.
 - Documentation comments attach to the next const, resource, function, or
-  resource element at the same indentation level.
+  resource member at the same indentation level.

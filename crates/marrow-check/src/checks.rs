@@ -2723,7 +2723,7 @@ fn check_append_args(
     let Some(node) = saved_layer_node(program, &target.value) else {
         return;
     };
-    if matches!(node.element, marrow_schema::Element::Group) {
+    if matches!(node.kind, marrow_schema::NodeKind::Group) {
         diagnostics.push(call_diagnostic(
             file,
             span,
@@ -2967,8 +2967,8 @@ fn check_resource_constructor_args(
     for (field, supplied) in fields.iter().zip(supplied) {
         if !supplied
             && matches!(
-                &field.element,
-                marrow_schema::Element::Slot { required: true, .. }
+                &field.kind,
+                marrow_schema::NodeKind::Slot { required: true, .. }
             )
         {
             diagnostics.push(call_diagnostic(

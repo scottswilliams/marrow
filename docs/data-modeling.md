@@ -151,8 +151,8 @@ non-integer identities are allocated by application code, then constructed:
 
 ## Sparse vs Required Fields
 
-Fields are sparse by default. A sparse declaration says what type the element
-has when populated. An unpopulated element is not an empty string, zero, or
+Fields are sparse by default. A sparse declaration says what type the field
+has when populated. An unpopulated field is not an empty string, zero, or
 false — there is simply no node in the tree.
 
 ```mw
@@ -160,7 +160,7 @@ subtitle: string         ; sparse: may be absent
 required title: string   ; must be populated for a valid resource
 ```
 
-Reading an unpopulated element raises `run.absent_element` unless the checker
+Reading an unpopulated field raises `run.absent_element` unless the checker
 can prove it exists. Guard with `exists`, or read with a default:
 
 ```mw

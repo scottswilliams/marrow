@@ -11,7 +11,7 @@
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
-use marrow_schema::{Element, Node, ResourceSchema, SavedRootSchema, Type};
+use marrow_schema::{Node, NodeKind, ResourceSchema, SavedRootSchema, Type};
 use marrow_store::backend::Backend;
 use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
@@ -439,7 +439,7 @@ pub(crate) fn validate_required_fields_after_field_write(
             code: WRITE_UNKNOWN_LAYER,
             message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
         })?;
-        if matches!(declared.element, Element::Slot { .. }) {
+        if matches!(declared.kind, NodeKind::Slot { .. }) {
             return Err(WriteError {
                 code: WRITE_NOT_A_GROUP_LAYER,
                 message: format!("keyed layer `{name}` is a leaf, not a group"),
@@ -505,7 +505,7 @@ pub(crate) fn validate_required_fields_for_entry(
             code: WRITE_UNKNOWN_LAYER,
             message: format!("resource `{}` has no keyed layer `{name}`", schema.name),
         })?;
-        if matches!(declared.element, Element::Slot { .. }) {
+        if matches!(declared.kind, NodeKind::Slot { .. }) {
             return Err(WriteError {
                 code: WRITE_NOT_A_GROUP_LAYER,
                 message: format!("keyed layer `{name}` is a leaf, not a group"),
@@ -625,7 +625,7 @@ pub fn plan_layer_leaf_write(
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let declared = find_layer(schema, layer)?;
-    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+    let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
             code: WRITE_NOT_A_LEAF_LAYER,
             message: format!("keyed layer `{layer}` is a group, not a leaf"),
@@ -666,7 +666,7 @@ pub fn plan_layer_identity_leaf_write(
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let declared = find_layer(schema, layer)?;
-    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+    let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
             code: WRITE_NOT_A_LEAF_LAYER,
             message: format!("keyed layer `{layer}` is a group, not a leaf"),
@@ -704,7 +704,7 @@ pub fn plan_nested_layer_leaf_write(
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let declared = find_nested_layer(schema, parents, layer)?;
-    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+    let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
             code: WRITE_NOT_A_LEAF_LAYER,
             message: format!("keyed layer `{layer}` is a group, not a leaf"),
@@ -742,7 +742,7 @@ pub fn plan_nested_layer_identity_leaf_write(
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let declared = find_nested_layer(schema, parents, layer)?;
-    let Element::Slot { ty: leaf_type, .. } = &declared.element else {
+    let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
             code: WRITE_NOT_A_LEAF_LAYER,
             message: format!("keyed layer `{layer}` is a group, not a leaf"),
@@ -874,7 +874,7 @@ pub fn plan_layer_group_write(
 ) -> Result<WritePlan, WriteError> {
     let root = resolve_saved_root(schema, identity)?;
     let declared = find_layer(schema, layer)?;
-    if matches!(declared.element, Element::Slot { .. }) {
+    if matches!(declared.kind, NodeKind::Slot { .. }) {
         return Err(WriteError {
             code: WRITE_NOT_A_GROUP_LAYER,
             message: format!("keyed layer `{layer}` is a leaf, not a group"),
@@ -1131,8 +1131,8 @@ fn collect_materialized_plain_fields<'a>(
     fields: &mut Vec<MaterializedField<'a>>,
 ) {
     for node in members {
-        match &node.element {
-            Element::Slot { ty, required } if node.is_plain_field() => {
+        match &node.kind {
+            NodeKind::Slot { ty, required } if node.is_plain_field() => {
                 let mut path = prefix.clone();
                 path.push(node.name.clone());
                 fields.push(MaterializedField {
@@ -1141,7 +1141,7 @@ fn collect_materialized_plain_fields<'a>(
                     required: *required,
                 });
             }
-            Element::Group if node.key_params.is_empty() => {
+            NodeKind::Group if node.key_params.is_empty() => {
                 prefix.push(node.name.clone());
                 collect_materialized_plain_fields(&node.members, prefix, fields);
                 prefix.pop();
@@ -1159,8 +1159,8 @@ fn materialized_field_name(path: &[String]) -> String {
 /// `(node, value type, required)`. A keyed leaf and a group are layers, not plain
 /// fields the planner materializes, so they are skipped.
 fn plain_fields(members: &[Node]) -> impl Iterator<Item = (&Node, &Type, bool)> {
-    members.iter().filter_map(|node| match &node.element {
-        Element::Slot { ty, required } if node.is_plain_field() => Some((node, ty, *required)),
+    members.iter().filter_map(|node| match &node.kind {
+        NodeKind::Slot { ty, required } if node.is_plain_field() => Some((node, ty, *required)),
         _ => None,
     })
 }
@@ -1332,7 +1332,7 @@ fn descend_group_layers<'a>(
                 message: format!("keyed layer `{}` has no nested layer `{name}`", parent.name),
             })?,
         };
-        if matches!(declared.element, Element::Slot { .. }) {
+        if matches!(declared.kind, NodeKind::Slot { .. }) {
             return Err(WriteError {
                 code: WRITE_NOT_A_GROUP_LAYER,
                 message: format!("keyed layer `{name}` is a leaf, not a group"),

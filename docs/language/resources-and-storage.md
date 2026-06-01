@@ -150,9 +150,9 @@ Identity keys do not change in place. Changing identity means creating a new
 record and explicitly transforming or deleting any data that should not remain
 under the old identity.
 
-## Element Documentation
+## Field Documentation
 
-Resource elements may have documentation comments:
+Resource fields may have documentation comments:
 
 ```mw
 resource Book at ^books(id: int)
@@ -162,18 +162,18 @@ resource Book at ^books(id: int)
 
 Documentation comments feed generated docs, editor hover, inspect output, and
 LSP help. They do not change the saved path, the field name, the runtime value,
-or the type of the element. In the example above, code still reads and writes
+or the type of the field. In the example above, code still reads and writes
 `title`:
 
 ```mw
 ^books(id).title = "Small Gods"
 ```
 
-Source stable-id annotations are not part of v0.1. Durable element identity is
+Source stable-id annotations are not part of v0.1. Durable field identity is
 catalog work; for this release, data evolution treats source spelling and
 explicit maintenance code as the contract.
 
-Adding a sparse element is a source change. Adding a required element requires
+Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code
 depends on the field. Adding an index requires a backfill or rebuild of the
 generated index tree when matching base data already exists.
@@ -261,7 +261,7 @@ Identity keys, declared fields, keyed layers, and shorthand index names share
 the source namespace. A concise resource declaration cannot use the same name
 for a field and an index, or for an identity key and a field.
 
-Managed resource elements use declared identifiers. Quoted path segments are for
+Managed resource members use declared identifiers. Quoted path segments are for
 existing raw data, import, export, data evolution, and repair; they do not create
 undeclared fields in a managed resource.
 
@@ -474,9 +474,9 @@ data also validate bytes before returning typed values.
 If saved bytes do not match the resource schema, typed reads raise a typed
 error. Raw inspection can still show the stored bytes for repair.
 
-## Sparse And Required Elements
+## Sparse And Required Fields
 
-An unpopulated element is not a value. It is absent from the tree. That is
+An unpopulated field is not a value. It is absent from the tree. That is
 different from an empty string, zero, or false.
 
 ```mw
@@ -485,7 +485,7 @@ subtitle: string
 
 Rules:
 
-- A maybe-present element must be resolved at the read. An unresolved read of a
+- A maybe-present field must be resolved at the read. An unresolved read of a
   maybe-present place is a compile error that names the place and its resolutions;
   it never raises a runtime fault and never returns a stored null. Resolve it with
   `place ?? fallback`, `const x = place else <diverge>` (return, throw, break, or

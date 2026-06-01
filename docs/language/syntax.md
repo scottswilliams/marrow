@@ -12,7 +12,7 @@ markers.
   `ErrorCode` are reserved separately.
 - Semicolon starts a comment to end of line.
 - `;;` starts a documentation comment for the next declaration or resource
-  element.
+  member.
 - Tabs are an error in Marrow source. Use spaces.
 
 ## Blocks
@@ -70,12 +70,12 @@ resource Patient at ^patients(id: string)
         note: string
 ```
 
-Documentation comments apply to the next resource element. Source stable-id
-annotations are not part of v0.1; durable element identity belongs in the
+Documentation comments apply to the next resource member. Source stable-id
+annotations are not part of v0.1; durable field identity belongs in the
 catalog.
 
 Fields are sparse by default. Add `required` when a resource is invalid
-without a populated element:
+without a populated field:
 
 ```mw
 required title: string

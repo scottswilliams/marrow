@@ -3,7 +3,7 @@
 Future counterpart of
 [`../../language/resources-and-storage.md`](../../language/resources-and-storage.md).
 
-## Catalog-Owned Stable Element IDs
+## Catalog-Owned Stable IDs
 
 Stored entities need catalog-owned opaque stable identity. Tools may allocate or
 preserve those identities while editing, but the project catalog is the

@@ -32,7 +32,7 @@ pub(crate) use marrow_check::{
 };
 pub(crate) use marrow_schema::stdlib::Capability;
 pub(crate) use marrow_schema::{
-    Element, EnumSchema, IndexSchema, KeyDef, MemberPathResolution, Node, ResourceSchema, Type,
+    EnumSchema, IndexSchema, KeyDef, MemberPathResolution, Node, NodeKind, ResourceSchema, Type,
 };
 pub(crate) use marrow_store::Decimal;
 pub(crate) use marrow_store::backend::{Backend, Presence, StoreError};

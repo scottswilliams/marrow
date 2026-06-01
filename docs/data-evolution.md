@@ -19,17 +19,17 @@ fully describe until explicit data-evolution work runs.
 
 | Change | What it needs today |
 |---|---|
-| Add a sparse element | Source change only. Existing records stay valid; the element reads as absent until written. |
-| Add a `required` element | Code or tooling that populates existing records before code depends on the field. |
-| Rename an element | Source rename, plus explicit data movement if saved data must move. |
+| Add a sparse field | Source change only. Existing records stay valid; the field reads as absent until written. |
+| Add a `required` field | Code or tooling that populates existing records before code depends on the field. |
+| Rename a field | Source rename, plus explicit data movement if saved data must move. |
 | Add an index | Backfill/rebuild: rewrite indexed records so the generated index tree is populated. |
-| Remove an element | The data under it stays until code or maintenance work removes it. |
+| Remove a field | The data under it stays until code or maintenance work removes it. |
 | Delete a whole root, drop a required field, write raw segments | Maintenance work. Run with `--maintenance`. |
 
-## Sparse And Required Elements
+## Sparse And Required Fields
 
-A sparse element is a source change. Add the field and ship it; existing records
-remain valid. An unpopulated sparse element is absent, not zero or empty. Read it
+A sparse field is a source change. Add the field and ship it; existing records
+remain valid. An unpopulated sparse field is absent, not zero or empty. Read it
 with `path ?? default` or guard it with `exists(path)`.
 
 ```mw
@@ -38,7 +38,7 @@ resource Book at ^books(id: int)
     subtitle: string
 ```
 
-A `required` element is different. Existing records were written without it, so
+A `required` field is different. Existing records were written without it, so
 populate it before code reads it directly.
 
 ```mw

@@ -482,9 +482,7 @@ fn collect_resource_value(
 ) -> Result<(), RuntimeError> {
     for (name, value) in fields {
         if let Some(group) = members.iter().find(|node| {
-            node.name == name
-                && node.key_params.is_empty()
-                && matches!(node.element, Element::Group)
+            node.name == name && node.key_params.is_empty() && matches!(node.kind, NodeKind::Group)
         }) {
             let Value::Resource(fields) = value else {
                 return Err(unsupported(
@@ -541,8 +539,8 @@ fn flattened_field_name(prefix: &[String], name: &str) -> String {
 /// reference (`field: Resource::Id`), or `None` when `field` is not declared as a
 /// plain identity field in `members`.
 fn identity_field_arity(program: &CheckedProgram, members: &[Node], field: &str) -> Option<usize> {
-    let ty = members.iter().find_map(|node| match &node.element {
-        Element::Slot { ty, .. } if node.name == field && node.key_params.is_empty() => Some(ty),
+    let ty = members.iter().find_map(|node| match &node.kind {
+        NodeKind::Slot { ty, .. } if node.name == field && node.key_params.is_empty() => Some(ty),
         _ => None,
     })?;
     match leaf_kind(program, ty)? {
@@ -654,7 +652,7 @@ pub(crate) fn eval_field_delete(
     if let Some(group) = resource.members.iter().find(|declared| {
         declared.name == field
             && declared.key_params.is_empty()
-            && matches!(declared.element, Element::Group)
+            && matches!(declared.kind, NodeKind::Group)
     }) {
         let deletes_required = unkeyed_group_has_required_materialized_field(group);
         if !env.host.maintenance && deletes_required {
@@ -686,7 +684,7 @@ pub(crate) fn eval_field_delete(
     // under an explicit maintenance run (repair may drop a required field).
     let deletes_required = resource.members.iter().any(|declared| {
         declared.name == field
-            && matches!(declared.element, Element::Slot { required, .. } if required)
+            && matches!(declared.kind, NodeKind::Slot { required, .. } if required)
     });
     if !env.host.maintenance && deletes_required {
         return Err(raise_fault(
@@ -920,7 +918,7 @@ fn nested_unkeyed_group<'a>(
         _ => &resource.descend_layers(layers)?.members,
     };
     members.iter().find(|node| {
-        node.name == field && node.key_params.is_empty() && matches!(node.element, Element::Group)
+        node.name == field && node.key_params.is_empty() && matches!(node.kind, NodeKind::Group)
     })
 }
 
@@ -935,8 +933,8 @@ fn nested_field_required(
         [] => &resource.members,
         _ => &resource.descend_layers(layers)?.members,
     };
-    members.iter().find_map(|node| match &node.element {
-        Element::Slot { required, .. } if node.name == field && node.key_params.is_empty() => {
+    members.iter().find_map(|node| match &node.kind {
+        NodeKind::Slot { required, .. } if node.name == field && node.key_params.is_empty() => {
             Some(*required)
         }
         _ => None,

@@ -486,7 +486,7 @@ pub(crate) fn saved_group_entry_type(
     // leaf is a scalar/identity value already typed through `saved_leaf_type`.
     resource
         .descend_layers(&layers)
-        .filter(|node| matches!(node.element, marrow_schema::Element::Group))
+        .filter(|node| matches!(node.kind, marrow_schema::NodeKind::Group))
         .map(|_| MarrowType::GroupEntry {
             resource: resource.name.clone(),
             layers: layers.iter().map(|layer| (*layer).to_string()).collect(),

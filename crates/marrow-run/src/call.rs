@@ -590,7 +590,7 @@ fn eval_resource_constructor(
 
     for (field, slot) in fields.iter().zip(&slots) {
         if slot.is_none()
-            && let Element::Slot { required: true, .. } = field.element
+            && let NodeKind::Slot { required: true, .. } = field.kind
         {
             return Err(type_error(
                 &format!("`{}` requires `{}`", resource.name, field.name),

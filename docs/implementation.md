@@ -119,7 +119,7 @@ A resource declaration compiles to a schema:
 - saved root, if any;
 - identity keys;
 - fields and child layers;
-- required and sparse elements;
+- required and sparse fields;
 - indexes and unique indexes;
 - keyed history layers;
 - documentation comments and source spans.

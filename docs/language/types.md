@@ -108,7 +108,7 @@ explicit resource shape.
 ## Sparse Fields
 
 An unmarked field is maybe-present. A field declaration says what type the
-element has when it is populated; if it is not populated, there is simply no
+field has when it is populated; if it is not populated, there is simply no
 node in the tree.
 
 ```mw
@@ -123,7 +123,7 @@ binding that diverges on absence (`const x = place else return`); an
 `a?.b?.c` that ends in one of those. An unresolved maybe-present read is a
 compile error that names the place and the available resolutions.
 
-Use `exists(path)` when code needs to branch on whether an element is
+Use `exists(path)` when code needs to branch on whether a field is
 populated; the check narrows the path inside the guarded block:
 
 ```mw
@@ -139,7 +139,7 @@ const subtitle: string = ^books(id).subtitle ?? ""
 
 ## Required Fields
 
-Most elements are sparse because trees are the default. Mark a field
+Most fields are sparse because trees are the default. Mark a field
 `required` when a resource is invalid without it:
 
 ```mw

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
-use marrow_schema::{Element, ScalarType, Type};
+use marrow_schema::{NodeKind, ScalarType, Type};
 use marrow_syntax::{
     Block, Expression, InterpolationPart, ParamMode, ParsedSource, ResourceMember, SourceSpan,
     Statement, TypeRef,
@@ -314,9 +314,9 @@ impl CheckedFacts {
                     ResourceMember::Index(index) => index.span,
                 })
                 .unwrap_or_default();
-            let kind = match node.element {
-                Element::Slot { .. } => ResourceMemberKind::Field,
-                Element::Group => ResourceMemberKind::Group,
+            let kind = match node.kind {
+                NodeKind::Slot { .. } => ResourceMemberKind::Field,
+                NodeKind::Group => ResourceMemberKind::Group,
             };
             let id = ResourceMemberId(self.resource_members.len() as u32);
             self.resource_members.push(ResourceMemberFact {
