@@ -90,17 +90,13 @@ pub struct SymbolRef {
 /// name something encoded on disk — a saved field/group/layer/index, or a
 /// resource/identity attached to a saved root — whose stored path uses the source
 /// name. Renaming such a symbol changes the on-disk path and orphans stored data
-/// unless a migration moves it; per `docs/language/resources-and-storage.md`, an
-/// `@id(...)` stable id does not move the data, it only gives migration tooling a
-/// durable handle on the element across the rename, so it is surfaced here for the
-/// caller to decide.
+/// unless explicit maintenance work moves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameSafety {
     /// Safe to rename in source alone.
     SourceOnly,
     /// Names data encoded on disk; renaming orphans stored data unless migrated.
-    /// `stable_id` is the element's `@id(...)`, when one is declared.
-    SavedDataBacked { stable_id: Option<String> },
+    SavedDataBacked,
 }
 
 /// A definition together with every reference to it (the definition included), as
@@ -394,10 +390,7 @@ impl<'p> IndexBuilder<'p> {
     fn collect_resource(&mut self, file: &Path, module: &str, resource: &ResourceDecl) {
         let saved_root = resource.store.as_ref().map(|store| store.root.clone());
         let type_safety = match &saved_root {
-            // A saved resource's root name is part of the on-disk path; the type
-            // name is its source spelling. There is no element `@id` for the whole
-            // resource, so no stable id covers it.
-            Some(_) => RenameSafety::SavedDataBacked { stable_id: None },
+            Some(_) => RenameSafety::SavedDataBacked,
             None => RenameSafety::SourceOnly,
         };
         let resource_id = self.define(
@@ -450,9 +443,7 @@ impl<'p> IndexBuilder<'p> {
                             span: field.span,
                             kind: SymbolKind::Field,
                         },
-                        RenameSafety::SavedDataBacked {
-                            stable_id: field.stable_id.clone(),
-                        },
+                        RenameSafety::SavedDataBacked,
                     );
                     self.module_scope
                         .saved_members
@@ -467,9 +458,7 @@ impl<'p> IndexBuilder<'p> {
                             span: group.span,
                             kind: SymbolKind::Layer,
                         },
-                        RenameSafety::SavedDataBacked {
-                            stable_id: group.stable_id.clone(),
-                        },
+                        RenameSafety::SavedDataBacked,
                     );
                     self.module_scope
                         .saved_members
@@ -487,9 +476,7 @@ impl<'p> IndexBuilder<'p> {
                             span: index.span,
                             kind: SymbolKind::Index,
                         },
-                        RenameSafety::SavedDataBacked {
-                            stable_id: index.stable_id.clone(),
-                        },
+                        RenameSafety::SavedDataBacked,
                     );
                     self.module_scope
                         .saved_members

@@ -19,6 +19,7 @@ mod checks;
 mod enums;
 mod infer;
 pub mod program;
+mod prototype;
 pub mod resolve;
 mod rules;
 mod typerules;
@@ -42,6 +43,7 @@ use program::TypeNames;
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
 };
+pub(crate) use prototype::check_prototype_only;
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub(crate) use typerules::*;
 
@@ -122,8 +124,9 @@ pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
 /// non-unique index branch. These shapes are valid for key traversal, but they do
 /// not have materialized values distinct from their keys.
 pub const CHECK_COLLECTION_UNSUPPORTED: &str = "check.collection_unsupported";
-/// A `lock` target is not a saved root, record, or subtree.
-pub const CHECK_LOCK_TARGET: &str = "check.lock_target";
+/// A parsed construct belongs to the prototype language surface and is rejected
+/// for the v0.1 language contract.
+pub const CHECK_PROTOTYPE_ONLY: &str = "check.prototype_only";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
@@ -862,8 +865,8 @@ fn read_source(
 /// and collect the declaration lists for a checked module. Always returns a
 /// [`CheckedFile`] — a parse error yields one whose `parsed` carries the
 /// diagnostics. Cross-file checks — module-path matching, saved-root ownership,
-/// stable-id uniqueness, and import resolution — belong to the caller, since they
-/// span files and differ between library modules and test scripts.
+/// and import resolution — belong to the caller, since they span files and differ
+/// between library modules and test scripts.
 fn check_file_source(
     file_path: &Path,
     source: &str,
@@ -1027,9 +1030,10 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
             expr_touches_saved_data(value)
         }
         Statement::Var { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+        Statement::Assign { target, value, .. } => {
             expr_touches_saved_data(target) || expr_touches_saved_data(value)
         }
+        Statement::Merge { .. } => false,
         Statement::Delete { path, .. } => expr_touches_saved_data(path),
         Statement::Return { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
         Statement::Expr { value, .. } => expr_touches_saved_data(value),
@@ -1061,9 +1065,7 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
             expr_touches_saved_data(iterable) || block_touches_saved_data(body)
         }
         Statement::Transaction { body, .. } => block_touches_saved_data(body),
-        Statement::Lock { path, body, .. } => {
-            path.as_ref().is_some_and(expr_touches_saved_data) || block_touches_saved_data(body)
-        }
+        Statement::Lock { body, .. } => block_touches_saved_data(body),
         Statement::Try {
             body,
             catch,

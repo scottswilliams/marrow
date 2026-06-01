@@ -68,6 +68,30 @@ cargo test --manifest-path /private/tmp/marrow-worktrees/<lane>/Cargo.toml ...
 
 Never run broad cargo gates in parallel against the same target directory.
 
+## Central Tracking
+
+This document is the durable implementation tracker. Do not create a second
+roadmap in chat, memories, scratch files, or ADRs. Each orchestrated lane updates
+this document when the lane changes the plan, the next queue, the quality gate,
+or a deletion target.
+
+Tracking is forward-only:
+
+- keep only the next unintegrated lanes and active blockers;
+- delete completed lane history instead of appending diary entries;
+- record design decisions in the lane's canonical docs or commit message, not in
+  a new ADR;
+- keep temporary worktree paths, target directories, review transcripts, and
+  throwaway artifacts out of tracked files.
+
+Immediate queue after the prototype rejection lane integrates:
+
+| Order | Lane | Why It Is Next | Must Prove |
+| --- | --- | --- | --- |
+| 1 | Lane 3: Shared V0.1 Fixture Skeleton | Prevents rewrite lanes from inventing isolated test replicas. | Shared production-pipeline fixture shape exists and names deletion targets for old catch-all tests. |
+| 2 | Lane 4: Checked Model Nucleus | Gives runtime, tools, and evolution a single checked fact source. | Checked facts carry stable identities, effects, and source spans without runtime syntax re-resolution. |
+| 3 | Lane 5 or Lane 6, sequenced by overlap | Resource/store split and catalog identity are the next foundation for data durability. | Physical data identity no longer depends on source spelling or regenerated IDs. |
+
 ## Prototype Removal Controls
 
 The pivot from prototype to v0.1 is the central constraint. A lane that adds the
@@ -153,6 +177,25 @@ If a proposed lane cannot strengthen one of these foundations directly or
 remove a weak foundation that blocks it, it is not an implementation lane for
 this phase.
 
+## Data Quality Gate
+
+Every lane that touches durable data, checked facts, storage, backup/restore,
+or tooling protocols must name its data-quality contract before implementation:
+
+- the source-level fixture that exercises the production pipeline;
+- the catalog or checked fact that proves stable identity;
+- the write, transaction, backup/restore, and integrity behavior the lane
+  changes or intentionally leaves unchanged;
+- the stale-data or compatibility fixture that would fail if old source-spelling
+  identity, raw path identity, or duplicate classifiers remained authoritative;
+- the exact scan that proves a rejected prototype path is absent from production
+  code and canonical docs.
+
+Raw byte validity, green unit tests, or a local helper that duplicates semantic
+classification are not enough evidence for a data-quality claim. The proof must
+come from the same source, schema, checked program, store, and tool path that
+users exercise.
+
 ## Full Integration Gate
 
 Every integrated code lane must pass fresh output from:
@@ -211,7 +254,7 @@ path it replaces. Examples:
 
 | Prototype Path | Outcome | Replacement Gate |
 | --- | --- | --- |
-| `@id("...")` as durable identity | Reject and delete as production identity | catalog lane records stable IDs outside source annotations |
+| resource-member stable-id annotations as durable identity | Delete from source syntax and production identity | catalog lane records stable IDs outside source annotations |
 | Textual saved paths as stable IDs | Debug/admin only | tree-cell store and tools expose typed store/catalog identities |
 | Source-name physical keys | Delete production use | tree-cell physical keys derive from stable IDs and typed key values |
 | Source-order enum ordinals as stored meaning | Delete production use | enum member stable identity is encoded and indexed |
@@ -334,7 +377,15 @@ Files:
 - `docs/language/*.md`
 - `docs/*.md`
 - `docs/future/*.md`
+- `crates/marrow-syntax/src/ast.rs`
+- `crates/marrow-syntax/src/parse_decl.rs`
+- `crates/marrow-syntax/src/format.rs`
+- `crates/marrow-syntax/tests/*.rs`
+- `crates/marrow-schema/src/lib.rs`
+- `crates/marrow-schema/tests/*.rs`
 - `crates/marrow-check/src/checks.rs`
+- `crates/marrow-check/src/infer.rs`
+- `crates/marrow-check/src/prototype.rs`
 - `crates/marrow-check/tests/project.rs`
 - `crates/marrow/tests/check_cli.rs`
 
@@ -343,7 +394,8 @@ Production behavior:
 - Canonical docs describe v0.1 resource/store, requiredness, absence, write, and
   transaction laws.
 - Prototype-only features are removed from canonical docs and explicitly
-  rejected/diagnosed while any old spelling still parses during the rewrite.
+  deleted from syntax or rejected while old statement/expression spelling still
+  parses during the rewrite.
 - `docs/future/` contains only future constraints that are not v0.1 gates.
 - `lock`, `merge`, `@id`, raw saved-path APIs, source-order enum ordinals, and
   saved `inout` stop reading like v0.1 commitments.

@@ -820,13 +820,12 @@ fn parses_reference_sample_structure() {
 }
 
 #[test]
-fn attaches_doc_comments_and_stable_ids_to_resource_members() {
+fn attaches_doc_comments_to_resource_members() {
     let parsed = parse_source(
         r#"module shelf::books
 
 resource Book at ^books(id: int)
     ;; Display title.
-    @id("book.title")
     required title: string
 "#,
     );
@@ -837,7 +836,27 @@ resource Book at ^books(id: int)
         panic!("expected field, got {:?}", book.members[0]);
     };
     assert_eq!(title.docs, ["Display title."]);
-    assert_eq!(title.stable_id.as_deref(), Some("book.title"));
+}
+
+#[test]
+fn rejects_source_identity_annotations() {
+    let parsed = parse_source(
+        r#"module shelf::books
+
+resource Book at ^books(id: int)
+    @id("book.title")
+    required title: string
+"#,
+    );
+
+    assert!(parsed.has_errors());
+    assert!(
+        parsed.diagnostics.iter().any(|d| {
+            d.code == "parse.syntax" && d.message.contains("expected resource member name")
+        }),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
@@ -2158,7 +2177,6 @@ fn parses_a_flat_enum_declaration() {
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert!(!status.public);
     assert_eq!(member_names(status), ["active", "archived", "banned"]);
-    assert!(status.members.iter().all(|m| m.stable_id.is_none()));
 }
 
 #[test]

@@ -185,14 +185,13 @@ throws, returns, breaks, or continues. If `finally` throws, that error leaves
 the statement.
 `finally` is cleanup code; it cannot `return`, `break`, or `continue`.
 
-## Transactions And Locks
+## Transactions
 
-Transactions and locks affect saved data, so their detailed rules live in
-[Resources and Saved Data](resources-and-storage.md). They are block
-statements:
+Transactions affect saved data, so their detailed rules live in
+[Resources and Saved Data](resources-and-storage.md). A transaction is a block
+statement:
 
 ```mw
-lock ^books(id)
-    transaction
-        ^books(id).loanedTo = borrower
+transaction
+    ^books(id).loanedTo = borrower
 ```

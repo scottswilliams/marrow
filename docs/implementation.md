@@ -54,7 +54,7 @@ Marrow source follows one direct path:
 2. parse `.mw` files as Marrow source;
 3. match module declarations to source-root-relative paths;
 4. resolve imports and names;
-5. build resource schemas and stable metadata;
+5. build resource schemas and source metadata;
 6. check types, effects, saved paths, and capabilities;
 7. hand a checked program to runtime and tools.
 
@@ -122,7 +122,7 @@ A resource declaration compiles to a schema:
 - required and sparse elements;
 - indexes and unique indexes;
 - keyed history layers;
-- documentation comments and stable metadata IDs.
+- documentation comments and source spans.
 
 The same schema checks local values and saved values. This is the main
 simplification in Marrow: users learn one tree shape, then decide whether that
@@ -214,9 +214,9 @@ such as a record plus an audit entry, several related resources, or a delete
 plus cleanup work.
 
 Whole-resource assignment replaces the managed resource tree for one identity.
-Field writes update existing resources. `merge` copies populated entries into
-an existing tree. `delete` removes a value or subtree and updates generated
-indexes.
+Field writes update existing resources. `delete` removes a value or subtree and
+updates generated indexes. Source-level `merge` is not part of v0.1; use
+explicit checked writes or a future checked transform.
 
 Managed roots reject raw writes unless a tool enters explicit maintenance
 mode. This protects indexes, history layers, and required fields from
@@ -239,9 +239,8 @@ Marrow makes these guarantees to ordinary code:
 Nested transactions are savepoints. An inner rollback can be caught by outer
 code, and the outer transaction can continue.
 
-Locks coordinate application invariants. They are not schema validation,
-transactions, authentication, or permissions. A lock is released when its block
-exits.
+Source-level `lock` is not part of v0.1. Backend writer coordination is an
+implementation concern, not an accepted source construct.
 
 `nextId(...)` is runtime policy over a keyed saved root. The default policy
 covers a resource with one `int` identity key. `append(path, value)` allocates
@@ -350,16 +349,17 @@ source, tools can still restore or inspect the raw tree.
 Normal backups include generated index trees. Typed restore can verify them
 against primary resources or rebuild them when source is available.
 
-Normal restore writes into an empty target. Replace, merge, and repair restores
-are deferred — see [future/cli.md](future/cli.md).
+Normal restore writes into an empty target. Non-empty restore modes are deferred
+— see [future/cli.md](future/cli.md).
 
 Backend-native files can support fast local snapshots, but they are not the
 portable archive format.
 
 ## Data Evolution And Maintenance
 
-Schemas evolve through source changes and explicit data-evolution work. Stable
-metadata IDs let tools recognize a field or layer after a source rename.
+Schemas evolve through source changes and explicit data-evolution work. For
+v0.1, rename tooling uses explicit source paths and maintenance code. Durable
+rename identity belongs to future catalog work.
 
 Marrow does not guess data movement. If a change moves data, populates a new
 required field, rebuilds an index, or changes identity, that work is explicit,
@@ -404,8 +404,7 @@ manifest (format magic, version, and record count), not an engine file.
 replays one into an empty store in a single transaction; a non-empty target fails
 with `restore.not_empty`, since restoring over existing data is an explicit
 maintenance action. Empty-target restore is the only mode implemented today;
-replace, merge, and repair restore (the non-empty cases) are deferred (see
-[future/cli.md](future/cli.md)).
+non-empty restore modes are deferred (see [future/cli.md](future/cli.md)).
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and

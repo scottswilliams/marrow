@@ -189,10 +189,9 @@ entry does not renumber subsequent entries. Treat sequence keys as storage
 positions, not as a promise that the sequence is dense.
 
 For local trees and single-writer saved profiles, append is ordinary tree
-write work. In a shared-writer capability profile, append requires a lock or
-backend capability that can reserve a unique child key. If Marrow cannot
-choose a key safely, it reports a typed capability or runtime error instead of
-guessing.
+write work. In a shared-writer capability profile, append requires backend
+support that can reserve a unique child key. If Marrow cannot choose a key
+safely, it reports a typed capability or runtime error instead of guessing.
 
 ## Write And Print
 
@@ -211,7 +210,7 @@ print($"saved {id}")
 
 Neither statement produces a value. Complex IO belongs in `std::io`.
 
-## Delete And Merge
+## Delete
 
 `delete path` removes the value and child tree at that path:
 
@@ -219,12 +218,8 @@ Neither statement produces a value. Complex IO belongs in `std::io`.
 delete ^books(id).subtitle
 ```
 
-`merge target = source` copies a tree:
-
-```mw
-var draftBook: Book
-merge draftBook = ^books(id)
-```
+Source-level `merge` is not part of v0.1. Use explicit saved writes or a future
+checked transform for tree-copy behavior.
 
 ## Conversions
 

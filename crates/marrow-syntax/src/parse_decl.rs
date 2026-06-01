@@ -839,21 +839,6 @@ impl<'a> DeclParser<'a> {
         Vec::new()
     }
 
-    fn take_member_docs(
-        &self,
-        docs: &mut Vec<Token>,
-        comments: &mut Vec<Comment>,
-        has_stable_id: bool,
-    ) -> Vec<String> {
-        if has_stable_id && !docs.is_empty() {
-            return docs
-                .drain(..)
-                .map(|token| doc_comment_text(token.text(self.source)))
-                .collect();
-        }
-        self.take_docs_for_current_item(docs, comments)
-    }
-
     fn flush_docs_as_comments(&self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
         comments.extend(docs.drain(..).map(|token| {
             comment_from_token(
@@ -1002,7 +987,6 @@ impl<'a> DeclParser<'a> {
         let mut members = Vec::new();
         let mut comments = Vec::new();
         let mut docs: Vec<Token> = Vec::new();
-        let mut stable_id = None;
         self.advance(); // INDENT
 
         while let Some(kind) = self.peek() {
@@ -1049,28 +1033,12 @@ impl<'a> DeclParser<'a> {
                     // error points at the content after the indentation.
                     let span = self.header_span();
                     let err = self.content_span();
-                    if matches!(kind, TokenKind::At) {
-                        if docs.last().is_some_and(|last| {
-                            self.tokens[self.pos].span.line > last.span.line + 1
-                        }) {
-                            self.flush_docs_as_comments(&mut docs, &mut comments);
-                        }
-                        match parse_stable_id_tokens(self.source, &self.take_header_line()) {
-                            Some(id) => stable_id = Some(id),
-                            None => {
-                                self.error_span(err, "expected @id(\"stable.id\")");
-                            }
-                        }
-                        continue;
-                    }
                     if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
-                        let member_docs =
-                            self.take_member_docs(&mut docs, &mut comments, stable_id.is_some());
+                        let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                         let header = self.take_header_line();
                         match parse_index_tokens(self.source, &header[1..]) {
                             Ok(index) => members.push(ResourceMember::Index(IndexDecl {
                                 docs: member_docs,
-                                stable_id: stable_id.take(),
                                 span,
                                 ..index
                             })),
@@ -1078,8 +1046,7 @@ impl<'a> DeclParser<'a> {
                         }
                         continue;
                     }
-                    let member_docs =
-                        self.take_member_docs(&mut docs, &mut comments, stable_id.is_some());
+                    let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                     let header = self.take_header_line();
                     match parse_field_or_group_tokens(self.source, &header) {
                         Ok(MemberHead::Field {
@@ -1093,7 +1060,6 @@ impl<'a> DeclParser<'a> {
                             }
                             members.push(ResourceMember::Field(FieldDecl {
                                 docs: member_docs,
-                                stable_id: stable_id.take(),
                                 required,
                                 name,
                                 keys,
@@ -1114,7 +1080,6 @@ impl<'a> DeclParser<'a> {
                                 };
                             members.push(ResourceMember::Group(GroupDecl {
                                 docs: member_docs,
-                                stable_id: stable_id.take(),
                                 name,
                                 keys,
                                 members: children,
@@ -1162,7 +1127,7 @@ impl<'a> DeclParser<'a> {
 
     /// Parse an `INDENT … DEDENT` block of enum members. A member is a bare
     /// identifier on its own line; anything else (a type annotation, key
-    /// parameters, an `@id`, or a deeper indent) is a parse error. This mirrors
+    /// parameters, or a deeper indent) is a parse error. This mirrors
     /// `parse_resource_members` but accepts only the bare-name form.
     fn parse_enum_members(&mut self) -> (Vec<EnumMember>, Vec<Comment>) {
         let mut members = Vec::new();
@@ -1225,7 +1190,6 @@ impl<'a> DeclParser<'a> {
                                 };
                             members.push(EnumMember {
                                 docs: member_docs,
-                                stable_id: None,
                                 name,
                                 category,
                                 members: nested,
@@ -1714,8 +1678,6 @@ fn parse_resource_head(
     if rest.is_empty() {
         return Ok((name, None));
     }
-    // `at` is the saved-root keyword; the `@` symbol is a separate token used for
-    // `@id` member annotations.
     if !matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::At))
@@ -1778,25 +1740,6 @@ fn parse_key_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<KeyParam
     Ok(params)
 }
 
-/// Parse a `@id("stable.id")` member annotation from its tokens.
-fn parse_stable_id_tokens(source: &str, tokens: &[Token]) -> Option<String> {
-    // `@id ( "..." )`: At, Identifier(id), LeftParen, String, RightParen.
-    let [at, id, open, value, close] = tokens else {
-        return None;
-    };
-    if at.kind != TokenKind::At
-        || !(id.kind == TokenKind::Identifier && id.text(source) == "id")
-        || open.kind != TokenKind::LeftParen
-        || value.kind != TokenKind::String
-        || close.kind != TokenKind::RightParen
-    {
-        return None;
-    }
-    let text = value.text(source);
-    let body = text.strip_prefix('"')?.strip_suffix('"')?;
-    Some(body.to_string())
-}
-
 /// Parse an `index name(field, ...) [unique]` declaration from the tokens after
 /// the `index` keyword. The span is filled in by the caller.
 fn parse_index_tokens(source: &str, tokens: &[Token]) -> Result<IndexDecl, &'static str> {
@@ -1828,7 +1771,6 @@ fn parse_index_tokens(source: &str, tokens: &[Token]) -> Result<IndexDecl, &'sta
     };
     Ok(IndexDecl {
         docs: Vec::new(),
-        stable_id: None,
         name,
         args,
         unique,

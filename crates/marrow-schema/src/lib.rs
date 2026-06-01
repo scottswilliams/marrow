@@ -269,7 +269,6 @@ pub struct KeyDef {
 pub struct Node {
     pub name: String,
     pub docs: Vec<String>,
-    pub stable_id: Option<String>,
     /// Empty for a top-level field; non-empty for any keyed leaf or keyed group.
     pub key_params: Vec<KeyDef>,
     /// Empty for any [`Element::Slot`]; the nested nodes for an [`Element::Group`].
@@ -298,7 +297,6 @@ pub struct IndexSchema {
     pub docs: Vec<String>,
     pub args: Vec<String>,
     pub unique: bool,
-    pub stable_id: Option<String>,
 }
 
 /// The compiled form of an enum: a named, fixed set of members. Members are held
@@ -318,13 +316,11 @@ pub struct EnumSchema {
 
 /// One enum member. `parent` is the ordinal of the enclosing member, `None` at the
 /// top level. A `category` member groups its descendants and is not selectable as a
-/// value. `stable_id` is a reserved slot for the rename-safe stable-id work; it is
-/// unused while ordinals are positional.
+/// value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMemberSchema {
     pub name: String,
     pub docs: Vec<String>,
-    pub stable_id: Option<String>,
     pub parent: Option<usize>,
     pub category: bool,
 }
@@ -544,9 +540,6 @@ pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
 /// Index arguments do not walk keyed child layers or unkeyed group descendants.
 pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
 
-/// Two resource elements declare the same stable ID. Stable IDs must be unique.
-pub const SCHEMA_DUPLICATE_STABLE_ID: &str = "schema.duplicate_stable_id";
-
 /// A saved key (an identity key, a keyed-layer key parameter, or an index
 /// argument) has a type with no order-preserving key encoding — currently
 /// `decimal`. Saved keys use ordered key types; the store cannot encode a
@@ -605,11 +598,9 @@ impl std::error::Error for SchemaError {}
 /// keep checking. Maps structure and the single-resource rules the schema alone
 /// can decide: `unknown` is rejected in managed saved fields and
 /// keys, an identity key may not share a name with a top-level member, index
-/// arguments must resolve within the resource, and stable IDs are unique within
-/// the resource.
+/// arguments must resolve within the resource.
 ///
-/// Deferred: full type validation, one-owner-per-root, and project-wide
-/// (cross-resource) stable-ID uniqueness.
+/// Deferred: full type validation and one-owner-per-root.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
     let map_sugar = decl.store.is_some();
@@ -652,8 +643,6 @@ pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError
 
     check_unsupported_map_types(&decl.members, map_sugar, &mut errors);
     check_index_args(decl, &mut errors);
-    check_stable_ids(decl, &mut errors);
-
     (schema, errors)
 }
 
@@ -725,7 +714,6 @@ fn flatten_enum_members(
         members.push(EnumMemberSchema {
             name: member.name.clone(),
             docs: member.docs.clone(),
-            stable_id: member.stable_id.clone(),
             parent,
             category: member.category,
         });
@@ -1177,54 +1165,6 @@ fn has_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
     })
 }
 
-/// Report stable IDs that repeat within this resource. Stable IDs must be
-/// unique; the later element is the error. Elements are visited in source order,
-/// descending into each group before the next sibling, so the first occurrence
-/// wins deterministically.
-///
-/// This covers the within-resource subset only; cross-resource uniqueness is
-/// deferred to a later project-wide pass.
-fn check_stable_ids(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
-    let mut seen: Vec<String> = Vec::new();
-    for (id, span) in stable_ids(decl) {
-        if seen.contains(&id) {
-            errors.push(SchemaError {
-                code: SCHEMA_DUPLICATE_STABLE_ID,
-                message: format!("duplicate stable id `{id}`"),
-                span,
-            });
-        } else {
-            seen.push(id);
-        }
-    }
-}
-
-/// Every stable ID declared in a resource, paired with the span of the element
-/// that carries it, in declaration order (descending into a group before the
-/// next sibling). Drives within-resource uniqueness here and project-wide
-/// uniqueness in the checker. Repeats are kept so callers can report them.
-pub fn stable_ids(decl: &ResourceDecl) -> Vec<(String, SourceSpan)> {
-    let mut ids = Vec::new();
-    collect_stable_ids(&decl.members, &mut ids);
-    ids
-}
-
-fn collect_stable_ids(members: &[ResourceMember], ids: &mut Vec<(String, SourceSpan)>) {
-    for member in members {
-        let (stable_id, span) = match member {
-            ResourceMember::Field(field) => (&field.stable_id, field.span),
-            ResourceMember::Group(group) => (&group.stable_id, group.span),
-            ResourceMember::Index(index) => (&index.stable_id, index.span),
-        };
-        if let Some(id) = stable_id {
-            ids.push((id.clone(), span));
-        }
-        if let ResourceMember::Group(group) = member {
-            collect_stable_ids(&group.members, ids);
-        }
-    }
-}
-
 /// The element type spelling of a `sequence[T]`, or `None` for a non-sequence
 /// type. The one place the `sequence[...]` spelling is parsed; [`Type::resolve`]
 /// drives off it. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree.
@@ -1455,7 +1395,6 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar
             Node {
                 name: group.name.clone(),
                 docs: group.docs.clone(),
-                stable_id: group.stable_id.clone(),
                 key_params: group.keys.iter().map(key_def).collect(),
                 members: group_members(group, errors, map_sugar),
                 element: Element::Group,
@@ -1471,7 +1410,6 @@ fn slot_node(field: &FieldDecl, ty: Type, key_params: Vec<KeyDef>, required: boo
     Node {
         name: field.name.clone(),
         docs: field.docs.clone(),
-        stable_id: field.stable_id.clone(),
         key_params,
         members: Vec::new(),
         element: Element::Slot { ty, required },
@@ -1535,7 +1473,6 @@ fn index_schema(index: &IndexDecl) -> IndexSchema {
         docs: index.docs.clone(),
         args: index.args.clone(),
         unique: index.unique,
-        stable_id: index.stable_id.clone(),
     }
 }
 

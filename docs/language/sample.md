@@ -63,13 +63,6 @@ pub fn addTag(id: Book::Id, tag: string): int
 
     return append(^books(id).tags, tag)
 
-pub fn copyTags(from: Book::Id, to: Book::Id): bool
-    if not exists(^books(from)) or not exists(^books(to))
-        return false
-
-    merge ^books(to).tags = ^books(from).tags
-    return true
-
 pub fn remove(id: Book::Id)
     delete ^books(id)
 
@@ -99,6 +92,6 @@ The sample covers:
 - child key values that cannot collide with generated index names;
 - explicit history entry creation;
 - transaction-built history entries with required fields;
-- managed assignment, `merge`, and `delete`;
+- managed assignment and `delete`;
 - generated index traversal through `^books.byShelf(...)`;
 - a transaction that updates primary data and generated index entries.

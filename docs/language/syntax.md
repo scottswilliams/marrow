@@ -70,13 +70,9 @@ resource Patient at ^patients(id: string)
         note: string
 ```
 
-Stable IDs apply to the next resource element:
-
-```mw
-;; Legal family name.
-@id("patient.name.last")
-last: string
-```
+Documentation comments apply to the next resource element. Source stable-id
+annotations are not part of v0.1; durable element identity belongs in the
+catalog.
 
 Fields are sparse by default. Add `required` when a resource is invalid
 without a populated element:
@@ -111,7 +107,6 @@ loanCount = loanCount + 1
 ^books(id).title = title
 delete ^books(id).subtitle
 var draftBook: Book
-merge draftBook = ^books(id)
 return id
 write($"created {id}")
 print($"created {id}")
@@ -346,6 +341,8 @@ A reserved word cannot be used as a name. Bindings, parameters, resources,
 fields, functions, and module segments must not be spelled as a reserved word;
 doing so is a parse error. Existing raw data named like a keyword is reached
 through a quoted segment, as above.
+
+`merge` and `lock` are reserved even though they are not v0.1 statements.
 
 A bare type spelling in value position is also a parse error. A type keyword such
 as `int` is valid in a type annotation or as a conversion call `int(raw)`, but

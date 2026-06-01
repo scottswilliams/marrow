@@ -295,7 +295,6 @@ fn formats_resource_declaration_with_members() {
     let source = "module app\n\
          resource Book at ^books(id: int)\n\
          \x20   ;; Display title.\n\
-         \x20   @id(\"book.title\")\n\
          \x20   required title: string\n\
          \x20   tags(pos: int): string\n\
          \x20   notes(noteId: string)\n\
@@ -303,7 +302,6 @@ fn formats_resource_declaration_with_members() {
          \x20   index byShelf(shelf, id) unique\n";
     let expected = "resource Book at ^books(id: int)\n\
          \x20   ;; Display title.\n\
-         \x20   @id(\"book.title\")\n\
          \x20   required title: string\n\
          \x20   tags(pos: int): string\n\
          \x20   notes(noteId: string)\n\

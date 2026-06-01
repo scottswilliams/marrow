@@ -3,15 +3,12 @@
 Future counterpart of
 [`../../language/resources-and-storage.md`](../../language/resources-and-storage.md).
 
-## Assigned stable element IDs
+## Catalog-Owned Stable Element IDs
 
-Today an element's stable identity is a name-derived string token written by
-hand, `@id("book.title")`, which marks a field or layer's rename identity. The
-approved redesign replaces that string with catalog-owned opaque stable identity
-for stored entities. Tools may allocate or preserve those identities while
-editing, but the project catalog is the authority. Because the identity is not
-name-shaped, a rename never desyncs it from the data it names. The current
-name-derived `@id("...")` remains the implemented form until this lands.
+Stored entities need catalog-owned opaque stable identity. Tools may allocate or
+preserve those identities while editing, but the project catalog is the
+authority. Because the identity is not name-shaped, a rename never desyncs it
+from the data it names.
 
 ## GUID identity allocation
 

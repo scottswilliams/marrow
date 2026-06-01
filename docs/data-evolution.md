@@ -21,7 +21,7 @@ fully describe until explicit data-evolution work runs.
 |---|---|
 | Add a sparse element | Source change only. Existing records stay valid; the element reads as absent until written. |
 | Add a `required` element | Code or tooling that populates existing records before code depends on the field. |
-| Rename an element | Source rename, plus explicit data movement if saved data must move. A stable `@id` helps tooling recognize the element across the rename. |
+| Rename an element | Source rename, plus explicit data movement if saved data must move. |
 | Add an index | Backfill/rebuild: rewrite indexed records so the generated index tree is populated. |
 | Remove an element | The data under it stays until code or maintenance work removes it. |
 | Delete a whole root, drop a required field, write raw segments | Maintenance work. Run with `--maintenance`. |
@@ -69,33 +69,23 @@ Run it, then deploy code that depends on the field:
 marrow run --entry app::backfillPages ./project
 ```
 
-## Stable IDs For Renames
+## Renames
 
 A field's source name is how code spells it. A rename changes that spelling, and
 saved data keyed by the old name does not move on its own.
 
-`@id(...)` gives an element a durable source metadata token that can help tools
-recognize a rename:
+For v0.1, rename work is explicit maintenance code or a tool workflow that names
+the old and new saved paths:
 
 ```mw
-resource Book at ^books(id: int)
-    ;; Display title shown in search and shelf views.
-    @id("book.title")
-    displayTitle: string
+pub fn renameTitle()
+    for id in keys(^books)
+        ^books(id).displayTitle = ^books(id).title
+        delete ^books(id).title
 ```
 
-What `@id` does and does not do today:
-
-- It is source metadata, not a database catalog. It does not change the saved
-  path, the field name, the runtime value, or the type.
-- The checker enforces that stable IDs are unique within a project. A collision
-  is `schema.duplicate_stable_id`.
-- It does not move saved data. Data-evolution code still decides what to read,
-  rewrite, or delete.
-
-Use stable dotted text that describes the logical element, not its current
-source spelling. Leave IDs off short-lived private shapes where a source name is
-enough.
+Source stable-id annotations are not a production rename contract or v0.1
+syntax. Use explicit maintenance code until catalog-owned identity lands.
 
 ## Index Rebuilds
 
@@ -175,8 +165,7 @@ one transaction. Empty-target restore is the only restore mode implemented
 today; restoring into a store that already holds data fails with
 `restore.not_empty`.
 
-Replace, merge, and repair restores are deferred (see
-[future/cli.md](future/cli.md)).
+Non-empty restore modes are deferred (see [future/cli.md](future/cli.md)).
 
 ## Also Deferred
 
@@ -187,7 +176,7 @@ These do not exist yet:
 - typed transforms as a dedicated planning surface;
 - `marrow data diff` and `marrow data load` (see
   [future/data-tools.md](future/data-tools.md));
-- replace, merge, and repair restore modes.
+- non-empty restore modes.
 
 CLI commands follow the standard contract from
 [`error-codes.md`](error-codes.md): `0` on success, `1` for a recoverable check,

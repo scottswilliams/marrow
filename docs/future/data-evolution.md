@@ -48,9 +48,9 @@ Durable identity should be catalog-owned and opaque. Source names are authoring
 spellings, public aliases are client/tool spellings, and physical key segments
 are storage layout. Those concepts must not collapse into one string.
 
-Current `@id("book.title")` annotations are transitional source metadata. They
-can help tools recognize a rename in the prototype, but they are not the final
-durable identity model.
+Source-level stable-id annotations are not the durable identity model. Future
+rename tooling should read and write catalog identity instead of treating source
+metadata as authoritative.
 
 ## Typed Transforms
 

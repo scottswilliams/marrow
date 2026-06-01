@@ -233,8 +233,8 @@ records inside one transaction, so a target either gains the whole archive or is
 left unchanged.
 
 `marrow restore` writes into an empty target only; a non-empty target fails
-with `restore.not_empty`. Restoring over existing data — replace, merge, and
-repair modes — is deferred (see [future/cli.md](future/cli.md)).
+with `restore.not_empty`. Non-empty restore modes are deferred (see
+[future/cli.md](future/cli.md)).
 
 ## Inspecting The Store From The CLI
 

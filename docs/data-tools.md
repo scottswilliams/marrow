@@ -27,8 +27,8 @@ rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
 
 There is no in-place repair command. To rewrite a store, back it up, empty it,
 and `marrow restore` an archive into the empty store (see [cli.md](cli.md));
-`marrow restore` writes into an empty target only, and replace/merge/repair
-restores are deferred. `data` itself only reads.
+`marrow restore` writes into an empty target only, and non-empty restore modes
+are deferred. `data` itself only reads.
 
 ## What needs source, what does not
 

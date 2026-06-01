@@ -794,7 +794,10 @@ fn count_builtin_type(
     }
 }
 
-fn is_saved_path_expression(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+pub(crate) fn is_saved_path_expression(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+) -> bool {
     use marrow_syntax::Expression;
     match expr {
         Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
@@ -810,6 +813,7 @@ fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expres
     use marrow_syntax::Expression;
     match callee {
         Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::Call { .. } => is_saved_path_expression(program, callee),
         Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
             match base.as_ref() {
                 Expression::SavedRoot { name: root, .. } => find_resource_schema(program, root)

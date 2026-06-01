@@ -1209,10 +1209,7 @@ fn a_saved_field_name_is_saved_data_backed_and_unsafe() {
         .expect("the field declaration is a symbol");
     assert_eq!(def.kind, SymbolKind::Field, "{def:?}");
     assert!(
-        matches!(
-            index.rename_safety(&def),
-            RenameSafety::SavedDataBacked { .. }
-        ),
+        matches!(index.rename_safety(&def), RenameSafety::SavedDataBacked),
         "a saved field is data-backed: {:?}",
         index.rename_safety(&def),
     );
@@ -1243,30 +1240,4 @@ fn a_source_only_symbol_is_safe_to_rename() {
         RenameSafety::SourceOnly,
         "a parameter is source-only",
     );
-}
-
-#[test]
-fn a_saved_field_with_a_stable_id_carries_it_for_migration() {
-    // A stored field with an `@id(...)` is still saved-data-backed (the on-disk
-    // path uses the source name), but the stable id is surfaced so migration
-    // tooling can track the rename.
-    let source = "module m\n\
-        resource Book at ^books(id: int)\n    \
-        @id(\"book.title\")\n    \
-        required title: string\n\
-        fn peek(id: int): string\n    \
-        return ^books(id).title\n";
-    let (index, paths) = analyze("safety-stable-id", &[("src/m.mw", source)]);
-    let file = &paths[0];
-
-    let decl_offset = source.find("title: string").expect("field decl") + 1;
-    let def = index
-        .definition(file, decl_offset)
-        .expect("field declaration");
-    match index.rename_safety(&def) {
-        RenameSafety::SavedDataBacked { stable_id } => {
-            assert_eq!(stable_id.as_deref(), Some("book.title"), "{stable_id:?}");
-        }
-        other => panic!("a saved field is data-backed, found {other:?}"),
-    }
 }

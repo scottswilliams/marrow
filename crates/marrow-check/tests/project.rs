@@ -1478,28 +1478,45 @@ fn reports_two_resources_owning_one_saved_root() {
 }
 
 #[test]
-fn reports_stable_id_reused_across_resources() {
-    let root = temp_project("dup-stable-id", |root| {
-        // A stable id must be unique across the whole project, not only within
-        // one resource.
-        write(
-            root,
-            "src/shelf.mw",
-            "module shelf\n\
-             resource Book at ^books(id: int)\n\
-             \x20   @id(\"shared\")\n\
-             \x20   required title: string\n\
-             resource Shelf at ^shelves(id: int)\n\
-             \x20   @id(\"shared\")\n\
-             \x20   required name: string\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
+fn prototype_only_constructs_are_rejected_after_parsing() {
+    let report = check_module_report(
+        "prototype-only",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn normalize(inout book: Book)\n    return\n\
+         fn save(out book: Book)\n    book = Book(title: \"saved\")\n\n\
+         fn f(id: int)\n    var local = Book(title: \"local\")\n    normalize(inout local)\n    save(out ^books(id))\n    lock ^books(id)\n        print(\"locked\")\n    merge ^books(id) = ^books(id)\n    normalize(inout ^books(id))\n",
+    );
 
-    let dups = with_code(&report, "schema.duplicate_stable_id");
-    assert_eq!(dups.len(), 1, "{:#?}", report.diagnostics);
-    assert!(dups[0].message.contains("shared"), "{}", dups[0].message);
+    let found = with_code(&report, "check.prototype_only");
+    assert_eq!(found.len(), 3, "{:#?}", report.diagnostics);
+    assert!(
+        found.iter().any(|d| d.message.contains("lock")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("merge")),
+        "{found:#?}"
+    );
+    assert!(
+        found.iter().any(|d| d.message.contains("saved `inout`")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn saved_inout_through_index_entry_is_prototype_only() {
+    let report = check_module_report(
+        "prototype-index-inout",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn touch(inout id: Book::Id)\n    return\n\
+         fn f(id: int)\n    touch(inout ^books.byShelf(\"fiction\")(id))\n",
+    );
+
+    let found = with_code(&report, "check.prototype_only");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -4753,13 +4770,19 @@ fn local_field_and_name_assignment_targets_are_allowed() {
 }
 
 #[test]
-fn invalid_merge_target_is_rejected() {
-    let found = check_script(
-        "merge-bad",
-        "fn f()\n    merge f(x) = y\n",
-        "check.invalid_assign_target",
+fn merge_reports_only_prototype_rejection() {
+    let report = check_module_report("merge-bad", "module m\nfn f()\n    merge f(x) = y\n");
+    assert!(
+        with_code(&report, "check.invalid_assign_target").is_empty(),
+        "{:#?}",
+        report.diagnostics
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        with_code(&report, "check.prototype_only").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]
@@ -4929,28 +4952,65 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
 }
 
 #[test]
-fn lock_targets_must_be_saved_roots_records_or_subtrees() {
-    let found = check_module(
+fn invalid_lock_targets_report_only_prototype_rejections() {
+    let report = check_module_report(
         "lock-targets",
         "module m\n\
          resource Cell at ^cells(id: int)\n    required v: int\n\
          fn lockLocal()\n    var x: int = 1\n    lock x\n        x = 2\n\
          fn lockField(id: int)\n    lock ^cells(id).v\n        ^cells(id).v = 2\n\
          fn lockLiteral()\n    lock 5\n        print(\"nope\")\n",
-        "check.lock_target",
     );
-    assert_eq!(found.len(), 3, "{found:#?}");
+    assert_eq!(
+        with_code(&report, "check.prototype_only").len(),
+        3,
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]
-fn saved_root_record_and_group_lock_targets_are_allowed() {
+fn lock_target_out_calls_do_not_affect_production_out_flow() {
+    let report = check_module_report(
+        "lock-target-out-flow",
+        "module m\n\
+         fn assign(out value: int)\n    value = 1\n\
+         fn f(out value: int)\n    lock assign(out value)\n        return\n",
+    );
+
+    assert_eq!(
+        with_code(&report, "check.prototype_only").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.out_parameter_assignment").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.invalid_assign_target").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn lock_statements_are_prototype_only_regardless_of_target_shape() {
     let report = check_module_report(
         "lock-targets-ok",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    notes(pos: int)\n        body: string\n\
          fn ok(id: int, pos: int)\n    lock ^books\n        print(\"root\")\n    lock ^books(id)\n        print(\"record\")\n    lock ^books(id).notes\n        print(\"layer\")\n    lock ^books(id).notes(pos)\n        ^books(id).notes(pos).body = \"x\"\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_eq!(
+        with_code(&report, "check.prototype_only").len(),
+        4,
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 // --- W1 unified resolver: module-aware, visibility-aware call resolution ---

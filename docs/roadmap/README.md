@@ -15,7 +15,7 @@ product, so the boundary stays clear as it grows.
 
 ## Implementation Roadmap
 
-The active implementation control surface is
+The active implementation plan and forward tracker is
 [`prototype-to-v1-execution-plan.md`](prototype-to-v1-execution-plan.md). It
 maps the accepted Marrow ADR packet to file-disjoint lanes, review gates,
 deletion targets, and verification commands for the v0.1 rewrite.

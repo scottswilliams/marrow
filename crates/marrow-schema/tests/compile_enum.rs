@@ -51,10 +51,9 @@ fn member_name_inverts_the_ordinal() {
 }
 
 #[test]
-fn carries_member_docs_and_an_empty_stable_id_slot() {
+fn carries_member_docs() {
     let schema = compile_ok("module app\nenum Status\n    ;; Currently live.\n    active\n");
     assert_eq!(schema.members[0].docs, ["Currently live."]);
-    assert!(schema.members[0].stable_id.is_none());
 }
 
 #[test]

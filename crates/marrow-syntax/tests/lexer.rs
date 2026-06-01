@@ -125,7 +125,7 @@ fn preserves_doc_comments_as_tokens() {
 
 #[test]
 fn indented_doc_comments_follow_block_layout() {
-    let source = "resource Book at ^books(id: int)\n    ;; Display title.\n    @id(\"book.title\")\n    title: string\n";
+    let source = "resource Book at ^books(id: int)\n    ;; Display title.\n    title: string\n";
 
     assert_eq!(
         kinds(source),
@@ -143,12 +143,6 @@ fn indented_doc_comments_follow_block_layout() {
             TokenKind::Newline,
             TokenKind::Indent,
             TokenKind::DocComment,
-            TokenKind::Newline,
-            TokenKind::At,
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::String,
-            TokenKind::RightParen,
             TokenKind::Newline,
             TokenKind::Identifier,
             TokenKind::Colon,

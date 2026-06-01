@@ -125,9 +125,6 @@ pub(crate) fn analyze_source_project(
     // The first resource (in file then source order) to claim each saved root
     // owns it; a later resource on the same root is a duplicate owner.
     let mut root_owners: HashMap<String, PathBuf> = HashMap::new();
-    // The first resource to declare each stable ID owns it; the same ID in a
-    // later resource is a project-wide duplicate.
-    let mut stable_id_owners: HashMap<String, PathBuf> = HashMap::new();
     // Parsed sources kept from pass 1 so pass 2 can resolve imports against the
     // full project module set without re-reading files.
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
@@ -158,9 +155,9 @@ pub(crate) fn analyze_source_project(
             constants,
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
 
-        // Saved roots and stable IDs are owned project-wide. Walk the file's
-        // resource declarations beside their compiled schemas (same order) to
-        // enforce one owner per root and one declaration per stable id.
+        // Saved roots are owned project-wide. Walk the file's resource
+        // declarations beside their compiled schemas (same order) to enforce one
+        // owner per root.
         let mut schemas = resources.iter();
         for declaration in &parsed.file.declarations {
             let marrow_syntax::Declaration::Resource(resource) = declaration else {
@@ -186,30 +183,6 @@ pub(crate) fn analyze_source_project(
                         root_owners.insert(saved.root.clone(), file.path.clone());
                     }
                 }
-            }
-            // Within-resource stable-id duplicates are reported by
-            // compile_resource; this catches an id reused in another resource.
-            let mut seen_here: Vec<String> = Vec::new();
-            for (id, span) in marrow_schema::stable_ids(resource) {
-                if seen_here.contains(&id) {
-                    continue;
-                }
-                match stable_id_owners.get(&id) {
-                    Some(first) => report.diagnostics.push(CheckDiagnostic {
-                        code: marrow_schema::SCHEMA_DUPLICATE_STABLE_ID,
-                        severity: Severity::Error,
-                        file: file.path.clone(),
-                        message: format!(
-                            "stable id `{id}` is already declared in `{}`",
-                            first.display()
-                        ),
-                        span,
-                    }),
-                    None => {
-                        stable_id_owners.insert(id.clone(), file.path.clone());
-                    }
-                }
-                seen_here.push(id);
             }
         }
 

@@ -24,15 +24,14 @@ pub const CHECK_FINALLY_CONTROL_FLOW: &str = "check.finally_control_flow";
 pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
 /// A `catch` annotation must be `Error`.
 pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
-/// An assignment or merge target is not a writable place.
+/// An assignment target is not a writable place.
 pub const CHECK_INVALID_ASSIGN_TARGET: &str = "check.invalid_assign_target";
 /// An `out` parameter can return normally without being assigned.
 pub const CHECK_OUT_PARAMETER_ASSIGNMENT: &str = "check.out_parameter_assignment";
 /// A `const` value is not a constant expression.
 pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
-/// A loop over a saved layer mutates that same layer (a direct write, delete,
-/// append, or merge whose target is the layer being traversed). Collect the keys
-/// into a local sequence first when a rewrite must change the traversed layer.
+/// A loop over a saved layer mutates that same layer. Collect the keys into a
+/// local sequence first when a rewrite must change the traversed layer.
 pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = "check.loop_mutates_traversed_layer";
 
 /// Apply every structural statement rule to one function body.
@@ -135,7 +134,7 @@ fn walk_statement(
 ) {
     check_statement_out_argument_targets(file, statement, read_only_params, out);
     match statement {
-        Statement::Assign { target, .. } | Statement::Merge { target, .. } => {
+        Statement::Assign { target, .. } => {
             check_assignment_target(file, target, read_only_params, local_collections, out);
         }
         Statement::If {
@@ -211,7 +210,7 @@ fn check_statement_out_argument_targets(
         | Statement::Expr { value, .. } => {
             check_expr_out_argument_targets(file, value, read_only_params, out);
         }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+        Statement::Assign { target, value, .. } => {
             check_expr_out_argument_targets(file, target, read_only_params, out);
             check_expr_out_argument_targets(file, value, read_only_params, out);
         }
@@ -223,6 +222,7 @@ fn check_statement_out_argument_targets(
         Statement::Delete { path, .. } => {
             check_expr_out_argument_targets(file, path, read_only_params, out);
         }
+        Statement::Merge { .. } => {}
         Statement::Return { value, .. } => {
             if let Some(value) = value {
                 check_expr_out_argument_targets(file, value, read_only_params, out);
@@ -253,11 +253,6 @@ fn check_statement_out_argument_targets(
                 check_expr_out_argument_targets(file, step, read_only_params, out);
             }
         }
-        Statement::Lock { path, .. } => {
-            if let Some(path) = path {
-                check_expr_out_argument_targets(file, path, read_only_params, out);
-            }
-        }
         Statement::Match { scrutinee, .. } => {
             if let Some(scrutinee) = scrutinee {
                 check_expr_out_argument_targets(file, scrutinee, read_only_params, out);
@@ -266,6 +261,7 @@ fn check_statement_out_argument_targets(
         Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Transaction { .. }
+        | Statement::Lock { .. }
         | Statement::Try { .. } => {}
     }
 }
@@ -491,7 +487,7 @@ fn walk_out_statement(
                 returns: Vec::new(),
             }
         }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+        Statement::Assign { target, value, .. } => {
             mark_expr_out_assignments(target, &mut state);
             mark_expr_out_assignments(value, &mut state);
             mark_place_assignment(target, &mut state);
@@ -507,6 +503,10 @@ fn walk_out_statement(
                 returns: Vec::new(),
             }
         }
+        Statement::Merge { .. } => OutFlow {
+            fallthrough: vec![state],
+            returns: Vec::new(),
+        },
         Statement::Return { value, .. } => {
             if let Some(value) = value {
                 mark_expr_out_assignments(value, &mut state);
@@ -582,12 +582,7 @@ fn walk_out_statement(
         Statement::Transaction { body, .. } => {
             walk_out_block(file, body, out_params, vec![state], out)
         }
-        Statement::Lock { path, body, .. } => {
-            if let Some(path) = path {
-                mark_expr_out_assignments(path, &mut state);
-            }
-            walk_out_block(file, body, out_params, vec![state], out)
-        }
+        Statement::Lock { body, .. } => walk_out_block(file, body, out_params, vec![state], out),
         Statement::Try {
             body,
             catch,
@@ -914,7 +909,7 @@ fn loop_jump_unresolved(label: Option<&str>, loop_depth: usize, loop_labels: &[S
     }
 }
 
-/// Walk a block reporting a write/delete/append/merge that mutates the same saved
+/// Walk a block reporting a write, delete, or append that mutates the same saved
 /// layer an enclosing `for` loop is traversing, which is forbidden because mutating
 /// a tree layer while iterating it has undefined ordering. `traversed` holds the
 /// canonical text of each enclosing loop's traversed saved layer; a mutation whose
@@ -1038,22 +1033,13 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
 
 /// The saved layer a statement adds keys to or removes keys from, as canonical
 /// text, or `None` when the statement does not change a saved layer's key set. A
-/// whole-record/keyed-entry write, `delete`, or whole-record `merge` of
-/// `^root(key…)` affects the parent layer (the callee). `append(path, v)` and a
-/// keyed-leaf/layer `merge` affect the named layer. A scalar field write or field
-/// delete keeps the layer's keys, so it is not reported here.
+/// whole-record/keyed-entry write or `delete` of `^root(key…)` affects the parent
+/// layer (the callee). `append(path, v)` affects the named layer. A scalar field
+/// write or field delete keeps the layer's keys, so it is not reported here.
 fn mutated_layer(statement: &Statement) -> Option<String> {
     match statement {
         Statement::Assign { target, .. } => keyed_entry_parent(target),
         Statement::Delete { path, .. } => keyed_entry_parent(path),
-        Statement::Merge { target, .. } => match target {
-            // A keyed-layer merge `merge ^root(key…).layer = …` overlays entries
-            // into that layer, so the layer itself is the affected key set.
-            Expression::Field { base, .. } if is_saved_path(base) => {
-                Some(format_expression(target))
-            }
-            other => keyed_entry_parent(other),
-        },
         Statement::Expr {
             value: Expression::Call { callee, args, .. },
             ..
@@ -1063,7 +1049,7 @@ fn mutated_layer(statement: &Statement) -> Option<String> {
 }
 
 /// The layer that gains or loses a key when `target` (a `^root(key…)` or
-/// `^root(key…).layer(key…)` place) is written, deleted, or merged whole: the
+/// `^root(key…).layer(key…)` place) is written or deleted whole: the
 /// callee with the final key step dropped. A scalar field place
 /// (`^root(key…).field`) is not a keyed entry, so it returns `None` — writing a
 /// field does not change the parent layer's keys.

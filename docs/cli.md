@@ -63,8 +63,8 @@ marrow check [--format text|json|jsonl] <file.mw | projectdir>
 Parse a single `.mw` file, or check a whole project directory, and report
 diagnostics.
 
-- Given a `.mw` file, it parses that file in isolation and reports parse
-  diagnostics. It does not type-check across modules.
+- Given a `.mw` file, it parses and checks that file in isolation. Module-wide
+  rules that need a project are not applied.
 - Given a project directory, it loads `marrow.json` and runs the project checker
   over every source root plus configured test files: parse, type, effect, and
   saved-path checks.
@@ -301,8 +301,7 @@ Empty-target restore is the only mode implemented today: if the target already
 holds data, restore refuses with `restore.not_empty` (exit `1`) rather than
 overwrite it.
 
-Replace, merge, and repair restores (the non-empty cases) are deferred — see
-[future/cli.md](future/cli.md).
+Non-empty restore modes are deferred — see [future/cli.md](future/cli.md).
 
 Prints the record count and exits `0`; exits `1` if the target is non-empty or on
 an I/O or store error.

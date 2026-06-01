@@ -42,13 +42,10 @@ module shelf::books
 
 resource Book at ^books(id: int)
     ;; Display title shown in shelf views and search results.
-    @id("book.title")
     required title: string
 
-    @id("book.author")
     required author: string
 
-    @id("book.shelf")
     required shelf: string
 
     loanedTo: string
@@ -77,8 +74,7 @@ This shows the main shape:
 - `resource Book` defines a typed tree shape.
 - `at ^books(id: int)` declares the stored identity key and generated
   `Book::Id` type.
-- Documentation comments and `@id(...)` metadata feed editor hover, docs,
-  inspect output, and data-evolution tooling.
+- Documentation comments feed editor hover, docs, and inspect output.
 - `index byShelf(shelf, id)` declares an alternate lookup tree.
 - `var book: Book` uses the same resource shape locally.
 - `^books(id) = book` saves the local resource and creates index entries.
@@ -98,7 +94,7 @@ This shows the main shape:
   nominal equality, and compact ordinal storage.
 - [Resources and Saved Data](resources-and-storage.md) defines resources,
   local trees, saved trees, identity keys, indexes, history, transactions,
-  locks, delete, merge, and data access.
+  delete, data access, and prototype-only parsed forms.
 - [Modules and Functions](modules-functions.md) defines modules, imports,
   visibility, parameters, named arguments, resource arguments, returns, and
   name resolution.

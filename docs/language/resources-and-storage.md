@@ -144,54 +144,28 @@ Identity keys do not change in place. Changing identity means creating a new
 record and explicitly transforming or deleting any data that should not remain
 under the old identity.
 
-## Element Documentation And IDs
+## Element Documentation
 
-Resource elements may have documentation comments and stable IDs:
+Resource elements may have documentation comments:
 
 ```mw
 resource Book at ^books(id: int)
     ;; Display title shown in search and shelf views.
-    @id("book.title")
     title: string
 ```
 
 Documentation comments feed generated docs, editor hover, inspect output, and
-LSP help. Stable IDs let data-evolution tools track an element even if its
-source name changes.
-
-An `@id(...)` value names the resource element for tooling. It does not change
-the saved path, the field name, the runtime value, or the type of the element.
-In the example above, code still reads and writes `title`:
+LSP help. They do not change the saved path, the field name, the runtime value,
+or the type of the element. In the example above, code still reads and writes
+`title`:
 
 ```mw
 ^books(id).title = "Small Gods"
 ```
 
-If the source field is later renamed, the stable ID can stay the same:
-
-```mw
-resource Book at ^books(id: int)
-    ;; Display title shown in search and shelf views.
-    @id("book.title")
-    displayTitle: string
-```
-
-That gives data-evolution tools a durable way to understand that `displayTitle`
-is the same logical element that used to be spelled `title`. The tool still
-decides what saved data to read, rewrite, or delete; Marrow does not move bytes
-from the ID alone.
-
-Stable IDs are optional source metadata, not a database catalog. When present,
-they must be unique in the project. Use stable dotted text that describes the
-logical element, not its current source spelling. Add IDs to elements that need
-durable identity across rename, data evolution, generated documentation, or
-external tooling. Leave them off short-lived private shapes where a source name
-is enough.
-
-`@id(...)` applies only to the next resource element at the same indentation
-level: a field, keyed field, group, keyed group, or index. It does not apply to
-the whole resource declaration, the saved root, or identity keys in the
-`at ^root(...)` clause.
+Source stable-id annotations are not part of v0.1. Durable element identity is
+catalog work; for this release, data evolution treats source spelling and
+explicit maintenance code as the contract.
 
 Adding a sparse element is a source change. Adding a required element requires
 explicit data-evolution work that populates existing saved resources before code
@@ -452,10 +426,8 @@ A whole read is useful for small records and construction; read or traverse the
 child layers you need directly.
 
 Whole-resource assignment replaces the saved resource for that identity.
-Fields and child entries absent from the assigned value are removed. Use
-`merge` when the intent is to copy populated entries into an existing tree.
-Use field writes for current-only updates when history layers must remain
-untouched.
+Fields and child entries absent from the assigned value are removed. Use field
+writes for current-only updates when history layers must remain untouched.
 
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
@@ -493,7 +465,7 @@ if exists(^books(id).subtitle)
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
-## Delete And Merge
+## Delete
 
 `delete` removes the value and child tree at a path:
 
@@ -502,26 +474,14 @@ delete ^books(id).subtitle
 delete ^books(id)
 ```
 
-`merge` copies a whole tree:
-
-```mw
-var draftBook: Book
-merge draftBook = ^books(id)
-merge ^books(id) = draftBook
-```
-
-`merge` preserves child fields under the source tree and does not remove target
-entries that are absent from the source. It is different from assigning one
-scalar field or replacing a whole resource.
-The source tree is read before the target tree is changed.
-
-When `delete` or `merge` targets a managed saved resource, Marrow also updates
-the generated index entries for that resource.
-After a managed merge, the resulting resource must still satisfy required
-fields and typed layers.
+When `delete` targets a managed saved resource, Marrow also updates the
+generated index entries for that resource.
 
 Deleting a required field is rejected unless the surrounding keyed entry or
 resource is being deleted, or code is running in explicit maintenance mode.
+
+Source-level `merge` is not part of v0.1. Use explicit checked writes or a
+future checked transform for tree-copy behavior.
 
 Deleting one resource identity is ordinary application work. Deleting a whole
 managed root is maintenance work. Code must opt into maintenance mode. The
@@ -541,8 +501,8 @@ With matching or bundled source available, tools can show backup entries as
 typed resources. Without source, tools can still restore or inspect the raw
 tree.
 
-Normal restore writes into an empty target. Replace, merge, and repair restores
-are explicit maintenance actions.
+Normal restore writes into an empty target. Non-empty restore modes are explicit
+maintenance actions.
 
 ## Transactions
 
@@ -585,29 +545,9 @@ rolled-back work. Treat IDs as opaque identifiers, not business counters.
 
 ## Locks
 
-Locks coordinate concurrent writers:
-
-```mw
-lock ^books(id)
-    transaction
-        ^books(id).loanedTo = borrower
-```
-
-Locks may target a root, record, or subtree. Examples prefer record-level
-locks:
-
-```mw
-lock ^books(id)
-```
-
-Use broader or narrower locks when the data invariant needs that shape. Locks
-coordinate concurrent jobs, processes, sessions, or server requests that share
-saved data. Marrow `.mw` does not add in-language threads or async/await.
-
-A lock is held for its block and released when the block exits, including exit
-by `return`, `break`, `continue`, `throw`, or runtime error. If the selected
-capability profile cannot provide the requested lock, Marrow reports a typed
-capability or runtime error.
+Source-level `lock` is not part of v0.1. Use transactions for saved-data
+atomicity in ordinary `.mw` code. Backend and server layers may still use their
+own writer coordination outside the source language.
 
 ## Managed Saved Trees
 
@@ -626,12 +566,14 @@ data-integrity risk.
 ## Passing Resource Places
 
 Functions can accept resource values as normal inputs. Mutating the caller's
-local resource or saved tree must be explicit:
+local resource must be explicit:
 
 ```mw
 fn normalize(inout book: Book)
-normalize(inout ^books(id))
+var draft: Book = ^books(id)
+normalize(inout draft)
 ```
 
 `inout` at the call site makes hidden writes visible. First-class storable
 references to saved places are not part of the ordinary application model.
+Saved paths are not valid `inout` arguments.

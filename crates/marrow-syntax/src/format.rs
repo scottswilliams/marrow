@@ -188,7 +188,7 @@ fn format_enum(decl: &EnumDecl) -> String {
 /// Render one enum member and its nested members, each on its own line at the
 /// given indent depth. A `category` member leads with the `category` word.
 fn format_enum_member(member: &EnumMember, level: usize) -> String {
-    let mut out = format_member_meta(&member.docs, &member.stable_id, level);
+    let mut out = format_docs(&member.docs, level);
     let category = if member.category { "category " } else { "" };
     out.push_str(&format!(
         "{}{category}{}",
@@ -268,7 +268,7 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
     let pad = INDENT.repeat(level);
     match member {
         ResourceMember::Field(field) => {
-            let mut out = format_member_meta(&field.docs, &field.stable_id, level);
+            let mut out = format_docs(&field.docs, level);
             let required = if field.required { "required " } else { "" };
             // A resource field always declares a type, so render it directly.
             out.push_str(&format!(
@@ -280,7 +280,7 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
             out
         }
         ResourceMember::Group(group) => {
-            let mut out = format_member_meta(&group.docs, &group.stable_id, level);
+            let mut out = format_docs(&group.docs, level);
             out.push_str(&format!(
                 "{pad}{}{}",
                 group.name,
@@ -294,7 +294,7 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
             out
         }
         ResourceMember::Index(index) => {
-            let mut out = format_member_meta(&index.docs, &index.stable_id, level);
+            let mut out = format_docs(&index.docs, level);
             let unique = if index.unique { " unique" } else { "" };
             out.push_str(&format!(
                 "{pad}index {}({}){unique}",
@@ -304,17 +304,6 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
             out
         }
     }
-}
-
-/// Render a member's documentation comments and `@id(...)` metadata as the
-/// lines preceding it, each indented to `level`.
-fn format_member_meta(docs: &[String], stable_id: &Option<String>, level: usize) -> String {
-    let pad = INDENT.repeat(level);
-    let mut out = format_docs(docs, level);
-    if let Some(stable_id) = stable_id {
-        out.push_str(&format!("{pad}@id(\"{stable_id}\")\n"));
-    }
-    out
 }
 
 fn format_function(source: &str, decl: &FunctionDecl) -> String {

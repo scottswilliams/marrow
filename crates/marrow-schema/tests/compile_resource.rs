@@ -6,8 +6,8 @@
 //! the structural errors the compiler reports.
 
 use marrow_schema::{
-    Element, Node, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_DUPLICATE_STABLE_ID,
-    SCHEMA_INDEX_IN_GROUP, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+    Element, Node, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_IN_GROUP,
+    SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NON_ENUM_NAMED_FIELD,
     SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
     SCHEMA_UNORDERABLE_KEY, SCHEMA_UNSUPPORTED_TYPE, ScalarType, Type, check_saved_named_fields,
@@ -1042,24 +1042,6 @@ resource Book at ^books(id: int)
     let (_, errors) = compile_resource(&resource(source));
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
     assert!(errors[0].message.contains("rev"));
-}
-
-#[test]
-fn duplicate_stable_id_within_resource_is_an_error() {
-    // Stable IDs must be unique; within one resource the later element is the
-    // error.
-    let source = "\
-resource Book at ^books(id: int)
-    @id(\"book.x\")
-    required title: string
-    @id(\"book.x\")
-    required author: string
-";
-    let (_, errors) = compile_resource(&resource(source));
-    assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_STABLE_ID]);
-    assert!(errors[0].message.contains("book.x"));
-    // The error points at the second element, not the first.
-    assert_eq!(errors[0].span.line, 5);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 # Formal Grammar
 
-This appendix gives an EBNF-style grammar for Marrow `.mw`. It describes the
-source language, not the implementation parser.
+This appendix gives an EBNF-style grammar for accepted v0.1 Marrow `.mw`
+source.
 
 The grammar uses these conventions:
 
@@ -82,13 +82,11 @@ resource_store  = "at" saved_root key_params? ;
 saved_root      = "^" identifier ;
 
 resource_member =
-      doc_comment* stable_id? field_decl
-    | doc_comment* stable_id? keyed_field_decl
-    | doc_comment* stable_id? group_decl
-    | doc_comment* stable_id? index_decl
+      doc_comment* field_decl
+    | doc_comment* keyed_field_decl
+    | doc_comment* group_decl
+    | doc_comment* index_decl
     ;
-
-stable_id       = "@id" "(" string_lit ")" NEWLINE ;
 
 field_decl      =
       required_marker? identifier type_annotation NEWLINE
@@ -212,7 +210,6 @@ statement       =
     | var_stmt
     | assignment_stmt
     | delete_stmt
-    | merge_stmt
     | if_stmt
     | match_stmt
     | while_stmt
@@ -221,7 +218,6 @@ statement       =
     | continue_stmt
     | return_stmt
     | transaction_stmt
-    | lock_stmt
     | try_stmt
     | throw_stmt
     | expression_stmt
@@ -233,8 +229,6 @@ var_stmt        =
 
 assignment_stmt = assignable "=" expression NEWLINE ;
 delete_stmt     = "delete" path_expr NEWLINE ;
-merge_stmt      = "merge" assignable "=" expression NEWLINE ;
-
 return_stmt     = "return" expression? NEWLINE ;
 break_stmt      = "break" identifier? NEWLINE ;
 continue_stmt   = "continue" identifier? NEWLINE ;
@@ -279,11 +273,10 @@ name must be unambiguous, else it is qualified. The checker requires the arms to
 cover every selectable leaf exactly once; there is no wildcard arm. See
 [Enums](enums.md).
 
-## Transactions, Locks, Try/Catch
+## Transactions And Try/Catch
 
 ```ebnf
 transaction_stmt = "transaction" NEWLINE block ;
-lock_stmt        = "lock" saved_path NEWLINE block ;
 
 try_stmt         =
     "try" NEWLINE block
@@ -464,7 +457,8 @@ These rules are part of the grammar contract:
 - `index` declarations are checked as direct members of keyed saved resources.
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
-- `out` and `inout` arguments must be assignable places.
+- `out` and local `inout` arguments must be assignable places. Saved paths are
+  not valid `inout` arguments.
 - Direct collection iteration yields elements. For a managed resource root, that
   means resource values; for a non-unique index branch, that means the identities
   in the branch.
@@ -472,5 +466,3 @@ These rules are part of the grammar contract:
   address-plus-element traversal as expression forms.
 - Documentation comments attach to the next const, resource, function, or
   resource element at the same indentation level.
-- `@id(...)` attaches to the next resource element at the same indentation
-  level.

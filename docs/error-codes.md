@@ -124,10 +124,9 @@ project) and by any command that parses sources before running.
 
 ### `check.*` — kind `check`
 
-Static errors found while checking a project (module resolution, types, and
-control-flow rules). A bare single-file `check` reports `parse.*` only; the
-name-resolution and type rules below run when a whole project is checked (by
-`check <projectdir>`, `run`, or `test`).
+Static errors found while checking source. A bare single-file `check` runs the
+available checker rules for that file; project checks also run module-wide rules
+over every configured source and test file.
 
 | Code | Meaning |
 |---|---|
@@ -151,7 +150,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
-| `check.lock_target` | A `lock` target is not a saved root, record, or subtree. |
+| `check.prototype_only` | Source uses a rejected prototype construct, such as source-level `lock`, `merge`, or saved-path `inout` call arguments. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |
@@ -167,7 +166,7 @@ name-resolution and type rules below run when a whole project is checked (by
 | `check.category_not_selectable` | A category enum member is named in value position; only a concrete member under it is selectable. |
 | `check.is_requires_enum` | The left operand of `is` is not an enum value. |
 | `check.is_type` | The right operand of `is` is not a member of the left operand's enum. |
-| `check.invalid_assign_target` | An assignment or `merge` target is not a writable place. |
+| `check.invalid_assign_target` | An assignment target is not a writable place. |
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
@@ -189,7 +188,6 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.unsupported_type` | A parsed type spelling is only supported in a narrower declaration context, such as `map[K, V]` saved-resource member sugar. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
-| `schema.duplicate_stable_id` | Two resource elements declare the same stable ID. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as an identity, a name, or a sequence; a key must be an orderable scalar. |
 | `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; a saved field stores a scalar or an enum ordinal. |
@@ -227,7 +225,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |
-| `run.traversal` | A write, delete, append, or merge changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
+| `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
 
 ### `value.*` — kind `runtime`
@@ -339,7 +337,7 @@ the store's `store.corrupt_path`, not a `data.*` code.)
 
 | Code | Meaning |
 |---|---|
-| `restore.not_empty` | `marrow restore` targets a non-empty store; normal restore writes into an empty target only. (Replace, merge, and repair restores are deferred — see [future/cli.md](future/cli.md).) Exit code `1`. |
+| `restore.not_empty` | `marrow restore` targets a non-empty store; normal restore writes into an empty target only. (Non-empty restore modes are deferred — see [future/cli.md](future/cli.md).) Exit code `1`. |
 
 ## Typed Errors In Running Programs
 
@@ -361,7 +359,7 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 
 ## Deferred Surfaces
 
-`marrow data diff`/`data load` and the non-empty `marrow restore` modes
-(replace, merge, repair) are deferred — see [future/data-tools.md](future/data-tools.md)
-and [future/cli.md](future/cli.md). No new code family appears for a
-deferred surface until that surface ships.
+`marrow data diff`/`data load` and non-empty `marrow restore` modes are
+deferred — see [future/data-tools.md](future/data-tools.md) and
+[future/cli.md](future/cli.md). No new code family appears for a deferred
+surface until that surface ships.

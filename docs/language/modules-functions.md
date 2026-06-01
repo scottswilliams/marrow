@@ -165,8 +165,8 @@ if parseInt(input, out n)
     write($"parsed {n}")
 ```
 
-The marked argument must be a writable place: a local variable, a field of a
-local value, or a saved path. It cannot be an arbitrary expression.
+The marked `out` argument must be a writable place: a local variable, a field of
+a local value, or a saved path. It cannot be an arbitrary expression.
 The checker requires every `out` parameter to be assigned before every normal
 return.
 
@@ -174,14 +174,14 @@ Use `inout` when the callee reads and mutates the caller's value:
 
 ```mw
 fn normalize(inout book: Book)
-normalize(inout ^books(id))
+var draft: Book = ^books(id)
+normalize(inout draft)
 ```
 
 The `inout` marker at the call site makes caller-visible writes explicit.
-An `inout` argument is a writable place, not a hidden reference value. If the
-place is saved data, callee writes use the same managed write planner as
-ordinary assignment. Wrap the call in `transaction` when several saved writes
-must commit or roll back together.
+An `inout` argument is a writable local place, not a hidden reference value.
+Saved paths are not valid `inout` arguments. Use explicit saved assignments at
+the call site when saved data must be updated.
 
 ## Passing Resources
 

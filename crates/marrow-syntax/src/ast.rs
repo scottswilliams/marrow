@@ -258,7 +258,6 @@ pub enum ResourceMember {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDecl {
     pub docs: Vec<String>,
-    pub stable_id: Option<String>,
     pub required: bool,
     pub name: String,
     pub keys: Vec<KeyParam>,
@@ -269,7 +268,6 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupDecl {
     pub docs: Vec<String>,
-    pub stable_id: Option<String>,
     pub name: String,
     pub keys: Vec<KeyParam>,
     pub members: Vec<ResourceMember>,
@@ -280,7 +278,6 @@ pub struct GroupDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexDecl {
     pub docs: Vec<String>,
-    pub stable_id: Option<String>,
     pub name: String,
     pub args: Vec<String>,
     pub unique: bool,
@@ -314,12 +311,9 @@ pub struct EnumDecl {
 
 /// One enum member: a bare identifier, optionally with nested members under it.
 /// A `category` member groups its descendants and is not selectable as a value.
-/// `stable_id` is a reserved slot for the rename-safe stable-id work; the parser
-/// always leaves it `None` for now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMember {
     pub docs: Vec<String>,
-    pub stable_id: Option<String>,
     pub name: String,
     pub category: bool,
     pub members: Vec<EnumMember>,
