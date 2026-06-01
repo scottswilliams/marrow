@@ -65,7 +65,7 @@ pub fn add(title: string, author: string, shelf: string): Book::Id
     return id
 
 pub fn listShelf(shelf: string)
-    for id in ^books.byShelf(shelf).take(50)
+    for id in ^books.byShelf(shelf)
         print($"book {id}: {^books(id).title}")
 ```
 
@@ -140,7 +140,7 @@ pub fn loan(id: Book::Id, borrower: string): bool
     return true
 
 pub fn printShelf(shelf: string)
-    for id in ^books.byShelf(shelf).take(50)
+    for id in ^books.byShelf(shelf)
         const title: string = ^books(id).title
         const author: string = ^books(id).author
         print($"{title} by {author}")

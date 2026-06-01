@@ -215,7 +215,7 @@ ends with all resource identity keys in declaration order so each entry is
 distinct:
 
 ```mw
-for id in ^books.byShelf("fiction").take(50)
+for id in ^books.byShelf("fiction")
     write($"book {id}: {^books(id).title}")
 ```
 
@@ -265,7 +265,7 @@ repair and derived rebuild are explicit data-evolution tooling work.
 
 ## Lookup And Query
 
-Marrow reads saved data with paths, ordered paths, and declared indexes.
+Marrow reads saved data with paths, traversal, and declared indexes.
 
 Use the primary saved root when identity is known:
 
@@ -273,40 +273,31 @@ Use the primary saved root when identity is known:
 const title = ^books(id).title
 ```
 
-Traversal walks an ordered path: an index branch (`^books.byShelf(shelf)`), a
-keyed child layer (`^books(id).notes`), or an explicit full-store traversal
-(`^books.all`). Bare iteration over a whole store (`for id in ^books`) is not
-production-legal; traverse `^books.all` with a bound. Ordered-path traversal is
-seek-based, not offset- or page-number based. The operations are:
-
-- `.take(n)` yields up to `n` items with no continuation.
-- `.window(size: n)` yields a `Window[T]`: the items plus a maybe-present `next`
-  resume token.
-- `.after(key)` seeks past a typed ordered key (a tuple for a composite key);
-  `.from(key)` and `.until(key)` bound the range.
-- `.reverse()` walks in reverse order.
-- `.resume(token)` continues from an opaque resume token.
-
-Use an index when the access pattern matters, and bound the traversal:
+Stores, indexes, and keyed child layers are durable iterables. Iterate one with an
+ordinary `for` loop; it streams lazily rather than materializing the collection.
+Use an index when the access pattern matters:
 
 ```mw
-for id in ^books.byShelf("fiction").take(50)
+for id in ^books.byShelf("fiction")
     print(^books(id).title)
 ```
 
-Take a page and resolve its resume token like any maybe-present read:
+Full-store traversal is explicit by iterating the store root, and streams the same
+way:
 
 ```mw
-const page = ^books.all.window(size: 50)
-for id in page.items
+for id in ^books
     print(^books(id).title)
-if let next = page.next
-    write("more pages remain")
 ```
 
-Marrow does not add a separate storage query language. If code needs a new
-lookup path, add an index to the resource and rebuild the generated tree when
-existing data should appear through it.
+Materialization is explicit: `for id in ^books` streams, while `collect(^books)`
+builds an in-memory list and may warn. The concern is not large loops but hidden
+ones — an access that hides a scan with no matching index is what the checker
+flags.
+
+Marrow does not add a separate storage query language. If code needs a new lookup
+path, add an index to the resource and rebuild the generated tree when existing
+data should appear through it.
 
 ## Managed Writes
 

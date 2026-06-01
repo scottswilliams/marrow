@@ -75,16 +75,14 @@ loop. A zero step never progresses and is rejected.
 must be a positive duration and descending temporal ranges are not yet supported. A
 negated duration step (`by -1.day`) is a check error.
 
-Collection loops walk the elements of an ordered path. An ordered path is a
-bounded traversal surface — a whole-store traversal `^books.all`, an index branch
-`^books.byShelf(shelf)`, or a keyed child layer `^books(id).notes` — and a
-production loop bounds it with `.take(n)` or a window:
+Collection loops walk elements. A store, index, or keyed child layer is a durable
+iterable; a `for` loop over one streams lazily rather than materializing it:
 
 ```mw
-for book in ^books.all.take(100)
+for book in ^books
     write(book.title)
 
-for tag in ^books(id).tags.take(100)
+for tag in ^books(id).tags
     write(tag)
 ```
 
@@ -94,34 +92,33 @@ is the item at a populated position. For a non-unique index branch, the element
 is the identity stored in that lookup branch:
 
 ```mw
-for id in ^books.byShelf("fiction").take(100)
+for id in ^books.byShelf("fiction")
     write($"book {id}: {^books(id).title}")
 ```
 
 Use two loop variables when code needs both the address and the element:
 
 ```mw
-for id, book in ^books.all.take(100)
+for id, book in ^books
     write($"{id}: {book.title}")
 
-for pos, tag in ^books(id).tags.take(100)
+for pos, tag in ^books(id).tags
     write($"{pos}: {tag}")
 ```
 
 Use `keys(...)` when code only needs addresses:
 
 ```mw
-for id in keys(^books.all.take(100))
+for id in keys(^books)
     write($"{id}")
 
-for pos in keys(^books(id).tags.take(100))
+for pos in keys(^books(id).tags)
     write($"{pos}")
 ```
 
-Saved-layer iteration walks child keys in stored order. Unbounded collection
-materialization can visit the whole layer; `.take(n)` limits the walked prefix to
-at most `n` children. Element and two-variable loops also read the values they
-yield. `keys(...)` reads only the addresses.
+Saved-layer iteration walks child keys in stored order, streaming them lazily
+rather than materializing the layer. Element and two-variable loops also read the
+values they yield; `keys(...)` reads only the addresses.
 
 `while` loops use a boolean condition:
 
@@ -135,8 +132,8 @@ while loanCount < limit
 Labels let `break` and `continue` target an outer loop:
 
 ```mw
-outer: for shelf in ^books.byShelf.take(100)
-    for id in ^books.byShelf(shelf).take(100)
+outer: for shelf in ^books.byShelf
+    for id in ^books.byShelf(shelf)
         if wanted(id)
             break outer
 ```

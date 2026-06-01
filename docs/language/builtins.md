@@ -35,7 +35,7 @@ covered in detail under Operators in the syntax reference.
 Direct iteration over a collection yields its elements:
 
 ```mw
-for book in ^books.all.take(100)
+for book in ^books
     write(book.title)
 
 for tag in ^books(id).tags
@@ -43,20 +43,19 @@ for tag in ^books(id).tags
 ```
 
 The element is the useful value the collection stores or selects. A primary
-resource root is traversed as an explicit, bounded ordered path (`^books.all`). A
-sequence or keyed layer yields the value stored at each populated child. A
-key-only collection such as a non-unique index branch yields its members and is
-bounded:
+resource root yields resources. A sequence or keyed layer yields the value stored
+at each populated child. A key-only collection such as a set or non-unique index
+branch yields its members:
 
 ```mw
-for id in ^books.byShelf("fiction").take(50)
+for id in ^books.byShelf("fiction")
     write($"{id}")
 ```
 
 Use two loop variables for the address and element together:
 
 ```mw
-for id, book in ^books.all.take(100)
+for id, book in ^books
     write($"{id}: {book.title}")
 
 for pos, tag in ^books(id).tags
@@ -121,7 +120,7 @@ over `values(...)` and `entries(...)` where those apply, and over an in-memory
 `sequence`:
 
 ```mw
-for book in reversed(^books.all.take(100))
+for book in reversed(^books)
     write(book.title)
 
 for tag in reversed(^books(id).tags)
