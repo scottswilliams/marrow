@@ -191,10 +191,11 @@ require ordered values of the same type.
 
 Concatenation with `_` requires `string` operands.
 
-The absence-default `??` reads a possibly-absent path on its left and yields the
-right operand when that path is absent. Its left operand must be a path read or a
-`?.` chain — a value that is always present has nothing to default — and the
-default must match the path's leaf type. It binds tighter than `==`, so
+The absence-default `??` reads a maybe-present operand on its left and yields the
+right operand when that read is absent. Its left operand must be a maybe-present
+read — a path read, a `?.` chain, or a maybe-present builtin result such as
+`next`/`prev` — since a value that is always present has nothing to default; the
+default must match the read's type. It binds tighter than `==`, so
 `name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. It does not chain:
 write one `??` per read.
 
@@ -330,7 +331,8 @@ Marrow reserves:
 ```text
 module use pub fn resource at index unique
 required
-const var if else while for in break continue return delete merge
+enum match is
+const var if let else while for in break continue return delete edit merge
 transaction lock try catch finally throw out inout true false
 not and or
 int decimal bool string bytes date instant duration

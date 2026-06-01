@@ -47,13 +47,16 @@ resource Book at ^books(id: int)
     required pages: int
 ```
 
-What the current build does with an under-populated record:
+What Marrow does with an under-populated record:
 
-- A whole-resource read materializes the fields that are present and does not,
-  today, raise on the missing required field.
-- A direct read of the absent field raises `run.absent_element`.
-- `marrow data integrity` verifies stored value encodings and orphaned paths; it
-  does not sweep every record for required-field completeness.
+- Adding `required pages` is data-attached evolution: activation runs the
+  data-attached check, which proves every stored record has `pages` or reports the
+  exact records that lack it (a Default or Transform obligation).
+- A required field missing from stored data is a fatal data-attachment/corruption
+  error, never a catchable branch.
+- A bare (maybe-present) field reads as maybe-present and is resolved at the read
+  site; an unresolved read is a compile error.
+- `marrow data integrity` verifies stored value encodings and orphaned paths.
 
 Backfill with ordinary code:
 

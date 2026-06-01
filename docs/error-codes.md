@@ -199,9 +199,9 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 
 Runtime faults from the evaluator, surfaced by `run` and `test`. Deterministic
 faults that the evaluator can recover from are raised as catchable `Error`
-values: arithmetic faults, decimal envelope failures, absent-element reads,
-recoverable type and parse/range failures from builtins, and assertions keep
-their specific `run.*` code. Runtime backstops for
+values: arithmetic faults, decimal envelope failures, recoverable type and
+parse/range failures from builtins, and assertions keep their specific `run.*`
+code. Runtime backstops for
 unchecked or internal states, control-flow invariants, missing host
 capabilities, unsupported constructs, storage failures, and traversal
 conflicts are fatal runtime errors rather than catchable `Error` values. A
@@ -219,7 +219,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.unknown_function` | A call named a function the program does not declare. Fatal runtime backstop for unchecked programs. |
 | `run.private_function` | A qualified call reached a function that exists but is not `pub` to the calling module. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
-| `run.absent_element` | A direct read of a saved element that is absent (unpopulated). |
+| `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `else` / `if let` / `?.`) or is a compile error. |
 | `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. Fatal storage/backend failure while evaluating a read. |
 | `run.unsupported` | A construct this slice of the runtime does not yet evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
