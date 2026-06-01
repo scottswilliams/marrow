@@ -65,15 +65,16 @@ pub fn add(title: string, author: string, shelf: string): Book::Id
     return id
 
 pub fn listShelf(shelf: string)
-    for id in ^books.byShelf(shelf)
+    for id in ^books.byShelf(shelf).take(50)
         print($"book {id}: {^books(id).title}")
 ```
 
 This shows the main shape:
 
 - `resource Book` defines a typed tree shape.
-- `at ^books(id: int)` declares the stored identity key and generated
-  `Book::Id` type.
+- `at ^books(id: int)` declares the `^books` store and its identity key. The
+  canonical identity type is `Id(^books)`; because `Book` has just this one store,
+  it auto-exports the alias `Book::Id`.
 - Documentation comments feed editor hover, docs, and inspect output.
 - `index byShelf(shelf, id)` declares an alternate lookup tree.
 - `var book: Book` uses the same resource shape locally.
@@ -91,7 +92,7 @@ This shows the main shape:
   resources, sequences, keyed trees, local variables, identity types, and
   conversion rules.
 - [Enums](enums.md) defines named, fixed sets of values, their members,
-  nominal equality, and compact ordinal storage.
+  nominal equality, and stable member-identity storage.
 - [Resources and Saved Data](resources-and-storage.md) defines resources,
   local trees, saved trees, identity keys, indexes, history, transactions,
   delete, data access, and prototype-only parsed forms.
@@ -139,7 +140,7 @@ pub fn loan(id: Book::Id, borrower: string): bool
     return true
 
 pub fn printShelf(shelf: string)
-    for id in ^books.byShelf(shelf)
+    for id in ^books.byShelf(shelf).take(50)
         const title: string = ^books(id).title
         const author: string = ^books(id).author
         print($"{title} by {author}")

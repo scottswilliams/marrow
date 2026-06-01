@@ -36,12 +36,12 @@ may be a `use`-imported short alias: after `use a::b`, both `b::Status` and
 `b::Status::open` name module `a::b`'s enum, the same way the alias resolves a
 call.
 
-A value stores compactly as the ordinal of the selected member — its position in
-declaration order, starting at zero. So a `state: Status` field set to
-`Status::archived` stores the int `1`. At the language level the field reads back
-as its member: a read of `state` is a `Status` value, equal to `Status::archived`
-again. Raw inspection works on the stored bytes, so `marrow data get` shows the
-ordinal `1`.
+A value stores as the selected member's stable catalog identity, not its position
+in source. Reordering the members in the declaration does not change what stored
+data means: each stored value decodes back to the member it named. At the language
+level a `state: Status` field reads back as its member: a read of `state` is a
+`Status` value, equal to `Status::archived` again. Raw inspection works on the
+stored bytes, so `marrow data get` shows the stored member identity.
 
 ## Hierarchies
 
@@ -68,11 +68,10 @@ by the bare `Cat::paw`; the compiler rejects it and asks for the qualifying path
 (`Cat::tiger::paw` or `Cat::lion::paw`). The full path always resolves, so a
 duplicate name is fully usable — it just has to be written out.
 
-A value is still a single selected member, stored as one ordinal exactly as a flat
-enum value is. Ordinals are assigned in pre-order — a parent before its children,
-in source order among siblings — so a flat enum keeps the same `0..n` ordinals it
-always had. The hierarchy lives in the schema, not in the value, so flat and
-nested enums share one storage model and existing data needs no rewrite.
+A value is still a single selected member, stored as its stable member identity
+exactly as a flat enum value is. The hierarchy lives in the schema, not in the
+value, so flat and nested enums share one storage model and existing data needs no
+rewrite.
 
 A member marked `category` groups its descendants and cannot be selected as a
 value; only its concrete members can. Above, `Cat::tiger` is a category and is

@@ -75,13 +75,16 @@ loop. A zero step never progresses and is rejected.
 must be a positive duration and descending temporal ranges are not yet supported. A
 negated duration step (`by -1.day`) is a check error.
 
-Collection loops walk elements:
+Collection loops walk the elements of an ordered path. An ordered path is a
+bounded traversal surface — a whole-store traversal `^books.all`, an index branch
+`^books.byShelf(shelf)`, or a keyed child layer `^books(id).notes` — and a
+production loop bounds it with `.take(n)` or a window:
 
 ```mw
-for book in ^books
+for book in ^books.all.take(100)
     write(book.title)
 
-for tag in ^books(id).tags
+for tag in ^books(id).tags.take(100)
     write(tag)
 ```
 
@@ -91,27 +94,27 @@ is the item at a populated position. For a non-unique index branch, the element
 is the identity stored in that lookup branch:
 
 ```mw
-for id in ^books.byShelf("fiction")
+for id in ^books.byShelf("fiction").take(100)
     write($"book {id}: {^books(id).title}")
 ```
 
 Use two loop variables when code needs both the address and the element:
 
 ```mw
-for id, book in ^books
+for id, book in ^books.all.take(100)
     write($"{id}: {book.title}")
 
-for pos, tag in ^books(id).tags
+for pos, tag in ^books(id).tags.take(100)
     write($"{pos}: {tag}")
 ```
 
 Use `keys(...)` when code only needs addresses:
 
 ```mw
-for id in keys(^books)
+for id in keys(^books.all.take(100))
     write($"{id}")
 
-for pos in keys(^books(id).tags)
+for pos in keys(^books(id).tags.take(100))
     write($"{pos}")
 ```
 
@@ -131,8 +134,8 @@ while loanCount < limit
 Labels let `break` and `continue` target an outer loop:
 
 ```mw
-outer: for shelf in ^books.byShelf
-    for id in ^books.byShelf(shelf)
+outer: for shelf in ^books.byShelf.take(100)
+    for id in ^books.byShelf(shelf).take(100)
         if wanted(id)
             break outer
 ```

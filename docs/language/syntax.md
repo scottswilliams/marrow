@@ -201,9 +201,10 @@ write one `??` per read.
 The optional read `?.` accesses a field that may be absent. An absent step
 short-circuits the rest of the chain to absent rather than failing the read, so
 `^books(id)?.binding?.shelf` is absent when any step along the way is. An
-unguarded `?.` chain that ends absent raises an absent-element error like any
-other read; pair it with `??` to supply a default. Only absence is short-circuited
-— schema and decoding errors still surface.
+unresolved maybe-present read — including a `?.` chain not terminated by a
+resolution — is a compile error, not a runtime fault; resolve it with `??`, an
+`else` diverging binding, or an `if let`. Only absence is short-circuited — schema
+and decoding errors still surface.
 
 Ranges use `int` endpoints and yield `int` values when iterated. The checker
 accepts them for `for` loops, not as saved values.

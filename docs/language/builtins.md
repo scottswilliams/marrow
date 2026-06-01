@@ -35,7 +35,7 @@ covered in detail under Operators in the syntax reference.
 Direct iteration over a collection yields its elements:
 
 ```mw
-for book in ^books
+for book in ^books.all.take(100)
     write(book.title)
 
 for tag in ^books(id).tags
@@ -43,19 +43,20 @@ for tag in ^books(id).tags
 ```
 
 The element is the useful value the collection stores or selects. A primary
-resource root yields resources. A sequence or keyed layer yields the value stored
-at each populated child. A key-only collection such as a set or non-unique index
-branch yields its members:
+resource root is traversed as an explicit, bounded ordered path (`^books.all`). A
+sequence or keyed layer yields the value stored at each populated child. A
+key-only collection such as a non-unique index branch yields its members and is
+bounded:
 
 ```mw
-for id in ^books.byShelf("fiction")
+for id in ^books.byShelf("fiction").take(50)
     write($"{id}")
 ```
 
 Use two loop variables for the address and element together:
 
 ```mw
-for id, book in ^books
+for id, book in ^books.all.take(100)
     write($"{id}: {book.title}")
 
 for pos, tag in ^books(id).tags
@@ -120,7 +121,7 @@ over `values(...)` and `entries(...)` where those apply, and over an in-memory
 `sequence`:
 
 ```mw
-for book in reversed(^books)
+for book in reversed(^books.all.take(100))
     write(book.title)
 
 for tag in reversed(^books(id).tags)
@@ -158,8 +159,9 @@ key encoding tree iteration uses.
 its edge entry: `next(^books)` is the first stored record, `prev(^books)` the
 last; `next(^books(id).tags)` is the first stored position in that layer.
 
-Stepping off the edge — `next` of the last entry, or `prev` of the first — raises
-the catchable `run.absent_element` fault, so it composes with `??`:
+Stepping off the edge — `next` of the last entry, or `prev` of the first — has no
+neighbor, so the result is maybe-present and must be resolved at the read, the same
+as any maybe-present value. It composes with `??`:
 
 ```mw
 const following = next(^books(id)) ?? Book::Id(id)
@@ -218,8 +220,8 @@ Neither statement produces a value. Complex IO belongs in `std::io`.
 delete ^books(id).subtitle
 ```
 
-Source-level `merge` is not part of v0.1. Use explicit saved writes or a future
-checked transform for tree-copy behavior.
+`merge` is a reserved word, not a v0.1 statement. For a partial update that keeps
+existing data, use field writes or an `edit` block rather than a whole-record `=`.
 
 ## Conversions
 

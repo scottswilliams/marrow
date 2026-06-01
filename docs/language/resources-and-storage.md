@@ -51,9 +51,10 @@ Then `^books(id)` is a saved `Book`, where `id` is a `Book::Id`.
 Saved resources are not hidden blobs. The book above is stored as fields and
 layers under `^books(id)`, so tools can inspect the same tree that code reads.
 
-Marrow does not add a hidden existence marker for an otherwise empty resource.
-A resource identity exists when its saved path has a value or children. If
-existence matters, model at least one required field.
+A resource identity can exist with no populated fields. Existence is an explicit
+structural fact: `exists(^books(id))` is true once the node exists, independent of
+any field value or child. There is no need to model a required field just to record
+that a resource exists.
 
 A saved root has one managed resource owner. If `Book` owns `^books`, another
 resource cannot claim `^books` with a different shape. Use nested layers,
@@ -106,8 +107,13 @@ const id = Book::Id(17)
 ^books(id).title = "Small Gods"
 ```
 
-For a single-key resource, the generated identity type wraps that stored key.
-Ordinary typed code passes the identity value, not the raw key.
+Identity is owned by the store. The canonical identity type is `Id(^books)`: the
+store plus its key. When a resource has only that one store, the store auto-exports
+an ergonomic alias named after the resource, so everyday code writes `Book::Id`.
+That alias is store-derived sugar, not identity owned by the resource. If one
+resource has several stores, each store names a distinct alias (for example
+`DraftBook::Id` and `PublishedBook::Id`). Ordinary typed code passes the identity
+value, not the raw key.
 
 Composite identities work the same way:
 
@@ -125,7 +131,7 @@ use separate field names.
 Key names are part of the managed layer namespace. A resource keyed by `id`
 does not also declare a field or child layer named `id`.
 
-Ordinary typed code addresses a managed root with the generated identity type:
+Ordinary typed code addresses a managed root through the store's identity alias:
 
 ```mw
 const id = Enrollment::Id(
@@ -209,7 +215,7 @@ ends with all resource identity keys in declaration order so each entry is
 distinct:
 
 ```mw
-for id in ^books.byShelf("fiction")
+for id in ^books.byShelf("fiction").take(50)
     write($"book {id}: {^books(id).title}")
 ```
 
@@ -259,7 +265,7 @@ repair and derived rebuild are explicit data-evolution tooling work.
 
 ## Lookup And Query
 
-Marrow reads saved data with paths, traversal, and declared indexes.
+Marrow reads saved data with paths, ordered paths, and declared indexes.
 
 Use the primary saved root when identity is known:
 
@@ -267,11 +273,35 @@ Use the primary saved root when identity is known:
 const title = ^books(id).title
 ```
 
-Use an index when the access pattern matters:
+Traversal walks an ordered path: an index branch (`^books.byShelf(shelf)`), a
+keyed child layer (`^books(id).notes`), or an explicit full-store traversal
+(`^books.all`). Bare iteration over a whole store (`for id in ^books`) is not
+production-legal; traverse `^books.all` with a bound. Ordered-path traversal is
+seek-based, not offset- or page-number based. The operations are:
+
+- `.take(n)` yields up to `n` items with no continuation.
+- `.window(size: n)` yields a `Window[T]`: the items plus a maybe-present `next`
+  resume token.
+- `.after(key)` seeks past a typed ordered key (a tuple for a composite key);
+  `.from(key)` and `.until(key)` bound the range.
+- `.reverse()` walks in reverse order.
+- `.resume(token)` continues from an opaque resume token.
+
+Use an index when the access pattern matters, and bound the traversal:
 
 ```mw
-for id in ^books.byShelf("fiction")
+for id in ^books.byShelf("fiction").take(50)
     print(^books(id).title)
+```
+
+Take a page and resolve its resume token like any maybe-present read:
+
+```mw
+const page = ^books.all.window(size: 50)
+for id in page.items
+    print(^books(id).title)
+if let next = page.next
+    write("more pages remain")
 ```
 
 Marrow does not add a separate storage query language. If code needs a new
@@ -299,6 +329,16 @@ storage error before success is visible. Ordinary app code does not call a
 special `set(...)` function for indexed fields. Untyped writes that bypass a
 managed resource root are rejected unless code runs in an explicit maintenance
 mode.
+
+Group several field writes under one root with an `edit` block. Like a field
+write it preserves omitted fields and children; unlike a whole-record `=` it does
+not clear them:
+
+```mw
+edit ^books(id)
+    shelf = "fiction"
+    subtitle = "A novel"
+```
 
 Field writes update existing resources. To create a resource or keyed entry
 with required fields, assign a whole tree value or use a transaction that
@@ -425,9 +465,10 @@ and traversed through their saved paths (for example `^books(id).versions(v)`).
 A whole read is useful for small records and construction; read or traverse the
 child layers you need directly.
 
-Whole-resource assignment replaces the saved resource for that identity.
-Fields and child entries absent from the assigned value are removed. Use field
-writes for current-only updates when history layers must remain untouched.
+Whole-resource assignment is exact. It replaces the saved resource for that
+identity, clearing every field, unkeyed group, and keyed child layer omitted from
+the assigned value. To preserve children while updating current state, use a field
+write or an edit block instead of `=`.
 
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
@@ -446,8 +487,12 @@ subtitle: string
 
 Rules:
 
-- Direct read of an unpopulated element raises an absent-element error unless
-  the checker can prove the element exists.
+- A maybe-present element must be resolved at the read. An unresolved read of a
+  maybe-present place is a compile error that names the place and its resolutions;
+  it never raises a runtime fault and never returns a stored null. Resolve it with
+  `place ?? fallback`, `const x = place else <diverge>` (return, throw, break, or
+  continue), an `if let x = place` or `if exists(place)` branch, or optional
+  chaining `a?.b?.c` that ends in one of those.
 - `path ?? default` returns `default` for an unpopulated sparse path. It
   does not hide schema errors.
 - `exists(path)` checks whether a value or child exists and narrows the path
@@ -480,8 +525,8 @@ generated index entries for that resource.
 Deleting a required field is rejected unless the surrounding keyed entry or
 resource is being deleted, or code is running in explicit maintenance mode.
 
-Source-level `merge` is not part of v0.1. Use explicit checked writes or a
-future checked transform for tree-copy behavior.
+`merge` is a reserved word, not a v0.1 statement. For partial updates that keep
+existing data, use field writes or an edit block rather than a whole-record `=`.
 
 Deleting one resource identity is ordinary application work. Deleting a whole
 managed root is maintenance work. Code must opt into maintenance mode. The

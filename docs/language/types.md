@@ -55,7 +55,8 @@ saved resource identities.
 An `enum` is a named, fixed set of values — the user-defined generalization of
 `bool`. It is a named scalar-valued type: a value such as `Status::archived`
 compares nominally (it equals only a value of the same enum) and stores as the
-member's compact ordinal. See [Enums](enums.md).
+member's stable catalog identity, decoded back to the current source member, so
+reordering members does not change stored meaning. See [Enums](enums.md).
 
 ## Saved Types
 
@@ -106,16 +107,24 @@ explicit resource shape.
 
 ## Sparse Fields
 
-Resource fields are sparse by default. A field declaration says what type the
-element has when it is populated. If it is not populated, there is simply no
+An unmarked field is maybe-present. A field declaration says what type the
+element has when it is populated; if it is not populated, there is simply no
 node in the tree.
 
 ```mw
 subtitle: string
 ```
 
+Absence is a fork resolved at the read. Reading a maybe-present place never
+raises an absent-element error and never yields a stored null. The read must be
+resolved at the read site by one of: an absence-default `place ?? fallback`; a
+binding that diverges on absence (`const x = place else return`); an
+`if let x = place` or `if exists(place)` branch; or optional chaining
+`a?.b?.c` that ends in one of those. An unresolved maybe-present read is a
+compile error that names the place and the available resolutions.
+
 Use `exists(path)` when code needs to branch on whether an element is
-populated:
+populated; the check narrows the path inside the guarded block:
 
 ```mw
 if exists(^books(id).subtitle)
@@ -128,10 +137,6 @@ Use the absence-default `??` when absence is expected:
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
-Directly reading an unpopulated element raises an absent-element error unless
-the checker can prove the element exists. An `exists(...)` check narrows the
-path inside the guarded block.
-
 ## Required Fields
 
 Most elements are sparse because trees are the default. Mark a field
@@ -142,10 +147,11 @@ required title: string
 required author: string
 ```
 
-Writing a resource value must populate required fields. Reading an
-unpopulated required field is an error. Assigning absence to a required field
-is an error; use `delete` only when deleting the surrounding keyed entry or
-resource, or when running in explicit maintenance mode.
+Writing a resource value must populate required fields. A required field that
+is missing in stored data is a fatal data-attachment error at activation, not a
+maybe-present read to resolve or a catchable branch. Assigning absence to a
+required field is an error; use `delete` only when deleting the surrounding
+keyed entry or resource, or when running in explicit maintenance mode.
 
 A local mutable resource can be built field by field. Required fields are
 checked when the resource is saved, returned, or passed where a complete
@@ -293,8 +299,13 @@ const gameId = Game::Id(1)
 
 ## Identity Types
 
-Keyed saved resources define identity types from their identity keys. For a
-single-key resource:
+Identity is owned by the store, not derived from the resource. A keyed store
+defines its identity type from the store plus its key; `Id(^store)` is the
+canonical identity type. When a store holds the only store for its resource, it
+auto-exports an ergonomic alias named after the resource, so everyday code
+writes `Book::Id` for `Id(^books)`. The alias is store-derived sugar; when one
+resource has several stores, each store names a distinct alias
+(`DraftBook::Id`, `PublishedBook::Id`). For a single-key resource:
 
 ```mw
 resource Book at ^books(id: int)
@@ -306,7 +317,7 @@ const id: Book::Id = nextId(^books)
 A singleton saved resource such as `resource Settings at ^settings` has no
 generated identity type; the root itself is the resource.
 
-`Book::Id` is a typed wrapper over the stored key. It prevents ordinary
+`Book::Id` is a typed wrapper over the store's key. It prevents ordinary
 integers from being accidentally passed as book identifiers, and it keeps IDs
 from becoming meaningful business counters. Convert explicitly at boundaries
 such as URLs, command arguments, or host IO.
@@ -380,9 +391,9 @@ IDs behind.
 `^books(next(^books(id))).title` is well-typed. Over a keyed child layer, `next`
 and `prev` type to the layer's key. `reversed(...)` preserves its argument's
 element type, so `for x in reversed(layer)` binds `x` exactly as `for x in layer`
-does. Stepping off the edge raises the catchable `run.absent_element` fault, and
-`??` defaults it — the default's type drives the result, as it does for any
-absent read.
+does. Stepping off the edge yields no neighbor, so the result is maybe-present and is
+resolved at the read like any maybe-present value, commonly with `??` — the
+default's type drives the result. It does not raise a runtime fault.
 
 ## Mutability
 
