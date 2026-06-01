@@ -1520,7 +1520,7 @@ fn saved_inout_through_index_entry_is_prototype_only() {
 }
 
 #[test]
-fn saved_traversal_shaper_methods_are_prototype_only() {
+fn old_saved_traversal_method_shapers_are_prototype_only() {
     let report = check_module_report(
         "prototype-saved-traversal-shapers",
         "module m\n\

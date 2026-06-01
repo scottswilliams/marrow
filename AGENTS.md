@@ -53,9 +53,8 @@ Avoid agentic slop and documentation sediment at all costs, including in code.
 ## Worktrees
 
 Use an isolated worktree for multi-file changes, Rust changes, or cleanup
-batches. The local harness is `$HOME/agents-work/marrow`; tracked work
-normally lives under `$HOME/agents-work/marrow/worktrees/main`, with
-short-lived lane worktrees under `$HOME/agents-work/marrow/worktrees`.
+batches. Keep lane worktrees under `/Users/scottwilliams/Dev` next to the main
+checkout, using names such as `/Users/scottwilliams/Dev/marrow-<lane>`.
 
 Keep harness files, throwaway worktrees, cargo targets, trial artifacts,
 patches, reviews, logs, and leases outside the repository. The tracked repo
@@ -73,14 +72,16 @@ Use focused checks before broad ones:
    for broad rename, runtime, or release-surface changes.
 
 Do not run broad Cargo gates in parallel against the same target directory. In
-a lane, set `CARGO_TARGET_DIR` to an external harness path:
+a lane, spell `CARGO_TARGET_DIR` explicitly in every Cargo command, using an
+external target path:
 
 ```sh
-export CARGO_TARGET_DIR="$HOME/agents-work/marrow/cache/cargo-targets/<lane>"
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/<lane> \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-<lane>/Cargo.toml ...
 ```
 
-Use `cache/cargo-targets/integration` for broad integration gates, one at a
-time.
+Use `/Users/scottwilliams/Dev/.build/marrow-targets/integration` for broad
+integration gates, one at a time.
 
 ## Review And Integration
 
@@ -96,14 +97,14 @@ simplicity, minimality, and whether every changed line belongs. Treat
 docs/language/ as the source of truth for language behavior.
 ```
 
-Integrate only from `$HOME/agents-work/marrow/worktrees/main`. Prefer
-`git cherry-pick -x <reviewed-sha>` over merging a whole branch. If a conflict
-is not an obvious mechanical rename/import conflict, abort and send the branch
-back to the lane.
+Integrate only from the live main checkout at `/Users/scottwilliams/Dev/marrow`.
+Prefer `git cherry-pick -x <reviewed-sha>` over merging a whole branch. If a
+conflict is not an obvious mechanical rename/import conflict, abort and send the
+branch back to the lane.
 
-Before pushing `main`, run the verification ladder through the workspace
-checks using `cache/cargo-targets/integration`, then ask for a final read-only
-review of the assembled diff:
+Before pushing `main`, run the verification ladder through the workspace checks
+using `/Users/scottwilliams/Dev/.build/marrow-targets/integration`, then ask for
+a final read-only review of the assembled diff:
 
 ```text
 Review the integration diff before main is pushed. Findings first. Focus on
@@ -126,6 +127,14 @@ belong together.
 ## Coding Expectations
 
 - Prefer simple Rust and narrow abstractions.
+- Prefer typed IDs and small enums over strings or booleans when values carry
+  semantic identity or state.
+- Avoid crate-root glob preludes and production `use super::*`; import the names
+  a module uses.
+- Do not duplicate semantic classifiers across parser, checker, runtime, tools,
+  or tests. Move the ownership boundary instead.
+- Delete obsolete prototype paths instead of wrapping them in compatibility
+  shims.
 - Keep code concise and self-documenting. Prioritize readability and
   maintainability.
 - Write comments as a human engineer would: explain *why*, in plain prose. Do not

@@ -12,7 +12,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
-use marrow_syntax::{Block, Expression, ParamMode, SourceSpan, TypeRef};
+use marrow_syntax::{Block, Expression, ParamMode, ParsedSource, SourceSpan, TypeRef};
+
+use crate::facts::CheckedFacts;
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -27,9 +29,45 @@ pub struct FileId(pub u32);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CheckedProgram {
     pub modules: Vec<CheckedModule>,
+    pub facts: CheckedFacts,
 }
 
 impl CheckedProgram {
+    pub fn from_modules(modules: Vec<CheckedModule>) -> Self {
+        let mut program = Self {
+            modules,
+            facts: CheckedFacts::default(),
+        };
+        program.rebuild_facts();
+        program
+    }
+
+    fn rebuild_facts(&mut self) {
+        self.facts = CheckedFacts::from_modules(&self.modules, &HashMap::new());
+    }
+
+    pub(crate) fn rebuild_facts_with_sources<'a, I>(&mut self, sources: I)
+    where
+        I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+    {
+        let sources: HashMap<PathBuf, &ParsedSource> = sources
+            .into_iter()
+            .map(|(path, parsed)| (path.to_path_buf(), parsed))
+            .collect();
+        self.facts = CheckedFacts::from_modules(&self.modules, &sources);
+    }
+
+    pub(crate) fn rebuild_facts_with_sources_preserving_prefix<'a, I>(
+        &mut self,
+        prefix: &CheckedProgram,
+        sources: I,
+    ) where
+        I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+    {
+        self.rebuild_facts_with_sources(sources);
+        self.facts.overwrite_prefix_from(&prefix.facts);
+    }
+
     /// The source file the given file id names, or `None` if the id is out of
     /// range (an id from a different program, or a fault with no project file).
     pub fn file_path(&self, id: FileId) -> Option<&Path> {
@@ -76,9 +114,8 @@ pub struct CheckedConst {
     pub span: SourceSpan,
 }
 
-/// A checked function: its resolved signature — name, visibility, parameters,
-/// return type, whether its body touches saved data — and the body itself, which
-/// the runtime evaluates.
+/// A checked function: its resolved signature, effect summary, and the temporary
+/// syntax body bridge the current runtime still evaluates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedFunction {
     pub name: String,
@@ -88,7 +125,8 @@ pub struct CheckedFunction {
     pub span: SourceSpan,
     /// True when the body reads or writes any saved root (`^...`).
     pub touches_saved_data: bool,
-    /// The function body, as parsed, for the runtime to evaluate.
+    /// Temporary syntax body bridge. Checked executable IR will replace this as
+    /// the runtime stops evaluating source syntax directly.
     pub body: Block,
 }
 

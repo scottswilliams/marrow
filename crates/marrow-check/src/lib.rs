@@ -17,6 +17,7 @@ pub mod analysis;
 pub mod binding;
 mod checks;
 mod enums;
+pub mod facts;
 mod infer;
 pub mod program;
 mod prototype;
@@ -36,6 +37,11 @@ pub(crate) use enums::{
     check_is, check_match, collect_enum_names, join_or, normalize_program_named_types,
     normalize_program_named_types_against, private_enum_type_reference, resolve_enum_member_path,
     resolve_type,
+};
+pub use facts::{
+    CheckedFacts, CheckedType, DirectEffectFacts, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
+    FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
+    ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
 };
 pub(crate) use infer::*;
 pub use marrow_schema::{IndexSchema, ResourceSchema};
@@ -500,7 +506,34 @@ pub fn check_tests_with_sources(
         sources,
         TestResolutionSuppression::default(),
     )?;
-    Ok((checked.report, checked.modules))
+    Ok((
+        checked.report,
+        checked.program.modules[checked.test_module_start..].to_vec(),
+    ))
+}
+
+pub fn check_tests_program(
+    project_root: &Path,
+    config: &ProjectConfig,
+    project: &CheckedProgram,
+) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
+    check_tests_with_sources_program(project_root, config, project, &ProjectSources::new())
+}
+
+pub fn check_tests_with_sources_program(
+    project_root: &Path,
+    config: &ProjectConfig,
+    project: &CheckedProgram,
+    sources: &ProjectSources,
+) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
+    let checked = check_tests_with_sources_analysis(
+        project_root,
+        config,
+        project,
+        sources,
+        TestResolutionSuppression::default(),
+    )?;
+    Ok((checked.report, checked.program))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -620,7 +653,8 @@ fn diagnostic_message_name<'a>(message: &'a str, prefix: &str, suffix: &str) -> 
 
 pub(crate) struct CheckedTests {
     pub(crate) report: CheckReport,
-    pub(crate) modules: Vec<CheckedModule>,
+    pub(crate) program: CheckedProgram,
+    pub(crate) test_module_start: usize,
     pub(crate) files: Vec<analysis::AnalyzedFile>,
 }
 
@@ -746,9 +780,8 @@ pub(crate) fn check_tests_with_sources_analysis(
     // `nextId` gate finds the project's resource schemas. Resource annotations are
     // recognized project-wide (project plus test resources).
     let project_count = project.modules.len();
-    let mut combined = CheckedProgram {
-        modules: project.modules.iter().cloned().chain(modules).collect(),
-    };
+    let mut combined =
+        CheckedProgram::from_modules(project.modules.iter().cloned().chain(modules).collect());
     resolution_suppression.reveal_complete_modules(&combined);
     // The duplicate diagnostic is the useful error; downstream references into
     // that invalid namespace should not also pretend the function is just absent.
@@ -802,10 +835,21 @@ pub(crate) fn check_tests_with_sources_analysis(
     // combined program so a test's `match` over a project enum dispatches correctly.
     // The bodies belong to the already-normalized test modules — the tail of the
     // combined program past the project's own modules.
-    let mut test_program = CheckedProgram {
-        modules: combined.modules[project_count..].to_vec(),
-    };
-    resolve_match_enums(&mut test_program, &combined);
+    let mut resolved_tests =
+        CheckedProgram::from_modules(combined.modules[project_count..].to_vec());
+    resolve_match_enums(&mut resolved_tests, &combined);
+    for (target, source) in combined.modules[project_count..]
+        .iter_mut()
+        .zip(resolved_tests.modules)
+    {
+        *target = source;
+    }
+    combined.rebuild_facts_with_sources_preserving_prefix(
+        project,
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
     let analyzed = parsed_files
         .into_iter()
         .map(|(file, parsed)| analysis::AnalyzedFile {
@@ -818,7 +862,8 @@ pub(crate) fn check_tests_with_sources_analysis(
 
     Ok(CheckedTests {
         report,
-        modules: test_program.modules,
+        program: combined,
+        test_module_start: project_count,
         files: analyzed,
     })
 }

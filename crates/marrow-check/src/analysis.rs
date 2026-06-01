@@ -341,6 +341,11 @@ pub(crate) fn analyze_source_project(
     // runtime dispatches by ordinals rather than guessing the enum from the arms.
     let snapshot = program.clone();
     resolve_match_enums(&mut program, &snapshot);
+    program.rebuild_facts_with_sources(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
 
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are

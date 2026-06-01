@@ -1,0 +1,961 @@
+//! Typed checked facts derived from the best-effort checked program.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use marrow_schema::stdlib::Capability;
+use marrow_schema::{Element, ScalarType, Type};
+use marrow_syntax::{
+    Block, Expression, InterpolationPart, ParamMode, ParsedSource, ResourceMember, SourceSpan,
+    Statement, TypeRef,
+};
+
+use crate::program::{CheckedModule, MarrowType};
+use crate::{build_alias_map, expand_alias};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModuleId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunctionId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceMemberId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumMemberId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalId(pub u32);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckedFacts {
+    modules: Vec<ModuleFact>,
+    functions: Vec<FunctionFact>,
+    locals: Vec<LocalFact>,
+    resources: Vec<ResourceFact>,
+    resource_members: Vec<ResourceMemberFact>,
+    enums: Vec<EnumFact>,
+    enum_members: Vec<EnumMemberFact>,
+}
+
+impl CheckedFacts {
+    pub(crate) fn from_modules(
+        modules: &[CheckedModule],
+        sources: &HashMap<PathBuf, &ParsedSource>,
+    ) -> Self {
+        let mut facts = Self::default();
+
+        for (module_index, module) in modules.iter().enumerate() {
+            facts.modules.push(ModuleFact {
+                id: ModuleId(module_index as u32),
+                name: module.name.clone(),
+                source_file: module.source_file.clone(),
+                span: module.span,
+            });
+        }
+
+        for (module_index, module) in modules.iter().enumerate() {
+            let module_id = ModuleId(module_index as u32);
+            let parsed = sources.get(&module.source_file);
+            facts.collect_resource_facts(module_id, module, parsed.copied());
+        }
+
+        for (module_index, module) in modules.iter().enumerate() {
+            let module_id = ModuleId(module_index as u32);
+            let parsed = sources.get(&module.source_file);
+            facts.collect_enum_facts(module_id, module, parsed.copied());
+        }
+
+        for (module_index, module) in modules.iter().enumerate() {
+            let module_id = ModuleId(module_index as u32);
+            let parsed = sources.get(&module.source_file).copied();
+            for function in &module.functions {
+                if let Some(function) = facts.function_fact(module_id, module, function, parsed) {
+                    facts.functions.push(function);
+                }
+            }
+        }
+
+        facts
+    }
+
+    pub fn modules(&self) -> &[ModuleFact] {
+        &self.modules
+    }
+
+    pub fn functions(&self) -> &[FunctionFact] {
+        &self.functions
+    }
+
+    pub fn locals(&self) -> &[LocalFact] {
+        &self.locals
+    }
+
+    pub fn resources(&self) -> &[ResourceFact] {
+        &self.resources
+    }
+
+    pub fn resource_members(&self) -> &[ResourceMemberFact] {
+        &self.resource_members
+    }
+
+    pub fn enums(&self) -> &[EnumFact] {
+        &self.enums
+    }
+
+    pub fn enum_members(&self) -> &[EnumMemberFact] {
+        &self.enum_members
+    }
+
+    pub(crate) fn overwrite_prefix_from(&mut self, prefix: &Self) {
+        overwrite_prefix(&mut self.modules, &prefix.modules);
+        overwrite_prefix(&mut self.functions, &prefix.functions);
+        overwrite_prefix(&mut self.locals, &prefix.locals);
+        overwrite_prefix(&mut self.resources, &prefix.resources);
+        overwrite_prefix(&mut self.resource_members, &prefix.resource_members);
+        overwrite_prefix(&mut self.enums, &prefix.enums);
+        overwrite_prefix(&mut self.enum_members, &prefix.enum_members);
+    }
+
+    pub fn module_id(&self, name: &str) -> Option<ModuleId> {
+        self.modules
+            .iter()
+            .find(|module| module.name == name)
+            .map(|module| module.id)
+    }
+
+    pub fn resource_id(&self, module: ModuleId, name: &str) -> Option<ResourceId> {
+        self.resources
+            .iter()
+            .find(|resource| resource.module == module && resource.name == name)
+            .map(|resource| resource.id)
+    }
+
+    pub fn resource_member_id(
+        &self,
+        resource: ResourceId,
+        path: &[&str],
+    ) -> Option<ResourceMemberId> {
+        let mut parent = None;
+        let mut current = None;
+        for name in path {
+            let member = self.resource_members.iter().find(|member| {
+                member.resource == resource && member.parent == parent && member.name == *name
+            })?;
+            current = Some(member.id);
+            parent = current;
+        }
+        current
+    }
+
+    pub fn enum_id(&self, module: ModuleId, name: &str) -> Option<EnumId> {
+        self.enums
+            .iter()
+            .find(|enum_fact| enum_fact.module == module && enum_fact.name == name)
+            .map(|enum_fact| enum_fact.id)
+    }
+
+    pub fn function_id(&self, module: ModuleId, name: &str) -> Option<FunctionId> {
+        self.functions
+            .iter()
+            .find(|function| function.module == module && function.name == name)
+            .map(|function| function.id)
+    }
+
+    pub fn function(&self, id: FunctionId) -> &FunctionFact {
+        &self.functions[id.0 as usize]
+    }
+
+    fn function_fact(
+        &mut self,
+        module_id: ModuleId,
+        module: &CheckedModule,
+        function: &crate::CheckedFunction,
+        parsed: Option<&ParsedSource>,
+    ) -> Option<FunctionFact> {
+        let declaration = parsed.and_then(|parsed| parsed.file.function(&function.name));
+        let aliases = build_alias_map(&module.imports);
+
+        let params = function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                let annotation = declaration
+                    .and_then(|declaration| declaration.params.get(index))
+                    .map(|param| &param.ty);
+                let ty =
+                    self.checked_type_for_signature(module_id, &param.ty, annotation, &aliases)?;
+                Some((param.name.clone(), param.mode, ty))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let return_type = match function.return_type.as_ref() {
+            Some(ty) => {
+                let annotation =
+                    declaration.and_then(|declaration| declaration.return_type.as_ref());
+                Some(self.checked_type_for_signature(module_id, ty, annotation, &aliases)?)
+            }
+            None => None,
+        };
+
+        let id = FunctionId(self.functions.len() as u32);
+        let params = params
+            .into_iter()
+            .map(|(name, mode, ty)| {
+                let local = LocalFact {
+                    id: LocalId(self.locals.len() as u32),
+                    function: id,
+                    name,
+                    mode,
+                    ty,
+                };
+                self.locals.push(local.clone());
+                local
+            })
+            .collect();
+
+        Some(FunctionFact {
+            id,
+            module: module_id,
+            name: function.name.clone(),
+            public: function.public,
+            params,
+            return_type,
+            direct_effects: self.direct_effects_for_block(&aliases, &function.body),
+            span: function.span,
+        })
+    }
+
+    fn collect_resource_facts(
+        &mut self,
+        module_id: ModuleId,
+        module: &CheckedModule,
+        parsed: Option<&ParsedSource>,
+    ) {
+        for resource in &module.resources {
+            let declaration = parsed.and_then(|parsed| {
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        marrow_syntax::Declaration::Resource(candidate)
+                            if candidate.name == resource.name =>
+                        {
+                            Some(candidate)
+                        }
+                        _ => None,
+                    })
+            });
+            let resource_id = ResourceId(self.resources.len() as u32);
+            self.resources.push(ResourceFact {
+                id: resource_id,
+                module: module_id,
+                name: resource.name.clone(),
+                saved_root: resource.saved_root.as_ref().map(|root| root.root.clone()),
+                span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
+            });
+            self.collect_resource_member_facts(
+                resource_id,
+                None,
+                &resource.members,
+                declaration.map(|resource| resource.members.as_slice()),
+            );
+            for index in &resource.indexes {
+                let span = declaration
+                    .and_then(|resource| {
+                        resource.members.iter().find_map(|member| match member {
+                            ResourceMember::Index(candidate) if candidate.name == index.name => {
+                                Some(candidate.span)
+                            }
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or_default();
+                let id = ResourceMemberId(self.resource_members.len() as u32);
+                self.resource_members.push(ResourceMemberFact {
+                    id,
+                    resource: resource_id,
+                    parent: None,
+                    name: index.name.clone(),
+                    kind: ResourceMemberKind::Index,
+                    span,
+                });
+            }
+        }
+    }
+
+    fn collect_resource_member_facts(
+        &mut self,
+        resource_id: ResourceId,
+        parent: Option<ResourceMemberId>,
+        nodes: &[marrow_schema::Node],
+        declarations: Option<&[ResourceMember]>,
+    ) {
+        for node in nodes {
+            let declaration = declarations.and_then(|declarations| {
+                declarations.iter().find(|member| match member {
+                    ResourceMember::Field(field) => field.name == node.name,
+                    ResourceMember::Group(group) => group.name == node.name,
+                    ResourceMember::Index(_) => false,
+                })
+            });
+            let span = declaration
+                .map(|member| match member {
+                    ResourceMember::Field(field) => field.span,
+                    ResourceMember::Group(group) => group.span,
+                    ResourceMember::Index(index) => index.span,
+                })
+                .unwrap_or_default();
+            let kind = match node.element {
+                Element::Slot { .. } => ResourceMemberKind::Field,
+                Element::Group => ResourceMemberKind::Group,
+            };
+            let id = ResourceMemberId(self.resource_members.len() as u32);
+            self.resource_members.push(ResourceMemberFact {
+                id,
+                resource: resource_id,
+                parent,
+                name: node.name.clone(),
+                kind,
+                span,
+            });
+            let nested = declaration.and_then(|member| match member {
+                ResourceMember::Group(group) => Some(group.members.as_slice()),
+                _ => None,
+            });
+            self.collect_resource_member_facts(resource_id, Some(id), &node.members, nested);
+        }
+    }
+
+    fn collect_enum_facts(
+        &mut self,
+        module_id: ModuleId,
+        module: &CheckedModule,
+        parsed: Option<&ParsedSource>,
+    ) {
+        for enum_schema in &module.enums {
+            let declaration = parsed.and_then(|parsed| {
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        marrow_syntax::Declaration::Enum(candidate)
+                            if candidate.name == enum_schema.name =>
+                        {
+                            Some(candidate)
+                        }
+                        _ => None,
+                    })
+            });
+            let enum_id = EnumId(self.enums.len() as u32);
+            self.enums.push(EnumFact {
+                id: enum_id,
+                module: module_id,
+                name: enum_schema.name.clone(),
+                span: declaration.map_or(SourceSpan::default(), |decl| decl.span),
+            });
+
+            let mut member_spans = Vec::new();
+            if let Some(declaration) = declaration {
+                flatten_enum_member_spans(&declaration.members, &mut member_spans);
+            }
+            let member_start = self.enum_members.len() as u32;
+            for (index, member) in enum_schema.members.iter().enumerate() {
+                self.enum_members.push(EnumMemberFact {
+                    id: EnumMemberId(member_start + index as u32),
+                    enum_id,
+                    parent: member
+                        .parent
+                        .map(|parent| EnumMemberId(member_start + parent as u32)),
+                    name: member.name.clone(),
+                    category: member.category,
+                    span: member_spans.get(index).copied().unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    fn checked_type_for_signature(
+        &self,
+        module_id: ModuleId,
+        ty: &MarrowType,
+        annotation: Option<&TypeRef>,
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<CheckedType> {
+        annotation
+            .and_then(|annotation| self.checked_type_from_type_ref(module_id, annotation, aliases))
+            .or_else(|| self.checked_type(module_id, ty))
+    }
+
+    fn checked_type_from_type_ref(
+        &self,
+        module_id: ModuleId,
+        ty: &TypeRef,
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<CheckedType> {
+        self.checked_type_from_resolved_type(module_id, &Type::resolve(ty), aliases)
+    }
+
+    fn checked_type_from_resolved_type(
+        &self,
+        module_id: ModuleId,
+        ty: &Type,
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<CheckedType> {
+        match ty {
+            Type::Scalar(scalar) => Some(CheckedType::Primitive(*scalar)),
+            Type::Identity(resource) => {
+                let segments = split_type_path(resource);
+                self.resolve_resource_segments(module_id, &segments, aliases)
+                    .map(CheckedType::Identity)
+            }
+            Type::Named(name) if name == "Error" => Some(CheckedType::Error),
+            Type::Named(name) => {
+                let segments = split_type_path(name);
+                self.resolve_resource_segments(module_id, &segments, aliases)
+                    .map(CheckedType::Resource)
+            }
+            Type::Sequence(element) => self
+                .checked_type_from_resolved_type(module_id, element, aliases)
+                .map(|element| CheckedType::Sequence(Box::new(element))),
+            Type::Unknown => None,
+        }
+    }
+
+    fn checked_type(&self, module_id: ModuleId, ty: &MarrowType) -> Option<CheckedType> {
+        match ty {
+            MarrowType::Primitive(scalar) => Some(CheckedType::Primitive(*scalar)),
+            MarrowType::Error => Some(CheckedType::Error),
+            MarrowType::Resource(name) => self
+                .resolve_resource_type(module_id, name)
+                .map(CheckedType::Resource),
+            MarrowType::GroupEntry { resource, layers } => {
+                let resource = self.resolve_resource_type(module_id, resource)?;
+                let names: Vec<&str> = layers.iter().map(String::as_str).collect();
+                Some(CheckedType::GroupEntry {
+                    resource,
+                    members: self.member_path_ids(resource, &names)?,
+                })
+            }
+            MarrowType::Identity(resource) => self
+                .resolve_resource_type(module_id, resource)
+                .map(CheckedType::Identity),
+            MarrowType::Enum { module, name } => {
+                let module = self.module_id(module)?;
+                self.enum_id(module, name).map(CheckedType::Enum)
+            }
+            MarrowType::Sequence(element) => self
+                .checked_type(module_id, element)
+                .map(|element| CheckedType::Sequence(Box::new(element))),
+            MarrowType::LocalTree { keys, value } => {
+                let keys = keys
+                    .iter()
+                    .map(|key| self.checked_type(module_id, key))
+                    .collect::<Option<Vec<_>>>()?;
+                let value = Box::new(self.checked_type(module_id, value)?);
+                Some(CheckedType::LocalTree { keys, value })
+            }
+            MarrowType::Invalid | MarrowType::Unknown => None,
+        }
+    }
+
+    fn resolve_resource_type(&self, module_id: ModuleId, name: &str) -> Option<ResourceId> {
+        let segments = split_type_path(name);
+        self.resolve_resource_segments(module_id, &segments, &HashMap::new())
+    }
+
+    fn resolve_resource_segments(
+        &self,
+        module_id: ModuleId,
+        segments: &[String],
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<ResourceId> {
+        let expanded = expand_alias(segments, aliases);
+        let (resource, module) = expanded.split_last()?;
+        if module.is_empty() {
+            return self.resource_id(module_id, resource).or_else(|| {
+                self.resources
+                    .iter()
+                    .find(|candidate| candidate.name == *resource)
+                    .map(|candidate| candidate.id)
+            });
+        }
+        self.module_id(&module.join("::"))
+            .and_then(|module_id| self.resource_id(module_id, resource))
+    }
+
+    fn resource_for_root(&self, root: &str) -> Option<ResourceId> {
+        self.resources
+            .iter()
+            .find(|resource| resource.saved_root.as_deref() == Some(root))
+            .map(|resource| resource.id)
+    }
+
+    fn member_path_ids(
+        &self,
+        resource: ResourceId,
+        path: &[&str],
+    ) -> Option<Vec<ResourceMemberId>> {
+        let mut result = Vec::new();
+        let mut parent = None;
+        for name in path {
+            let member = self.resource_members.iter().find(|member| {
+                member.resource == resource && member.parent == parent && member.name == *name
+            })?;
+            result.push(member.id);
+            parent = Some(member.id);
+        }
+        Some(result)
+    }
+
+    fn direct_effects_for_block(
+        &self,
+        aliases: &HashMap<String, Vec<String>>,
+        block: &Block,
+    ) -> DirectEffectFacts {
+        let mut effects = DirectEffectFacts::default();
+        self.collect_block_effects(aliases, block, &mut effects);
+        effects
+    }
+
+    fn collect_block_effects(
+        &self,
+        aliases: &HashMap<String, Vec<String>>,
+        block: &Block,
+        effects: &mut DirectEffectFacts,
+    ) {
+        for statement in &block.statements {
+            self.collect_statement_effects(aliases, statement, effects);
+        }
+    }
+
+    fn collect_statement_effects(
+        &self,
+        aliases: &HashMap<String, Vec<String>>,
+        statement: &Statement,
+        effects: &mut DirectEffectFacts,
+    ) {
+        match statement {
+            Statement::Const { value, .. } | Statement::Throw { value, .. } => {
+                if matches!(statement, Statement::Throw { .. }) {
+                    effects.throws = true;
+                }
+                self.collect_expr_reads(aliases, value, effects);
+            }
+            Statement::Var { value, .. } => {
+                if let Some(value) = value {
+                    self.collect_expr_reads(aliases, value, effects);
+                }
+            }
+            Statement::Assign { target, value, .. } => {
+                self.collect_saved_write(target, effects);
+                self.collect_saved_path_key_reads(aliases, target, effects);
+                self.collect_expr_reads(aliases, value, effects);
+            }
+            Statement::Delete { path, .. } => {
+                self.collect_saved_write(path, effects);
+                self.collect_saved_path_key_reads(aliases, path, effects);
+            }
+            Statement::Merge { target, value, .. } => {
+                self.collect_expr_reads(aliases, target, effects);
+                self.collect_expr_reads(aliases, value, effects);
+            }
+            Statement::Return { value, .. } => {
+                if let Some(value) = value {
+                    self.collect_expr_reads(aliases, value, effects);
+                }
+            }
+            Statement::Expr { value, .. } => self.collect_expr_reads(aliases, value, effects),
+            Statement::If {
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                if let Some(condition) = condition {
+                    self.collect_expr_reads(aliases, condition, effects);
+                }
+                self.collect_block_effects(aliases, then_block, effects);
+                for else_if in else_ifs {
+                    if let Some(condition) = &else_if.condition {
+                        self.collect_expr_reads(aliases, condition, effects);
+                    }
+                    self.collect_block_effects(aliases, &else_if.block, effects);
+                }
+                if let Some(block) = else_block {
+                    self.collect_block_effects(aliases, block, effects);
+                }
+            }
+            Statement::While {
+                condition, body, ..
+            } => {
+                if let Some(condition) = condition {
+                    self.collect_expr_reads(aliases, condition, effects);
+                }
+                self.collect_block_effects(aliases, body, effects);
+            }
+            Statement::For {
+                iterable,
+                step,
+                body,
+                ..
+            } => {
+                self.collect_expr_reads(aliases, iterable, effects);
+                if let Some(step) = step {
+                    self.collect_expr_reads(aliases, step, effects);
+                }
+                self.collect_block_effects(aliases, body, effects);
+            }
+            Statement::Transaction { body, .. } => {
+                effects.transactions = true;
+                self.collect_block_effects(aliases, body, effects);
+            }
+            Statement::Lock { path, body, .. } => {
+                if let Some(path) = path {
+                    self.collect_expr_reads(aliases, path, effects);
+                }
+                self.collect_block_effects(aliases, body, effects);
+            }
+            Statement::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => {
+                self.collect_block_effects(aliases, body, effects);
+                if let Some(catch) = catch {
+                    self.collect_block_effects(aliases, &catch.block, effects);
+                }
+                if let Some(finally) = finally {
+                    self.collect_block_effects(aliases, finally, effects);
+                }
+            }
+            Statement::Match {
+                scrutinee, arms, ..
+            } => {
+                if let Some(scrutinee) = scrutinee {
+                    self.collect_expr_reads(aliases, scrutinee, effects);
+                }
+                for arm in arms {
+                    self.collect_block_effects(aliases, &arm.block, effects);
+                }
+            }
+            Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+
+    fn collect_expr_reads(
+        &self,
+        aliases: &HashMap<String, Vec<String>>,
+        expr: &Expression,
+        effects: &mut DirectEffectFacts,
+    ) {
+        let is_saved_path = is_saved_path_syntax(expr);
+        let saved_place = self.saved_place_effect(expr);
+        if let Some(effect) = saved_place.clone() {
+            push_unique(&mut effects.saved_reads, effect);
+            self.collect_saved_path_key_reads(aliases, expr, effects);
+            return;
+        }
+        if is_saved_path {
+            self.collect_saved_path_key_reads(aliases, expr, effects);
+            return;
+        }
+        if let Some(effect) = host_effect(expr, aliases) {
+            push_unique(&mut effects.host_calls, effect);
+        }
+        match expr {
+            Expression::Call { callee, args, .. } => {
+                if is_append_call(callee) {
+                    if let Some(target) = args.first() {
+                        self.collect_saved_write(&target.value, effects);
+                        self.collect_saved_path_key_reads(aliases, &target.value, effects);
+                    }
+                    for arg in args.iter().skip(1) {
+                        self.collect_expr_reads(aliases, &arg.value, effects);
+                    }
+                    return;
+                }
+                self.collect_expr_reads(aliases, callee, effects);
+                for arg in args {
+                    self.collect_expr_reads(aliases, &arg.value, effects);
+                }
+            }
+            Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+                self.collect_expr_reads(aliases, base, effects);
+            }
+            Expression::Unary { operand, .. } => self.collect_expr_reads(aliases, operand, effects),
+            Expression::Binary { left, right, .. } => {
+                self.collect_expr_reads(aliases, left, effects);
+                self.collect_expr_reads(aliases, right, effects);
+            }
+            Expression::Interpolation { parts, .. } => {
+                for part in parts {
+                    if let InterpolationPart::Expr(expr) = part {
+                        self.collect_expr_reads(aliases, expr, effects);
+                    }
+                }
+            }
+            Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {
+            }
+        }
+    }
+
+    fn collect_saved_path_key_reads(
+        &self,
+        aliases: &HashMap<String, Vec<String>>,
+        expr: &Expression,
+        effects: &mut DirectEffectFacts,
+    ) {
+        match expr {
+            Expression::Call { callee, args, .. } => {
+                self.collect_saved_path_key_reads(aliases, callee, effects);
+                for arg in args {
+                    self.collect_expr_reads(aliases, &arg.value, effects);
+                }
+            }
+            Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+                self.collect_saved_path_key_reads(aliases, base, effects);
+            }
+            Expression::SavedRoot { .. }
+            | Expression::Literal { .. }
+            | Expression::Name { .. }
+            | Expression::Unary { .. }
+            | Expression::Binary { .. }
+            | Expression::Interpolation { .. } => {}
+        }
+    }
+
+    fn collect_saved_write(&self, expr: &Expression, effects: &mut DirectEffectFacts) {
+        if let Some(effect) = self.saved_place_effect(expr) {
+            push_unique(&mut effects.saved_writes, effect);
+        }
+    }
+
+    fn saved_place_effect(&self, expr: &Expression) -> Option<SavedPlaceEffect> {
+        let (root, members) = saved_path_parts(expr)?;
+        let resource = self.resource_for_root(&root)?;
+        let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
+        Some(SavedPlaceEffect {
+            resource,
+            members: self.member_path_ids(resource, &member_names)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleFact {
+    pub id: ModuleId,
+    pub name: String,
+    pub source_file: PathBuf,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceFact {
+    pub id: ResourceId,
+    pub module: ModuleId,
+    pub name: String,
+    pub saved_root: Option<String>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceMemberFact {
+    pub id: ResourceMemberId,
+    pub resource: ResourceId,
+    pub parent: Option<ResourceMemberId>,
+    pub name: String,
+    pub kind: ResourceMemberKind,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceMemberKind {
+    Field,
+    Group,
+    Index,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumFact {
+    pub id: EnumId,
+    pub module: ModuleId,
+    pub name: String,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMemberFact {
+    pub id: EnumMemberId,
+    pub enum_id: EnumId,
+    pub parent: Option<EnumMemberId>,
+    pub name: String,
+    pub category: bool,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionFact {
+    pub id: FunctionId,
+    pub module: ModuleId,
+    pub name: String,
+    pub public: bool,
+    pub params: Vec<LocalFact>,
+    pub return_type: Option<CheckedType>,
+    pub direct_effects: DirectEffectFacts,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFact {
+    pub id: LocalId,
+    pub function: FunctionId,
+    pub name: String,
+    pub mode: Option<ParamMode>,
+    pub ty: CheckedType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedType {
+    Primitive(ScalarType),
+    Error,
+    Resource(ResourceId),
+    GroupEntry {
+        resource: ResourceId,
+        members: Vec<ResourceMemberId>,
+    },
+    Identity(ResourceId),
+    Enum(EnumId),
+    Sequence(Box<CheckedType>),
+    LocalTree {
+        keys: Vec<CheckedType>,
+        value: Box<CheckedType>,
+    },
+}
+
+/// Effects directly visible in a function body. Calls to user functions are not
+/// expanded here; transitive summaries belong to the checked-executable lane.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DirectEffectFacts {
+    pub saved_reads: Vec<SavedPlaceEffect>,
+    pub saved_writes: Vec<SavedPlaceEffect>,
+    pub transactions: bool,
+    pub host_calls: Vec<HostEffect>,
+    pub throws: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedPlaceEffect {
+    pub resource: ResourceId,
+    pub members: Vec<ResourceMemberId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostEffect {
+    Output,
+    Capability(Capability),
+}
+
+fn flatten_enum_member_spans(members: &[marrow_syntax::EnumMember], spans: &mut Vec<SourceSpan>) {
+    for member in members {
+        spans.push(member.span);
+        flatten_enum_member_spans(&member.members, spans);
+    }
+}
+
+fn saved_path_parts(expr: &Expression) -> Option<(String, Vec<String>)> {
+    match expr {
+        Expression::SavedRoot { name, .. } => Some((name.clone(), Vec::new())),
+        Expression::Call { callee, .. } => saved_path_parts(callee),
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            let (root, mut members) = saved_path_parts(base)?;
+            members.push(name.clone());
+            Some((root, members))
+        }
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::Unary { .. }
+        | Expression::Binary { .. }
+        | Expression::Interpolation { .. } => None,
+    }
+}
+
+fn is_saved_path_syntax(expr: &Expression) -> bool {
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Call { callee, .. } => is_saved_path_syntax(callee),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            is_saved_path_syntax(base)
+        }
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::Unary { .. }
+        | Expression::Binary { .. }
+        | Expression::Interpolation { .. } => false,
+    }
+}
+
+fn split_type_path(path: &str) -> Vec<String> {
+    path.split("::").map(str::to_string).collect()
+}
+
+fn host_effect(expr: &Expression, aliases: &HashMap<String, Vec<String>>) -> Option<HostEffect> {
+    match expr {
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            Expression::Name { segments, .. } => {
+                let expanded = expand_alias(segments, aliases);
+                match expanded.as_slice() {
+                    [name] if name == "print" || name == "write" => Some(HostEffect::Output),
+                    [std, module, op] if std == "std" => marrow_schema::stdlib::lookup(module, op)
+                        .and_then(|entry| match entry.capability {
+                            Capability::Pure => None,
+                            capability => Some(HostEffect::Capability(capability)),
+                        }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_append_call(callee: &Expression) -> bool {
+    matches!(
+        callee,
+        Expression::Name { segments, .. } if segments.as_slice() == ["append"]
+    )
+}
+
+fn push_unique<T>(items: &mut Vec<T>, item: T)
+where
+    T: PartialEq,
+{
+    if !items.contains(&item) {
+        items.push(item);
+    }
+}
+
+fn overwrite_prefix<T>(target: &mut [T], prefix: &[T])
+where
+    T: Clone,
+{
+    assert!(
+        target.len() >= prefix.len(),
+        "checked fact prefix longer than combined facts"
+    );
+    for (target, source) in target.iter_mut().zip(prefix) {
+        *target = source.clone();
+    }
+}

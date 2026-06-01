@@ -150,7 +150,7 @@ over every configured source and test file.
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
-| `check.prototype_only` | Source uses a rejected prototype construct, such as `@id`, source-level `lock` or `merge`, saved-path `inout` call arguments, or saved traversal shapers. |
+| `check.prototype_only` | Source uses a rejected prototype construct, such as `@id`, source-level `lock` or `merge`, saved-path `inout` call arguments, or old saved traversal method shapers such as `.take(...)`, `.window(...)`, and `.resume(...)`. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |

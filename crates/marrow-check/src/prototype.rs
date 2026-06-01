@@ -185,7 +185,7 @@ fn check_expr(
                     file,
                     *span,
                     &format!(
-                        "saved `.{method}(...)` traversal is prototype-only; v0.1 source streams durable iterables with ordinary `for` loops"
+                        "saved traversal method `.{method}(...)` is prototype-only; v0.1 source streams durable iterables with ordinary `for` loops"
                     ),
                     diagnostics,
                 );

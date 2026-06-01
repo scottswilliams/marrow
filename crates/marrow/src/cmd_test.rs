@@ -82,9 +82,10 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
+    let source_module_count = src_program.modules.len();
 
-    let (test_report, test_modules) =
-        match marrow_check::check_tests(std::path::Path::new(dir), &config, &src_program) {
+    let (test_report, program) =
+        match marrow_check::check_tests_program(std::path::Path::new(dir), &config, &src_program) {
             Ok(result) => result,
             Err(error) => {
                 report_simple_error(
@@ -102,7 +103,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
 
     // A test is a public, zero-parameter function in a test file. Each test keeps
     // its source file so a failure can be reported at its location.
-    let tests: Vec<(String, PathBuf)> = test_modules
+    let tests: Vec<(String, PathBuf)> = program.modules[source_module_count..]
         .iter()
         .flat_map(|module| {
             module
@@ -125,10 +126,6 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-
-    // The runner resolves test names against the project plus the test modules.
-    let mut program = src_program;
-    program.modules.extend(test_modules);
 
     // Tests get the same host capabilities as a run; their `std::log` output goes
     // to a discard sink so it stays out of the pass/fail report.

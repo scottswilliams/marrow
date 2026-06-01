@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use marrow_check::{MarrowType, check_project};
+use marrow_check::{
+    CheckedType, HostEffect, MarrowType, SavedPlaceEffect, check_project, check_tests_program,
+};
 use marrow_project::parse_config;
+use marrow_schema::stdlib::Capability;
 use marrow_store::value::ScalarType;
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -65,6 +68,324 @@ fn builds_a_module_for_a_clean_library_file() {
     assert!(add.touches_saved_data, "{add:#?}");
     // The body is carried into the artifact for the runtime to evaluate.
     assert!(!add.body.statements.is_empty(), "{add:#?}");
+}
+
+#[test]
+fn checked_facts_assign_typed_ids_to_same_named_declarations() {
+    let root = temp_project("program-fact-ids", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             resource Book at ^books_a(id: int)\n\
+             \x20   required title: string\n\
+             enum Status\n\
+             \x20   active\n\
+             pub fn fresh(): Book::Id\n\
+             \x20   return nextId(^books_a)\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             resource Book at ^books_b(id: int)\n\
+             \x20   required title: string\n\
+             enum Status\n\
+             \x20   active\n\
+             pub fn fresh(): Book::Id\n\
+             \x20   return nextId(^books_b)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+
+    let a = facts.module_id("a").expect("module a");
+    let b = facts.module_id("b").expect("module b");
+    assert_ne!(a, b);
+
+    let a_book = facts.resource_id(a, "Book").expect("a::Book");
+    let b_book = facts.resource_id(b, "Book").expect("b::Book");
+    assert_ne!(a_book, b_book);
+
+    let a_status = facts.enum_id(a, "Status").expect("a::Status");
+    let b_status = facts.enum_id(b, "Status").expect("b::Status");
+    assert_ne!(a_status, b_status);
+
+    let fresh = facts.function_id(a, "fresh").expect("a::fresh");
+    assert_eq!(
+        facts.function(fresh).return_type.as_ref(),
+        Some(&CheckedType::Identity(a_book))
+    );
+}
+
+#[test]
+fn checked_facts_record_function_effects_with_typed_places() {
+    let root = temp_project("program-fact-effects", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   tags(pos: int): string\n\
+             fn readTitle(id: Book::Id): string\n\
+             \x20   return ^books(id).title\n\
+             fn rename(id: Book::Id, title: string)\n\
+             \x20   transaction\n\
+             \x20       ^books(id).title = title\n\
+             fn addTag(id: Book::Id, tag: string): int\n\
+             \x20   return append(^books(id).tags, tag)\n\
+             fn logTitle(title: string)\n\
+             \x20   print(title)\n\
+             fn stamp(): instant\n\
+             \x20   return std::clock::now()\n\
+             fn fail()\n\
+             \x20   throw Error(code: \"books.fail\", message: \"nope\")\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+
+    let module = facts.module_id("books").expect("books module");
+    let book = facts.resource_id(module, "Book").expect("Book resource");
+    let title = facts
+        .resource_member_id(book, &["title"])
+        .expect("Book.title member");
+    let tags = facts
+        .resource_member_id(book, &["tags"])
+        .expect("Book.tags member");
+    let title_fact = facts
+        .resource_members()
+        .iter()
+        .find(|member| member.id == title)
+        .expect("Book.title fact");
+    assert_eq!(title_fact.span.line, 3);
+    let title_place = SavedPlaceEffect {
+        resource: book,
+        members: vec![title],
+    };
+
+    let read = facts.function_id(module, "readTitle").expect("readTitle");
+    assert_eq!(facts.function(read).span.line, 5);
+    assert_eq!(
+        facts.function(read).direct_effects.saved_reads,
+        vec![title_place.clone()]
+    );
+    assert!(facts.function(read).direct_effects.saved_writes.is_empty());
+
+    let rename = facts.function_id(module, "rename").expect("rename");
+    assert!(facts.function(rename).direct_effects.transactions);
+    assert_eq!(
+        facts.function(rename).direct_effects.saved_writes,
+        vec![title_place]
+    );
+
+    let add_tag = facts.function_id(module, "addTag").expect("addTag");
+    assert_eq!(
+        facts.function(add_tag).direct_effects.saved_writes,
+        vec![SavedPlaceEffect {
+            resource: book,
+            members: vec![tags],
+        }]
+    );
+
+    let log = facts.function_id(module, "logTitle").expect("logTitle");
+    assert_eq!(
+        facts.function(log).direct_effects.host_calls,
+        vec![HostEffect::Output]
+    );
+
+    let stamp = facts.function_id(module, "stamp").expect("stamp");
+    assert_eq!(
+        facts.function(stamp).direct_effects.host_calls,
+        vec![HostEffect::Capability(Capability::Clock)]
+    );
+
+    let fail = facts.function_id(module, "fail").expect("fail");
+    assert!(facts.function(fail).direct_effects.throws);
+}
+
+#[test]
+fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
+    let root = temp_project("program-fact-resource-owner", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             resource Book at ^a_books(id: int)\n\
+             \x20   required title: string\n\
+             fn borrowed(id: b::Book::Id): b::Book::Id\n\
+             \x20   return id\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             resource Book at ^b_books(id: int)\n\
+             \x20   required title: string\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+    let a = facts.module_id("a").expect("module a");
+    let b = facts.module_id("b").expect("module b");
+    let a_book = facts.resource_id(a, "Book").expect("a::Book");
+    let b_book = facts.resource_id(b, "Book").expect("b::Book");
+    assert_ne!(a_book, b_book);
+
+    let borrowed = facts.function(facts.function_id(a, "borrowed").expect("borrowed"));
+    assert_eq!(borrowed.params[0].ty, CheckedType::Identity(b_book));
+    assert_eq!(borrowed.return_type, Some(CheckedType::Identity(b_book)));
+}
+
+#[test]
+fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
+    let root = temp_project("program-test-fact-resource-owner", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             resource Book at ^a_books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn borrowed(id: b::Book::Id): b::Book::Id\n\
+             \x20   return id\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             resource Book at ^b_books(id: int)\n\
+             \x20   required title: string\n",
+        );
+        write(
+            root,
+            "tests/facts_test.mw",
+            "use b\n\
+             fn helper(id: b::Book::Id): b::Book::Id\n\
+             \x20   return id\n\
+             pub fn smoke()\n\
+             \x20   return\n",
+        );
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let (src_report, src_program) = check_project(&root, &cfg).expect("check source");
+    let (test_report, combined) =
+        check_tests_program(&root, &cfg, &src_program).expect("check tests");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
+    assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
+    let facts = &combined.facts;
+    let a = facts.module_id("a").expect("module a");
+    let b = facts.module_id("b").expect("module b");
+    let test = facts
+        .module_id("tests::facts_test")
+        .expect("tests::facts_test");
+    let a_book = facts.resource_id(a, "Book").expect("a::Book");
+    let b_book = facts.resource_id(b, "Book").expect("b::Book");
+    assert_ne!(a_book, b_book);
+
+    let borrowed = facts.function(facts.function_id(a, "borrowed").expect("borrowed"));
+    assert_eq!(borrowed.params[0].ty, CheckedType::Identity(b_book));
+    assert_eq!(borrowed.return_type, Some(CheckedType::Identity(b_book)));
+
+    let helper = facts.function(facts.function_id(test, "helper").expect("helper"));
+    assert_eq!(helper.params[0].ty, CheckedType::Identity(b_book));
+    assert_eq!(helper.return_type, Some(CheckedType::Identity(b_book)));
+}
+
+#[test]
+fn checked_facts_fail_closed_for_invalid_saved_places_and_signatures() {
+    let root = temp_project("program-fact-fail-closed", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   notes(pos: int)\n\
+             \x20       text: string\n\
+             fn badPath()\n\
+             \x20   ^books(1).notes(1).missing\n\
+             fn badSignature(id: Missing): int\n\
+             \x20   return 1\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+    let module = facts.module_id("books").expect("books module");
+    let bad_path = facts.function_id(module, "badPath").expect("badPath");
+    assert!(
+        facts
+            .function(bad_path)
+            .direct_effects
+            .saved_reads
+            .is_empty(),
+        "{:#?}",
+        facts.function(bad_path).direct_effects
+    );
+    assert!(facts.function_id(module, "badSignature").is_none());
+}
+
+#[test]
+fn checked_facts_record_saved_reads_inside_saved_path_keys() {
+    let root = temp_project("program-fact-key-reads", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             resource Config at ^config\n\
+             \x20   required bookId: int\n\
+             fn readDefault(): string\n\
+             \x20   return ^books(^config.bookId).title\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+    let module = facts.module_id("books").expect("books module");
+    let book = facts.resource_id(module, "Book").expect("Book");
+    let title = facts
+        .resource_member_id(book, &["title"])
+        .expect("Book.title");
+    let config = facts.resource_id(module, "Config").expect("Config");
+    let book_id = facts
+        .resource_member_id(config, &["bookId"])
+        .expect("Config.bookId");
+    let read_default = facts
+        .function_id(module, "readDefault")
+        .expect("readDefault");
+
+    assert_eq!(
+        facts.function(read_default).direct_effects.saved_reads,
+        vec![
+            SavedPlaceEffect {
+                resource: book,
+                members: vec![title],
+            },
+            SavedPlaceEffect {
+                resource: config,
+                members: vec![book_id],
+            },
+        ]
+    );
 }
 
 /// `nextId(^books)` over a single-`int` root types to `Book::Id`, so a function

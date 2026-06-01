@@ -187,10 +187,12 @@ impl<'a> Lexer<'a> {
             }
 
             let end = index + ch.len_utf8();
-            self.error_at(
-                self.span(line, index, end),
-                format!("unexpected character `{ch}`"),
-            );
+            let message = if ch == '~' {
+                "`~` is reserved for future typed ephemeral roots".to_string()
+            } else {
+                format!("unexpected character `{ch}`")
+            };
+            self.error_at(self.span(line, index, end), message);
             index = end;
         }
     }

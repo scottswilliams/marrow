@@ -123,19 +123,17 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
             _ => {}
         }
     }
-    CheckedProgram {
-        modules: vec![CheckedModule {
-            name: "test".into(),
-            source_file: std::path::PathBuf::new(),
-            span: Default::default(),
-            imports: imports.iter().map(|name| name.to_string()).collect(),
-            constants: Vec::new(),
-            functions,
-            resources,
-            enums,
-            enum_public: HashMap::new(),
-        }],
-    }
+    CheckedProgram::from_modules(vec![CheckedModule {
+        name: "test".into(),
+        source_file: std::path::PathBuf::new(),
+        span: Default::default(),
+        imports: imports.iter().map(|name| name.to_string()).collect(),
+        constants: Vec::new(),
+        functions,
+        resources,
+        enums,
+        enum_public: HashMap::new(),
+    }])
 }
 
 fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
@@ -200,7 +198,7 @@ fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
             enum_public: HashMap::new(),
         });
     }
-    CheckedProgram { modules }
+    CheckedProgram::from_modules(modules)
 }
 
 /// Run an entry function against an empty store, returning only its value.
@@ -9535,7 +9533,7 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
             }
         })
         .collect();
-    CheckedProgram { modules }
+    CheckedProgram::from_modules(modules)
 }
 
 #[test]

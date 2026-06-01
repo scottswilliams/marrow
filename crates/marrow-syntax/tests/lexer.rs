@@ -357,13 +357,23 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
     );
     assert!(lexed.diagnostics[0].message.contains("tabs"));
     assert!(lexed.diagnostics[1].message.contains("unterminated string"));
-    assert!(
-        lexed.diagnostics[2]
-            .message
-            .contains("unexpected character")
-    );
+    assert!(lexed.diagnostics[2].message.contains("reserved"));
     assert_eq!(lexed.diagnostics[0].span.line, 2);
     assert_eq!(lexed.diagnostics[0].span.column, 1);
+}
+
+#[test]
+fn reserves_tilde_for_ephemeral_roots() {
+    let lexed = lex_source("fn main()\n    return ~cache\n");
+
+    assert!(lexed.has_errors());
+    let diagnostic = lexed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("reserved"))
+        .expect("reserved tilde diagnostic");
+    assert_eq!(diagnostic.code, "parse.syntax");
+    assert_eq!(diagnostic.span.line, 2);
 }
 
 #[test]
