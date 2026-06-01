@@ -74,6 +74,27 @@ fn open_read_only_allows_simultaneous_readers() {
 }
 
 #[test]
+fn live_read_only_handle_refuses_read_write_open_until_dropped() {
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let path = dir.path().join("store.redb");
+
+    {
+        let mut store = RedbStore::open(&path).expect("create");
+        store.write(b"k", b"v".to_vec()).expect("write");
+    }
+
+    let reader = RedbStore::open_read_only(&path).expect("open read-only");
+    match RedbStore::open(&path) {
+        Ok(_) => panic!("a writer must be refused while a read-only handle is alive"),
+        Err(error) => assert_eq!(error.code(), "store.locked"),
+    }
+
+    drop(reader);
+    let store = RedbStore::open(&path).expect("reopen read-write after dropping reader");
+    assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
+}
+
+#[test]
 fn open_read_only_refuses_write_capability_operations() {
     let dir = tempfile::tempdir().expect("create a temp dir");
     let path = dir.path().join("store.redb");
