@@ -753,6 +753,63 @@ mod tests {
         });
     }
 
+    #[test]
+    fn redb_read_transactions_are_stable_snapshots() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("snapshot.redb");
+        let key: &[u8] = b"k";
+        let old: &[u8] = b"old";
+        let new: &[u8] = b"new";
+
+        let mut store = RedbStore::open(&path).expect("open");
+        Backend::write(&mut store, key, old.to_vec()).expect("seed old value");
+
+        let db = match store.db {
+            DatabaseHandle::ReadWrite(db) => db,
+            DatabaseHandle::ReadOnly(_) => panic!("expected a read-write redb handle"),
+        };
+
+        let read = db.begin_read().expect("begin read transaction");
+        let table = read
+            .open_table(TABLE)
+            .expect("open table in read transaction");
+        assert_eq!(
+            table
+                .get(key)
+                .expect("read original value")
+                .map(|value| value.value().to_vec()),
+            Some(old.to_vec())
+        );
+
+        let write = db.begin_write().expect("begin write transaction");
+        {
+            let mut table = write.open_table(TABLE).expect("open table for write");
+            table.insert(key, new).expect("replace value");
+        }
+        write.commit().expect("commit replacement");
+
+        assert_eq!(
+            table
+                .get(key)
+                .expect("read through original transaction")
+                .map(|value| value.value().to_vec()),
+            Some(old.to_vec())
+        );
+
+        drop(table);
+        drop(read);
+
+        let read = db.begin_read().expect("begin fresh read transaction");
+        let table = read.open_table(TABLE).expect("open table in fresh read");
+        assert_eq!(
+            table
+                .get(key)
+                .expect("read fresh value")
+                .map(|value| value.value().to_vec()),
+            Some(new.to_vec())
+        );
+    }
+
     /// A foreign or meta-less redb file — one with tables but no `marrow.meta` —
     /// must be rejected as corruption, not silently adopted and stamped as a
     /// Marrow store. (`Database::create` opens existing files too, so `open` tells
