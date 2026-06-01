@@ -494,6 +494,9 @@ pub(crate) fn eval_for(
         ) {
             return Err(unsupported("a two-name binding over a range", span));
         }
+        if let Some(stream) = simple_saved_layer_loop(iterable, StreamBinding::KeyValue, env)? {
+            return eval_streamed_saved_layer_for(label, binding, stream, body, span, env);
+        }
         let entries = eval_collection_entries(iterable, env)?;
         let prefix = traversed_layer_prefix(iterable, env)?;
         return iterate_saved_layer(prefix, env, |env| {
@@ -533,7 +536,7 @@ pub(crate) fn eval_for(
             ..
         }
     ) {
-        if let Some(stream) = simple_saved_layer_loop(iterable, env)? {
+        if let Some(stream) = simple_saved_layer_loop(iterable, StreamBinding::Key, env)? {
             return eval_streamed_saved_layer_for(label, binding, stream, body, span, env);
         }
         let values = eval_collection(iterable, env)?;
@@ -825,28 +828,122 @@ fn eval_streamed_saved_layer_for(
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     iterate_saved_layer(Some(stream.prefix.clone()), env, |env| {
-        let parent = encode_path(&stream.prefix);
-        let mut child = seek_stream_child(&parent, None, stream.dir, env, span)?;
-        while let Some(segment) = child {
-            let ChildSegment::Key(key) = segment else {
-                return Err(unsupported("iterating this saved path", span));
-            };
-            let anchor = encode_path(&[stream_child_segment(stream.child_kind, key.clone())]);
-            let value = saved_key_to_value(key)
-                .ok_or_else(|| unsupported("iterating keys of this type", span))?;
-            env.push_scope();
-            env.bind(binding.first.clone(), value, false);
-            let flow = eval_block(body, env);
-            env.pop_scope();
-            match classify(flow?, label) {
-                LoopStep::Iterate => {}
-                LoopStep::Stop => break,
-                LoopStep::Propagate(flow) => return Ok(flow),
-            }
-            child = seek_stream_child(&parent, Some(&anchor), stream.dir, env, span)?;
-        }
-        Ok(Flow::Normal)
+        let step = stream_saved_identities(
+            &stream.prefix,
+            stream.depth,
+            &stream.key_prefix,
+            &stream,
+            env,
+            span,
+            &mut |key, env| {
+                env.push_scope();
+                env.bind(binding.first.clone(), key.clone(), false);
+                if let Some(second) = &binding.second {
+                    let value = stream_value_for_key(&stream, &key, env, span)?;
+                    env.bind(second.clone(), value, false);
+                }
+                let flow = eval_block(body, env);
+                env.pop_scope();
+                Ok(classify(flow?, label))
+            },
+        )?;
+        Ok(match step {
+            LoopStep::Iterate | LoopStep::Stop => Flow::Normal,
+            LoopStep::Propagate(flow) => flow,
+        })
     })
+}
+
+fn stream_saved_identities(
+    prefix: &[PathSegment],
+    depth: usize,
+    keys: &[SavedKey],
+    stream: &SimpleSavedLayerLoop,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+    on_key: &mut impl FnMut(Value, &mut Env<'_>) -> Result<LoopStep, RuntimeError>,
+) -> Result<LoopStep, RuntimeError> {
+    if depth == 0 {
+        if let Some(value) = read_terminal_identity(prefix, keys, span, env)? {
+            return on_key(value, env);
+        }
+        return Ok(LoopStep::Iterate);
+    }
+    let parent = encode_path(prefix);
+    let mut child = seek_stream_child(&parent, None, stream.dir, env, span)?;
+    while let Some(segment) = child {
+        let ChildSegment::Key(key) = segment else {
+            return Err(unsupported("iterating this saved path", span));
+        };
+        let anchor = encode_path(&[stream_child_segment(stream.child_kind, key.clone())]);
+        let mut keys = keys.to_vec();
+        keys.push(key.clone());
+        let step = if depth <= 1 {
+            let value = collected_identity_value(&keys, span)?;
+            on_key(value, env)?
+        } else {
+            let mut child_prefix = prefix.to_vec();
+            child_prefix.push(stream_child_segment(stream.child_kind, key));
+            stream_saved_identities(&child_prefix, depth - 1, &keys, stream, env, span, on_key)?
+        };
+        match step {
+            LoopStep::Iterate => {}
+            LoopStep::Stop | LoopStep::Propagate(_) => return Ok(step),
+        }
+        child = seek_stream_child(&parent, Some(&anchor), stream.dir, env, span)?;
+    }
+    Ok(LoopStep::Iterate)
+}
+
+fn stream_value_for_key(
+    stream: &SimpleSavedLayerLoop,
+    key: &Value,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match stream.value_source.as_ref() {
+        Some(StreamValueSource::Root { root }) => {
+            let identity = identity_keys(key, span)?;
+            read_resource(root, &identity, span, env)
+        }
+        Some(StreamValueSource::ChildLayer {
+            root,
+            identity,
+            parents,
+            layer,
+        }) => {
+            let layer_key =
+                value_to_key(key.clone()).ok_or_else(|| unsupported("a key of this type", span))?;
+            if parents.is_empty() {
+                read_layer_entry(
+                    root,
+                    identity,
+                    layer,
+                    &[layer_key],
+                    ReadPosition::ArgSeed,
+                    span,
+                    env,
+                )
+            } else {
+                read_layer_entry_at(
+                    LayerEntryAddress {
+                        root,
+                        identity,
+                        parent_layers: parents,
+                        layer,
+                        layer_keys: &[layer_key],
+                    },
+                    ReadPosition::ArgSeed,
+                    span,
+                    env,
+                )
+            }
+        }
+        None => Err(unsupported(
+            "a two-name binding over this saved iterable",
+            span,
+        )),
+    }
 }
 
 fn seek_stream_child(
@@ -872,17 +969,15 @@ fn seek_stream_child(
     })
 }
 
-/// Materialize a non-range `for` iterable to a sequence of values. A saved-layer
-/// path yields elements for value-bearing collections and identities for
-/// key-only index branches. `keys(<layer>)` preserves address-only traversal.
-/// Every other iterable must evaluate to an in-memory sequence (e.g.
-/// `std::text::split(...)`).
+/// Materialize a non-range `for` iterable to the values the loop should bind.
+/// Direct saved paths are address-oriented: roots and indexes yield identities,
+/// and keyed child layers yield child keys. `values(...)` and `entries(...)`
+/// are expression values handled by `eval_expr`.
 pub(crate) fn eval_collection(
     iterable: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    // `for x in reversed(L)` walks the same layer in reverse key order. `keys(L)`
-    // stays address-only; direct value-bearing layers materialize their elements.
+    // `for x in reversed(L)` walks the same iterable shape in reverse key order.
     // `reversed(values(L))` / `reversed(entries(L))` and in-memory sequences fall
     // through to `eval_expr`, which shapes those rows.
     if let Some(inner) = reversed_argument(iterable) {
@@ -903,11 +998,7 @@ pub(crate) fn eval_collection(
             {
                 return Ok(values);
             }
-            if is_iterable_index_branch(inner, env) {
-                return enumerate_layer_dir(inner, Direction::Descending, env);
-            }
-            return materialize_layer_dir(inner, Direction::Descending, env)
-                .map(|rows| rows.into_iter().map(|(_, value)| value).collect());
+            return enumerate_layer_dir(inner, Direction::Descending, env);
         }
     }
     if let Some(path) = keys_argument(iterable) {
@@ -927,11 +1018,7 @@ pub(crate) fn eval_collection(
         {
             return Ok(values);
         }
-        if is_iterable_index_branch(iterable, env) {
-            return enumerate_layer(iterable, env);
-        }
-        return materialize_layer(iterable, env)
-            .map(|rows| rows.into_iter().map(|(_, value)| value).collect());
+        return enumerate_layer(iterable, env);
     }
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),

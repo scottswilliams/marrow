@@ -14,8 +14,9 @@ data has no `^` and exists only while code runs.
 
 ## Saved Roots
 
-A resource attaches to a saved root with an `at ^root(...)` clause. The resource
-owns that root: writes under it go through the resource schema.
+A resource attaches to a saved root with an `at ^root(...)` clause. In the
+current source shorthand, that declares a store for the resource shape; writes
+under the root go through that store schema.
 
 ```mw
 resource Book at ^books(id: int)
@@ -24,9 +25,9 @@ resource Book at ^books(id: int)
     shelf: string
 ```
 
-`^books(id)` is now a saved `Book`. A saved root has exactly one owning
-resource — another resource cannot claim `^books` with a different shape. Use
-child layers, indexes, or a separate root instead.
+`^books(id)` is now a saved `Book`. A saved root has exactly one managed store
+schema; another store cannot claim `^books` with a different shape. Use child
+layers, indexes, or a separate root instead.
 
 A resource can also own a root with no identity keys — a singleton:
 
@@ -36,10 +37,10 @@ resource Settings at ^settings
     required maxLoans: int
 ```
 
-A singleton has no generated identity type; the root itself is the resource, and
+A singleton has no store identity type; the root itself is the resource, and
 its fields live directly at `^settings.theme` and `^settings.maxLoans`.
 
-Marrow stores no hidden existence marker. A resource identity exists when its
+Marrow stores no hidden existence marker. A store identity exists when its
 saved path has a value or children. If existence must be detectable for an
 otherwise-empty record, model at least one `required` field.
 
@@ -82,8 +83,10 @@ for pos, tag in ^books(id).tags ; keyed layers read directly
 
 ## Identity Keys
 
-Keys in the `at ^root(...)` clause identify the record. For one key, the
-generated identity type wraps that stored key:
+Keys in the `at ^root(...)` clause identify the record. The canonical identity
+type is store-aware: `Id(^books)` wraps the store plus its key. The executable
+syntax still uses the generated bridge alias until checked-model identity
+syntax lands.
 
 ```mw
 resource Book at ^books(id: int)
@@ -93,7 +96,13 @@ const id = Book::Id(17)
 ^books(id).title = "Small Gods"
 ```
 
-Composite identities list more than one key and still produce one identity type:
+`Book::Id` is only the current executable bridge until checked-model support
+for `Id(^store)` lands everywhere. Treat it as store-derived sugar, not as
+resource-owned identity.
+
+Composite identities list more than one key and still produce one store-aware
+identity type. In current executable source, the bridge alias carries the key
+shape:
 
 ```mw
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
@@ -107,7 +116,7 @@ const id = Enrollment::Id(
 ^enrollments(id).status = "active"
 ```
 
-`Enrollment::Id` is treated as a single opaque identity, not a tuple. The
+`Id(^enrollments)` is treated as a single opaque identity, not a tuple. The
 runtime lowers each key component into the saved path. With one record at
 `studentId: 1, courseId: "cs101"`, the saved tree is:
 
@@ -135,8 +144,10 @@ const id: Book::Id = nextId(^books)
 
 `nextId` is only available for a single-`int` identity. Composite and
 non-integer identities are allocated by application code, then constructed:
-`Enrollment::Id(studentId: ..., courseId: ...)`. Convert at boundaries (URLs,
-command arguments, host IO) with the identity constructor, e.g. `Book::Id(17)`.
+`Enrollment::Id(studentId: ..., courseId: ...)` today, migrating to
+`Id(^enrollments)(...)` when the checked model accepts it. Convert at boundaries
+(URLs, command arguments, host IO) with the identity constructor, e.g.
+`Book::Id(17)`.
 
 ## Sparse vs Required Fields
 
@@ -204,8 +215,9 @@ constraint, cascade, or join; it is a typed value. Applications enforce
 relationship rules in code, or model the relationship as a resource plus an
 index.
 
-Model a reference by storing the related record's key as a scalar field, and
-reconstruct the identity when you traverse:
+Model a reference by storing the related record's store-aware identity. The
+canonical type is `Id(^authors)`; the current executable bridge spells it
+`Author::Id`.
 
 ```mw
 resource Author at ^authors(id: int)
@@ -213,28 +225,25 @@ resource Author at ^authors(id: int)
 
 resource Book at ^books(id: int)
     required title: string
-    required authorId: int
-    index byAuthor(authorId, id)
+    required author: Author::Id
+    index byAuthor(author, id)
 
-pub fn link(authorId: Author::Id, title: string): Book::Id
+pub fn link(author: Author::Id, title: string): Book::Id
     var bk: Book
     bk.title = title
-    bk.authorId = int(authorId)        ; store the raw key
+    bk.author = author
     const id = nextId(^books)
     ^books(id) = bk
     return id
 
-pub fn printByAuthor(authorId: Author::Id)
-    for id in ^books.byAuthor(int(authorId))
-        const ref = Author::Id(^books(id).authorId)
-        print($"{^books(id).title} by {^authors(ref).name}")
+pub fn printByAuthor(author: Author::Id)
+    for id in ^books.byAuthor(author)
+        print($"{^books(id).title} by {^authors(author).name}")
 ```
 
-Store the related key as a scalar (`int` here) and reconstruct the identity with
-its constructor when needed. A field declared with a generated identity type
-(for example `authorId: Author::Id`) is not yet supported by the runtime write
-path; such a write fails with `run.unsupported`. Use a scalar key field plus
-explicit identity construction, as above.
+The current executable bridge may still spell those types as `Author::Id` and
+`Book::Id` until checked-model identity lands in the runtime. That bridge is a
+syntax/runtime limitation, not the durable data model.
 
 Cascading cleanup is ordinary application or data-evolution code. `delete` does
 not follow identity values stored in other resources.
@@ -297,7 +306,9 @@ typed data-evolution transform.
 ## Indexes
 
 Use an index when a value is an alternate lookup path, not a different record.
-Indexes are declared members of keyed saved resources:
+Indexes are store-owned lookup paths. The concise resource form below is the
+current source shorthand: its index declarations desugar to the generated store,
+not to durable resource-owned identity.
 
 ```mw
 resource Book at ^books(id: int)
@@ -317,7 +328,7 @@ Rules the project checker enforces (reported when you `marrow check
   `schema.index_missing_identity_keys`.
 - A unique index may omit the identity key, because each populated lookup path
   points to exactly one record.
-- An index requires a keyed root. A singleton has no identity for an entry to
+- An index requires a keyed store. A singleton has no identity for an entry to
   point to (`schema.index_requires_keyed_root`).
 - Index arguments may name identity keys or top-level fields. Nested fields
   through unkeyed groups are rejected with `schema.nested_index_arg`, and
@@ -363,17 +374,18 @@ for id in ^books.byShelf("fiction")
     print($"{id}: {^books(id).title}")
 ```
 
-Plain iteration yields the natural element of the collection. On a managed root,
-`^books` yields `Book` values. On a non-unique index branch,
+Plain durable iteration streams keys or identities. On a managed root, `^books`
+yields store identities, canonically `Id(^books)` and currently `Book::Id` in
+executable source. On a non-unique index branch,
 `^books.byShelf("fiction")` yields the identities in that branch. Use two loop
-variables when both address and element are needed, and use `keys(...)` when code
-only needs addresses. The marker values that back non-unique index entries are a
-raw-inspection detail, not typed data.
+variables, `entries(...)`, or `values(...)` when record values are needed. The
+marker values that back non-unique index entries are a raw-inspection detail,
+not typed data.
 
 By traversal, following a stored reference and reconstructing the identity:
 
 ```mw
-const author = ^authors(Author::Id(^books(id).authorId)).name
+const author = ^authors(^books(id).author).name
 ```
 
 ## Inspecting the Saved Tree
@@ -408,6 +420,6 @@ Some maintenance operations are not yet implemented:
 - `marrow data diff` and `marrow data load` are deferred, and restore today
   writes into an empty target only. Non-empty restore modes are deferred — see
   [future/data-tools.md](future/data-tools.md) and [future/cli.md](future/cli.md).
-- A field declared with a generated identity type is not yet accepted by the
-  write path; model references with a scalar key field plus identity
-  construction (see [Relationships](#relationships)).
+- Store-aware identity fields are canonical; the current executable bridge may
+  still require resource-shaped aliases such as `Author::Id` until checked-model
+  identity reaches the runtime (see [Relationships](#relationships)).

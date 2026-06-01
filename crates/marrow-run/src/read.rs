@@ -228,11 +228,12 @@ pub(crate) fn enumerate_index_branch(
         PathSegment::Root(root.clone()),
         PathSegment::Index(index.clone()),
     ];
+    let mut arg_keys = Vec::new();
     for arg in args {
-        prefix.push(PathSegment::IndexKey(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("an index key of this type", span))?,
-        ));
+        let key = value_to_key(eval_expr(&arg.value, env)?)
+            .ok_or_else(|| unsupported("an index key of this type", span))?;
+        prefix.push(PathSegment::IndexKey(key.clone()));
+        arg_keys.push(key);
     }
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("iterating this saved path", span))?;
@@ -254,7 +255,18 @@ pub(crate) fn enumerate_index_branch(
     } else {
         schema.args.len().saturating_sub(args.len())
     };
-    collect_child_identities(&prefix, depth, &[], PathSegment::IndexKey, dir, span, env)
+    let key_prefix = arg_keys
+        .get(identity_start..)
+        .map_or_else(Vec::new, |keys| keys.to_vec());
+    collect_child_identities(
+        &prefix,
+        depth,
+        &key_prefix,
+        PathSegment::IndexKey,
+        dir,
+        span,
+        env,
+    )
 }
 
 /// Enumerate the child keys of a keyed/sequence child layer `^root(id…).layer`.
@@ -294,6 +306,11 @@ pub(crate) fn collect_child_identities(
     span: SourceSpan,
     env: &Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
+    if depth == 0 {
+        return Ok(read_terminal_identity(prefix, keys, span, env)?
+            .into_iter()
+            .collect());
+    }
     let children = {
         let store = env.store.borrow();
         let encoded = encode_path(prefix);
@@ -320,14 +337,7 @@ pub(crate) fn collect_child_identities(
         let mut keys = keys.to_vec();
         keys.push(key.clone());
         if depth <= 1 {
-            // The last key level: a single-key identity stays a raw key value; a
-            // composite one reconstructs its full `Value::Identity`.
-            values.push(if keys.len() == 1 {
-                saved_key_to_value(key)
-                    .ok_or_else(|| unsupported("iterating keys of this type", span))?
-            } else {
-                Value::Identity(keys)
-            });
+            values.push(collected_identity_value(&keys, span)?);
         } else {
             let mut prefix = prefix.to_vec();
             prefix.push(make_segment(key));
@@ -343,6 +353,36 @@ pub(crate) fn collect_child_identities(
         }
     }
     Ok(values)
+}
+
+pub(crate) fn read_terminal_identity(
+    prefix: &[PathSegment],
+    keys: &[SavedKey],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    let present = env
+        .store
+        .borrow()
+        .read(&encode_path(prefix))
+        .map_err(|error| error.located(span))?
+        .is_some();
+    if present {
+        collected_identity_value(keys, span).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn collected_identity_value(
+    keys: &[SavedKey],
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    if let [key] = keys {
+        return saved_key_to_value(key.clone())
+            .ok_or_else(|| unsupported("iterating keys of this type", span));
+    }
+    Ok(Value::Identity(keys.to_vec()))
 }
 
 /// Read a scalar field off a saved record, e.g. `^books(id).title`. Lowers the

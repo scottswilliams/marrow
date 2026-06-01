@@ -75,28 +75,29 @@ loop. A zero step never progresses and is rejected.
 must be a positive duration and descending temporal ranges are not yet supported. A
 negated duration step (`by -1.day`) is a check error.
 
-Collection loops walk elements. A store, index, or keyed child layer is a durable
-iterable; a `for` loop over one streams lazily rather than materializing it:
+Collection loops walk durable iterables. A store, index, or keyed child layer
+is a durable iterable; a `for` loop over one streams lazily rather than
+materializing it:
 
 ```mw
-for book in ^books
-    write(book.title)
+for id in ^books
+    write(^books(id).title)
 
-for tag in ^books(id).tags
-    write(tag)
+for pos in ^books(id).tags
+    write(^books(id).tags(pos))
 ```
 
-A collection element is the useful value the collection stores or selects. For a
-primary resource root, the element is the resource. For a sequence, the element
-is the item at a populated position. For a non-unique index branch, the element
-is the identity stored in that lookup branch:
+A single loop variable is the durable key or identity being streamed. For a
+primary store root, it is the store identity. For a keyed child layer, it is the
+child key at a populated position. For a non-unique index branch, it is the
+identity stored in that lookup branch:
 
 ```mw
 for id in ^books.byShelf("fiction")
     write($"book {id}: {^books(id).title}")
 ```
 
-Use two loop variables when code needs both the address and the element:
+Use two loop variables, `entries(...)`, or `values(...)` when code needs values:
 
 ```mw
 for id, book in ^books
@@ -104,9 +105,12 @@ for id, book in ^books
 
 for pos, tag in ^books(id).tags
     write($"{pos}: {tag}")
+
+for book in values(^books)
+    write(book.title)
 ```
 
-Use `keys(...)` when code only needs addresses:
+Use `keys(...)` when code wants to make address-only traversal explicit:
 
 ```mw
 for id in keys(^books)
@@ -117,7 +121,7 @@ for pos in keys(^books(id).tags)
 ```
 
 Saved-layer iteration walks child keys in stored order, streaming them lazily
-rather than materializing the layer. Element and two-variable loops also read the
+rather than materializing the layer. Value and two-variable loops also read the
 values they yield; `keys(...)` reads only the addresses.
 
 `while` loops use a boolean condition:

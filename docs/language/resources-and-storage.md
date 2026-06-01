@@ -16,9 +16,9 @@ shape, not on a backend key layout.
 Encoded resource keys are distinct from structural names. A record key such as
 `"byShelf"` does not collide with an index named `byShelf`.
 
-Typed traversal keeps those segment kinds separate: `^books` yields `Book`
-elements, `keys(^books)` yields resource identities, and
-`^books.byShelf(...)` yields identities from that index branch.
+Typed traversal keeps those segment kinds separate: `^books` streams book
+identities, `values(^books)` streams `Book` values, and
+`^books.byShelf(...)` streams identities from that index branch.
 
 ## Resource Trees
 
@@ -46,19 +46,20 @@ resource Book at ^books(id: int)
     shelf: string
 ```
 
-Then `^books(id)` is a saved `Book`, where `id` is a `Book::Id`.
+Then `^books(id)` is a saved `Book`, where `id` is the store identity
+canonically modeled as `Id(^books)`.
 
 Saved resources are not hidden blobs. The book above is stored as fields and
 layers under `^books(id)`, so tools can inspect the same tree that code reads.
 
-A resource identity can exist with no populated fields. Existence is an explicit
+A store identity can exist with no populated fields. Existence is an explicit
 structural fact: `exists(^books(id))` is true once the node exists, independent of
 any field value or child. There is no need to model a required field just to record
 that a resource exists.
 
-A saved root has one managed resource owner. If `Book` owns `^books`, another
-resource cannot claim `^books` with a different shape. Use nested layers,
-indexes, or a separate root instead.
+A saved root has one managed store schema. If `^books` stores `Book`, another
+store cannot claim `^books` with a different shape. Use nested layers, indexes,
+or a separate root instead.
 
 A saved resource declaration may omit identity keys when the root itself is
 the resource:
@@ -108,12 +109,11 @@ const id = Book::Id(17)
 ```
 
 Identity is owned by the store. The canonical identity type is `Id(^books)`: the
-store plus its key. When a resource has only that one store, the store auto-exports
-an ergonomic alias named after the resource, so everyday code writes `Book::Id`.
-That alias is store-derived sugar, not identity owned by the resource. If one
-resource has several stores, each store names a distinct alias (for example
-`DraftBook::Id` and `PublishedBook::Id`). Ordinary typed code passes the identity
-value, not the raw key.
+store plus its key. `Book::Id` is only the current executable bridge until the
+checked model accepts store-aware identity syntax everywhere. It is store-derived
+sugar, not identity owned by the resource. If one resource has several stores,
+each store needs a distinct alias. Ordinary typed code passes the identity value,
+not the raw key.
 
 Composite identities work the same way:
 
@@ -131,7 +131,7 @@ use separate field names.
 Key names are part of the managed layer namespace. A resource keyed by `id`
 does not also declare a field or child layer named `id`.
 
-Ordinary typed code addresses a managed root through the store's identity alias:
+Ordinary typed code addresses a managed root through the store identity:
 
 ```mw
 const id = Enrollment::Id(
@@ -190,28 +190,33 @@ resource Book at ^books(id: int)
     index byShelf(shelf, id)
 ```
 
+Indexes are owned by stores. The concise `resource ... at ^books(...)` form
+currently lets index declarations appear inside the resource block; that source
+form desugars to indexes on the generated store and is not durable
+resource-owned identity.
+
 Changing `shelf` moves the same book to a different lookup path. It does not
 create a different book. The index remains inspectable saved data, and user
 code uses the declared index instead of writing separate maintenance code.
-Index entries lead back to resource identities; the primary resource remains
+Index entries lead back to store identities; the primary resource remains
 the place to read fields.
 
-Declared indexes are direct members of keyed saved resources. A singleton
-saved resource has no generated identity for an index entry to point to.
+Declared indexes require keyed stores. A singleton
+saved root has no generated identity for an index entry to point to.
 Nested-layer indexing is modeled as a separate resource when it needs a
 first-class lookup path.
 
 Generated index entries are populated paths. Non-unique indexes use generated
 marker values at identity lookup paths. Unique indexes store the resource
-identity at the lookup path.
+store identity at the lookup path.
 Typed code reads non-unique index identities through direct iteration or
 `keys(...)`. It reads a unique index identity from the lookup path. Generated
 marker values are visible only through raw inspection.
 
-Index arguments may name identity keys or top-level fields only. Fields nested
+Index arguments may name store keys or top-level fields only. Fields nested
 through unkeyed groups are rejected, whether written as a dotted path or as a
 bare leaf name, and indexes do not walk keyed child layers. A non-unique index
-ends with all resource identity keys in declaration order so each entry is
+ends with all store identity keys in declaration order so each entry is
 distinct:
 
 ```mw
@@ -228,13 +233,13 @@ resource Book at ^books(id: int)
 ```
 
 A unique index can omit the identity key because each populated lookup path
-points to one resource identity.
+points to one store identity.
 
 ```mw
 const id: Book::Id = ^books.byIsbn(isbn)
 ```
 
-For a composite resource identity, a non-unique index includes all identity
+For a composite store identity, a non-unique index includes all identity
 key names. Typed traversal reconstructs the generated identity value instead
 of exposing a tuple of raw key components.
 
@@ -243,7 +248,7 @@ records with absent indexed fields do not create placeholder entries. Unique
 sparse indexes reject conflicts among populated keys; absence is not a unique
 value.
 
-Indexes describe current resource lookup paths. They do not automatically index
+Indexes describe current store lookup paths. They do not automatically index
 every history entry. If historical data needs its own lookup path, model it as a
 resource or add an explicit data-evolution transform.
 
@@ -252,9 +257,9 @@ conflict error escapes a transaction, the transaction rolls back. If code
 catches the error inside the transaction, the failed write has no effect and
 the transaction can continue.
 
-Identity keys, declared fields, keyed layers, and index names share the
-resource namespace. A resource cannot use the same name for a field and an
-index, or for an identity key and a field.
+Identity keys, declared fields, keyed layers, and shorthand index names share
+the source namespace. A concise resource declaration cannot use the same name
+for a field and an index, or for an identity key and a field.
 
 Managed resource elements use declared identifiers. Quoted path segments are for
 existing raw data, import, export, data evolution, and repair; they do not create
@@ -290,10 +295,10 @@ for id in ^books
     print(^books(id).title)
 ```
 
-Materialization is explicit: `for id in ^books` streams, while `collect(^books)`
-builds an in-memory list and may warn. The concern is not large loops but hidden
-ones — an access that hides a scan with no matching index is what the checker
-flags.
+Materialization is explicit: `for id in ^books` streams identities, while
+`collect(values(^books))` builds an in-memory list and may warn. The concern is
+not large loops but hidden ones — an access that hides traversal with no matching
+index is what the checker flags.
 
 Marrow does not add a separate storage query language. If code needs a new lookup
 path, add an index to the resource and rebuild the generated tree when existing
@@ -489,7 +494,7 @@ Rules:
 - `exists(path)` checks whether a value or child exists and narrows the path
   inside the guarded block.
 - `delete path` removes the value and child tree at that path. Deleting an
-  already absent sparse path or resource identity has no effect.
+  already absent sparse path or store identity has no effect.
 - `required` fields must be populated for a valid resource.
 - A `required` field inside a keyed layer is required for entries that exist,
   not for every possible key.
@@ -519,7 +524,7 @@ resource is being deleted, or code is running in explicit maintenance mode.
 `merge` is a reserved word, not a v0.1 statement. For partial updates that keep
 existing data, use field writes or an edit block rather than a whole-record `=`.
 
-Deleting one resource identity is ordinary application work. Deleting a whole
+Deleting one store identity is ordinary application work. Deleting a whole
 managed root is maintenance work. Code must opt into maintenance mode. The
 operation may still fail with a typed storage limit when the selected store
 cannot delete that subtree safely. Delete does not follow identity values
@@ -587,8 +592,8 @@ own writer coordination outside the source language.
 
 ## Managed Saved Trees
 
-When a resource owns a saved root, writes under that root go through the
-resource schema. Raw untyped writes to managed roots are rejected unless code
+When a store owns a saved root, writes under that root go through the
+store schema. Raw untyped writes to managed roots are rejected unless code
 explicitly opts into maintenance mode.
 Maintenance mode is selected by tools for data evolution, repair, restore, and
 root-wide work; ordinary application code does not enter it by accident.

@@ -639,7 +639,7 @@ fn a_match_arm_resolves_through_a_sequence_enum_loop_binding() {
 }
 
 #[test]
-fn a_match_arm_resolves_through_a_saved_enum_layer_loop_binding() {
+fn a_match_arm_resolves_through_a_saved_enum_layer_values_loop_binding() {
     let source = "module m\n\
         enum Status\n    \
         active\n    \
@@ -647,15 +647,17 @@ fn a_match_arm_resolves_through_a_saved_enum_layer_loop_binding() {
         resource Book at ^books(id: int)\n    \
         states(pos: int): Status\n\
         fn classify(id: Book::Id): int\n    \
-        for s in ^books(id).states\n        \
+        for s in values(^books(id).states)\n        \
         match s\n            \
         active\n                \
         return 1\n            \
         archived\n                \
         return 2\n    \
         return 0\n";
-    let (snapshot, paths) =
-        analyze_snapshot("enum-match-saved-layer-loop", &[("src/m.mw", source)]);
+    let (snapshot, paths) = analyze_snapshot(
+        "enum-match-saved-layer-values-loop",
+        &[("src/m.mw", source)],
+    );
     assert!(
         !snapshot.report.has_errors(),
         "source should check cleanly: {:#?}",
@@ -669,7 +671,7 @@ fn a_match_arm_resolves_through_a_saved_enum_layer_loop_binding() {
         .expect("active match arm");
     let def = index
         .definition(file, arm_use)
-        .expect("match arm from saved enum layer loop binding resolves");
+        .expect("match arm from saved enum layer values loop binding resolves");
     assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
 
     let member_decl = source.find("active\n").expect("active declaration");
@@ -731,7 +733,7 @@ fn a_saved_enum_layer_loop_match_records_its_scrutinee_enum() {
         resource Book at ^books(id: int)\n    \
         states(pos: int): Status\n\
         fn classify(id: Book::Id): int\n    \
-        for s in ^books(id).states\n        \
+        for s in values(^books(id).states)\n        \
         match s\n            \
         active\n                \
         return 1\n            \

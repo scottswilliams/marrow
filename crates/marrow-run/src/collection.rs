@@ -29,51 +29,90 @@ pub(crate) enum StreamChildKind {
     Index,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamBinding {
+    Key,
+    KeyValue,
+}
+
 pub(crate) struct SimpleSavedLayerLoop {
     pub(crate) prefix: Vec<PathSegment>,
     pub(crate) dir: Direction,
     pub(crate) child_kind: StreamChildKind,
+    pub(crate) depth: usize,
+    pub(crate) key_prefix: Vec<SavedKey>,
+    pub(crate) value_source: Option<StreamValueSource>,
 }
 
-/// Classify the single-level saved layer key walks a `for` loop can stream
-/// without first materializing the key list. Direct value loops still
-/// materialize before the body runs, preserving their eager element semantics.
-/// Composite identities and index branches stay on the recursive materialized
-/// path.
+#[derive(Clone)]
+pub(crate) enum StreamValueSource {
+    Root {
+        root: String,
+    },
+    ChildLayer {
+        root: String,
+        identity: Vec<SavedKey>,
+        parents: Vec<(String, Vec<SavedKey>)>,
+        layer: String,
+    },
+}
+
+/// Classify saved-layer `for` loops that can walk keys through backend seeks
+/// instead of first materializing the whole key list. A direct saved iterable
+/// binds keys/identities; a two-name direct loop also reads the value for that
+/// key inside the iteration. `keys(...)` remains address-only and cannot feed a
+/// two-name binding.
 pub(crate) fn simple_saved_layer_loop(
     iterable: &Expression,
+    binding: StreamBinding,
     env: &mut Env<'_>,
 ) -> Result<Option<SimpleSavedLayerLoop>, RuntimeError> {
     let (iterable, dir) = match reversed_argument(iterable) {
         Some(inner) => (inner, Direction::Descending),
         None => (iterable, Direction::Ascending),
     };
-    let Some(path) = keys_argument(iterable) else {
+    let (path, value_source) = if let Some(path) = keys_argument(iterable) {
+        if binding == StreamBinding::KeyValue {
+            return Ok(None);
+        }
+        (path, None)
+    } else if is_saved_path(iterable) {
+        (iterable, stream_value_source(iterable, env)?)
+    } else {
         return Ok(None);
     };
-    if !is_saved_path(path) {
-        return Ok(None);
-    }
-    if is_index_branch(path, env) {
-        return Ok(None);
-    }
     match path {
         Expression::SavedRoot { name, span } => {
-            match root_identity_arity(env.program, name) {
-                Some(1) => {}
+            let depth = match root_identity_arity(env.program, name) {
+                Some(arity) if arity > 0 => arity,
                 Some(0) => {
                     return Err(type_error(
                         &format!("`^{name}` is a singleton with no identities to iterate"),
                         *span,
                     ));
                 }
-                Some(_) | None => return Ok(None),
-            }
+                Some(_) => unreachable!("positive identity arity handled above"),
+                None => return Ok(None),
+            };
             Ok(Some(SimpleSavedLayerLoop {
                 prefix: vec![PathSegment::Root(name.clone())],
                 dir,
                 child_kind: StreamChildKind::Record,
+                depth,
+                key_prefix: Vec::new(),
+                value_source,
             }))
+        }
+        Expression::Call {
+            callee, args, span, ..
+        } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
+            stream_index_branch(callee, args, dir, value_source, binding, *span, env)
+        }
+        Expression::Field { base, .. }
+            if matches!(base.as_ref(), Expression::SavedRoot { .. })
+                && is_iterable_index_branch(path, env) =>
+        {
+            stream_index_branch(path, &[], dir, value_source, binding, path.span(), env)
         }
         Expression::Field {
             base, name: layer, ..
@@ -85,6 +124,111 @@ pub(crate) fn simple_saved_layer_loop(
                 prefix: saved_segments(&root, &identity, &with_layer, None),
                 dir,
                 child_kind: StreamChildKind::Index,
+                depth: 1,
+                key_prefix: Vec::new(),
+                value_source,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn stream_index_branch(
+    callee: &Expression,
+    args: &[Argument],
+    dir: Direction,
+    value_source: Option<StreamValueSource>,
+    binding: StreamBinding,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<SimpleSavedLayerLoop>, RuntimeError> {
+    if value_source.is_some() {
+        return Ok(None);
+    }
+    let Expression::Field {
+        base, name: index, ..
+    } = callee
+    else {
+        return Ok(None);
+    };
+    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+        return Ok(None);
+    };
+    let resource = find_resource(env.program, root)
+        .ok_or_else(|| unsupported("iterating this saved path", span))?;
+    let Some(schema) = resource.indexes.iter().find(|i| &i.name == index) else {
+        return Err(unsupported("iterating this saved path", span));
+    };
+    if schema.unique {
+        return Ok(None);
+    }
+    if args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+        || args.len() > schema.args.len()
+    {
+        return Err(unsupported("iterating this saved path", span));
+    }
+    let mut prefix = vec![
+        PathSegment::Root(root.clone()),
+        PathSegment::Index(index.clone()),
+    ];
+    let mut arg_keys = Vec::new();
+    for arg in args {
+        let key = value_to_key(eval_expr(&arg.value, env)?)
+            .ok_or_else(|| unsupported("an index key of this type", span))?;
+        prefix.push(PathSegment::IndexKey(key.clone()));
+        arg_keys.push(key);
+    }
+    let identity_arity = resource
+        .saved_root
+        .as_ref()
+        .map_or(0, |root| root.identity_keys.len());
+    let identity_start = schema.args.len().saturating_sub(identity_arity);
+    let depth = if args.len() < identity_start {
+        1
+    } else {
+        schema.args.len().saturating_sub(args.len())
+    };
+    let value_source = if binding == StreamBinding::KeyValue {
+        if args.len() < identity_start {
+            return Err(unsupported(
+                "a two-name binding over this index branch",
+                span,
+            ));
+        }
+        Some(StreamValueSource::Root { root: root.clone() })
+    } else {
+        value_source
+    };
+    let key_prefix = arg_keys
+        .get(identity_start..)
+        .map_or_else(Vec::new, |keys| keys.to_vec());
+    Ok(Some(SimpleSavedLayerLoop {
+        prefix,
+        dir,
+        child_kind: StreamChildKind::Index,
+        depth,
+        key_prefix,
+        value_source,
+    }))
+}
+
+fn stream_value_source(
+    path: &Expression,
+    env: &mut Env<'_>,
+) -> Result<Option<StreamValueSource>, RuntimeError> {
+    match path {
+        Expression::SavedRoot { name, .. } => {
+            Ok(Some(StreamValueSource::Root { root: name.clone() }))
+        }
+        Expression::Field { base, name, .. } if !is_index_branch(path, env) => {
+            let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
+            Ok(Some(StreamValueSource::ChildLayer {
+                root,
+                identity,
+                parents,
+                layer: name.clone(),
             }))
         }
         _ => Ok(None),
@@ -599,26 +743,20 @@ pub(crate) fn eval_reversed(
             env,
         )?));
     }
-    // `reversed(L)`: elements for value-bearing saved collections, identities for
-    // key-only index branches.
+    // `reversed(L)`: direct saved collections keep the same address-oriented
+    // element as ordinary `for`: identities for roots and indexes, child keys for
+    // keyed layers. Use `reversed(values(L))` when values are wanted.
     if is_saved_path(&arg.value) {
         if let Some(values) =
             unique_index_lookup_values(&arg.value, span, Direction::Descending, env)?
         {
             return Ok(Value::Sequence(values));
         }
-        if is_iterable_index_branch(&arg.value, env) {
-            return Ok(Value::Sequence(enumerate_layer_dir(
-                &arg.value,
-                Direction::Descending,
-                env,
-            )?));
-        }
-        let values = materialize_layer_dir(&arg.value, Direction::Descending, env)?
-            .into_iter()
-            .map(|(_, value)| value)
-            .collect();
-        return Ok(Value::Sequence(values));
+        return Ok(Value::Sequence(enumerate_layer_dir(
+            &arg.value,
+            Direction::Descending,
+            env,
+        )?));
     }
     // Any other argument must evaluate to an in-memory sequence, reversed directly.
     match eval_expr(&arg.value, env)? {

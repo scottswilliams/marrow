@@ -32,27 +32,27 @@ covered in detail under Operators in the syntax reference.
 
 ## Collection Traversal
 
-Direct iteration over a collection yields its elements:
+Direct iteration over a durable collection streams its addresses:
 
 ```mw
-for book in ^books
-    write(book.title)
+for id in ^books
+    write(^books(id).title)
 
-for tag in ^books(id).tags
-    write(tag)
+for pos in ^books(id).tags
+    write(^books(id).tags(pos))
 ```
 
-The element is the useful value the collection stores or selects. A primary
-resource root yields resources. A sequence or keyed layer yields the value stored
-at each populated child. A key-only collection such as a set or non-unique index
-branch yields its members:
+A primary root streams store identities. A sequence or keyed layer streams its
+populated child keys. A non-unique index branch streams the identities in that
+lookup branch:
 
 ```mw
 for id in ^books.byShelf("fiction")
     write($"{id}")
 ```
 
-Use two loop variables for the address and element together:
+Use two loop variables for the address and value together, or use `values(...)`
+when only values are wanted:
 
 ```mw
 for id, book in ^books
@@ -60,6 +60,9 @@ for id, book in ^books
 
 for pos, tag in ^books(id).tags
     write($"{pos}: {tag}")
+
+for book in values(^books)
+    write(book.title)
 ```
 
 Explicit traversal helpers:
@@ -67,18 +70,19 @@ Explicit traversal helpers:
 | Builtin | Meaning |
 |---|---|
 | `keys(collection)` | Element addresses |
-| `values(collection)` | Elements |
-| `entries(collection)` | Address and element pairs |
+| `values(collection)` | Stored values |
+| `entries(collection)` | Address and stored-value pairs |
 | `count(path)` | Populated immediate children, or scalar presence |
-| `reversed(iterable)` | The same elements in reverse key order |
+| `reversed(iterable)` | The same iterable shape in reverse key order |
 | `next(element)` | The nearest stored neighbor identity in key order |
 | `prev(element)` | The nearest stored neighbor identity, the other way |
 
 `keys(...)` is the lightest traversal shape when code only needs identities,
-positions, map keys, or other addresses. `values(...)` and `entries(...)` are
-the expression forms of one-variable and two-variable loops over value-bearing
-collections. Key-only collections such as sets and non-unique index branches do
-not have separate values; their generated marker values are a raw inspection
+positions, map keys, or other addresses. Direct durable `for` loops already use
+that address-oriented shape, so `keys(...)` is mostly useful when an address list
+is passed around as a value. `values(...)` and `entries(...)` explicitly read
+stored values. Key-only collections such as sets and non-unique index branches
+do not have separate values; their generated marker values are a raw inspection
 detail. Deep raw tree walks belong to inspection, backup, repair, and data
 evolution tools.
 
@@ -120,23 +124,22 @@ over `values(...)` and `entries(...)` where those apply, and over an in-memory
 `sequence`:
 
 ```mw
-for book in reversed(^books)
-    write(book.title)
+for id in reversed(^books)
+    write(^books(id).title)
 
-for tag in reversed(^books(id).tags)
-    write(tag)
+for pos in reversed(^books(id).tags)
+    write(^books(id).tags(pos))
 
 for word in reversed(std::text::split(line, ","))
     write(word)
 ```
 
-Over a saved layer the reversal walks the stored entries from the high key
-downward — it is a true reverse, not a copy of the forward result reversed after
-the fact. It still reads the whole layer up front, so an early `break` only stops
-the loop body, not the store scan (`next`/`prev` are the lazy single-step seeks). A
-composite identity reverses at every key level, so `reversed(^enrollments)` is the
-exact reverse of `^enrollments`, not its outermost key flipped over a forward
-tail. Over a `sequence` the elements are reversed directly.
+Over a saved layer the reversal streams stored keys from high to low — it is a
+true reverse, not a copy of the forward result reversed after the fact. An early
+`break` stops the scan. A composite identity reverses at every key level, so
+`reversed(^enrollments)` is the exact reverse of `^enrollments`, not its
+outermost key flipped over a forward tail. Over a `sequence` value, the elements
+are reversed directly.
 
 ### Stored Neighbors
 

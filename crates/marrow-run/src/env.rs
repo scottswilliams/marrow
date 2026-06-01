@@ -474,7 +474,7 @@ impl<'p> Env<'p> {
             if self
                 .traversed_index_layers
                 .iter()
-                .any(|prefix| path.len() > prefix.len() && path.starts_with(prefix.as_slice()))
+                .any(|prefix| path.starts_with(prefix.as_slice()))
             {
                 return Err(RuntimeError {
                     throw: None,

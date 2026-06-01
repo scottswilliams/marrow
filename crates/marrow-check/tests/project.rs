@@ -1520,6 +1520,52 @@ fn saved_inout_through_index_entry_is_prototype_only() {
 }
 
 #[test]
+fn saved_traversal_shaper_methods_are_prototype_only() {
+    let report = check_module_report(
+        "prototype-saved-traversal-shapers",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn f(token: string)\n    \
+         for id in ^books.take(10)\n        print($\"{id}\")\n    \
+         for id in ^books.byShelf(\"fiction\").window(size: 10)\n        print($\"{id}\")\n    \
+         for id in ^books.byShelf(\"fiction\").after(1)\n        print($\"{id}\")\n    \
+         for id in ^books.byShelf(\"fiction\").from(1)\n        print($\"{id}\")\n    \
+         for id in ^books.byShelf(\"fiction\").until(100)\n        print($\"{id}\")\n    \
+         for id in ^books.byShelf(\"fiction\").resume(token)\n        print($\"{id}\")\n    \
+         for id in ^books.byShelf(\"fiction\").reverse()\n        print($\"{id}\")\n",
+    );
+
+    let found = with_code(&report, "check.prototype_only");
+    assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
+    for name in [
+        "take", "window", "after", "from", "until", "resume", "reverse",
+    ] {
+        assert!(
+            found
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(name)),
+            "{name}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn declared_saved_members_named_like_traversal_shapers_are_not_prototype_only() {
+    let report = check_module_report(
+        "declared-traversal-shaped-names",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n    window(pos: int): string\n    index take(shelf, id)\n\n\
+         fn f(id: Book::Id)\n    \
+         ^books(id).window(1) = \"open\"\n    \
+         for found in ^books.take(\"fiction\")\n        var typed: Book::Id = found\n",
+    );
+
+    let found = with_code(&report, "check.prototype_only");
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn clean_project_has_no_diagnostics() {
     let root = temp_project("clean", |root| {
         write(root, "src/shelf/books.mw", "module shelf::books\n");
@@ -2740,12 +2786,12 @@ fn an_unknown_call_in_a_module_less_script_is_flagged() {
 }
 
 #[test]
-fn a_primary_root_loop_binds_resource_elements() {
+fn a_primary_root_loop_binds_identities() {
     let report = check_module_report(
-        "root-loop-elements",
+        "root-loop-identities",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn titles()\n    for book in ^books\n        var title: string = book.title\n",
+         fn titles()\n    for id in ^books\n        var typed: Book::Id = id\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2762,12 +2808,12 @@ fn a_two_name_primary_root_loop_binds_identity_and_resource() {
 }
 
 #[test]
-fn a_sequence_layer_loop_binds_element_values() {
+fn a_sequence_layer_loop_binds_keys() {
     let report = check_module_report(
-        "layer-loop-elements",
+        "layer-loop-keys",
         "module m\n\
          resource Book at ^books(id: int)\n    tags: sequence[string]\n\n\
-         fn tags(id: Book::Id)\n    for tag in ^books(id).tags\n        var text: string = tag\n",
+         fn tags(id: Book::Id)\n    for pos in ^books(id).tags\n        var typed: int = pos\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2778,7 +2824,7 @@ fn a_keyed_group_layer_loop_binds_group_entry_values() {
         "group-layer-loop-elements",
         "module m\n\
          resource Book at ^books(id: int)\n    versions(version: int)\n        required title: string\n\n\
-         fn titles(id: Book::Id)\n    for version in ^books(id).versions\n        var title: string = version.title\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
+         fn titles(id: Book::Id)\n    for version in ^books(id).versions\n        var typed: int = version\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2812,34 +2858,53 @@ fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
 }
 
 #[test]
-fn a_unique_index_lookup_loop_is_not_typed_as_an_index_branch() {
-    let found = check_module(
+fn a_unique_index_lookup_loop_binds_the_identity() {
+    let report = check_module_report(
         "unique-index-loop",
         "module m\n\
          resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
-         fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var n = id + 1\n",
-        "check.operator_type",
+         fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var typed: Book::Id = id\n",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
-fn key_only_index_branches_do_not_bind_pair_types() {
-    for iterable in [
-        "^books.byShelf(\"fiction\")",
-        "entries(^books.byShelf(\"fiction\"))",
-    ] {
-        let found = check_module(
-            "index-pair-loop",
-            &format!(
-                "module m\n\
-                 resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
-                 fn f()\n    for id, marker in {iterable}\n        var n = id + 1\n",
-            ),
-            "check.operator_type",
-        );
-        assert!(found.is_empty(), "{iterable}: {found:#?}");
-    }
+fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suffix() {
+    let report = check_module_report(
+        "partial-index-loop",
+        "module m\n\
+         resource Book at ^books(id: int)\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         fn f()\n    \
+         for author in ^books.byAuthorShelf\n        var typed_author: string = author\n    \
+         for shelf in ^books.byAuthorShelf(\"ann\")\n        var typed_shelf: string = shelf\n    \
+         for id in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Book::Id = id\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn identity_yielding_index_branches_bind_identity_and_resource_pairs() {
+    let report = check_module_report(
+        "index-pair-loop",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         fn f()\n    \
+         for id, book in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Book::Id = id\n        var typed_title: string = book.title\n    \
+         for exact_id, exact_book in ^books.byAuthorShelf(\"ann\", \"fiction\", 1)\n        var exact_typed: Book::Id = exact_id\n        var exact_title: string = exact_book.title\n",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn non_identity_index_branches_reject_two_name_loops() {
+    let found = check_module(
+        "non-identity-index-pair-loop",
+        "module m\n\
+         resource Book at ^books(id: int)\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         fn f()\n    for shelf, book in ^books.byAuthorShelf(\"ann\")\n        write($\"{shelf}\")\n",
+        "check.collection_unsupported",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -2909,7 +2974,7 @@ fn reversed_saved_collection_expressions_type_element_sequences() {
         "reversed-saved-expressions",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\n\
-         fn f(id: Book::Id)\n    const books = reversed(^books)\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(^books(id).tags)\n    for tag in tags\n        var also_bad = tag + 1\n",
+         fn f(id: Book::Id)\n    const ids = reversed(^books)\n    for bookId in ids\n        var typed: Book::Id = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in positions\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in tags\n        var also_bad = tag + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 2, "{found:#?}");
@@ -3524,7 +3589,7 @@ fn type_surface_ledger_reads_and_traversals_have_concrete_types() {
          fn sumAmounts(code: Account::Id): decimal\n    var sum: decimal = 0.0\n    for amount in values(^accounts(code).amounts)\n        sum = sum + amount\n    return sum\n\n\
          fn countAccounts(): int\n    return count(^accounts)\n\n\
          fn ids()\n    for code in keys(^accounts)\n        const typed: Account::Id = code\n\n\
-         fn accounts()\n    for account in ^accounts\n        const name: string = account.name\n\n\
+         fn accounts()\n    for code, account in ^accounts\n        const name: string = account.name\n\n\
          fn handle(): bool\n    try\n        throw Error(code: \"x.y\", message: \"m\")\n    catch err: Error\n        return err.code == ErrorCode(\"x.y\")\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
@@ -4209,9 +4274,9 @@ fn a_group_entry_does_not_flow_as_a_whole_resource() {
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
          fn takesBook(book: Book)\n    print(book.title)\n\n\
-         fn returnsBook(id: Book::Id): Book\n    for version in ^books(id).versions\n        return version\n    return ^books(id)\n\n\
-         fn pass(id: Book::Id)\n    for version in ^books(id).versions\n        takesBook(version)\n\n\
-         fn assign(id: Book::Id)\n    for version in ^books(id).versions\n        var book: Book = version\n";
+         fn returnsBook(id: Book::Id): Book\n    for versionKey, version in ^books(id).versions\n        return version\n    return ^books(id)\n\n\
+         fn pass(id: Book::Id)\n    for versionKey, version in ^books(id).versions\n        takesBook(version)\n\n\
+         fn assign(id: Book::Id)\n    for versionKey, version in ^books(id).versions\n        var book: Book = version\n";
 
     let returns = check_module(
         "group-entry-not-resource-return",

@@ -4,7 +4,10 @@ use marrow_syntax::{
     ArgMode, Block, Declaration, Expression, InterpolationPart, Severity, SourceSpan, Statement,
 };
 
-use crate::{CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram, is_saved_path_expression};
+use crate::{
+    CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram, find_resource_schema,
+    is_saved_path_expression, saved_layer_chain,
+};
 
 pub(crate) fn check_prototype_only(
     program: &CheckedProgram,
@@ -174,7 +177,19 @@ fn check_expr(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     match expr {
-        Expression::Call { callee, args, .. } => {
+        Expression::Call {
+            callee, args, span, ..
+        } => {
+            if let Some(method) = prototype_traversal_method(program, callee) {
+                push(
+                    file,
+                    *span,
+                    &format!(
+                        "saved `.{method}(...)` traversal is prototype-only; v0.1 source streams durable iterables with ordinary `for` loops"
+                    ),
+                    diagnostics,
+                );
+            }
             check_expr(program, file, callee, diagnostics);
             for arg in args {
                 if matches!(arg.mode, Some(ArgMode::InOut))
@@ -208,6 +223,56 @@ fn check_expr(
             }
         }
         Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn prototype_traversal_method<'a>(
+    program: &CheckedProgram,
+    callee: &'a Expression,
+) -> Option<&'a str> {
+    let Expression::Field {
+        base, name, quoted, ..
+    } = callee
+    else {
+        return None;
+    };
+    if *quoted || !saved_path_like_syntax(base) || declared_saved_member_or_index(program, callee) {
+        return None;
+    }
+    matches!(
+        name.as_str(),
+        "take" | "window" | "after" | "from" | "until" | "resume" | "reverse"
+    )
+    .then_some(name.as_str())
+}
+
+fn declared_saved_member_or_index(program: &CheckedProgram, callee: &Expression) -> bool {
+    let Expression::Field { base, name, .. } = callee else {
+        return false;
+    };
+    if let Expression::SavedRoot { name: root, .. } = base.as_ref()
+        && let Some(resource) = find_resource_schema(program, root)
+        && resource.indexes.iter().any(|index| &index.name == name)
+    {
+        return true;
+    }
+    let Some((root, layers)) = saved_layer_chain(callee) else {
+        return false;
+    };
+    let Some(resource) = find_resource_schema(program, root) else {
+        return false;
+    };
+    resource.descend_layers(&layers).is_some() || resource.field_type(&layers).is_some()
+}
+
+fn saved_path_like_syntax(expr: &Expression) -> bool {
+    match expr {
+        Expression::SavedRoot { .. } => true,
+        Expression::Call { callee, .. } => saved_path_like_syntax(callee),
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            saved_path_like_syntax(base)
+        }
+        _ => false,
     }
 }
 

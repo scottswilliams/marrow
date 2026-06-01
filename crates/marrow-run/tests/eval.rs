@@ -2757,15 +2757,6 @@ fn values_and_entries_over_an_index_branch_are_unsupported() {
             "{builtin}: {result:?}"
         );
     }
-
-    let program = checked_program(&format!(
-        "{resource}fn f()\n    for id, marker in ^books.byShelf(\"x\")\n        print($\"{{id}}: {{marker}}\")\n"
-    ));
-    let result = run(&program, "test::f", &[]);
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
-        "{result:?}"
-    );
 }
 
 #[test]
@@ -6115,6 +6106,13 @@ fn countKeysByIsbn(isbn: string): int
 fn iterTitlesByIsbn(isbn: string)
     for id in ^books.byIsbn(isbn)
         print(^books(id).title)
+
+fn changeIsbn(id: Book::Id)
+    ^books(id).isbn = \"978-1\"
+
+fn changeIsbnThroughHelper(isbn: string)
+    for id in ^books.byIsbn(isbn)
+        changeIsbn(id)
 ";
 
 #[test]
@@ -6217,6 +6215,32 @@ fn unique_index_lookup_iteration_yields_the_stored_identity() {
     )
     .expect("absent unique lookup is an empty iteration");
     assert_eq!(absent.output, "");
+}
+
+#[test]
+fn helper_call_mutating_a_traversed_unique_index_faults() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+    run_entry(
+        &program,
+        &store,
+        "test::register",
+        &[
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ],
+    )
+    .expect("register");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::changeIsbnThroughHelper",
+        &[Value::Str("978-0".into())],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
 }
 
 #[test]
@@ -6371,6 +6395,44 @@ fn activeStatuses()
 fn activeEnrollmentsDirect()
     for id in ^enrollments.byStatus(\"active\")
         print($\"{^enrollments(id).student}:{^enrollments(id).course}\")
+
+fn activeCoursesForStudent(student: string)
+    for id in ^enrollments.byStatus(\"active\", student)
+        print(^enrollments(id).course)
+
+fn activeCourseExact(student: string, course: string)
+    for id in ^enrollments.byStatus(\"active\", student, course)
+        print(^enrollments(id).course)
+
+fn activeCourseExactPair(student: string, course: string)
+    for id, enrollment in ^enrollments.byStatus(\"active\", student, course)
+        print($\"{^enrollments(id).course}:{enrollment.course}\")
+
+fn activeCourseExactKeys(student: string, course: string)
+    for id in keys(^enrollments.byStatus(\"active\", student, course))
+        print(^enrollments(id).course)
+
+fn activeCourseExactCount(student: string, course: string): int
+    return count(^enrollments.byStatus(\"active\", student, course))
+
+fn markInactive(id: Enrollment::Id)
+    ^enrollments(id).status = \"inactive\"
+
+fn deactivateExact(student: string, course: string)
+    for id in ^enrollments.byStatus(\"active\", student, course)
+        ^enrollments(id).status = \"inactive\"
+
+fn deactivateExactReversed(student: string, course: string)
+    for id in reversed(^enrollments.byStatus(\"active\", student, course))
+        ^enrollments(id).status = \"inactive\"
+
+fn deactivateExactThroughHelper(student: string, course: string)
+    for id in ^enrollments.byStatus(\"active\", student, course)
+        markInactive(id)
+
+fn deactivateExactReversedThroughHelper(student: string, course: string)
+    for id in reversed(^enrollments.byStatus(\"active\", student, course))
+        markInactive(id)
 ";
 
 #[test]
@@ -6398,6 +6460,125 @@ fn traverses_a_composite_identity_index() {
     // reads back `active`. Two such entries exist, in (studentId, courseId) order.
     let outcome = run_entry(&program, &store, "test::activeStatuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\nactive\n");
+
+    let outcome = run_entry(
+        &program,
+        &store,
+        "test::activeCoursesForStudent",
+        &[Value::Str("student-1".into())],
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "course-8\ncourse-9\n");
+
+    let outcome = run_entry(
+        &program,
+        &store,
+        "test::activeCourseExact",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "course-8\n");
+
+    let outcome = run_entry(
+        &program,
+        &store,
+        "test::activeCourseExactPair",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "course-8:course-8\n");
+
+    let outcome = run_entry(
+        &program,
+        &store,
+        "test::activeCourseExactKeys",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "course-8\n");
+
+    let exact_count = run_entry(
+        &program,
+        &store,
+        "test::activeCourseExactCount",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .expect("count")
+    .value;
+    assert_eq!(exact_count, Some(Value::Int(1)));
+
+    let inactive_count = run_entry(
+        &program,
+        &store,
+        "test::activeCourseExactCount",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-7".into()),
+        ],
+    )
+    .expect("count")
+    .value;
+    assert_eq!(inactive_count, Some(Value::Int(0)));
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::deactivateExact",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::deactivateExactReversed",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::deactivateExactThroughHelper",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
+
+    let error = run_entry(
+        &program,
+        &store,
+        "test::deactivateExactReversedThroughHelper",
+        &[
+            Value::Str("student-1".into()),
+            Value::Str("course-8".into()),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
 }
 
 #[test]
@@ -6427,8 +6608,8 @@ fn direct_composite_identity_index_loop_yields_identities() {
 
 // --- Unified saved-layer enumeration ---
 
-/// Iterating a primary keyed root yields record elements. `keys(^books)` keeps
-/// explicit identity traversal available when code needs addresses.
+/// Iterating a primary keyed root yields identities. Two-name loops pair the
+/// identity with the materialized record value.
 const BOOK_PRIMARY: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -6437,21 +6618,25 @@ fn add(id: int, t: string)
     ^books(id).title = t
 
 fn titles()
-    for id in keys(^books)
+    for id in ^books
         print(^books(id).title)
 
-fn elementTitles()
-    for book in ^books
-        print(book.title)
+fn directIds()
+    for id in ^books
+        print($\"{id}\")
 
 fn idsAndElementTitles()
     for id, book in ^books
         print($\"{id}: {book.title}\")
 
 fn reversedElementTitles()
-    const books = reversed(^books)
-    for book in books
+    for id, book in reversed(^books)
         print(book.title)
+
+fn reversedIdsAsValue()
+    const ids = reversed(^books)
+    for id in ids
+        print($\"{id}\")
 
 fn ids()
     const all = keys(^books)
@@ -6475,13 +6660,13 @@ fn iterates_a_primary_keyed_root() {
     add(2, "Sourcery");
     add(1, "Mort");
 
-    // `keys(^books)` yields ids in key order, each addressing its record.
+    // Direct root iteration yields ids in key order, each addressing its record.
     let outcome = run_entry(&program, &store, "test::titles", &[]).expect("run");
     assert_eq!(outcome.output, "Mort\nSourcery\n");
 }
 
 #[test]
-fn primary_root_loop_yields_resource_elements() {
+fn primary_root_loop_yields_identities() {
     let program = checked_program(BOOK_PRIMARY);
     let store = RefCell::new(MemStore::new());
     let add = |id: i64, title: &str| {
@@ -6496,8 +6681,8 @@ fn primary_root_loop_yields_resource_elements() {
     add(2, "Sourcery");
     add(1, "Mort");
 
-    let outcome = run_entry(&program, &store, "test::elementTitles", &[]).expect("run");
-    assert_eq!(outcome.output, "Mort\nSourcery\n");
+    let outcome = run_entry(&program, &store, "test::directIds", &[]).expect("run");
+    assert_eq!(outcome.output, "1\n2\n");
 }
 
 #[test]
@@ -6521,7 +6706,7 @@ fn two_name_primary_root_loop_yields_id_and_resource() {
 }
 
 #[test]
-fn reversed_primary_root_expression_yields_resource_elements() {
+fn reversed_two_name_primary_root_loop_yields_resources() {
     let program = checked_program(BOOK_PRIMARY);
     let store = RefCell::new(MemStore::new());
     let add = |id: i64, title: &str| {
@@ -6538,6 +6723,26 @@ fn reversed_primary_root_expression_yields_resource_elements() {
 
     let outcome = run_entry(&program, &store, "test::reversedElementTitles", &[]).expect("run");
     assert_eq!(outcome.output, "Sourcery\nMort\n");
+}
+
+#[test]
+fn reversed_primary_root_expression_yields_identities() {
+    let program = checked_program(BOOK_PRIMARY);
+    let store = RefCell::new(MemStore::new());
+    let add = |id: i64, title: &str| {
+        run_entry(
+            &program,
+            &store,
+            "test::add",
+            &[Value::Int(id), Value::Str(title.into())],
+        )
+        .expect("add");
+    };
+    add(2, "Sourcery");
+    add(1, "Mort");
+
+    let outcome = run_entry(&program, &store, "test::reversedIdsAsValue", &[]).expect("run");
+    assert_eq!(outcome.output, "2\n1\n");
 }
 
 #[test]
@@ -6586,7 +6791,7 @@ fn enroll(s: string, c: string, st: string)
     ^enrollments(id).status = st
 
 fn statuses()
-    for enrollment in ^enrollments
+    for id, enrollment in ^enrollments
         print(enrollment.status)
 ";
 
@@ -6610,13 +6815,13 @@ fn iterates_a_composite_primary_root() {
     enroll("student-1", "course-9", "active");
     enroll("student-2", "course-1", "dropped");
 
-    // Each element is the materialized enrollment record.
+    // Two-name iteration reads each materialized enrollment record.
     let outcome = run_entry(&program, &store, "test::statuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\ndropped\n");
 }
 
-/// Iterating a sequence/keyed child layer yields the layer's values. `keys(...)`
-/// keeps explicit position traversal available when code needs addresses.
+/// Iterating a sequence/keyed child layer yields positions. Two-name loops pair
+/// each position with its value.
 const BOOK_TAGS: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -6628,11 +6833,11 @@ fn seed()
     const b: int = append(^books(1).tags, \"funny\")
 
 fn positions()
-    for pos in keys(^books(1).tags)
+    for pos in ^books(1).tags
         print($\"{pos}\")
 
 fn tagValues()
-    for tag in ^books(1).tags
+    for pos, tag in ^books(1).tags
         print(tag)
 
 fn tagEntries()
@@ -6640,13 +6845,13 @@ fn tagEntries()
         print($\"{pos}={tag}\")
 
 fn tagValuesDescending()
-    for tag in reversed(^books(1).tags)
+    for pos, tag in reversed(^books(1).tags)
         print(tag)
 
-fn tagValuesDescendingValue()
-    const tags = reversed(^books(1).tags)
-    for tag in tags
-        print(tag)
+fn positionsDescendingValue()
+    const positions = reversed(^books(1).tags)
+    for pos in positions
+        print($\"{pos}\")
 
 fn keysOf()
     for pos in keys(^books(1).tags)
@@ -6659,7 +6864,7 @@ fn iterates_a_sequence_child_layer() {
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
 
-    // `keys(^books(1).tags)` yields 1-based positions in key order.
+    // Direct layer iteration yields 1-based positions in key order.
     let outcome = run_entry(&program, &store, "test::positions", &[]).expect("run");
     assert_eq!(outcome.output, "1\n2\n");
 
@@ -6669,7 +6874,7 @@ fn iterates_a_sequence_child_layer() {
 }
 
 #[test]
-fn sequence_child_layer_loop_yields_element_values() {
+fn sequence_child_layer_two_name_loop_yields_element_values() {
     let program = checked_program(BOOK_TAGS);
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -6699,18 +6904,17 @@ fn reversed_sequence_child_layer_loop_yields_values_descending() {
 }
 
 #[test]
-fn reversed_sequence_child_layer_expression_yields_values_descending() {
+fn reversed_sequence_child_layer_expression_yields_positions_descending() {
     let program = checked_program(BOOK_TAGS);
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
 
-    let outcome = run_entry(&program, &store, "test::tagValuesDescendingValue", &[]).expect("run");
-    assert_eq!(outcome.output, "funny\nfiction\n");
+    let outcome = run_entry(&program, &store, "test::positionsDescendingValue", &[]).expect("run");
+    assert_eq!(outcome.output, "2\n1\n");
 }
 
-/// A keyed (non-sequence) child tree iterates values, with `keys(...)` available
-/// for declared-key traversal. Seeded through the store directly to keep the
-/// focus on iteration order.
+/// A keyed (non-sequence) child tree iterates keys; two-name loops pair keys
+/// with values. Seeded through the store directly to keep the focus on order.
 const PLAYER_SCORES: &str = "\
 resource Game at ^games(id: int)
     scores(playerId: string): int
@@ -6720,7 +6924,7 @@ fn players()
         print(p)
 
 fn scores()
-    for score in ^games(1).scores
+    for player, score in ^games(1).scores
         print($\"{score}\")
 ";
 
@@ -6746,13 +6950,13 @@ fn iterates_a_keyed_child_tree() {
     let outcome = run_entry(&program, &store, "test::players", &[]).expect("run");
     assert_eq!(outcome.output, "alice\nbob\n");
 
-    // Bare child-layer iteration yields values in key order.
+    // Two-name child-layer iteration yields values in key order.
     let outcome = run_entry(&program, &store, "test::scores", &[]).expect("run");
     assert_eq!(outcome.output, "10\n7\n");
 }
 
-/// A keyed group layer iterates materialized entries, with two-name loops
-/// preserving the group address alongside the entry value.
+/// A keyed group layer iterates keys, with two-name loops preserving the group
+/// address alongside the entry value.
 const BOOK_VERSION_LOOPS: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -6766,7 +6970,7 @@ fn seed()
     ^books(1).versions(1).title = \"first\"
 
 fn versionTitles()
-    for version in ^books(1).versions
+    for v, version in ^books(1).versions
         print(version.title)
 
 fn versionEntries()
@@ -6945,7 +7149,7 @@ fn keysReversed()
         print($\"{id}\")
 
 fn titlesDescending()
-    for book in reversed(^books)
+    for id, book in reversed(^books)
         print(book.title)
 
 fn nextOf(id: int): int
@@ -6968,7 +7172,7 @@ fn nextTitle(id: int): string
 
 fn breakAfterFirst(): int
     var seen = 0
-    for book in reversed(^books)
+    for id in reversed(^books)
         seen = seen + 1
         break
     return seen
@@ -7242,7 +7446,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
 
     // Ascending identity order is (s1,c1),(s1,c2),(s2,c1); reverse is the mirror.
     let program = checked_program(&format!(
-        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
+        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
     ));
     let outcome = run_entry(&program, &store, "test::revStatuses", &[]).expect("run");
     assert_eq!(outcome.output, "active\ndropped\nactive\n");
@@ -7657,9 +7861,9 @@ fn keys_saved_root_loop_streams_through_seek_operations() {
 }
 
 #[test]
-fn direct_saved_root_value_loop_preserves_eager_element_values() {
+fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\nfn mutateFutureValue(): int\n    var total = 0\n    for book in ^books\n        if book.title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if book.title == \"B\"\n            total = total * 10 + 2\n        else if book.title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\nfn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if ^books(id).title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if ^books(id).title == \"B\"\n            total = total * 10 + 2\n        else if ^books(id).title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed");
@@ -7668,7 +7872,7 @@ fn direct_saved_root_value_loop_preserves_eager_element_values() {
         run_entry(&program, &store, "test::mutateFutureValue", &[])
             .expect("loop")
             .value,
-        Some(Value::Int(12))
+        Some(Value::Int(19))
     );
 }
 

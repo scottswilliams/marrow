@@ -17,34 +17,35 @@ designed extension adds a GUID allocation policy, written `^x(id: guid)`,
 alongside that single `int` policy, for identities that must be unique without a
 central counter.
 
-## Scratch data
+## Ephemeral roots
 
-A designed extension adds scratch roots, written with `~`, for typed tree data
-that outlives one local binding but is not saved:
+ADR 0209 reserves `~` for typed ephemeral roots: process- or session-lived
+resource-typed state that can be rebuilt and is never durable truth. v1 reserves
+the sigil only; it does not implement `~` declarations or writes.
 
 ```mw
-resource WordStat at ~words(word: string)
-    count: int
+cache ~bookSearch(term: string, book: Id(^books)): SearchHit
 
-fn count(word: string)
-    ~words(word).count = (~words(word).count ?? 0) + 1
+cache ~graph: GraphIndex
 ```
 
-Local data has no sigil, scratch data uses `~`, and saved data uses `^`.
-Scratch data is run-local: it is available to code that can name the root during
-one command, one server request, or one test, and it is cleared before the
-next run. It is not included in backups, restores, data evolution, saved-data
-integrity checks, or ordinary saved-data inspection.
+Local data has no sigil, ephemeral data uses `~`, and durable data uses `^`.
+Ephemeral roots are for typed state that is reused or shared across calls in one
+process or configured session, but can be discarded without corrupting the
+application. If losing the data would corrupt the application, it belongs under
+`^`.
 
-Scratch roots use the same resource shapes, path syntax, presence rules,
-traversal helpers, and type checks as saved roots. They are for caches, work
-sets, memo tables, intermediate indexes, and other data that needs shared
-identity during a run without becoming durable application state.
+Ephemeral roots reuse resource shapes and ordinary checked reads, writes, and
+iteration, but they do not receive catalog identity, do not appear in portable
+backups, and are not data-evolved. A source, catalog, type, or build change
+discards and rebuilds them by manifest match.
 
-Because scratch data has no portable saved representation, an implementation may
-choose memory-optimized structures for common access patterns. Code still
-depends on Marrow's typed tree behavior, not on a particular in-memory data
-structure.
+Natural uses are fast computed structures that should not become durable
+B-tree indexes: full-text and inverted indexes, graph adjacency, vector indexes,
+parsed-import buffers, precomputed models, analytics cubes, and hot read models.
+Future waves may add manual process-private roots, derived roots with
+`derives from` and `build`, and warm or project-shared caches. Those are future
+features, not v1 gates.
 
 ## Nested index arguments
 
@@ -86,10 +87,10 @@ than one key, use a native multi-layer keyed tree rather than a nested `map`:
 `map[date, map[string, int]]`. Use a declared index when a saved resource needs
 a maintained alternate lookup path.
 
-Map iteration follows the collection rule: one loop variable walks values, two
-loop variables walk key/value entries, and `keys(...)` walks keys only. The
-`values(...)` and `entries(...)` helpers remain useful when code needs an
-explicit map-style view as a value.
+Local map iteration follows the collection rule: one loop variable walks values,
+two loop variables walk key/value entries, and `keys(...)` walks keys only.
+Durable keyed layers stream keys with one loop variable and read values through
+two-name loops, `values(...)`, or `entries(...)`.
 
 A `set[K]` stores membership, not a user-visible `bool`; a member is present or
 absent. Because a set member has no value, there is no right-hand side to
@@ -128,10 +129,10 @@ explicit keyed group, and if set membership must carry metadata, it is no longer
 a set — use `map[K, V]`, for example `map[string, Flag]`.
 
 Saved collection data is typed tree data: ordered, inspectable, portable, and
-reached through paths. A local or scratch `map` or `set` has no portable saved
-form, so an implementation may choose memory-optimized structures for it; code
-still depends on Marrow's typed tree behavior, not on a particular in-memory
-data structure.
+reached through paths. A local or future ephemeral `map` or `set` has no
+portable saved form, so an implementation may choose memory-optimized
+structures for it; code still depends on Marrow's typed tree behavior, not on a
+particular in-memory data structure.
 
 ## Local Tree Writes
 

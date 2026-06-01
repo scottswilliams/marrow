@@ -167,7 +167,7 @@ The following foundations are mandatory before dependent breadth work:
 | Checked facts and IDs are authoritative | runtime, tools, evolution | runtime/source/tool re-resolution |
 | Catalog identity exists and owns durable IDs | tree-cell storage, backup, evolution | `@id`, source spelling, regenerated IDs |
 | Resource/store split is internal model | runtime writes, indexes, references | fused resource/root/schema ownership |
-| Store-owned indexes are explicit facts | index maintenance, scans, backup | resource-owned production indexes |
+| Store-owned indexes are explicit facts | index maintenance, durable traversal, backup | resource-owned production indexes |
 | Tree-cell storage keys derive from stable IDs | redb layout, backup, restore | source-name encoded physical keys |
 | Runtime executes checked IR/facts | production `run`, transactions, tools | AST-body execution and dynamic fallback lookup |
 | Evolution has exact witnesses | destructive changes, catalog apply | source-diff inference or migration-script framing |
@@ -247,7 +247,8 @@ path it replaces. Examples:
 | ADR 0204 | engine contract, tree cells, transactions, commit metadata, backup | tree-cell store, runtime, backup |
 | ADR 0205 | shared facts, local generations, raw debug only | tools and protocols |
 | ADR 0206 | catalog lifecycle and identity binding | catalog |
-| ADR 0207 | store-owned indexes, index key laws, bounded scans, cursors, sequence laws | resource/store parser and schema, catalog, tree-cell store, checked model, runtime, backup |
+| ADR 0207 | store-owned indexes, index key laws, durable traversal, internal range iterators, platform windows, sequence laws | resource/store parser and schema, catalog, tree-cell store, checked model, runtime, backup |
+| ADR 0209 | reserved typed ephemeral roots, future checked `~` effect class | parser reservation, checked-effect model |
 | ADR 0303 | Rust style and de-slopification | all Rust lanes, hardening |
 
 ## Prototype Inventory And Outcomes
@@ -262,7 +263,7 @@ path it replaces. Examples:
 | No-op or underspecified `lock` | Reject in production and remove from canonical docs | transaction lane defines v0.1 behavior without `lock` as a primitive |
 | Saved `inout` or durable reference-like mutation | Reject in production | checked effects forbid saved `inout` writeback |
 | Current `merge` surface as broad patch semantics | Reject, then replace with `edit` or checked transform semantics | runtime and evolution lanes define exact write or transform behavior |
-| Unbounded merge or traversal over durable subtrees | Reject unless bounded or explicitly budgeted | scan/cursor facts lane |
+| Hidden merge or traversal over durable subtrees | Reject unless explicit, budgeted, or moved to a platform window surface | durable-traversal facts lane |
 | Runtime execution of syntax bodies | Delete production entry | checked IR runtime lane |
 | Runtime string splitting or fallback resolution | Delete production use | checked model carries resolved IDs and saved places |
 | Executable `Unknown` or diagnostic recovery | Delete from executable IR | checked model separates recovery from executable facts |
@@ -475,12 +476,15 @@ Production behavior:
 - `CheckedProgram` carries typed IDs for modules, functions, resources, stores,
   fields, layers, indexes, enums, enum members, locals, and durable places.
 - Diagnostics and recovery values do not appear in executable facts.
-- Saved reads, writes, transactions, host effects, scan bounds, cursor needs,
-  and index usage are represented as checked effects.
+- Saved reads, writes, transactions, host effects, durable traversal facts,
+  platform window needs, and index usage are represented as checked effects.
 - Runtime-facing facts begin as non-production checked facts beside an explicit
   temporary syntax-body bridge. The bridge is named and marked for deletion by
   the runtime replacement lane; Lane 4 must not create a second production
   execution path.
+- `~` is reserved for future typed ephemeral roots. The v1 checked-effect model
+  leaves room to distinguish future ephemeral reads and writes, but no `~`
+  declaration or runtime behavior is implemented in v1.
 
 Fixture/oracle:
 
@@ -630,7 +634,7 @@ Files:
 Production behavior:
 
 - Engine contract is ordered bytes, snapshots, one writer, transactions,
-  bounded cursors, engine profile, and typed errors.
+  internal range iterators, engine profile, and typed errors.
 - Marrow tree-cell layer owns node, leaf, index, sequence, catalog/meta, and
   blob/chunk cells.
 - Physical keys derive from stable IDs and typed key values, not source names.
@@ -643,7 +647,7 @@ Fixture/oracle:
 
 - Store conformance for snapshots, one-writer behavior, rollback, commit
   metadata, node-cell existence, leaf absence, source-rename-stable physical
-  keys, enum reorder, bounded scans, and sequence state.
+  keys, enum reorder, range-iterator traversal, and sequence state.
 - Index conformance for absent components, non-unique tie-breakers, composite key
   ordering, binary string ordering, enum-reorder-stable meaning, unique duplicate
   rollback, duplicate build failure before publish, index build invisibility
@@ -788,8 +792,8 @@ Production behavior:
   shared compiler/runtime facts.
 - Raw physical keys and backend bytes are debug/admin only and disabled as
   stable production APIs.
-- Data previews are bounded and snapshot-bound.
-- Cursors are catalog-epoch and snapshot bound.
+- Data previews use platform windows and are snapshot-bound.
+- Platform resume/window tokens are catalog-epoch and snapshot bound.
 - Backup is a typed Marrow artifact that validates source, catalog, data,
   engine profile, checksums, layout, codecs, indexes, and sequence state before
   activation.
@@ -817,8 +821,8 @@ Deletion targets:
 
 Review lenses:
 
-- Soundness reviewer attacks stale cursors, stale generations, restore mismatch,
-  raw debug exposure, and unbounded previews.
+- Soundness reviewer attacks stale platform tokens, stale generations, restore
+  mismatch, raw debug exposure, and unwindowed previews.
 - Idiom reviewer checks adapters stay thin and transport-specific.
 
 ## Lane 11: Rust De-Slopification And Hardening
@@ -904,8 +908,8 @@ This plan is complete only when:
 - resources and stores are distinct in the model;
 - durable identity survives source rename/reorder through catalog decisions;
 - runtime executes checked facts/IR only;
-- transactions, snapshots, rollback, backup, restore, and bounded scans are
-  covered by production-pipeline fixtures;
+- transactions, snapshots, rollback, backup, restore, durable traversal, and
+  platform windows are covered by production-pipeline fixtures;
 - evolution preview/apply/verify and destructive approvals are implemented;
 - CLI and LSP consume shared facts;
 - full Rust/docs gates pass with no `unsafe`, no duplicate production

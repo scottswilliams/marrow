@@ -37,6 +37,7 @@ pub fn evaluate_function(
         args,
         &[],
         &[],
+        &[],
         // No debugger; the entry activation is depth 1.
         None,
         1,
@@ -154,6 +155,7 @@ pub(crate) fn run_entry_impl<'p>(
         args,
         &[],
         &[],
+        &[],
         hook,
         1,
     )? {
@@ -215,9 +217,9 @@ pub(crate) type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut
 /// [`evaluate_function`], [`run_entry`], and call evaluation; non-`out`/`inout`
 /// calls pass an empty `writeback`.
 ///
-/// `traversed_layers` carries the caller's active saved-layer traversal guards
-/// across helper calls, so dynamic writes are checked the same way direct writes
-/// in the loop body are checked.
+/// Traversal guards carry the caller's active saved-layer and generated-index
+/// prefixes across helper calls, so dynamic writes are checked the same way
+/// direct writes in the loop body are checked.
 ///
 /// The optional `hook` is the opt-in debugger; it is moved into this activation
 /// and, on every non-fatal outcome, moved back out in the returned tuple so the
@@ -238,6 +240,7 @@ pub(crate) fn invoke<'p>(
     args: &[Value],
     writeback: &[&str],
     traversed_layers: &[Vec<u8>],
+    traversed_index_layers: &[Vec<u8>],
     hook: Option<&'p mut dyn StepHook>,
     depth: usize,
 ) -> Result<Activation<'p>, RuntimeError> {
@@ -254,6 +257,7 @@ pub(crate) fn invoke<'p>(
     }
     let mut env = Env::new(ctx, output, module, hook, depth);
     env.traversed_layers = traversed_layers.to_vec();
+    env.traversed_index_layers = traversed_index_layers.to_vec();
     env.push_scope();
     if let Some(module) = module {
         for constant in &module.constants {
@@ -1041,6 +1045,7 @@ pub(crate) fn eval_call(
     // the hook back so the caller keeps stepping after the call returns.
     let depth = env.depth;
     let traversed_layers = env.traversed_layers.clone();
+    let traversed_index_layers = env.traversed_index_layers.clone();
     let (completion, _, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
@@ -1051,6 +1056,7 @@ pub(crate) fn eval_call(
         &values,
         &[],
         &traversed_layers,
+        &traversed_index_layers,
         env.hook.take(),
         depth + 1,
     )?;
@@ -1112,6 +1118,7 @@ pub(crate) fn eval_call_with_modes<'p>(
     // the hook back so the caller keeps stepping after the call returns.
     let depth = env.depth;
     let traversed_layers = env.traversed_layers.clone();
+    let traversed_index_layers = env.traversed_index_layers.clone();
     let (completion, finals, hook) = invoke(
         ctx,
         Rc::clone(&env.output),
@@ -1122,6 +1129,7 @@ pub(crate) fn eval_call_with_modes<'p>(
         &values,
         &writeback,
         &traversed_layers,
+        &traversed_index_layers,
         env.hook.take(),
         depth + 1,
     )?;

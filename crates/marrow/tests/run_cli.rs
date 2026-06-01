@@ -292,8 +292,8 @@ fn maps_an_unknown_entry_to_a_runtime_code() {
 }
 
 #[test]
-fn run_cli_executes_element_oriented_collection_loops() {
-    let root = temp_project("run-element-loops", |root| {
+fn run_cli_executes_identity_oriented_collection_loops() {
+    let root = temp_project("run-identity-loops", |root| {
         write(
             root,
             "marrow.json",
@@ -310,10 +310,10 @@ fn run_cli_executes_element_oriented_collection_loops() {
              \x20\x20\x20\x20^books(2).title = \"Sourcery\"\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
              \x20\x20\x20\x20const tag: int = append(^books(1).tags, \"fiction\")\n\
-             \x20\x20\x20\x20for book in ^books\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20print(book.title)\n\
-             \x20\x20\x20\x20for tag in ^books(1).tags\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20print(tag)\n",
+             \x20\x20\x20\x20for id in ^books\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print(^books(id).title)\n\
+             \x20\x20\x20\x20for pos in ^books(1).tags\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print(^books(1).tags(pos))\n",
         );
     });
     let output = run_run(&[root.to_str().unwrap()]);

@@ -89,9 +89,9 @@ The sample covers:
 - required fields and sparse fields;
 - keyed child layers such as `notes(noteId)`;
 - sequence append with `append`;
-- child key values that cannot collide with generated index names;
+- child key values that cannot collide with declared index names;
 - explicit history entry creation;
 - transaction-built history entries with required fields;
 - managed assignment and `delete`;
-- generated index traversal through `^books.byShelf(...)`;
+- declared index traversal through `^books.byShelf(...)`;
 - a transaction that updates primary data and generated index entries.

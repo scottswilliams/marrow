@@ -790,6 +790,7 @@ pub(crate) fn check_statement_types(
                 aliases,
                 diagnostics,
             );
+            check_for_collection_support(program, file, binding, iterable, diagnostics);
             let frame = for_frame(program, binding, iterable, scope, aliases, file);
             scope.push(frame);
             check_block_types(
@@ -942,7 +943,7 @@ fn collection_loop_binding_types(
 ) -> Option<(MarrowType, Option<MarrowType>)> {
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
     if let Some(path) = collection_wrapper_arg(iterable, "keys") {
-        if two_name {
+        if two_name || is_saved_unique_index_branch_path(program, path) {
             return None;
         }
         return Some((saved_path_key_type(program, path)?, None));
@@ -967,6 +968,13 @@ fn collection_loop_binding_types(
     }
     if is_saved_index_branch_path(program, iterable) {
         if two_name {
+            let (resource, index, arg_count) = saved_index_branch(program, iterable)?;
+            if non_unique_index_branch_yields_identity(resource, index, arg_count) {
+                return Some((
+                    saved_path_key_type(program, iterable)?,
+                    Some(MarrowType::Resource(resource.name.clone())),
+                ));
+            }
             return None;
         }
         return Some((saved_path_key_type(program, iterable)?, None));
@@ -977,7 +985,33 @@ fn collection_loop_binding_types(
             saved_path_direct_value_type(program, iterable),
         ));
     }
-    Some((saved_path_value_type(program, iterable), None))
+    Some((saved_path_key_type(program, iterable)?, None))
+}
+
+fn check_for_collection_support(
+    program: &CheckedProgram,
+    file: &Path,
+    binding: &marrow_syntax::ForBinding,
+    iterable: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if binding.second.is_none() {
+        return;
+    }
+    let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
+    let Some((resource, index, arg_count)) = saved_index_branch(program, iterable) else {
+        return;
+    };
+    if non_unique_index_branch_yields_identity(resource, index, arg_count) {
+        return;
+    }
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_COLLECTION_UNSUPPORTED,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: "a two-name loop over an index branch must yield resource identities".to_string(),
+        span: iterable.span(),
+    });
 }
 
 fn reversed_call_arg(expr: &marrow_syntax::Expression) -> Option<&marrow_syntax::Expression> {
@@ -1007,8 +1041,10 @@ fn is_saved_path_syntax(program: &CheckedProgram, expr: &marrow_syntax::Expressi
     use marrow_syntax::Expression;
     match expr {
         Expression::SavedRoot { .. } => true,
-        Expression::Field { .. } => saved_layer_chain(expr).is_some(),
-        Expression::Call { callee, .. } => saved_index_branch_type(program, callee).is_some(),
+        Expression::Field { .. } => {
+            is_saved_index_branch_path(program, expr) || saved_layer_chain(expr).is_some()
+        }
+        Expression::Call { .. } => is_saved_index_branch_path(program, expr),
         _ => false,
     }
 }
@@ -1027,7 +1063,10 @@ fn saved_path_key_type(
                 .filter(|root| !root.identity_keys.is_empty())?;
             Some(MarrowType::Identity(resource.name.clone()))
         }
-        Expression::Call { callee, .. } => saved_index_branch_type(program, callee.as_ref()),
+        Expression::Call { .. } => saved_index_branch_type(program, path),
+        Expression::Field { .. } if is_saved_index_branch_path(program, path) => {
+            saved_index_branch_type(program, path)
+        }
         Expression::Field { .. } => Some(layer_key_type(program, path)),
         _ => None,
     }
@@ -1060,8 +1099,86 @@ fn saved_path_direct_value_type(
 
 fn saved_index_branch_type(
     program: &CheckedProgram,
-    callee: &marrow_syntax::Expression,
+    path: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
+    let (resource, index, arg_count) = saved_index_branch(program, path)?;
+    if index.unique {
+        return Some(MarrowType::Identity(resource.name.clone()));
+    }
+    let identity_arity = resource
+        .saved_root
+        .as_ref()
+        .map_or(0, |root| root.identity_keys.len());
+    let identity_start = index.args.len().saturating_sub(identity_arity);
+    if arg_count < identity_start {
+        return index
+            .args
+            .get(arg_count)
+            .map(|name| index_component_type(program, resource, name));
+    }
+    Some(MarrowType::Identity(resource.name.clone()))
+}
+
+fn non_unique_index_branch_yields_identity(
+    resource: &ResourceSchema,
+    index: &IndexSchema,
+    arg_count: usize,
+) -> bool {
+    if index.unique {
+        return false;
+    }
+    let identity_arity = resource
+        .saved_root
+        .as_ref()
+        .map_or(0, |root| root.identity_keys.len());
+    let identity_start = index.args.len().saturating_sub(identity_arity);
+    arg_count >= identity_start
+}
+
+fn index_component_type(
+    program: &CheckedProgram,
+    resource: &ResourceSchema,
+    name: &str,
+) -> MarrowType {
+    if let Some(key) = resource
+        .saved_root
+        .as_ref()
+        .and_then(|root| root.identity_keys.iter().find(|key| key.name == name))
+    {
+        return MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+    }
+    resource
+        .field_type(&[name])
+        .map(|ty| lift_member_type(ty.clone(), resource_module(program, &resource.name)))
+        .unwrap_or(MarrowType::Unknown)
+}
+
+fn saved_index_branch<'p>(
+    program: &'p CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> Option<(&'p ResourceSchema, &'p IndexSchema, usize)> {
+    match path {
+        marrow_syntax::Expression::Call { callee, args, .. } => {
+            if args
+                .iter()
+                .any(|arg| arg.mode.is_some() || arg.name.is_some())
+            {
+                return None;
+            }
+            let (resource, index) = saved_index_schema(program, callee)?;
+            (args.len() <= index.args.len()).then_some((resource, index, args.len()))
+        }
+        marrow_syntax::Expression::Field { .. } => {
+            saved_index_schema(program, path).map(|(resource, index)| (resource, index, 0))
+        }
+        _ => None,
+    }
+}
+
+fn saved_index_schema<'p>(
+    program: &'p CheckedProgram,
+    callee: &marrow_syntax::Expression,
+) -> Option<(&'p ResourceSchema, &'p IndexSchema)> {
     let marrow_syntax::Expression::Field { base, name, .. } = callee else {
         return None;
     };
@@ -1069,15 +1186,19 @@ fn saved_index_branch_type(
         return None;
     };
     let resource = find_resource_schema(program, root)?;
-    resource
-        .indexes
-        .iter()
-        .any(|index| &index.name == name && !index.unique)
-        .then(|| MarrowType::Identity(resource.name.clone()))
+    let index = resource.indexes.iter().find(|index| &index.name == name)?;
+    Some((resource, index))
 }
 
 fn is_saved_index_branch_path(program: &CheckedProgram, path: &marrow_syntax::Expression) -> bool {
-    matches!(path, marrow_syntax::Expression::Call { callee, .. } if saved_index_branch_type(program, callee).is_some())
+    saved_index_branch(program, path).is_some()
+}
+
+fn is_saved_unique_index_branch_path(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> bool {
+    saved_index_branch(program, path).is_some_and(|(_, index, _)| index.unique)
 }
 
 /// The endpoint scalar type of a range iterable when both endpoints are the same
