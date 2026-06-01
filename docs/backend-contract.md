@@ -209,9 +209,11 @@ it carries extra duties. Each maps to a stable `store.*` code (see
   auto-converted or misread. A brand-new file is stamped with the version on
   creation.
 - Lock. redb holds an OS lock on the file, so a second writer for an open
-  store is refused as `store.locked` rather than racing it. A read-only inspecting
-  open releases the lock when it drops, so it does not block a later read-write
-  open.
+  store is refused as `store.locked` rather than racing it. Read-only inspecting
+  opens use redb's read-only handle, may coexist with other read-only opens, and
+  release their shared read access when dropped so they do not block a later
+  read-write open. Write-capability operations through a read-only handle are
+  refused as `store.read_only`.
 - Corruption. A file that is not a Marrow store is rejected rather than
   adopted: an existing redb file with tables but no Marrow metadata is
   `store.corruption`, and a file that is not a valid database at all surfaces as

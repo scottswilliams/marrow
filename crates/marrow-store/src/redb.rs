@@ -21,7 +21,8 @@ use std::ops::Bound;
 use std::path::Path;
 
 use redb::{
-    AccessGuard, Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+    AccessGuard, Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable,
+    TableDefinition, WriteTransaction,
 };
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
@@ -47,12 +48,41 @@ type Undo = (Vec<u8>, Option<Vec<u8>>);
 
 /// A redb-backed saved-tree store implementing the [`Backend`] contract.
 pub struct RedbStore {
-    db: Database,
+    db: DatabaseHandle,
     /// The live write transaction while one is open (`Some` iff `journals` is
     /// non-empty).
     txn: Option<WriteTransaction>,
     /// One undo log per open nesting level (innermost last).
     journals: Vec<Vec<Undo>>,
+}
+
+/// The redb handle is either writable or truly read-only at the storage layer.
+enum DatabaseHandle {
+    ReadWrite(Database),
+    ReadOnly(ReadOnlyDatabase),
+}
+
+impl DatabaseHandle {
+    fn begin_read(&self, op: &'static str) -> Result<ReadTransaction, StoreError> {
+        match self {
+            Self::ReadWrite(db) => db.begin_read().map_err(io(op)),
+            Self::ReadOnly(db) => db.begin_read().map_err(io(op)),
+        }
+    }
+
+    fn begin_write(&self, op: &'static str) -> Result<WriteTransaction, StoreError> {
+        match self {
+            Self::ReadWrite(db) => db.begin_write().map_err(io(op)),
+            Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
+        }
+    }
+
+    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+        match self {
+            Self::ReadWrite(_) => Ok(()),
+            Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
+        }
+    }
 }
 
 /// Map any redb error to a [`StoreError::Io`] naming the operation.
@@ -303,7 +333,7 @@ macro_rules! read_view {
                 $body
             }
             None => {
-                let read = $self.db.begin_read().map_err(io($op))?;
+                let read = $self.db.begin_read($op)?;
                 let $table = read.open_table(TABLE).map_err(io($op))?;
                 $body
             }
@@ -365,7 +395,7 @@ impl RedbStore {
         write.open_table(TABLE).map_err(io("open"))?;
         write.commit().map_err(io("open"))?;
         Ok(Self {
-            db,
+            db: DatabaseHandle::ReadWrite(db),
             txn: None,
             journals: Vec::new(),
         })
@@ -373,11 +403,11 @@ impl RedbStore {
 
     /// Open an existing store for read-only inspection. Unlike [`open`](Self::open)
     /// it never creates the file — a missing path is an error — and it only
-    /// verifies the recorded [`FORMAT_VERSION`] rather than stamping it. redb has
-    /// no read-only database handle, so the returned store is technically writable;
-    /// an inspecting caller must use only the reading [`Backend`] methods.
+    /// verifies the recorded [`FORMAT_VERSION`] rather than stamping it. The
+    /// returned store uses redb's read-only handle, and Marrow's write-capability
+    /// operations fail before starting any write transaction.
     pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
-        let db = Database::open(path).map_err(|error| match error {
+        let db = ReadOnlyDatabase::open(path).map_err(|error| match error {
             redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
                 data_dir: path.to_path_buf(),
             },
@@ -419,7 +449,7 @@ impl RedbStore {
             }
         }
         Ok(Self {
-            db,
+            db: DatabaseHandle::ReadOnly(db),
             txn: None,
             journals: Vec::new(),
         })
@@ -465,8 +495,9 @@ impl Backend for RedbStore {
     }
 
     fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        self.db.require_write_access("write")?;
         if self.txn.is_none() {
-            let write = self.db.begin_write().map_err(io("write"))?;
+            let write = self.db.begin_write("write")?;
             {
                 let mut table = write.open_table(TABLE).map_err(io("write"))?;
                 table.insert(path, value.as_slice()).map_err(io("write"))?;
@@ -488,8 +519,9 @@ impl Backend for RedbStore {
     }
 
     fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+        self.db.require_write_access("delete")?;
         if self.txn.is_none() {
-            let write = self.db.begin_write().map_err(io("delete"))?;
+            let write = self.db.begin_write("delete")?;
             {
                 let mut table = write.open_table(TABLE).map_err(io("delete"))?;
                 for key in subtree_keys(&table, path)? {
@@ -642,8 +674,9 @@ impl Backend for RedbStore {
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {
+        self.db.require_write_access("begin")?;
         if self.txn.is_none() {
-            self.txn = Some(self.db.begin_write().map_err(io("begin"))?);
+            self.txn = Some(self.db.begin_write("begin")?);
         }
         self.journals.push(Vec::new());
         Ok(())

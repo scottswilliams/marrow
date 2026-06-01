@@ -4,7 +4,7 @@
 //! the per-backend conformance tests inside the crate.
 #![cfg(feature = "native")]
 
-use marrow_store::backend::{Backend, ScanPage};
+use marrow_store::backend::{Backend, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
@@ -54,6 +54,68 @@ fn open_read_only_reads_an_existing_store_without_creating_one() {
     // read-write afterward.
     drop(store);
     RedbStore::open(&path).expect("reopen read-write after a read-only open");
+}
+
+#[test]
+fn open_read_only_allows_simultaneous_readers() {
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let path = dir.path().join("store.redb");
+
+    {
+        let mut store = RedbStore::open(&path).expect("create");
+        store.write(b"k", b"v".to_vec()).expect("write");
+    }
+
+    let first = RedbStore::open_read_only(&path).expect("open first read-only");
+    let second = RedbStore::open_read_only(&path).expect("open second read-only");
+
+    assert_eq!(first.read(b"k").expect("read first"), Some(b"v".to_vec()));
+    assert_eq!(second.read(b"k").expect("read second"), Some(b"v".to_vec()));
+}
+
+#[test]
+fn open_read_only_refuses_write_capability_operations() {
+    let dir = tempfile::tempdir().expect("create a temp dir");
+    let path = dir.path().join("store.redb");
+
+    {
+        let mut store = RedbStore::open(&path).expect("create");
+        store
+            .write(b"keep", b"original".to_vec())
+            .expect("seed keep");
+        store
+            .write(b"delete-target", b"still here".to_vec())
+            .expect("seed delete target");
+    }
+
+    let assert_read_only = |result: Result<(), StoreError>, op| match result {
+        Err(error) => assert_eq!(error.code(), "store.read_only", "{op} error"),
+        Ok(()) => panic!("{op} must be refused on a read-only store"),
+    };
+
+    {
+        let mut store = RedbStore::open_read_only(&path).expect("open read-only for write");
+        assert_read_only(store.write(b"keep", b"changed".to_vec()), "write");
+    }
+    {
+        let mut store = RedbStore::open_read_only(&path).expect("open read-only for delete");
+        assert_read_only(store.delete(b"delete-target"), "delete");
+    }
+    {
+        let mut store = RedbStore::open_read_only(&path).expect("open read-only for begin");
+        assert_read_only(store.begin(), "begin");
+    }
+
+    let store = RedbStore::open(&path).expect("reopen read-write");
+    assert_eq!(
+        store.read(b"keep").expect("read keep"),
+        Some(b"original".to_vec())
+    );
+    assert_eq!(
+        store.read(b"delete-target").expect("read delete target"),
+        Some(b"still here".to_vec())
+    );
+    assert_eq!(store.read(b"new").expect("read absent new"), None);
 }
 
 /// The encoded path `^books(id).title`.

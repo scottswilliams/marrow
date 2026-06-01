@@ -58,9 +58,9 @@ Storage errors include the failed operation, a safe path or prefix when one is
 available, and the capability or limit involved. Machine-readable facts belong
 in `data`; clients do not parse `message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.limit`, and `store.corrupt_path`. Backends enforce no key or value size
-limit, so `store.limit` is produced only by archive framing, when a record's
-length exceeds the archive's `u32` chunk-length field.
+`store.limit`, `store.read_only`, and `store.corrupt_path`. Backends enforce no
+key or value size limit, so `store.limit` is produced only by archive framing,
+when a record's length exceeds the archive's `u32` chunk-length field.
 
 Managed-root protection raises `write.*` codes when code attempts maintenance
 work without the maintenance capability: `write.requires_maintenance` for a
@@ -266,8 +266,8 @@ one is reported under its own `write.*` code.
 ### `store.*` — kind `storage`
 
 Backend faults. The in-memory store can only produce `store.corrupt_path`; a
-persistent backend can also produce the I/O, locking, format, corruption, and
-limit variants. A store fault met during a program read or write travels as
+persistent backend can also produce the I/O, locking, format, corruption, limit,
+and read-only variants. A store fault met during a program read or write travels as
 `run.store` or `write.store`; the `serve` server passes the `store.*` code
 through unchanged.
 
@@ -279,6 +279,7 @@ through unchanged.
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
 | `store.corruption` | The persistent store is corrupt and could not be opened or read. |
 | `store.limit` | An archive chunk exceeded the framing limit (a record length above the archive's `u32` chunk-length field). Backends enforce no key/value size limit, so archive framing is the sole producer. |
+| `store.read_only` | A write-capability operation was requested through a read-only store handle. |
 
 ### `protocol.*` — kind `protocol`
 

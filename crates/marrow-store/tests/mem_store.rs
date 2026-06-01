@@ -191,6 +191,7 @@ fn store_errors_expose_stable_codes_and_messages() {
             },
             "store.limit",
         ),
+        (StoreError::ReadOnly { op: "write" }, "store.read_only"),
     ];
     for (error, code) in cases {
         assert_eq!(error.code(), code, "code for {error:?}");
@@ -206,4 +207,9 @@ fn store_errors_expose_stable_codes_and_messages() {
     let message = locked.to_string();
     assert!(message.contains("already open"), "{message}");
     assert!(message.contains("marrow.redb"), "{message}");
+
+    let read_only = StoreError::ReadOnly { op: "write" };
+    let message = read_only.to_string();
+    assert!(message.contains("write"), "{message}");
+    assert!(message.contains("read-only"), "{message}");
 }

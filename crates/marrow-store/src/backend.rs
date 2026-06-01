@@ -55,6 +55,8 @@ pub enum StoreError {
     /// Backends enforce no key/value size limit, so archive framing is the sole
     /// producer of this variant (`store.limit`).
     LimitExceeded { limit: &'static str },
+    /// A write-capability operation was requested through a read-only store handle.
+    ReadOnly { op: &'static str },
 }
 
 impl StoreError {
@@ -67,6 +69,7 @@ impl StoreError {
             Self::FormatVersion { .. } => "store.format_version",
             Self::Corruption { .. } => "store.corruption",
             Self::LimitExceeded { .. } => "store.limit",
+            Self::ReadOnly { .. } => "store.read_only",
         }
     }
 }
@@ -89,6 +92,7 @@ impl std::fmt::Display for StoreError {
             ),
             Self::Corruption { message } => write!(f, "the store is corrupt: {message}"),
             Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
+            Self::ReadOnly { op } => write!(f, "cannot {op} through a read-only store handle"),
         }
     }
 }
