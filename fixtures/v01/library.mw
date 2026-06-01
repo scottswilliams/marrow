@@ -1,0 +1,25 @@
+module v01::library
+
+resource Author at ^authors(id: int)
+    required name: string
+
+resource Book at ^books(id: int)
+    required title: string
+    required author: Author::Id
+    tags(pos: int): string
+
+pub fn seed()
+    ^authors(Author::Id(1)).name = "Ursula K. Le Guin"
+    transaction
+        ^books(Book::Id(10)).title = "A Wizard of Earthsea"
+        ^books(Book::Id(10)).author = Author::Id(1)
+        ^books(Book::Id(10)).tags(1) = "fantasy"
+
+pub fn seededTitle(): string
+    return ^books(Book::Id(10)).title
+
+pub fn seededAuthorName(): string
+    return ^authors(^books(Book::Id(10)).author).name
+
+pub fn printSeededAuthor()
+    print(seededAuthorName())

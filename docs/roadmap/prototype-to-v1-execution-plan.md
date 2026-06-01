@@ -423,29 +423,31 @@ Review lenses:
 Files:
 
 - `crates/marrow-check/tests/v01_fixtures.rs`
-- `crates/marrow-run/tests/v01_fixtures.rs`
-- `crates/marrow-store/tests/v01_fixtures.rs`
 - `crates/marrow/tests/v01_cli.rs`
 - test-support modules colocated with the crate that uses them
 
 Production behavior:
 
 - Establish the smallest shared fixture skeleton that later lanes extend.
-- The skeleton contains source text, expected catalog/data slots, and
-  helper wiring for source-driven tests, but it does not fake capabilities that
-  do not exist yet.
+- The skeleton contains source text and helper wiring for source-driven tests,
+  but it does not fake catalog or logical data-slot capabilities that do not
+  exist yet.
 - Each later lane adds the failing production-pipeline assertion for its own
   capability.
 
 Fixture/oracle:
 
-- A `Book`/`Author` fixture can be loaded by checker, runtime, store, CLI/LSP,
-  evolution, and backup tests as those lanes become real.
+- A `Book`/`Author` fixture can be loaded by checker now and run through the CLI
+  production path now, then runtime, store, LSP, evolution, and backup tests as
+  those lanes gain source-driven harnesses and catalog/logical data-slot facts.
 - The initial lane proves only that the fixture is source-driven, shared, and
   not a second semantic classifier.
-- The fixture names a typed reference field, `author: Id(^authors)`, so later
-  checker/runtime/store/backup lanes inherit one reference oracle instead of
-  creating incompatible relationship examples.
+- The fixture names a typed reference field. Until the resource/store surface
+  lane lands canonical `Id(^authors)` syntax, the shared source fixture uses the
+  current executable spelling, `author: Author::Id`, as a temporary executable
+  identity bridge for that relationship. Lane 5 must migrate the fixture to the
+  canonical store-addressed spelling when it replaces resource-owned identity
+  with store-owned aliases.
 
 Deletion targets:
 
@@ -550,6 +552,8 @@ Fixture/oracle:
 - A `Book`/`Author` typed-reference fixture proving `author: Id(^authors)`
   checks and lowers as a typed value without implying joins, cascade delete, or
   automatic existence checks.
+- Migration of the shared v0.1 fixture from current `Author::Id` spelling to the
+  canonical `Id(^authors)` spelling.
 
 Deletion targets:
 

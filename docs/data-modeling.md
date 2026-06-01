@@ -226,7 +226,6 @@ resource Author at ^authors(id: int)
 resource Book at ^books(id: int)
     required title: string
     required author: Author::Id
-    index byAuthor(author, id)
 
 pub fn link(author: Author::Id, title: string): Book::Id
     var bk: Book
@@ -236,12 +235,16 @@ pub fn link(author: Author::Id, title: string): Book::Id
     ^books(id) = bk
     return id
 
-pub fn printByAuthor(author: Author::Id)
-    for id in ^books.byAuthor(author)
-        print($"{^books(id).title} by {^authors(author).name}")
+pub fn printBook(id: Book::Id)
+    const author = ^books(id).author
+    print($"{^books(id).title} by {^authors(author).name}")
 ```
 
-The current executable bridge may still spell those types as `Author::Id` and
+Do not store raw scalar keys just to represent an ordinary forward reference.
+If a reverse lookup needs an index today, model that lookup explicitly until
+identity-typed index components are part of the checked model.
+
+The current executable bridge may still spell identity types as `Author::Id` and
 `Book::Id` until checked-model identity lands in the runtime. That bridge is a
 syntax/runtime limitation, not the durable data model.
 
@@ -382,7 +385,7 @@ variables, `entries(...)`, or `values(...)` when record values are needed. The
 marker values that back non-unique index entries are a raw-inspection detail,
 not typed data.
 
-By traversal, following a stored reference and reconstructing the identity:
+By traversal, following a stored typed reference:
 
 ```mw
 const author = ^authors(^books(id).author).name
