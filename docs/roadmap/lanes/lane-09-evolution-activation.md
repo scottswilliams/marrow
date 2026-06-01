@@ -11,14 +11,17 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-09-evolution-activation`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-09-evolution-activation`
 
-Status: witness matrix design may start now; production code waits for catalog,
-presence ledger, tree-cell store, and runtime facts.
+Status: read-only witness matrix design may start now; tracked edits wait for
+catalog, presence ledger, tree-cell store, and runtime facts.
 
 ## Parallel Safety
 
-This lane may run design review and fixture planning while earlier lanes build
-the facts it consumes. Do not edit checker presence facts, catalog identity,
-runtime write planning, or store key shape in parallel with their owning lanes.
+This lane may run read-only design review and fixture planning while earlier
+lanes build the facts it consumes. Before its dependencies land, record findings
+outside tracked files or return them to the orchestrator; do not edit
+`docs/data-evolution.md`, `docs/cli.md`, `docs/project-config.md`, tests, or
+source. Do not edit checker presence facts, catalog identity, runtime write
+planning, or store key shape in parallel with their owning lanes.
 
 Own these files during the code pass:
 
@@ -118,5 +121,6 @@ Do not start production code until catalog identity, the presence ledger,
 tree-cell store contracts, and runtime checked facts are integrated. Implement
 one proof-discharge pipeline for check/catalog/evolve/repair surfaces, exact
 witness preview/apply, compatibility windows, and rejection of migration-script
-or transform shims. Leave the worktree dirty for soundness and idiom/spec
+or transform shims. Before those dependencies land, do read-only design only and
+make no tracked edits. Leave the worktree dirty for soundness and idiom/spec
 review.

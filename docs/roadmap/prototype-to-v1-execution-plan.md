@@ -106,8 +106,8 @@ edit the checker/schema identity surface.
 | Catalog/presence | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Design and review only | Code after Lane 5 store facts integrate | Owns accepted catalog metadata and read-proof ledger; no store physical key edits. |
 | Tree-cell store | [Lane 7](lanes/lane-07-tree-cell-store-engine.md) | Read-only planning and engine-substrate checks only | Production key work after Lane 6 | Owns store backend/tree-cell code; no checker/catalog ownership. |
 | Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Inventory and design only | Code after store facts, presence ledger, and tree-cell address API exist | Owns runtime checked execution; no syntax-body compatibility path survives. |
-| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Witness matrix design only | Code after catalog, proof ledger, store, and runtime facts exist | Owns one proof-discharge pipeline with command-specific surfaces. |
-| Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the typed backup manifest first, then adapters and rendering; no tool-local semantic classifiers. |
+| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Read-only witness matrix design only | Code after catalog, proof ledger, store, and runtime facts exist | Owns one proof-discharge pipeline with command-specific surfaces. |
+| Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Read-only stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the typed backup manifest first, then adapters and rendering; no tool-local semantic classifiers. |
 | Hardening | [Lane 11](lanes/lane-11-rust-hardening.md) | Read-only scans anytime | Final fixes after owning lanes land, except truly file-disjoint style fixes | Owns deletion proof, not postponed semantic rewrites. |
 
 Lane 5 may split internally into syntax/schema and checked-facts tasks, but one
@@ -328,6 +328,9 @@ Current hotspot map:
 - `crates/marrow-check/src/facts.rs` and read typing are shared by resource/store
   facts and the ADR 0210 presence ledger. Do not run Lane 5 checked-facts work
   beside Lane 6 presence-ledger code.
+- Lane 8 may add runtime-facing checked-fact APIs only after Lane 6 has
+  integrated the catalog and presence-ledger facts. Treat this as a handoff, not
+  concurrent checker ownership.
 - `crates/marrow-run/src/call.rs`, `exec.rs`, `expr.rs`, `path.rs`,
   `schema_query.rs`, `write.rs`, and `write_dispatch.rs` form one vertical
   runtime replacement lane; do not split them into competing adapters.
@@ -338,7 +341,16 @@ Current hotspot map:
   Run CLI/tooling lanes after the fact, catalog, and store lanes expose stable
   APIs.
 
-## Lane 0: Plan Review And Baseline
+## Non-Authoritative Lane Snapshots
+
+The sections below preserve historical lane context and completion criteria.
+They are not executable prompts, file-ownership contracts, or current TDD
+starts. The active per-orchestrator lane files under [`lanes/`](lanes/) are the
+authority for Lane 5 and later. If a snapshot conflicts with a lane file, the
+lane file wins; if the conflict would affect implementation, update or delete
+the stale snapshot before assigning work.
+
+### Lane 0: Plan Review And Baseline
 
 Files:
 
@@ -357,7 +369,7 @@ Deletion target:
 
 - None; this lane creates the execution control surface.
 
-## Lane 1: V0.1 Surface Decision Slice
+### Lane 1: V0.1 Surface Decision Slice
 
 Files:
 
@@ -401,7 +413,7 @@ Review lenses:
 - Orchestration reviewer checks the choices unblock Lane 2 without widening
   v0.1.
 
-## Lane 2: Prototype Rejection And Docs Alignment
+### Lane 2: Prototype Rejection And Docs Alignment
 
 Files:
 
@@ -448,7 +460,7 @@ Review lenses:
 - Language/spec reviewer verifies the docs now read like one product.
 - Soundness reviewer searches for remaining prototype commitments.
 
-## Lane 3: Shared V0.1 Fixture Skeleton
+### Lane 3: Shared V0.1 Fixture Skeleton
 
 Files:
 
@@ -491,7 +503,7 @@ Review lenses:
 - Soundness reviewer checks that the fixture can expose source/catalog/data
   drift.
 
-## Lane 4: Checked Model Nucleus
+### Lane 4: Checked Model Nucleus
 
 Files:
 
@@ -555,7 +567,7 @@ Review lenses:
   shadowed locals.
 - Idiom reviewer checks typed IDs, no glob-prelude expansion, and small modules.
 
-## Lane 5: Resource/Store Surface, Schema Split, And Store-Owned Indexes
+### Lane 5: Resource/Store Surface, Schema Split, And Store-Owned Indexes
 
 Files:
 
@@ -583,7 +595,8 @@ Production behavior:
   generated store; production resource schemas do not own indexes as resource
   members.
 - Unmarked fields are optional by default, `required` is explicit, and defaults
-  make reads total without forcing physical storage.
+  are schema facts. Presence admission and read-totality proof flow through the
+  Lane 6 ledger, not a Lane 5 classifier.
 - Collections materialize as local trees, sequences, and keyed layers rather
   than a flat in-memory list type.
 - Future placement and partition syntax remains reserved; Lane 5 does not add a
@@ -627,7 +640,7 @@ Review lenses:
 - Soundness reviewer attacks cross-module resources, aliases, and identity
   confusion.
 
-## Lane 6: Catalog Identity Binding And Presence Ledger
+### Lane 6: Catalog Identity Binding And Presence Ledger
 
 Files:
 
@@ -685,7 +698,7 @@ Review lenses:
 - Idiom reviewer checks catalog metadata remains compiler/tooling
   infrastructure, not source syntax.
 
-## Lane 7: Tree-Cell Store And Engine Profile
+### Lane 7: Tree-Cell Store And Engine Profile
 
 Depends on:
 
@@ -753,7 +766,7 @@ Review lenses:
 - Idiom reviewer checks redb stays an engine substrate and no semantic logic
   leaks into backend code.
 
-## Lane 8: Runtime Checked Execution And Write Planner
+### Lane 8: Runtime Checked Execution And Write Planner
 
 Files:
 
@@ -814,7 +827,7 @@ Review lenses:
 - Idiom reviewer checks the runtime consumes facts and keeps planner
   classifications out of source syntax.
 
-## Lane 9: Source-Native Evolution
+### Lane 9: Source-Native Evolution
 
 Files:
 
@@ -868,7 +881,7 @@ Review lenses:
 - Idiom reviewer checks user-facing terms are `rename`, `default`, `prove`,
   `transform`, `retire`, `rebuild`, and `repair`, not internal lens jargon.
 
-## Lane 10: Tooling, Backup, Restore, And Protocols
+### Lane 10: Tooling, Backup, Restore, And Protocols
 
 Files:
 
@@ -877,7 +890,9 @@ Files:
 - `crates/marrow/src/cmd_backup.rs`
 - `crates/marrow/src/lsp.rs`
 - `crates/marrow/src/serve/protocol.rs`
-- `crates/marrow/tests/*`
+- focused backup, data, serve, LSP, and protocol tests under
+  `crates/marrow/tests/`; do not claim `check_project_cli.rs`, `run_cli.rs`, or
+  `*evolve*.rs`
 - `docs/cli.md`
 - `docs/lsp.md`
 - `docs/serve-protocol.md`
@@ -929,7 +944,7 @@ Review lenses:
   mismatch, raw debug exposure, and unbounded previews.
 - Idiom reviewer checks adapters stay thin and transport-specific.
 
-## Lane 11: Rust De-Slopification And Hardening
+### Lane 11: Rust De-Slopification And Hardening
 
 Files:
 

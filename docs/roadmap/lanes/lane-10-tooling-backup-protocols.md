@@ -11,19 +11,21 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-10-tooling-protocols`
 
-Status: stale protocol and docs audit may start now; production code waits for
-the relevant fact, store, runtime, and evolution generation contracts. The first
-code phase in this lane defines the typed backup manifest and production
-backup/restore API.
+Status: read-only stale protocol and docs inventory may start now; tracked edits
+wait for the relevant fact, store, runtime, and evolution generation contracts.
+The first code phase in this lane defines the typed backup manifest and
+production backup/restore API.
 
 ## Parallel Safety
 
-This lane can audit docs and protocol descriptions in parallel. Code changes to
-CLI/LSP/serve/data/backup wait until the facts they render are integrated. The
-typed backup manifest phase waits for source, catalog, store, runtime, and
-generation facts, then becomes the contract that later backup CLI and protocol
-adapters consume. Do not patch missing semantic facts inside tools; send the
-missing fact back to the owning lane.
+This lane can inventory docs and protocol descriptions in parallel, but early
+inventory is read-only: do not edit tracked protocol docs, define replacement
+protocol shapes, or patch missing facts into tools before dependencies land.
+Tracked changes to CLI/LSP/serve/data/backup wait until the facts they render
+are integrated. The typed backup manifest phase waits for source, catalog,
+store, runtime, and generation facts, then becomes the contract that later
+backup CLI and protocol adapters consume. Send missing semantic facts back to
+the owning lane.
 
 Own these files during the code pass:
 
@@ -32,7 +34,11 @@ Own these files during the code pass:
 - `crates/marrow/src/cmd_backup.rs`
 - `crates/marrow/src/lsp.rs`
 - `crates/marrow/src/serve/protocol.rs`
-- `crates/marrow/tests/*`
+- `crates/marrow/tests/*backup*.rs`
+- `crates/marrow/tests/*data*.rs`
+- `crates/marrow/tests/*serve*.rs`
+- `crates/marrow/tests/*lsp*.rs`
+- `crates/marrow/tests/*protocol*.rs`
 - `docs/cli.md`
 - `docs/lsp.md`
 - `docs/serve-protocol.md`
@@ -131,9 +137,11 @@ Continue Marrow v0.1 Lane 10 in `/Users/scottwilliams/Dev/marrow-lane-10-tooling
 Use branch `lane-10-tooling-protocols`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-10-tooling-protocols`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Audit stale raw protocol docs now, but do not patch around missing semantic facts
-in tools. Once shared facts, proof ledger, store contracts, runtime facts, and
-generation facts exist, first define the typed backup manifest and production
-backup/restore API, then make CLI/LSP/data/serve/backup render or consume those
-facts directly and restrict raw surfaces to debug/admin. Leave the worktree
-dirty for soundness and idiom/spec review.
+Do a read-only inventory of stale raw protocol docs now; do not edit tracked
+protocol docs, define replacement typed protocol shapes, or patch around missing
+semantic facts in tools before dependencies land. Once shared facts, proof
+ledger, store contracts, runtime facts, and generation facts exist, first define
+the typed backup manifest and production backup/restore API, then make
+CLI/LSP/data/serve/backup render or consume those facts directly and restrict
+raw surfaces to debug/admin. Leave the worktree dirty for soundness and
+idiom/spec review.
