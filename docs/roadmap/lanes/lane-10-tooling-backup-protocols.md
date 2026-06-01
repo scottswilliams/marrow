@@ -45,6 +45,30 @@ Own these files during the code pass:
 - `docs/data-tools.md`
 - `docs/backend-contract.md` only for backup/restore references
 
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of tooling and protocol surfaces across CLI,
+LSP, data preview, serve, backup, restore, protocol docs, fixtures, and tests.
+It must delete adapter-local semantic classifiers, raw production protocols, and
+unbounded preview assumptions in its area instead of leaving a second tool model
+for a later lane.
+
+Before handing the lane to review:
+
+- split backup manifest validation, restore activation, CLI rendering, LSP
+  rendering, data preview, and serve protocol adapters by invariant;
+- send missing semantic facts back to owning lanes instead of reclassifying paths
+  or diagnostics in tools;
+- delete dead raw protocol, saved-path re-resolution, raw archive, unbounded
+  preview, and LSP semantic-patch helpers introduced or exposed by this lane;
+- delete comments that narrate adapter branches, defend temporary raw surfaces,
+  or compensate for overgrown command functions;
+- preserve only comments for non-obvious protocol, snapshot, manifest, or
+  recovery constraints;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  adapter functions, duplicate semantic classifiers, raw fallback glue, comment
+  sediment, and lane-local cleanup deferred to Lane 11.
+
 ## Production Contract
 
 - CLI, LSP, data tools, serve, backup, restore, and future adapters render
@@ -75,8 +99,9 @@ Delete or isolate:
 - unbounded data preview materialization;
 - LSP patches that infer facts missing from Marrow itself.
 
-Temporary bridge allowed: raw inspection commands only when named
-debug/admin-only and excluded from default production docs.
+Production bridge: none for protocols. Raw inspection commands are allowed only
+when named debug/admin-only, excluded from default production docs, and unable to
+serve as backup/restore, data-preview, LSP, or serve protocol semantics.
 
 ## TDD Start
 
@@ -116,7 +141,9 @@ mismatch, raw debug exposure, unbounded previews, and LSP divergence.
 
 Idiom/spec review checks adapters stay thin, transport-specific code has no
 semantic classifiers, docs mark raw surfaces as debug/admin, and no new
-dependency appears.
+dependency appears. It also rejects oversized adapter dispatchers, duplicate
+semantic classifiers, raw fallback glue, comment sediment, and lane-local
+cleanup deferred to Lane 11.
 
 ## Integration Gate
 
@@ -143,5 +170,8 @@ semantic facts in tools before dependencies land. Once shared facts, proof
 ledger, store contracts, runtime facts, and generation facts exist, first define
 the typed backup manifest and production backup/restore API, then make
 CLI/LSP/data/serve/backup render or consume those facts directly and restrict
-raw surfaces to debug/admin. Leave the worktree dirty for soundness and
-idiom/spec review.
+raw surfaces to debug/admin. Before review, satisfy the Area Cleanup Gate: split
+backup manifest validation, restore activation, CLI rendering, LSP rendering,
+data preview, and serve adapters; delete raw protocol, saved-path re-resolution,
+raw archive, unbounded preview, and LSP semantic-patch helpers. Leave the
+worktree dirty for soundness and idiom/spec review.

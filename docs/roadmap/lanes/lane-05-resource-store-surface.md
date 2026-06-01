@@ -40,6 +40,30 @@ Own these files during the code pass:
 Do not change runtime execution, catalog file persistence, tree-cell physical
 keys, backup/restore protocols, or source-native evolution in this lane.
 
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of the resource/store surface across syntax,
+schema, checker facts, diagnostics, docs, fixtures, and tests. It must delete or
+rewrite resource-owned store, index, and identity paths in its area instead of
+leaving a second semantic model for a later lane. It must not leave
+`crates/marrow-check/src/checks.rs` as a larger catch-all pass.
+
+Before handing the lane to review:
+
+- split any expanded statement, loop, call, saved-path, or resource/store
+  dispatcher into focused helpers or a focused module;
+- keep helper names carrying the explanation rather than adding branch-by-branch
+  comments;
+- delete dead resource-owned identity/index/store helpers and stale fixtures
+  introduced or exposed by this lane;
+- delete comments that narrate what the code does, explain temporary migration
+  state, or compensate for an oversized function;
+- preserve only comments that explain durable invariants or non-obvious
+  soundness constraints;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  functions, duplicate semantic classifiers, compatibility glue, and comment
+  sediment.
+
 ## Production Contract
 
 - Split `resource` and `store` declarations are the internal model.
@@ -71,9 +95,11 @@ Delete or isolate:
 - checker/runtime index lookup through `resource.indexes`.
 - accidental production support for `~` typed ephemeral roots.
 
-Temporary bridge allowed: a runtime-facing merged view may exist only if it is
-named as a Lane 8 deletion target and cannot be chosen by production callers as
-a second semantic model.
+Production bridge: none. There are no production callers that need a
+runtime-facing merged resource/store view in v0.1; delete merged-view helpers
+instead of naming them as a Lane 8 handoff. If another lane finds a real caller,
+that caller is a blocking bug to fix there, not a reason to preserve a second
+semantic model here.
 
 ## TDD Start
 
@@ -117,7 +143,9 @@ index components, and source rename assumptions.
 
 Idiom/spec review checks the grammar matches docs, the implementation is small,
 no new dependencies appear, no duplicate store classifiers are introduced, and
-Rust modules do not grow crate-root glob preludes or compatibility slop.
+Rust modules do not grow crate-root glob preludes, oversized dispatcher
+functions, comment sediment, compatibility slop, or lane-local cleanup deferred
+to Lane 11.
 
 ## Integration Gate
 
@@ -134,8 +162,9 @@ rg -n 'cache\s*~|ensure\s*~|Id\s*\(\s*~|store\s*~|at\s*~' \
     /Users/scottwilliams/Dev/marrow-lane-05-resource-store/docs
 ```
 
-Every match must be a test of rejection, an explicitly named temporary bridge,
-or canonical docs explaining compatibility.
+Every match must be a rejection test, canonical compatibility docs for an
+explicitly store-declared alias, or debug/admin docs. Lane 5 allows no production
+bridge; merged-view/prototype helpers with no production callers must be absent.
 
 ## Starter Prompt
 
@@ -147,5 +176,10 @@ Implement the resource/store split with TDD: split `store` declarations,
 store-owned indexes, canonical `Id(^store)`, concise-form desugaring if kept,
 ADR 0209 `~` source-form reservation/rejection, and migration of v0.1 fixtures
 away from resource-owned identity. Do not touch catalog persistence, runtime
-execution, tree-cell keys, backup, or evolution. Leave the worktree dirty for
-two read-only reviews: soundness and idiom/spec.
+execution, tree-cell keys, backup, or evolution. Before review, satisfy the Area
+Cleanup Gate: remove resource-owned store/index/identity helpers, delete any
+runtime-facing merged resource/store view, split resource/store checker
+dispatchers, and make `ResourceSchema.saved_root`, `ResourceSchema.indexes`,
+`ResourceMember::Index`, `Book::Id`, and `Author::Id` absent outside allowed
+rejection or compatibility docs. Leave the worktree dirty for two read-only
+reviews: soundness and idiom/spec.

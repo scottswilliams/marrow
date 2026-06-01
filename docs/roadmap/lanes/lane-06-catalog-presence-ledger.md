@@ -35,6 +35,31 @@ Own these files during the code pass:
 - `docs/data-evolution.md`
 - `docs/error-codes.md`
 
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of catalog identity and read-presence
+admission across checker facts, catalog metadata, project loading, diagnostics,
+docs, fixtures, and tests. It must delete source-owned stable identity and ad
+hoc read-presence paths in its area instead of leaving a second proof model for a
+later lane.
+
+Before handing the lane to review:
+
+- split catalog file handling, identity binding, epoch/digest validation,
+  read-presence proof recording, and diagnostics into focused helpers or modules
+  with one invariant each;
+- keep proof-source classification in one ledger path, not scattered helper
+  predicates;
+- delete dead `@id`, regenerated-ID, read-totality, and maybe-present helpers
+  introduced or exposed by this lane;
+- delete comments that narrate branch structure, explain temporary migration
+  state, or compensate for oversized functions;
+- preserve only comments that explain durable identity, epoch, digest, or
+  soundness constraints;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  functions, duplicate proof classifiers, compatibility glue, comment sediment,
+  and lane-local cleanup deferred to Lane 11.
+
 ## Production Contract
 
 - Source-only check proposes catalog changes without mutating accepted catalog
@@ -68,8 +93,8 @@ Delete or reject:
 - catalog state hidden outside the source tree or engine metadata;
 - any tool or runtime read proof inferred without a ledger entry.
 
-Temporary bridge allowed: none for stable identity. A pending attached-data proof
-is an obligation, not an executable success path.
+Production bridge: none for stable identity. A pending attached-data proof is an
+obligation, not an executable success path.
 
 ## TDD Start
 
@@ -111,7 +136,9 @@ outside the ledger.
 
 Idiom/spec review checks ADR 0206 and ADR 0210 coverage, compact Rust modules,
 no dependency additions, no source syntax for stable IDs, and docs that describe
-the accepted catalog file as generated project metadata.
+the accepted catalog file as generated project metadata. It also rejects
+oversized checker/catalog dispatchers, duplicate proof classifiers, comment
+sediment, and lane-local cleanup deferred to Lane 11.
 
 ## Integration Gate
 
@@ -136,5 +163,9 @@ on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
 Do not start production code unless Lane 5 store facts are on main. Implement
 the committed accepted catalog file and the ADR 0210 presence proof ledger with
 TDD. Delete/reject source `@id` annotations entirely from canonical source, keep
-valid read-site absence resolution flowing through one checked-program ledger,
-and leave the worktree dirty for soundness and idiom/spec review.
+valid read-site absence resolution flowing through one checked-program ledger.
+Before review, satisfy the Area Cleanup Gate: keep proof-source classification in
+the ledger; split catalog file IO, identity binding, epoch/digest validation,
+proof recording, and diagnostics; delete `@id`, regenerated-ID, read-totality,
+and maybe-present helpers. Leave the worktree dirty for soundness and idiom/spec
+review.

@@ -39,6 +39,30 @@ Own these files during the code pass:
 Do not edit checker facts, catalog file ownership, runtime write planning, or
 tooling protocols in this lane except to consume stable APIs already integrated.
 
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of the storage area across engine adapters,
+tree-cell keys and values, commit metadata, conformance tests, backend docs, and
+fixtures. It must delete source-name physical-key paths, raw archive production
+paths, and in-memory-list production assumptions in its area instead of leaving a
+second storage model for a later lane.
+
+Before handing the lane to review:
+
+- split engine substrate, tree-cell address encoding, commit metadata, index
+  cells, archive/backup inputs, and conformance helpers by invariant;
+- keep redb as ordered bytes and transactions only; semantic key decisions live
+  in Marrow storage modules, not backend adapters;
+- delete dead source-name key, raw archive, schema-in-backend, and flat-list
+  helpers introduced or exposed by this lane;
+- delete comments that narrate encoding branches, repeat type names, or explain
+  compatibility behavior;
+- preserve only comments for non-obvious ordering, durability, corruption, or
+  recovery rationale;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  store functions, duplicate key classifiers, redb semantic leakage, comment
+  sediment, and lane-local cleanup deferred to Lane 11.
+
 ## Production Contract
 
 - The engine contract is ordered bytes, snapshots, one writer, transactions,
@@ -66,8 +90,10 @@ Delete or isolate:
 - in-memory list materialization where tree, sequence, or keyed-layer state is
   the actual contract.
 
-Temporary bridge allowed: a compatibility reader may exist only if it is named
-as an evolution/repair input and cannot write new production data.
+Production bridge: none for store semantics. If old data needs repair input
+later, the owning evolution/restore lane may add a read-only repair adapter
+outside production open/write paths. This lane must not preserve source-name key
+readers or writers as a second storage model.
 
 ## TDD Start
 
@@ -106,6 +132,8 @@ renames, enum reorders, index atomicity, read-only opens, and repair behavior.
 
 Idiom/spec review checks redb stays a substrate, storage modules stay small, no
 new dependency appears, and tree-cell contracts match ADR 0204, 0207, and 0208.
+It also rejects oversized store dispatchers, duplicate key classifiers, redb
+semantic leakage, comment sediment, and lane-local cleanup deferred to Lane 11.
 
 ## Integration Gate
 
@@ -131,5 +159,9 @@ typed engine errors, and read-only opens. Do not write semantic store fixtures,
 stable-ID physical-key tests, typed-reference tests, index-cell tests, archive
 format changes, or tree-cell address code until Lane 6 lands. Once dependencies
 land, implement stable-ID tree-cell storage, commit metadata, sequence/index
-cells, and engine profile behavior. Leave the worktree dirty for soundness and
-idiom/spec review.
+cells, and engine profile behavior. Before review, satisfy the Area Cleanup
+Gate: keep redb limited to ordered bytes and transactions; split engine
+substrate, tree-cell address encoding, commit metadata, index cells,
+archive/backup inputs, and conformance helpers; delete source-name key, raw
+archive, schema-in-backend, and flat-list helpers. Leave the worktree dirty for
+soundness and idiom/spec review.

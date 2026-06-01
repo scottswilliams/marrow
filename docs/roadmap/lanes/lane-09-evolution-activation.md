@@ -34,6 +34,30 @@ Own these files during the code pass:
 - `docs/cli.md`
 - `docs/project-config.md`
 
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of source-native evolution and activation
+across proof discharge, catalog/evolve commands, exact witnesses, compatibility
+windows, repair admission, docs, fixtures, and tests. It must delete
+migration-script framing, source-diff identity inference, and transform shims in
+its area instead of leaving a second evolution model for a later lane.
+
+Before handing the lane to review:
+
+- split preview, exact witness validation, apply, compatibility-window checks,
+  repair admission, and CLI rendering by invariant;
+- keep transform-required rejection in the shared proof-discharge path, not in
+  adapter-local fallbacks;
+- delete dead migration-script, source-diff identity, best-effort rename, and
+  transform-shim helpers introduced or exposed by this lane;
+- delete comments that narrate migration history, summarize obvious apply
+  branches, or explain temporary compatibility glue;
+- preserve only comments for non-obvious witness drift, destructive approval,
+  recovery, or stale-writer constraints;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  evolution functions, duplicate witness/proof classifiers, migration shims,
+  comment sediment, and lane-local cleanup deferred to Lane 11.
+
 ## Production Contract
 
 - `marrow check`, data-attached check, `catalog preview`, `catalog accept`,
@@ -61,8 +85,8 @@ Delete or reject:
 - apply paths that do not consume the exact preview witness;
 - repair paths that bypass catalog/proof-ledger activation.
 
-Temporary bridge allowed: none for destructive apply. Any transform not
-implemented as a checked transform is rejected as transform-required.
+Production bridge: none for destructive apply. Any transform not implemented as
+a checked transform is rejected as transform-required.
 
 ## TDD Start
 
@@ -96,7 +120,9 @@ expiry, and repair bypasses.
 
 Idiom/spec review checks user-facing terms are `rename`, `default`, `prove`,
 `transform`, `retire`, `rebuild`, and `repair`, and that no migration-script
-product story leaks back into canonical docs.
+product story leaks back into canonical docs. It also rejects oversized
+evolution/apply dispatchers, duplicate witness/proof classifiers, migration
+shims, comment sediment, and lane-local cleanup deferred to Lane 11.
 
 ## Integration Gate
 
@@ -122,5 +148,8 @@ tree-cell store contracts, and runtime checked facts are integrated. Implement
 one proof-discharge pipeline for check/catalog/evolve/repair surfaces, exact
 witness preview/apply, compatibility windows, and rejection of migration-script
 or transform shims. Before those dependencies land, do read-only design only and
-make no tracked edits. Leave the worktree dirty for soundness and idiom/spec
-review.
+make no tracked edits. Before review, satisfy the Area Cleanup Gate: split
+preview, exact witness validation, apply, compatibility-window checks, repair
+admission, and CLI rendering; delete migration-script, source-diff identity,
+best-effort rename, and transform-shim helpers. Leave the worktree dirty for
+soundness and idiom/spec review.

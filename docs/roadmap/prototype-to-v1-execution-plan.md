@@ -45,8 +45,10 @@ Each substantial lane uses this loop:
 3. Run two read-only senior reviews in parallel:
    - soundness: try to break identity, storage, write, transaction, and data
      compatibility semantics with real repros;
-   - idiom/spec: verify minimality, local style, ADR traceability, docs, and no
-     slop.
+   - idiom/spec: verify minimality, local style, ADR traceability, docs, code
+     shape, and no slop. This review must inspect touched Rust for oversized
+     dispatcher functions, catch-all semantic passes, duplicate helpers,
+     comment-heavy code, and compatibility glue.
 4. Fix every finding in the lane, then re-review until both reviews pass.
 5. Integrate through the live main worktree only:
    - fetch and record the current `origin/main`;
@@ -58,6 +60,21 @@ Each substantial lane uses this loop:
    - run the full integration gate with the integration target directory;
    - request a final read-only review of the assembled main diff;
    - fetch again and push only if `origin/main` has not moved.
+
+Stop the line when the same Rust smell appears in more than one lane. The
+orchestrator updates the affected lane plans and starter prompts before assigning
+new implementation work, then sends dirty lanes back to their build agents for
+code-shape repair. A lane with oversized dispatcher functions, comment-heavy
+control flow, duplicate semantic classifiers, or new compatibility glue has not
+reached review-ready state.
+
+Each lane owns complete cleanup of its area. The build agent must delete
+prototype paths, duplicate classifiers, dead APIs, stale fixtures, low-value
+comments, and weak module shape in the files it owns. Lane 11 is an audit for
+missed residue after the owning lanes land; it is not a parking lot for cleanup
+that the current lane already knows it must do. If a prototype bridge has no
+current production caller, delete it instead of preserving it as a future
+handoff.
 
 Use one cargo target directory per lane, for example:
 
@@ -128,21 +145,22 @@ lane plan:
 - replacement behavior: the v0.1 behavior that becomes authoritative;
 - old production paths touched by the lane;
 - duplicate classifiers or duplicate resolution logic that must disappear;
-- temporary bridge, only when unavoidable, with the exact later lane that
-  deletes it;
+- production bridge, only when a current production caller cannot be moved in the
+  same file-disjoint lane, naming the live caller, isolation boundary, absence
+  test, and exact deletion lane;
 - architecture absence tests or scans that prove the old path is no longer
   production-reachable;
 - docs that must be deleted, folded into canonical references, or marked
   debug/admin only.
 
-Temporary bridges are allowed only when they keep a vertical rewrite shippable
-without lying about the destination. A bridge must be named, isolated, reviewed,
-and assigned to a deletion lane at creation time. A bridge may not create a new
-semantic owner. The only acceptable runtime-replacement bridge is a
-syntax-to-IR adapter that keeps the old runtime callable for one named lane, and
+Production bridges are exceptional. They are allowed only when a live production
+caller cannot be moved in the same file-disjoint lane, and the bridge is named,
+isolated, reviewed, covered by an absence test, and assigned to a deletion lane
+at creation time. A bridge with no current production caller is deleted, not
+handed off. A bridge may not create a new semantic owner or let production
+callers choose between old and new semantics. The only acceptable
+runtime-replacement bridge is a syntax-to-IR adapter for one named live caller;
 it may not preserve runtime name resolution as a second checker.
-It is a failed bridge if production callers can choose between old and new
-semantics or if the bridge survives past its named deletion lane.
 
 Semantic ownership after v0.1:
 
@@ -162,13 +180,26 @@ Rust cleanup is also lane-scoped:
   duplicate helpers in that module instead of wrapping them;
 - large semantic files must be split when that is the smallest way to give one
   clear invariant per module;
+- broad functions introduced or expanded by the lane must be split before review
+  handoff. A passing test suite does not justify leaving a giant statement/type
+  dispatcher, a pile of local helper comments, or a second semantic classifier in
+  place;
 - new crate-root glob preludes are forbidden, and existing glob-prelude patterns
   are deletion targets when a lane rewrites that crate boundary;
 - tests must move toward source-driven production fixtures instead of adding
   more catch-all assertions to giant files;
 - `#[allow(dead_code)]`, unused public APIs, fallback lookup helpers, and
-  "just for compatibility" functions are deleted unless a reviewer records the
-  current non-production owner and deletion lane.
+  "just for compatibility" functions are deleted. Explicit debug/admin product
+  surfaces may remain only when excluded from production semantics and reviewed
+  as such;
+- comments added by a lane must explain durable rationale. Comments that narrate
+  control flow, summarize obvious branches, or explain temporary migration state
+  are deleted or replaced with better names and smaller helpers.
+
+Every lane plan must name the touched Rust hotspots and expected split/deletion
+shape in its Area Cleanup Gate. Starter prompts refer to that gate and include
+only lane-specific blocking deltas. Reviewers treat "this can wait for Lane 11"
+as a failing answer when the lane introduced or expanded the smell.
 
 The hardening lane is not a place to postpone known deletion. It is the final
 audit that proves previous lanes deleted what they said they would delete.
@@ -181,7 +212,8 @@ finds one, it must choose one of these outcomes before integration:
 
 - replace it with the v0.1 foundation and delete the old path;
 - limit it to an explicit debug/admin boundary that is part of the v0.1
-  product, or to a named temporary bridge with a deletion lane;
+  product, or to a production bridge with a live caller, isolation boundary,
+  absence test, and deletion lane;
 - stop and run a design review for the replacement shape.
 
 The following foundations are mandatory before dependent breadth work:
@@ -393,7 +425,8 @@ Production behavior:
     in read totality and data-attached compatibility without forcing storage;
   - there is no broad "production mode" that keeps prototype semantics alive.
     Prototype constructs are rejected unconditionally as their replacements
-    land, except for explicit debug/admin commands and named temporary bridges.
+    land, except for explicit debug/admin commands and production bridges with
+    live callers, isolation boundaries, absence tests, and deletion lanes.
 
 Fixture/oracle:
 
@@ -552,14 +585,14 @@ Fixture/oracle:
   `Unknown` cannot enter executable facts.
 - An architecture test proving checked executable facts do not store source
   `Block`, `Statement`, or `Expression` values. Any compatibility test must
-  name the temporary bridge, prove it is not a second production execution path,
-  and point to the Lane 8 deletion.
+  prove the old runtime path is absent from production execution or limited to an
+  explicit debug/admin surface.
 
 Deletion targets:
 
 - Executable recovery facts and new runtime fallback paths.
-- The temporary syntax-body bridge is a named Lane 8 deletion target, not a
-  Lane 4 acceptance requirement.
+- Production syntax-body execution is a Lane 8 deletion target, not a Lane 4
+  acceptance requirement.
 
 Review lenses:
 
@@ -965,7 +998,7 @@ Fixture/oracle:
 - `rg` scans for prototype terms, `unsafe`, raw stable path claims, executable
   `Unknown`, and old migration language.
 - Diff review proving each old path is deleted, replaced, or limited to an
-  explicit debug/admin surface, with no temporary bridges remaining.
+  explicit debug/admin surface, with no production bridges remaining.
 
 Deletion targets:
 

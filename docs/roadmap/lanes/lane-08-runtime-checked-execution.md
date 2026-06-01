@@ -34,6 +34,30 @@ Own these files during the code pass:
 Do not change parser syntax, catalog acceptance workflow, tree-cell physical
 keys, or evolution apply semantics in this lane.
 
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of the runtime execution area across
+checked runtime entry, durable-place reads, write planning, transactions, host
+effects, runtime tests, and runtime-facing docs. It must delete syntax-body
+execution and runtime-local path/schema classifiers in its area instead of
+leaving a second runtime model for a later lane.
+
+Before handing the lane to review:
+
+- split checked execution, durable-place reads, write planning, transactions,
+  index maintenance, and host-effect handling by invariant;
+- delete production syntax execution paths instead of wrapping them in mode
+  flags or compatibility helpers;
+- delete dead `lock`, `merge`, saved `inout`, string/path classifier, and raw
+  syntax execution helpers introduced or exposed by this lane;
+- delete comments that narrate statement branches, migration state, or why a
+  large dispatcher is safe;
+- preserve only comments that explain durable write, rollback, or host-effect
+  soundness constraints;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  runtime functions, duplicate path classifiers, syntax-execution glue, comment
+  sediment, and lane-local cleanup deferred to Lane 11.
+
 ## Production Contract
 
 - Runtime entry accepts checked executable facts or IR, not syntax bodies.
@@ -65,8 +89,8 @@ Delete or isolate:
 - runtime schema/path classifiers that duplicate checker facts;
 - hidden merge or lock semantics.
 
-Temporary bridge allowed: none for production execution. Debug interpreters must
-be named debug/admin surfaces and excluded from `run` and normal CLI paths.
+Production bridge: none for execution. Debug interpreters must be named
+debug/admin surfaces and excluded from `run` and normal CLI paths.
 
 ## TDD Start
 
@@ -106,7 +130,9 @@ index updates, optional fields, host effects, stale proof facts, and any path
 that executes syntax.
 
 Idiom/spec review checks runtime consumes facts, write planners stay focused,
-compatibility code is deleted, and Rust modules have clear invariants.
+compatibility code is deleted, and Rust modules have clear invariants. It also
+rejects oversized runtime dispatchers, duplicate path classifiers, syntax
+execution glue, comment sediment, and lane-local cleanup deferred to Lane 11.
 
 ## Integration Gate
 
@@ -131,4 +157,8 @@ ledger, and Lane 7 tree-cell address API are on main. Replace AST-body execution
 with checked facts or checked IR, implement explicit write plans and transaction
 behavior, delete runtime string/path classifiers, and prove ADR 0209 `~` roots
 have no production runtime behavior beyond a named future checked-effect slot.
-Leave the worktree dirty for soundness and idiom/spec review.
+Before review, satisfy the Area Cleanup Gate: split checked execution,
+durable-place reads, write planning, transactions, index maintenance, and
+host-effect handling; delete syntax-body execution, runtime path/schema
+classifiers, `lock`, `merge`, and saved `inout`. Leave the worktree dirty for
+soundness and idiom/spec review.

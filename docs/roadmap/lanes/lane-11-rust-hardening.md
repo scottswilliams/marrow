@@ -31,6 +31,24 @@ Owned during final hardening:
 Do not create new ADRs, new broad roadmaps, compatibility shims, or generic
 cleanup commits with unrelated changes.
 
+## Area Cleanup Gate
+
+This lane is the final audit, not the place where active lanes dump avoidable
+mess. If a scan finds oversized functions, duplicate classifiers, compatibility
+glue, stale fixtures, or comment sediment introduced by an active semantic lane,
+send the finding back to that lane before it integrates.
+
+When this lane does edit Rust or docs:
+
+- split or delete the touched production path in the same focused change that
+  exposes the smell;
+- keep each hardening batch file-disjoint from active semantic lanes;
+- delete comments that narrate old edits, temporary migration state, or obvious
+  control flow;
+- preserve only comments that explain durable invariants or soundness rationale;
+- ensure the idiom/spec reviewer explicitly checks that the lane did not become
+  a generic cleanup grab bag.
+
 ## Production Contract
 
 - No duplicate production semantic paths remain.
@@ -57,7 +75,7 @@ Delete or prove absent:
 - comments that narrate edits, preserve temporary migration notes, or restate
   obvious Rust.
 
-Temporary bridge allowed: none after this lane.
+Production bridge: none after this lane.
 
 ## TDD And Scan Start
 
@@ -91,7 +109,9 @@ fooled by renamed helpers.
 
 Idiom/spec review checks every deletion has an owner, Rust comments explain
 durable rationale only, docs are not sediment, and no compatibility story is
-invented without a prior lane.
+invented without a prior lane. It also rejects generic cleanup batches,
+oversized replacement functions, duplicate classifiers, comment sediment, and
+cleanup that should have been returned to an owning active lane.
 
 ## Integration Gate
 
@@ -108,5 +128,8 @@ on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
 Start with read-only scans for prototype paths, duplicate classifiers, `unsafe`,
 glob preludes, stale docs, and low-value comments. Do not race active semantic
 lanes; send semantic findings back to their owner. After owning lanes land,
-delete remaining vestiges with focused tests or absence checks and leave the
-worktree dirty for soundness and idiom/spec review.
+delete remaining vestiges with focused tests or absence checks. Before review,
+satisfy the Area Cleanup Gate: keep hardening batches file-disjoint, return
+active-lane smells to their owner, split or delete the touched production path in
+the same focused change, and avoid generic cleanup grabs. Leave the worktree
+dirty for soundness and idiom/spec review.
