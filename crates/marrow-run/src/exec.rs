@@ -881,33 +881,11 @@ pub(crate) fn eval_collection(
     iterable: &Expression,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    eval_collection_limited(iterable, None, env)
-}
-
-fn eval_collection_limited(
-    iterable: &Expression,
-    limit: Option<usize>,
-    env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    if let Some(taken) = take_argument(iterable) {
-        if !is_saved_path(taken.layer) {
-            return Err(unsupported("iterating this value", iterable.span()));
-        }
-        let limit = eval_take_limit(&taken, env)?;
-        return eval_collection_limited(taken.layer, Some(limit), env);
-    }
     // `for x in reversed(L)` walks the same layer in reverse key order. `keys(L)`
     // stays address-only; direct value-bearing layers materialize their elements.
     // `reversed(values(L))` / `reversed(entries(L))` and in-memory sequences fall
     // through to `eval_expr`, which shapes those rows.
     if let Some(inner) = reversed_argument(iterable) {
-        if let Some(taken) = take_argument(inner)
-            && is_saved_path(taken.layer)
-        {
-            let mut values = eval_collection(inner, env)?;
-            values.reverse();
-            return Ok(values);
-        }
         if let Some(layer) = keys_argument(inner) {
             if !is_saved_path(layer) {
                 return enumerate_local_collection_dir(
@@ -917,27 +895,18 @@ fn eval_collection_limited(
                 );
             }
             check_key_collection(layer, iterable.span(), env)?;
-            if take_argument(layer).is_some() {
-                let mut values = enumerate_layer(layer, env)?;
-                values.reverse();
-                return Ok(values);
-            }
-            return enumerate_layer_dir_limited(layer, Direction::Descending, limit, env);
+            return enumerate_layer_dir(layer, Direction::Descending, env);
         }
         if is_saved_path(inner) {
             if let Some(values) =
                 unique_index_lookup_values(inner, iterable.span(), Direction::Descending, env)?
             {
-                let mut values = values;
-                if let Some(limit) = limit {
-                    values.truncate(limit);
-                }
                 return Ok(values);
             }
             if is_iterable_index_branch(inner, env) {
-                return enumerate_layer_dir_limited(inner, Direction::Descending, limit, env);
+                return enumerate_layer_dir(inner, Direction::Descending, env);
             }
-            return materialize_layer_dir_limited(inner, Direction::Descending, limit, env)
+            return materialize_layer_dir(inner, Direction::Descending, env)
                 .map(|rows| rows.into_iter().map(|(_, value)| value).collect());
         }
     }
@@ -950,33 +919,25 @@ fn eval_collection_limited(
             );
         }
         check_key_collection(path, iterable.span(), env)?;
-        return enumerate_layer_dir_limited(path, Direction::Ascending, limit, env);
+        return enumerate_layer(path, env);
     }
     if is_saved_path(iterable) {
         if let Some(values) =
             unique_index_lookup_values(iterable, iterable.span(), Direction::Ascending, env)?
         {
-            let mut values = values;
-            if let Some(limit) = limit {
-                values.truncate(limit);
-            }
             return Ok(values);
         }
         if is_iterable_index_branch(iterable, env) {
-            return enumerate_layer_dir_limited(iterable, Direction::Ascending, limit, env);
+            return enumerate_layer(iterable, env);
         }
-        return materialize_layer_dir_limited(iterable, Direction::Ascending, limit, env)
+        return materialize_layer(iterable, env)
             .map(|rows| rows.into_iter().map(|(_, value)| value).collect());
     }
-    let mut values = match eval_expr(iterable, env)? {
+    match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
         Value::LocalTree(entries) => Ok(entries.into_iter().map(|entry| entry.value).collect()),
         _ => Err(unsupported("iterating this value", iterable.span())),
-    }?;
-    if let Some(limit) = limit {
-        values.truncate(limit);
     }
-    Ok(values)
 }
 
 fn eval_collection_entries(
@@ -987,11 +948,6 @@ fn eval_collection_entries(
         && is_saved_path(inner)
         && keys_argument(inner).is_none()
     {
-        if take_argument(inner).is_some() {
-            let mut rows = materialize_layer(inner, env)?;
-            rows.reverse();
-            return materialize_entry_pairs(rows);
-        }
         return materialize_entry_pairs(materialize_layer_dir(inner, Direction::Descending, env)?);
     }
     if let Some(inner) = values_or_entries(iterable)

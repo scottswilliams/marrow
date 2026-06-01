@@ -4439,33 +4439,9 @@ fn reshelve_while_iterating_direct()
     for id in ^books.byShelf(\"fiction\")
         ^books(id).shelf = \"history\"
 
-fn reshelve_while_iterating_taken()
-    for id in ^books.byShelf(\"fiction\").take(1)
-        ^books(id).shelf = \"history\"
-
 fn titles_on(shelf: string)
     for id in ^books.byShelf(shelf)
         print(^books(id).title)
-
-fn ids_on_taken(shelf: string, n: int)
-    for id in ^books.byShelf(shelf).take(n)
-        print($\"{id}\")
-
-fn reversed_ids_on_taken(shelf: string, n: int)
-    for id in reversed(^books.byShelf(shelf).take(n))
-        print($\"{id}\")
-
-fn reversed_keys_on_taken(shelf: string, n: int)
-    for id in reversed(keys(^books.byShelf(shelf).take(n)))
-        print($\"{id}\")
-
-fn reversed_entries_on_taken(n: int)
-    for id, book in reversed(^books.take(n))
-        print($\"{id}: {book.title}\")
-
-fn ids_on_chained_take(shelf: string)
-    for id in ^books.byShelf(shelf).take(3).take(1)
-        print($\"{id}\")
 ";
 
 #[test]
@@ -4530,170 +4506,6 @@ fn bare_index_iteration_yields_first_level_keys() {
 }
 
 #[test]
-fn take_limits_direct_index_branch_iteration() {
-    let program = checked_program(BOOK_SHELF);
-    let store = RefCell::new(MemStore::new());
-    let add = |id: i64, shelf: &str| {
-        run_entry(
-            &program,
-            &store,
-            "test::add",
-            &[
-                Value::Int(id),
-                Value::Str("t".into()),
-                Value::Str(shelf.into()),
-            ],
-        )
-        .expect("add");
-    };
-    add(1, "fiction");
-    add(2, "fiction");
-    add(3, "fiction");
-    add(4, "history");
-
-    let outcome = run_entry(
-        &program,
-        &store,
-        "test::ids_on_taken",
-        &[Value::Str("fiction".into()), Value::Int(2)],
-    )
-    .expect("run");
-    assert_eq!(outcome.output, "1\n2\n");
-
-    let outcome = run_entry(
-        &program,
-        &store,
-        "test::ids_on_taken",
-        &[Value::Str("fiction".into()), Value::Int(0)],
-    )
-    .expect("run");
-    assert_eq!(outcome.output, "");
-}
-
-#[test]
-fn take_rejects_a_negative_bound() {
-    let program = checked_program(BOOK_SHELF);
-    let store = RefCell::new(MemStore::new());
-    let error = run_entry(
-        &program,
-        &store,
-        "test::ids_on_taken",
-        &[Value::Str("fiction".into()), Value::Int(-1)],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, RUN_TYPE, "{error:?}");
-}
-
-#[test]
-fn take_on_a_local_sequence_is_not_a_collection_method() {
-    let program = checked_program(
-        "fn f()\n    for word in std::text::split(\"a,b\", \",\").take(1)\n        print(word)\n",
-    );
-    let store = RefCell::new(MemStore::new());
-
-    assert!(run_entry(&program, &store, "test::f", &[]).is_err());
-}
-
-#[test]
-fn reversed_take_and_reversed_keys_take_agree_on_the_taken_prefix() {
-    let program = checked_program(BOOK_SHELF);
-    let store = RefCell::new(MemStore::new());
-    let add = |id: i64| {
-        run_entry(
-            &program,
-            &store,
-            "test::add",
-            &[
-                Value::Int(id),
-                Value::Str("t".into()),
-                Value::Str("fiction".into()),
-            ],
-        )
-        .expect("add");
-    };
-    add(1);
-    add(2);
-    add(3);
-
-    let direct = run_entry(
-        &program,
-        &store,
-        "test::reversed_ids_on_taken",
-        &[Value::Str("fiction".into()), Value::Int(2)],
-    )
-    .expect("direct")
-    .output;
-    let keys = run_entry(
-        &program,
-        &store,
-        "test::reversed_keys_on_taken",
-        &[Value::Str("fiction".into()), Value::Int(2)],
-    )
-    .expect("keys")
-    .output;
-
-    assert_eq!(direct, "2\n1\n");
-    assert_eq!(keys, direct);
-}
-
-#[test]
-fn two_name_reversed_take_uses_the_taken_prefix() {
-    let program = checked_program(BOOK_SHELF);
-    let store = RefCell::new(MemStore::new());
-    for (id, title) in [(1, "one"), (2, "two"), (3, "three")] {
-        run_entry(
-            &program,
-            &store,
-            "test::add",
-            &[
-                Value::Int(id),
-                Value::Str(title.into()),
-                Value::Str("fiction".into()),
-            ],
-        )
-        .expect("add");
-    }
-
-    let outcome = run_entry(
-        &program,
-        &store,
-        "test::reversed_entries_on_taken",
-        &[Value::Int(2)],
-    )
-    .expect("run");
-
-    assert_eq!(outcome.output, "2: two\n1: one\n");
-}
-
-#[test]
-fn chained_take_is_not_a_saved_layer_bound() {
-    let program = checked_program(BOOK_SHELF);
-    let store = RefCell::new(MemStore::new());
-    for id in 1..=3 {
-        run_entry(
-            &program,
-            &store,
-            "test::add",
-            &[
-                Value::Int(id),
-                Value::Str("t".into()),
-                Value::Str("fiction".into()),
-            ],
-        )
-        .expect("add");
-    }
-
-    let error = run_entry(
-        &program,
-        &store,
-        "test::ids_on_chained_take",
-        &[Value::Str("fiction".into())],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
-}
-
-#[test]
 fn updating_an_indexed_field_while_iterating_that_index_faults() {
     let program = checked_program(BOOK_SHELF);
     let store = RefCell::new(MemStore::new());
@@ -4744,32 +4556,6 @@ fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
         &program,
         &store,
         "test::reshelve_while_iterating_direct",
-        &[],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
-}
-
-#[test]
-fn updating_an_indexed_field_while_iterating_a_taken_index_faults() {
-    let program = checked_program(BOOK_SHELF);
-    let store = RefCell::new(MemStore::new());
-    run_entry(
-        &program,
-        &store,
-        "test::add",
-        &[
-            Value::Int(1),
-            Value::Str("Mort".into()),
-            Value::Str("fiction".into()),
-        ],
-    )
-    .expect("add");
-
-    let error = run_entry(
-        &program,
-        &store,
-        "test::reshelve_while_iterating_taken",
         &[],
     )
     .unwrap_err();
