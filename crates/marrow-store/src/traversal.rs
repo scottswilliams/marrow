@@ -7,14 +7,16 @@
 //! to their distinct immediate children, collecting distinct roots, reading the
 //! highest integer key off a band) is identical regardless of the source.
 //!
-//! These free functions hold that shared half once. A backend adapts its native
-//! range into an [`Entries`] iterator — pairs in Marrow order, each fallible so a
-//! persistent store can report an I/O fault mid-walk — and calls them. A new
-//! backend gets the whole traversal for free by doing the same.
+//! Backends reuse this logic in two shapes. When a native range can yield borrowed
+//! pairs through an ordinary iterator, the free functions consume an [`Entries`]
+//! stream. When the storage cursor owns each row guard, the backend drives one row
+//! at a time through small state objects such as [`ChildCollapse`],
+//! [`DescendantProbe`], and [`ScanAccumulator`].
 //!
-//! The walk borrows each key and value only for the step that handles it (it
-//! copies out only what it keeps), so a backend whose range hands back borrowed
-//! bytes can yield them without owning a copy per row.
+//! Both forms keep the semantic decisions here: subtree bounds, immediate-child
+//! decoding and collapse, descendant detection, scan truncation, root collapse,
+//! and integer-key decoding. The walk borrows each key and value only for the step
+//! that handles it and copies out only what it keeps.
 
 use crate::backend::{Presence, ScanPage, StoreError};
 use crate::path::{
@@ -41,6 +43,17 @@ pub(crate) enum NeighborStep {
     Done,
     Skip,
     Child(ChildSegment),
+}
+
+pub(crate) enum DescendantStep {
+    Done,
+    Skip,
+    Found,
+}
+
+pub(crate) enum ScanStep {
+    Done,
+    Continue,
 }
 
 pub(crate) struct ChildCollapse<'a> {
@@ -102,6 +115,58 @@ impl<'a> NeighborSeek<'a> {
             ChildSegment::Name(_) => Ok(NeighborStep::Skip),
             key @ ChildSegment::Key(_) => Ok(NeighborStep::Child(key)),
         }
+    }
+}
+
+pub(crate) struct DescendantProbe<'a> {
+    path: &'a [u8],
+}
+
+impl<'a> DescendantProbe<'a> {
+    pub(crate) fn new(path: &'a [u8]) -> Self {
+        Self { path }
+    }
+
+    pub(crate) fn step(&self, key: &[u8]) -> DescendantStep {
+        if !key.starts_with(self.path) {
+            return DescendantStep::Done;
+        }
+        if key.len() > self.path.len() {
+            return DescendantStep::Found;
+        }
+        DescendantStep::Skip
+    }
+}
+
+pub(crate) struct ScanAccumulator<'a> {
+    path: &'a [u8],
+    limit: usize,
+    page: ScanPage,
+}
+
+impl<'a> ScanAccumulator<'a> {
+    pub(crate) fn new(path: &'a [u8], limit: usize) -> Self {
+        Self {
+            path,
+            limit,
+            page: ScanPage::default(),
+        }
+    }
+
+    pub(crate) fn step(&mut self, key: &[u8], value: &[u8]) -> ScanStep {
+        if !key.starts_with(self.path) {
+            return ScanStep::Done;
+        }
+        if self.page.entries.len() == self.limit {
+            self.page.truncated = true;
+            return ScanStep::Done;
+        }
+        self.page.entries.push((key.to_vec(), value.to_vec()));
+        ScanStep::Continue
+    }
+
+    pub(crate) fn into_page(self) -> ScanPage {
+        self.page
     }
 }
 
@@ -202,16 +267,25 @@ pub(crate) fn has_descendants<'a>(
     entries: impl Entries<'a>,
     path: &[u8],
 ) -> Result<bool, StoreError> {
+    let probe = DescendantProbe::new(path);
     for entry in entries {
         let (key, _) = entry?;
-        if !key.starts_with(path) {
-            break; // past the subtree
-        }
-        if key.len() > path.len() {
-            return Ok(true);
+        match probe.step(key) {
+            DescendantStep::Done => break,
+            DescendantStep::Skip => {}
+            DescendantStep::Found => return Ok(true),
         }
     }
     Ok(false)
+}
+
+pub(crate) fn presence_from_parts(has_value: bool, has_descendants: bool) -> Presence {
+    match (has_value, has_descendants) {
+        (false, false) => Presence::Absent,
+        (true, false) => Presence::ValueOnly,
+        (false, true) => Presence::ChildrenOnly,
+        (true, true) => Presence::ValueAndChildren,
+    }
 }
 
 /// Combine whether `path` holds a value with whether it has descendants into the
@@ -222,12 +296,10 @@ pub(crate) fn presence<'a>(
     entries: impl Entries<'a>,
     path: &[u8],
 ) -> Result<Presence, StoreError> {
-    Ok(match (has_value, has_descendants(entries, path)?) {
-        (false, false) => Presence::Absent,
-        (true, false) => Presence::ValueOnly,
-        (false, true) => Presence::ChildrenOnly,
-        (true, true) => Presence::ValueAndChildren,
-    })
+    Ok(presence_from_parts(
+        has_value,
+        has_descendants(entries, path)?,
+    ))
 }
 
 /// Up to `limit` (encoded path, value) pairs from a range that begins at `path`,
@@ -240,19 +312,15 @@ pub(crate) fn scan<'a>(
     path: &[u8],
     limit: usize,
 ) -> Result<ScanPage, StoreError> {
-    let mut page = ScanPage::default();
+    let mut scan = ScanAccumulator::new(path, limit);
     for entry in entries {
         let (key, value) = entry?;
-        if !key.starts_with(path) {
-            break; // past the subtree
+        match scan.step(key, value) {
+            ScanStep::Done => break,
+            ScanStep::Continue => {}
         }
-        if page.entries.len() == limit {
-            page.truncated = true;
-            break;
-        }
-        page.entries.push((key.to_vec(), value.to_vec()));
     }
-    Ok(page)
+    Ok(scan.into_page())
 }
 
 /// The distinct saved root names, in Marrow order, from a range over the whole

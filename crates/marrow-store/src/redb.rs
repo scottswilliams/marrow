@@ -21,13 +21,13 @@ use std::ops::Bound;
 use std::path::Path;
 
 use redb::{
-    AccessGuard, Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable,
-    TableDefinition, WriteTransaction,
+    Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition,
+    WriteTransaction,
 };
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
 use crate::path::{ChildSegment, int_index_key_band, int_record_key_band, root_name, subtree_band};
-use crate::traversal::{self, Entries};
+use crate::traversal;
 
 /// The single table holding every encoded (path, value) pair.
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
@@ -90,79 +90,6 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
         op,
         message: error.to_string(),
     }
-}
-
-/// One row's borrowed access guards, holding the encoded key and value alive so a
-/// borrow into them stays valid while the shared traversal handles the row.
-type Row<'t> = (
-    AccessGuard<'t, &'static [u8]>,
-    AccessGuard<'t, &'static [u8]>,
-);
-
-/// Collect the rows of the subtree at `prefix`, in Marrow order, as access guards.
-/// The guards (not the bytes) are materialized so a later borrow into them
-/// outlives a single iteration step; redb hands back a fresh guard per row, which
-/// a plain `Iterator` cannot lend across steps. Mapping these into [`entries`]
-/// gives the shared [`traversal`] functions their source.
-///
-/// Only the subtree is collected (the range stops at the first key past `prefix`),
-/// and `stop_at` caps it earlier still — given the rows gathered so far, it returns
-/// whether the traversal can no longer change its answer — so an early-exiting walk
-/// (presence or a bounded scan) does not materialize the whole subtree just to
-/// look at the rows it needs.
-fn collect_rows<'t, T>(
-    table: &'t T,
-    prefix: &[u8],
-    stop_at: impl Fn(&[Row<'t>]) -> bool,
-    op: &'static str,
-) -> Result<Vec<Row<'t>>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut rows = Vec::new();
-    for entry in table.range::<&[u8]>(prefix..).map_err(io(op))? {
-        let (key, value) = entry.map_err(io(op))?;
-        if !key.value().starts_with(prefix) {
-            break; // past the subtree
-        }
-        if stop_at(&rows) {
-            break; // the traversal has already seen all it needs
-        }
-        rows.push((key, value));
-    }
-    Ok(rows)
-}
-
-fn collect_rows_after<'t, T>(
-    table: &'t T,
-    prefix: &[u8],
-    cursor: &[u8],
-    stop_at: impl Fn(&[Row<'t>]) -> bool,
-    op: &'static str,
-) -> Result<Vec<Row<'t>>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut rows = Vec::new();
-    let range = (Bound::Excluded(cursor), Bound::Unbounded);
-    for entry in table.range::<&[u8]>(range).map_err(io(op))? {
-        let (key, value) = entry.map_err(io(op))?;
-        if !key.value().starts_with(prefix) {
-            break;
-        }
-        if stop_at(&rows) {
-            break;
-        }
-        rows.push((key, value));
-    }
-    Ok(rows)
-}
-
-/// Borrow each collected row as the shared `(key, value)` item shape. The borrows
-/// live as long as `rows`, so the traversal can read them across its whole walk.
-fn entries<'a>(rows: &'a [Row<'_>]) -> impl Entries<'a> {
-    rows.iter()
-        .map(|(key, value)| Ok((key.value(), value.value())))
 }
 
 fn streamed_neighbor_child<T>(
@@ -346,6 +273,65 @@ where
         }
     }
     Ok(count)
+}
+
+fn streamed_presence<T>(table: &T, path: &[u8]) -> Result<Presence, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let has_value = table.get(path).map_err(io("presence"))?.is_some();
+    let probe = traversal::DescendantProbe::new(path);
+    let mut has_descendants = false;
+    for entry in table.range::<&[u8]>(path..).map_err(io("presence"))? {
+        let (key, _) = entry.map_err(io("presence"))?;
+        match probe.step(key.value()) {
+            traversal::DescendantStep::Done => break,
+            traversal::DescendantStep::Skip => {}
+            traversal::DescendantStep::Found => {
+                has_descendants = true;
+                break;
+            }
+        }
+    }
+    Ok(traversal::presence_from_parts(has_value, has_descendants))
+}
+
+fn streamed_scan<T>(table: &T, path: &[u8], limit: usize) -> Result<ScanPage, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut scan = traversal::ScanAccumulator::new(path, limit);
+    for entry in table.range::<&[u8]>(path..).map_err(io("scan"))? {
+        let (key, value) = entry.map_err(io("scan"))?;
+        match scan.step(key.value(), value.value()) {
+            traversal::ScanStep::Done => break,
+            traversal::ScanStep::Continue => {}
+        }
+    }
+    Ok(scan.into_page())
+}
+
+fn streamed_scan_after<T>(
+    table: &T,
+    path: &[u8],
+    cursor: &[u8],
+    limit: usize,
+) -> Result<ScanPage, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut scan = traversal::ScanAccumulator::new(path, limit);
+    let range = table
+        .range::<&[u8]>((Bound::Excluded(cursor), Bound::Unbounded))
+        .map_err(io("scan_after"))?;
+    for entry in range {
+        let (key, value) = entry.map_err(io("scan_after"))?;
+        match scan.step(key.value(), value.value()) {
+            traversal::ScanStep::Done => break,
+            traversal::ScanStep::Continue => {}
+        }
+    }
+    Ok(scan.into_page())
 }
 
 /// Run a read `$body` over the current view's table: the open transaction's
@@ -591,15 +577,7 @@ impl Backend for RedbStore {
     }
 
     fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        read_view!(self, "presence", |table| {
-            let has_value = table.get(path).map_err(io("presence"))?.is_some();
-            // The subtree's rows sort with `path`'s own entry (if any) first, so the
-            // first descendant — the only one presence needs — is among the first
-            // two rows. Stopping there avoids walking a large subtree to learn it
-            // merely has children.
-            let rows = collect_rows(&table, path, |rows| rows.len() >= 2, "presence")?;
-            traversal::presence(has_value, entries(&rows), path)
-        })
+        read_view!(self, "presence", |table| streamed_presence(&table, path))
     }
 
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
@@ -653,25 +631,12 @@ impl Backend for RedbStore {
     }
 
     fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan", |table| {
-            // One row past the limit is enough for the scan to report truncation.
-            let cap = limit.saturating_add(1);
-            let rows = collect_rows(&table, path, move |rows| rows.len() >= cap, "scan")?;
-            traversal::scan(entries(&rows), path, limit)
-        })
+        read_view!(self, "scan", |table| streamed_scan(&table, path, limit))
     }
 
     fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
         read_view!(self, "scan_after", |table| {
-            let cap = limit.saturating_add(1);
-            let rows = collect_rows_after(
-                &table,
-                path,
-                cursor,
-                move |rows| rows.len() >= cap,
-                "scan_after",
-            )?;
-            traversal::scan(entries(&rows), path, limit)
+            streamed_scan_after(&table, path, cursor, limit)
         })
     }
 
