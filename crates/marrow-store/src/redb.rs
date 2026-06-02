@@ -835,6 +835,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn open_rejects_unsupported_format_version_with_typed_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("future-format.redb");
+        let unsupported = FORMAT_VERSION + 1;
+
+        {
+            let db = Database::create(&path).expect("create redb file");
+            let write = db.begin_write().expect("begin");
+            {
+                let mut meta = write.open_table(META).expect("open meta table");
+                meta.insert("format_version", unsupported)
+                    .expect("write future format version");
+            }
+            {
+                let _table = write.open_table(TABLE).expect("open data table");
+            }
+            write.commit().expect("commit future-format store");
+        }
+
+        for result in [RedbStore::open(&path), RedbStore::open_read_only(&path)] {
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("future format version must be rejected"),
+            };
+            assert_eq!(error.code(), "store.format_version");
+            match error {
+                StoreError::FormatVersion { found, supported } => {
+                    assert_eq!(found, unsupported);
+                    assert_eq!(supported, FORMAT_VERSION);
+                }
+                other => panic!("expected format version error, got {other:?}"),
+            }
+        }
+    }
+
     /// A brand-new file is created and stamped, and reopening the stamped store
     /// succeeds — the new-vs-existing distinction does not break the normal path.
     #[test]
