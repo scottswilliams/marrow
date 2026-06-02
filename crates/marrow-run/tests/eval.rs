@@ -8709,74 +8709,62 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
 }
 
 #[test]
-fn raw_quoted_segment_without_maintenance_is_rejected() {
-    // A quoted/raw segment under a managed root is gated: without maintenance it
-    // raises `write.raw_requires_maintenance`, distinct from an unknown-field typo.
+fn quoted_undeclared_saved_field_write_is_unknown_field_without_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn raw_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[Value::Int(1)]).expect("seed");
-    let result = run_entry(&program, &store, "test::raw_write", &[Value::Int(1)]);
+    let result = run_entry(&program, &store, "test::quoted_write", &[Value::Int(1)]);
     assert!(
-        matches!(result, Err(ref error) if error.code == "write.raw_requires_maintenance"),
+        matches!(result, Err(ref error) if error.code == "write.unknown_field"),
         "{result:?}"
     );
 }
 
 #[test]
-fn raw_quoted_segment_under_maintenance_round_trips() {
-    // Under maintenance, a quoted/raw segment lowers to a raw backend write and
-    // read at the literal segment, bypassing the schema's declared fields.
+fn quoted_undeclared_saved_field_write_is_unknown_field_under_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn raw_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\nfn raw_read(id: int): string\n    return ^books(id).\"old-title\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\nfn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n",
     );
     let store = RefCell::new(MemStore::new());
     let host = Host::new().with_maintenance();
     run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
-    run_entry_with_host(
+    let result = run_entry_with_host(
         &program,
         &store,
         &host,
-        "test::raw_write",
+        "test::quoted_write",
         &[Value::Int(1), Value::Str("legacy".into())],
-    )
-    .expect("raw write under maintenance");
-    assert_eq!(
-        run_entry_with_host(&program, &store, &host, "test::raw_read", &[Value::Int(1)])
-            .expect("raw read")
-            .value,
-        Some(Value::Str("legacy".into())),
-        "the raw literal segment round-trips under maintenance"
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.unknown_field"),
+        "{result:?}"
     );
 }
 
 #[test]
-fn a_raw_segment_write_of_a_non_string_is_rejected() {
-    // Raw segments are an untyped text boundary: they read back as text, so a raw
-    // write takes a string. A non-string scalar is rejected (run.type) rather than
-    // stored as bytes the raw read could never return — keeping the round-trip
-    // symmetric.
+fn quoted_undeclared_saved_field_write_does_not_get_raw_type_rules() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn raw_write(id: int, n: int)\n    ^books(id).\"count\" = n\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn quoted_write(id: int, n: int)\n    ^books(id).\"count\" = n\n",
     );
     let store = RefCell::new(MemStore::new());
     let host = Host::new().with_maintenance();
-    let error = run_entry_with_host(
+    let result = run_entry_with_host(
         &program,
         &store,
         &host,
-        "test::raw_write",
+        "test::quoted_write",
         &[Value::Int(1), Value::Int(5)],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, RUN_TYPE, "{error:?}");
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == "write.unknown_field"),
+        "{result:?}"
+    );
 }
 
 #[test]
 fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
-    // Maintenance grants RAW (quoted) access only; an unquoted undeclared field is
-    // still a typo, so it stays `write.unknown_field` even with maintenance on.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn typo(id: int)\n    ^books(id).nope = \"x\"\n",
     );
@@ -8790,32 +8778,21 @@ fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
 }
 
 #[test]
-fn raw_quoted_segment_naming_a_declared_field_is_rejected_under_maintenance() {
-    // A raw quoted segment writes the literal segment with no index maintenance.
-    // Naming a DECLARED field that way would overwrite the stored value while
-    // leaving that field's index entry stale, a silent maintenance-only desync.
-    // The runtime rejects it (`write.raw_declared_field`) and forces the managed
-    // write path for anything the schema models — even under maintenance. `shelf`
-    // is declared and feeds the `byShelf` index, so the stale-index risk is real.
+fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn raw_clobber(id: int)\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn quoted_update(id: int)\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
     );
     let store = RefCell::new(MemStore::new());
     let host = Host::new().with_maintenance();
     run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
-    let result = run_entry_with_host(
+    run_entry_with_host(
         &program,
         &store,
         &host,
-        "test::raw_clobber",
+        "test::quoted_update",
         &[Value::Int(1)],
-    );
-    assert!(
-        matches!(result, Err(ref error) if error.code == "write.raw_declared_field"),
-        "{result:?}"
-    );
-    // The store is untouched: the field keeps its managed value and the index entry
-    // it feeds still resolves, so no desync was introduced.
+    )
+    .expect("quoted declared field write uses the managed path");
     assert_eq!(
         run_entry_with_host(
             &program,
@@ -8826,42 +8803,47 @@ fn raw_quoted_segment_naming_a_declared_field_is_rejected_under_maintenance() {
         )
         .expect("count")
         .value,
+        Some(Value::Int(0)),
+        "the managed write moved the record off the old shelf index entry"
+    );
+    assert_eq!(
+        run_entry_with_host(
+            &program,
+            &store,
+            &host,
+            "test::shelf_at",
+            &[Value::Str("history".into())]
+        )
+        .expect("count")
+        .value,
         Some(Value::Int(1)),
-        "the rejected raw write left the field and its index entry intact"
+        "the managed write added the new shelf index entry"
     );
 }
 
 #[test]
-fn raw_quoted_segment_on_an_unmodeled_name_still_works_under_maintenance() {
-    // The declared-field rejection must not over-reach: a raw segment whose name is
-    // genuinely NOT a declared field is exactly what raw access exists for, so it
-    // still round-trips under maintenance.
+fn quoted_undeclared_saved_field_read_is_managed_field_error_under_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn raw_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\nfn raw_read(id: int): string\n    return ^books(id).\"old-title\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n",
     );
     let store = RefCell::new(MemStore::new());
     let host = Host::new().with_maintenance();
-    run_entry_with_host(
+    run_entry_with_host(&program, &store, &host, "test::seed", &[Value::Int(1)]).expect("seed");
+    let result = run_entry_with_host(
         &program,
         &store,
         &host,
-        "test::raw_write",
-        &[Value::Int(1), Value::Str("legacy".into())],
-    )
-    .expect("raw write to an unmodeled segment");
-    assert_eq!(
-        run_entry_with_host(&program, &store, &host, "test::raw_read", &[Value::Int(1)])
-            .expect("raw read")
-            .value,
-        Some(Value::Str("legacy".into())),
-        "a genuinely unmodeled raw segment is unaffected by the declared-field guard"
+        "test::quoted_read",
+        &[Value::Int(1)],
+    );
+    assert!(
+        matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
+        "{result:?}"
     );
 }
 
 #[test]
 fn managed_write_to_a_declared_field_is_unaffected() {
-    // The guard sits only on the raw quoted path; an ordinary managed write to the
-    // same declared field keeps working and its index stays coherent.
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn move_shelf(id: int, s: string)\n    ^books(id).shelf = s\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
     );
@@ -8905,18 +8887,18 @@ fn managed_write_to_a_declared_field_is_unaffected() {
 }
 
 #[test]
-fn a_non_maintenance_program_cannot_reach_a_declared_field_raw_write() {
-    // The capability gate is checked before the declared-field guard, so without
-    // maintenance a raw segment is still `write.raw_requires_maintenance` whether or
-    // not it names a declared field — the gate stays intact.
+fn quoted_declared_saved_field_write_uses_managed_path_without_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn raw_clobber(id: int)\n    ^books(id).\"shelf\" = \"history\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn quoted_update(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf(id: int): string\n    return ^books(id).shelf\n",
     );
     let store = RefCell::new(MemStore::new());
-    let result = run_entry(&program, &store, "test::raw_clobber", &[Value::Int(1)]);
-    assert!(
-        matches!(result, Err(ref error) if error.code == "write.raw_requires_maintenance"),
-        "{result:?}"
+    run_entry(&program, &store, "test::quoted_update", &[Value::Int(1)])
+        .expect("quoted declared field write uses the managed path");
+    assert_eq!(
+        run_entry(&program, &store, "test::shelf", &[Value::Int(1)])
+            .expect("read")
+            .value,
+        Some(Value::Str("history".into()))
     );
 }
 

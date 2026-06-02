@@ -145,10 +145,9 @@ Output written with `print`/`write` goes to stdout. `std::log` output goes to
 stderr. The run reads the real system clock, environment, and filesystem.
 
 `--maintenance` grants the run the maintenance capability for data evolution and
-repair tooling. It permits whole managed-root deletes, required-field deletes,
-and raw quoted-segment access that the default run rejects. An operator must type
-it; the default run and `run.defaultEntry` can never inject it. Use it
-deliberately.
+repair tooling. It permits whole managed-root deletes and required-field deletes
+that the default run rejects. An operator must type it; the default run and
+`run.defaultEntry` can never inject it. Use it deliberately.
 
 `--trace` reports each statement as it runs — file, line, call depth, and the
 visible locals — and each managed write or delete, in execution order. Under text

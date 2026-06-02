@@ -285,17 +285,18 @@ and a name, not a literal.
 
 Dots are data fields. `::` is for code namespaces.
 
-Quoted field segments are allowed for existing data with non-identifier names:
+Quoted field segments preserve field spellings that are not identifiers:
 
 ```mw
 ^books(id)."old-title"
 ```
 
-Managed resource declarations use identifier field names. Quoted segments are
-for raw data, import, export, data evolution, and repair paths.
+The runtime treats a quoted saved field as an ordinary managed field name. It
+does not bypass the resource schema, write planning, or generated index
+maintenance; an unmodeled quoted saved field is still an unknown field.
 
-Reserved words are not identifiers, so a data name spelled like a keyword must
-be quoted too (`^events(id)."at"`). A bare keyword after `.` is a parse error.
+A bare keyword after `.` is a parse error; quoted spelling is still subject to
+the same managed-name checks described above.
 
 ## Named Arguments And Resource Literals
 
@@ -347,8 +348,7 @@ unknown Error ErrorCode
 
 A reserved word cannot be used as a name. Bindings, parameters, resources,
 fields, functions, and module segments must not be spelled as a reserved word;
-doing so is a parse error. Existing raw data named like a keyword is reached
-through a quoted segment, as above.
+doing so is a parse error.
 
 `merge` and `lock` are reserved even though they are not v0.1 statements.
 

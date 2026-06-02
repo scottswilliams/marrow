@@ -269,9 +269,9 @@ Identity keys, declared fields, keyed layers, and shorthand index names share
 the source namespace. A concise resource declaration cannot use the same name
 for a field and an index, or for an identity key and a field.
 
-Managed resource members use declared identifiers. Quoted path segments are for
-existing raw data, import, export, data evolution, and repair; they do not create
-undeclared fields in a managed resource.
+Managed resource members use declared identifiers. Quoted field spelling is an
+ordinary managed field access; it does not create undeclared fields or bypass
+write planning in a managed resource.
 
 Ordinary code may read declared index trees. Ordinary code does not write them;
 repair and derived rebuild are explicit data-evolution tooling work.
@@ -333,8 +333,7 @@ If `shelf` participates in an index, Marrow handles the full update:
 That managed write is internally coherent or it reports a typed capability or
 storage error before success is visible. Ordinary app code does not call a
 special `set(...)` function for indexed fields. Untyped writes that bypass a
-managed store root are rejected unless code runs in an explicit maintenance
-mode.
+managed store root are rejected; maintenance code still uses managed writes.
 
 Group several field writes under one root with an `edit` block. Like a field
 write it preserves omitted fields and children; unlike a whole-record `=` it does
@@ -602,15 +601,13 @@ own writer coordination outside the source language.
 ## Managed Saved Trees
 
 When a store owns a saved root, writes under that root go through the
-store schema. Raw untyped writes to managed roots are rejected unless code
-explicitly opts into maintenance mode.
+store schema. Raw untyped writes to managed roots are rejected.
 Maintenance mode is selected by tools for data evolution, repair, restore, and
 root-wide work; ordinary application code does not enter it by accident.
 
 This protects managed indexes, history layers, and typed fields from
-accidental corruption while still allowing deliberate maintenance functions.
-Untyped writes to a managed root are rejected when the runtime can enforce the
-boundary. Otherwise the project treats the writer as an explicit maintenance or
+accidental corruption while still allowing deliberate maintenance functions
+through managed writes. Otherwise the project treats the writer as an explicit
 data-integrity risk.
 
 ## Passing Resource Places

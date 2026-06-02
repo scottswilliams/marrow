@@ -217,9 +217,9 @@ Field writes update existing resources. `delete` removes a value or subtree and
 updates generated indexes. Source-level `merge` is not part of v0.1; use
 explicit checked writes or a future checked transform.
 
-Managed roots reject raw writes unless a tool enters explicit maintenance
-mode. This protects indexes, history layers, and required fields from
-accidental corruption.
+Managed writes are planned before they commit, and generated index updates are
+part of the same plan. This protects indexes, history layers, and required
+fields from accidental corruption.
 
 ## Runtime Consistency
 
@@ -370,9 +370,9 @@ explicit maintenance mode when it needs maintenance capabilities. There is no
 separate migration DSL and no hidden migration ledger in the database kernel.
 
 Maintenance mode is selected by tools, not ordinary application code. A
-maintenance run names the roots it may change. It can opt into raw writes
-under managed roots, rebuild indexes, delete whole roots, or repair bytes that
-fail schema validation.
+maintenance run names the roots it may change. It can rebuild indexes, delete
+whole roots, or repair data that fails schema validation through explicit
+managed writes.
 
 ## Tools And Server
 

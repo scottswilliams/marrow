@@ -4,7 +4,6 @@ use marrow_check::CheckedProgram;
 use marrow_schema::{IndexSchema, Node, NodeKind, StoreSchema};
 use marrow_store::backend::Backend;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_store::value::{ScalarType, decode_value};
 use marrow_syntax::{Argument, Expression, SourceSpan};
 
 use crate::collection::{Direction, ReadPosition, absent_read};
@@ -20,11 +19,8 @@ use crate::schema_query::{
     resource_layer_leaf_chain, root_identity_arity, root_identity_keys,
 };
 use crate::stdlib::{is_index_branch, is_iterable_index_branch};
-use crate::value::{
-    Value, decode_leaf, identity_value, saved_key_to_value, saved_value_to_value, value_to_key,
-};
+use crate::value::{Value, decode_leaf, identity_value, saved_key_to_value, value_to_key};
 use crate::write::decode_identity;
-use crate::write_dispatch::raw_segment_path;
 
 /// The encoded path prefix of the saved layer a `for` iterable traverses, or
 /// `None` for a range or a local value (which traverse no saved layer). A saved
@@ -432,16 +428,10 @@ pub(crate) fn eval_saved_field(
 pub(crate) fn read_saved_field(
     base: &Expression,
     name: &str,
-    quoted: bool,
+    _quoted: bool,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    // A quoted/raw segment under a managed root (`^books(id)."old-title"`) is raw
-    // access: gated to maintenance, reading the literal segment rather than a
-    // declared field. An unquoted field falls through to the declared-field path.
-    if quoted {
-        return eval_raw_field_read(base, name, span, env);
-    }
     // A plain `^root(id…).field` base is a top-level field; a base reached through
     // one or more group layers (`^root(id…).layer(key…)….field` or the unkeyed
     // group hop `^root(id…).name.field`) is a field inside that group. Lowering the
@@ -789,42 +779,6 @@ fn materialize_resource_members(
         }
     }
     Ok(fields)
-}
-
-/// Read a quoted/raw segment `^root(key…)."segment"` under maintenance: the bytes
-/// at the literal path are returned as a string (raw segments hold untyped data
-/// the schema does not model, so they decode as their stored text). Off
-/// maintenance, [`raw_segment_path`] rejects it; an absent segment is a catchable
-/// absent-element read.
-pub(crate) fn eval_raw_field_read(
-    base: &Expression,
-    segment: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let (path, ..) = raw_segment_path(base, segment, span, env)?;
-    let bytes = {
-        let store = env.store.borrow();
-        store
-            .read(&encode_path(&path))
-            .map_err(|error| error.located(span))?
-    };
-    let Some(bytes) = bytes else {
-        return Err(absent_read(
-            ReadPosition::Value,
-            format!("`\"{segment}\"` is absent"),
-            span,
-        ));
-    };
-    decode_value(&bytes, ScalarType::Str)
-        .map(saved_value_to_value)
-        .ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("raw segment `\"{segment}\"` did not decode as text"),
-            span,
-        })
 }
 
 /// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated

@@ -149,7 +149,6 @@ production semantics. Evidence: `crates/marrow-run/src/schema_query.rs:206`,
 `crates/marrow-run/src/collection.rs:65`,
 `crates/marrow-run/src/stdlib.rs:183`,
 `crates/marrow-run/src/schema_query.rs:365`,
-`crates/marrow-run/src/write_dispatch.rs:205`,
 `crates/marrow-store/src/lib.rs:13`, `crates/marrow-store/src/path.rs:20`,
 `crates/marrow-store/src/path.rs:47`, `crates/marrow-store/src/backend.rs:114`,
 and `crates/marrow-store/src/conformance.rs:1` rederive or expose durable
@@ -166,16 +165,13 @@ and `crates/marrow-run/src/write.rs:1477`. Writes must be driven by checked
 durable-place and store-address facts, with source-spelling helpers limited to
 debug rendering if they survive.
 
-**Lane 8 - Checked Runtime.** Remove runtime compatibility fallbacks, raw
-maintenance backdoors, and branches for rejected prototype constructs. Evidence:
+**Lane 8 - Checked Runtime.** Remove runtime compatibility fallbacks and
+branches for rejected prototype constructs. Evidence:
 `crates/marrow-run/src/call.rs:988`, `crates/marrow-run/src/call.rs:1012`,
 `crates/marrow-run/src/stdlib.rs:618`,
-`crates/marrow-run/src/write_dispatch.rs:114`,
-`crates/marrow-run/src/write_dispatch.rs:140`, `crates/marrow-run/src/read.rs:768`,
 `crates/marrow-run/src/exec.rs:132`, `crates/marrow-run/src/exec.rs:322`, and
 `crates/marrow-run/src/call.rs:432`. Dispatch only checked std descriptors;
-move any raw repair path to a typed admin/data-tool API or delete it, and let
-checked IR exclude `merge`, `lock`, and saved `inout`.
+let checked IR exclude `merge`, `lock`, and saved `inout`.
 
 **Lane 10 - Tooling And Protocols.** Replace raw backup, data, explain/CLI,
 LSP, and serve protocol/tool surfaces. Evidence:

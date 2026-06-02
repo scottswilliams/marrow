@@ -114,12 +114,12 @@ pub struct Host {
     /// does not sandbox paths; the host either grants filesystem access or not.
     pub(crate) filesystem: bool,
     /// Whether this run may perform maintenance-only managed operations:
-    /// dropping a whole managed root, deleting a required field on its own, and
-    /// raw (quoted-segment) writes/reads under a managed root. Default `false`;
-    /// a tool opts in explicitly with [`Host::with_maintenance`]. Maintenance is
-    /// not a language feature — it is a host capability tools select for
-    /// migration, repair, and restore. An ordinary `marrow run` of the default
-    /// entry never sets it, so the protected operations stay unreachable there.
+    /// dropping a whole managed root and deleting a required field on its own.
+    /// Default `false`; a tool opts in explicitly with [`Host::with_maintenance`].
+    /// Maintenance is not a language feature — it is a host capability tools
+    /// select for migration, repair, and restore. An ordinary `marrow run` of the
+    /// default entry never sets it, so the protected operations stay unreachable
+    /// there.
     pub(crate) maintenance: bool,
 }
 
@@ -175,10 +175,9 @@ impl Host {
     }
 
     /// A host that may perform maintenance-only managed operations: dropping a
-    /// whole managed root, deleting a required field on its own, and raw
-    /// (quoted-segment) writes/reads under a managed root. Selected only by
-    /// explicit tooling (migration, repair, restore) — never by an ordinary run,
-    /// so the default path can never reach maintenance behavior.
+    /// whole managed root and deleting a required field on its own. Selected only
+    /// by explicit tooling (migration, repair, restore) — never by an ordinary
+    /// run, so the default path can never reach maintenance behavior.
     pub fn with_maintenance(mut self) -> Self {
         self.maintenance = true;
         self

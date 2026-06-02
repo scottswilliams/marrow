@@ -2,9 +2,9 @@
 
 Marrow schemas evolve through source changes plus explicit data-evolution code.
 Marrow does not currently run an automatic data compiler over saved stores: when
-a change moves data, populates a new required field, repairs raw bytes, or
-rebuilds an index, that work is ordinary `.mw` code or a Marrow tool workflow
-that an operator can inspect.
+a change moves modeled data, populates a new required field, repairs schema
+violations, or rebuilds an index, that work is ordinary `.mw` code or a Marrow
+tool workflow that an operator can inspect.
 
 The saved-data model these changes operate on is defined in
 [`language/resources-and-storage.md`](language/resources-and-storage.md), and
@@ -24,7 +24,7 @@ schema does not fully describe until explicit data-evolution work runs.
 | Rename a field | Source rename, plus explicit data movement if saved data must move. |
 | Add an index | Backfill/rebuild: rewrite indexed records so the generated index tree is populated. |
 | Remove a field | The data under it stays until code or maintenance work removes it. |
-| Delete a whole root, drop a required field, write raw segments | Maintenance work. Run with `--maintenance`. |
+| Delete a whole root or drop a required field | Maintenance work. Run with `--maintenance`. |
 
 ## Sparse And Required Fields
 
@@ -155,36 +155,36 @@ resource path.
 
 ## Maintenance Mode
 
-Ordinary `marrow run` protects managed roots. Three operations are rejected
-outside maintenance because they can corrupt managed indexes, history layers, or
-typed fields:
+Ordinary `marrow run` protects managed roots. Two operations are rejected
+outside maintenance because they can remove large managed subtrees or violate
+required-field contracts:
 
 | Operation | Code without `--maintenance` |
 |---|---|
 | Delete a whole managed root (`delete ^books`) | `write.requires_maintenance` |
 | Delete a `required` field (`delete ^books(id).title`) | `write.required_field` |
-| Write or read a raw quoted segment (`^books(id)."oldTitle" = ...`) | `write.raw_requires_maintenance` |
 
 `marrow run --maintenance` grants the maintenance capability for that run. The
 flag is an explicit escape hatch; the default run and `run.defaultEntry` cannot
 inject it.
 
-Maintenance permits whole-root deletes, required-field deletes, and raw
-quoted-segment access. It does not make unquoted undeclared fields valid, and it
-does not loosen type checks on managed writes.
+Maintenance permits whole-root deletes and required-field deletes. It does not
+make undeclared fields valid, and it does not loosen type checks on managed
+writes.
 
 ## Repair
 
-Repair handles data that no longer matches the schema: undecodable values, raw
-fields left by an earlier shape, corrupt paths, and orphaned paths. It uses the
-same tools:
+Repair handles data that no longer matches the schema. Runtime maintenance code
+can rewrite or delete schema-modeled data through managed writes; raw bytes,
+corrupt paths, and orphaned paths are reported by data tools until typed repair
+surfaces land. It uses the same inspection tools:
 
 - `marrow data integrity ./project` reports `data.decode`, `data.orphan`, and
   `store.corrupt_path` problems. It is read-only.
 - `marrow data dump ./project` and `marrow data get ./project <path>` show the
   raw stored paths and values.
-- A repair function run with `--maintenance` rewrites or deletes the offending
-  data.
+- A repair function run with `--maintenance` rewrites or deletes modeled data
+  through managed paths.
 
 There is no dedicated `marrow repair` command. Repair is a maintenance run of
 your own code, verified before and after with `marrow data integrity`.

@@ -65,12 +65,8 @@ tree-cell metadata length above a `u32` field.
 
 Managed-root protection raises `write.*` codes when code attempts maintenance
 work without the maintenance capability: `write.requires_maintenance` for a
-whole managed-root delete, and `write.raw_requires_maintenance` for a raw
-quoted-segment write or read under a managed root. The latter is distinct from
-`write.unknown_field` so a tool can tell raw syntax from a declared-field typo.
-A raw quoted-segment write whose name is a declared field raises
-`write.raw_declared_field` even under maintenance: the raw path runs no index
-maintenance, so the schema's own fields must go through the managed write.
+whole managed-root delete. Deleting a required field on its own raises
+`write.required_field` outside maintenance.
 
 The `marrow serve` data server reports a `protocol.*` code when a request is bad:
 `protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`, and
@@ -261,8 +257,6 @@ one is reported under its own `write.*` code.
 | `write.next_id_unsupported` | `nextId` was asked for a root whose identity shape has no default integer allocation policy. The runtime backstop for `check.next_id_requires_single_int`. |
 | `write.required_field` | Deleting a `required` field on its own is rejected outside maintenance. |
 | `write.requires_maintenance` | A whole managed-root delete (`delete ^books`) was attempted without the maintenance capability. |
-| `write.raw_requires_maintenance` | A quoted/raw segment under a managed root was used without the maintenance capability. Distinct from `write.unknown_field` so a tool can tell raw syntax from a declared-field typo. |
-| `write.raw_declared_field` | A raw quoted-segment write named a declared field of the resource. Rejected even under maintenance: the raw path runs no index maintenance, so a declared field must go through the managed write. |
 
 ### `store.*` — kind `storage`
 

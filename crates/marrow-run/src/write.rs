@@ -101,19 +101,6 @@ pub const WRITE_REQUIRED_FIELD: &str = "write.required_field";
 /// Deleting one identity is ordinary work; dropping the whole root is
 /// maintenance work that code must opt into. The runtime enforces this.
 pub const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
-/// A quoted/raw path segment under a managed root (`^books(id)."old-title"`) was
-/// used outside maintenance. Quoted segments are for existing raw data, import,
-/// export, migration, and repair; they do not create undeclared fields. Without
-/// maintenance the runtime rejects them — distinct from `write.unknown_field`, so
-/// a tool can tell "you used raw syntax" from "you typo'd a declared field".
-pub const WRITE_RAW_REQUIRES_MAINTENANCE: &str = "write.raw_requires_maintenance";
-/// A raw quoted-segment write named a DECLARED field of the resource. The raw
-/// path stores the literal segment with no index maintenance, so writing a
-/// declared field that way would overwrite its stored value while leaving any
-/// index it feeds stale. Raw access is for data the schema does not model, so the
-/// runtime rejects this even under maintenance and points to the managed write,
-/// which keeps the field and its indexes coherent.
-pub const WRITE_RAW_DECLARED_FIELD: &str = "write.raw_declared_field";
 
 /// A store error met while planning a write becomes a `write.store` failure.
 impl From<StoreError> for WriteError {

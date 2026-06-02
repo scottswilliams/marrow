@@ -42,8 +42,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                 };
                 entry = Some(value.clone());
             }
-            // Grants the maintenance capability (whole-root delete, required-field
-            // delete, raw quoted-segment access). An operator must type it; the
+            // Grants the maintenance capability. An operator must type it; the
             // default run and `run.defaultEntry` can never inject it.
             "--maintenance" => maintenance = true,
             // Report each statement and managed write as the run executes.
@@ -82,8 +81,8 @@ with `print`/`write` goes to stdout.
 
   --maintenance  Run with the maintenance capability, for data evolution and
                  repair tooling. It permits whole managed-root
-                 deletes, required-field deletes, and raw quoted-segment access
-                 that the default run rejects. Use it deliberately.
+                 deletes and required-field deletes that the default run
+                 rejects. Use it deliberately.
   --trace        Report each statement (file:line, call depth, visible locals)
                  and each managed write as the run executes, in execution order.
   --dry-run      Run the entry, report the saved-data writes it would commit,

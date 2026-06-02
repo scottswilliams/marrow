@@ -1,13 +1,12 @@
 //! Write-side evaluation over the managed-write layer.
 
 use marrow_check::CheckedProgram;
-use marrow_schema::{Node, NodeKind, ResourceSchema};
+use marrow_schema::{Node, NodeKind};
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
-use marrow_store::value::encode_value;
 use marrow_syntax::{Argument, Expression, SourceSpan};
 
 use crate::env::Env;
-use crate::error::{Located, RuntimeError, assign_error, raise_fault, type_error, unsupported};
+use crate::error::{Located, RuntimeError, assign_error, raise_fault, unsupported};
 use crate::expr::eval_expr;
 use crate::path::{lower, lower_keys, saved_segments};
 use crate::schema_query::{
@@ -17,11 +16,10 @@ use crate::schema_query::{
 };
 use crate::value::{Value, identity_keys_of, value_to_saved};
 use crate::write::{
-    NestedLayerTarget, ResourceValue, SuppliedIdentity, WRITE_RAW_DECLARED_FIELD,
-    WRITE_RAW_REQUIRES_MAINTENANCE, WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE,
-    materialized_plain_fields, plan_field_delete, plan_field_write, plan_identity_field_write,
-    plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
-    plan_nested_field_write, plan_nested_identity_field_write,
+    NestedLayerTarget, ResourceValue, SuppliedIdentity, WRITE_REQUIRED_FIELD,
+    WRITE_REQUIRES_MAINTENANCE, materialized_plain_fields, plan_field_delete, plan_field_write,
+    plan_identity_field_write, plan_layer_group_write, plan_layer_identity_leaf_write,
+    plan_layer_leaf_write, plan_nested_field_write, plan_nested_identity_field_write,
     plan_nested_layer_identity_leaf_write, plan_nested_layer_leaf_write, plan_resource_delete,
     plan_resource_write, validate_required_fields_after_field_write,
 };
@@ -35,18 +33,11 @@ use crate::write::{
 pub(crate) fn eval_saved_field_write(
     base: &Expression,
     field: &str,
-    quoted: bool,
+    _quoted: bool,
     value: &Expression,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    // A quoted/raw segment under a managed root (`^books(id)."old-title" = v`) is
-    // raw access: gated to maintenance, writing the literal segment rather than a
-    // declared field. An unquoted undeclared field stays `write.unknown_field`.
-    if quoted {
-        let value = eval_expr(value, env)?;
-        return eval_raw_field_write(base, field, value, span, env);
-    }
     // A plain `^root(id…).field` base is a top-level field write; a base reached
     // through one or more group layers (`^root(id…).layer(key…)….field = v` or the
     // unkeyed group hop `^root(id…).name.field = v`) writes inside that group.
@@ -127,85 +118,6 @@ pub(crate) fn write_saved_field(
         env.note_created_required_path(path);
     }
     env.defer_required_entry_check(root, identity, &[]);
-    Ok(())
-}
-
-/// Lower a quoted/raw record path `^root(key…)."segment"` to the encoded literal
-/// path and gate it on maintenance, returning the path along with the root name and
-/// resolved resource so a write can apply its declared-field guard. Quoted segments
-/// are for existing raw data, import, export, migration, and repair; without
-/// maintenance they are rejected with `write.raw_requires_maintenance` — distinct
-/// from `write.unknown_field`, so a tool can tell raw syntax from a declared-field
-/// typo. The base must lower to a top-level record identity under a managed root; a
-/// raw segment names a literal `Field` directly under the record key, bypassing the
-/// resource schema.
-pub(crate) fn raw_segment_path(
-    base: &Expression,
-    segment: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(Vec<PathSegment>, String, ResourceSchema), RuntimeError> {
-    let (root, identity) = lower(base, env)?.into_record(base.span())?;
-    let Some(resource) = find_resource(env.program, &root) else {
-        return Err(unsupported("a raw segment under this saved path", span));
-    };
-    env.require_maintenance(
-        WRITE_RAW_REQUIRES_MAINTENANCE,
-        format!(
-            "`\"{segment}\"` is a raw segment under managed root `^{root}`; \
-             declare the field, or run in maintenance mode for raw access"
-        ),
-        span,
-    )?;
-    let path = saved_segments(&root, &identity, &[], Some(segment));
-    Ok((path, root, resource.clone()))
-}
-
-/// Write a quoted/raw segment `^root(key…)."segment" = value` under maintenance:
-/// the value's canonical bytes are stored at the literal path, bypassing the
-/// schema's declared fields and index maintenance (raw data the schema does not
-/// model). Off maintenance, [`raw_segment_path`] rejects it.
-pub(crate) fn eval_raw_field_write(
-    base: &Expression,
-    segment: &str,
-    value: Value,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    let (path, root, resource) = raw_segment_path(base, segment, span, env)?;
-    // A raw segment runs no index maintenance, so clobbering a DECLARED field's
-    // literal path would overwrite its stored value while leaving any index it feeds
-    // stale. Anything the schema models must go through the managed write; raw access
-    // is only for paths the schema does not model. This holds even under maintenance.
-    if resource.field_type(&[segment]).is_some() {
-        return Err(raise_fault(
-            WRITE_RAW_DECLARED_FIELD,
-            format!(
-                "`\"{segment}\"` is a declared field of `^{root}`; write it as \
-                 `^{root}(…).{segment}` so its indexes stay coherent — a raw \
-                 segment is only for data the schema does not model"
-            ),
-            span,
-        ));
-    }
-    // Raw segments are an untyped text boundary: `eval_raw_field_read` decodes them
-    // as text, so a raw write takes a string to keep the round-trip symmetric.
-    // Convert other scalars explicitly before a raw write.
-    if !matches!(value, Value::Str(_)) {
-        return Err(type_error(
-            &format!(
-                "a raw segment `\"{segment}\"` takes a string value; convert before a raw write"
-            ),
-            span,
-        ));
-    }
-    let saved = value_to_saved(value)
-        .ok_or_else(|| unsupported("writing a resource value to a raw segment", span))?;
-    let bytes = encode_value(&saved).map_err(|error| error.located(span))?;
-    env.store
-        .borrow_mut()
-        .write(&encode_path(&path), bytes)
-        .map_err(|error| error.located(span))?;
     Ok(())
 }
 
