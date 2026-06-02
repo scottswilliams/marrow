@@ -27,8 +27,8 @@ use redb::{
 
 use crate::backend::{Backend, Presence, ScanPage, StoreError};
 use crate::path::{
-    ChildSegment, int_index_key_band, int_record_key_band, is_key_child_segment, segment_len,
-    subtree_band,
+    ChildSegment, int_index_key_band, int_record_key_band, is_key_child_segment, root_name,
+    segment_len, subtree_band,
 };
 use crate::traversal::{self, Entries};
 
@@ -319,6 +319,22 @@ where
         keys.push(key.to_vec());
     }
     Ok(keys)
+}
+
+fn streamed_roots<T>(table: &T) -> Result<Vec<String>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut roots = Vec::new();
+    for entry in table.range::<&[u8]>(..).map_err(io("roots"))? {
+        let (key, _) = entry.map_err(io("roots"))?;
+        let key = key.value();
+        let name = root_name(key).ok_or_else(|| StoreError::CorruptPath { path: key.to_vec() })?;
+        if roots.last() != Some(&name) {
+            roots.push(name);
+        }
+    }
+    Ok(roots)
 }
 
 /// Run a read `$body` over the current view's table: the open transaction's
@@ -659,10 +675,7 @@ impl Backend for RedbStore {
     }
 
     fn roots(&self) -> Result<Vec<String>, StoreError> {
-        read_view!(self, "roots", |table| {
-            let rows = collect_rows(&table, &[], |_| false, "roots")?;
-            traversal::roots(entries(&rows))
-        })
+        read_view!(self, "roots", |table| streamed_roots(&table))
     }
 
     fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
