@@ -116,10 +116,43 @@ Current queue:
 
 | Order | Lane | Why It Is Next | Must Prove |
 | --- | --- | --- | --- |
-| 1 | [Lane 8: Runtime Checked Execution And Write Planner](lanes/lane-08-runtime-checked-execution.md) | Runtime can now consume store facts, the presence ledger, and tree-cell APIs instead of syntax bodies and raw saved paths. | Production execution is driven by checked facts or checked IR, with explicit durable places and write plans. |
-| 2 | [Lane 9: Source-Native Evolution And Activation](lanes/lane-09-evolution-activation.md) | Activation and evolution need the checked runtime and tree-cell store facts before they can prove saved data. | Catalog, source, and saved data evolve through one proof-discharge pipeline. |
-| 3 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces once runtime and evolution expose shared facts. | Raw bytes, raw paths, and local semantic rediscovery disappear from production protocols. |
-| 4 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
+| 1 | [Lane 6 corrective reopen: Catalog Identity Binding And Presence Ledger](lanes/lane-06-catalog-presence-ledger.md) | The lane landed, but audit found schema/tests still bless source-order enum ordinals and presence uses duplicate classifiers. | Enum stored meaning uses catalog member identity, and read/presence proof classification has one owner. |
+| 2 | [Lane 8: Runtime Checked Execution And Write Planner](lanes/lane-08-runtime-checked-execution.md) | Runtime can now consume store facts, the presence ledger, and tree-cell APIs instead of syntax bodies and raw saved paths. | Production execution is driven by checked facts or checked IR, with explicit durable places and write plans. |
+| 3 | [Lane 9: Source-Native Evolution And Activation](lanes/lane-09-evolution-activation.md) | Activation and evolution need the checked runtime and tree-cell store facts before they can prove saved data. | Catalog, source, and saved data evolve through one proof-discharge pipeline. |
+| 4 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces once runtime and evolution expose shared facts. | Raw bytes, raw paths, and local semantic rediscovery disappear from production protocols. |
+| 5 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
+
+## Active Quality Intervention
+
+Current status blocks review-ready and completion claims for the affected
+foundations while allowing file-disjoint implementation work to continue. Lane 8
+may keep replacing runtime syntax execution, but it may not claim review-ready or
+complete while the runtime still executes `CheckedFunction.body: Block`, resolves
+calls with source strings, or classifies saved paths locally. Removing one raw
+public entrypoint is an acceptable slice only when the deletion target stays
+intact and the next slice deletes the underlying prototype execution model.
+
+Lane 6 is reopened for a corrective pass before Lane 9 or Lane 10 production
+code starts, and before Lane 8 claims enum/index-value completion. The pass owns
+the split between catalog-backed enum identity and source-order schema
+traversal, plus the duplicate read/presence classifiers still active in checker
+facts and presence modules. Declaration order may remain a source traversal
+index only; it must not be stored meaning or index-key meaning.
+
+The Lane 7 store work is mostly clean, but stale dirty Lane 7 worktrees and raw
+archive surfaces are not integration candidates. Retire stale worktrees after
+preserving any explicitly requested patch, and route raw archive/backup cleanup
+to Lane 10 unless the store owner can delete the surface without colliding with
+active tooling work.
+
+Every active orchestrator must include these items in the next handoff:
+
+- the exact weak foundation being removed, not just the feature being added;
+- the code-shape cleanup performed before review;
+- the absence scan proving no production caller can choose the old model;
+- any old test or fixture deleted or migrated because it depended on prototype
+  behavior;
+- a statement that no roadmap wording was narrowed to hide unfinished deletion.
 
 ## Parallel Orchestrator Split
 
@@ -129,6 +162,7 @@ edit the checker/schema identity surface.
 
 | Track | Lane Plan | Can Start Now | Code Timing | Collision Boundary |
 | --- | --- | --- | --- | --- |
+| Catalog/presence corrective | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Yes | Current corrective lane, sequenced with checker/schema edits | Owns enum stored identity and presence classifier cleanup; no runtime/store physical-key edits. |
 | Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Yes | Current production lane | Owns runtime checked execution; no syntax-body compatibility path survives. |
 | Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Read-only witness matrix design only | Code after checked runtime facts exist | Owns one proof-discharge pipeline with command-specific surfaces. |
 | Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Read-only stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the typed backup manifest first, then adapters and rendering; no tool-local semantic classifiers. |

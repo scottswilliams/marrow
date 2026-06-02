@@ -11,8 +11,10 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-08-runtime-checked`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked`
 
-Status: ready for production code; Lane 5 store facts, Lane 6 catalog/presence
-facts, and Lane 7 tree-cell APIs are on main.
+Status: active, but not review-ready. Removing the raw public function
+entrypoint is only a small slice; the lane still owns deletion of production
+syntax-body execution, runtime string resolution, and runtime path/schema
+classification.
 
 ## Parallel Safety
 
@@ -41,6 +43,14 @@ leaving a second runtime model for a later lane.
 
 Before handing the lane to review:
 
+- replace `CheckedFunction.body: Block` and any production `Block`/`Statement`
+  execution with checked executable facts or checked IR;
+- migrate runtime tests away from hand-built checked functions that copy syntax
+  bodies into the checked artifact;
+- delete runtime call lookup by source strings, alias expansion, and fallback
+  dispatch in favor of checked call target descriptors;
+- delete runtime saved-path and schema classifiers in favor of checked durable
+  places and store-address facts;
 - split checked execution, durable-place reads, write planning, transactions,
   index maintenance, and host-effect handling by invariant;
 - migrate runtime tests, fixtures, and callers to checked facts or checked IR
@@ -82,7 +92,8 @@ Replacement behavior: checked facts/IR fully determine what runtime executes.
 Delete or isolate:
 
 - production execution of syntax `Block`, `Statement`, or `Expression`;
-- temporary syntax-body bridge from the checked-model migration;
+- temporary syntax-body bridge from the checked-model migration, including
+  checked-program fields that carry syntax bodies into production runtime;
 - runtime splitting of `::`, saved paths, function names, enum members, or
   store identities;
 - saved `inout` writeback;
@@ -97,6 +108,8 @@ debug/admin surfaces and excluded from `run` and normal CLI paths.
 Write failing checks first:
 
 - architecture test proving production runtime cannot execute raw syntax;
+- architecture test proving checked runtime artifacts do not carry syntax
+  `Block`, `Statement`, or `Expression` execution bodies;
 - exact root assignment reports subtree clearing;
 - field assignment and `edit` preserve omitted data;
 - delete and existence assertions lower to write plans;
@@ -156,11 +169,14 @@ Start production runtime edits now that the store facts, presence ledger, and
 tree-cell APIs are on `main`. Replace AST-body execution with checked facts or
 checked IR, implement explicit write plans and transaction behavior, delete
 runtime string/path classifiers, and prove ADR 0209 `~` roots have no production
-runtime behavior beyond a named future checked-effect slot. No legacy survival
+runtime behavior beyond a named future checked-effect slot. Do not treat removal
+of a public raw entrypoint as completion while `CheckedFunction` still carries a
+syntax `Block` or runtime executes `Statement`/`Expression`. No legacy survival
 for green tests: migrate runtime tests, fixtures, and callers to checked facts or
-checked IR instead of keeping the syntax interpreter, fallback dispatch, `lock`,
-`merge`, or saved `inout`. Before review, satisfy the Area Cleanup Gate: split
-checked execution, durable-place reads,
-write planning, transactions, index maintenance, and host-effect handling;
-delete syntax-body execution and runtime path/schema classifiers. Leave the
-worktree dirty for soundness and idiom/spec review.
+checked IR instead of keeping hand-built syntax-body checked functions, the
+syntax interpreter, fallback dispatch, `lock`, `merge`, or saved `inout`. Before
+review, satisfy the Area Cleanup Gate: split checked execution, durable-place
+reads, write planning, transactions, index maintenance, and host-effect
+handling; delete syntax-body execution, runtime string resolution, and runtime
+path/schema classifiers. Leave the worktree dirty for soundness and idiom/spec
+review.

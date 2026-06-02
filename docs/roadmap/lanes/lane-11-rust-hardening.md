@@ -114,6 +114,26 @@ and `crates/marrow-syntax/src/format.rs:296` keep `ResourceMember::Index` and
 resource-owned schema indexes alive. Delete production resource-owned index
 handling except any accepted concise-form desugaring.
 
+**Lane 6 - Catalog Identity.** Remove source-order enum ordinals as stored
+meaning and index-key meaning. Evidence:
+`crates/marrow-schema/src/lib.rs:81`, `crates/marrow-schema/src/lib.rs:333`,
+`crates/marrow-schema/src/lib.rs:760`,
+`crates/marrow-schema/tests/compile_enum.rs:36`, and
+`crates/marrow-schema/tests/compile_resource.rs:870` still document or test
+enum fields as declaration-order integers. Migrate schema facts and tests to
+catalog member IDs, keeping declaration order only as a source traversal index.
+
+**Lane 6 - Presence Ledger.** Delete duplicate read and saved-path classifiers
+instead of letting presence replay checker semantics. Evidence:
+`crates/marrow-check/src/presence/calls.rs:5`,
+`crates/marrow-check/src/presence/calls.rs:9`,
+`crates/marrow-check/src/presence/calls.rs:27`,
+`crates/marrow-check/src/presence/keys.rs:20`,
+`crates/marrow-check/src/facts.rs:1148`, and
+`crates/marrow-check/src/facts.rs:1165` classify builtin reads or saved paths
+outside one canonical ledger/query. Keep one semantic owner used by facts,
+checks, and presence.
+
 **Lane 8 - Enum Runtime Values.** Consume catalog-backed enum member identity for
 runtime values and index maintenance. Evidence:
 `crates/marrow-schema/src/lib.rs:83`, `crates/marrow-schema/src/lib.rs:334`,
@@ -198,6 +218,12 @@ Evidence: `crates/marrow-check/src/checks.rs:619`,
 `crates/marrow-check/src/enums.rs:291`,
 `crates/marrow-check/src/binding.rs:739`, and
 `crates/marrow-check/src/facts.rs:541`.
+
+Any lane touching checker store/resource resolution must consolidate duplicate
+resolver loops before review. Evidence:
+`crates/marrow-check/src/lib.rs:292` and
+`crates/marrow-check/src/resolve.rs:182` scan module/store/resource structure
+through separate paths. Keep one typed resolver and make callers use it.
 
 Any lane touching checker or runtime module boundaries must remove crate-root
 glob plumbing and production `use super::*` in its changed area. Evidence:

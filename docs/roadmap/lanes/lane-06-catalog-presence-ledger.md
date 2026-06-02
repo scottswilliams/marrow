@@ -12,7 +12,9 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-06-catalog-presence`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence`
 
-Status: design and review may start now; code waits for Lane 5.
+Status: landed once, but reopened for corrective foundation cleanup after
+read-only audit found old enum ordinal storage and duplicate presence
+classifiers still active.
 
 ## Parallel Safety
 
@@ -45,6 +47,16 @@ later lane.
 
 Before handing the lane to review:
 
+- migrate enum stored meaning and enum index-key meaning away from
+  declaration-order ordinals to catalog member identity, with source reorder
+  fixtures proving meaning survives;
+- keep declaration order only as a source traversal index, never as durable
+  stored meaning;
+- delete or consolidate duplicated saved-path, builtin-call, read-target, and
+  proof-source classifiers in facts and presence modules;
+- split broad presence AST walkers when the same semantic facts are already
+  collected elsewhere, or make one pass the canonical owner and delete the
+  duplicate pass;
 - split catalog file handling, identity binding, epoch/digest validation,
   read-presence proof recording, and diagnostics into focused helpers or modules
   with one invariant each;
@@ -93,6 +105,7 @@ Delete or reject:
   allowed matches are rejection tests or historical/debug docs only;
 - regenerated IDs that make a diff clean;
 - ad hoc read-totality classifiers outside the checked ledger;
+- source-order enum ordinals as stored meaning or index-key meaning;
 - catalog state hidden outside the source tree or engine metadata;
 - any tool or runtime read proof inferred without a ledger entry.
 
@@ -109,6 +122,8 @@ Write failing production-pipeline checks first:
   and digest;
 - source rename without intent fails closed;
 - accepted rename preserves stable identity without moving data cells;
+- enum value storage and index keys survive member reordering through catalog
+  member identity, not declaration-order ordinal;
 - fresh clone and source rollback bind only through accepted catalog metadata;
 - bare maybe-present read with no read-site resolution emits a diagnostic;
 - positive reads using `??`, `if exists`, and optional
@@ -163,17 +178,18 @@ Continue Marrow v0.1 Lane 6 in `/Users/scottwilliams/Dev/marrow-lane-06-catalog-
 Use branch `lane-06-catalog-presence`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Do read-only design/review now if needed, but do not start production code until
-Lane 5 resource/store facts are on `main`. Then implement the committed accepted
-catalog file, stable catalog identity, catalog-backed enum member identity, and
-the ADR 0210 presence proof ledger with TDD. Delete/reject source `@id`
-annotations entirely from canonical source; keep valid read-site absence
+This lane is reopened because the landed code still blesses source-order enum
+ordinals and duplicate read/presence classifiers. Implement the committed
+accepted catalog file, stable catalog identity, catalog-backed enum member
+identity, and the ADR 0210 presence proof ledger with TDD. Delete/reject source
+`@id` annotations entirely from canonical source; keep valid read-site absence
 resolution flowing through one checked-program ledger. Do not edit store
 physical keys or runtime execution in this lane. No legacy survival for green
 tests: migrate/delete tests, fixtures, and callers that depend on regenerated
-IDs, source-order enum ordinals, `@id`, or ad hoc maybe-read behavior. Before
-review, satisfy the Area Cleanup Gate: keep proof-source classification in the
-ledger; split catalog file IO, identity binding, epoch/digest validation, proof
-recording, and diagnostics; delete `@id`, regenerated-ID, read-totality, and
-maybe-present helpers. Leave the worktree dirty for soundness and idiom/spec
-review.
+IDs, source-order enum ordinals, `@id`, duplicated saved-path classifiers, or ad
+hoc maybe-read behavior. Before review, satisfy the Area Cleanup Gate: keep
+proof-source classification in the ledger; split catalog file IO, identity
+binding, epoch/digest validation, proof recording, diagnostics, and broad
+presence walkers; delete `@id`, regenerated-ID, read-totality, maybe-present,
+and duplicate classifier helpers. Leave the worktree dirty for soundness and
+idiom/spec review.
