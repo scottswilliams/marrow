@@ -5,6 +5,8 @@ use marrow_store::backend::{Backend, Presence};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 
+const RAW_COPY_SCAN_LIMIT: usize = 2;
+
 /// The encoded path `^books(id)`.
 fn book(id: i64) -> Vec<u8> {
     encode_path(&[
@@ -20,6 +22,30 @@ fn book_field(id: i64, field: &str) -> Vec<u8> {
         PathSegment::RecordKey(SavedKey::Int(id)),
         PathSegment::Field(field.into()),
     ])
+}
+
+fn collect_raw_records(store: &MemStore) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut records = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = match cursor.as_deref() {
+            Some(cursor) => store.scan_after(&[], cursor, RAW_COPY_SCAN_LIMIT),
+            None => store.scan(&[], RAW_COPY_SCAN_LIMIT),
+        };
+        let next_cursor = page.entries.last().map(|(path, _)| path.clone());
+        records.extend(page.entries);
+        if !page.truncated {
+            return records;
+        }
+        if let (Some(previous), Some(next)) = (cursor.as_ref(), next_cursor.as_ref()) {
+            assert!(
+                next > previous,
+                "truncated scan did not advance the raw record cursor"
+            );
+        }
+        cursor = next_cursor;
+        assert!(cursor.is_some(), "truncated scan returned no record cursor");
+    }
 }
 
 #[test]
@@ -87,27 +113,24 @@ fn deleting_an_absent_path_is_a_no_op() {
 }
 
 #[test]
-fn dump_and_restore_reproduce_the_store() {
+fn bounded_raw_copy_reproduces_the_store() {
     let mut store = MemStore::new();
     store.write(&book(1), b"whole".to_vec());
     store.write(&book_field(1, "title"), b"Dune".to_vec());
     store.write(&book_field(1, "author"), b"Herbert".to_vec());
     store.write(&book_field(2, "title"), b"Sand".to_vec());
 
-    // Dumping from the empty prefix yields every entry in Marrow order.
-    let dump = store.scan(&[], usize::MAX);
-    assert_eq!(dump.entries.len(), 4);
+    let source_records = collect_raw_records(&store);
+    assert_eq!(source_records.len(), 4);
 
-    // Restoring re-writes the encoded pairs into a fresh store.
-    let mut restored = MemStore::new();
-    for (path, value) in &dump.entries {
-        restored.write(path, value.clone());
+    let mut copied = MemStore::new();
+    for (path, value) in &source_records {
+        copied.write(path, value.clone());
     }
 
-    // The restored store reproduces the dump, the roots, and presence exactly.
-    assert_eq!(restored.scan(&[], usize::MAX), dump);
-    assert_eq!(restored.roots(), store.roots());
-    assert_eq!(restored.presence(&book(1)), Ok(Presence::ValueAndChildren));
+    assert_eq!(collect_raw_records(&copied), source_records);
+    assert_eq!(copied.roots(), store.roots());
+    assert_eq!(copied.presence(&book(1)), Ok(Presence::ValueAndChildren));
 }
 
 #[test]

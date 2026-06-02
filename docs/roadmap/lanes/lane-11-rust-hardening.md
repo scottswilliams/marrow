@@ -137,13 +137,6 @@ fields. Physical keys must derive from catalog IDs, typed key values, and
 reserved placement prefixes; raw path parsing/rendering may remain only for a
 reviewed debug/admin surface.
 
-**Lane 7 - Tree-Cell Store.** Avoid whole-subtree buffering in the persistent
-backend. Evidence: `crates/marrow-store/src/redb.rs:114`,
-`crates/marrow-store/src/redb.rs:306`, `crates/marrow-store/src/redb.rs:565`,
-and `crates/marrow-store/src/redb.rs:661` collect full row/key sets for range,
-delete, child, or root operations. Split redb traversal into bounded streaming
-helpers and delete in bounded batches.
-
 **Lane 8 - Checked Runtime.** Delete production AST execution and raw
 `FunctionDecl` execution. Evidence: `crates/marrow-run/src/lib.rs:46`,
 `crates/marrow-run/src/call.rs:9`, `crates/marrow-run/src/call.rs:148`,
@@ -198,12 +191,6 @@ physical key bytes, or tool-local classifiers. Replace them with typed backup
 manifests, opaque cursors, bounded snapshot/paging APIs, and shared
 checked/catalog/store facts; restore must validate or rebuild derived data
 before commit.
-
-**Lane 10 - Tooling And Protocols.** Remove unbounded scans from tools.
-Evidence: `crates/marrow-store/src/archive.rs:32`,
-`crates/marrow/src/cmd_data.rs:219`, `crates/marrow/src/cmd_data.rs:259`, and
-`crates/marrow/src/cmd_data.rs:339` call `scan(&[], usize::MAX)`. Stream
-bounded pages through backup, stats, dump, and integrity.
 
 Priority 2:
 

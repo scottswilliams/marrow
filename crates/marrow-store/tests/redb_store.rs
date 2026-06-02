@@ -1,13 +1,15 @@
 //! Native (redb) store behavior beyond the shared backend contract: durable
-//! persistence, single-writer locking, read-only opens, and dumps that round
-//! trip between memory and native storage. The contract itself is exercised by
-//! the per-backend conformance tests inside the crate.
+//! persistence, single-writer locking, read-only opens, and raw record copies
+//! between memory and native storage. The contract itself is exercised by the
+//! per-backend conformance tests inside the crate.
 #![cfg(feature = "native")]
 
-use marrow_store::backend::{Backend, ScanPage, StoreError};
+use marrow_store::backend::{Backend, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::redb::RedbStore;
+
+const RAW_COPY_SCAN_LIMIT: usize = 2;
 
 #[test]
 fn redb_persists_and_reopens() {
@@ -148,43 +150,67 @@ fn book_title(id: i64) -> Vec<u8> {
     ])
 }
 
-/// Dump the whole store as the raw ordered stream.
-fn dump(store: &dyn Backend) -> ScanPage {
-    store.scan(&[], usize::MAX).expect("dump")
+fn collect_raw_records(store: &dyn Backend) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut records = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = match cursor.as_deref() {
+            Some(cursor) => store
+                .scan_after(&[], cursor, RAW_COPY_SCAN_LIMIT)
+                .expect("scan next raw record page"),
+            None => store
+                .scan(&[], RAW_COPY_SCAN_LIMIT)
+                .expect("scan raw records"),
+        };
+        let next_cursor = page.entries.last().map(|(path, _)| path.clone());
+        records.extend(page.entries);
+        if !page.truncated {
+            return records;
+        }
+        if let (Some(previous), Some(next)) = (cursor.as_ref(), next_cursor.as_ref()) {
+            assert!(
+                next > previous,
+                "truncated scan did not advance the raw record cursor"
+            );
+        }
+        cursor = next_cursor;
+        assert!(cursor.is_some(), "truncated scan returned no record cursor");
+    }
 }
 
-/// Restore a dump into `store` by replaying its (path, value) pairs.
-fn restore(store: &mut dyn Backend, source: &ScanPage) {
-    for (path, value) in &source.entries {
-        store.write(path, value.clone()).expect("restore write");
+fn copy_raw_records(store: &mut dyn Backend, source: &[(Vec<u8>, Vec<u8>)]) {
+    for (path, value) in source {
+        store.write(path, value.clone()).expect("copy raw record");
     }
 }
 
 #[test]
-fn dumps_round_trip_between_memory_and_native() {
-    // The dump is backend-independent for the memory and redb ordered-byte engines.
+fn raw_records_copy_between_memory_and_native() {
     let dir = tempfile::tempdir().expect("create a temp dir");
 
     let mut mem = MemStore::new();
-    restore(&mut mem, &{
-        let mut seed = ScanPage::default();
-        seed.entries.push((book_title(1), b"Dune".to_vec()));
-        seed.entries.push((book_title(2), b"Sand".to_vec()));
-        seed
-    });
-    let source = dump(&mem);
+    let seed = vec![
+        (book_title(1), b"Dune".to_vec()),
+        (book_title(2), b"Sand".to_vec()),
+    ];
+    copy_raw_records(&mut mem, &seed);
+    let source = collect_raw_records(&mem);
+    assert_eq!(source.len(), 2);
 
-    // Memory -> native reproduces the dump exactly.
     let mut redb = RedbStore::open(&dir.path().join("from-mem.redb")).expect("open redb");
-    restore(&mut redb, &source);
-    assert_eq!(dump(&redb), source, "native reproduces the memory dump");
-
-    // Native -> memory reproduces it too.
-    let mut mem_again = MemStore::new();
-    restore(&mut mem_again, &dump(&redb));
+    copy_raw_records(&mut redb, &source);
     assert_eq!(
-        dump(&mem_again),
+        collect_raw_records(&redb),
         source,
-        "memory reproduces the native dump"
+        "native reproduces memory raw records"
+    );
+
+    let mut mem_again = MemStore::new();
+    let native_records = collect_raw_records(&redb);
+    copy_raw_records(&mut mem_again, &native_records);
+    assert_eq!(
+        collect_raw_records(&mem_again),
+        source,
+        "memory reproduces native raw records"
     );
 }

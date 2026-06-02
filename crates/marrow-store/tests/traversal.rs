@@ -217,7 +217,7 @@ fn scan_returns_only_the_subtree_in_order() {
     // A sibling record must not appear in the scan of seq(1).
     store.write(&encode_path(&seq(2)), b"other".to_vec());
 
-    let page = store.scan(&encode_path(&seq(1)), usize::MAX);
+    let page = store.scan(&encode_path(&seq(1)), 2);
     assert!(!page.truncated);
     let paths: Vec<Vec<u8>> = page.entries.into_iter().map(|(key, _)| key).collect();
     assert_eq!(

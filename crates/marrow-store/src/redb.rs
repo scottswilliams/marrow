@@ -788,7 +788,7 @@ mod tests {
 
         for key in keys {
             assert_eq!(
-                Backend::read(&store, key.as_slice()).expect("read restored key"),
+                Backend::read(&store, key.as_slice()).expect("read rollback key"),
                 Some(b"value".to_vec())
             );
         }

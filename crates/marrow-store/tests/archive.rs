@@ -9,7 +9,7 @@ use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, encode_value};
 
-fn dump_fixture(store: &MemStore) -> marrow_store::backend::ScanPage {
+fn raw_stream_fixture(store: &MemStore) -> marrow_store::backend::ScanPage {
     let page = store.scan(&[], 32);
     assert!(!page.truncated, "archive fixture exceeded its scan limit");
     page
@@ -43,8 +43,7 @@ fn an_archive_round_trips_through_a_fresh_store() {
     let read = read_archive(&mut Cursor::new(&buffer), &mut target).expect("read archive");
     assert_eq!(read, 2);
 
-    // The target store reproduces the source's dump byte-for-byte.
-    assert_eq!(dump_fixture(&target), dump_fixture(&source));
+    assert_eq!(raw_stream_fixture(&target), raw_stream_fixture(&source));
 }
 
 #[test]
@@ -111,7 +110,7 @@ fn a_truncated_archive_read_rolls_the_target_back_whole() {
     // A non-empty target whose prior contents must survive the failed replay.
     let mut target = MemStore::new();
     target.write(&book_title(9), encoded(&SavedValue::Str("Keep".into())));
-    let before = dump_fixture(&target);
+    let before = raw_stream_fixture(&target);
 
     let result = read_archive(&mut Cursor::new(&archive), &mut target);
     assert!(
@@ -119,7 +118,7 @@ fn a_truncated_archive_read_rolls_the_target_back_whole() {
         "a truncated archive is a typed corruption error: {result:?}"
     );
     assert_eq!(
-        dump_fixture(&target),
+        raw_stream_fixture(&target),
         before,
         "the target is rolled back to its prior state, with no half-written record"
     );
@@ -138,7 +137,7 @@ fn an_archive_with_trailing_records_after_count_is_rejected() {
 
     let mut target = MemStore::new();
     target.write(&book_title(9), encoded(&SavedValue::Str("Keep".into())));
-    let before = dump_fixture(&target);
+    let before = raw_stream_fixture(&target);
 
     let result = read_archive(&mut Cursor::new(&archive), &mut target);
     assert!(
@@ -146,7 +145,7 @@ fn an_archive_with_trailing_records_after_count_is_rejected() {
         "an archive with body bytes after its declared record count is corrupt: {result:?}"
     );
     assert_eq!(
-        dump_fixture(&target),
+        raw_stream_fixture(&target),
         before,
         "the archive read rolls back instead of committing a declared-count prefix"
     );
