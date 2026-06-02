@@ -95,7 +95,7 @@ This shows the main shape:
   nominal equality, and stable member-identity storage.
 - [Resources and Saved Data](resources-and-storage.md) defines resources,
   local trees, saved trees, identity keys, indexes, history, transactions,
-  delete, data access, and prototype-only parsed forms.
+  delete, and data access.
 - [Modules and Functions](modules-functions.md) defines modules, imports,
   visibility, parameters, named arguments, resource arguments, returns, and
   name resolution.

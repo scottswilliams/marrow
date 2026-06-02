@@ -499,11 +499,7 @@ fn identity_type_known(
 }
 
 fn store_root_known(program: &CheckedProgram, identity: &str) -> bool {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.stores)
-        .any(|store| store.root == identity)
+    resolve_store_by_root(program, identity).is_some()
 }
 
 fn check_block_type_annotations(
