@@ -811,6 +811,69 @@ mod tests {
     }
 
     #[test]
+    fn redb_aborted_write_transaction_does_not_publish_raw_byte_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("aborted-write.redb");
+
+        let store = RedbStore::open(&path).expect("open");
+        let db = match store.db {
+            DatabaseHandle::ReadWrite(db) => db,
+            DatabaseHandle::ReadOnly(_) => panic!("expected a read-write redb handle"),
+        };
+
+        let seed = db.begin_write().expect("begin seed transaction");
+        {
+            let mut table = seed.open_table(TABLE).expect("open table for seed");
+            table
+                .insert(b"kept".as_slice(), b"old".as_slice())
+                .expect("seed kept value");
+            table
+                .insert(b"removed".as_slice(), b"still-here".as_slice())
+                .expect("seed removable value");
+        }
+        seed.commit().expect("commit seed values");
+
+        let write = db.begin_write().expect("begin write transaction");
+        {
+            let mut table = write.open_table(TABLE).expect("open table for write");
+            table
+                .insert(b"kept".as_slice(), b"new".as_slice())
+                .expect("replace raw byte key");
+            table
+                .insert(b"added".as_slice(), b"transient".as_slice())
+                .expect("insert raw byte key");
+            table
+                .remove(b"removed".as_slice())
+                .expect("remove raw byte key");
+        }
+        write.abort().expect("abort raw byte changes");
+
+        let read = db.begin_read().expect("begin fresh read transaction");
+        let table = read.open_table(TABLE).expect("open table for read");
+        assert_eq!(
+            table
+                .get(b"kept".as_slice())
+                .expect("read kept value")
+                .map(|value| value.value().to_vec()),
+            Some(b"old".to_vec())
+        );
+        assert_eq!(
+            table
+                .get(b"removed".as_slice())
+                .expect("read removed value")
+                .map(|value| value.value().to_vec()),
+            Some(b"still-here".to_vec())
+        );
+        assert_eq!(
+            table
+                .get(b"added".as_slice())
+                .expect("read added value")
+                .map(|value| value.value().to_vec()),
+            None
+        );
+    }
+
+    #[test]
     fn redb_table_orders_raw_byte_keys_lexicographically() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("ordered-bytes.redb");
