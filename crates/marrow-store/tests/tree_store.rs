@@ -2,7 +2,10 @@ use marrow_store::backend::{Backend, StoreError};
 use marrow_store::cell::{CatalogId, CellKey, MetaCell, SequencePosition};
 use marrow_store::key::SavedKey;
 use marrow_store::mem::MemStore;
-use marrow_store::tree::{CommitMetadata, EngineProfile, TreeCellStore};
+use marrow_store::tree::{
+    CommitMetadata, EngineProfile, TreeCellStore, TreeEnumMember, TreeReference,
+    decode_tree_enum_member, decode_tree_reference, encode_tree_enum_member, encode_tree_reference,
+};
 
 fn catalog_id(hex: &str) -> CatalogId {
     CatalogId::new(format!("cat_{hex}")).unwrap()
@@ -68,6 +71,77 @@ fn writes_tree_cells_without_source_spelling_keys() {
                 "physical key contains source spelling {spelling:?}: {key:?}"
             );
         }
+    }
+}
+
+#[test]
+fn reference_values_store_target_catalog_id_and_identity_keys() {
+    let books = catalog_id("1111111111111111");
+    let library_books = catalog_id("1111111111111111");
+    let authors = catalog_id("2222222222222222");
+
+    let value = TreeReference::new(
+        books.clone(),
+        vec![SavedKey::Str("isbn-9780441172719".into())],
+    );
+    let encoded = encode_tree_reference(&value).expect("encode reference");
+
+    assert_eq!(
+        decode_tree_reference(&encoded).expect("decode reference"),
+        value
+    );
+    assert_eq!(
+        encoded,
+        encode_tree_reference(&TreeReference::new(
+            library_books,
+            vec![SavedKey::Str("isbn-9780441172719".into())],
+        ))
+        .expect("renamed source uses the same catalog-backed bytes")
+    );
+    assert_ne!(
+        encoded,
+        encode_tree_reference(&TreeReference::new(
+            authors,
+            vec![SavedKey::Str("isbn-9780441172719".into())],
+        ))
+        .expect("different store identity changes bytes")
+    );
+    for spelling in ["books", "libraryBooks", "authors"] {
+        assert!(
+            !contains_subslice(&encoded, spelling.as_bytes()),
+            "reference bytes contain source spelling {spelling:?}: {encoded:?}"
+        );
+    }
+}
+
+#[test]
+fn enum_member_values_store_catalog_ids_not_source_order() {
+    let status = catalog_id("aaaaaaaaaaaaaaaa");
+    let active = catalog_id("bbbbbbbbbbbbbbbb");
+    let archived = catalog_id("cccccccccccccccc");
+
+    let value = TreeEnumMember::new(status.clone(), active.clone());
+    let encoded = encode_tree_enum_member(&value).expect("encode enum member");
+
+    assert_eq!(
+        decode_tree_enum_member(&encoded).expect("decode enum member"),
+        value
+    );
+    assert_eq!(
+        encoded,
+        encode_tree_enum_member(&TreeEnumMember::new(status.clone(), active))
+            .expect("source reorder leaves catalog-backed bytes alone")
+    );
+    assert_ne!(
+        encoded,
+        encode_tree_enum_member(&TreeEnumMember::new(status, archived))
+            .expect("different member identity changes bytes")
+    );
+    for spelling in ["Status", "active", "archived", "enabled"] {
+        assert!(
+            !contains_subslice(&encoded, spelling.as_bytes()),
+            "enum bytes contain source spelling {spelling:?}: {encoded:?}"
+        );
     }
 }
 
@@ -357,6 +431,14 @@ fn malformed_tree_cell_data_is_store_corruption_not_corrupt_saved_path() {
     let error = store
         .read_engine_profile_digest()
         .expect_err("malformed engine profile digest is corruption");
+    assert_eq!(error.code(), "store.corruption");
+    assert!(!matches!(error, StoreError::CorruptPath { .. }));
+
+    let error = decode_tree_reference(&[0xff]).expect_err("malformed reference is corruption");
+    assert_eq!(error.code(), "store.corruption");
+    assert!(!matches!(error, StoreError::CorruptPath { .. }));
+
+    let error = decode_tree_enum_member(&[0xff]).expect_err("malformed enum member is corruption");
     assert_eq!(error.code(), "store.corruption");
     assert!(!matches!(error, StoreError::CorruptPath { .. }));
 

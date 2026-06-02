@@ -96,6 +96,26 @@ Malformed tree-cell metadata or index cells report `store.corruption`. The
 saved-path decoder's `store.corrupt_path` code is reserved for malformed saved
 path keys.
 
+## Tree-Cell Value Codecs
+
+Scalar leaves still use the canonical scalar value codec described in
+`marrow_store::value`: typed reads know the scalar type from checked facts, so
+those bytes carry no type tag.
+
+Tree-cell references and enum-member values use catalog-backed codecs because
+their durable meaning is not a scalar spelling:
+
+| Value | Bytes |
+|---|---|
+| Store reference | version `00`, referenced store catalog ID, identity key count, then each identity key as a length-prefixed `SavedKey` byte run. Lengths and counts are big-endian `u32` values. |
+| Enum member | version `00`, enum catalog ID, member catalog ID. |
+
+Each catalog ID is the big-endian length-prefixed opaque `cat_<16 lowercase hex>[_n]`
+string from the accepted catalog. Reference bytes therefore distinguish two
+stores with identical key values, and enum bytes distinguish members by stable
+catalog identity instead of declaration order. Source root names, member names,
+enum member spelling, and source order are not inputs to these codecs.
+
 ## Current Saved-Path Operations
 
 A saved path is a sequence of segments — a root, identity record keys, named
@@ -268,7 +288,7 @@ The laws cover:
   full child walk, and keeping record keys separate from index positions;
 - ordered roots, deduped;
 - bounded scans returning only the subtree, in order, truncating at the limit;
-- dump and restore reproducing the store byte-for-byte;
+- bounded raw record copies reproducing the store byte-for-byte;
 - a corrupt path surfacing as a typed `store.corrupt_path` error;
 - transaction laws: a committed transaction keeps its writes; a rolled-back one
   discards them; an unbalanced `commit`/`rollback` is a no-op; nested savepoints;
@@ -276,8 +296,8 @@ The laws cover:
   with a middle commit and outer rollback; and a transaction seeing its writes in
   traversal.
 
-Holding both stores to one suite is why a dump from one backend restores
-faithfully into the other.
+Holding both stores to one suite is why a bounded raw record copy from one
+backend reproduces faithfully in the other.
 
 ## Native-Store Responsibilities
 

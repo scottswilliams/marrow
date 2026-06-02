@@ -6,8 +6,10 @@ use crate::key::{SavedKey, decode_key_value};
 
 const NODE_MARKER: &[u8] = b"node";
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
+const TREE_VALUE_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
 const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_0000000000000000".len();
+const MIN_LENGTH_PREFIX_BYTES: usize = 4;
 
 pub type EngineProfileDigest = [u8; ENGINE_PROFILE_DIGEST_BYTES];
 
@@ -79,6 +81,48 @@ pub struct IndexPage {
     pub entries: Vec<IndexEntry>,
     pub cursor: Option<IndexCursor>,
     pub truncated: bool,
+}
+
+/// A typed reference to a stored identity in another catalog-backed store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeReference {
+    store: CatalogId,
+    identity: Vec<SavedKey>,
+}
+
+impl TreeReference {
+    pub fn new(store: CatalogId, identity: Vec<SavedKey>) -> Self {
+        Self { store, identity }
+    }
+
+    pub fn store(&self) -> &CatalogId {
+        &self.store
+    }
+
+    pub fn identity(&self) -> &[SavedKey] {
+        &self.identity
+    }
+}
+
+/// A catalog-backed enum member value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEnumMember {
+    enum_id: CatalogId,
+    member_id: CatalogId,
+}
+
+impl TreeEnumMember {
+    pub fn new(enum_id: CatalogId, member_id: CatalogId) -> Self {
+        Self { enum_id, member_id }
+    }
+
+    pub fn enum_id(&self) -> &CatalogId {
+        &self.enum_id
+    }
+
+    pub fn member_id(&self) -> &CatalogId {
+        &self.member_id
+    }
 }
 
 /// A typed tree-cell facade that constructs physical keys from [`CellKey`].
@@ -354,6 +398,42 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     }
 }
 
+pub fn encode_tree_reference(value: &TreeReference) -> Result<Vec<u8>, StoreError> {
+    let mut bytes = vec![TREE_VALUE_VERSION_V0];
+    put_catalog_id(&value.store, &mut bytes)?;
+    put_saved_keys(&value.identity, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub fn decode_tree_reference(bytes: &[u8]) -> Result<TreeReference, StoreError> {
+    let mut cursor = Cursor::new(bytes);
+    cursor.take_version()?;
+    let store = cursor.take_catalog_id()?;
+    let identity = cursor.take_saved_keys()?;
+    if !cursor.is_empty() {
+        return Err(corrupt_cell(bytes));
+    }
+    Ok(TreeReference { store, identity })
+}
+
+pub fn encode_tree_enum_member(value: &TreeEnumMember) -> Result<Vec<u8>, StoreError> {
+    let mut bytes = vec![TREE_VALUE_VERSION_V0];
+    put_catalog_id(&value.enum_id, &mut bytes)?;
+    put_catalog_id(&value.member_id, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub fn decode_tree_enum_member(bytes: &[u8]) -> Result<TreeEnumMember, StoreError> {
+    let mut cursor = Cursor::new(bytes);
+    cursor.take_version()?;
+    let enum_id = cursor.take_catalog_id()?;
+    let member_id = cursor.take_catalog_id()?;
+    if !cursor.is_empty() {
+        return Err(corrupt_cell(bytes));
+    }
+    Ok(TreeEnumMember { enum_id, member_id })
+}
+
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -415,6 +495,21 @@ fn put_catalog_ids(ids: &[CatalogId], out: &mut Vec<u8>) -> Result<(), StoreErro
     Ok(())
 }
 
+fn put_catalog_id(id: &CatalogId, out: &mut Vec<u8>) -> Result<(), StoreError> {
+    put_bytes(id.as_str().as_bytes(), out)
+}
+
+fn put_saved_keys(keys: &[SavedKey], out: &mut Vec<u8>) -> Result<(), StoreError> {
+    let len = u32::try_from(keys.len()).map_err(|_| StoreError::LimitExceeded {
+        limit: "tree cell value key count",
+    })?;
+    out.extend_from_slice(&len.to_be_bytes());
+    for key in keys {
+        put_bytes(&crate::key::encode_key_value(key), out)?;
+    }
+    Ok(())
+}
+
 fn decode_u64(bytes: &[u8]) -> Result<u64, StoreError> {
     let raw: [u8; 8] = bytes.try_into().map_err(|_| corrupt_cell(bytes))?;
     Ok(u64::from_be_bytes(raw))
@@ -463,6 +558,15 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_be_bytes(raw))
     }
 
+    fn take_version(&mut self) -> Result<(), StoreError> {
+        let version = self.take(1)?[0];
+        if version == TREE_VALUE_VERSION_V0 {
+            Ok(())
+        } else {
+            Err(corrupt_cell(&[version]))
+        }
+    }
+
     fn take_bytes(&mut self) -> Result<&'a [u8], StoreError> {
         let len = self.take_u32()? as usize;
         self.take(len)
@@ -470,6 +574,12 @@ impl<'a> Cursor<'a> {
 
     fn take_digest(&mut self) -> Result<EngineProfileDigest, StoreError> {
         decode_digest(self.take_bytes()?)
+    }
+
+    fn take_catalog_id(&mut self) -> Result<CatalogId, StoreError> {
+        let raw = self.take_bytes()?;
+        let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
+        CatalogId::new(id).map_err(|_| corrupt_cell(raw))
     }
 
     fn take_catalog_ids(&mut self) -> Result<Vec<CatalogId>, StoreError> {
@@ -484,6 +594,23 @@ impl<'a> Cursor<'a> {
             ids.push(CatalogId::new(id).map_err(|_| corrupt_cell(raw))?);
         }
         Ok(ids)
+    }
+
+    fn take_saved_keys(&mut self) -> Result<Vec<SavedKey>, StoreError> {
+        let len = self.take_u32()? as usize;
+        if len > self.bytes.len() / MIN_LENGTH_PREFIX_BYTES {
+            return Err(corrupt_cell(self.bytes));
+        }
+        let mut keys = Vec::new();
+        for _ in 0..len {
+            let raw = self.take_bytes()?;
+            let (key, consumed) = decode_key_value(raw).ok_or_else(|| corrupt_cell(raw))?;
+            if consumed != raw.len() {
+                return Err(corrupt_cell(raw));
+            }
+            keys.push(key);
+        }
+        Ok(keys)
     }
 
     fn take_u32(&mut self) -> Result<u32, StoreError> {
