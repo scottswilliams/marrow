@@ -1,7 +1,23 @@
 //! The IDE-grade analysis surface: project analysis plus cursor type and
 //! scope queries. This is the stable path editor tooling consumes.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
+use marrow_syntax::{Severity, SourceSpan};
+
+use crate::checks::{
+    ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude, for_frame,
+};
+use crate::enums::{collect_enum_names, normalize_program_named_types, resolve_type};
+use crate::infer::{bind, infer_type, local_binding};
+use crate::{
+    CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
+    CheckedModule, CheckedProgram, IO_READ, MarrowType, ProjectSources,
+    SCHEMA_DUPLICATE_ROOT_OWNER, TestResolutionSuppression, check_file_source, enum_visibility,
+    module_path_error, read_source, resolve_match_enums,
+};
 
 /// An IDE-grade view of a checked project: the diagnostics and best-effort
 /// program [`check_project`] produces, plus every parsed file — including files
@@ -122,8 +138,8 @@ pub(crate) fn analyze_source_project(
     // that name; later files declaring it are duplicates. This is also the set
     // of resolvable project module names for `use` resolution.
     let mut declared: HashMap<String, PathBuf> = HashMap::new();
-    // The first resource (in file then source order) to claim each saved root
-    // owns it; a later resource on the same root is a duplicate owner.
+    // The first store (in file then source order) to declare each saved root owns
+    // it; a later store on the same root is a duplicate owner.
     let mut root_owners: HashMap<String, PathBuf> = HashMap::new();
     // Parsed sources kept from pass 1 so pass 2 can resolve imports against the
     // full project module set without re-reading files.
@@ -150,38 +166,31 @@ pub(crate) fn analyze_source_project(
         let CheckedFile {
             parsed,
             resources,
+            stores,
             enums,
             functions,
             constants,
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
 
-        // Saved roots are owned project-wide. Walk the file's resource
-        // declarations beside their compiled schemas (same order) to enforce one
-        // owner per root.
-        let mut schemas = resources.iter();
+        // Saved roots are owned project-wide by stores.
         for declaration in &parsed.file.declarations {
-            let marrow_syntax::Declaration::Resource(resource) = declaration else {
+            let marrow_syntax::Declaration::Store(store) = declaration else {
                 continue;
             };
-            let schema = schemas
-                .next()
-                .expect("one compiled schema per resource declaration");
-            if let Some(saved) = &schema.saved_root {
-                match root_owners.get(&saved.root) {
-                    Some(first) => report.diagnostics.push(CheckDiagnostic {
-                        code: SCHEMA_DUPLICATE_ROOT_OWNER,
-                        severity: Severity::Error,
-                        file: file.path.clone(),
-                        message: format!(
-                            "saved root `^{}` is already owned by a resource in `{}`",
-                            saved.root,
-                            first.display()
-                        ),
-                        span: resource.span,
-                    }),
-                    None => {
-                        root_owners.insert(saved.root.clone(), file.path.clone());
-                    }
+            match root_owners.get(&store.root.root) {
+                Some(first) => report.diagnostics.push(CheckDiagnostic {
+                    code: SCHEMA_DUPLICATE_ROOT_OWNER,
+                    severity: Severity::Error,
+                    file: file.path.clone(),
+                    message: format!(
+                        "saved root `^{}` is already owned by a store in `{}`",
+                        store.root.root,
+                        first.display()
+                    ),
+                    span: store.span,
+                }),
+                None => {
+                    root_owners.insert(store.root.root.clone(), file.path.clone());
                 }
             }
         }
@@ -222,6 +231,7 @@ pub(crate) fn analyze_source_project(
                                 constants,
                                 functions,
                                 resources,
+                                stores,
                                 enums,
                                 enum_public: enum_visibility(&parsed.file),
                             });
@@ -270,6 +280,7 @@ pub(crate) fn analyze_source_project(
                 constants,
                 functions,
                 resources,
+                stores,
                 enums,
                 enum_public: enum_visibility(&parsed.file),
             });

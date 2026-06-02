@@ -2,14 +2,12 @@
 //! into the store, and keep generated index entries coherent.
 
 use crate::write::{
-    ResourceValue, SuppliedIdentity, WRITE_ID_OVERFLOW, WRITE_LAYER_KEY_ARITY,
-    WRITE_NEXT_ID_UNSUPPORTED, WRITE_NO_SAVED_ROOT, WRITE_NOT_A_GROUP_LAYER,
-    WRITE_NOT_A_LEAF_LAYER, WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT,
-    WRITE_UNKNOWN_FIELD, WRITE_UNKNOWN_LAYER, WriteOp, next_id, next_layer_pos, plan_field_delete,
-    plan_field_write, plan_identity_field_write, plan_layer_group_write, plan_layer_leaf_write,
-    plan_nested_field_write, plan_resource_delete, plan_resource_write,
+    self, ResourceValue, SuppliedIdentity, WRITE_ID_OVERFLOW, WRITE_LAYER_KEY_ARITY,
+    WRITE_NEXT_ID_UNSUPPORTED, WRITE_NOT_A_GROUP_LAYER, WRITE_NOT_A_LEAF_LAYER,
+    WRITE_REQUIRED_ABSENT, WRITE_TYPE_MISMATCH, WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD,
+    WRITE_UNKNOWN_LAYER, WriteError, WriteOp, WritePlan,
 };
-use marrow_schema::{ResourceSchema, compile_resource};
+use marrow_schema::{ResourceSchema, StoreSchema, compile_resource, compile_store};
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{
@@ -18,25 +16,166 @@ use marrow_store::path::{
 use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_syntax::{Declaration, parse_source};
 
-/// Compile the single resource declared in `source`.
-fn schema(source: &str) -> ResourceSchema {
-    let parsed = parse_source(source);
-    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
-    let decl = parsed
-        .file
-        .declarations
-        .into_iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Resource(resource) => Some(resource),
-            _ => None,
-        })
-        .expect("a resource declaration");
-    let (schema, errors) = compile_resource(&decl);
-    assert!(errors.is_empty(), "{errors:?}");
-    schema
+struct SavedResourceSchema {
+    resource: ResourceSchema,
+    store: StoreSchema,
 }
 
-/// The `Book` resource: a saved root with one required and one sparse field.
+impl std::ops::Deref for SavedResourceSchema {
+    type Target = ResourceSchema;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resource
+    }
+}
+
+/// Compile the single saved resource declared in `source`.
+fn schema(source: &str) -> SavedResourceSchema {
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
+    let mut resources = Vec::new();
+    let mut stores = Vec::new();
+    for declaration in parsed.file.declarations {
+        match declaration {
+            Declaration::Resource(resource) => {
+                let (schema, errors) = compile_resource(&resource);
+                assert!(errors.is_empty(), "{errors:?}");
+                resources.push(schema);
+            }
+            Declaration::Store(store) => {
+                let resource = resources
+                    .iter()
+                    .find(|resource| resource.name == store.resource)
+                    .expect("store resource declared before store");
+                let (schema, errors) = compile_store(&store, resource);
+                assert!(errors.is_empty(), "{errors:?}");
+                stores.push(schema);
+            }
+            _ => {}
+        }
+    }
+    let resource = resources
+        .into_iter()
+        .next()
+        .expect("a resource declaration");
+    let store = stores
+        .into_iter()
+        .find(|store| store.resource == resource.name)
+        .expect("a store declaration for the resource");
+    SavedResourceSchema { resource, store }
+}
+
+fn plan_resource_write(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    value: &ResourceValue,
+    store: &dyn Backend,
+) -> Result<WritePlan, WriteError> {
+    write::plan_resource_write(&schema.store, &schema.resource, identity, value, store)
+}
+
+fn plan_resource_delete(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    store: &dyn Backend,
+) -> Result<WritePlan, WriteError> {
+    write::plan_resource_delete(&schema.store, &schema.resource, identity, store)
+}
+
+fn plan_field_write(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    value: &SavedValue,
+    store: &dyn Backend,
+) -> Result<WritePlan, WriteError> {
+    write::plan_field_write(
+        &schema.store,
+        &schema.resource,
+        identity,
+        field,
+        value,
+        store,
+    )
+}
+
+fn plan_identity_field_write(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    keys: &[SavedKey],
+    referenced_arity: usize,
+) -> Result<WritePlan, WriteError> {
+    write::plan_identity_field_write(
+        &schema.store,
+        &schema.resource,
+        identity,
+        field,
+        keys,
+        referenced_arity,
+    )
+}
+
+fn plan_field_delete(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    field: &str,
+    store: &dyn Backend,
+) -> Result<WritePlan, WriteError> {
+    write::plan_field_delete(&schema.store, &schema.resource, identity, field, store)
+}
+
+fn plan_layer_leaf_write(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
+    write::plan_layer_leaf_write(&schema.store, &schema.resource, identity, layer, key, value)
+}
+
+fn plan_layer_group_write(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    key: &[SavedKey],
+    value: &ResourceValue,
+) -> Result<WritePlan, WriteError> {
+    write::plan_layer_group_write(&schema.store, &schema.resource, identity, layer, key, value)
+}
+
+fn plan_nested_field_write(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    layers: &[(&str, &[SavedKey])],
+    field: &str,
+    value: &SavedValue,
+) -> Result<WritePlan, WriteError> {
+    write::plan_nested_field_write(
+        &schema.store,
+        &schema.resource,
+        identity,
+        layers,
+        field,
+        value,
+    )
+}
+
+fn next_id(schema: &SavedResourceSchema, store: &dyn Backend) -> Result<i64, WriteError> {
+    write::next_id(&schema.store, store)
+}
+
+fn next_layer_pos(
+    schema: &SavedResourceSchema,
+    identity: &[SavedKey],
+    layer: &str,
+    store: &dyn Backend,
+) -> Result<i64, WriteError> {
+    write::next_layer_pos(&schema.store, &schema.resource, identity, layer, store)
+}
+
+/// The `Book` resource stored at `^books`, with one required and one sparse field.
 const BOOK: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -120,14 +259,6 @@ resource Book at ^books(id: int)
         required shelf: string
 ";
 
-/// A LOCAL `Book` (no saved root) with a keyed-leaf layer, to exercise the
-/// no-saved-root rejection through the layer planner.
-const LOCAL_BOOK_LAYERS: &str = "\
-resource Book
-    required title: string
-    tags(pos: int): string
-";
-
 const PATIENT_WITH_REQUIRED_GROUP: &str = "\
 resource Patient at ^patients(id: int)
     mrn: string
@@ -143,7 +274,7 @@ fn saved(text: &str) -> SavedValue {
 /// Plan and commit a whole-resource write against the current store state.
 fn write(
     store: &mut MemStore,
-    schema: &ResourceSchema,
+    schema: &SavedResourceSchema,
     identity: &[SavedKey],
     value: ResourceValue,
 ) {
@@ -156,7 +287,7 @@ fn write(
 /// Plan and commit a single-field write against the current store state.
 fn write_field(
     store: &mut MemStore,
-    schema: &ResourceSchema,
+    schema: &SavedResourceSchema,
     identity: &[SavedKey],
     field: &str,
     value: SavedValue,
@@ -168,7 +299,7 @@ fn write_field(
 }
 
 /// Plan and commit a keyed-leaf write of `^books(id).tags(pos)`.
-fn write_tag(store: &mut MemStore, schema: &ResourceSchema, id: i64, pos: i64, value: &str) {
+fn write_tag(store: &mut MemStore, schema: &SavedResourceSchema, id: i64, pos: i64, value: &str) {
     plan_layer_leaf_write(
         schema,
         &[SavedKey::Int(id)],
@@ -211,7 +342,7 @@ fn patient_name_field_path(id: i64, field: &str) -> Vec<u8> {
 }
 
 /// Plan and commit a group-entry field write of `^books(id).notes(noteId).text`.
-fn write_note(store: &mut MemStore, schema: &ResourceSchema, id: i64, note: &str, text: &str) {
+fn write_note(store: &mut MemStore, schema: &SavedResourceSchema, id: i64, note: &str, text: &str) {
     plan_nested_field_write(
         schema,
         &[SavedKey::Int(id)],
@@ -582,8 +713,8 @@ fn next_id_over_a_string_keyed_root_is_unsupported() {
     );
 }
 
-/// A keyless singleton root has no generated identity at all, so `nextId` is not
-/// available for it.
+/// A keyless singleton root has no store identity, so `nextId` is not available
+/// for it.
 #[test]
 fn next_id_over_a_singleton_root_is_unsupported() {
     let settings = schema("resource Settings at ^settings\n    required theme: string\n");
@@ -1629,22 +1760,6 @@ fn a_keyed_leaf_write_leaves_top_level_fields_untouched() {
 }
 
 #[test]
-fn a_keyed_leaf_write_to_a_resource_without_a_saved_root_is_rejected() {
-    let book = schema(LOCAL_BOOK_LAYERS);
-    let result = plan_layer_leaf_write(
-        &book,
-        &[SavedKey::Int(5)],
-        "tags",
-        &[SavedKey::Int(1)],
-        &SavedValue::Str("x".into()),
-    );
-    assert!(
-        matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
-        "{result:?}"
-    );
-}
-
-#[test]
 fn next_layer_pos_starts_at_one_when_empty() {
     let book = schema(BOOK_LAYERS);
     let store = MemStore::new();
@@ -1876,22 +1991,6 @@ fn a_group_entry_field_write_with_a_mismatched_value_type_is_rejected() {
     );
     assert!(
         matches!(result, Err(ref error) if error.code == WRITE_TYPE_MISMATCH),
-        "{result:?}"
-    );
-}
-
-#[test]
-fn a_group_entry_field_write_to_a_resource_without_a_saved_root_is_rejected() {
-    let book = schema(LOCAL_BOOK_LAYERS);
-    let result = plan_nested_field_write(
-        &book,
-        &[SavedKey::Int(5)],
-        &[("notes", &[SavedKey::Str("n1".into())])],
-        "text",
-        &SavedValue::Str("x".into()),
-    );
-    assert!(
-        matches!(result, Err(ref error) if error.code == WRITE_NO_SAVED_ROOT),
         "{result:?}"
     );
 }
@@ -2201,7 +2300,7 @@ fn a_failing_plan_step_leaves_the_store_byte_for_byte_unchanged() {
 
 /// How many mutations the second-write plan lowers to, derived by counting the
 /// steps a successful commit performs against a throwaway counting backend.
-fn plan_step_count(book: &ResourceSchema) -> usize {
+fn plan_step_count(book: &SavedResourceSchema) -> usize {
     let plan = plan_resource_write(
         book,
         &[SavedKey::Int(99)],
@@ -2252,16 +2351,16 @@ fn the_no_transaction_batched_path_gives_the_same_final_state() {
     );
 }
 
-/// A `Book` whose `authorId` is a typed reference to `Author`.
+/// A `Book` whose `authorId` is a typed reference to `^authors`.
 const BOOK_REF: &str = "\
 resource Book at ^books(id: int)
     required title: string
-    authorId: Author::Id
+    authorId: Id(^authors)
 ";
 
 #[test]
 fn an_identity_field_write_stages_the_canonical_identity_encoding() {
-    // Writing `^books(1).authorId = Author::Id(7)` stages the referenced identity's
+    // Writing `^books(1).authorId = nextId(^authors)` stages the referenced identity's
     // canonical key encoding at the field path — the same `encode_identity` a unique
     // index entry uses, reused unchanged.
     let book = schema(BOOK_REF);
@@ -2287,7 +2386,7 @@ fn an_identity_field_write_stages_the_canonical_identity_encoding() {
 
 #[test]
 fn an_identity_field_write_rejects_a_wrong_referenced_arity() {
-    // The referenced resource has a single-key identity, so a two-key value is the
+    // The referenced store has a single-key identity, so a two-key value is the
     // wrong shape: a catchable `write.type_mismatch`, not a `run.*` fault.
     let book = schema(BOOK_REF);
     let result = plan_identity_field_write(

@@ -1,6 +1,24 @@
 //! Expression type inference and the saved-path/field type resolution it walks.
 
-use super::*;
+use std::collections::HashMap;
+use std::path::Path;
+
+use marrow_schema::{MemberPathResolution, Type};
+use marrow_store::value::ScalarType;
+use marrow_syntax::{Severity, SourceSpan};
+
+use crate::checks::{
+    check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
+    key_type_diagnostic, operator_diagnostic,
+};
+use crate::enums::{check_is, join_or, resolve_enum_member_path, resolve_type};
+use crate::program::TypeNames;
+use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
+use crate::{
+    CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_PRIVATE_ENUM,
+    CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, MarrowType,
+    find_store_resource, identity_type_for_store, resolve_resource_type, resource_type_name,
+};
 
 /// Infer an expression's type without recording diagnostics. Resolution runs after
 /// the checking pass, which already reported any type errors, so a throwaway sink
@@ -323,10 +341,10 @@ pub(crate) fn infer_type(
                 }
             }
         }
-        // A bare `^root` naming a keyless singleton (`Settings at ^settings`) reads
-        // the whole record by its root, so it types to that resource — the same
-        // `Resource` a keyed `^books(key…)` whole read yields through its `Call`
-        // form. A keyed root used bare names no value (it needs keys), and any other
+        // A bare `^root` naming a keyless singleton store reads the whole record
+        // by its root, so it types to that resource shape — the same `Resource` a
+        // keyed `^books(key…)` whole read yields through its `Call` form. A keyed
+        // root used bare names no value (it needs keys), and any other
         // multi-segment name has no known type.
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
@@ -416,14 +434,9 @@ fn check_local_key_count(
 /// whole record. A keyed root needs keys to address a record, so a bare reference to
 /// one names no value here.
 fn singleton_resource_type(program: &CheckedProgram, root: &str) -> MarrowType {
-    match find_resource_schema(program, root) {
-        Some(resource)
-            if resource
-                .saved_root
-                .as_ref()
-                .is_some_and(|saved_root| saved_root.identity_keys.is_empty()) =>
-        {
-            MarrowType::Resource(resource.name.clone())
+    match find_store_resource(program, root) {
+        Some(store) if store.store.identity_keys.is_empty() => {
+            MarrowType::Resource(resource_type_name(&store.module.name, &store.resource.name))
         }
         _ => MarrowType::Unknown,
     }
@@ -431,7 +444,7 @@ fn singleton_resource_type(program: &CheckedProgram, root: &str) -> MarrowType {
 
 /// The declared type of a top-level saved field read: `base` is either a keyed
 /// record access `^root(key…)` (a call whose callee is the saved root) or — for a
-/// keyless singleton resource (`Settings at ^settings`) addressed by its root —
+/// keyless singleton store addressed by its root —
 /// the saved root `^root` itself. Group-layer fields and keyed-leaf reads are not
 /// resolved here.
 pub(crate) fn saved_field_type(
@@ -448,11 +461,11 @@ pub(crate) fn saved_field_type(
         Expression::SavedRoot { name, .. } => (name, true),
         _ => return None,
     };
-    let resource = find_resource_schema(program, root)?;
-    if bare_root && saved_root_requires_keys(resource) {
+    let store = find_store_resource(program, root)?;
+    if bare_root && !store.store.identity_keys.is_empty() {
         return None;
     }
-    field_member_type(resource, &[field], resource_module(program, &resource.name))
+    field_member_type(store.resource, &[field], &store.module.name)
 }
 
 /// The resource type of a whole-record read `^root(key…)`: the call's callee is
@@ -466,8 +479,11 @@ pub(crate) fn saved_resource_type(
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = callee else {
         return None;
     };
-    let resource = find_resource_schema(program, root)?;
-    Some(MarrowType::Resource(resource.name.clone()))
+    let store = find_store_resource(program, root)?;
+    Some(MarrowType::Resource(resource_type_name(
+        &store.module.name,
+        &store.resource.name,
+    )))
 }
 
 /// The record type of a whole group-entry access `^root(key…).layer(key…)` whose
@@ -481,21 +497,22 @@ pub(crate) fn saved_group_entry_type(
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
     let (root, layers) = saved_layer_chain(callee)?;
-    let resource = find_resource_schema(program, root)?;
+    let store = find_store_resource(program, root)?;
     // Only a keyed group (a layer holding members) is a whole-entry record; a keyed
     // leaf is a scalar/identity value already typed through `saved_leaf_type`.
-    resource
+    store
+        .resource
         .descend_layers(&layers)
         .filter(|node| matches!(node.kind, marrow_schema::NodeKind::Group))
         .map(|_| MarrowType::GroupEntry {
-            resource: resource.name.clone(),
+            resource: resource_type_name(&store.module.name, &store.resource.name),
             layers: layers.iter().map(|layer| (*layer).to_string()).collect(),
         })
 }
 
 /// The identity type of a unique-index lookup `^root.uniqueIndex(args)`: the
-/// owning resource's `Resource::Id`. A unique index stores one resource identity
-/// at the lookup path, so reading it yields that identity (mirrors the runtime's
+/// owning store's `Id(^root)`. A unique index stores one store identity at the
+/// lookup path, so reading it yields that identity (mirrors the runtime's
 /// `eval_index_lookup`). A non-unique index has no single identity in value
 /// position, so it is not typed here. `callee` is the `^root.index` field.
 pub(crate) fn saved_index_identity_type(
@@ -508,11 +525,13 @@ pub(crate) fn saved_index_identity_type(
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
         return None;
     };
-    let resource = find_resource_schema(program, root)?;
-    let index = resource.indexes.iter().find(|index| &index.name == name)?;
-    index
-        .unique
-        .then(|| MarrowType::Identity(resource.name.clone()))
+    let store = find_store_resource(program, root)?;
+    let index = store
+        .store
+        .indexes
+        .iter()
+        .find(|index| &index.name == name)?;
+    index.unique.then(|| identity_type_for_store(store.store))
 }
 
 /// The declared type of a field read off a resource-typed value, e.g. `book.title`
@@ -525,17 +544,17 @@ pub(crate) fn local_field_type(
 ) -> Option<MarrowType> {
     match base_type {
         MarrowType::Resource(name) => {
-            let resource = resolve::resolve_resource_by_name_any(program, name)?;
-            field_member_type(resource, &[field], resource_module(program, &resource.name))
+            let (resource, module) = resolve_resource_type(program, name)?;
+            field_member_type(resource, &[field], module)
         }
         MarrowType::GroupEntry {
             resource: name,
             layers,
         } => {
-            let resource = resolve::resolve_resource_by_name_any(program, name)?;
+            let (resource, module) = resolve_resource_type(program, name)?;
             let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
             chain.push(field);
-            field_member_type(resource, &chain, resource_module(program, &resource.name))
+            field_member_type(resource, &chain, module)
         }
         MarrowType::Error => error_field_type(field),
         _ => None,
@@ -560,12 +579,12 @@ pub(crate) fn saved_group_field_type(
     field: &str,
 ) -> Option<MarrowType> {
     let (root, mut chain) = saved_group_chain(base)?;
-    let resource = find_resource_schema(program, root)?;
+    let store = find_store_resource(program, root)?;
     if starts_from_bare_keyed_root(program, base) {
         return None;
     }
     chain.push(field);
-    field_member_type(resource, &chain, resource_module(program, &resource.name))
+    field_member_type(store.resource, &chain, &store.module.name)
 }
 
 fn singleton_saved_group_field_type(
@@ -577,16 +596,11 @@ fn singleton_saved_group_field_type(
         return None;
     };
     let (root, layer) = singleton_saved_layer(callee)?;
-    let resource = find_resource_schema(program, root)?;
-    let saved_root = resource.saved_root.as_ref()?;
-    if !saved_root.identity_keys.is_empty() {
+    let store = find_store_resource(program, root)?;
+    if !store.store.identity_keys.is_empty() {
         return None;
     }
-    field_member_type(
-        resource,
-        &[layer, field],
-        resource_module(program, &resource.name),
-    )
+    field_member_type(store.resource, &[layer, field], &store.module.name)
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -638,8 +652,8 @@ pub(crate) fn saved_leaf_type(
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
     let (root, layers) = saved_layer_chain(callee)?;
-    let resource = find_resource_schema(program, root)?;
-    leaf_member_type(resource, &layers, resource_module(program, &resource.name))
+    let store = find_store_resource(program, root)?;
+    leaf_member_type(store.resource, &layers, &store.module.name)
 }
 
 fn singleton_saved_leaf_type(
@@ -647,12 +661,11 @@ fn singleton_saved_leaf_type(
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
     let (root, layer) = singleton_saved_layer(callee)?;
-    let resource = find_resource_schema(program, root)?;
-    let saved_root = resource.saved_root.as_ref()?;
-    if !saved_root.identity_keys.is_empty() {
+    let store = find_store_resource(program, root)?;
+    if !store.store.identity_keys.is_empty() {
         return None;
     }
-    leaf_member_type(resource, &[layer], resource_module(program, &resource.name))
+    leaf_member_type(store.resource, &[layer], &store.module.name)
 }
 
 fn singleton_saved_layer(callee: &marrow_syntax::Expression) -> Option<(&str, &str)> {
@@ -737,6 +750,10 @@ pub(crate) fn lift_member_type(ty: Type, owning_module: &str) -> MarrowType {
             module: owning_module.to_string(),
             name,
         },
+        Type::Identity(identity) => MarrowType::Identity(identity),
+        Type::Sequence(element) => {
+            MarrowType::Sequence(Box::new(lift_member_type(*element, owning_module)))
+        }
         other => MarrowType::from_resolved(other, TypeNames::default()),
     }
 }
@@ -800,7 +817,7 @@ pub(crate) fn is_saved_path_expression(
 ) -> bool {
     use marrow_syntax::Expression;
     match expr {
-        Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::SavedRoot { name, .. } => find_store_resource(program, name).is_some(),
         Expression::Call { callee, .. } => is_saved_path_callee(program, callee),
         Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
             !starts_from_bare_keyed_root(program, expr) && is_saved_path_expression(program, base)
@@ -812,14 +829,14 @@ pub(crate) fn is_saved_path_expression(
 fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expression) -> bool {
     use marrow_syntax::Expression;
     match callee {
-        Expression::SavedRoot { name, .. } => find_resource_schema(program, name).is_some(),
+        Expression::SavedRoot { name, .. } => find_store_resource(program, name).is_some(),
         Expression::Call { .. } => is_saved_path_expression(program, callee),
         Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
             match base.as_ref() {
-                Expression::SavedRoot { name: root, .. } => find_resource_schema(program, root)
-                    .is_some_and(|resource| {
-                        !saved_root_requires_keys(resource)
-                            || resource.indexes.iter().any(|index| &index.name == name)
+                Expression::SavedRoot { name: root, .. } => find_store_resource(program, root)
+                    .is_some_and(|store| {
+                        store.store.identity_keys.is_empty()
+                            || store.store.indexes.iter().any(|index| &index.name == name)
                     }),
                 _ => is_saved_path_expression(program, base),
             }
@@ -830,8 +847,8 @@ fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expres
 
 fn starts_from_bare_keyed_root(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
     starts_from_bare_saved_root(expr)
-        .and_then(|root| find_resource_schema(program, root))
-        .is_some_and(saved_root_requires_keys)
+        .and_then(|root| find_store_resource(program, root))
+        .is_some_and(|store| !store.store.identity_keys.is_empty())
 }
 
 fn starts_from_bare_saved_root(expr: &marrow_syntax::Expression) -> Option<&str> {
@@ -845,19 +862,12 @@ fn starts_from_bare_saved_root(expr: &marrow_syntax::Expression) -> Option<&str>
     }
 }
 
-fn saved_root_requires_keys(resource: &marrow_schema::ResourceSchema) -> bool {
-    resource
-        .saved_root
-        .as_ref()
-        .is_some_and(|saved_root| !saved_root.identity_keys.is_empty())
-}
-
-/// The `Resource::Id` identity type of the resource at saved root `root`, or
+/// The `Id(^root)` identity type of the store at saved root `root`, or
 /// `Unknown` when `root` names no keyed saved root.
 pub(crate) fn record_identity_type(program: &CheckedProgram, root: &str) -> MarrowType {
-    match find_resource_schema(program, root) {
-        Some(resource) if resource.saved_root.is_some() => {
-            MarrowType::Identity(resource.name.clone())
+    match find_store_resource(program, root) {
+        Some(store) if !store.store.identity_keys.is_empty() => {
+            identity_type_for_store(store.store)
         }
         _ => MarrowType::Unknown,
     }
@@ -873,51 +883,15 @@ pub(crate) fn layer_key_type(
     let Some((root, layers)) = saved_layer_chain(layer_field) else {
         return MarrowType::Unknown;
     };
-    let Some(resource) = find_resource_schema(program, root) else {
+    let Some(store) = find_store_resource(program, root) else {
         return MarrowType::Unknown;
     };
-    match resource
+    match store
+        .resource
         .descend_layers(&layers)
         .map(|node| node.key_params.as_slice())
     {
         Some([key]) => MarrowType::from_resolved(key.ty.clone(), TypeNames::default()),
         _ => MarrowType::Unknown,
-    }
-}
-
-/// The type produced by a resource constructor callee, if `segments` name a
-/// resource visible to `from_module`: `Book(...)` constructs the resource value
-/// (its [`MarrowType::Resource`]), and `Book::Id(...)` constructs its identity
-/// ([`MarrowType::Identity`]). The resource *name* is module-scoped (own module
-/// first), so two modules can each declare a `Book`. Any other callee returns
-/// `None`, so a genuinely unresolved call is still reported.
-pub(crate) fn resource_constructor_resource<'p>(
-    program: &'p CheckedProgram,
-    from_module: &str,
-    segments: &[String],
-) -> Option<(MarrowType, &'p marrow_schema::ResourceSchema)> {
-    match segments {
-        [_] => match resolve(program, from_module, segments, ResolvableKind::Resource) {
-            Resolution::Found(Def {
-                item: DefItem::Resource(resource),
-                ..
-            }) => Some((MarrowType::Resource(resource.name.clone()), resource)),
-            _ => None,
-        },
-        [.., id] if id == "Id" => {
-            match resolve(
-                program,
-                from_module,
-                segments,
-                ResolvableKind::ResourceIdentity,
-            ) {
-                Resolution::Found(Def {
-                    item: DefItem::Resource(resource),
-                    ..
-                }) => Some((MarrowType::Identity(resource.name.clone()), resource)),
-                _ => None,
-            }
-        }
-        _ => None,
     }
 }

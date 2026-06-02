@@ -1,6 +1,13 @@
 //! Runtime faults: `RuntimeError`, the `run.*` codes, and the fault constructors.
 
-use crate::*;
+use marrow_check::{CheckedModule, CheckedProgram, FileId};
+use marrow_store::backend::StoreError;
+use marrow_store::value::{ScalarType, ValueError};
+use marrow_syntax::SourceSpan;
+
+use crate::env::AssignError;
+use crate::value::Value;
+use crate::write::WriteError;
 
 /// A runtime fault: a stable `run.*` code, a human-readable message, and the
 /// source span of the construct that raised it.

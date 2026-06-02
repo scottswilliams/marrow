@@ -4,9 +4,10 @@
 
 use std::process::ExitCode;
 
-use marrow_check::resolve::{resolve_resource_by_name_any, resolve_resource_by_root};
+use marrow_check::resolve::{resolve_resource_by_name_any, resolve_store_by_root};
 use marrow_check::{
-    CheckedProgram, Def, DefItem, IndexSchema, Resolution, ResolvableKind, ResourceSchema, resolve,
+    CheckedProgram, Def, DefItem, IndexSchema, Resolution, ResolvableKind, ResourceSchema,
+    StoreSchema, resolve,
 };
 use marrow_run::{SavedPathClass, classify_saved_path};
 use marrow_store::path::{PathSegment, display_path, encode_path, parse_path};
@@ -99,10 +100,13 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
     // named member. Together they pick the resource and the indexes that name
     // covers.
     let root = root_of(&segments);
-    let resource = root.and_then(|root| resolve_resource_by_root(program, root));
+    let store_resource = root.and_then(|root| resolve_store_by_root(program, root));
+    let resource = store_resource.map(|(_, resource)| resource);
     let field = terminal_field(&segments);
-    let indexes = match (resource, field) {
-        (Some(resource), Some(field)) => indexes_covering(resource, field),
+    let indexes = match (root, field) {
+        (Some(root), Some(field)) => store_by_root(program, root)
+            .map(|store| indexes_covering(store, field))
+            .unwrap_or_default(),
         _ => Vec::new(),
     };
     let encoded = encode_path(&segments);
@@ -124,14 +128,14 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
                     }
                 }
                 SavedPathClass::Identity {
-                    resource: referenced,
+                    store_root: referenced,
                     ..
                 } => {
                     print!(" resolves to");
                     if let Some(owner) = resource {
                         print!(" {} of resource {}", member_phrase(field), owner.name);
                     }
-                    println!(", type {referenced}::Id");
+                    println!(", type Id(^{referenced})");
                 }
                 SavedPathClass::IndexMarker => {
                     println!(" is a generated index entry");
@@ -177,8 +181,16 @@ fn terminal_field(segments: &[PathSegment]) -> Option<&str> {
 
 /// The declared indexes whose key arguments include `field` — the indexes a write
 /// to that field keeps coherent.
-fn indexes_covering<'r>(resource: &'r ResourceSchema, field: &str) -> Vec<&'r IndexSchema> {
-    resource
+fn store_by_root<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p StoreSchema> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| &module.stores)
+        .find(|store| store.root == root)
+}
+
+fn indexes_covering<'r>(store: &'r StoreSchema, field: &str) -> Vec<&'r IndexSchema> {
+    store
         .indexes
         .iter()
         .filter(|index| index.args.iter().any(|arg| arg == field))
@@ -218,7 +230,9 @@ fn saved_path_record(
 ) -> serde_json::Value {
     let (class_name, ty) = match class {
         SavedPathClass::Scalar(ty) => ("scalar", Some(ty.name().to_string())),
-        SavedPathClass::Identity { resource, .. } => ("identity", Some(format!("{resource}::Id"))),
+        SavedPathClass::Identity { store_root, .. } => {
+            ("identity", Some(format!("Id(^{store_root})")))
+        }
         SavedPathClass::IndexMarker => ("index_marker", None),
         SavedPathClass::KeyTypeMismatch { .. } => ("key_type_mismatch", None),
         SavedPathClass::Orphan => ("orphan", None),
@@ -247,26 +261,13 @@ fn saved_path_record(
 
 /// Explain a name: resolve it as each applicable kind through the one resolver the
 /// checker and runtime use, and report `found`/`ambiguous`/`not_visible`/
-/// `unresolved`. A trailing `::Id` (a `Resource::Id` or `module::Resource::Id`) is
-/// a resource-identity request on the name minus that suffix; any other bare or
-/// qualified name is tried as a function first, then a resource, so the first
-/// concrete declaration wins.
+/// `unresolved`. A bare or qualified name is tried as a function first, then a
+/// resource, so the first concrete declaration wins.
 fn explain_name(program: &CheckedProgram, target: &str, format: CheckFormat) {
     let segments: Vec<String> = target.split("::").map(str::to_string).collect();
-    let resolution = if segments.last().map(String::as_str) == Some("Id") && segments.len() >= 2 {
-        // The name names a resource identity. Strip the `Id` and resolve the
-        // remaining `Resource` / `module::Resource` as a resource, reported as the
-        // identity. The resolver's own two-segment `Resource::Id` special-case only
-        // covers a bare resource, so the qualified form is resolved here instead.
-        resolve_resource_name(program, &segments[..segments.len() - 1])
-    } else {
-        // A name is resolved project-wide (from no particular module) as a function,
-        // then, if that fails, as a resource — the same fall-through the runtime's
-        // call dispatch uses.
-        match resolve(program, "", &segments, ResolvableKind::Function) {
-            Resolution::Unresolved => resolve_resource_name(program, &segments),
-            resolution => resolution,
-        }
+    let resolution = match resolve(program, "", &segments, ResolvableKind::Function) {
+        Resolution::Unresolved => resolve_resource_name(program, &segments),
+        resolution => resolution,
     };
     match format {
         CheckFormat::Text => print!("{}", name_text(target, &resolution)),
@@ -280,12 +281,12 @@ fn explain_name(program: &CheckedProgram, target: &str, format: CheckFormat) {
 /// shared resolver handles the qualified form and a bare resource in the empty
 /// module; a bare resource living in some other module is not reachable by an
 /// unqualified name there, so it falls back to the project-wide resource-name
-/// lookup the checker uses, reported as the resource identity.
+/// lookup the checker uses.
 fn resolve_resource_name<'p>(program: &'p CheckedProgram, name: &[String]) -> Resolution<'p> {
-    match resolve(program, "", name, ResolvableKind::ResourceIdentity) {
+    match resolve(program, "", name, ResolvableKind::Resource) {
         Resolution::Unresolved if name.len() == 1 => {
             match resolve_resource_by_name_any(program, &name[0]) {
-                Some(resource) => resource_identity(program, resource),
+                Some(resource) => resource_name(program, resource),
                 None => Resolution::Unresolved,
             }
         }
@@ -293,12 +294,9 @@ fn resolve_resource_name<'p>(program: &'p CheckedProgram, name: &[String]) -> Re
     }
 }
 
-/// Wrap a project-wide resource in a `Found` identity resolution, attributing it to
-/// the module that declares it (the resolver's `Def` carries the owning module).
-fn resource_identity<'p>(
-    program: &'p CheckedProgram,
-    resource: &'p ResourceSchema,
-) -> Resolution<'p> {
+/// Wrap a project-wide resource in a `Found` resolution, attributing it to the
+/// module that declares it (the resolver's `Def` carries the owning module).
+fn resource_name<'p>(program: &'p CheckedProgram, resource: &'p ResourceSchema) -> Resolution<'p> {
     let module = program
         .modules
         .iter()
@@ -306,7 +304,7 @@ fn resource_identity<'p>(
         .expect("resource came from a program module");
     Resolution::Found(Def {
         module,
-        kind: ResolvableKind::ResourceIdentity,
+        kind: ResolvableKind::Resource,
         item: DefItem::Resource(resource),
     })
 }
@@ -361,7 +359,7 @@ fn name_record(target: &str, resolution: &Resolution<'_>) -> serde_json::Value {
 }
 
 /// The kind word for a resolved declaration, matching the `ResolvableKind` it was
-/// reached as: a function, or a resource (constructor or identity).
+/// reached as: a function or a resource.
 fn kind_word(def: &Def<'_>) -> &'static str {
     match def.item {
         DefItem::Function(_) => "function",

@@ -13,9 +13,9 @@ compilation ideas live in [future/data-evolution.md](future/data-evolution.md).
 
 ## What A Change Requires
 
-A schema change is a source edit to a `resource` declaration. Some edits are
-safe on their own; others leave existing saved data that the new schema does not
-fully describe until explicit data-evolution work runs.
+A schema change is a source edit to a `resource` or `store` declaration. Some
+edits are safe on their own; others leave existing saved data that the new
+schema does not fully describe until explicit data-evolution work runs.
 
 | Change | What it needs today |
 |---|---|
@@ -33,18 +33,22 @@ remain valid. An unpopulated sparse field is absent, not zero or empty. Read it
 with `path ?? default` or guard it with `exists(path)`.
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
     subtitle: string
+
+store ^books(id: int): Book
 ```
 
 A `required` field is different. Existing records were written without it, so
 populate it before code reads it directly.
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required pages: int
+
+store ^books(id: int): Book
 ```
 
 What Marrow does with an under-populated record:
@@ -92,14 +96,15 @@ syntax. Use explicit maintenance code until catalog-owned identity lands.
 
 ## Index Rebuilds
 
-Adding an `index` to a resource that already holds data leaves the index tree
-empty until indexed values are written through managed writes.
+Adding an `index` to a store that already holds data leaves the index tree empty
+until indexed values are written through managed writes.
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     title: string
     shelf: string
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
 ```
 

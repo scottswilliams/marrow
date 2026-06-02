@@ -1,6 +1,29 @@
 //! Sequence and keyed builtins: keys/values/entries/reversed/neighbor/append.
 
-use crate::*;
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+use marrow_syntax::{Argument, Expression, SourceSpan};
+
+use crate::env::{AssignError, Env};
+use crate::error::{
+    RUN_ABSENT, RUN_STORE, RUN_TYPE, RuntimeError, assign_error, overflow, raise_fault, type_error,
+    unsupported, write_fault,
+};
+use crate::expr::eval_expr;
+use crate::path::{Terminal, lower, saved_segments};
+use crate::read::{
+    LayerEntryAddress, enumerate_layer, enumerate_layer_dir, keys_argument, read_layer_entry,
+    read_layer_entry_at, read_resource, reversed_argument,
+};
+use crate::schema_query::{find_store_resource, is_saved_path, root_identity_arity};
+use crate::stdlib::{
+    check_key_collection, is_index_branch, is_iterable_index_branch, unique_index_lookup_values,
+};
+use crate::value::{LocalTreeEntry, Value, saved_key_to_value, value_to_key, value_to_saved};
+use crate::write::{
+    next_id, next_layer_pos, next_nested_layer_pos, plan_layer_leaf_write,
+    plan_nested_layer_leaf_write,
+};
+use crate::write_dispatch::nested_layer_prefix;
 
 /// Where a saved read sits, which decides how an absent element fails. A
 /// value-position read (`^book(id).title` used as a value) raises a catchable
@@ -154,9 +177,9 @@ fn stream_index_branch(
     let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
         return Ok(None);
     };
-    let resource = find_resource(env.program, root)
+    let (store_schema, _) = find_store_resource(env.program, root)
         .ok_or_else(|| unsupported("iterating this saved path", span))?;
-    let Some(schema) = resource.indexes.iter().find(|i| &i.name == index) else {
+    let Some(schema) = store_schema.indexes.iter().find(|i| &i.name == index) else {
         return Err(unsupported("iterating this saved path", span));
     };
     if schema.unique {
@@ -180,10 +203,7 @@ fn stream_index_branch(
         prefix.push(PathSegment::IndexKey(key.clone()));
         arg_keys.push(key);
     }
-    let identity_arity = resource
-        .saved_root
-        .as_ref()
-        .map_or(0, |root| root.identity_keys.len());
+    let identity_arity = store_schema.identity_keys.len();
     let identity_start = schema.args.len().saturating_sub(identity_arity);
     let depth = if args.len() < identity_start {
         1
@@ -279,11 +299,11 @@ pub(crate) fn eval_next_id(
     // (composite, non-int, or singleton) surfaces as a catchable `write.*` fault
     // from `next_id`. The schema-driven gate replaces the old name-only scan, which
     // would invent a bogus `Int(1)` for any root.
-    let resource = find_resource(env.program, name)
+    let (store_schema, _) = find_store_resource(env.program, name)
         .ok_or_else(|| unsupported("`nextId` of an undeclared saved root", span))?;
     let next = {
         let store = env.store.borrow();
-        next_id(resource, &*store)
+        next_id(store_schema, &*store)
     };
     let next = next.map_err(|error| write_fault(error, span))?;
     Ok(Value::Int(next))
@@ -332,7 +352,7 @@ pub(crate) fn eval_append(
         return Err(unsupported("appending to this path", span));
     };
     let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
-    let resource = find_resource(env.program, &root)
+    let (store_schema, resource) = find_store_resource(env.program, &root)
         .ok_or_else(|| unsupported("appending under this saved root", span))?;
     // Append adds a key to this layer's key set.
     env.guard_traversed_layer(
@@ -344,24 +364,39 @@ pub(crate) fn eval_append(
     let pos = {
         let store = env.store.borrow();
         if parents.is_empty() {
-            next_layer_pos(resource, &identity, layer, &*store)
+            next_layer_pos(store_schema, resource, &identity, layer, &*store)
         } else {
             let parent_refs: Vec<(&str, &[SavedKey])> = parents
                 .iter()
                 .map(|(name, keys)| (name.as_str(), keys.as_slice()))
                 .collect();
-            next_nested_layer_pos(resource, &identity, &parent_refs, layer, &*store)
+            next_nested_layer_pos(
+                store_schema,
+                resource,
+                &identity,
+                &parent_refs,
+                layer,
+                &*store,
+            )
         }
     };
     let pos = pos.map_err(|error| write_fault(error, span))?;
     let plan = if parents.is_empty() {
-        plan_layer_leaf_write(resource, &identity, layer, &[SavedKey::Int(pos)], &saved)
+        plan_layer_leaf_write(
+            store_schema,
+            resource,
+            &identity,
+            layer,
+            &[SavedKey::Int(pos)],
+            &saved,
+        )
     } else {
         let parent_refs: Vec<(&str, &[SavedKey])> = parents
             .iter()
             .map(|(name, keys)| (name.as_str(), keys.as_slice()))
             .collect();
         plan_nested_layer_leaf_write(
+            store_schema,
             resource,
             &identity,
             &parent_refs,

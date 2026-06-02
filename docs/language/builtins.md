@@ -166,7 +166,7 @@ neighbor, so the result is maybe-present and must be resolved at the read, the s
 as any maybe-present value. It composes with `??`:
 
 ```mw
-const following = next(^books(id)) ?? Book::Id(id)
+const following = next(^books(id)) ?? id
 ```
 
 ## Sequence Updates
@@ -250,24 +250,24 @@ boundaries.
 
 ## IDs
 
-`nextId(root)` returns the next identity value for a keyed saved resource root
-with the default integer identity policy:
+`nextId(root)` returns the next identity value for a keyed store root with the
+default integer identity policy:
 
 ```mw
 const id = nextId(^books)
 ```
 
-For a typed resource root, `nextId` returns that resource's ID type:
+For a typed store root, `nextId` returns that store's identity type:
 
 ```mw
-const id: Book::Id = nextId(^books)
+const id: Id(^books) = nextId(^books)
 ```
 
 `nextId(...)` is an effectful value function. The checker tracks the
 allocation just as it tracks `append(...)` and direct saved writes.
 
-Marrow provides a default per-root allocation policy for a resource with one
-`int` identity key. Composite identities and non-integer identities are
+Marrow provides a default per-root allocation policy for a store with one `int`
+identity key. Composite identities and non-integer identities are
 application-provided; `nextId` is not available for those roots in ordinary
 `.mw`.
 
@@ -279,12 +279,12 @@ late.
 
 After restore, `nextId` must choose an unused identity. It may skip ahead.
 
-If a resource root uses application-provided identity keys, allocate those keys
-in application or host code, then construct the generated identity value before
-writing the resource:
+If a store uses application-provided identity keys, allocate those keys in
+application or host code, then pass the checked identity value before writing the
+resource:
 
 ```mw
-const id = Book::Id(17)
+const id: Id(^books) = loadBookId("book-17")
 ```
 
 ## Errors

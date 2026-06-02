@@ -786,10 +786,10 @@ fn analysis_snapshot_retains_files_with_parse_errors() {
 }
 
 #[test]
-fn surfaces_resource_schema_errors() {
+fn surfaces_resource_body_index_errors() {
     let root = temp_project("schema-error", |root| {
-        // An index is only valid as a direct member of a saved resource, not
-        // inside a child layer.
+        // Resource bodies no longer own index declarations; indexes belong to the
+        // store body, so a nested resource-body index is rejected by the parser.
         write(
             root,
             "src/shelf.mw",
@@ -806,10 +806,42 @@ fn surfaces_resource_schema_errors() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "schema.index_in_group"),
+            .any(|diagnostic| diagnostic.code == "parse.syntax"
+                && diagnostic.message.contains("store body")),
         "{:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn split_store_applies_saved_field_schema_rules() {
+    let errors = check_module(
+        "split-store-saved-field",
+        "module m\n\
+         resource Author\n\
+         \x20   required name: string\n\
+         resource Book\n\
+         \x20   author: Author\n\
+         store ^books(id: int): Book\n",
+        "schema.non_enum_named_field",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("author"));
+}
+
+#[test]
+fn legacy_resource_identity_type_is_rejected_as_a_saved_field() {
+    let errors = check_module(
+        "legacy-id-saved-field",
+        "module m\n\
+         resource Book\n\
+         \x20   title: string\n\
+         \x20   legacy: Book::Id\n\
+         store ^books(id: int): Book\n",
+        "schema.non_enum_named_field",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].message.contains("legacy"));
 }
 
 #[test]
@@ -921,15 +953,15 @@ fn rejects_a_cross_module_qualified_enum_identity_key() {
 
 #[test]
 fn rejects_a_sequence_index_argument() {
-    // An index argument keys on its field's stored scalar. A `sequence` has none,
-    // so the index is rejected at the third key position.
+    // A sequence member is a keyed layer, not a top-level scalar field, so an
+    // index cannot name it as an argument.
     let errors = check_module(
         "sequence-index-arg",
         "module m\n\
          resource Order at ^orders(id: int)\n\
          \x20   tags: sequence[string]\n\
          \x20   index byTags(tags, id)\n",
-        "schema.nonscalar_key",
+        "schema.unknown_index_arg",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
     assert!(errors[0].message.contains("byTags"));
@@ -1456,9 +1488,9 @@ fn is_with_a_bare_duplicated_member_is_ambiguous() {
 }
 
 #[test]
-fn reports_two_resources_owning_one_saved_root() {
+fn reports_two_stores_sharing_one_saved_root() {
     let root = temp_project("dup-root", |root| {
-        // A saved root has one managed owner; two resources on `^books` collide.
+        // A saved root has one managed owner; two stores on `^books` collide.
         write(
             root,
             "src/shelf.mw",
@@ -1475,6 +1507,86 @@ fn reports_two_resources_owning_one_saved_root() {
     let owners = with_code(&report, "schema.duplicate_root_owner");
     assert_eq!(owners.len(), 1, "{:#?}", report.diagnostics);
     assert!(owners[0].message.contains("books"), "{}", owners[0].message);
+}
+
+#[test]
+fn split_store_facts_keep_resource_and_store_identity_separate() {
+    let root = temp_project("split-store-facts", |root| {
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byTitle(title, id)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let module = program.facts.module_id("shelf").expect("shelf module");
+    let resource = program.facts.resource_id(module, "Book").expect("Book");
+    let store = program
+        .facts
+        .store_id(module, "books")
+        .expect("books store");
+    assert_eq!(program.facts.store(store).resource, resource);
+    assert_eq!(program.facts.store_indexes().len(), 1);
+    let index = &program.facts.store_indexes()[0];
+    assert_eq!(index.store, store);
+    assert_eq!(index.name, "byTitle");
+    assert!(
+        program
+            .facts
+            .resource_members()
+            .iter()
+            .all(|member| member.name != "byTitle"),
+        "{:#?}",
+        program.facts.resource_members()
+    );
+}
+
+#[test]
+fn split_store_may_precede_the_resource_shape() {
+    let root = temp_project("store-before-resource", |root| {
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             store ^books(id: int): Book\n\
+             \x20   index byTitle(title, id)\n\
+             resource Book\n\
+             \x20   title: string\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let module = program.facts.module_id("shelf").expect("shelf module");
+    let resource = program.facts.resource_id(module, "Book").expect("Book");
+    let store = program
+        .facts
+        .store_id(module, "books")
+        .expect("books store");
+    assert_eq!(program.facts.store(store).resource, resource);
+}
+
+#[test]
+fn id_of_store_is_the_canonical_reference_type() {
+    let found = check_module(
+        "store-id-reference",
+        "module m\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
+         fn put()\n    ^books(1).authorId = nextId(^authors)\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]
@@ -1510,7 +1622,7 @@ fn saved_inout_through_index_entry_is_prototype_only() {
         "prototype-index-inout",
         "module m\n\
          resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
-         fn touch(inout id: Book::Id)\n    return\n\
+         fn touch(inout id: Id(^books))\n    return\n\
          fn f(id: int)\n    touch(inout ^books.byShelf(\"fiction\")(id))\n",
     );
 
@@ -1555,9 +1667,9 @@ fn declared_saved_members_named_like_traversal_shapers_are_not_prototype_only() 
         "declared-traversal-shaped-names",
         "module m\n\
          resource Book at ^books(id: int)\n    shelf: string\n    window(pos: int): string\n    index take(shelf, id)\n\n\
-         fn f(id: Book::Id)\n    \
+         fn f(id: Id(^books))\n    \
          ^books(id).window(1) = \"open\"\n    \
-         for found in ^books.take(\"fiction\")\n        var typed: Book::Id = found\n",
+         for found in ^books.take(\"fiction\")\n        var typed: Id(^books) = found\n",
     );
 
     let found = with_code(&report, "check.prototype_only");
@@ -2024,7 +2136,12 @@ fn known_types_are_not_flagged_as_unknown() {
         write(
             root,
             "src/m.mw",
-            "module m\nresource Book at ^books(id: int)\n    required title: string\n\nfn f(a: int, b: sequence[string], c: Book::Id, d: Book, e: unknown, g: shelf::Thing): bool\n    return true\n",
+            "module m\nresource Book at ^books(id: int)\n    required title: string\n\nfn f(a: int, b: sequence[string], c: Id(^books), d: Book, e: unknown, g: shelf::Thing): bool\n    return true\n",
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\nresource Thing\n    name: string\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -2577,8 +2694,7 @@ fn out_and_inout_markers_are_rejected_on_plain_call_targets() {
     let found = check_module(
         "out-marker-plain-calls",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\
-         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(out 5)\n    const len: int = std::text::length(out s)\n    const book_id: Book::Id = Book::Id(out id)\n",
+         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(out 5)\n    const len: int = std::text::length(out s)\n    const converted: int = int(out id)\n",
         "check.call_argument",
     );
     assert_eq!(found.len(), 3, "{found:#?}");
@@ -2677,9 +2793,9 @@ fn a_resource_constructor_is_not_an_unresolved_call() {
 }
 
 #[test]
-fn an_identity_constructor_is_not_an_unresolved_call() {
-    // `Book::Id(1)` constructs a resource identity; it is a
-    // known declared resource's identity, not an undefined function.
+fn legacy_identity_constructor_is_an_unresolved_call() {
+    // `Book::Id(1)` is legacy syntax. Store identity values come from saved-root
+    // operations such as `nextId(^books)`.
     let found = check_module(
         "ctor-identity",
         "module m\n\
@@ -2687,7 +2803,7 @@ fn an_identity_constructor_is_not_an_unresolved_call() {
          fn caller()\n    const id = Book::Id(1)\n",
         "check.unresolved_call",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -2750,23 +2866,23 @@ fn a_qualified_resource_constructor_is_not_an_unresolved_call() {
 }
 
 #[test]
-fn an_identity_constructor_keeps_precedence_over_a_qualified_resource_name() {
+fn qualified_id_call_uses_the_resource_constructor_without_identity_precedence() {
     let root = temp_project("identity-constructor-precedence", |root| {
         write(
             root,
-            "src/Book.mw",
-            "module Book\nresource Id\n    title: string\n",
+            "src/catalog.mw",
+            "module catalog\nresource Id\n    title: string\n",
         );
         write(
             root,
             "src/app.mw",
-            "module app\nresource Book at ^books(id: int)\n    title: string\nfn caller()\n    var id = Book::Id(1)\n",
+            "module app\nuse catalog\nresource Book at ^books(id: int)\n    title: string\nfn caller()\n    var id = catalog::Id(1)\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();
     assert!(
-        with_code(&report, "check.call_argument").is_empty(),
+        with_code(&report, "check.call_argument").len() == 1,
         "{:#?}",
         report.diagnostics
     );
@@ -2791,7 +2907,7 @@ fn a_primary_root_loop_binds_identities() {
         "root-loop-identities",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn titles()\n    for id in ^books\n        var typed: Book::Id = id\n",
+         fn titles()\n    for id in ^books\n        var typed: Id(^books) = id\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2802,7 +2918,7 @@ fn a_two_name_primary_root_loop_binds_identity_and_resource() {
         "root-loop-entries",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn titles()\n    for id, book in ^books\n        var typed: Book::Id = id\n        var title: string = book.title\n",
+         fn titles()\n    for id, book in ^books\n        var typed: Id(^books) = id\n        var title: string = book.title\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2813,7 +2929,7 @@ fn a_sequence_layer_loop_binds_keys() {
         "layer-loop-keys",
         "module m\n\
          resource Book at ^books(id: int)\n    tags: sequence[string]\n\n\
-         fn tags(id: Book::Id)\n    for pos in ^books(id).tags\n        var typed: int = pos\n",
+         fn tags(id: Id(^books))\n    for pos in ^books(id).tags\n        var typed: int = pos\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2824,7 +2940,7 @@ fn a_keyed_group_layer_loop_binds_group_entry_values() {
         "group-layer-loop-elements",
         "module m\n\
          resource Book at ^books(id: int)\n    versions(version: int)\n        required title: string\n\n\
-         fn titles(id: Book::Id)\n    for version in ^books(id).versions\n        var typed: int = version\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
+         fn titles(id: Id(^books))\n    for version in ^books(id).versions\n        var typed: int = version\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2863,9 +2979,24 @@ fn a_unique_index_lookup_loop_binds_the_identity() {
         "unique-index-loop",
         "module m\n\
          resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
-         fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var typed: Book::Id = id\n",
+         fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var typed: Id(^books) = id\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn unique_index_lookup_arguments_are_checked() {
+    let found = check_module(
+        "unique-index-args",
+        "module m\n\
+         resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         fn f()\n    \
+         const missing = ^books.byIsbn()\n    \
+         const extra = ^books.byIsbn(\"978\", 1)\n    \
+         const wrong = ^books.byIsbn(123)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
 }
 
 #[test]
@@ -2877,7 +3008,7 @@ fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suff
          fn f()\n    \
          for author in ^books.byAuthorShelf\n        var typed_author: string = author\n    \
          for shelf in ^books.byAuthorShelf(\"ann\")\n        var typed_shelf: string = shelf\n    \
-         for id in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Book::Id = id\n",
+         for id in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Id(^books) = id\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2889,8 +3020,8 @@ fn identity_yielding_index_branches_bind_identity_and_resource_pairs() {
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
          fn f()\n    \
-         for id, book in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Book::Id = id\n        var typed_title: string = book.title\n    \
-         for exact_id, exact_book in ^books.byAuthorShelf(\"ann\", \"fiction\", 1)\n        var exact_typed: Book::Id = exact_id\n        var exact_title: string = exact_book.title\n",
+         for id, book in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Id(^books) = id\n        var typed_title: string = book.title\n    \
+         for exact_id, exact_book in ^books.byAuthorShelf(\"ann\", \"fiction\", 1)\n        var exact_typed: Id(^books) = exact_id\n        var exact_title: string = exact_book.title\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2925,7 +3056,7 @@ fn supported_collection_wrappers_bind_their_documented_shapes() {
         "collection-wrapper-shapes",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn f()\n    for id in keys(^books)\n        var typed: Book::Id = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Book::Id = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n",
+         fn f()\n    for id in keys(^books)\n        var typed: Id(^books) = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Id(^books) = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2936,7 +3067,7 @@ fn layer_key_traversal_binds_declared_key_types() {
         "layer-key-traversal-types",
         "module m\n\
          resource Run at ^runs(id: int)\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\n\
-         fn f(id: Run::Id)\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
+         fn f(id: Id(^runs))\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2974,7 +3105,7 @@ fn reversed_saved_collection_expressions_type_element_sequences() {
         "reversed-saved-expressions",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\n\
-         fn f(id: Book::Id)\n    const ids = reversed(^books)\n    for bookId in ids\n        var typed: Book::Id = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in positions\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in tags\n        var also_bad = tag + 1\n",
+         fn f(id: Id(^books))\n    const ids = reversed(^books)\n    for bookId in ids\n        var typed: Id(^books) = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in positions\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in tags\n        var also_bad = tag + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 2, "{found:#?}");
@@ -3551,7 +3682,7 @@ fn type_surface_count_builtin_result_is_an_int() {
         "module m\n\
          resource Book at ^books(id: int)\n    tags(pos: int): string\n\n\
          fn countBooks(): int\n    return count(^books)\n\n\
-         fn countTags(id: Book::Id): int\n    return count(^books(id).tags)\n",
+         fn countTags(id: Id(^books)): int\n    return count(^books(id).tags)\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -3586,9 +3717,9 @@ fn type_surface_ledger_reads_and_traversals_have_concrete_types() {
         "ledger-type-surfaces",
         "module m\n\
          resource Account at ^accounts(code: string)\n    required name: string\n    amounts(pos: int): decimal\n\n\
-         fn sumAmounts(code: Account::Id): decimal\n    var sum: decimal = 0.0\n    for amount in values(^accounts(code).amounts)\n        sum = sum + amount\n    return sum\n\n\
+         fn sumAmounts(code: Id(^accounts)): decimal\n    var sum: decimal = 0.0\n    for amount in values(^accounts(code).amounts)\n        sum = sum + amount\n    return sum\n\n\
          fn countAccounts(): int\n    return count(^accounts)\n\n\
-         fn ids()\n    for code in keys(^accounts)\n        const typed: Account::Id = code\n\n\
+         fn ids()\n    for code in keys(^accounts)\n        const typed: Id(^accounts) = code\n\n\
          fn accounts()\n    for code, account in ^accounts\n        const name: string = account.name\n\n\
          fn handle(): bool\n    try\n        throw Error(code: \"x.y\", message: \"m\")\n    catch err: Error\n        return err.code == ErrorCode(\"x.y\")\n",
     );
@@ -3713,7 +3844,7 @@ fn type_surface_optional_group_field_read_preserves_the_leaf_type() {
         "module m\n\
          resource Book at ^books(id: int)\n\
          \x20   binding\n        cover: string\n\n\
-         fn cover(id: Book::Id): string\n    return ^books(id)?.binding?.cover\n",
+         fn cover(id: Id(^books)): string\n    return ^books(id)?.binding?.cover\n",
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -3937,44 +4068,44 @@ fn a_typed_initializer_with_an_unresolved_value_is_flagged() {
 
 #[test]
 fn an_unknown_value_into_an_identity_place_is_not_flagged() {
-    // `nextId(^books)` is typed `Book::Id`, not `unknown`, so the initializer is the
-    // nominal match — this guards the `const id: Book::Id = nextId(^books)` shape
+    // `nextId(^books)` is typed `Id(^books)`, not `unknown`, so the initializer is the
+    // nominal match — this guards the `const id: Id(^books) = nextId(^books)` shape
     // against a false untyped-value error.
     let found = check_module(
         "untyped-identity",
         "module m\n\
          resource Book at ^books(id: int)\n    title: string\n\n\
-         fn f()\n    const id: Book::Id = nextId(^books)\n",
+         fn f()\n    const id: Id(^books) = nextId(^books)\n",
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]
-fn an_identity_typed_field_accepts_an_identity_of_that_resource() {
-    // A saved field typed `Author::Id` is a reference: assigning a real
-    // `Author::Id` is the nominal match, so nothing is flagged.
+fn an_identity_typed_field_accepts_an_identity_of_that_store() {
+    // A saved field typed `Id(^authors)` is a reference: assigning a real
+    // `Id(^authors)` is the nominal match, so nothing is flagged.
     let found = check_module(
         "ref-field-ok",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
-         fn f()\n    ^books(1).authorId = Author::Id(7)\n",
+         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         fn f()\n    ^books(1).authorId = nextId(^authors)\n",
         "check.assignment_type",
     );
     assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]
-fn an_identity_typed_field_rejects_a_wrong_resource_identity() {
-    // Assigning a `Book::Id` into an `Author::Id` field is the nominal mismatch a
+fn an_identity_typed_field_rejects_a_wrong_store_identity() {
+    // Assigning a `Id(^books)` into an `Id(^authors)` field is the nominal mismatch a
     // typed reference forbids.
     let found = check_module(
-        "ref-field-wrong-resource",
+        "ref-field-wrong-store",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
-         fn f()\n    ^books(1).authorId = Book::Id(7)\n",
+         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         fn f()\n    ^books(1).authorId = nextId(^books)\n",
         "check.assignment_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -3982,12 +4113,13 @@ fn an_identity_typed_field_rejects_a_wrong_resource_identity() {
 
 #[test]
 fn an_identity_typed_field_rejects_a_raw_scalar() {
-    // A bare `int` is not an identity; it must be constructed as `Author::Id(...)`.
+    // A bare `int` is not an identity; store identity values are produced by
+    // operations such as `nextId(^authors)`.
     let found = check_module(
         "ref-field-raw-scalar",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
          fn f()\n    ^books(1).authorId = 7\n",
         "check.assignment_type",
     );
@@ -3996,16 +4128,15 @@ fn an_identity_typed_field_rejects_a_raw_scalar() {
 
 #[test]
 fn an_unknown_value_into_an_identity_field_is_an_untyped_value() {
-    // A dynamic `unknown` parameter stored into an `Author::Id` field is the
+    // A dynamic `unknown` parameter stored into an `Id(^authors)` field is the
     // foreign-value hazard: a single raw key is a structurally valid identity
-    // encoding, so `data integrity` cannot catch it later. The conversion boundary
-    // for an identity is its `Author::Id(...)` constructor, so strict typing rejects
-    // the unconverted value the same way a scalar place does — convert it first.
+    // encoding, so `data integrity` cannot catch it later. Strict typing rejects the
+    // unconverted value the same way a scalar place does.
     let found = check_module(
         "ref-field-untyped",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
          fn put(x: unknown)\n    ^books(1).authorId = x\n",
         "check.untyped_value",
     );
@@ -4014,13 +4145,13 @@ fn an_unknown_value_into_an_identity_field_is_an_untyped_value() {
 
 #[test]
 fn nextid_into_an_identity_field_is_not_an_untyped_value() {
-    // `nextId(^authors)` is typed `Author::Id`, not `unknown`, so assigning it into
-    // an `Author::Id` field is the nominal match — never the untyped-value path.
+    // `nextId(^authors)` is typed `Id(^authors)`, not `unknown`, so assigning it into
+    // an `Id(^authors)` field is the nominal match — never the untyped-value path.
     let found = check_module(
         "ref-field-nextid-ok",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
          fn put()\n    ^books(1).authorId = nextId(^authors)\n",
         "check.untyped_value",
     );
@@ -4028,169 +4159,118 @@ fn nextid_into_an_identity_field_is_not_an_untyped_value() {
 }
 
 #[test]
-fn a_converted_value_into_an_identity_field_is_not_an_untyped_value() {
-    // Converting a dynamic value through the `Author::Id(...)` constructor produces
-    // an `Author::Id`, so the assignment is the nominal match — the dynamic value has
-    // been made typed and is no longer flagged.
+fn multiple_stores_over_one_resource_keep_distinct_identities() {
+    let report = check_module_report(
+        "two-stores-one-resource",
+        "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\
+         store ^archivedBooks(id: int): Book\n\n\
+         fn freshBook(): Id(^books)\n    return nextId(^books)\n\
+         fn freshArchived(): Id(^archivedBooks)\n    return nextId(^archivedBooks)\n\
+         fn wrong(): Id(^books)\n    return nextId(^archivedBooks)\n",
+    );
+    let return_type = with_code(&report, "check.return_type");
+    assert_eq!(return_type.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        return_type[0].message.contains("Id(^books)")
+            && return_type[0].message.contains("Id(^archivedBooks)"),
+        "{return_type:#?}"
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "`nextId` over each declared store must be typed: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn legacy_resource_id_is_not_a_common_identity_for_multiple_stores() {
+    let report = check_module_report(
+        "two-stores-one-resource-legacy-id",
+        "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\
+         store ^archivedBooks(id: int): Book\n\n\
+         fn read(id: Book::Id): string\n    return ^books(id).title\n\
+         fn archive()\n    ^archivedBooks(Book::Id(1)).title = \"archived\"\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.unknown_type").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.unresolved_call").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn same_named_resources_use_their_own_module_shape() {
+    let root = temp_project("same-name-resource-shape", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             resource Book\n    title: int\n\
+             store ^aBooks(id: int): Book\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             resource Book\n    title: string\n\
+             store ^bBooks(id: int): Book\n\
+             fn f(): string\n    const b = Book(title: \"ok\")\n    return b.title\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn identity_type_must_name_a_declared_store() {
+    let found = check_module(
+        "missing-id-store",
+        "module m\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n    author: Id(^authors)\n    missing: Id(^missing)\n\
+         store ^books(id: int): Book\n",
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("Id(^missing)"), "{found:#?}");
+}
+
+#[test]
+fn legacy_identity_constructor_conversion_is_unresolved() {
+    // The legacy constructor spelling is no longer a conversion boundary for store
+    // identities.
     let found = check_module(
         "ref-field-converted-ok",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Author::Id\n\n\
+         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
          fn put(x: unknown)\n    ^books(1).authorId = Author::Id(int(x))\n",
-        "check.untyped_value",
+        "check.unresolved_call",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
-fn an_identity_constructor_rejects_a_wrong_typed_key() {
-    // `Author::Id("x")` builds an identity for an `int`-keyed resource from a
-    // string. The identity keyspace is typed, so a wrong-scalar key would settle a
-    // string into an `int` keyslot; it is the same `check.key_type` a record lookup
-    // `^authors("x")` reports.
+fn legacy_identity_constructor_calls_are_unresolved() {
     let found = check_module(
-        "ctor-key-wrong-type",
+        "ctor-legacy-unresolved",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         fn f()\n    const id = Author::Id(\"x\")\n",
-        "check.key_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_an_identity_as_a_key() {
-    // `Author::Id(Book::Id(7))` passes another resource's identity where a scalar
-    // `int` key is declared; an identity is not a key scalar, so it is the same
-    // `check.key_type` mismatch.
-    let found = check_module(
-        "ctor-key-identity",
-        "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
-         fn f()\n    const id = Author::Id(Book::Id(7))\n",
-        "check.key_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_a_wrong_typed_composite_key() {
-    // A composite identity `Pair::Id(int, string)` built with a swapped second key
-    // (`int` where `string` is declared) settles the wrong scalar into a keyslot;
-    // each key is checked against its declared type, so this is `check.key_type`.
-    let found = check_module(
-        "ctor-composite-wrong-type",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(7, 9)\n",
-        "check.key_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_accepts_a_correct_key() {
-    // `Author::Id(7)` matches the declared `int` key, so nothing is flagged — the
-    // type guard must not over-reject a correct identity construction.
-    let found = check_module(
-        "ctor-key-ok",
-        "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         fn f()\n    const id = Author::Id(7)\n",
-        "check.key_type",
-    );
-    assert!(found.is_empty(), "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_accepts_a_correct_composite_key() {
-    // `Pair::Id(7, "x")` matches the declared `(int, string)` keys, positional and
-    // named both — a correct composite must round-trip the type guard clean.
-    let found = check_module(
-        "ctor-composite-ok",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(7, \"x\")\n    const named = Pair::Id(a: 7, b: \"x\")\n",
-        "check.key_type",
-    );
-    assert!(found.is_empty(), "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_a_wrong_typed_named_composite_key() {
-    // Named composite keys are matched to their declared key by name, so a swapped
-    // type under the right name (`b: 9` where `b: string`) is still `check.key_type`.
-    let found = check_module(
-        "ctor-named-wrong-type",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(a: 7, b: 9)\n",
-        "check.key_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_the_wrong_key_count() {
-    let found = check_module(
-        "ctor-key-count",
-        "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         fn f()\n    const id = Author::Id()\n    const extra = Author::Id(1, 2)\n",
-        "check.call_argument",
-    );
-    assert_eq!(found.len(), 2, "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_requires_missing_named_keys() {
-    let found = check_module(
-        "ctor-named-missing-key",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(a: 7)\n",
-        "check.call_argument",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("b"), "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_unknown_named_keys() {
-    let found = check_module(
-        "ctor-named-unknown-key",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(a: 7, c: \"x\")\n",
-        "check.call_argument",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("c"), "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_duplicate_named_keys() {
-    let found = check_module(
-        "ctor-named-duplicate-key",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(a: 7, a: 8)\n",
-        "check.call_argument",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("a"), "{found:#?}");
-}
-
-#[test]
-fn an_identity_constructor_rejects_mixed_positional_and_named_keys() {
-    let found = check_module(
-        "ctor-mixed-keys",
-        "module m\n\
-         resource Pair at ^pairs(a: int, b: string)\n    note: string\n\n\
-         fn f()\n    const id = Pair::Id(7, b: \"x\")\n",
-        "check.call_argument",
+         fn f()\n    const author = Author::Id(7)\n",
+        "check.unresolved_call",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
@@ -4274,9 +4354,9 @@ fn a_group_entry_does_not_flow_as_a_whole_resource() {
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
          fn takesBook(book: Book)\n    print(book.title)\n\n\
-         fn returnsBook(id: Book::Id): Book\n    for versionKey, version in ^books(id).versions\n        return version\n    return ^books(id)\n\n\
-         fn pass(id: Book::Id)\n    for versionKey, version in ^books(id).versions\n        takesBook(version)\n\n\
-         fn assign(id: Book::Id)\n    for versionKey, version in ^books(id).versions\n        var book: Book = version\n";
+         fn returnsBook(id: Id(^books)): Book\n    for versionKey, version in ^books(id).versions\n        return version\n    return ^books(id)\n\n\
+         fn pass(id: Id(^books))\n    for versionKey, version in ^books(id).versions\n        takesBook(version)\n\n\
+         fn assign(id: Id(^books))\n    for versionKey, version in ^books(id).versions\n        var book: Book = version\n";
 
     let returns = check_module(
         "group-entry-not-resource-return",
@@ -4315,14 +4395,14 @@ fn a_whole_group_entry_write_rejects_a_different_group_layer() {
 }
 
 #[test]
-fn equality_on_two_identities_of_the_same_resource_types_bool() {
-    // Two `Author::Id` values compare with `==`; the result is `bool`, so no
+fn equality_on_two_identities_of_the_same_store_types_bool() {
+    // Two `Id(^authors)` values compare with `==`; the result is `bool`, so no
     // operator diagnostic is raised.
     let found = check_module(
-        "ref-eq-same-resource",
+        "ref-eq-same-store",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
-         fn f(): bool\n    return Author::Id(1) == Author::Id(2)\n",
+         fn f(): bool\n    return nextId(^authors) == nextId(^authors)\n",
         "check.operator_type",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -4330,13 +4410,13 @@ fn equality_on_two_identities_of_the_same_resource_types_bool() {
 
 #[test]
 fn equality_across_resource_identities_is_an_operator_error() {
-    // `==` between an `Author::Id` and a `Book::Id` is a nominal category error.
+    // `==` between an `Id(^authors)` and a `Id(^books)` is a nominal category error.
     let found = check_module(
         "ref-eq-cross-resource",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
          resource Book at ^books(id: int)\n    title: string\n\n\
-         fn f(): bool\n    return Author::Id(1) == Book::Id(1)\n",
+         fn f(): bool\n    return nextId(^authors) == nextId(^books)\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -4344,13 +4424,12 @@ fn equality_across_resource_identities_is_an_operator_error() {
 
 #[test]
 fn a_self_referencing_identity_field_accepts_its_own_identity() {
-    // A field typed `Self::Id`-style — here `Person::Id` on `Person` — is a valid
-    // same-resource reference.
+    // A field typed as its owning store identity is a valid self reference.
     let found = check_module(
         "ref-self",
         "module m\n\
-         resource Person at ^people(id: int)\n    managerId: Person::Id\n\n\
-         fn f()\n    ^people(1).managerId = Person::Id(2)\n",
+         resource Person at ^people(id: int)\n    managerId: Id(^people)\n\n\
+         fn f()\n    ^people(1).managerId = nextId(^people)\n",
         "check.assignment_type",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -4427,7 +4506,7 @@ fn a_return_of_an_unresolved_value_into_an_identity_return_is_not_flagged() {
         "ret-identity",
         "module m\n\
          resource Book at ^books(id: int)\n    title: string\n\n\
-         fn f(): Book::Id\n    return nextId(^books)\n",
+         fn f(): Id(^books)\n    return nextId(^books)\n",
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -4436,7 +4515,7 @@ fn a_return_of_an_unresolved_value_into_an_identity_return_is_not_flagged() {
 #[test]
 fn a_unique_index_lookup_types_as_the_resource_identity() {
     // `^books.byIsbn(isbn)` reads back the owning identity, so it types as
-    // `Book::Id` — not `Unknown`. Returned where `int` is expected, that is a
+    // `Id(^books)` — not `Unknown`. Returned where `int` is expected, that is a
     // typed value (a non-primitive identity), so strict untyped-value checking
     // does not fire.
     let found = check_module(
@@ -5617,7 +5696,7 @@ fn a_qualified_enum_saved_field_declaration_checks_clean() {
         write(
             root,
             "src/pkg/kinds.mw",
-            "module pkg::kinds\n\nenum Color\n    red\n    green\n",
+            "module pkg::kinds\n\npub enum Color\n    red\n    green\n",
         );
         write(
             root,
@@ -5674,6 +5753,20 @@ fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
     );
     assert_eq!(found.len(), 1, "{found:#?}");
     assert!(found[0].message.contains("banned"), "{}", found[0].message);
+}
+
+#[test]
+fn non_unique_index_branch_arguments_are_checked() {
+    let found = check_module(
+        "non-unique-index-args",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+         fn f()\n    \
+         for id in ^books.byShelf(123)\n        var typed: Id(^books) = id\n    \
+         for id in ^books.byShelf(\"fiction\", 1, 2)\n        var typed: Id(^books) = id\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
 }
 
 #[test]
@@ -6390,7 +6483,7 @@ fn two_module_less_scripts_are_a_check_error() {
 
 #[test]
 fn two_scripts_with_clashing_resources_never_silently_bind_to_the_wrong_shape() {
-    // The wrong-resource-binding repro: each script declares its own `Order` with a
+    // The wrong-shape-binding repro: each script declares its own `Order` with a
     // different shape (`one.mw`'s has `count`, `two.mw`'s has `priority`). Under the
     // empty-name alias, `two.mw`'s `var o: Order` could bind to `one.mw`'s `Order`,
     // and assigning a field only `two.mw`'s `Order` has would either silently accept

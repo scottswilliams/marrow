@@ -14,6 +14,8 @@ use marrow_syntax::{
     SourceSpan, Statement, format_expression,
 };
 
+use crate::checks::check_range_value;
+use crate::typerules::check_literal_range;
 use crate::{CHECK_TRY_HANDLER, CheckDiagnostic};
 
 /// A `finally` block must not let control flow escape it via `return`, `break`,
@@ -71,7 +73,7 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
         ));
     }
     check_literal_ranges(file, value, out);
-    crate::check_range_value(file, value, out);
+    check_range_value(file, value, out);
 }
 
 /// Range-check every literal inside a `const` value so an out-of-range integer or
@@ -80,7 +82,7 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
 fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagnostic>) {
     match expr {
         Expression::Literal { kind, text, span } => {
-            crate::check_literal_range(*kind, text, *span, file, out);
+            check_literal_range(*kind, text, *span, file, out);
         }
         Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
             check_literal_ranges(file, base, out)

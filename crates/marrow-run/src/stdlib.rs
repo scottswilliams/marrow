@@ -1,6 +1,25 @@
 //! Builtin and `std::` dispatch, conversions, and host capabilities.
 
-use crate::*;
+use marrow_schema::IndexSchema;
+use marrow_store::Decimal;
+use marrow_store::path::{ChildSegment, PathSegment, encode_path};
+use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
+use marrow_syntax::{Argument, Expression, SourceSpan};
+
+use crate::base64;
+use crate::collection::{Direction, local_collection_count};
+use crate::env::Env;
+use crate::error::{
+    Located, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_TYPE, RuntimeError, conversion_error,
+    decimal_overflow, divide_by_zero, error_field, io_error, overflow, raise, raise_fault,
+    std_arity, type_error, unsupported,
+};
+use crate::expr::{eval_expr, eval_int};
+use crate::path::{node_segments, saved_path_present};
+use crate::read::enumerate_layer;
+use crate::schema_query::{find_store_resource, is_saved_path};
+use crate::value::{Value, identity_value, render, saved_value_to_value, value_to_key};
+use crate::write::decode_identity_arity;
 
 /// Is `module` a standard-library module, derived once from the shared stdlib
 /// table ([`marrow_schema::stdlib::all`])? A module is known iff the table has a
@@ -107,15 +126,12 @@ fn direct_primary_root_count(
     let Expression::SavedRoot { name, .. } = expr else {
         return Ok(None);
     };
-    let Some(resource) = find_resource(env.program, name) else {
+    let Some((store_schema, _)) = find_store_resource(env.program, name) else {
         return Ok(None);
     };
-    let Some(root) = &resource.saved_root else {
-        return Ok(None);
-    };
-    match root.identity_keys.len() {
+    match store_schema.identity_keys.len() {
         0 => Ok(None),
-        1 if resource.indexes.is_empty() => {
+        1 if store_schema.indexes.is_empty() => {
             let path = encode_path(&[PathSegment::Root(name.clone())]);
             let count = env
                 .store
@@ -166,7 +182,7 @@ pub(crate) fn is_index_branch(expr: &Expression, env: &Env<'_>) -> bool {
 /// Whether `expr` is a non-unique declared index branch that acts as an
 /// address-only collection in direct loops.
 pub(crate) fn is_iterable_index_branch(expr: &Expression, env: &Env<'_>) -> bool {
-    index_branch_schema(expr, env).is_some_and(|(_, index)| !index.unique)
+    index_branch_schema(expr, env).is_some_and(|(_, _, index)| !index.unique)
 }
 
 pub(crate) fn check_key_collection(
@@ -180,10 +196,7 @@ pub(crate) fn check_key_collection(
     Ok(())
 }
 
-fn index_branch_schema<'a>(
-    expr: &Expression,
-    env: &'a Env<'_>,
-) -> Option<(&'a ResourceSchema, &'a IndexSchema)> {
+fn index_branch_schema(expr: &Expression, env: &Env<'_>) -> Option<(String, usize, IndexSchema)> {
     let (base, name) = match expr {
         Expression::Field { base, name, .. } => (base.as_ref(), name),
         Expression::Call { callee, .. } => {
@@ -197,9 +210,17 @@ fn index_branch_schema<'a>(
     let Expression::SavedRoot { name: root, .. } = base else {
         return None;
     };
-    let resource = find_resource(env.program, root)?;
-    let index = resource.indexes.iter().find(|index| &index.name == name)?;
-    Some((resource, index))
+    let (store_schema, _) = find_store_resource(env.program, root)?;
+    let index = store_schema
+        .indexes
+        .iter()
+        .find(|index| &index.name == name)?
+        .clone();
+    Some((
+        store_schema.root.clone(),
+        store_schema.identity_keys.len(),
+        index,
+    ))
 }
 
 pub(crate) fn unique_index_lookup_path(
@@ -233,15 +254,17 @@ pub(crate) fn unique_index_lookup(
         return Ok(None);
     };
     let Some((root_name, identity_arity, index_name, index_arg_count)) = (|| {
-        let resource = find_resource(env.program, root)?;
-        let index = resource.indexes.iter().find(|index| &index.name == name)?;
+        let (store_schema, _) = find_store_resource(env.program, root)?;
+        let index = store_schema
+            .indexes
+            .iter()
+            .find(|index| &index.name == name)?;
         if !index.unique {
             return None;
         }
-        let saved_root = resource.saved_root.as_ref()?;
         Some((
-            saved_root.root.clone(),
-            saved_root.identity_keys.len(),
+            store_schema.root.clone(),
+            store_schema.identity_keys.len(),
             index.name.clone(),
             index.args.len(),
         ))
@@ -353,17 +376,15 @@ fn read_unique_index_value(
         return Ok(None);
     };
     let identity =
-        crate::write::decode_identity_arity(&bytes, lookup.identity_arity).ok_or_else(|| {
-            RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!(
-                    "the `{}` index entry did not decode to an identity",
-                    lookup.index_name
-                ),
-                span,
-            }
+        decode_identity_arity(&bytes, lookup.identity_arity).ok_or_else(|| RuntimeError {
+            throw: None,
+            origin: None,
+            code: RUN_TYPE,
+            message: format!(
+                "the `{}` index entry did not decode to an identity",
+                lookup.index_name
+            ),
+            span,
         })?;
     Ok(Some(identity_value(identity)))
 }
@@ -1121,8 +1142,21 @@ pub(crate) fn eval_io(
 
 #[cfg(test)]
 mod stdlib_table_tests {
-    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use marrow_check::CheckedProgram;
     use marrow_schema::stdlib::Capability;
+    use marrow_store::mem::MemStore;
+    use marrow_syntax::{Argument, SourceSpan};
+
+    use crate::env::{Context, Env, TransactionState};
+    use crate::error::RUN_UNSUPPORTED;
+    use crate::host::Host;
+    use crate::stdlib::{
+        eval_assert, eval_clock_capability, eval_env, eval_io, eval_log, eval_std,
+    };
 
     // Every descriptor row must reach a live runtime handler. A row that the
     // checker would type-check but no handler recognizes faults only at run time

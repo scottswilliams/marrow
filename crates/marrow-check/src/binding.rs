@@ -28,23 +28,23 @@ use std::path::{Path, PathBuf};
 use marrow_schema::Type as SchemaType;
 use marrow_syntax::{
     Block, Declaration, EnumMember, Expression, MatchArm, ParsedSource, ResourceDecl,
-    ResourceMember, SourceSpan, Statement, TypeRef,
+    ResourceMember, SourceSpan, Statement, StoreDecl, TypeRef,
 };
 
 use crate::MarrowType;
-use crate::enums::resolve_enum;
+use crate::checks::{file_prelude, for_frame};
+use crate::enums::{resolve_enum, resolve_enum_member_path, resolve_type};
+use crate::infer::{infer_only, local_binding};
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
-    expand_module_alias, file_prelude, find_resource_schema, for_frame, infer_only, local_binding,
-    resolve, resolve_enum_member_path, resolve_function_in_module, resolve_type,
+    expand_module_alias, find_resource_schema, resolve, resolve_function_in_module,
 };
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
 /// live: function-local bindings (`Param`, `Local`), module-level declarations
-/// (`ModuleConst`, `Function`, `Resource` and its generated `ResourceIdentity`),
-/// enum declarations and members (`Enum`, `EnumMember`), the members of a
-/// resource that name saved data (`Field`, `Layer`, `Index`), and imported module
-/// aliases (`ModuleRef`).
+/// (`ModuleConst`, `Function`, `Resource`), enum declarations and members
+/// (`Enum`, `EnumMember`), the members of a resource that name saved data
+/// (`Field`, `Layer`, `Index`), and imported module aliases (`ModuleRef`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
     /// A function parameter, scoped to that function's body.
@@ -57,8 +57,6 @@ pub enum SymbolKind {
     Function,
     /// A declared resource (its type name).
     Resource,
-    /// A resource's generated `Type::Id` identity.
-    ResourceIdentity,
     /// A declared enum type.
     Enum,
     /// A declared enum member.
@@ -67,7 +65,7 @@ pub enum SymbolKind {
     Field,
     /// A keyed layer or group of a resource.
     Layer,
-    /// A declared lookup index of a resource.
+    /// A declared lookup index of a store.
     Index,
     /// An imported module, by the short name a `use` brings into the file.
     ModuleRef,
@@ -85,12 +83,12 @@ pub struct SymbolRef {
 /// Whether renaming a symbol is safe to do purely in source.
 ///
 /// `SourceOnly` symbols (locals, parameters, constants, functions, module
-/// aliases, and resources/identities with no saved root) exist only in source, so
-/// a rename that updates every reference is complete. `SavedDataBacked` symbols
-/// name something encoded on disk — a saved field/group/layer/index, or a
-/// resource/identity attached to a saved root — whose stored path uses the source
-/// name. Renaming such a symbol changes the on-disk path and orphans stored data
-/// unless explicit maintenance work moves it.
+/// aliases, and resources with no saved root) exist only in source, so a rename
+/// that updates every reference is complete. `SavedDataBacked` symbols name
+/// something encoded on disk — a saved field/group/layer/index, or a resource
+/// attached to a saved root — whose stored path uses the source name. Renaming
+/// such a symbol changes the on-disk path and orphans stored data unless explicit
+/// maintenance work moves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameSafety {
     /// Safe to rename in source alone.
@@ -218,16 +216,14 @@ struct IndexBuilder<'p> {
 }
 
 /// Project-wide module-level definitions, indexed for resolution. Functions are
-/// resolved through [`resolve_function_in_module`]; constants, resources, and
-/// identities are resolved by name here.
+/// resolved through [`resolve_function_in_module`]; constants and resources are
+/// resolved by name here.
 #[derive(Default)]
 struct ModuleScope {
     /// `module name -> (const name -> DefId)`.
     constants: HashMap<String, HashMap<String, DefId>>,
     /// `(module name, resource name) -> DefId` for the resource type symbol.
     resources: HashMap<(String, String), DefId>,
-    /// `(module name, resource name) -> DefId` for the generated identity symbol.
-    identities: HashMap<(String, String), DefId>,
     /// `(module name, function name) -> DefId`, the function's definition.
     functions: HashMap<(String, String), DefId>,
     /// `(module name, enum name) -> DefId`, the enum's definition.
@@ -281,9 +277,18 @@ impl<'p> IndexBuilder<'p> {
     }
 
     /// Collect every definition a file contributes: module constants, functions,
-    /// resources (and their identity and members), and `use` aliases.
+    /// resources, store-backed members, and `use` aliases.
     fn collect_definitions(&mut self, file: &Path, parsed: &ParsedSource) {
         let module = Self::module_name(parsed);
+        let stores: Vec<&StoreDecl> = parsed
+            .file
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::Store(store) => Some(store),
+                _ => None,
+            })
+            .collect();
 
         // `use shelf::books` introduces the short name `books` as a module
         // reference. The whole `use` path is the definition span.
@@ -329,7 +334,13 @@ impl<'p> IndexBuilder<'p> {
                         .insert((module.clone(), function.name.clone()), id);
                 }
                 Declaration::Resource(resource) => {
-                    self.collect_resource(file, &module, resource);
+                    let has_store = stores.iter().any(|store| store.resource == resource.name);
+                    self.collect_resource(file, &module, resource, has_store);
+                }
+                Declaration::Store(store) => {
+                    if let Some(resource) = resource_decl(parsed, &store.resource) {
+                        self.collect_store(file, store, resource);
+                    }
                 }
                 Declaration::Enum(enum_decl) => {
                     let id = self.define(
@@ -382,16 +393,21 @@ impl<'p> IndexBuilder<'p> {
         }
     }
 
-    /// Collect a resource definition: the resource type, its generated identity,
-    /// and its saved members (fields, groups/layers, indexes). The resource and
-    /// identity are data-backed exactly when the resource has a saved root.
-    /// Resources and identities are keyed by their declaring module plus source
-    /// name; use sites choose the module through the checker resolver.
-    fn collect_resource(&mut self, file: &Path, module: &str, resource: &ResourceDecl) {
-        let saved_root = resource.store.as_ref().map(|store| store.root.clone());
-        let type_safety = match &saved_root {
-            Some(_) => RenameSafety::SavedDataBacked,
-            None => RenameSafety::SourceOnly,
+    /// Collect a resource definition. It is data-backed exactly when a store
+    /// references the resource in this module. Resources are keyed by their
+    /// declaring module plus source name; use sites choose the module through the
+    /// checker resolver.
+    fn collect_resource(
+        &mut self,
+        file: &Path,
+        module: &str,
+        resource: &ResourceDecl,
+        has_store: bool,
+    ) {
+        let type_safety = if has_store {
+            RenameSafety::SavedDataBacked
+        } else {
+            RenameSafety::SourceOnly
         };
         let resource_id = self.define(
             SymbolRef {
@@ -404,23 +420,27 @@ impl<'p> IndexBuilder<'p> {
         self.module_scope
             .resources
             .insert((module.to_string(), resource.name.clone()), resource_id);
-        // The generated `Type::Id` identity shares the resource's declaration site
-        // and saved-data backing.
-        let identity_id = self.define(
+    }
+
+    fn collect_store(&mut self, file: &Path, store: &StoreDecl, resource: &ResourceDecl) {
+        self.collect_members(file, &store.root.root, &mut Vec::new(), &resource.members);
+        for index in &store.indexes {
+            self.collect_index(file, &store.root.root, index);
+        }
+    }
+
+    fn collect_index(&mut self, file: &Path, root: &str, index: &marrow_syntax::IndexDecl) {
+        let id = self.define(
             SymbolRef {
                 file: file.to_path_buf(),
-                span: resource.span,
-                kind: SymbolKind::ResourceIdentity,
+                span: index.span,
+                kind: SymbolKind::Index,
             },
-            type_safety,
+            RenameSafety::SavedDataBacked,
         );
         self.module_scope
-            .identities
-            .insert((module.to_string(), resource.name.clone()), identity_id);
-
-        if let Some(root) = &saved_root {
-            self.collect_members(file, root, &mut Vec::new(), &resource.members);
-        }
+            .saved_members
+            .insert((root.to_string(), vec![index.name.clone()]), id);
     }
 
     /// Collect a resource's members, descending groups. `chain` is the saved-path
@@ -466,21 +486,6 @@ impl<'p> IndexBuilder<'p> {
                     // Descend into the group's members with this layer on the chain.
                     self.collect_members(file, root, chain, &group.members);
                     chain.pop();
-                }
-                ResourceMember::Index(index) => {
-                    // An index is addressed as `^root.index(..)`, a single-name
-                    // chain distinct from a field's path. Key it under its own name.
-                    let id = self.define(
-                        SymbolRef {
-                            file: file.to_path_buf(),
-                            span: index.span,
-                            kind: SymbolKind::Index,
-                        },
-                        RenameSafety::SavedDataBacked,
-                    );
-                    self.module_scope
-                        .saved_members
-                        .insert((root.to_string(), vec![index.name.clone()]), id);
                 }
             }
         }
@@ -544,9 +549,6 @@ impl<'p> IndexBuilder<'p> {
                 }
             }
             Declaration::Resource(resource) => {
-                if let Some(store) = &resource.store {
-                    self.collect_key_type_refs(file, source, aliases, module, &store.keys);
-                }
                 self.collect_resource_member_type_refs(
                     file,
                     source,
@@ -554,6 +556,9 @@ impl<'p> IndexBuilder<'p> {
                     module,
                     &resource.members,
                 );
+            }
+            Declaration::Store(store) => {
+                self.collect_key_type_refs(file, source, aliases, module, &store.root.keys);
             }
             Declaration::Function(function) => {
                 for param in &function.params {
@@ -591,7 +596,6 @@ impl<'p> IndexBuilder<'p> {
                         &group.members,
                     );
                 }
-                ResourceMember::Index(_) => {}
             }
         }
     }
@@ -666,20 +670,7 @@ impl<'p> IndexBuilder<'p> {
             SchemaType::Sequence(element) => {
                 self.collect_resource_schema_type_ref(file, source, aliases, module, ty, element);
             }
-            SchemaType::Identity(resource) => {
-                let mut segments = split_type_path(resource);
-                segments.push("Id".to_string());
-                let resolved_segments = expand_alias(&segments, aliases);
-                if let Some(def) = self.module_scope.resolved_resource(
-                    self.program,
-                    module,
-                    &resolved_segments,
-                    ResolvableKind::ResourceIdentity,
-                ) && let Some(span) = type_ref_path_tail_span(source, ty, &segments, 2)
-                {
-                    self.use_of(def, file, span, SymbolKind::ResourceIdentity);
-                }
-            }
+            SchemaType::Identity(_) => {}
             SchemaType::Named(resource) => {
                 let segments = split_type_path(resource);
                 let resolved_segments = expand_alias(&segments, aliases);
@@ -702,6 +693,17 @@ impl<'p> IndexBuilder<'p> {
             bindings: self.bindings,
         }
     }
+}
+
+fn resource_decl<'a>(parsed: &'a ParsedSource, name: &str) -> Option<&'a ResourceDecl> {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Resource(resource) if resource.name == name => Some(resource),
+            _ => None,
+        })
 }
 
 /// Walks a function body collecting identifier uses against a scope of local
@@ -952,9 +954,9 @@ impl UseWalker<'_, '_> {
                 self.resolve_name(segments, *span, scope);
             }
             Expression::SavedRoot { .. } => {
-                // A bare saved root resolves to the resource owning it only as part
-                // of a larger saved-path expression; resolution happens in the
-                // enclosing Call/Field arm where the chain is known.
+                // A bare saved root resolves only as part of a larger saved-path
+                // expression; resolution happens in the enclosing Call/Field arm
+                // where the chain is known.
             }
             Expression::Unary { operand, .. } => self.walk_expr(operand, scope),
             Expression::Binary { left, right, .. } => {
@@ -992,7 +994,7 @@ impl UseWalker<'_, '_> {
 
     /// Resolve a bare or qualified name used as a value: a local/parameter
     /// (innermost scope first, shadowing-aware), a module alias, a module constant,
-    /// or a resource/identity. Records the use when it resolves.
+    /// or a resource. Records the use when it resolves.
     fn resolve_name(
         &mut self,
         segments: &[String],
@@ -1001,7 +1003,7 @@ impl UseWalker<'_, '_> {
     ) {
         if let [name] = segments {
             // A single-segment name is a local, parameter, module constant,
-            // resource/identity, or imported alias.
+            // resource, or imported alias.
             if let Some(id) = lookup(scope, name) {
                 let kind = self.builder.bindings[id.0].definition.kind;
                 self.builder.use_of(id, self.file, span, kind);
@@ -1021,22 +1023,6 @@ impl UseWalker<'_, '_> {
                 self.builder
                     .use_of(id, self.file, span, SymbolKind::Resource);
             }
-            return;
-        }
-        // A qualified name: `Resource::Id` or `module::Resource::Id` names the
-        // generated identity, with module aliases expanded by the checker resolver.
-        let resolved_segments = expand_alias(segments, self.aliases);
-        if segments.last().is_some_and(|segment| segment == "Id")
-            && let Some(def) = self.builder.module_scope.resolved_resource(
-                self.builder.program,
-                self.module,
-                &resolved_segments,
-                ResolvableKind::ResourceIdentity,
-            )
-        {
-            let use_span = path_tail_span(self.source, span, segments, 2).unwrap_or(span);
-            self.builder
-                .use_of(def, self.file, use_span, SymbolKind::ResourceIdentity);
             return;
         }
         if let Some(resolved) = self.resolve_enum_member(segments) {
@@ -1236,23 +1222,8 @@ impl UseWalker<'_, '_> {
             return false;
         };
         // Constructors are call-shaped but name resources, not functions. Resolve
-        // them with the same module-aware resource resolver used by the checker,
-        // including the identity-precedence path for `Book::Id(...)`.
+        // them with the same module-aware resource resolver used by the checker.
         let resolved_segments = expand_alias(segments, self.aliases);
-        if segments.last().is_some_and(|segment| segment == "Id")
-            && let Some(def) = self.builder.module_scope.resolved_resource(
-                self.builder.program,
-                self.module,
-                &resolved_segments,
-                ResolvableKind::ResourceIdentity,
-            )
-        {
-            let use_span =
-                path_tail_span(self.source, *callee_span, segments, 2).unwrap_or(*callee_span);
-            self.builder
-                .use_of(def, self.file, use_span, SymbolKind::ResourceIdentity);
-            return true;
-        }
         if let Some(def) = self.builder.module_scope.resolved_resource(
             self.builder.program,
             self.module,
@@ -1341,7 +1312,6 @@ impl ModuleScope {
         let key = (module.name.clone(), resource.name.clone());
         match kind {
             ResolvableKind::Resource => self.resources.get(&key).copied(),
-            ResolvableKind::ResourceIdentity => self.identities.get(&key).copied(),
             ResolvableKind::Function => None,
         }
     }

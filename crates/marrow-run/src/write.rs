@@ -11,7 +11,7 @@
 //! non-unique) coherent. Keyed-layer writes — leaf entries and group-entry
 //! fields — build on this.
 
-use marrow_schema::{Node, NodeKind, ResourceSchema, SavedRootSchema, Type};
+use marrow_schema::{Node, NodeKind, ResourceSchema, StoreSchema, Type};
 use marrow_store::backend::Backend;
 use marrow_store::backend::StoreError;
 use marrow_store::path::{PathSegment, SavedKey, decode_key_value, encode_key_value, encode_path};
@@ -21,7 +21,7 @@ use marrow_store::value::{SavedValue, ValueError, decode_value, encode_value};
 /// name. Nested fields under unkeyed groups use dotted names such as
 /// `name.first`. A scalar/enum field carries its saved value; a typed-reference
 /// field carries the referenced identity's key segments under `identities`,
-/// paired with the referenced resource's identity arity so the staged leaf is
+/// paired with the referenced store identity arity so the staged leaf is
 /// validated before encoding. A field listed in neither is simply not supplied
 /// (absent). Keyed layers are written through the dedicated layer planners, not
 /// this value.
@@ -32,8 +32,8 @@ pub struct ResourceValue {
 }
 
 /// A typed-reference field supplied to a write: the field name, the referenced
-/// identity's key segments, and the referenced resource's identity arity (the arity
-/// the staged leaf must have to round-trip through `decode_identity`).
+/// identity's key segments, and the referenced store identity arity (the arity the
+/// staged leaf must have to round-trip through `decode_identity`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuppliedIdentity {
     pub field: String,
@@ -63,15 +63,13 @@ pub struct WriteError {
 pub const WRITE_REQUIRED_ABSENT: &str = "write.required_absent";
 /// A field value's type does not match the resource schema.
 pub const WRITE_TYPE_MISMATCH: &str = "write.type_mismatch";
-/// The resource has no saved root, so it cannot be written to saved data.
-pub const WRITE_NO_SAVED_ROOT: &str = "write.no_saved_root";
-/// The supplied identity keys do not match the resource's saved root.
+/// The supplied identity keys do not match the store root's identity shape.
 pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
 /// The store reported an error (e.g. a corrupt stored path) during a write.
 pub const WRITE_STORE: &str = "write.store";
 /// A field write names a field the resource does not declare.
 pub const WRITE_UNKNOWN_FIELD: &str = "write.unknown_field";
-/// A unique index already maps the supplied key(s) to a different resource, so
+/// A unique index already maps the supplied key(s) to a different identity, so
 /// committing this write would violate the uniqueness constraint.
 pub const WRITE_UNIQUE_CONFLICT: &str = "write.unique_conflict";
 /// A keyed-layer write names a layer the resource does not declare.
@@ -89,10 +87,8 @@ pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 /// `nextId` was asked for a root whose identity has no default integer
 /// allocation policy: a composite identity, a single non-integer key, or a
-/// keyless singleton. The default per-root policy applies only to a resource with
-/// one `int` identity key; other shapes are application-provided. Distinct from
-/// `write.no_saved_root` so a tool can tell a local/singleton resource from one
-/// whose identity is simply not auto-allocated.
+/// keyless singleton. The default per-root policy applies only to a store with
+/// one `int` identity key; other shapes are application-provided.
 pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 /// Deleting a `required` field on its own is rejected: a required field can only
 /// go away when its surrounding keyed entry or whole resource is deleted. The
@@ -228,14 +224,15 @@ fn apply_steps(steps: Vec<PlanStep>, store: &mut dyn Backend) -> Result<(), Stor
 /// (delete the entries for the currently-stored values, write entries for the
 /// new values). `store` is read, not written; apply the returned [`WritePlan`]
 /// with [`WritePlan::commit`]. Returns a [`WriteError`] if the value does not
-/// satisfy the schema or a unique key is already held by another resource.
+/// satisfy the schema or a unique key is already held by another identity.
 pub fn plan_resource_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     value: &ResourceValue,
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
 
     // Validate every field and collect the ones to write, before staging any
     // step — a rejected write must leave no trace. A scalar/enum field carries a
@@ -257,7 +254,7 @@ pub fn plan_resource_write(
 
     // Reject a unique-index conflict before staging anything: a populated unique
     // key already held by a different identity blocks the write.
-    for index in &schema.indexes {
+    for index in &store_schema.indexes {
         if index.unique {
             let new_keys = index_keys(&index.args, root, identity, value);
             check_unique_conflict(&index.name, root, identity, new_keys.as_deref(), store)?;
@@ -279,7 +276,7 @@ pub fn plan_resource_write(
     // currently-stored values, then write the entry for the new values. An entry
     // exists only when every indexed value is populated. A unique entry stores
     // the owning identity; a non-unique entry stores a presence marker.
-    for index in &schema.indexes {
+    for index in &store_schema.indexes {
         if let Some(old_keys) = stored_index_keys(&index.args, root, identity, schema, store)? {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &old_keys)),
@@ -297,18 +294,19 @@ pub fn plan_resource_write(
 
 /// Plan a whole-resource delete: remove the resource at `identity` and tear down
 /// its generated index entries (found by reading `store`). Returns a
-/// [`WriteError`] only when the resource has no saved root or the identity arity
-/// is wrong; deleting an absent resource is a successful no-op plan.
+/// [`WriteError`] only when the store/resource binding does not match or the
+/// identity arity is wrong; deleting an absent resource is a successful no-op plan.
 pub fn plan_resource_delete(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let mut steps = vec![PlanStep::Delete {
         path: encode_path(&identity_path(root, identity)),
     }];
-    for index in &schema.indexes {
+    for index in &store_schema.indexes {
         if let Some(keys) = stored_index_keys(&index.args, root, identity, schema, store)? {
             steps.push(PlanStep::Delete {
                 path: encode_path(&index_path(root, &index.name, &keys)),
@@ -326,19 +324,20 @@ pub fn plan_resource_delete(
 /// add the entry for the new value).
 /// `store` is read, not written; apply the returned [`WritePlan`] with
 /// [`WritePlan::commit`]. Returns a [`WriteError`] if the field is unknown, the
-/// value is mistyped, or a unique key is already held by another resource.
+/// value is mistyped, or a unique key is already held by another identity.
 ///
 /// This is a current-only update; it never clears the resource's other fields.
 /// Whether a field write may create a new (and possibly required-incomplete)
 /// resource is a transaction-contextual rule the runtime enforces, not here.
 pub fn plan_field_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     field: &str,
     value: &SavedValue,
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let (_, ty, _) = field_slot(&schema.members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", schema.name),
@@ -346,7 +345,7 @@ pub fn plan_field_write(
     check_type(field, ty, value)?;
 
     // Reject a unique-index conflict on the written field before staging.
-    for index in &schema.indexes {
+    for index in &store_schema.indexes {
         if index.unique && index.args.iter().any(|arg| arg == field) {
             let new_keys =
                 field_write_index_keys(&index.args, root, identity, field, value, schema, store)?;
@@ -363,7 +362,7 @@ pub fn plan_field_write(
     // currently-stored values, then add the entry for the values after this
     // write. Other index arguments keep their stored values. A unique entry
     // stores the owning identity; a non-unique entry stores a presence marker.
-    for index in &schema.indexes {
+    for index in &store_schema.indexes {
         if !index.args.iter().any(|arg| arg == field) {
             continue;
         }
@@ -387,7 +386,7 @@ pub fn plan_field_write(
 /// Plan a write of a typed-reference field: set the identity-typed `field` of the
 /// resource at `identity` to the referenced identity `keys`, leaving the
 /// resource's other fields in place. `field` must be declared with an identity
-/// type (`authorId: Author::Id`), and `keys` must have the referenced resource's
+/// type (`authorId: Id(^authors)`), and `keys` must have the referenced store's
 /// identity arity (`referenced_arity`, the same arity `decode_identity` reads the
 /// stored leaf back by). The leaf is stored as the referenced identity's canonical
 /// key encoding — the very `encode_identity` a unique index entry uses, reused
@@ -398,13 +397,14 @@ pub fn plan_field_write(
 /// scalar fields, and a referenced identity has no single scalar projection in the
 /// composite case. So there is no index reconciliation here.
 pub fn plan_identity_field_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     field: &str,
     keys: &[SavedKey],
     referenced_arity: usize,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let (_, ty, _) = field_slot(&schema.members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", schema.name),
@@ -421,13 +421,14 @@ pub fn plan_identity_field_write(
 /// Validate that a single-field write outside a user transaction would leave
 /// every required field populated for each entry it creates or updates.
 pub(crate) fn validate_required_fields_after_field_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layers: &[(&str, &[SavedKey])],
     field: &str,
     store: &dyn Backend,
 ) -> Result<(), WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let mut entry_base = identity_path(root, identity);
     let mut layer_base = entry_base.clone();
     let mut entry_members = schema.members.as_slice();
@@ -486,13 +487,14 @@ pub(crate) fn validate_required_fields_after_field_write(
 /// writes are staged, so it reads every required field from the store and skips an
 /// entry that was deleted again before commit.
 pub(crate) fn validate_required_fields_for_entry(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layers: &[(&str, &[SavedKey])],
     exempt_layers: &[Vec<(String, Vec<SavedKey>)>],
     store: &dyn Backend,
 ) -> Result<(), WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let mut entry_base = identity_path(root, identity);
     let mut layer_base = entry_base.clone();
     let mut entry_members = schema.members.as_slice();
@@ -575,12 +577,13 @@ fn entry_layers_exempt(
 /// reconciliation: teardown only, with no new entry to add. Deleting an already
 /// absent field is a successful no-op plan. `store` is read, not written.
 pub fn plan_field_delete(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     field: &str,
     store: &dyn Backend,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     if field_slot(&schema.members, field).is_none() {
         return Err(WriteError {
             code: WRITE_UNKNOWN_FIELD,
@@ -595,7 +598,7 @@ pub fn plan_field_delete(
     // Tear down every index entry the field feeds: with the field gone its key is
     // incomplete, so the stored entry no longer corresponds to a populated key.
     // There is no replacement entry — unlike a field write, a delete only removes.
-    for index in &schema.indexes {
+    for index in &store_schema.indexes {
         if !index.args.iter().any(|arg| arg == field) {
             continue;
         }
@@ -617,13 +620,14 @@ pub fn plan_field_delete(
 /// [`WriteError`] if the layer is unknown, is a group rather than a leaf, the key
 /// arity is wrong, or the value is mistyped.
 pub fn plan_layer_leaf_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layer: &str,
     key: &[SavedKey],
     value: &SavedValue,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let declared = find_layer(schema, layer)?;
     let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
@@ -654,9 +658,10 @@ pub fn plan_layer_leaf_write(
 /// `^root(identity).layer(key)` to the referenced identity `keys`, the identity-leaf
 /// analogue of [`plan_layer_leaf_write`]. `layer` must be a declared keyed leaf with
 /// an identity type, `key` must match the layer's key arity, and `keys` must have
-/// the referenced resource's identity arity (`referenced_arity`). The leaf is stored
-/// as the referenced identity's canonical encoding.
+/// the referenced store identity arity (`referenced_arity`). The leaf is stored as
+/// the referenced identity's canonical encoding.
 pub fn plan_layer_identity_leaf_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layer: &str,
@@ -664,7 +669,7 @@ pub fn plan_layer_identity_leaf_write(
     keys: &[SavedKey],
     referenced_arity: usize,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let declared = find_layer(schema, layer)?;
     let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
@@ -695,6 +700,7 @@ pub fn plan_layer_identity_leaf_write(
 /// `^root(identity).rows(row).fields(col) = value`. The parent chain must name
 /// group layers; the terminal `layer` must be a keyed leaf.
 pub fn plan_nested_layer_leaf_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     parents: &[(&str, &[SavedKey])],
@@ -702,7 +708,7 @@ pub fn plan_nested_layer_leaf_write(
     key: &[SavedKey],
     value: &SavedValue,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let declared = find_nested_layer(schema, parents, layer)?;
     let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
@@ -729,39 +735,51 @@ pub fn plan_nested_layer_leaf_write(
     })
 }
 
+pub(crate) struct NestedLayerTarget<'a> {
+    pub parents: &'a [(&'a str, &'a [SavedKey])],
+    pub layer: &'a str,
+    pub key: &'a [SavedKey],
+}
+
 /// Plan a typed-reference keyed-leaf write below an already-keyed parent layer
 /// chain. The stored value is the referenced identity's canonical encoding.
 pub fn plan_nested_layer_identity_leaf_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
-    parents: &[(&str, &[SavedKey])],
-    layer: &str,
-    key: &[SavedKey],
+    target: NestedLayerTarget<'_>,
     keys: &[SavedKey],
     referenced_arity: usize,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
-    let declared = find_nested_layer(schema, parents, layer)?;
+    let root = resolve_store_root(store_schema, identity)?;
+    let declared = find_nested_layer(schema, target.parents, target.layer)?;
     let NodeKind::Slot { ty: leaf_type, .. } = &declared.kind else {
         return Err(WriteError {
             code: WRITE_NOT_A_LEAF_LAYER,
-            message: format!("keyed layer `{layer}` is a group, not a leaf"),
+            message: format!("keyed layer `{}` is a group, not a leaf", target.layer),
         });
     };
-    if key.len() != declared.key_params.len() {
+    if target.key.len() != declared.key_params.len() {
         return Err(WriteError {
             code: WRITE_LAYER_KEY_ARITY,
             message: format!(
-                "keyed layer `{layer}` expects {} key(s), got {}",
+                "keyed layer `{}` expects {} key(s), got {}",
+                target.layer,
                 declared.key_params.len(),
-                key.len()
+                target.key.len()
             ),
         });
     }
-    let value = staged_identity_value(layer, leaf_type, keys, referenced_arity)?;
+    let value = staged_identity_value(target.layer, leaf_type, keys, referenced_arity)?;
     Ok(WritePlan {
         steps: vec![PlanStep::Write {
-            path: encode_path(&nested_layer_leaf_path(root, identity, parents, layer, key)),
+            path: encode_path(&nested_layer_leaf_path(
+                root,
+                identity,
+                target.parents,
+                target.layer,
+                target.key,
+            )),
             value,
         }],
     })
@@ -769,7 +787,7 @@ pub fn plan_nested_layer_identity_leaf_write(
 
 /// The staged bytes for a typed-reference leaf: the referenced identity's canonical
 /// encoding. `ty` must be an identity type, and `keys` must have the referenced
-/// resource's identity arity, so the stored bytes round-trip through
+/// store identity arity, so the stored bytes round-trip through
 /// `decode_identity`. A non-identity declared type or a wrong-arity value is a
 /// catchable [`WRITE_TYPE_MISMATCH`] — the leaf could never decode back otherwise.
 /// Shared by the top-level, nested, and keyed-leaf identity-write planners.
@@ -804,13 +822,14 @@ fn staged_identity_value(
 /// the innermost layer. Like the single-level case, groups carry no generated
 /// indexes (`schema.index_in_group`), so this is a plain replace-in-place write.
 pub fn plan_nested_field_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layers: &[(&str, &[SavedKey])],
     field: &str,
     value: &SavedValue,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let innermost = descend_group_layers(schema, layers)?;
     let (_, ty, _) = field_slot(&innermost.members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
@@ -830,10 +849,11 @@ pub fn plan_nested_field_write(
 /// Plan a typed-reference field write into a (possibly nested) keyed group entry,
 /// the identity-leaf analogue of [`plan_nested_field_write`]. The innermost group
 /// layer must declare `field` with an identity type, and `keys` must have the
-/// referenced resource's identity arity (`referenced_arity`); the leaf is stored as
+/// referenced store identity arity (`referenced_arity`); the leaf is stored as
 /// the referenced identity's canonical encoding. A wrong-shape value is a catchable
 /// [`WRITE_TYPE_MISMATCH`].
 pub fn plan_nested_identity_field_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layers: &[(&str, &[SavedKey])],
@@ -841,7 +861,7 @@ pub fn plan_nested_identity_field_write(
     keys: &[SavedKey],
     referenced_arity: usize,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let innermost = descend_group_layers(schema, layers)?;
     let (_, ty, _) = field_slot(&innermost.members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
@@ -862,17 +882,17 @@ pub fn plan_nested_identity_field_write(
 /// `^root(identity).layer(key…)` with the supplied field `value`s — like a
 /// whole-resource write scoped to one group entry (required group fields must be
 /// present and typed). Groups carry no generated indexes, so there is no index
-/// maintenance. Errors when the resource has no saved root, the identity or key
-/// arity is wrong, the layer is unknown or a leaf, or a required field is absent or
-/// mistyped.
+/// maintenance. Errors when the store identity or layer key arity is wrong, the
+/// layer is unknown or a leaf, or a required field is absent or mistyped.
 pub fn plan_layer_group_write(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layer: &str,
     key: &[SavedKey],
     value: &ResourceValue,
 ) -> Result<WritePlan, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     let declared = find_layer(schema, layer)?;
     if matches!(declared.kind, NodeKind::Slot { .. }) {
         return Err(WriteError {
@@ -924,35 +944,24 @@ pub fn plan_layer_group_write(
     Ok(WritePlan { steps })
 }
 
-/// A resource's saved root, or `WRITE_NO_SAVED_ROOT` when it has none (a local or
-/// singleton resource). Shared by [`resolve_saved_root`] (which adds an arity
-/// check against a supplied identity) and [`next_id`] (which has no identity).
-fn saved_root_of(schema: &ResourceSchema) -> Result<&SavedRootSchema, WriteError> {
-    schema.saved_root.as_ref().ok_or_else(|| WriteError {
-        code: WRITE_NO_SAVED_ROOT,
-        message: format!("resource `{}` has no saved root", schema.name),
-    })
-}
-
-/// Resolve a resource's saved root and check the supplied identity has the
-/// expected number of keys.
-fn resolve_saved_root<'a>(
-    schema: &'a ResourceSchema,
+/// Resolve the store root and check the supplied identity has the expected
+/// number of keys.
+fn resolve_store_root<'a>(
+    store_schema: &'a StoreSchema,
     identity: &[SavedKey],
-) -> Result<&'a SavedRootSchema, WriteError> {
-    let root = saved_root_of(schema)?;
-    if identity.len() != root.identity_keys.len() {
+) -> Result<&'a StoreSchema, WriteError> {
+    if identity.len() != store_schema.identity_keys.len() {
         return Err(WriteError {
             code: WRITE_IDENTITY_MISMATCH,
             message: format!(
-                "resource `{}` expects {} identity key(s), got {}",
-                schema.name,
-                root.identity_keys.len(),
+                "store `^{}` expects {} identity key(s), got {}",
+                store_schema.root,
+                store_schema.identity_keys.len(),
                 identity.len()
             ),
         });
     }
-    Ok(root)
+    Ok(store_schema)
 }
 
 /// The next identity for a single-`int` keyed saved root: one greater than the
@@ -960,30 +969,29 @@ fn resolve_saved_root<'a>(
 /// the default `nextId` policy. Non-integer immediate children — such as index
 /// names — are ignored.
 ///
-/// The single-`int`-root gate is enforced here, not just documented: a resource
-/// with no saved root yields `WRITE_NO_SAVED_ROOT`, and a composite, non-integer,
-/// or keyless-singleton root yields [`WRITE_NEXT_ID_UNSUPPORTED`]. Taking the
-/// `&ResourceSchema` (rather than a bare root name) lets the function decide the
-/// policy from the schema, mirroring `next_layer_pos`.
-pub fn next_id(schema: &ResourceSchema, store: &dyn Backend) -> Result<i64, WriteError> {
-    let root = saved_root_of(schema)?;
-    if !root.single_int_root() {
+/// The single-`int`-root gate is enforced here, not just documented: a
+/// composite, non-integer, or keyless-singleton root yields
+/// [`WRITE_NEXT_ID_UNSUPPORTED`].
+pub fn next_id(store_schema: &StoreSchema, store: &dyn Backend) -> Result<i64, WriteError> {
+    if !store_schema.single_int_root() {
         return Err(WriteError {
             code: WRITE_NEXT_ID_UNSUPPORTED,
             message: format!(
                 "`nextId` has no default allocation policy for `{}`: {}; the default \
-                 per-root policy is only available for a resource with one `int` \
+                 per-root policy is only available for a store with one `int` \
                  identity key",
-                schema.name,
-                root.next_id_shape(),
+                store_schema.root,
+                store_schema.next_id_shape(),
             ),
         });
     }
     let highest = store
-        .max_int_record_key(&encode_path(&[PathSegment::Root(root.root.clone())]))
+        .max_int_record_key(&encode_path(&[PathSegment::Root(
+            store_schema.root.clone(),
+        )]))
         .map_err(|_| WriteError {
             code: WRITE_STORE,
-            message: format!("could not read records under `^{}`", root.root),
+            message: format!("could not read records under `^{}`", store_schema.root),
         })?
         .unwrap_or(0);
     next_after(highest)
@@ -1006,12 +1014,13 @@ fn next_after(highest: i64) -> Result<i64, WriteError> {
 /// non-positive keys are ignored. This is the append policy for sequence-shaped
 /// (integer-keyed) layers, the analogue of [`next_id`] for a root.
 pub fn next_layer_pos(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     layer: &str,
     store: &dyn Backend,
 ) -> Result<i64, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     find_layer(schema, layer)?;
     let mut prefix = identity_path(root, identity);
     prefix.push(PathSegment::ChildLayer(layer.into()));
@@ -1031,13 +1040,14 @@ pub fn next_layer_pos(
 /// The next 1-based position for an `append` to a keyed layer below a keyed
 /// parent chain, e.g. `^root(identity).rows(row).fields`.
 pub fn next_nested_layer_pos(
+    store_schema: &StoreSchema,
     schema: &ResourceSchema,
     identity: &[SavedKey],
     parents: &[(&str, &[SavedKey])],
     layer: &str,
     store: &dyn Backend,
 ) -> Result<i64, WriteError> {
-    let root = resolve_saved_root(schema, identity)?;
+    let root = resolve_store_root(store_schema, identity)?;
     find_nested_layer(schema, parents, layer)?;
     let mut prefix = nested_layer_path(root, identity, parents);
     prefix.push(PathSegment::ChildLayer(layer.into()));
@@ -1207,21 +1217,21 @@ fn layer_in<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
 }
 
 /// The encoded-path segments for `^root(identity)`.
-fn identity_path(root: &SavedRootSchema, identity: &[SavedKey]) -> Vec<PathSegment> {
+fn identity_path(root: &StoreSchema, identity: &[SavedKey]) -> Vec<PathSegment> {
     let mut path = vec![PathSegment::Root(root.root.clone())];
     path.extend(identity.iter().cloned().map(PathSegment::RecordKey));
     path
 }
 
 /// The encoded-path segments for `^root(identity).field`.
-fn field_path(root: &SavedRootSchema, identity: &[SavedKey], field: &str) -> Vec<PathSegment> {
+fn field_path(root: &StoreSchema, identity: &[SavedKey], field: &str) -> Vec<PathSegment> {
     let mut path = identity_path(root, identity);
     path.push(PathSegment::Field(field.into()));
     path
 }
 
 fn materialized_field_path(
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     field: &[String],
 ) -> Vec<PathSegment> {
@@ -1278,7 +1288,7 @@ fn ensure_required_fields_present(
 /// The encoded-path segments for a keyed-leaf entry,
 /// `^root(identity).layer(key…)`.
 fn layer_leaf_path(
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     layer: &str,
     key: &[SavedKey],
@@ -1287,7 +1297,7 @@ fn layer_leaf_path(
 }
 
 fn nested_layer_leaf_path(
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     parents: &[(&str, &[SavedKey])],
     layer: &str,
@@ -1303,7 +1313,7 @@ fn nested_layer_leaf_path(
 /// `^root(identity).layer0(key0…).layer1(key1…)…`, appending a `ChildLayer` and
 /// its `IndexKey`s for each level of the chain.
 fn nested_layer_path(
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     layers: &[(&str, &[SavedKey])],
 ) -> Vec<PathSegment> {
@@ -1360,7 +1370,7 @@ fn descend_group_layers<'a>(
 }
 
 fn materialized_layer_field_path(
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     field: &[String],
     key: &[SavedKey],
@@ -1390,7 +1400,7 @@ const INDEX_MARKER: &[u8] = b"1";
 /// absent or is a type with no key encoding, so no entry is written.
 fn index_keys(
     args: &[String],
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     value: &ResourceValue,
 ) -> Option<Vec<SavedKey>> {
@@ -1414,7 +1424,7 @@ fn index_keys(
 /// key encoding, or does not decode.
 fn stored_arg_key(
     arg: &str,
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     schema: &ResourceSchema,
     store: &dyn Backend,
@@ -1439,7 +1449,7 @@ fn stored_arg_key(
 /// undecodable, so nothing is torn down for it.
 fn stored_index_keys(
     args: &[String],
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     schema: &ResourceSchema,
     store: &dyn Backend,
@@ -1455,7 +1465,7 @@ fn stored_index_keys(
 /// key encoding, so no entry is written.
 fn field_write_index_keys(
     args: &[String],
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     field: &str,
     value: &SavedValue,
@@ -1474,7 +1484,7 @@ fn field_write_index_keys(
 }
 
 /// The encoded-path segments for an index entry, `^root.index(keys...)`.
-fn index_path(root: &SavedRootSchema, index: &str, keys: &[SavedKey]) -> Vec<PathSegment> {
+fn index_path(root: &StoreSchema, index: &str, keys: &[SavedKey]) -> Vec<PathSegment> {
     let mut path = vec![
         PathSegment::Root(root.root.clone()),
         PathSegment::Index(index.into()),
@@ -1494,7 +1504,7 @@ fn index_entry_value(unique: bool, identity: &[SavedKey]) -> Vec<u8> {
     }
 }
 
-/// Encode a resource identity as the value of a unique index entry: its keys in
+/// Encode a store identity as the value of a unique index entry: its keys in
 /// identity order, self-delimiting so the run decodes back exactly.
 fn encode_identity(identity: &[SavedKey]) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -1508,12 +1518,12 @@ fn encode_identity(identity: &[SavedKey]) -> Vec<u8> {
 /// the saved root's identity arity. Returns `None` unless the bytes are exactly
 /// that many well-formed keys with nothing left over. The runtime reads it back
 /// when a unique-index lookup is used in value position.
-pub fn decode_identity(bytes: &[u8], root: &SavedRootSchema) -> Option<Vec<SavedKey>> {
+pub fn decode_identity(bytes: &[u8], root: &StoreSchema) -> Option<Vec<SavedKey>> {
     decode_identity_arity(bytes, root.identity_keys.len())
 }
 
 /// Decode a stored identity by its key `arity` alone — the same walk as
-/// [`decode_identity`], for a typed-reference leaf whose referenced resource gives
+/// [`decode_identity`], for a typed-reference leaf whose referenced store gives
 /// the arity directly. Returns `None` unless the bytes are exactly that many
 /// well-formed keys with nothing left over.
 pub fn decode_identity_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
@@ -1527,14 +1537,14 @@ pub fn decode_identity_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>
     rest.is_empty().then_some(keys)
 }
 
-/// Reject a write when a unique index would map `new_keys` to a resource other
-/// than `identity`. `new_keys` is `None` when the entry would not exist (an
+/// Reject a write when a unique index would map `new_keys` to another identity.
+/// `new_keys` is `None` when the entry would not exist (an
 /// indexed value is absent), which never conflicts. An entry held by `identity`
 /// itself is not a conflict (a re-write of its own record); an unreadable entry
 /// is a store error, since a real clash cannot be ruled out.
 fn check_unique_conflict(
     index: &str,
-    root: &SavedRootSchema,
+    root: &StoreSchema,
     identity: &[SavedKey],
     new_keys: Option<&[SavedKey]>,
     store: &dyn Backend,
@@ -1551,7 +1561,7 @@ fn check_unique_conflict(
         Some(_) => Err(WriteError {
             code: WRITE_UNIQUE_CONFLICT,
             message: format!(
-                "unique index `{index}` already holds those key(s) for another resource"
+                "unique index `{index}` already holds those key(s) for another identity"
             ),
         }),
         None => Err(WriteError {

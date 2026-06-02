@@ -37,6 +37,15 @@ impl SourceFile {
             })
     }
 
+    pub fn store(&self, root: &str) -> Option<&StoreDecl> {
+        self.declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Store(store) if store.root.root == root => Some(store),
+                _ => None,
+            })
+    }
+
     pub fn function(&self, name: &str) -> Option<&FunctionDecl> {
         self.declarations
             .iter()
@@ -72,6 +81,7 @@ pub struct UseDecl {
 pub enum Declaration {
     Const(ConstDecl),
     Resource(ResourceDecl),
+    Store(StoreDecl),
     Function(FunctionDecl),
     Enum(EnumDecl),
 }
@@ -236,8 +246,17 @@ pub enum BinaryOp {
 pub struct ResourceDecl {
     pub docs: Vec<String>,
     pub name: String,
-    pub store: Option<SavedRoot>,
     pub members: Vec<ResourceMember>,
+    pub comments: Vec<Comment>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreDecl {
+    pub docs: Vec<String>,
+    pub root: SavedRoot,
+    pub resource: String,
+    pub indexes: Vec<IndexDecl>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
@@ -252,7 +271,6 @@ pub struct SavedRoot {
 pub enum ResourceMember {
     Field(FieldDecl),
     Group(GroupDecl),
-    Index(IndexDecl),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

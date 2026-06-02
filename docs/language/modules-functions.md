@@ -95,7 +95,7 @@ fn add(title: string, author: string): int
 An omitted return type means the function produces no value:
 
 ```mw
-fn remove(id: Book::Id)
+fn remove(id: Id(^books))
     delete ^books(id)
 ```
 
@@ -110,17 +110,17 @@ The return type says whether the call produces a value; the body and checker
 describe the effects:
 
 ```mw
-fn addBook(title: string, author: string, shelf: string): Book::Id
+fn addBook(title: string, author: string, shelf: string): Id(^books)
     var book: Book
     book.title = title
     book.author = author
     book.shelf = shelf
 
-    const id: Book::Id = nextId(^books)
+    const id: Id(^books) = nextId(^books)
     ^books(id) = book
     return id
 
-fn remove(id: Book::Id)
+fn remove(id: Id(^books))
     delete ^books(id)
 ```
 
@@ -188,7 +188,7 @@ the call site when saved data must be updated.
 Resources pass like typed values by default:
 
 ```mw
-fn save(id: Book::Id, book: Book)
+fn save(id: Id(^books), book: Book)
     ^books(id) = book
 ```
 

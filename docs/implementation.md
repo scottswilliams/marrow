@@ -131,12 +131,11 @@ shape is local or saved.
 Resources are schema declarations. They are not service APIs, hidden objects,
 or function containers.
 
-One saved root has one managed owner. If `Book` owns `^books`, another
-resource cannot claim `^books` with a different shape.
+One saved root has one managed owner. If a store owns `^books`, another store
+cannot claim `^books` with a different shape.
 
 Identity keys live in the saved path. They are not stored fields. Typed code
-addresses a saved resource through its generated identity type, not raw key
-tuples.
+addresses saved data through the store identity type, not raw key tuples.
 
 Schemas come from source. Tools may cache compiled metadata, but the cache is
 not the source of truth.
@@ -242,8 +241,8 @@ code, and the outer transaction can continue.
 Source-level `lock` is not part of v0.1. Backend writer coordination is an
 implementation concern, not an accepted source construct.
 
-`nextId(...)` is runtime policy over a keyed saved root. The default policy
-covers a resource with one `int` identity key. `append(path, value)` allocates
+`nextId(...)` is runtime policy over a keyed store root. The default policy
+covers a store with one `int` identity key. `append(path, value)` allocates
 the next positive integer child below that path and does not fill holes.
 
 ## Standard Library Boundary

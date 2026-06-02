@@ -45,7 +45,7 @@ fn config() -> marrow_project::ProjectConfig {
 }
 
 #[test]
-fn v01_library_fixture_checks_clean_and_exposes_current_identity_bridge() {
+fn v01_library_fixture_checks_clean_and_exposes_store_identity_refs() {
     let root = temp_project("v01-library-check", |root| {
         write(root, "src/v01/library.mw", LIBRARY_SOURCE);
     });
@@ -75,7 +75,7 @@ fn v01_library_fixture_checks_clean_and_exposes_current_identity_bridge() {
         book.field_type(&["author"])
             .expect("author field")
             .to_string(),
-        "Author::Id"
+        "Id(^authors)"
     );
     let author = book
         .members

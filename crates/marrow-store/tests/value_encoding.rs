@@ -325,7 +325,7 @@ fn scalar_type_names_map_to_their_value_type() {
     // so it maps to `Str`; `Str` still spells back as `string`.
     assert_eq!(ScalarType::from_scalar_name("ErrorCode"), Some(Str));
     assert_eq!(Str.name(), "string");
-    for name in ["Book", "Book::Id", "unknown", "Int", ""] {
+    for name in ["Book", "Book::Title", "unknown", "Int", ""] {
         assert_eq!(ScalarType::from_scalar_name(name), None, "{name}");
     }
 }

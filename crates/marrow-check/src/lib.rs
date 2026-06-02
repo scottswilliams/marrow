@@ -7,9 +7,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use marrow_project::{DiscoverError, ProjectConfig, discover_modules, discover_test_modules};
+use marrow_project::{DiscoverError, ProjectConfig, discover_test_modules};
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
-use marrow_schema::{MemberPathResolution, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
@@ -28,30 +27,19 @@ mod typerules;
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
 pub use enums::resolve_match_enums;
-// The type machinery is carved into sibling modules but stays one flat internal
-// namespace: each module reaches the others (and the driver remainder here)
-// through `use super::*;`, so these glob re-exports keep every `pub(crate)` helper
-// resolvable across the boundary without per-call qualification.
-pub(crate) use checks::*;
-pub(crate) use enums::{
-    check_is, check_match, collect_enum_names, join_or, normalize_program_named_types,
-    normalize_program_named_types_against, private_enum_type_reference, resolve_enum_member_path,
-    resolve_type,
-};
 pub use facts::{
     CheckedFacts, CheckedType, DirectEffectFacts, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
     FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
+    StoreFact, StoreId, StoreIndexFact, StoreIndexId,
 };
-pub(crate) use infer::*;
-pub use marrow_schema::{IndexSchema, ResourceSchema};
+pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};
 use program::TypeNames;
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
 };
 pub(crate) use prototype::check_prototype_only;
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
-pub(crate) use typerules::*;
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
@@ -116,7 +104,7 @@ pub const CHECK_PRIVATE_ENUM: &str = "check.private_enum";
 pub const CHECK_AMBIGUOUS_CALL: &str = "check.ambiguous_call";
 /// `nextId(^root)` names a root with no default integer allocation policy: a
 /// composite identity, a single non-integer identity key, or a keyless singleton.
-/// The default per-root policy is only available for a resource with one `int`
+/// The default per-root policy is only available for a store with one `int`
 /// identity key. The runtime backstops
 /// this with `write.next_id_unsupported`; the checker catches it before a run.
 pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
@@ -183,9 +171,9 @@ pub const CHECK_IS_REQUIRES_ENUM: &str = "check.is_requires_enum";
 pub const CHECK_IS_TYPE: &str = "check.is_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
-/// Two resources in the project claim the same saved root. A saved root has one
-/// managed owner. This is a schema-model rule, but it is cross-resource, so the
-/// project checker reports it rather than per-resource schema compilation.
+/// Two stores in the project declare the same root. A saved root has one managed
+/// owner. This is a schema-model rule, but it is cross-declaration, so the
+/// project checker reports it rather than per-store schema compilation.
 pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 
 /// A problem found while checking a project, located in a specific file.
@@ -284,34 +272,80 @@ pub fn check_project_with_sources(
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
-/// The schema of the resource that owns saved root `^root`, if any. Saved roots
-/// are project-wide (a `^books` write addresses the one `books` resource from any
-/// module), so this is a thin shim over the resolver's project-wide root lookup;
-/// the runtime's `find_resource` routes through the same helper.
+pub(crate) struct StoreResource<'p> {
+    pub(crate) module: &'p CheckedModule,
+    pub(crate) store: &'p marrow_schema::StoreSchema,
+    pub(crate) resource: &'p marrow_schema::ResourceSchema,
+}
+
+pub(crate) fn find_store_resource<'p>(
+    program: &'p CheckedProgram,
+    root: &str,
+) -> Option<StoreResource<'p>> {
+    for module in &program.modules {
+        if let Some(store) = module.stores.iter().find(|store| store.root == root)
+            && let Some(resource) = module
+                .resources
+                .iter()
+                .find(|resource| resource.name == store.resource)
+        {
+            return Some(StoreResource {
+                module,
+                store,
+                resource,
+            });
+        }
+    }
+    None
+}
+
+/// The schema of the resource stored at saved root `^root`, if any. Saved roots
+/// are project-wide (a `^books` write addresses the one `books` store from any
+/// module), so this resolves through the store table and returns only the
+/// resource shape for callers that do not need identity keys or indexes.
 pub(crate) fn find_resource_schema<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<&'p marrow_schema::ResourceSchema> {
-    resolve::resolve_resource_by_root(program, root)
+    find_store_resource(program, root).map(|store| store.resource)
 }
 
-/// The qualified name of the module that declares `resource`. A saved enum field
-/// names an enum declared in the same module (the saved-field rule forbids any
-/// other named field type), so this module owns the enum a bare `Named` field
-/// type refers to. Defaults to the empty module for a resource not found in any
-/// module's list (a module-less script's resource), matching how a script's enums
-/// carry the empty owner.
-fn resource_module<'p>(program: &'p CheckedProgram, name: &str) -> &'p str {
-    program
-        .modules
-        .iter()
-        .find(|module| {
-            module
-                .resources
-                .iter()
-                .any(|resource| resource.name == name)
-        })
-        .map_or("", |module| module.name.as_str())
+pub(crate) fn identity_type_for_store(store: &marrow_schema::StoreSchema) -> MarrowType {
+    MarrowType::Identity(store.root.clone())
+}
+
+pub(crate) fn resource_type_name(module: &str, resource: &str) -> String {
+    if module.is_empty() {
+        resource.to_string()
+    } else {
+        format!("{module}::{resource}")
+    }
+}
+
+pub(crate) fn resolve_resource_type<'p>(
+    program: &'p CheckedProgram,
+    name: &str,
+) -> Option<(&'p marrow_schema::ResourceSchema, &'p str)> {
+    if let Some((module_name, resource_name)) = name.rsplit_once("::") {
+        return program
+            .modules
+            .iter()
+            .find(|module| module.name == module_name)
+            .and_then(|module| {
+                module
+                    .resources
+                    .iter()
+                    .find(|resource| resource.name == resource_name)
+                    .map(|resource| (resource, module.name.as_str()))
+            });
+    }
+    program.modules.iter().find_map(|module| {
+        module
+            .resources
+            .iter()
+            .find(|resource| resource.name == name)
+            .map(|resource| (resource, module.name.as_str()))
+    })
 }
 
 fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<String, bool> {
@@ -609,9 +643,6 @@ impl TestResolutionSuppression {
         if let Some(element) = sequence_type_element(name) {
             return self.references_hidden_type_text(element);
         }
-        if let Some(resource) = name.strip_suffix("::Id") {
-            return self.references_hidden_named_type(resource);
-        }
         self.references_hidden_named_type(name)
     }
 
@@ -686,6 +717,7 @@ pub(crate) fn check_tests_with_sources_analysis(
         let CheckedFile {
             parsed,
             resources,
+            stores,
             enums,
             functions,
             constants,
@@ -708,6 +740,7 @@ pub(crate) fn check_tests_with_sources_analysis(
                 constants,
                 functions,
                 resources,
+                stores,
                 enums,
                 enum_public: enum_visibility(&parsed.file),
             });
@@ -793,7 +826,7 @@ pub(crate) fn check_tests_with_sources_analysis(
     // reads them. The project modules carry the project's own normalized
     // signatures already.
     let resolver = combined.clone();
-    normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
+    enums::normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
     let project_resources: HashSet<String> = combined
         .modules
         .iter()
@@ -810,11 +843,11 @@ pub(crate) fn check_tests_with_sources_analysis(
     // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look
     // unresolved; the shared suppression handles that qualified-call case.
-    check_resolved_files(
-        ResolvedFileCheck {
+    checks::check_resolved_files(
+        checks::ResolvedFileCheck {
             files: &files,
             parsed_files: &parsed_files,
-            module_name_policy: ModuleNamePolicy::PathOnly,
+            module_name_policy: checks::ModuleNamePolicy::PathOnly,
             resolvable: &resolvable,
             program: &combined,
             project_resources: &project_resources,
@@ -873,6 +906,7 @@ pub(crate) fn check_tests_with_sources_analysis(
 struct CheckedFile {
     parsed: marrow_syntax::ParsedSource,
     resources: Vec<marrow_schema::ResourceSchema>,
+    stores: Vec<marrow_schema::StoreSchema>,
     enums: Vec<marrow_schema::EnumSchema>,
     functions: Vec<CheckedFunction>,
     constants: Vec<CheckedConst>,
@@ -950,6 +984,15 @@ fn check_file_source(
             _ => None,
         })
         .collect();
+    let module_stored_resources: HashSet<String> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Store(store) => Some(store.resource.clone()),
+            _ => None,
+        })
+        .collect();
     // A bare enum annotation in a signature names this module's enum, so the
     // resolved type carries the module's qualified name as the enum's owner. A
     // module-less script has no declared name (its enums are project-unique).
@@ -963,7 +1006,14 @@ fn check_file_source(
         resources: &module_resources,
         enums: &module_enums,
     };
-    let mut resources = Vec::new();
+    let resources = checked_resources(
+        file_path,
+        &parsed,
+        &module_stored_resources,
+        &module_enums,
+        diagnostics,
+    );
+    let mut stores = Vec::new();
     let mut enums = Vec::new();
     let mut functions = Vec::new();
     let mut constants = Vec::new();
@@ -973,26 +1023,43 @@ fn check_file_source(
                 rules::check_function_body(file_path, function, diagnostics);
                 functions.push(checked_function(function, names));
             }
-            marrow_syntax::Declaration::Resource(resource) => {
-                let (schema, mut errors) = marrow_schema::compile_resource(resource);
-                // A bare-named saved field must be a declared enum. Schema
-                // compilation cannot see other declarations, so the enum names are
-                // resolved here and the rule applied alongside the other saved-data
-                // checks.
-                errors.extend(marrow_schema::check_saved_named_fields(
-                    resource,
-                    &module_enums,
-                ));
-                for error in errors {
+            marrow_syntax::Declaration::Resource(_) => {}
+            marrow_syntax::Declaration::Store(store) => {
+                if let Some(resource) = resources
+                    .iter()
+                    .find(|resource| resource.name == store.resource)
+                {
+                    let (schema, errors) = marrow_schema::compile_store(store, resource);
+                    for error in errors {
+                        let diagnostic = CheckDiagnostic {
+                            code: error.code,
+                            severity: Severity::Error,
+                            file: file_path.to_path_buf(),
+                            message: error.message,
+                            span: error.span,
+                        };
+                        if !diagnostics.iter().any(|existing| {
+                            existing.code == diagnostic.code
+                                && existing.file == diagnostic.file
+                                && existing.message == diagnostic.message
+                                && existing.span == diagnostic.span
+                        }) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    stores.push(schema);
+                } else {
                     diagnostics.push(CheckDiagnostic {
-                        code: error.code,
+                        code: CHECK_UNKNOWN_TYPE,
                         severity: Severity::Error,
                         file: file_path.to_path_buf(),
-                        message: error.message,
-                        span: error.span,
+                        message: format!(
+                            "unknown resource `{}` for store `^{}`",
+                            store.resource, store.root.root
+                        ),
+                        span: store.span,
                     });
                 }
-                resources.push(schema);
             }
             marrow_syntax::Declaration::Enum(decl) => {
                 let (schema, errors) = marrow_schema::compile_enum(decl);
@@ -1027,10 +1094,65 @@ fn check_file_source(
     CheckedFile {
         parsed,
         resources,
+        stores,
         enums,
         functions,
         constants,
     }
+}
+
+fn checked_resources(
+    file_path: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    module_stored_resources: &HashSet<String>,
+    module_enums: &[String],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Vec<marrow_schema::ResourceSchema> {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Resource(resource) => Some(resource),
+            _ => None,
+        })
+        .map(|resource| {
+            let has_store = module_stored_resources.contains(&resource.name);
+            let (schema, errors) = if has_store {
+                marrow_schema::compile_stored_resource(resource)
+            } else {
+                marrow_schema::compile_resource(resource)
+            };
+            for error in errors {
+                push_schema_error(file_path, diagnostics, error);
+            }
+            if has_store {
+                for error in marrow_schema::check_saved_member_rules(&resource.members) {
+                    push_schema_error(file_path, diagnostics, error);
+                }
+                for error in
+                    marrow_schema::check_saved_named_member_fields(&resource.members, module_enums)
+                {
+                    push_schema_error(file_path, diagnostics, error);
+                }
+            }
+            schema
+        })
+        .collect()
+}
+
+fn push_schema_error(
+    file_path: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    error: marrow_schema::SchemaError,
+) {
+    diagnostics.push(CheckDiagnostic {
+        code: error.code,
+        severity: Severity::Error,
+        file: file_path.to_path_buf(),
+        message: error.message,
+        span: error.span,
+    });
 }
 
 /// Resolve a function declaration for the checked-program artifact: its
@@ -1257,6 +1379,7 @@ fn check_duplicate_declarations(
         let (name, span) = match declaration {
             Declaration::Const(decl) => (decl.name.as_str(), decl.span),
             Declaration::Resource(decl) => (decl.name.as_str(), decl.span),
+            Declaration::Store(_) => continue,
             Declaration::Function(decl) => (decl.name.as_str(), decl.span),
             Declaration::Enum(decl) => (decl.name.as_str(), decl.span),
         };

@@ -59,6 +59,7 @@ top_level_decl  =
       use_decl
     | doc_comment* const_decl
     | doc_comment* resource_decl
+    | doc_comment* store_decl
     | doc_comment* enum_decl
     | doc_comment* function_decl
     ;
@@ -78,6 +79,10 @@ resource_decl   =
     "resource" identifier resource_store? NEWLINE
     INDENT resource_member+ DEDENT ;
 
+store_decl      =
+    "store" saved_root key_params? ":" identifier NEWLINE
+    (INDENT store_member+ DEDENT)? ;
+
 resource_store  = "at" saved_root key_params? ;
 saved_root      = "^" identifier ;
 
@@ -85,7 +90,10 @@ resource_member =
       doc_comment* field_decl
     | doc_comment* keyed_field_decl
     | doc_comment* group_decl
-    | doc_comment* index_decl
+    ;
+
+store_member =
+      doc_comment* index_decl
     ;
 
 field_decl      =
@@ -172,6 +180,7 @@ type_annotation = ":" type ;
 type            =
       qualified_name
     | scalar_type
+    | identity_type
     | sequence_type
     | keyed_tree_type
     ;
@@ -190,17 +199,19 @@ scalar_type     =
     ;
 
 sequence_type   = "sequence" "[" type "]" ;
+identity_type   = "Id" "(" saved_root ")" ;
 keyed_tree_type = "(" key_decl ("," key_decl)* ","? ")" ":" type ;
 ```
 
-`qualified_name` includes normal imported types and generated resource identity
-types such as `Book::Id`. `Error` is the builtin resource-shaped error type.
+`qualified_name` includes normal imported types. Store identity types use the
+source form `Id(^root)`, for example `Id(^books)`. `Error` is the builtin
+resource-shaped error type.
 
 The checker restricts where some parsed types are valid. A missing return type
 means the function produces no value. Managed saved fields and keys reject
 `unknown`; use `bytes`, `string`, or an explicit resource shape for persisted
-dynamic payloads. `map[K, V]` is accepted only as saved-resource member sugar
-for a keyed leaf, not as a local runtime map value or nested type.
+dynamic payloads. `map[K, V]` is accepted only as saved keyed-leaf member sugar,
+not as a local runtime map value or nested type.
 
 ## Statements
 
@@ -468,23 +479,28 @@ These rules are part of the grammar contract:
   `const Bad = int`, is a parse error: a type keyword is not an expression.
 - Reserved words are not identifiers, so a reserved word cannot be used as a
   name for a binding, parameter, resource, field, function, or module segment.
-- Calls to generated resource identity types, such as `Book::Id(...)`, are
-  checked as identity constructors.
+- Store identity values are typed as `Id(^root)`.
 - Calls to resource types and `Error(...)` are checked as resource
   constructors; calls to functions are checked as calls.
 - `throw` requires an `Error` value.
 - `catch name` binds `name` as `Error`; if a catch annotation is present, it
   must be `Error`.
 - `finally` blocks reject `return`, `break`, and `continue`.
-- `index` declarations are checked as direct members of keyed saved resources.
+- `index` declarations are checked as direct members of keyed stores. In the
+  concise `resource ... at ^root(...)` declaration sugar, index declarations in
+  the resource block desugar onto the generated store.
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
 - `out` and local `inout` arguments must be assignable places. Saved paths are
   not valid `inout` arguments.
-- Direct collection iteration yields elements. For a managed resource root, that
+- Direct collection iteration yields elements. For a managed store root, that
   means resource values; for a non-unique index branch, that means the identities
   in the branch.
 - `keys`, `values`, and `entries` expose address-only, element-only, and
   address-plus-element traversal as expression forms.
-- Documentation comments attach to the next const, resource, function, or
-  resource member at the same indentation level.
+- Documentation comments attach to the next const, resource, store, function, or
+  resource/store element at the same indentation level.
+
+ADR 0209 reserves `~` source forms for future typed ephemeral roots. v0.1 rejects
+top-level `~roots`, `cache ~...`, `ensure ~...`, and identity types such as
+`Id(~scratch)`.

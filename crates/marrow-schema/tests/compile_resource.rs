@@ -6,14 +6,14 @@
 //! the structural errors the compiler reports.
 
 use marrow_schema::{
-    Node, NodeKind, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_IN_GROUP,
-    SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NON_ENUM_NAMED_FIELD,
-    SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
-    SCHEMA_UNORDERABLE_KEY, SCHEMA_UNSUPPORTED_TYPE, ScalarType, Type, check_saved_named_fields,
-    compile_resource,
+    Node, NodeKind, ResourceSchema, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
+    SCHEMA_INDEX_REQUIRES_KEYED_ROOT, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG,
+    SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_IN_SAVED,
+    SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY, SCHEMA_UNSUPPORTED_TYPE, ScalarType, Type,
+    check_saved_member_rules, check_saved_named_member_fields, compile_resource, compile_store,
+    compile_stored_resource,
 };
-use marrow_syntax::{Declaration, ResourceDecl, parse_source};
+use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
 
 /// Parse `source` and return its single resource declaration.
 fn resource(source: &str) -> ResourceDecl {
@@ -36,9 +36,75 @@ fn resource(source: &str) -> ResourceDecl {
 
 /// Compile `source`'s resource, asserting it produced no schema errors.
 fn compile_ok(source: &str) -> ResourceSchema {
-    let (schema, errors) = compile_resource(&resource(source));
+    let (schema, errors) = compile_source(source);
     assert!(errors.is_empty(), "unexpected schema errors: {errors:?}");
     schema
+}
+
+fn compile_source(source: &str) -> (ResourceSchema, Vec<marrow_schema::SchemaError>) {
+    let parsed = parse_source(source);
+    assert!(
+        !parsed.has_errors(),
+        "source should parse cleanly: {:?}",
+        parsed.diagnostics
+    );
+    let mut resource = None;
+    let mut store = None;
+    for declaration in parsed.file.declarations {
+        match declaration {
+            Declaration::Resource(decl) => resource = Some(decl),
+            Declaration::Store(decl) => store = Some(decl),
+            _ => {}
+        }
+    }
+    let resource = resource.expect("resource declaration");
+    if let Some(store) = store {
+        let (schema, mut errors) = compile_stored_resource(&resource);
+        let (_, store_errors) = compile_store(&store, &schema);
+        errors.extend(store_errors);
+        errors.extend(check_saved_member_rules(&resource.members));
+        (schema, errors)
+    } else {
+        compile_resource(&resource)
+    }
+}
+
+fn compile_source_errors(source: &str) -> Vec<marrow_schema::SchemaError> {
+    let (_, errors) = compile_source(source);
+    errors
+}
+
+fn compile_store_errors(source: &str) -> Vec<marrow_schema::SchemaError> {
+    let (resource, store) = resource_and_store(source);
+    let (schema, resource_errors) = compile_stored_resource(&resource);
+    assert!(
+        resource_errors.is_empty(),
+        "unexpected resource errors: {resource_errors:?}"
+    );
+    let (_, store_errors) = compile_store(&store, &schema);
+    store_errors
+}
+
+fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
+    let parsed = parse_source(source);
+    assert!(
+        !parsed.has_errors(),
+        "source should parse cleanly: {:?}",
+        parsed.diagnostics
+    );
+    let mut resource = None;
+    let mut store = None;
+    for declaration in parsed.file.declarations {
+        match declaration {
+            Declaration::Resource(decl) => resource = Some(decl),
+            Declaration::Store(decl) => store = Some(decl),
+            _ => {}
+        }
+    }
+    (
+        resource.expect("resource declaration"),
+        store.expect("store declaration"),
+    )
 }
 
 /// The top-level node named `name` (a keyed leaf or a group).
@@ -81,12 +147,22 @@ resource Book at ^books(id: int)
 
 #[test]
 fn book_saved_root_has_one_identity_key() {
-    let schema = compile_ok(BOOK);
-    let root = schema.saved_root.expect("Book has a saved root");
-    assert_eq!(root.root, "books");
-    assert_eq!(root.identity_keys.len(), 1);
-    assert_eq!(root.identity_keys[0].name, "id");
-    assert_eq!(root.identity_keys[0].ty, Type::Scalar(ScalarType::Int));
+    let (resource, store) = resource_and_store(BOOK);
+    let (resource_schema, resource_errors) = compile_stored_resource(&resource);
+    assert!(resource_errors.is_empty(), "{resource_errors:?}");
+    let (store_schema, store_errors) = compile_store(&store, &resource_schema);
+    assert!(store_errors.is_empty(), "{store_errors:?}");
+    assert_eq!(store_schema.root, "books");
+    assert_eq!(store_schema.identity_keys.len(), 1);
+    assert_eq!(store_schema.identity_keys[0].name, "id");
+    assert_eq!(
+        store_schema.identity_keys[0].ty,
+        Type::Scalar(ScalarType::Int)
+    );
+    assert_eq!(
+        store_schema.identity_type(),
+        Type::Identity("books".to_string())
+    );
 }
 
 #[test]
@@ -182,27 +258,54 @@ fn book_versions_is_a_history_group() {
 
 #[test]
 fn book_byshelf_index() {
-    let schema = compile_ok(BOOK);
-    assert_eq!(schema.indexes.len(), 1);
-    let by_shelf = &schema.indexes[0];
+    let (resource, store) = resource_and_store(BOOK);
+    let (resource_schema, resource_errors) = compile_stored_resource(&resource);
+    assert!(resource_errors.is_empty(), "{resource_errors:?}");
+    let (store_schema, store_errors) = compile_store(&store, &resource_schema);
+    assert!(store_errors.is_empty(), "{store_errors:?}");
+    assert_eq!(store_schema.indexes.len(), 1);
+    let by_shelf = &store_schema.indexes[0];
     assert_eq!(by_shelf.name, "byShelf");
     assert_eq!(by_shelf.args, ["shelf", "id"]);
     assert!(!by_shelf.unique);
 }
 
 #[test]
-fn index_inside_group_is_an_error() {
-    let source = "\
-resource Book at ^books(id: int)
-    notes(noteId: string)
-        text: string
-        index byText(text)
-";
-    let (schema, errors) = compile_resource(&resource(source));
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].code, SCHEMA_INDEX_IN_GROUP);
-    // The misplaced index is dropped, not promoted to a resource index.
-    assert!(schema.indexes.is_empty());
+fn two_stores_over_one_resource_have_distinct_identity_types() {
+    let resource = resource(
+        "\
+resource Book
+    title: string
+",
+    );
+    let (book, resource_errors) = compile_resource(&resource);
+    assert!(resource_errors.is_empty(), "{resource_errors:?}");
+    let (_, books) = resource_and_store(
+        "\
+resource Book
+    title: string
+store ^books(id: int): Book
+",
+    );
+    let (_, archived) = resource_and_store(
+        "\
+resource Book
+    title: string
+store ^archivedBooks(id: int): Book
+",
+    );
+
+    let (books, books_errors) = compile_store(&books, &book);
+    let (archived, archived_errors) = compile_store(&archived, &book);
+
+    assert!(books_errors.is_empty(), "{books_errors:?}");
+    assert!(archived_errors.is_empty(), "{archived_errors:?}");
+    assert_eq!(books.identity_type(), Type::Identity("books".to_string()));
+    assert_eq!(
+        archived.identity_type(),
+        Type::Identity("archivedBooks".to_string())
+    );
+    assert_ne!(books.identity_type(), archived.identity_type());
 }
 
 #[test]
@@ -212,7 +315,7 @@ resource Book at ^books(id: int)
     required title: string
     title: string
 ";
-    let (schema, errors) = compile_resource(&resource(source));
+    let (schema, errors) = compile_source(source);
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].code, SCHEMA_DUPLICATE_MEMBER);
     // Best-effort: every parsed member is kept in source order; the collision
@@ -234,7 +337,7 @@ resource Book at ^books(id: int)
     required title: string
     note: unknown
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("note"));
 }
@@ -245,7 +348,7 @@ fn saved_identity_key_typed_unknown_is_an_error() {
 resource Book at ^books(id: unknown)
     required title: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("id"));
 }
@@ -256,7 +359,7 @@ fn saved_keyed_leaf_typed_unknown_is_an_error() {
 resource Book at ^books(id: int)
     tags(pos: int): unknown
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("tags"));
 }
@@ -268,7 +371,7 @@ resource Book at ^books(id: int)
     notes(noteId: string)
         body: unknown
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("body"));
 }
@@ -281,7 +384,7 @@ fn saved_field_typed_sequence_of_unknown_is_an_error() {
 resource Book at ^books(id: int)
     tags: sequence[unknown]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("tags"));
 }
@@ -292,7 +395,7 @@ fn saved_map_member_value_typed_unknown_is_an_error() {
 resource Book at ^books(id: int)
     scores: map[string, unknown]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("scores"));
 }
@@ -305,7 +408,7 @@ fn saved_field_typed_sequence_of_concrete_type_is_allowed() {
 resource Book at ^books(id: int)
     tags: sequence[string]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert!(
         errors.is_empty(),
         "sequence of a concrete type is fine: {errors:?}"
@@ -412,7 +515,7 @@ fn map_member_sugar_is_rejected_on_local_resources() {
 resource Draft
     scores: map[string, int]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
     assert!(errors[0].message.contains("scores"));
 }
@@ -423,7 +526,7 @@ fn map_type_nested_inside_sequence_is_rejected() {
 resource Book at ^books(id: int)
     scores: sequence[map[string, int]]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
     assert!(errors[0].message.contains("scores"));
 }
@@ -434,7 +537,7 @@ fn map_type_in_identity_key_is_rejected() {
 resource Book at ^books(id: map[string, int])
     title: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
     assert!(errors[0].message.contains("id"));
 }
@@ -445,7 +548,7 @@ fn map_type_in_key_param_is_rejected() {
 resource Draft
     scores(k: map[string, int]): int
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
     assert!(errors[0].message.contains("k"));
 }
@@ -456,7 +559,7 @@ fn map_type_as_map_key_is_rejected_once() {
 resource Book at ^books(id: int)
     scores: map[map[string, int], int]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
     assert!(errors[0].message.contains("key"));
 }
@@ -467,7 +570,7 @@ fn required_map_member_sugar_is_rejected() {
 resource Book at ^books(id: int)
     required scores: map[string, int]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
     assert!(errors[0].message.contains("scores"));
 }
@@ -480,7 +583,7 @@ fn keyed_leaf_key_param_typed_unknown_is_an_error() {
 resource Book at ^books(id: int)
     tags(pos: unknown): string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("pos"));
 }
@@ -494,7 +597,7 @@ resource Book at ^books(id: int)
         revisions(rev: unknown)
             body: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert!(errors[0].message.contains("rev"));
 }
@@ -507,7 +610,7 @@ fn local_keyed_leaf_key_param_typed_unknown_is_allowed() {
 resource Draft
     tags(pos: unknown): string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert!(
         errors.is_empty(),
         "local resources may use `unknown` in keys: {errors:?}"
@@ -521,7 +624,7 @@ resource Draft
     title: string
     note: unknown
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert!(
         errors.is_empty(),
         "local resources may use `unknown`: {errors:?}"
@@ -535,7 +638,7 @@ resource Book at ^books(id: int)
     required id: int
     required title: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
     assert!(errors[0].message.contains("id"));
 }
@@ -547,21 +650,21 @@ resource Book at ^books(notes: int)
     notes(noteId: string)
         text: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
     assert!(errors[0].message.contains("notes"));
 }
 
 #[test]
 fn identity_key_name_colliding_with_index_is_an_error() {
-    // Identity keys, fields, layers, and index names share the resource
-    // namespace, so a key may not reuse an index name.
+    // Identity keys and index names share the store namespace, so a key may not
+    // reuse an index name.
     let source = "\
 resource Book at ^books(id: int)
     required title: string
     index id(title, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
     assert!(errors[0].message.contains("id"));
 }
@@ -575,7 +678,7 @@ resource Book at ^books(id: int)
     required title: string
     index byShelf(shelf, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
     assert!(errors[0].message.contains("shelf"));
 }
@@ -588,7 +691,7 @@ resource Book at ^books(id: int)
     required title: string
     index byTitle(title, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert!(
         errors.is_empty(),
         "field and identity-key args resolve: {errors:?}"
@@ -603,7 +706,7 @@ resource Book at ^books(id: int)
     tags(pos: int): string
     index byTag(tags, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
     assert!(errors[0].message.contains("tags"));
 }
@@ -615,7 +718,7 @@ resource Book at ^books(id: int)
     scores: map[string, int]
     index byScore(scores, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
     assert!(errors[0].message.contains("scores"));
 }
@@ -630,7 +733,7 @@ resource Book at ^books(id: int)
     price: decimal
     index byPrice(price, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
     assert!(errors[0].message.contains("price"));
 }
@@ -642,7 +745,7 @@ fn keyed_leaf_with_a_decimal_key_param_is_an_error() {
 resource Book at ^books(id: int)
     samples(ts: decimal): int
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
     assert!(errors[0].message.contains("ts"));
 }
@@ -653,7 +756,7 @@ fn map_member_with_a_decimal_key_type_is_an_error() {
 resource Book at ^books(id: int)
     scores: map[decimal, int]
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
     assert!(errors[0].message.contains("key"));
 }
@@ -664,7 +767,7 @@ fn identity_key_typed_decimal_is_an_error() {
 resource Reading at ^readings(ts: decimal)
     required value: int
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
     assert!(errors[0].message.contains("ts"));
 }
@@ -679,7 +782,7 @@ fn identity_key_typed_as_a_bare_name_is_an_error() {
 resource Order at ^orders(state: Status)
     required note: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert!(errors[0].message.contains("Status"));
 }
@@ -690,7 +793,7 @@ fn keyed_layer_key_param_typed_as_a_bare_name_is_an_error() {
 resource Order at ^orders(id: int)
     byState(state: Status): string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert!(errors[0].message.contains("Status"));
 }
@@ -704,7 +807,7 @@ fn an_undeclared_or_typo_named_identity_key_is_an_error() {
 resource Order at ^orders(state: Stutus)
     required note: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert!(errors[0].message.contains("Stutus"));
 }
@@ -719,18 +822,7 @@ resource Person
 resource Order at ^orders(owner: Person)
     required note: string
 ";
-    let parsed = parse_source(source);
-    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
-    let order = parsed
-        .file
-        .declarations
-        .iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Resource(resource) if resource.name == "Order" => Some(resource.clone()),
-            _ => None,
-        })
-        .expect("Order resource");
-    let (_, errors) = compile_resource(&order);
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert!(errors[0].message.contains("Person"));
 }
@@ -742,7 +834,7 @@ fn a_sequence_typed_key_is_an_error() {
 resource Order at ^orders(tags: sequence[string])
     required note: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert!(errors[0].message.contains("sequence"));
 }
@@ -756,8 +848,8 @@ resource Order at ^orders(id: int)
     tags: sequence[string]
     index byTags(tags, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
-    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    let errors = compile_store_errors(source);
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
     assert!(errors[0].message.contains("byTags"));
 }
 
@@ -765,10 +857,10 @@ resource Order at ^orders(id: int)
 fn an_identity_field_index_argument_is_an_error() {
     let source = "\
 resource Book at ^books(id: int)
-    authorId: Author::Id
+    authorId: Id(^authors)
     index byAuthor(authorId, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert!(errors[0].message.contains("authorId"));
 }
@@ -784,7 +876,7 @@ resource Order at ^orders(id: int)
     state: Status
     index byState(state, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert!(
         errors.is_empty(),
         "an enum-field index keys on its ordinal: {errors:?}"
@@ -801,7 +893,7 @@ resource Order at ^orders(id: int)
     rank: int
     index byRank(rank, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert!(errors.is_empty(), "orderable scalar keys: {errors:?}");
 }
 
@@ -810,23 +902,23 @@ fn an_identity_typed_key_is_an_error() {
     // A saved key must be an orderable scalar. An identity value has no supported
     // saved-key encoding yet, so reject it statically instead of deferring it.
     let source = "\
-resource Edge at ^edges(from: Node::Id)
+resource Edge at ^edges(from: Id(^nodes))
     required note: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
-    assert!(errors[0].message.contains("Node::Id"));
+    assert!(errors[0].message.contains("Id(^nodes)"));
 }
 
 #[test]
 fn a_keyed_layer_key_param_typed_as_an_identity_is_an_error() {
     let source = "\
 resource Edge at ^edges(id: int)
-    byNode(from: Node::Id): string
+    byNode(from: Id(^nodes)): string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
-    assert!(errors[0].message.contains("Node::Id"));
+    assert!(errors[0].message.contains("Id(^nodes)"));
 }
 
 #[test]
@@ -839,7 +931,7 @@ resource Book at ^books(id: int)
     shelf: string
     index byShelf(shelf)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
     assert!(errors[0].message.contains("byShelf"));
 }
@@ -851,7 +943,7 @@ resource Book at ^books(id: int)
     shelf: string
     index byShelf(shelf, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert!(
         errors.is_empty(),
         "trailing identity key resolves: {errors:?}"
@@ -866,7 +958,7 @@ resource Book at ^books(id: int)
     shelf: string
     index byShelf(id, shelf)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
 }
 
@@ -879,7 +971,7 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
     index byStatus(status, courseId, studentId)
 ";
-    let (_, errors) = compile_resource(&resource(reversed));
+    let errors = compile_store_errors(reversed);
     assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
 
     let in_order = "\
@@ -887,7 +979,7 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
     index byStatus(status, studentId, courseId)
 ";
-    let (_, errors) = compile_resource(&resource(in_order));
+    let errors = compile_store_errors(in_order);
     assert!(
         errors.is_empty(),
         "all identity keys in order resolve: {errors:?}"
@@ -902,7 +994,7 @@ resource Book at ^books(id: int)
     isbn: string
     index byIsbn(isbn) unique
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert!(
         errors.is_empty(),
         "unique index needs no identity key: {errors:?}"
@@ -910,31 +1002,17 @@ resource Book at ^books(id: int)
 }
 
 #[test]
-fn index_on_a_singleton_resource_is_an_error() {
-    // A singleton saved resource has no generated identity for an index entry to
+fn index_on_a_singleton_store_is_an_error() {
+    // A singleton store has no generated identity for an index entry to
     // point to, so an index is rejected.
     let source = "\
 resource Settings at ^settings
     theme: string
     index byTheme(theme)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
     assert!(errors[0].message.contains("byTheme"));
-}
-
-#[test]
-fn index_on_a_local_resource_is_an_error() {
-    // A local (non-saved) resource has no saved root at all, so it cannot carry a
-    // declared index.
-    let source = "\
-resource Draft
-    title: string
-    index byTitle(title)
-";
-    let (_, errors) = compile_resource(&resource(source));
-    assert_eq!(codes(&errors), [SCHEMA_INDEX_REQUIRES_KEYED_ROOT]);
-    assert!(errors[0].message.contains("byTitle"));
 }
 
 #[test]
@@ -967,7 +1045,7 @@ resource Book at ^books(id: int)
     versions(version: int)
         required title: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert!(
         errors.is_empty(),
         "keyed-group required fields are fine: {errors:?}"
@@ -985,7 +1063,7 @@ resource Book at ^books(id: int)
         amount: int
     index byAmount(pricing.amount, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NESTED_INDEX_ARG]);
     assert!(errors[0].message.contains("pricing.amount"));
 }
@@ -999,7 +1077,7 @@ resource Book at ^books(id: int)
         shelf: string
     index byShelf(shelf, id)
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_store_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NESTED_INDEX_ARG]);
     assert!(errors[0].message.contains("shelf"));
 }
@@ -1012,7 +1090,7 @@ fn duplicate_identity_key_name_is_an_error() {
 resource Enrollment at ^enrollments(studentId: string, studentId: string)
     status: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
     assert!(errors[0].message.contains("studentId"));
 }
@@ -1024,7 +1102,7 @@ fn duplicate_keyed_leaf_key_param_name_is_an_error() {
 resource Book at ^books(id: int)
     tags(pos: int, pos: int): string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
     assert!(errors[0].message.contains("pos"));
 }
@@ -1036,22 +1114,21 @@ resource Book at ^books(id: int)
     revisions(rev: int, rev: int)
         body: string
 ";
-    let (_, errors) = compile_resource(&resource(source));
+    let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
     assert!(errors[0].message.contains("rev"));
 }
 
 #[test]
 fn clean_book_has_no_new_errors() {
-    let (_, errors) = compile_resource(&resource(BOOK));
+    let errors = compile_source_errors(BOOK);
     assert!(errors.is_empty(), "Book is clean: {errors:?}");
 }
 
 #[test]
 fn one_shape_compiles_as_both_local_and_saved() {
     // A resource's field and layer shape is checked through one schema whether it
-    // is a saved root or a local value. Only `saved_root` differs between the two
-    // compilations.
+    // is attached to a store or used as a local value.
     let saved = compile_ok(
         "\
 resource Book at ^books(id: int)
@@ -1066,11 +1143,8 @@ resource Book
     tags(pos: int): string
 ",
     );
-    assert!(saved.saved_root.is_some(), "saved Book has a root");
-    assert!(local.saved_root.is_none(), "local Book has no root");
     // The stored shape is identical regardless of where the resource lives.
     assert_eq!(saved.members, local.members);
-    assert_eq!(saved.indexes, local.indexes);
 }
 
 /// A resource nesting a keyed-leaf layer and a field inside a group, to pin the
@@ -1164,21 +1238,14 @@ resource Order at ^orders(id: int)
     );
     // `Status` is a declared enum: the saved field is accepted.
     assert!(
-        check_saved_named_fields(&decl, &["Status".to_string()]).is_empty(),
+        check_saved_named_member_fields(&decl.members, &["Status".to_string()]).is_empty(),
         "an enum-typed saved field is allowed"
     );
     // With no such enum declared, the bare-named field has no stored scalar form
     // (it would otherwise silently decode as an int) and is rejected.
-    let errors = check_saved_named_fields(&decl, &[]);
+    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
     assert!(errors[0].message.contains("state"));
-
-    // A local (non-saved) resource is exempt: nothing lowers into the store.
-    let local = resource("resource Order\n    required state: Status\n");
-    assert!(
-        check_saved_named_fields(&local, &[]).is_empty(),
-        "a local resource has no saved fields to reject"
-    );
 }
 
 #[test]
@@ -1190,10 +1257,10 @@ resource Order at ^orders(id: int)
 ",
     );
     assert!(
-        check_saved_named_fields(&decl, &["Status".to_string()]).is_empty(),
+        check_saved_named_member_fields(&decl.members, &["Status".to_string()]).is_empty(),
         "an enum-typed map value is allowed"
     );
-    let errors = check_saved_named_fields(&decl, &[]);
+    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
     assert!(errors[0].message.contains("scores"));
 }
@@ -1206,7 +1273,7 @@ resource Order at ^orders(id: int)
     scores: map[string, map[string, int]]
 ",
     );
-    let errors = check_saved_named_fields(&decl, &[]);
+    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert!(errors.is_empty(), "{errors:#?}");
 }
 
@@ -1218,7 +1285,7 @@ resource Order at ^orders(id: int)
     scores: map[map[string, int], Missing]
 ",
     );
-    let errors = check_saved_named_fields(&decl, &[]);
+    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert!(errors.is_empty(), "{errors:#?}");
 }
 
@@ -1230,7 +1297,7 @@ resource Order at ^orders(id: int)
     required scores: map[string, Missing]
 ",
     );
-    let errors = check_saved_named_fields(&decl, &[]);
+    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert!(errors.is_empty(), "{errors:#?}");
 }
 
@@ -1244,7 +1311,7 @@ resource Saved at ^saved(id: int)
     required k: kinds::Color
 ",
     );
-    let short_errors = check_saved_named_fields(&short_alias, &[]);
+    let short_errors = check_saved_named_member_fields(&short_alias.members, &[]);
     assert!(
         short_errors.is_empty(),
         "the schema-only gate cannot reject a qualified enum name: {short_errors:#?}"
@@ -1257,7 +1324,7 @@ resource Saved at ^saved(id: int)
     required k: pkg::kinds::Color
 ",
     );
-    let full_errors = check_saved_named_fields(&full_path, &[]);
+    let full_errors = check_saved_named_member_fields(&full_path.members, &[]);
     assert!(
         full_errors.is_empty(),
         "the schema-only gate cannot reject a fully qualified enum name: {full_errors:#?}"

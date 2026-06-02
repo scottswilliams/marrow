@@ -1,6 +1,30 @@
 //! Saved-data reads and layer/index enumeration.
 
-use crate::*;
+use marrow_check::CheckedProgram;
+use marrow_schema::{IndexSchema, Node, NodeKind, StoreSchema};
+use marrow_store::backend::Backend;
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+use marrow_store::value::{ScalarType, decode_value};
+use marrow_syntax::{Argument, Expression, SourceSpan};
+
+use crate::collection::{Direction, ReadPosition, absent_read};
+use crate::env::Env;
+use crate::error::{
+    Located, RUN_ABSENT, RUN_STORE, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, raise_fault,
+    type_error, unsupported,
+};
+use crate::expr::eval_expr;
+use crate::path::{lower, lower_keys, saved_segments};
+use crate::schema_query::{
+    find_resource, find_store_resource, is_saved_path, layer_key_params, leaf_kind,
+    resource_layer_leaf_chain, root_identity_arity, root_identity_keys,
+};
+use crate::stdlib::{is_index_branch, is_iterable_index_branch};
+use crate::value::{
+    Value, decode_leaf, identity_value, saved_key_to_value, saved_value_to_value, value_to_key,
+};
+use crate::write::decode_identity;
+use crate::write_dispatch::raw_segment_path;
 
 /// The encoded path prefix of the saved layer a `for` iterable traverses, or
 /// `None` for a range or a local value (which traverse no saved layer). A saved
@@ -235,9 +259,9 @@ pub(crate) fn enumerate_index_branch(
         prefix.push(PathSegment::IndexKey(key.clone()));
         arg_keys.push(key);
     }
-    let resource = find_resource(env.program, root)
+    let (store_schema, _) = find_store_resource(env.program, root)
         .ok_or_else(|| unsupported("iterating this saved path", span))?;
-    let schema = resource
+    let schema = store_schema
         .indexes
         .iter()
         .find(|i| &i.name == index && !i.unique)
@@ -245,10 +269,7 @@ pub(crate) fn enumerate_index_branch(
     if args.len() > schema.args.len() {
         return Err(unsupported("iterating this saved path", span));
     }
-    let identity_arity = resource
-        .saved_root
-        .as_ref()
-        .map_or(0, |root| root.identity_keys.len());
+    let identity_arity = store_schema.identity_keys.len();
     let identity_start = schema.args.len().saturating_sub(identity_arity);
     let depth = if args.len() < identity_start {
         1
@@ -453,13 +474,13 @@ pub(crate) fn eval_optional_field(
     }
 }
 
-/// Read a resource identity from a declared index lookup `^root.index(args…)`.
+/// Read a store identity from a declared index lookup `^root.index(args…)`.
 /// A unique index stores the owning identity at the lookup path, so reading it
-/// decodes back to the resource's runtime identity value. A non-unique index has
+/// decodes back to the store's runtime identity value. A non-unique index has
 /// no single identity to yield in value position; iterate it with `keys(...)`
 /// instead.
 pub(crate) fn eval_index_lookup(
-    resource: &ResourceSchema,
+    store_schema: &StoreSchema,
     index: &IndexSchema,
     args: &[Argument],
     span: SourceSpan,
@@ -478,14 +499,22 @@ pub(crate) fn eval_index_lookup(
             span,
         });
     }
-    // A unique index points to one resource, so `decode_identity` needs the
-    // resource's saved root to know the identity arity.
-    let root = resource
-        .saved_root
-        .as_ref()
-        .ok_or_else(|| unsupported("an index on a resource with no saved root", span))?;
+    if args.len() != index.args.len() {
+        return Err(RuntimeError {
+            throw: None,
+            origin: None,
+            code: RUN_TYPE,
+            message: format!(
+                "unique index `{}` expects {} key argument(s), but {} were given",
+                index.name,
+                index.args.len(),
+                args.len()
+            ),
+            span,
+        });
+    }
     let mut segments = vec![
-        PathSegment::Root(root.root.clone()),
+        PathSegment::Root(store_schema.root.clone()),
         PathSegment::Index(index.name.clone()),
     ];
     for arg in args {
@@ -512,7 +541,7 @@ pub(crate) fn eval_index_lookup(
             span,
         ));
     };
-    decode_identity(&bytes, root)
+    decode_identity(&bytes, store_schema)
         .map(identity_value)
         .ok_or_else(|| RuntimeError {
             throw: None,
@@ -549,7 +578,7 @@ pub(crate) fn eval_saved_layer_read(
         .chain(std::iter::once(layer.as_str()))
         .collect();
     let expected = layer_key_params(env.program, &root, &layer_names);
-    let layer_keys = lower_keys(keys, span, false, expected, env)?;
+    let layer_keys = lower_keys(keys, span, false, &expected, env)?;
     if parents.is_empty() {
         read_layer_entry(
             &root,
@@ -701,10 +730,7 @@ pub(crate) fn read_resource(
 ) -> Result<Value, RuntimeError> {
     let resource = find_resource(env.program, root)
         .ok_or_else(|| unsupported("reading this saved root", span))?;
-    let arity = resource
-        .saved_root
-        .as_ref()
-        .map_or(0, |saved| saved.identity_keys.len());
+    let arity = root_identity_arity(env.program, root).unwrap_or(0);
     if identity.len() != arity {
         // A whole-resource read needs the root's full identity: a keyed root such
         // as `^books` is a collection of records, not a readable value on its own.

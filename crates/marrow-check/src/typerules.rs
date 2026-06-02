@@ -1,7 +1,12 @@
 //! The type lattice's compatibility, conversion, and display rules, plus the
 //! literal-range envelope.
 
-use super::*;
+use std::path::Path;
+
+use marrow_store::value::ScalarType;
+use marrow_syntax::{Severity, SourceSpan};
+
+use crate::{CHECK_LITERAL_RANGE, CheckDiagnostic, MarrowType};
 
 /// The decimal envelope, mirroring `marrow_store::decimal`: at most 34
 /// significant digits and 34 fractional places.
@@ -110,8 +115,8 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
     }
     match expected {
         MarrowType::Primitive(p) => Some(matches!(actual, MarrowType::Primitive(q) if q == p)),
-        MarrowType::Identity(resource) => {
-            Some(matches!(actual, MarrowType::Identity(other) if other == resource))
+        MarrowType::Identity(store_root) => {
+            Some(matches!(actual, MarrowType::Identity(other) if other == store_root))
         }
         MarrowType::Resource(resource) => {
             Some(matches!(actual, MarrowType::Resource(other) if other == resource))
@@ -156,12 +161,12 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
 /// against it is a `check.untyped_value` ("convert it first") rather than a
 /// deferral. Scalars and the checker-only `Error` are reached by the conversion
 /// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor), an enum is
-/// a concrete typed place a dynamic value must be made into, and an identity is
-/// reached by its `Resource::Id(...)` constructor. A whole resource is the same
+/// a concrete typed place a dynamic value must be made into, and an identity must
+/// pass through a checked store-identity boundary. A whole resource is the same
 /// hazard at the record level: an `unknown` record's fields would land raw scalars
-/// or foreign identities in the resource's typed (identity) fields — encodings
+/// or foreign identities in the resource's typed identity fields — encodings
 /// `data integrity` cannot later distinguish from a genuine reference, since a
-/// stored identity carries only its keys, not its source resource. So every
+/// stored identity carries only its keys, not its source store. So every
 /// concrete typed place rejects an `unknown` value, which must be converted into the
 /// resource (a constructor, a read of the same resource) first. The only place an
 /// `unknown` flows without conversion is into another `unknown`; a sequence has no
@@ -239,14 +244,14 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
 }
 
 /// The source spelling of a type for a diagnostic message: a scalar by name, an
-/// identity as `Resource::Id`, a resource by its name, an enum by its name, a
+/// identity as `Id(^root)`, a resource by its name, an enum by its name, a
 /// sequence as `sequence[element]`, the checker-only `Error`, or `value` for a type
 /// with no surface spelling.
 pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
-        MarrowType::Identity(resource) => format!("{resource}::Id"),
+        MarrowType::Identity(root) => format!("Id(^{root})"),
         MarrowType::Resource(resource) => resource.clone(),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
         MarrowType::Enum { name, .. } => name.clone(),

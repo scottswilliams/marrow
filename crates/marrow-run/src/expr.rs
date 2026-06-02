@@ -1,6 +1,25 @@
 //! Pure-expression evaluation: literals, operators, and coercions.
 
-use crate::*;
+use std::cmp::Ordering;
+
+use marrow_schema::{EnumSchema, MemberPathResolution};
+use marrow_store::Decimal;
+use marrow_syntax::{
+    BinaryOp, Expression, InterpolationPart, LiteralKind, SourceSpan, UnaryOp,
+    duration_unit_seconds,
+};
+
+use crate::call::eval_call;
+use crate::collection::eval_local_collection_read;
+use crate::env::Env;
+use crate::error::{
+    RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_UNBOUND_NAME, RuntimeError,
+    decimal_overflow, divide_by_zero, overflow, raise_fault, type_error, unsupported,
+};
+use crate::read::{eval_local_field_get, eval_optional_field, eval_saved_field, read_resource};
+use crate::schema_query::{enum_in, is_saved_path, resolve_enum};
+use crate::stdlib::int_remainder;
+use crate::value::{Value, render};
 
 /// Evaluate `path ?? default`: the value at the left path read, or `default` when
 /// it is absent. Schema/type errors are not hidden — only an absent element

@@ -144,7 +144,7 @@ over every configured source and test file.
 | `check.return_type` | A `return` value's type does not match the function's declared return type. |
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
-| `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign resource spliced into a keyspace. |
+| `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign store root spliced into a keyspace. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |
 | `check.unresolved_call` | A call names a function that is neither a builtin nor a declared function. |
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
@@ -182,17 +182,17 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.duplicate_member` | A resource or enum member name collides with another member at the same level. |
 | `schema.category_leaf` | A `category` enum member has no nested members, so it can never be selected or matched. |
 | `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
-| `schema.duplicate_root_owner` | Two resources claim the same saved root (a cross-resource rule the project checker reports). |
-| `schema.index_in_group` | An index appears inside a group; indexes are direct members of keyed saved resources. |
+| `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
+| `schema.index_in_group` | An index appears inside a group; indexes are direct members of keyed stores. |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
-| `schema.unsupported_type` | A parsed type spelling is only supported in a narrower declaration context, such as `map[K, V]` saved-resource member sugar. |
+| `schema.unsupported_type` | A parsed type spelling is only supported in a narrower declaration context, such as `map[K, V]` saved keyed-leaf member sugar. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as an identity, a name, or a sequence; a key must be an orderable scalar. |
 | `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; a saved field stores a scalar or an enum ordinal. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
-| `schema.index_requires_keyed_root` | An index is declared on a resource with no keyed saved root. |
+| `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |
 | `schema.nested_index_arg` | An index argument names a field nested through an unkeyed group (not yet resolved by the write planner). |
 
 ### `run.*` — kind `runtime`
@@ -247,11 +247,10 @@ one is reported under its own `write.*` code.
 |---|---|
 | `write.required_absent` | A required field was absent in a whole-resource write. |
 | `write.type_mismatch` | A field value's type does not match the resource schema. |
-| `write.no_saved_root` | The resource has no saved root, so it cannot be written to saved data. |
-| `write.identity_mismatch` | The supplied identity keys do not match the resource's saved root. |
+| `write.identity_mismatch` | The supplied identity keys do not match the store root's identity shape. |
 | `write.store` | The store reported an error during a write. |
 | `write.unknown_field` | A field write names a field the resource does not declare. |
-| `write.unique_conflict` | A unique index already maps the supplied key(s) to a different resource. |
+| `write.unique_conflict` | A unique index already maps the supplied key(s) to a different identity. |
 | `write.unknown_layer` | A keyed-layer write names a layer the resource does not declare. |
 | `write.not_a_leaf_layer` | A keyed-leaf write targets a group layer. |
 | `write.not_a_group_layer` | A group-entry field write targets a leaf layer. |

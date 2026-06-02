@@ -12,16 +12,16 @@
 //!   leaf is [`Resolution::Found`], a non-`pub` one is [`Resolution::NotVisible`]
 //!   (a distinct visibility error, not "unresolved"), and a missing module or
 //!   leaf is [`Resolution::Unresolved`];
-//! - **saved roots stay project-wide** ([`resolve_resource_by_root`]): a `^root`
-//!   addresses its one owning resource from any module — only the resource *name*
-//!   (a constructor or type reference) is module-scoped.
+//! - **saved roots stay project-wide** ([`resolve_store_by_root`]): a `^root`
+//!   addresses its one owning store from any module — only source names such as
+//!   resource constructors and type references are module-scoped.
 //!
 //! Builtins and `std::` helpers are *not* resolved here: each dispatches before
 //! user declarations, so callers pre-check them and only reach [`resolve`] for a
 //! name that must denote a project declaration. Import aliases are expanded once,
 //! up front, against the referencing module's imports.
 
-use marrow_schema::ResourceSchema;
+use marrow_schema::{ResourceSchema, StoreSchema};
 
 use crate::program::{CheckedFunction, CheckedModule, CheckedProgram};
 use crate::{build_alias_map, expand_alias};
@@ -29,12 +29,11 @@ use crate::{build_alias_map, expand_alias};
 /// What a name is being resolved *as*. The runtime dispatches builtins, then
 /// constructors, then functions, so the kind picks which declaration table a
 /// module is searched in — a bare `greet` is a function, a bare `Book` a
-/// resource, `Book::Id` its identity.
+/// resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvableKind {
     Function,
     Resource,
-    ResourceIdentity,
 }
 
 /// The declaration a resolved name denotes, borrowed from the program: the
@@ -48,9 +47,7 @@ pub struct Def<'p> {
     pub item: DefItem<'p>,
 }
 
-/// The concrete declaration behind a [`Def`]. A resource resolved as a constructor
-/// or as an identity both carry the [`ResourceSchema`]; the [`Def::kind`]
-/// distinguishes how it was reached.
+/// The concrete declaration behind a [`Def`].
 #[derive(Debug, Clone, Copy)]
 pub enum DefItem<'p> {
     Function(&'p CheckedFunction),
@@ -91,31 +88,6 @@ pub fn resolve<'p>(
     path: &[String],
     kind: ResolvableKind,
 ) -> Resolution<'p> {
-    // A `Book::Id` identity is the only two-segment name whose prefix is not a
-    // module — it is the resource name. Resolve it by name (module-scoped) before
-    // the generic module/leaf split treats `Book` as a module qualifier.
-    if kind == ResolvableKind::ResourceIdentity
-        && let Some(id) = path.last()
-        && id == "Id"
-    {
-        if let [name, _] = path {
-            return resolve_resource_by_name(program, from_module, name, kind);
-        }
-        let aliases = build_alias_map(&module_imports(program, from_module));
-        let expanded = expand_alias(path, &aliases);
-        if expanded.len() >= 3
-            && expanded.last().is_some_and(|last| last == "Id")
-            && let Some(resource) = expanded.get(expanded.len() - 2)
-        {
-            return resolve_qualified(
-                program,
-                &expanded[..expanded.len() - 2].join("::"),
-                resource,
-                kind,
-            );
-        }
-    }
-
     let aliases = build_alias_map(&module_imports(program, from_module));
     let expanded = expand_alias(path, &aliases);
     let Some((leaf, module_prefix)) = expanded.split_last() else {
@@ -206,60 +178,26 @@ fn resolve_qualified<'p>(
     }
 }
 
-/// Resolve a resource by its declared *name* (module-scoped), for a constructor
-/// or `Name::Id` identity: the referencing module's own resource first, else a
-/// resource of that name anywhere in the project (resource names are not yet
-/// visibility-gated). Mirrors the bare-then-project fallback the constructor and
-/// identity paths used before this resolver existed.
-fn resolve_resource_by_name<'p>(
-    program: &'p CheckedProgram,
-    from_module: &str,
-    name: &str,
-    kind: ResolvableKind,
-) -> Resolution<'p> {
-    if let Some(module) = find_module(program, from_module)
-        && let Some(resource) = module.resources.iter().find(|r| r.name == name)
-    {
-        return Resolution::Found(Def {
-            module,
-            kind,
-            item: DefItem::Resource(resource),
-        });
-    }
-    for module in &program.modules {
-        if let Some(resource) = module.resources.iter().find(|r| r.name == name) {
-            return Resolution::Found(Def {
-                module,
-                kind,
-                item: DefItem::Resource(resource),
-            });
-        }
-    }
-    Resolution::Unresolved
-}
-
-/// The resource owning saved root `^root`, searched project-wide (saved roots are
-/// global: a `^books` write addresses the one `books` resource from any module).
-/// Mirrors the runtime's `find_resource`.
-pub fn resolve_resource_by_root<'p>(
+/// The store owning saved root `^root`, plus the resource tree shape it stores.
+pub fn resolve_store_by_root<'p>(
     program: &'p CheckedProgram,
     root: &str,
-) -> Option<&'p ResourceSchema> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| {
-            resource
-                .saved_root
-                .as_ref()
-                .is_some_and(|saved| saved.root == root)
-        })
+) -> Option<(&'p StoreSchema, &'p ResourceSchema)> {
+    for module in &program.modules {
+        if let Some(store) = module.stores.iter().find(|store| store.root == root)
+            && let Some(resource) = module
+                .resources
+                .iter()
+                .find(|resource| resource.name == store.resource)
+        {
+            return Some((store, resource));
+        }
+    }
+    None
 }
 
-/// The resource declared with `name` anywhere in the project, for a constructor
-/// or `Name::Id` identity keyed on the resource name. Resource names are not yet
-/// visibility-gated, so this is a project-wide name lookup.
+/// The resource declared with `name` anywhere in the project. Resource names are
+/// not yet visibility-gated, so this is a project-wide name lookup.
 pub fn resolve_resource_by_name_any<'p>(
     program: &'p CheckedProgram,
     name: &str,
@@ -284,7 +222,7 @@ fn lookup_in_module<'p>(
             .iter()
             .find(|function| function.name == leaf)
             .map(DefItem::Function),
-        ResolvableKind::Resource | ResolvableKind::ResourceIdentity => module
+        ResolvableKind::Resource => module
             .resources
             .iter()
             .find(|resource| resource.name == leaf)

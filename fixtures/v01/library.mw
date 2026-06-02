@@ -1,25 +1,30 @@
 module v01::library
 
-resource Author at ^authors(id: int)
+resource Author
     required name: string
 
-resource Book at ^books(id: int)
+store ^authors(id: int): Author
+
+resource Book
     required title: string
-    required author: Author::Id
+    required author: Id(^authors)
     tags(pos: int): string
 
+store ^books(id: int): Book
+
 pub fn seed()
-    ^authors(Author::Id(1)).name = "Ursula K. Le Guin"
+    const author: Id(^authors) = nextId(^authors)
+    ^authors(author).name = "Ursula K. Le Guin"
     transaction
-        ^books(Book::Id(10)).title = "A Wizard of Earthsea"
-        ^books(Book::Id(10)).author = Author::Id(1)
-        ^books(Book::Id(10)).tags(1) = "fantasy"
+        ^books(10).title = "A Wizard of Earthsea"
+        ^books(10).author = author
+        ^books(10).tags(1) = "fantasy"
 
 pub fn seededTitle(): string
-    return ^books(Book::Id(10)).title
+    return ^books(10).title
 
 pub fn seededAuthorName(): string
-    return ^authors(^books(Book::Id(10)).author).name
+    return ^authors(^books(10).author).name
 
 pub fn printSeededAuthor()
     print(seededAuthorName())

@@ -531,12 +531,9 @@ Fixture/oracle:
   those lanes gain source-driven harnesses and catalog/logical data-slot facts.
 - The initial lane proves only that the fixture is source-driven, shared, and
   not a second semantic classifier.
-- The fixture names a typed reference field. Until the resource/store surface
-  lane lands canonical `Id(^authors)` syntax, the shared source fixture uses the
-  current executable spelling, `author: Author::Id`, as a temporary executable
-  identity bridge for that relationship. Lane 5 must migrate the fixture to the
-  canonical store-addressed spelling when it replaces resource-owned identity
-  with store-owned aliases.
+- The fixture names a typed reference field with the canonical store-addressed
+  spelling, `author: Id(^authors)`, so it does not preserve a resource-owned
+  identity bridge as fixture surface.
 
 Deletion targets:
 
@@ -635,9 +632,9 @@ Production behavior:
 - The concise `resource Book at ^books(id: int)` form desugars to a resource and
   store when kept for ergonomics.
 - `Id(^store)` is the canonical identity type. `Book::Id` is not automatic
-  resource identity; any surviving alias must be explicitly store-declared,
-  absent from canonical fixtures by default, and reviewed as compatibility
-  surface.
+  identity owned by the resource name; any surviving alias must be explicitly
+  store-declared, absent from canonical fixtures by default, and reviewed as
+  compatibility surface.
 - Declared indexes belong to stores. Concise-form indexes are desugared into the
   generated store; production resource schemas do not own indexes as resource
   members.
@@ -668,8 +665,7 @@ Fixture/oracle:
 - A `Book`/`Author` typed-reference fixture proving `author: Id(^authors)`
   checks and lowers as a typed value without implying joins, cascade delete, or
   automatic existence checks.
-- Migration of the shared v0.1 fixture from current `Author::Id` spelling to the
-  canonical `Id(^authors)` spelling.
+- Migration of the shared v0.1 fixture to the canonical `Id(^authors)` spelling.
 
 Deletion targets:
 
@@ -862,7 +858,7 @@ Deletion targets:
 - AST-body execution path for production runs.
 - The temporary syntax-body bridge introduced during checked-model migration.
 - Runtime string splitting for saved paths, function names, enum members, or
-  resource identities.
+  store identities.
 - Saved `inout` writeback.
 - Runtime schema and path classifiers that duplicate checked-model durable
   place facts.

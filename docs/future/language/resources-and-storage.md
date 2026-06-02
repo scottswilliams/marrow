@@ -54,10 +54,11 @@ future extension may allow indexes to target scalar fields nested through
 unkeyed groups:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     location
         shelf: string
 
+store ^books(id: int): Book
     index byShelf(location.shelf, id)
 ```
 
@@ -84,7 +85,7 @@ A `map[K, V]` is the developer-facing spelling for a single keyed layer when
 lookup is the point; its key follows the same rules as any keyed tree. For more
 than one key, use a native multi-layer keyed tree rather than a nested `map`:
 `counts(day: date, category: string): int` is flatter and more expressive than
-`map[date, map[string, int]]`. Use a declared index when a saved resource needs
+`map[date, map[string, int]]`. Use a declared index when a saved store needs
 a maintained alternate lookup path.
 
 Local map iteration follows the collection rule: one loop variable walks values,

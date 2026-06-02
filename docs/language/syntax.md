@@ -45,9 +45,11 @@ module shelf::books
 
 const MaxLoans: int = 5
 
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
+
+store ^books(id: int): Book
 
 pub fn add(title: string): int
     return 1
@@ -61,13 +63,15 @@ means the function produces no value.
 Resource indentation mirrors tree layers:
 
 ```mw
-resource Patient at ^patients(id: string)
+resource Patient
     name
         required first: string
         required last: string
 
     visits(date: date)
         note: string
+
+store ^patients(id: string): Patient
 ```
 
 Documentation comments apply to the next resource member. Source stable-id
@@ -81,11 +85,12 @@ without a populated field:
 required title: string
 ```
 
-Indexes are declared as direct members of keyed saved resources:
+Indexes are declared on stores:
 
 ```mw
-index byName(name.last, id)
-index byMrn(mrn) unique
+store ^patients(id: string): Patient
+    index byName(name.last, id)
+    index byMrn(mrn) unique
 ```
 
 History is modeled as an ordinary keyed child layer:
@@ -132,7 +137,7 @@ decides whether a `const` is a module constant or a local binding.
 const left: int = 1      ; immutable local binding
 var right: int = 1       ; mutable local binding
 var book: Book           ; mutable local resource, built up field by field
-const id = Book::Id(1)   ; immutable local value; runtime-computed is fine
+const id = nextId(^books); immutable local value; runtime-computed is fine
 const MaxLoans: int = 5  ; module-level constant, evaluated at compile time
 ```
 
@@ -309,10 +314,10 @@ const err = Error(
 )
 ```
 
-Generated resource identity types are constructed explicitly at boundaries:
+Store identity values are produced by allocation or checked boundary helpers:
 
 ```mw
-const id = Book::Id(17)
+const id: Id(^books) = nextId(^books)
 ```
 
 ## Spelling

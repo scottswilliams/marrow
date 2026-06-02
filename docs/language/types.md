@@ -49,8 +49,8 @@ underscores.
 scalar and it is not a managed saved resource.
 
 Marrow does not include user-defined type aliases in the first language
-surface. Use resources for named tree shapes and generated identity types for
-saved resource identities.
+surface. Use resources for named tree shapes and `Id(^store)` for saved store
+identities.
 
 An `enum` is a named, fixed set of values — the user-defined generalization of
 `bool`. It is a named scalar-valued type: a value such as `Status::archived`
@@ -62,20 +62,20 @@ reordering members does not change stored meaning. See [Enums](enums.md).
 
 Saved fields use concrete types. A saved leaf field may use `int`,
 `decimal`, `bool`, `string`, `bytes`, `date`, `instant`, `duration`,
-`ErrorCode`, or a generated resource identity type such as `Book::Id`.
+`ErrorCode`, or a store identity type such as `Id(^books)`.
 Nested resources, sequences, and keyed trees are saved by their declared
 shape.
 
-A saved leaf field typed as a resource identity is a typed reference. A field
-`authorId: Author::Id` holds an `Author` identity and only an `Author` identity:
-assigning an identity of a different resource, or a raw scalar, is a check error,
-since identities are nominal. A dynamic (`unknown`) value is rejected the same way
-a scalar field rejects one — convert it through the identity constructor
-(`Author::Id(...)`) first — so an unchecked value cannot land in a reference where
-it would read back as a foreign or malformed identity. Writing the field stores the
-referenced identity's canonical key encoding, and reading it back yields the same
-identity value, so a saved reference round-trips. A field may reference its own
-resource (`managerId: Person::Id` on `Person`).
+A saved leaf field typed as `Id(^store)` is a typed reference. A field
+`authorId: Id(^authors)` holds an `^authors` identity and only an `^authors`
+identity: assigning an identity from a different store root, or a raw scalar, is
+a check error because identities are nominal by store. A dynamic (`unknown`)
+value is rejected the same way a scalar field rejects one — pass it through a
+checked identity boundary first — so an unchecked value cannot land in a
+reference where it would read back as a foreign or malformed identity. Writing
+the field stores the referenced store identity's canonical key encoding, and
+reading it back yields the same identity value, so a saved reference round-trips.
+A field may reference its own store (`managerId: Id(^people)` on `Person`).
 
 This rule covers every typed saved location, not just one field: an `unknown`
 value must be converted before it is written to a scalar field, an identity field,
@@ -84,9 +84,10 @@ could otherwise carry a raw scalar or foreign identity into one of the resource'
 typed fields, so the value must first be made into that resource — a constructor or
 a read of the same resource — before the write.
 
-Two identities of the same resource compare with `==`; identities of different
-resources do not, mirroring how enum `==` is nominal. Comparison is by the
-referenced keys, so the same reference written twice is equal.
+Two identities from the same store root compare with `==`; identities from
+different store roots do not, even when those stores use the same resource shape.
+Comparison is by the referenced keys after the nominal store match, so the same
+reference written twice is equal.
 
 Saving an identity in a field does not create a foreign-key constraint, cascade,
 or join: it is a typed value, not an enforced relationship. The field is not
@@ -98,7 +99,7 @@ model them as resources and indexes.
 
 Saved keys are orderable scalar types — every scalar except `decimal`. A key
 may not be `decimal`, an enum or other named type, a whole resource, a
-sequence, a keyed tree, or `unknown`. Identity-typed keys such as `Book::Id`
+sequence, a keyed tree, or `unknown`. Identity-typed keys such as `Id(^books)`
 are not yet supported.
 
 `unknown` belongs at dynamic boundaries, not inside managed saved schemas. If
@@ -169,10 +170,12 @@ is optional, leave its fields sparse and guard reads with `exists(...)`.
 A resource is a typed tree shape:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
     shelf: string
+
+store ^books(id: int): Book
 ```
 
 Use the same type for local and saved data:
@@ -183,7 +186,7 @@ draft.title = "Small Gods"
 draft.author = "Terry Pratchett"
 draft.shelf = "fiction"
 
-const id = Book::Id(1)
+const id: Id(^books) = nextId(^books)
 ^books(id) = draft
 const saved: Book = ^books(id)
 ```
@@ -290,10 +293,12 @@ Keyed trees can be local or nested inside saved resources:
 ```mw
 var localScores(playerId: string): int
 
-resource Game at ^games(id: int)
+resource Game
     scores(playerId: string): int
 
-const gameId = Game::Id(1)
+store ^games(id: int): Game
+
+const gameId: Id(^games) = nextId(^games)
 ^games(gameId).scores(playerId) = 42
 ```
 
@@ -301,38 +306,35 @@ const gameId = Game::Id(1)
 
 Identity is owned by the store, not derived from the resource. A keyed store
 defines its identity type from the store plus its key; `Id(^store)` is the
-canonical identity type. When a store holds the only store for its resource, it
-auto-exports an ergonomic alias named after the resource, so everyday code
-writes `Book::Id` for `Id(^books)`. The alias is store-derived sugar; when one
-resource has several stores, each store names a distinct alias
-(`DraftBook::Id`, `PublishedBook::Id`). For a single-key resource:
+canonical identity type. For a single-key store:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
 
-const id: Book::Id = nextId(^books)
+store ^books(id: int): Book
+
+const id: Id(^books) = nextId(^books)
 ```
 
-A singleton saved resource such as `resource Settings at ^settings` has no
-generated identity type; the root itself is the resource.
+A singleton store such as `store ^settings: Settings` has no generated identity
+type; the root itself is addressed directly.
 
-`Book::Id` is a typed wrapper over the store's key. It prevents ordinary
+`Id(^books)` is a typed wrapper over the store's key. It prevents ordinary
 integers from being accidentally passed as book identifiers, and it keeps IDs
 from becoming meaningful business counters. Convert explicitly at boundaries
 such as URLs, command arguments, or host IO.
 
-Identity types are nominal: `Book::Id` and `Magazine::Id` are distinct even
-when their stored keys share a shape, so a `Magazine::Id` is rejected wherever a
-`Book::Id` is expected. Saved key arguments are type-checked statically the same
+Identity types are nominal: `Id(^books)` and `Id(^magazines)` are distinct even
+when their stored keys share a shape, so an `Id(^magazines)` is rejected wherever
+an `Id(^books)` is expected. Saved key arguments are type-checked statically the same
 way — both a raw scalar of the wrong type (`^books("oops")`) and a foreign
 identity spliced into a keyspace (`^books(magazineId)`) are reported as
 `check.key_type`.
 
-An identity constructor's key arguments are checked the same way: each key passed
-to `Book::Id(...)` must match the referenced resource's declared identity key type,
-so `Book::Id("oops")` for an `int`-keyed `Book` is a `check.key_type`, as is a
-wrong-typed key of a composite identity.
+Each key passed through a store identity boundary must match the referenced
+store's declared identity key type. A string key for an `int`-keyed `^books`
+store is a `check.key_type`, as is a wrong-typed key of a composite identity.
 
 At run time the key scalar type and arity are enforced before any store write: a
 key whose scalar kind or count does not match the declared keyspace faults
@@ -340,8 +342,8 @@ key whose scalar kind or count does not match the declared keyspace faults
 an already-stored key of the wrong scalar type as `data.key_type`. One case is
 not distinguished at run time: an identity reused through a dynamically typed
 (`unknown`) value that has the same scalar shape as the target keyspace — for
-example a `Magazine::Id` whose key is a single `int`, the same shape `^books`
-uses. The value level does not carry the resource an identity belongs to, so a
+example an `Id(^magazines)` whose key is a single `int`, the same shape `^books`
+uses. The value level does not carry the store root an identity belongs to, so a
 same-shape foreign identity passes the runtime scalar check. This is caught
 statically whenever the identity is statically typed.
 
@@ -351,33 +353,33 @@ Other identity shapes are application-provided.
 A managed saved root is addressed by one identity value:
 
 ```mw
-const id: Book::Id = nextId(^books)
+const id: Id(^books) = nextId(^books)
 const title = ^books(id).title
 ```
 
 The declaration lists the stored key components; ordinary typed code passes
-the generated identity type, not the raw key literal. Use the generated
-identity constructor when an identity enters from a boundary:
+the store identity type, not the raw key literal. Allocation and host or
+application boundary helpers are responsible for producing checked identities:
 
 ```mw
-const id = Book::Id(17)
+const allocated: Id(^books) = nextId(^books)
+const loaded: Id(^books) = loadBookId("book-17")
 ```
 
-Composite-key resources also define one identity type:
+Composite-key stores also define one identity type:
 
 ```mw
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     status: string
+
+store ^enrollments(studentId: string, courseId: string): Enrollment
 ```
 
-`Enrollment::Id` represents both keys together. Application code treats it as
+`Id(^enrollments)` represents both keys together. Application code treats it as
 one identity value rather than a general tuple:
 
 ```mw
-const id = Enrollment::Id(
-    studentId: "student-1",
-    courseId: "course-9",
-)
+const id: Id(^enrollments) = loadEnrollmentId("student-1", "course-9")
 
 ^enrollments(id).status = "active"
 ```
@@ -386,8 +388,8 @@ Identity values are opaque. Do not encode business meaning into them, and do
 not rely on them being gap-free. Failed or rolled-back work may leave unused
 IDs behind.
 
-`next(^books(id))` and `prev(^books(id))` type to that resource's identity
-(`Book::Id`), so the neighbor is addressed like any identity:
+`next(^books(id))` and `prev(^books(id))` type to that store's identity
+(`Id(^books)`), so the neighbor is addressed like any identity:
 `^books(next(^books(id))).title` is well-typed. Over a keyed child layer, `next`
 and `prev` type to the layer's key. `reversed(...)` preserves its argument's
 element type, so `for x in reversed(layer)` binds `x` exactly as `for x in layer`
@@ -411,7 +413,7 @@ A local `const` is an immutable binding; its initializer may be any expression,
 including a runtime-computed value:
 
 ```mw
-const id = Book::Id(1)
+const id: Id(^books) = nextId(^books)
 ```
 
 `var` declares a mutable local:
@@ -510,8 +512,7 @@ the backend:
   most nanosecond precision. Zero is `PT0S`. A duration is an elapsed span, so
   it never uses calendar components.
 - `ErrorCode` saves as stable UTF-8 text.
-- generated resource identities save as canonical encodings of their declared
-  key values.
+- store identities save as canonical encodings of their declared key values.
 
 The `decimal` envelope is a signed coefficient of up to 34 significant digits,
 with up to 34 of them after the decimal point. Values outside the envelope, and

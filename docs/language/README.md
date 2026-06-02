@@ -40,7 +40,7 @@ With it, data is saved in the project database.
 ```mw
 module shelf::books
 
-resource Book at ^books(id: int)
+resource Book
     ;; Display title shown in shelf views and search results.
     required title: string
 
@@ -51,15 +51,16 @@ resource Book at ^books(id: int)
     loanedTo: string
     tags(pos: int): string
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
 
-pub fn add(title: string, author: string, shelf: string): Book::Id
+pub fn add(title: string, author: string, shelf: string): Id(^books)
     var book: Book
     book.title = title
     book.author = author
     book.shelf = shelf
 
-    const id: Book::Id = nextId(^books)
+    const id: Id(^books) = nextId(^books)
     ^books(id) = book
 
     return id
@@ -72,11 +73,10 @@ pub fn listShelf(shelf: string)
 This shows the main shape:
 
 - `resource Book` defines a typed tree shape.
-- `at ^books(id: int)` declares the `^books` store and its identity key. The
-  canonical identity type is `Id(^books)`; because `Book` has just this one store,
-  it auto-exports the alias `Book::Id`.
+- `store ^books(id: int): Book` declares the `^books` store over that shape. Its
+  canonical identity type is `Id(^books)`.
 - Documentation comments feed editor hover, docs, and inspect output.
-- `index byShelf(shelf, id)` declares an alternate lookup tree.
+- `index byShelf(shelf, id)` declares an alternate lookup tree owned by the store.
 - `var book: Book` uses the same resource shape locally.
 - `^books(id) = book` saves the local resource and creates index entries.
 - Assignment to an indexed field updates the field and its index entries
@@ -115,7 +115,7 @@ This shows the main shape:
 ```mw
 module reading::shelf
 
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
     required shelf: string
@@ -123,9 +123,10 @@ resource Book at ^books(id: int)
     loanedTo: string
     tags(pos: int): string
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
 
-pub fn loan(id: Book::Id, borrower: string): bool
+pub fn loan(id: Id(^books), borrower: string): bool
     if not exists(^books(id))
         return false
 

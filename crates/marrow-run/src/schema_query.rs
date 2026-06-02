@@ -1,6 +1,10 @@
 //! Program and schema lookups, and saved-path classification.
 
-use crate::*;
+use marrow_check::{CheckedProgram, Def, DefItem, Resolution, ResolvableKind, resolve};
+use marrow_schema::{EnumSchema, KeyDef, ResourceSchema, StoreSchema, Type};
+use marrow_store::path::{PathSegment, SavedKey};
+use marrow_store::value::ScalarType;
+use marrow_syntax::Expression;
 
 /// Whether the chain of layer names (outermost to innermost) is fully declared on
 /// the resource at `root`: the first is a direct layer of the resource, each
@@ -14,15 +18,33 @@ pub(crate) fn resource_layer_chain_exists(
     find_resource(program, root).is_some_and(|resource| resource.descend_layers(layers).is_some())
 }
 
-/// The resource schema attached to a saved root, by root name. Saved roots are
-/// project-wide (a `^books` write addresses the one `books` resource from any
-/// module), so this routes through the resolver's project-wide root lookup; the
-/// checker's `find_resource_schema` shares the same helper.
+pub(crate) fn find_store_resource<'p>(
+    program: &'p CheckedProgram,
+    root: &str,
+) -> Option<(&'p StoreSchema, &'p ResourceSchema)> {
+    program.modules.iter().find_map(|module| {
+        let store = module.stores.iter().find(|store| store.root == root)?;
+        let resource = module
+            .resources
+            .iter()
+            .find(|resource| resource.name == store.resource)?;
+        Some((store, resource))
+    })
+}
+
+pub(crate) fn find_store<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p StoreSchema> {
+    find_store_resource(program, root).map(|(store, _)| store)
+}
+
+/// The resource schema stored at a saved root, by root name. Saved roots are
+/// project-wide (a `^books` write addresses the one `books` store from any
+/// module), so this resolves through the store table and returns the resource
+/// tree shape attached to that store.
 pub(crate) fn find_resource<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<&'p ResourceSchema> {
-    marrow_check::resolve::resolve_resource_by_root(program, root)
+    find_store_resource(program, root).map(|(_, resource)| resource)
 }
 
 /// The enum named `name` owned by exactly `module`, if any. Mirrors the checker's
@@ -60,124 +82,49 @@ pub(crate) fn resolve_enum<'p>(
     })
 }
 
-/// The number of declared identity keys for the resource at saved root `name`,
+/// The number of declared identity keys for the store at saved root `name`,
 /// or `None` when `name` is not a managed saved root. A keyless singleton has
 /// arity 0; a keyed root such as `^books` has a positive arity, so it cannot be
 /// read or addressed without an identity.
 pub(crate) fn root_identity_arity(program: &CheckedProgram, name: &str) -> Option<usize> {
-    find_resource(program, name)
-        .and_then(|resource| resource.saved_root.as_ref())
-        .map(|root| root.identity_keys.len())
+    find_store_resource(program, name).map(|(store, _)| store.identity_keys.len())
 }
 
-/// The declared identity key parameters of the resource at saved root `name`, or
+/// The declared identity key parameters of the store at saved root `name`, or
 /// an empty slice when the root is unresolved or keyless — the key-type guard
 /// reads these to reject a wrong-typed record key.
 pub(crate) fn root_identity_keys<'p>(program: &'p CheckedProgram, name: &str) -> &'p [KeyDef] {
-    find_resource(program, name)
-        .and_then(|resource| resource.saved_root.as_ref())
-        .map_or(&[], |root| root.identity_keys.as_slice())
+    find_store_resource(program, name).map_or(&[], |(store, _)| store.identity_keys.as_slice())
 }
 
 /// The declared key parameters of a keyed layer named by its chain (outermost
 /// first), or an empty slice when the chain does not resolve — the key-type guard
 /// reads these to reject a wrong-typed index key.
-pub(crate) fn layer_key_params<'p>(
-    program: &'p CheckedProgram,
+pub(crate) fn layer_key_params(
+    program: &CheckedProgram,
     root: &str,
     chain: &[&str],
-) -> &'p [KeyDef] {
-    find_resource(program, root)
-        .and_then(|resource| resource.descend_layers(chain))
-        .map_or(&[], |node| node.key_params.as_slice())
-}
-
-/// The resource schema declared with `name`, for an identity constructor
-/// `Name::Id(...)`. Keyed on the resource name (not its saved root), since the
-/// constructor names the resource; routed through the resolver's project-wide
-/// name lookup so the runtime keeps no name resolution of its own.
-pub(crate) fn find_resource_by_name<'p>(
-    program: &'p CheckedProgram,
-    name: &str,
-) -> Option<&'p ResourceSchema> {
-    marrow_check::resolve::resolve_resource_by_name_any(program, name)
-}
-
-/// Build a resource identity value from a `Resource::Id(...)` constructor: its
-/// keys lowered in declared identity-key order. Positional args lower in order;
-/// named args (composite keys) match by key name. A singleton (keyless) resource
-/// has no identity type, and an arity or name mismatch is a type error.
-pub(crate) fn eval_identity_constructor(
-    resource: &ResourceSchema,
-    args: &[Argument],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let root = resource
-        .saved_root
-        .as_ref()
-        .filter(|saved| !saved.identity_keys.is_empty());
-    let Some(root) = root else {
-        return Err(unsupported(
-            "an identity for a resource with no identity keys",
-            span,
-        ));
+) -> Vec<KeyDef> {
+    let Some(resource) = find_resource(program, root) else {
+        return Vec::new();
     };
-    if args.iter().any(|arg| arg.mode.is_some()) {
-        return Err(type_error(
-            "an identity key cannot be an out argument",
-            span,
-        ));
-    }
-    if args.len() != root.identity_keys.len() {
-        return Err(type_error(
-            &format!(
-                "`{}::Id` takes {} key(s), got {}",
-                resource.name,
-                root.identity_keys.len(),
-                args.len()
-            ),
-            span,
-        ));
-    }
-    // Mixed positional and named arguments are ambiguous; require one shape.
-    let named = args.iter().filter(|arg| arg.name.is_some()).count();
-    if named != 0 && named != args.len() {
-        return Err(type_error(
-            "an identity takes either positional or named keys, not both",
-            span,
-        ));
-    }
-    let mut keys = Vec::with_capacity(root.identity_keys.len());
-    if named == 0 {
-        // Positional: each argument lowers to the key at the same position, then is
-        // guarded against that position's declared key type so a wrong-scalar key —
-        // a dynamic value the checker could not see — faults instead of settling
-        // into the typed keyspace, the same guard a record lookup `^root(key)` runs.
-        for (key_def, arg) in root.identity_keys.iter().zip(args) {
-            let key = value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| type_error("a key of this type", span))?;
-            guard_key_type(key_def, &key, span)?;
-            keys.push(key);
-        }
-    } else {
-        // Named (composite): for each declared key, find the matching argument,
-        // so keys land in declared order regardless of argument order; each is
-        // guarded against its declared key type the same way.
-        for key_def in &root.identity_keys {
-            let arg = args
-                .iter()
-                .find(|arg| arg.name.as_deref() == Some(key_def.name.as_str()))
-                .ok_or_else(|| {
-                    type_error(&format!("identity key `{}` is missing", key_def.name), span)
-                })?;
-            let key = value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| type_error("a key of this type", span))?;
-            guard_key_type(key_def, &key, span)?;
-            keys.push(key);
-        }
-    }
-    Ok(identity_value(keys))
+    resource
+        .descend_layers(chain)
+        .map_or_else(Vec::new, |node| node.key_params.clone())
+}
+
+/// The canonical store root for an identity type string.
+pub(crate) fn identity_root(program: &CheckedProgram, identity: &str) -> Option<String> {
+    find_store_resource(program, identity).map(|(store, _)| store.root.clone())
+}
+
+/// The declared key parameters for an identity type. Canonical `Id(^root)` names
+/// the store directly.
+pub(crate) fn identity_key_defs<'p>(
+    program: &'p CheckedProgram,
+    identity: &str,
+) -> Option<&'p [KeyDef]> {
+    find_store_resource(program, identity).map(|(store, _)| store.identity_keys.as_slice())
 }
 
 /// Whether `name` names a resource type (for an uninitialized `var book: Book`
@@ -228,38 +175,37 @@ pub(crate) fn is_group_base(base: &Expression) -> bool {
 }
 
 /// How a saved leaf field stores and reads: a plain scalar (its own type, or an
-/// enum's ordinal `int`), or a typed reference to another resource's identity. An
-/// identity leaf names the referenced resource and carries its identity arity, so
+/// enum's ordinal `int`), or a typed reference to another store identity. An
+/// identity leaf names the referenced store root and carries its identity arity, so
 /// the runtime decodes the stored bytes back with `decode_identity` and encodes a
 /// write with `encode_identity`, sharing the flat key encoding unique-index entries
 /// already use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LeafKind {
     Scalar(ScalarType),
-    Identity { resource: String, arity: usize },
+    Identity { store_root: String, arity: usize },
 }
 
 /// Resolve a declared member [`Type`] to its stored [`LeafKind`], given the program
-/// so an identity type can resolve the referenced resource's identity arity. A
-/// scalar or enum field is a scalar leaf; an `Author::Id` field is an identity leaf
-/// referencing `Author`. Any other type (a sequence, a bare resource, an unresolved
-/// identity reference) has no flat leaf form, so this is `None`.
+/// so an identity type can resolve the referenced store's identity arity. A
+/// scalar or enum field is a scalar leaf; an `Id(^authors)` field is an identity
+/// leaf referencing `^authors`. Any other type (a sequence, a bare resource, an
+/// unresolved identity reference) has no flat leaf form, so this is `None`.
 pub(crate) fn leaf_kind(program: &CheckedProgram, ty: &Type) -> Option<LeafKind> {
     match ty {
-        Type::Identity(resource) => {
-            let referenced = find_resource_by_name(program, resource)?;
-            let arity = referenced.saved_root.as_ref()?.identity_keys.len();
+        Type::Identity(identity) => {
+            let identity_keys = identity_key_defs(program, identity)?;
             Some(LeafKind::Identity {
-                resource: resource.clone(),
-                arity,
+                store_root: identity_root(program, identity)?,
+                arity: identity_keys.len(),
             })
         }
         other => other.stored_scalar().map(LeafKind::Scalar),
     }
 }
 
-/// The stored leaf kind of a saved root's top-level field — a scalar (its own type,
-/// or `int` for an enum's ordinal) or a typed reference to another resource.
+/// The stored leaf kind of a saved root's top-level field — a scalar (its own
+/// type, or `int` for an enum's ordinal) or a typed store identity.
 pub(crate) fn resource_field_leaf(
     program: &CheckedProgram,
     root: &str,
@@ -328,10 +274,10 @@ pub enum SavedPathClass {
     /// The path is a declared scalar leaf of the given type; its stored bytes
     /// should decode as a canonical form of that type.
     Scalar(ScalarType),
-    /// The path is a declared typed-reference leaf (`authorId: Author::Id`); its
+    /// The path is a declared typed-reference leaf (`authorId: Id(^authors)`); its
     /// stored bytes are the referenced identity's canonical encoding, which decodes
     /// back with `decode_identity` against `arity` keys, not as a scalar.
-    Identity { resource: String, arity: usize },
+    Identity { store_root: String, arity: usize },
     /// The path is a generated index entry (`^root.index(keys…)`). Its value is a
     /// presence marker or a stored identity, raw-only by design — not a typed
     /// scalar, and a legal, expected store-level value.
@@ -386,10 +332,10 @@ pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -
             .iter()
             .all(|segment| matches!(segment, PathSegment::IndexKey(_)))
     {
-        let Some(resource) = find_resource(program, root) else {
+        let Some((store, _)) = find_store_resource(program, root) else {
             return SavedPathClass::Orphan;
         };
-        if resource.indexes.iter().any(|index| index.name == *name) {
+        if store.indexes.iter().any(|index| index.name == *name) {
             return SavedPathClass::IndexMarker;
         }
         if arity == 0 {
@@ -404,10 +350,9 @@ pub fn classify_saved_path(program: &CheckedProgram, segments: &[PathSegment]) -
     }
     // The identity is the right length; each record key must also be the declared
     // scalar kind, or the keyspace is corrupt at the wrong type.
-    if let Some(resource) = find_resource(program, root)
-        && let Some(saved) = resource.saved_root.as_ref()
+    if let Some((store, _)) = find_store_resource(program, root)
         && let Some(mismatch) = key_type_mismatch(
-            &saved.identity_keys,
+            &store.identity_keys,
             rest[..identity_keys].iter().filter_map(record_key),
         )
     {
@@ -425,21 +370,15 @@ pub(crate) fn record_key(segment: &PathSegment) -> Option<&SavedKey> {
 }
 
 /// The first inner-key type mismatch of a stored identity-leaf reference, given
-/// the referenced resource and the keys decoded from the leaf — for data-integrity
-/// inspection of a typed-reference leaf (`authorId: Author::Id`). A wrong-scalar
+/// the referenced store root and the keys decoded from the leaf. A wrong-scalar
 /// key encodes by arity alone, so the arity check passes it; this catches the
-/// reference that points at a record the referenced keyspace could never hold. The
-/// referenced resource's declared identity keys are the authority; an unresolved
-/// or keyless resource declares none, so the check finds nothing.
+/// reference that points at a record the referenced keyspace could never hold.
 pub fn identity_leaf_key_mismatch(
     program: &CheckedProgram,
-    resource: &str,
+    store_root: &str,
     keys: &[SavedKey],
 ) -> Option<(ScalarType, ScalarType)> {
-    let declared = find_resource_by_name(program, resource)
-        .and_then(|resource| resource.saved_root.as_ref())?
-        .identity_keys
-        .as_slice();
+    let declared = identity_key_defs(program, store_root)?;
     match key_type_mismatch(declared, keys.iter()) {
         Some(SavedPathClass::KeyTypeMismatch { expected, found }) => Some((expected, found)),
         _ => None,
@@ -554,6 +493,6 @@ pub(crate) fn classify_member(
 fn leaf_class(leaf: LeafKind) -> SavedPathClass {
     match leaf {
         LeafKind::Scalar(ty) => SavedPathClass::Scalar(ty),
-        LeafKind::Identity { resource, arity } => SavedPathClass::Identity { resource, arity },
+        LeafKind::Identity { store_root, arity } => SavedPathClass::Identity { store_root, arity },
     }
 }

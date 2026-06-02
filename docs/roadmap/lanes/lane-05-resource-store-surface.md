@@ -37,8 +37,34 @@ Own these files during the code pass:
 - `docs/language/types.md`
 - `docs/language/sample.md`
 
-Do not change runtime execution, catalog file persistence, tree-cell physical
-keys, backup/restore protocols, or source-native evolution in this lane.
+Do not change catalog file persistence, tree-cell physical keys,
+backup/restore protocols, or source-native evolution in this lane. Runtime
+changes are limited to the schema-query bridge needed for canonical
+`Id(^store)` leaves to round-trip through the current executable path.
+
+## Area Cleanup Gate
+
+This lane owns the complete cleanup of the resource/store surface across syntax,
+schema, checker facts, diagnostics, docs, fixtures, and tests. It must delete or
+rewrite resource-owned store, index, and identity paths in its area instead of
+leaving a second semantic model for a later lane. It must not leave
+`crates/marrow-check/src/checks.rs` as a larger catch-all pass.
+
+Before handing the lane to review:
+
+- split any expanded statement, loop, call, saved-path, or resource/store
+  dispatcher into focused helpers or a focused module;
+- keep helper names carrying the explanation rather than adding branch-by-branch
+  comments;
+- delete dead resource-owned identity/index/store helpers and stale fixtures
+  introduced or exposed by this lane;
+- delete comments that narrate what the code does, explain temporary migration
+  state, or compensate for an oversized function;
+- preserve only comments that explain durable invariants or non-obvious
+  soundness constraints;
+- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
+  functions, duplicate semantic classifiers, compatibility glue, and comment
+  sediment.
 
 ## Area Cleanup Gate
 
@@ -74,9 +100,9 @@ Before handing the lane to review:
 - The concise `resource Book at ^books(id: int)` form is parser sugar only if it
   remains; schema and checked facts store the split representation.
 - `Id(^store)` is the canonical identity type. `Book::Id` is not automatic
-  resource identity; any surviving alias must be explicitly store-declared,
-  absent from canonical fixtures by default, and reviewed as compatibility
-  surface.
+  identity owned by the resource name; any surviving alias must be explicitly
+  store-declared, absent from canonical fixtures by default, and reviewed as
+  compatibility surface.
 - Indexes belong to stores. A production resource schema does not own indexes.
 - Collections are local trees, sequences, and keyed layers, not flat lists.
 - Placement or partition source syntax remains future-reserved.
@@ -95,7 +121,8 @@ Delete or isolate:
 - `ResourceMember::Index` as production ownership.
 - `ResourceSchema.saved_root` and `ResourceSchema.indexes` as durable owners.
 - resource-name-owned identity inference from `Book::Id`.
-- checker/runtime index lookup through `resource.indexes`.
+- checker/runtime index lookup through `resource.indexes` except for the named
+  Lane 8 bridge below.
 - accidental production support for `~` typed ephemeral roots.
 
 Production bridge: none. There are no production callers that need a

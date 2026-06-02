@@ -1,6 +1,13 @@
 //! Runtime values and their conversions to and from saved values.
 
-use crate::*;
+use marrow_store::Decimal;
+use marrow_store::path::SavedKey;
+use marrow_store::value::{SavedValue, decode_value};
+use marrow_syntax::SourceSpan;
+
+use crate::error::{RuntimeError, type_error, unsupported};
+use crate::schema_query::LeafKind;
+use crate::write::decode_identity_arity;
 
 /// A runtime value: the scalars a pure function manipulates plus the in-memory
 /// and saved-tree shapes the data features produce (sequences, resource trees,
@@ -32,18 +39,16 @@ pub enum Value {
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write.
     Resource(Vec<(String, Value)>),
-    /// A composite resource identity (`Enrollment::Id(...)`): its lowered key
-    /// segments in declared identity-key order. Single-key identities use their
+    /// A composite store identity (`Id(^enrollments)`): its lowered key segments
+    /// in declared identity-key order. Single-key identities use their
     /// key's scalar value, matching `nextId` and root traversal. Composite
     /// identities use this wrapper so a keyed lookup can splice all segments.
     ///
-    /// The owning resource is not carried here: two identities with the same key
-    /// scalars are byte-identical, so `Book::Id(1)` and `Magazine::Id(1)` are one
-    /// value. Nominal identity is enforced statically by the checker and again at
-    /// lowering against the declared key types, which covers well-typed programs;
-    /// the residual — a value that already lost its nominal resource through
-    /// dynamic code — waits on unifying the type IR so the value can name its
-    /// resource.
+    /// The owning store is not carried here: two identities with the same key
+    /// scalars are byte-identical at the value level. Nominal identity is enforced
+    /// statically by the checker and at lowering against declared key types; a
+    /// same-shape value that has lost its static type cannot be distinguished
+    /// until runtime values carry the store root.
     Identity(Vec<SavedKey>),
 }
 
@@ -156,7 +161,7 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
 /// value at runtime — the same way `nextId` and a single-key record lookup do — so a
 /// scalar value is taken as that one key. A non-key value is a type fault.
 ///
-/// The checker's nominal rule already rejects a wrong-resource or scalar value
+/// The checker's nominal rule already rejects a wrong-store or scalar value
 /// statically; this guards the well-typed path and gives a catchable `run.type`
 /// fault for a value that lost its nominal type through dynamic code, and the write
 /// planner's arity check rejects a single key written to a composite reference.
@@ -169,7 +174,7 @@ pub(crate) fn identity_keys_of(
         other => match value_to_key(other) {
             Some(key) => Ok(vec![key]),
             None => Err(type_error(
-                "an identity-typed field takes a resource identity (`Resource::Id(...)`)",
+                "an identity-typed field takes an Id(^store) value",
                 span,
             )),
         },

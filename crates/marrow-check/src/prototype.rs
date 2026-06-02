@@ -4,10 +4,8 @@ use marrow_syntax::{
     ArgMode, Block, Declaration, Expression, InterpolationPart, Severity, SourceSpan, Statement,
 };
 
-use crate::{
-    CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram, find_resource_schema,
-    is_saved_path_expression, saved_layer_chain,
-};
+use crate::infer::{is_saved_path_expression, saved_layer_chain};
+use crate::{CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram, find_store_resource};
 
 pub(crate) fn check_prototype_only(
     program: &CheckedProgram,
@@ -17,7 +15,7 @@ pub(crate) fn check_prototype_only(
 ) {
     for declaration in &parsed.file.declarations {
         match declaration {
-            Declaration::Resource(_) => {}
+            Declaration::Resource(_) | Declaration::Store(_) => {}
             Declaration::Function(function) => {
                 check_block(program, file, &function.body, diagnostics);
             }
@@ -251,17 +249,18 @@ fn declared_saved_member_or_index(program: &CheckedProgram, callee: &Expression)
         return false;
     };
     if let Expression::SavedRoot { name: root, .. } = base.as_ref()
-        && let Some(resource) = find_resource_schema(program, root)
-        && resource.indexes.iter().any(|index| &index.name == name)
+        && let Some(store) = find_store_resource(program, root)
+        && store.store.indexes.iter().any(|index| &index.name == name)
     {
         return true;
     }
     let Some((root, layers)) = saved_layer_chain(callee) else {
         return false;
     };
-    let Some(resource) = find_resource_schema(program, root) else {
+    let Some(store) = find_store_resource(program, root) else {
         return false;
     };
+    let resource = store.resource;
     resource.descend_layers(&layers).is_some() || resource.field_type(&layers).is_some()
 }
 

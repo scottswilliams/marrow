@@ -1,17 +1,16 @@
-//! Compiles a parsed Marrow resource declaration into a typed-tree
-//! [`ResourceSchema`].
+//! Compiles parsed Marrow resource and store declarations into schema shapes.
 //!
-//! It maps the parsed resource declaration produced by `marrow-syntax` onto the
-//! saved/local tree shape: a saved root with identity keys, top-level fields,
-//! keyed layers (sequences, keyed trees, groups, and history), and declared
-//! indexes. Semantic validation beyond structure is deferred; see the notes on
-//! [`compile_resource`].
+//! [`ResourceSchema`] describes the typed resource tree: fields, keyed layers,
+//! groups, and saved-field value rules. [`StoreSchema`] owns the durable root,
+//! identity keys, and indexes that attach a resource shape to saved data. Semantic
+//! validation beyond structure is deferred; see the notes on [`compile_resource`]
+//! and [`compile_store`].
 
 use std::fmt;
 
 use marrow_syntax::{
     EnumDecl, EnumMember, FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember,
-    SavedRoot, SourceSpan, TypeRef,
+    SourceSpan, StoreDecl, TypeRef,
 };
 
 pub mod stdlib;
@@ -24,15 +23,16 @@ pub use marrow_store::value::ScalarType;
 /// crates match on structure instead of re-parsing the source spelling.
 ///
 /// Resolution is structural and module-blind: it decides everything a single
-/// declaration can (a scalar, a `sequence[...]`, an `X::Id` identity, `unknown`),
-/// and leaves any other bare or qualified name as [`Type::Named`]. The checker,
-/// which knows the project's resource names, promotes a `Named` to a resource
-/// reference or flags it unknown; the runtime only ever reads the scalar leaves.
+/// declaration can (a scalar, a `sequence[...]`, `Id(^store)`, or `unknown`), and
+/// leaves any other bare or qualified name as [`Type::Named`]. The checker,
+/// which knows the project's resource and enum names, promotes a `Named` to a
+/// resource or enum reference or flags it unknown; the runtime only ever reads the
+/// scalar leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Scalar(ScalarType),
     Sequence(Box<Type>),
-    /// A resource identity such as `Book::Id`, carrying the resource name.
+    /// A store identity such as `Id(^books)`, carrying the store root name.
     Identity(String),
     /// A bare or qualified name that is not a scalar, sequence, identity, or
     /// `unknown`: a resource reference (the checker confirms it) or a typo.
@@ -60,9 +60,11 @@ impl Type {
         if text == "unknown" {
             return Self::Unknown;
         }
-        // A resource identity such as `Book::Id` names the resource it wraps.
-        if let Some(resource) = text.strip_suffix("::Id") {
-            return Self::Identity(resource.to_string());
+        if let Some(store) = text
+            .strip_prefix("Id(^")
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            return Self::Identity(store.to_string());
         }
         Self::Named(text.to_string())
     }
@@ -81,10 +83,10 @@ impl Type {
     /// declaration-order ordinal. A saved field that is an unqualified
     /// [`Type::Named`] is always an enum: [`check_saved_named_fields`] rejects
     /// any other unqualified name (an undefined name or a resource type) at
-    /// compile time. Qualified names need project context, but once a `Named`
-    /// field reaches the store it stores its ordinal as an `int`. The storage
-    /// boundary — value type-checks, field reads, whole-resource reads — uses
-    /// this.
+    /// compile time. Qualified names need project context, but once a checked
+    /// `Named` field reaches the store it stores its enum ordinal as an `int`.
+    /// The storage boundary — value type-checks, field reads, whole-resource
+    /// reads — uses this.
     pub fn stored_scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
@@ -112,7 +114,7 @@ impl fmt::Display for Type {
         match self {
             Self::Scalar(scalar) => f.write_str(scalar.name()),
             Self::Sequence(element) => write!(f, "sequence[{element}]"),
-            Self::Identity(resource) => write!(f, "{resource}::Id"),
+            Self::Identity(store) => write!(f, "Id(^{store})"),
             Self::Named(name) => f.write_str(name),
             Self::Unknown => f.write_str("unknown"),
         }
@@ -129,9 +131,7 @@ impl fmt::Display for Type {
 pub struct ResourceSchema {
     pub name: String,
     pub docs: Vec<String>,
-    pub saved_root: Option<SavedRootSchema>,
     pub members: Vec<Node>,
-    pub indexes: Vec<IndexSchema>,
 }
 
 impl ResourceSchema {
@@ -221,8 +221,8 @@ impl Node {
     }
 }
 
-/// The saved root a resource is attached to, with the identity keys that live
-/// in the saved path. Identity keys are not stored fields.
+/// The durable root and identity key shape declared by a store. Identity keys
+/// live in the saved path; they are not stored fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedRootSchema {
     pub root: String,
@@ -230,8 +230,8 @@ pub struct SavedRootSchema {
 }
 
 impl SavedRootSchema {
-    /// Does this saved root qualify for the default `nextId` allocation policy?
-    /// Only a resource with exactly one `int` identity key does; composite
+    /// Does this store root qualify for the default `nextId` allocation policy?
+    /// Only a store with exactly one `int` identity key does; composite
     /// identities, non-integer identities, and keyless singletons are
     /// application-provided. This is the one contract both the checker (which
     /// types `nextId(^root)`) and the runtime write planner (which allocates the
@@ -251,6 +251,37 @@ impl SavedRootSchema {
             [key] => format!("a single `{}` key", key.ty),
             keys => format!("a composite identity of {} keys", keys.len()),
         }
+    }
+}
+
+/// The compiled durable store over a resource tree shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreSchema {
+    pub root: String,
+    pub resource: String,
+    pub docs: Vec<String>,
+    pub identity_keys: Vec<KeyDef>,
+    pub indexes: Vec<IndexSchema>,
+}
+
+impl StoreSchema {
+    pub fn identity_type(&self) -> Type {
+        Type::Identity(self.root.clone())
+    }
+
+    pub fn saved_root(&self) -> SavedRootSchema {
+        SavedRootSchema {
+            root: self.root.clone(),
+            identity_keys: self.identity_keys.clone(),
+        }
+    }
+
+    pub fn single_int_root(&self) -> bool {
+        self.saved_root().single_int_root()
+    }
+
+    pub fn next_id_shape(&self) -> String {
+        self.saved_root().next_id_shape()
     }
 }
 
@@ -528,8 +559,8 @@ pub const SCHEMA_INDEX_IN_GROUP: &str = "schema.index_in_group";
 pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
 
 /// A parsed type spelling is only supported in a narrower declaration context.
-/// Currently `map[K, V]` is declaration sugar for saved-resource members only;
-/// it is not a general local or nested map type.
+/// Currently `map[K, V]` is declaration sugar for saved keyed-leaf members
+/// only; it is not a general local or nested map type.
 pub const SCHEMA_UNSUPPORTED_TYPE: &str = "schema.unsupported_type";
 
 /// A top-level field or layer shares a name with an identity key. Identity keys
@@ -555,9 +586,8 @@ pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
 /// identity.
 pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_identity_keys";
 
-/// An index is declared on a resource with no keyed saved root. Declared indexes
-/// are members of keyed saved resources; a singleton (keyless) or local
-/// (non-saved) resource has no generated identity for an entry to point to.
+/// An index is declared on a store with no keyed saved root. Declared indexes
+/// need a store identity for entries to point to.
 pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
 
 /// An index argument names a field nested through an unkeyed group. The write
@@ -576,7 +606,7 @@ pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = "schema.non_enum_named_field";
 /// the store projects a key from its scalar value and the key guard cannot tell
 /// a member ordinal from a raw string or int written into a non-scalar position.
 /// Every bare or qualified name — a local enum, a cross-module enum, a resource,
-/// or a typo — every sequence, and every resource identity is rejected
+/// or a typo — every sequence, and every store identity is rejected
 /// structurally, since the rule asks only whether the type is an orderable scalar.
 pub const SCHEMA_NONSCALAR_KEY: &str = "schema.nonscalar_key";
 
@@ -595,55 +625,134 @@ impl std::error::Error for SchemaError {}
 /// Compile a parsed resource declaration into a [`ResourceSchema`].
 ///
 /// Always returns a best-effort schema together with any errors, so callers can
-/// keep checking. Maps structure and the single-resource rules the schema alone
-/// can decide: `unknown` is rejected in managed saved fields and
-/// keys, an identity key may not share a name with a top-level member, index
-/// arguments must resolve within the resource.
+/// keep checking. Maps the resource tree shape and the single-resource rules the
+/// schema alone can decide, including saved-field value types and keyed-layer
+/// key types. Store identity keys and index arguments are checked by
+/// [`compile_store`].
 ///
 /// Deferred: full type validation and one-owner-per-root.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
-    let mut errors = Vec::new();
-    let map_sugar = decl.store.is_some();
+    compile_resource_shape(decl, false)
+}
 
-    let saved_root = decl.store.as_ref().map(|store| SavedRootSchema {
-        root: store.root.clone(),
-        identity_keys: store.keys.iter().map(key_def).collect(),
-    });
+/// Compile a resource shape that is attached to at least one store declaration.
+pub fn compile_stored_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
+    compile_resource_shape(decl, true)
+}
+
+fn compile_resource_shape(
+    decl: &ResourceDecl,
+    saved_map_sugar: bool,
+) -> (ResourceSchema, Vec<SchemaError>) {
+    let mut errors = Vec::new();
 
     let mut members = Vec::new();
-    let mut indexes = Vec::new();
     let mut names = Namespace::default();
 
     for member in &decl.members {
-        match member {
-            ResourceMember::Index(index) => {
-                names.check(&index.name, index.span, &mut errors);
-                indexes.push(index_schema(index));
-            }
-            _ => {
-                names.check(member_name(member), member_span(member), &mut errors);
-                members.push(member_node(member, &mut errors, map_sugar));
-            }
-        }
+        names.check(member_name(member), member_span(member), &mut errors);
+        members.push(member_node(member, &mut errors, saved_map_sugar));
     }
 
     let schema = ResourceSchema {
         name: decl.name.clone(),
         docs: decl.docs.clone(),
-        saved_root,
         members,
-        indexes,
     };
 
-    // Saved-data rules apply only to managed saved resources. They are reported
-    // over the declaration, which carries the spans the built schema does not.
-    if let Some(store) = &decl.store {
-        check_saved_data(store, &decl.members, decl.span, &mut errors);
+    check_unsupported_map_types(&decl.members, saved_map_sugar, &mut errors);
+    (schema, errors)
+}
+
+/// Compile a parsed store declaration into a [`StoreSchema`] against the resource
+/// shape it stores.
+pub fn compile_store(
+    decl: &StoreDecl,
+    resource: &ResourceSchema,
+) -> (StoreSchema, Vec<SchemaError>) {
+    let mut errors = Vec::new();
+    check_duplicate_key_params(&decl.root.keys, decl.span, &mut errors);
+    for key in &decl.root.keys {
+        if let Some(error) = unsupported_map_key_param_error(key, decl.span) {
+            errors.push(error);
+            continue;
+        }
+        let ty = Type::resolve(&key.ty);
+        if ty.embeds_unknown() {
+            errors.push(unknown_error("identity key", &key.name, decl.span));
+        } else if let Some(error) = key_type_error("identity key", &key.name, &ty, decl.span) {
+            errors.push(error);
+        }
+        if resource
+            .members
+            .iter()
+            .any(|member| member.name == key.name)
+        {
+            errors.push(SchemaError {
+                code: SCHEMA_KEY_MEMBER_COLLISION,
+                message: format!(
+                    "identity key `{}` collides with a top-level member of the \
+                     same name; identity keys live in the saved path, not stored \
+                     members",
+                    key.name
+                ),
+                span: decl.span,
+            });
+        }
     }
 
-    check_unsupported_map_types(&decl.members, map_sugar, &mut errors);
-    check_index_args(decl, &mut errors);
-    (schema, errors)
+    let mut names = Namespace::default();
+    for index in &decl.indexes {
+        names.check(&index.name, index.span, &mut errors);
+        if decl.root.keys.is_empty() {
+            errors.push(SchemaError {
+                code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+                message: format!(
+                    "index `{}` requires a keyed saved root; a singleton store has \
+                     no identity for an index entry to point to",
+                    index.name
+                ),
+                span: index.span,
+            });
+            continue;
+        }
+        if decl.root.keys.iter().any(|key| key.name == index.name) {
+            errors.push(SchemaError {
+                code: SCHEMA_KEY_MEMBER_COLLISION,
+                message: format!(
+                    "identity key `{}` collides with index `{}`; identity keys and \
+                     indexes share the store namespace",
+                    index.name, index.name
+                ),
+                span: index.span,
+            });
+        }
+        check_store_index_args(index, &decl.root.keys, resource, &mut errors);
+    }
+
+    (
+        StoreSchema {
+            root: decl.root.root.clone(),
+            resource: decl.resource.clone(),
+            docs: decl.docs.clone(),
+            identity_keys: decl.root.keys.iter().map(key_def).collect(),
+            indexes: decl.indexes.iter().map(index_schema).collect(),
+        },
+        errors,
+    )
+}
+
+/// Report saved-data member rules for a resource attached by a split store
+/// declaration. Concise `resource at ^root` runs these through
+/// [`compile_resource`]; split stores call this from the store declaration so a
+/// plain resource AST stays store-independent.
+pub fn check_saved_member_rules(members: &[ResourceMember]) -> Vec<SchemaError> {
+    let mut errors = Vec::new();
+    for member in members {
+        check_member_unknown(member, &mut errors);
+        check_member_keys(member, &mut errors);
+    }
+    errors
 }
 
 /// Compile a parsed enum into an [`EnumSchema`], with any errors.
@@ -721,55 +830,11 @@ fn flatten_enum_members(
     }
 }
 
-/// Report the saved-data rules for a managed saved resource: reject `unknown`
-/// in identity keys, fields, and keyed leaves (recursively), and reject an
-/// identity key that shares a name with a top-level member.
-///
-/// Errors are collected in source order: identity keys, then members. Identity
-/// keys have no span of their own, so their errors point at the declaration.
-fn check_saved_data(
-    store: &SavedRoot,
-    members: &[ResourceMember],
-    decl_span: SourceSpan,
-    errors: &mut Vec<SchemaError>,
-) {
-    check_duplicate_key_params(&store.keys, decl_span, errors);
-    for key in &store.keys {
-        if let Some(error) = unsupported_map_key_param_error(key, decl_span) {
-            errors.push(error);
-        } else {
-            let ty = Type::resolve(&key.ty);
-            if ty.embeds_unknown() {
-                errors.push(unknown_error("identity key", &key.name, decl_span));
-            } else if let Some(error) = key_type_error("identity key", &key.name, &ty, decl_span) {
-                errors.push(error);
-            }
-        }
-        if let Some(span) = top_level_member_span(members, &key.name) {
-            errors.push(SchemaError {
-                code: SCHEMA_KEY_MEMBER_COLLISION,
-                message: format!(
-                    "identity key `{}` collides with a top-level member of the \
-                     same name; identity keys live in the saved path, not stored \
-                     members",
-                    key.name
-                ),
-                span,
-            });
-        }
-    }
-
-    for member in members {
-        check_member_unknown(member, errors);
-        check_member_keys(member, errors);
-    }
-}
-
 /// Validate a keyed-layer's own key parameters, descending into groups. A keyed
 /// layer's key must be a saved key, so it may not embed `unknown` and may not be
 /// an unorderable type such as `decimal`. A keyed leaf and a keyed group both
 /// carry their key parameters in `keys`; an unkeyed field or group has none.
-/// Identity keys are checked separately in [`check_saved_data`].
+/// Identity keys are checked by store compilation.
 fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
@@ -786,7 +851,6 @@ fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
                 check_member_keys(nested, errors);
             }
         }
-        ResourceMember::Index(_) => {}
     }
 }
 
@@ -815,8 +879,8 @@ fn unsupported_map_key_error(name: &str, ty: &str, span: SourceSpan) -> Option<S
     contains_map_type_syntax(ty).then(|| SchemaError {
         code: SCHEMA_UNSUPPORTED_TYPE,
         message: format!(
-            "key `{}` uses `map[...]`, which is only supported as saved-resource \
-             member sugar for a keyed leaf",
+            "key `{}` uses `map[...]`, which is only supported as saved \
+             keyed-leaf member sugar",
             name
         ),
         span,
@@ -862,7 +926,6 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
                 check_member_unknown(nested, errors);
             }
         }
-        ResourceMember::Index(_) => {}
     }
 }
 
@@ -896,7 +959,6 @@ fn check_unsupported_map_types(
                 }
                 check_unsupported_map_types(&group.members, saved_map_sugar, errors);
             }
-            ResourceMember::Index(_) => {}
         }
     }
 }
@@ -918,7 +980,7 @@ fn unsupported_map_field_error(field: &FieldDecl) -> SchemaError {
         code: SCHEMA_UNSUPPORTED_TYPE,
         message: format!(
             "field `{}` uses `map[...]`, which is only supported as unrequired \
-             saved-resource member sugar for a keyed leaf",
+             saved keyed-leaf member sugar",
             field.name
         ),
         span: field.span,
@@ -933,23 +995,36 @@ fn is_supported_map_member(field: &FieldDecl) -> bool {
             .unwrap_or(false)
 }
 
-/// Reject every managed saved field whose type is an unqualified name that is
-/// not one of `enums`. An unqualified [`Type::Named`] reaches a stored scalar
-/// only as an enum (its member ordinal); an undefined name or a resource type
-/// has no stored scalar form. Qualified names need import and project context,
-/// since [`compile_resource`] compiles one resource without that context. A
-/// local (non-saved) resource is exempt — only saved fields lower into the store.
-pub fn check_saved_named_fields(decl: &ResourceDecl, enums: &[String]) -> Vec<SchemaError> {
+/// Apply the saved named-field rule directly to resource members. Split store
+/// declarations use this after resolving the resource they attach.
+pub fn check_saved_named_member_fields(
+    members: &[ResourceMember],
+    enums: &[String],
+) -> Vec<SchemaError> {
+    check_saved_named_member_fields_with(members, |name| {
+        name.contains("::") || enums.iter().any(|enum_name| enum_name == name)
+    })
+}
+
+/// Apply the saved named-field rule with a project-aware enum resolver. Schema
+/// compilation only knows same-file enum names; the checker supplies a resolver
+/// for qualified names after imports and module visibility are known.
+pub fn check_saved_named_member_fields_with(
+    members: &[ResourceMember],
+    mut is_declared_enum_name: impl FnMut(&str) -> bool,
+) -> Vec<SchemaError> {
     let mut errors = Vec::new();
-    if decl.store.is_some() {
-        for member in &decl.members {
-            check_named_field(member, enums, &mut errors);
-        }
+    for member in members {
+        check_named_field(member, &mut is_declared_enum_name, &mut errors);
     }
     errors
 }
 
-fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec<SchemaError>) {
+fn check_named_field(
+    member: &ResourceMember,
+    is_declared_enum_name: &mut impl FnMut(&str) -> bool,
+    errors: &mut Vec<SchemaError>,
+) {
     match member {
         ResourceMember::Field(field) => {
             let ty = if contains_map_type(&field.ty.text) {
@@ -965,100 +1040,49 @@ fn check_named_field(member: &ResourceMember, enums: &[String], errors: &mut Vec
             } else {
                 Type::resolve(&field.ty)
             };
-            if let Type::Named(name) = ty
-                && !is_declared_or_qualified_enum_name(&name, enums)
-            {
-                errors.push(SchemaError {
-                    code: SCHEMA_NON_ENUM_NAMED_FIELD,
-                    message: format!(
-                        "saved field `{}` has type `{name}`, which is not a declared enum; \
-                         a saved field stores a scalar or an enum ordinal",
-                        field.name
-                    ),
-                    span: field.span,
-                });
-            }
+            check_named_field_type(&ty, field, is_declared_enum_name, errors);
         }
         ResourceMember::Group(group) => {
             for nested in &group.members {
-                check_named_field(nested, enums, errors);
+                check_named_field(nested, is_declared_enum_name, errors);
             }
         }
-        ResourceMember::Index(_) => {}
     }
 }
 
-fn is_declared_or_qualified_enum_name(name: &str, enums: &[String]) -> bool {
-    name.contains("::") || enums.iter().any(|enum_name| enum_name == name)
-}
-
-/// The span of a top-level member named `name`, if one exists. Identity keys,
-/// fields, layers, and index names share the resource namespace, so an identity
-/// key may not reuse any of them.
-fn top_level_member_span(members: &[ResourceMember], name: &str) -> Option<SourceSpan> {
-    members
-        .iter()
-        .find(|member| member_name(member) == name)
-        .map(member_span)
-}
-
-/// Resolve each index argument against the resource. Implemented indexes may
-/// name an identity key or a top-level unkeyed field. Nested scalar fields
-/// reached through unkeyed groups are recognized only to report the unsupported
-/// nested-index diagnostic; indexes do not walk keyed child layers. Each
-/// unresolved argument is reported at its index's span, in index then argument
-/// order.
-///
-/// An index also requires a keyed saved root: a singleton (keyless) or local
-/// (non-saved) resource has no identity for an entry to point to, which is
-/// reported once per index and short-circuits the per-argument checks.
-fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
-    let keys = decl
-        .store
-        .as_ref()
-        .map(|store| &store.keys[..])
-        .unwrap_or(&[]);
-    for member in &decl.members {
-        let ResourceMember::Index(index) = member else {
-            continue;
-        };
-        if keys.is_empty() {
-            errors.push(SchemaError {
-                code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-                message: format!(
-                    "index `{}` requires a keyed saved root; a singleton or local \
-                     resource has no identity for an index entry to point to",
-                    index.name
-                ),
-                span: index.span,
-            });
-            continue;
+fn check_named_field_type(
+    ty: &Type,
+    field: &FieldDecl,
+    is_declared_enum_name: &mut impl FnMut(&str) -> bool,
+    errors: &mut Vec<SchemaError>,
+) {
+    match ty {
+        Type::Named(name) if !is_declared_enum_name(name) => errors.push(SchemaError {
+            code: SCHEMA_NON_ENUM_NAMED_FIELD,
+            message: format!(
+                "saved field `{}` has type `{name}`, which is not a declared enum; \
+                 a saved field stores a scalar or an enum ordinal",
+                field.name
+            ),
+            span: field.span,
+        }),
+        Type::Sequence(element) => {
+            check_named_field_type(element, field, is_declared_enum_name, errors);
         }
-        for arg in &index.args {
-            match index_arg_type(arg, keys, &decl.members) {
-                None if has_nested_unkeyed_field_named(arg, &decl.members) => {
-                    errors.push(SchemaError {
-                        code: SCHEMA_NESTED_INDEX_ARG,
-                        message: format!(
-                            "index `{}` argument `{arg}` names a field nested through an \
-                             unkeyed group, which the write planner does not maintain",
-                            index.name
-                        ),
-                        span: index.span,
-                    });
-                }
-                None => errors.push(SchemaError {
-                    code: SCHEMA_UNKNOWN_INDEX_ARG,
-                    message: format!(
-                        "index `{}` argument `{arg}` does not name an identity \
-                         key or top-level field",
-                        index.name
-                    ),
-                    span: index.span,
-                }),
-                // A dotted argument resolves through an unkeyed group, which the
-                // write planner does not maintain.
-                Some(_) if arg.contains('.') => errors.push(SchemaError {
+        _ => {}
+    }
+}
+
+fn check_store_index_args(
+    index: &IndexDecl,
+    keys: &[KeyParam],
+    resource: &ResourceSchema,
+    errors: &mut Vec<SchemaError>,
+) {
+    for arg in &index.args {
+        match store_index_arg_type(arg, keys, resource) {
+            None if store_index_arg_is_nested_field(arg, resource) => {
+                errors.push(SchemaError {
                     code: SCHEMA_NESTED_INDEX_ARG,
                     message: format!(
                         "index `{}` argument `{arg}` names a field nested through an \
@@ -1066,26 +1090,67 @@ fn check_index_args(decl: &ResourceDecl, errors: &mut Vec<SchemaError>) {
                         index.name
                     ),
                     span: index.span,
-                }),
-                Some(ty) => {
-                    if let Some(error) = index_arg_key_error(&index.name, arg, ty, index.span) {
-                        errors.push(error);
-                    }
-                }
+                });
             }
-        }
-        if !index.unique && !ends_with_identity_keys(&index.args, keys) {
-            errors.push(SchemaError {
-                code: SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
+            None => errors.push(SchemaError {
+                code: SCHEMA_UNKNOWN_INDEX_ARG,
                 message: format!(
-                    "non-unique index `{}` must end with all identity key(s) in \
-                     declaration order so each entry is distinct",
+                    "index `{}` argument `{arg}` does not name an identity \
+                     key or top-level field",
                     index.name
                 ),
                 span: index.span,
-            });
+            }),
+            Some(ty) => {
+                if let Some(error) = index_arg_type_key_error(&index.name, arg, &ty, index.span) {
+                    errors.push(error);
+                }
+            }
         }
     }
+    if !index.unique && !ends_with_identity_keys(&index.args, keys) {
+        errors.push(SchemaError {
+            code: SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
+            message: format!(
+                "non-unique index `{}` must end with all identity key(s) in \
+                 declaration order so each entry is distinct",
+                index.name
+            ),
+            span: index.span,
+        });
+    }
+}
+
+fn store_index_arg_type(arg: &str, keys: &[KeyParam], resource: &ResourceSchema) -> Option<Type> {
+    if arg.contains('.') {
+        return None;
+    }
+    if let Some(key) = keys.iter().find(|key| key.name == arg) {
+        return Some(Type::resolve(&key.ty));
+    }
+    resource.field_type(&[arg]).cloned()
+}
+
+fn store_index_arg_is_nested_field(arg: &str, resource: &ResourceSchema) -> bool {
+    if arg.contains('.') {
+        let segments: Vec<&str> = arg.split('.').collect();
+        return resource.field_type(&segments).is_some();
+    }
+    resource
+        .members
+        .iter()
+        .any(|node| node_has_nested_field_named(node, arg))
+}
+
+fn node_has_nested_field_named(node: &Node, name: &str) -> bool {
+    if !node.key_params.is_empty() {
+        return false;
+    }
+    matches!(node.kind, NodeKind::Group)
+        && node.members.iter().any(|member| {
+            (member.name == name && member.is_plain_field())
+                || node_has_nested_field_named(member, name)
+        })
 }
 
 /// Does this index argument list end with all identity key names in declaration
@@ -1097,72 +1162,6 @@ fn ends_with_identity_keys(args: &[String], keys: &[KeyParam]) -> bool {
             .iter()
             .zip(keys)
             .all(|(arg, key)| arg == &key.name)
-}
-
-/// The type `arg` resolves to in this resource, or `None` if it resolves to
-/// nothing. A single segment may name an identity key or a top-level unkeyed
-/// scalar field. A dotted path walks unkeyed groups (each non-final segment an
-/// unkeyed group, the final segment a scalar unkeyed field); identity keys are
-/// single-segment only.
-fn index_arg_type<'a>(
-    arg: &str,
-    keys: &'a [KeyParam],
-    members: &'a [ResourceMember],
-) -> Option<&'a TypeRef> {
-    let segments: Vec<&str> = arg.split('.').collect();
-    if segments.len() == 1
-        && let Some(key) = keys.iter().find(|key| key.name == segments[0])
-    {
-        return Some(&key.ty);
-    }
-    resolve_field_type(&segments, members)
-}
-
-/// Resolve a non-empty field path against `members` to its field type. The final
-/// segment must be an unkeyed scalar field; every earlier segment must be an
-/// unkeyed group whose members resolve the rest. Keyed fields and groups are
-/// keyed layers that index arguments do not walk.
-fn resolve_field_type<'a>(segments: &[&str], members: &'a [ResourceMember]) -> Option<&'a TypeRef> {
-    let (name, rest) = segments.split_first().expect("non-empty field path");
-    members.iter().find_map(|member| match member {
-        ResourceMember::Field(field)
-            if rest.is_empty()
-                && field.name == *name
-                && field.keys.is_empty()
-                && map_entry(&field.ty.text).is_none() =>
-        {
-            Some(&field.ty)
-        }
-        ResourceMember::Group(group)
-            if !rest.is_empty() && group.keys.is_empty() && group.name == *name =>
-        {
-            resolve_field_type(rest, &group.members)
-        }
-        _ => None,
-    })
-}
-
-/// Does a bare index argument name a scalar field below at least one unkeyed
-/// group? The argument is still unsupported, but it is a nested-field request
-/// rather than an unknown name.
-fn has_nested_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
-    !name.contains('.')
-        && members.iter().any(|member| match member {
-            ResourceMember::Group(group) if group.keys.is_empty() => {
-                has_unkeyed_field_named(name, &group.members)
-            }
-            _ => false,
-        })
-}
-
-fn has_unkeyed_field_named(name: &str, members: &[ResourceMember]) -> bool {
-    members.iter().any(|member| match member {
-        ResourceMember::Field(field) => field.keys.is_empty() && field.name == name,
-        ResourceMember::Group(group) if group.keys.is_empty() => {
-            has_unkeyed_field_named(name, &group.members)
-        }
-        _ => false,
-    })
 }
 
 /// The element type spelling of a `sequence[T]`, or `None` for a non-sequence
@@ -1230,7 +1229,7 @@ fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
 /// project from an orderable scalar value, so the rule is an allowlist: every
 /// scalar except `decimal` is a key; everything else is rejected. The verdict
 /// needs no knowledge of what a name refers to, so a local enum, a cross-module
-/// enum, a resource, a typo, and a resource identity are all the same
+/// enum, a resource, a typo, and a store identity are all the same
 /// `NonScalar` case, caught structurally without an enum or resource list.
 enum KeyTypeVerdict {
     Ok,
@@ -1242,7 +1241,7 @@ enum KeyTypeVerdict {
 }
 
 /// Classify a key type. `decimal` is the one scalar the store cannot encode as a
-/// key; every other scalar is orderable. A resource identity, name, or sequence
+/// key; every other scalar is orderable. A store identity, name, or sequence
 /// is a non-scalar key.
 fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
     match ty {
@@ -1279,19 +1278,12 @@ fn key_type_error(what: &str, name: &str, ty: &Type, span: SourceSpan) -> Option
     }
 }
 
-/// The error an index argument of source type `ty` earns, or `None` if it is a
-/// valid index key. An index entry keys on the argument's *stored* scalar, so the
-/// orderability rule reads that projection: an enum field stores its ordinal as an
-/// orderable `int` and indexes fine, while a `decimal` (no key encoding) and a
-/// `sequence` (no single scalar) cannot. A resource identity has no supported
-/// index-key projection yet, so it is rejected with the other non-scalars.
-fn index_arg_key_error(
+fn index_arg_type_key_error(
     index: &str,
     arg: &str,
-    ty: &TypeRef,
+    resolved: &Type,
     span: SourceSpan,
 ) -> Option<SchemaError> {
-    let resolved = Type::resolve(ty);
     match resolved.stored_scalar() {
         Some(ScalarType::Decimal) => Some(SchemaError {
             code: SCHEMA_UNORDERABLE_KEY,
@@ -1313,40 +1305,24 @@ fn index_arg_key_error(
     }
 }
 
-/// Compile the members nested inside a group into nodes. Fields and groups
-/// recurse; an index here is an error, since indexes are direct members of the
-/// resource.
+/// Compile the members nested inside a group into nodes.
 fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Vec<Node> {
     let mut members = Vec::new();
     let mut names = Namespace::default();
 
     for member in &group.members {
-        match member {
-            ResourceMember::Index(index) => errors.push(SchemaError {
-                code: SCHEMA_INDEX_IN_GROUP,
-                message: format!(
-                    "index `{}` cannot be declared inside group `{}`; \
-                     declare indexes as direct resource members",
-                    index.name, group.name
-                ),
-                span: index.span,
-            }),
-            _ => {
-                names.check(member_name(member), member_span(member), errors);
-                members.push(member_node(member, errors, map_sugar));
-            }
-        }
+        names.check(member_name(member), member_span(member), errors);
+        members.push(member_node(member, errors, map_sugar));
     }
 
     members
 }
 
-/// The name of a non-index resource member.
+/// The name of a resource member.
 fn member_name(member: &ResourceMember) -> &str {
     match member {
         ResourceMember::Field(field) => &field.name,
         ResourceMember::Group(group) => &group.name,
-        ResourceMember::Index(index) => &index.name,
     }
 }
 
@@ -1355,14 +1331,13 @@ fn member_span(member: &ResourceMember) -> SourceSpan {
     match member {
         ResourceMember::Field(field) => field.span,
         ResourceMember::Group(group) => group.span,
-        ResourceMember::Index(index) => index.span,
     }
 }
 
-/// Compile one non-index resource member (a field or a group) into a [`Node`]:
+/// Compile one resource member into a [`Node`]:
 /// an unkeyed plain field is a top-level `Slot`; `sequence[T]`, `map[K, V]`,
 /// and keyed fields are keyed-leaf `Slot`s; a group is a `Group` with recursed
-/// members. An index is not a node and is handled by the caller.
+/// members.
 fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Node {
     match member {
         ResourceMember::Field(field) if field.keys.is_empty() => {
@@ -1400,7 +1375,6 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar
                 kind: NodeKind::Group,
             }
         }
-        ResourceMember::Index(_) => unreachable!("indexes are not compiled to nodes"),
     }
 }
 

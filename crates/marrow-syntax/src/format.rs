@@ -9,7 +9,7 @@
 use crate::{
     ArgMode, Argument, BinaryOp, Block, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, InterpolationPart, KeyParam,
-    ParamDecl, ParamMode, ResourceDecl, ResourceMember, SavedRoot, Statement, TypeRef, UnaryOp,
+    ParamDecl, ParamMode, ResourceDecl, ResourceMember, Statement, StoreDecl, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -130,6 +130,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     match declaration {
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
+        Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
     }
@@ -142,6 +143,7 @@ fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(decl),
+        Declaration::Store(decl) => format_store(decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(decl),
     }
@@ -162,10 +164,23 @@ fn format_resource(decl: &ResourceDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     out.push_str("resource ");
     out.push_str(&decl.name);
-    if let Some(store) = &decl.store {
-        out.push_str(&format_saved_root(store));
-    }
     let body = format_resource_body(&decl.members, &decl.comments, 1);
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
+    }
+    out
+}
+
+fn format_store(decl: &StoreDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str(&format!(
+        "store ^{}{}: {}",
+        decl.root.root,
+        format_key_params(&decl.root.keys),
+        decl.resource
+    ));
+    let body = format_store_body(&decl.indexes, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');
         out.push_str(&body);
@@ -203,10 +218,6 @@ fn format_enum_member(member: &EnumMember, level: usize) -> String {
     out
 }
 
-fn format_saved_root(store: &SavedRoot) -> String {
-    format!(" at ^{}{}", store.root, format_key_params(&store.keys))
-}
-
 fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level: usize) -> String {
     let mut lines = Vec::new();
     for comment in comments {
@@ -219,6 +230,28 @@ fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level:
         lines.push(FormattedBodyLine {
             span: resource_member_span(member),
             text: format_resource_member(member, level),
+        });
+    }
+    lines.sort_by_key(|line| line.span.start_byte);
+    lines
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_store_body(indexes: &[crate::IndexDecl], comments: &[Comment], level: usize) -> String {
+    let mut lines = Vec::new();
+    for comment in comments {
+        lines.push(FormattedBodyLine {
+            span: comment.span,
+            text: format_comment(comment),
+        });
+    }
+    for index in indexes {
+        lines.push(FormattedBodyLine {
+            span: index.span,
+            text: format_index_decl(index, level),
         });
     }
     lines.sort_by_key(|line| line.span.start_byte);
@@ -260,7 +293,6 @@ fn resource_member_span(member: &ResourceMember) -> crate::SourceSpan {
     match member {
         ResourceMember::Field(field) => field.span,
         ResourceMember::Group(group) => group.span,
-        ResourceMember::Index(index) => index.span,
     }
 }
 
@@ -293,17 +325,19 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
             }
             out
         }
-        ResourceMember::Index(index) => {
-            let mut out = format_docs(&index.docs, level);
-            let unique = if index.unique { " unique" } else { "" };
-            out.push_str(&format!(
-                "{pad}index {}({}){unique}",
-                index.name,
-                index.args.join(", ")
-            ));
-            out
-        }
     }
+}
+
+fn format_index_decl(index: &crate::IndexDecl, level: usize) -> String {
+    let pad = INDENT.repeat(level);
+    let mut out = format_docs(&index.docs, level);
+    let unique = if index.unique { " unique" } else { "" };
+    out.push_str(&format!(
+        "{pad}index {}({}){unique}",
+        index.name,
+        index.args.join(", ")
+    ));
+    out
 }
 
 fn format_function(source: &str, decl: &FunctionDecl) -> String {

@@ -24,7 +24,7 @@ fn fileBook(
     book: Book,
     ;; shelf the book is filed under
     shelf: string,
-): Book::Id
+): Id(^books)
 ```
 
 Each parameter's doc is the run of `;;` lines directly above it; the language

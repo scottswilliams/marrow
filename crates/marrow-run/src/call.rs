@@ -1,6 +1,46 @@
 //! The function-call spine: invocation, argument binding, and call evaluation.
 
-use crate::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use marrow_check::{
+    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, FileId, MarrowType,
+    Resolution, ResolvableKind, resolve,
+};
+use marrow_schema::stdlib::Capability;
+use marrow_schema::{KeyDef, Node, NodeKind, ResourceSchema, Type};
+use marrow_store::Decimal;
+use marrow_store::backend::Backend;
+use marrow_store::mem::MemStore;
+use marrow_store::path::SavedKey;
+use marrow_store::value::ScalarType;
+use marrow_syntax::{ArgMode, Argument, Block, Expression, FunctionDecl, ParamMode, SourceSpan};
+
+use crate::collection::{
+    Direction, eval_append, eval_entries, eval_keys, eval_neighbor, eval_next_id, eval_reversed,
+    eval_values,
+};
+use crate::env::{Context, Env, Flow, TransactionState};
+use crate::error::{
+    RUN_NO_ENCLOSING_LOOP, RUN_PRIVATE_FUNCTION, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW,
+    RUN_UNKNOWN_FUNCTION, RuntimeError, assign_error, raise, reraise_fault, type_error,
+    unknown_function, unsupported,
+};
+use crate::exec::eval_block;
+use crate::expr::eval_expr;
+use crate::host::{Host, StepHook};
+use crate::path::{SavedPath, Terminal, lower};
+use crate::read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read, read_local_field};
+use crate::schema_query::{
+    enum_in, find_store_resource, identity_key_defs, identity_root, is_saved_path,
+};
+use crate::stdlib::{
+    eval_assert, eval_bytes_conversion, eval_clock_capability, eval_conversion, eval_count,
+    eval_env, eval_error_constructor, eval_exists, eval_io, eval_log, eval_output, eval_std,
+    is_std_module,
+};
+use crate::value::{RunOutput, Value, value_to_key};
+use crate::write_dispatch::write_local_field;
 
 /// Evaluate a standalone function with positional `args`, returning its returned
 /// value or `None`. Calls to other functions are not resolved (there is no
@@ -622,7 +662,7 @@ fn check_resource_constructor_value(
             span,
         )
     })?;
-    let expected = runtime_type_from_schema(module, ty);
+    let expected = runtime_type_from_schema(program, module, ty);
     let accepted = value_matches_type(program, &expected, value);
     if accepted {
         Ok(())
@@ -634,13 +674,19 @@ fn check_resource_constructor_value(
     }
 }
 
-fn runtime_type_from_schema(module: &CheckedModule, ty: &Type) -> MarrowType {
+fn runtime_type_from_schema(
+    program: &CheckedProgram,
+    module: &CheckedModule,
+    ty: &Type,
+) -> MarrowType {
     match ty {
         Type::Scalar(scalar) => MarrowType::Primitive(*scalar),
         Type::Sequence(element) => {
-            MarrowType::Sequence(Box::new(runtime_type_from_schema(module, element)))
+            MarrowType::Sequence(Box::new(runtime_type_from_schema(program, module, element)))
         }
-        Type::Identity(resource) => MarrowType::Identity(resource.clone()),
+        Type::Identity(identity) => MarrowType::Identity(
+            identity_root(program, identity).unwrap_or_else(|| identity.clone()),
+        ),
         Type::Unknown => MarrowType::Unknown,
         Type::Named(name) if name == "Error" => MarrowType::Error,
         Type::Named(name)
@@ -664,12 +710,7 @@ fn runtime_type_from_schema(module: &CheckedModule, ty: &Type) -> MarrowType {
 fn value_matches_type(program: &CheckedProgram, expected: &MarrowType, value: &Value) -> bool {
     match expected {
         MarrowType::Primitive(scalar) => value_scalar_type(value) == Some(*scalar),
-        MarrowType::Identity(resource) => {
-            let arity = find_resource_by_name(program, resource)
-                .and_then(|resource| resource.saved_root.as_ref())
-                .map_or(0, |root| root.identity_keys.len());
-            identity_value_matches(program, resource, arity, value)
-        }
+        MarrowType::Identity(identity) => identity_value_matches(program, identity, value),
         MarrowType::Resource(_) | MarrowType::GroupEntry { .. } => {
             matches!(value, Value::Resource(_))
         }
@@ -716,21 +757,13 @@ fn value_scalar_type(value: &Value) -> Option<ScalarType> {
     }
 }
 
-fn identity_value_matches(
-    program: &CheckedProgram,
-    resource: &str,
-    arity: usize,
-    value: &Value,
-) -> bool {
-    let Some(identity_keys) = find_resource_by_name(program, resource)
-        .and_then(|resource| resource.saved_root.as_ref())
-        .map(|root| root.identity_keys.as_slice())
-    else {
+fn identity_value_matches(program: &CheckedProgram, identity: &str, value: &Value) -> bool {
+    let Some(identity_keys) = identity_key_defs(program, identity) else {
         return false;
     };
     match value {
         Value::Identity(keys) => identity_keys_match(identity_keys, keys),
-        other if arity == 1 => value_to_key(other.clone())
+        other if identity_keys.len() == 1 => value_to_key(other.clone())
             .is_some_and(|key| identity_keys_match(identity_keys, &[key])),
         _ => false,
     }
@@ -904,10 +937,10 @@ pub(crate) fn eval_call(
     // (`^books.byIsbn(isbn)`) is an index lookup, not a keyed-layer read.
     if let Expression::Field { base, name, .. } = callee
         && let Expression::SavedRoot { name: root, .. } = base.as_ref()
-        && let Some(resource) = find_resource(env.program, root)
-        && let Some(index) = resource.indexes.iter().find(|index| &index.name == name)
+        && let Some((store, _)) = find_store_resource(env.program, root)
+        && let Some(index) = store.indexes.iter().find(|index| &index.name == name)
     {
-        return eval_index_lookup(resource, index, args, span, env).map(Some);
+        return eval_index_lookup(store, index, args, span, env).map(Some);
     }
     // A call whose callee is a saved layer field is a keyed-layer read — a leaf
     // value `^books(id).tags(pos)` or a whole group entry `^books(id).versions(v)`.
@@ -933,15 +966,6 @@ pub(crate) fn eval_call(
         && name == "Error"
     {
         return eval_error_constructor(args, span, env).map(Some);
-    }
-    // `Resource::Id(...)` constructs a resource identity. It may carry named
-    // (composite) keys, so it is dispatched before the named/moded guard that
-    // routes named calls to program functions.
-    if let [name, id] = segments.as_slice()
-        && id == "Id"
-        && let Some(resource) = find_resource_by_name(env.program, name)
-    {
-        return eval_identity_constructor(resource, args, span, env).map(Some);
     }
     if let Some((module, resource)) =
         resolve_resource_value_constructor(env.program, env.module, &segments)
@@ -1146,7 +1170,13 @@ pub(crate) fn eval_call_with_modes<'p>(
 
 #[cfg(test)]
 mod default_value_tests {
-    use super::*;
+    use marrow_check::MarrowType;
+    use marrow_schema::Type;
+    use marrow_store::Decimal;
+    use marrow_store::value::ScalarType;
+
+    use crate::call::{default_value, out_seed};
+    use crate::value::Value;
 
     // Pin the `var` defaults exhaustively against the values the dedicated
     // uninitialized-default table produced before it was folded into one fn.
@@ -1188,7 +1218,7 @@ mod default_value_tests {
             default_value(&Type::Sequence(Box::new(Type::Scalar(ScalarType::Int)))),
             Some(Value::Sequence(Vec::new()))
         );
-        assert_eq!(default_value(&Type::Identity("Book".into())), None);
+        assert_eq!(default_value(&Type::Identity("books".into())), None);
         assert_eq!(default_value(&Type::Named("Book".into())), None);
         assert_eq!(default_value(&Type::Unknown), None);
     }
@@ -1237,7 +1267,7 @@ mod default_value_tests {
             }),
             empty
         );
-        assert_eq!(out_seed(&MarrowType::Identity("Book".into())), empty);
+        assert_eq!(out_seed(&MarrowType::Identity("books".into())), empty);
         assert_eq!(out_seed(&MarrowType::Error), empty);
         assert_eq!(out_seed(&MarrowType::Unknown), empty);
     }

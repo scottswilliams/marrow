@@ -5,7 +5,10 @@
 use std::path::{Path, PathBuf};
 
 use marrow_check::binding::{RenameSafety, SymbolKind};
-use marrow_check::{AnalysisSnapshot, ProjectSources, analyze_project, build_binding_index};
+use marrow_check::{
+    AnalysisSnapshot, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, ProjectSources, analyze_project,
+    build_binding_index,
+};
 use marrow_syntax::Statement;
 
 fn temp_root(name: &str) -> PathBuf {
@@ -143,7 +146,7 @@ fn references_of_a_function_span_modules_through_aliases() {
     let books = "module shelf::books\n\
         resource Book at ^books(id: int)\n    \
         required title: string\n\
-        pub fn add(title: string): Book::Id\n    \
+        pub fn add(title: string): Id(^books)\n    \
         return nextId(^books)\n";
     let app = "module app\n\
         use shelf::books\n\
@@ -185,7 +188,7 @@ fn definition_from_an_aliased_call_site_resolves_to_the_function() {
     let books = "module shelf::books\n\
         resource Book at ^books(id: int)\n    \
         required title: string\n\
-        pub fn add(title: string): Book::Id\n    \
+        pub fn add(title: string): Id(^books)\n    \
         return nextId(^books)\n";
     let app = "module app\n\
         use shelf::books\n\
@@ -646,7 +649,7 @@ fn a_match_arm_resolves_through_a_saved_enum_layer_values_loop_binding() {
         archived\n\
         resource Book at ^books(id: int)\n    \
         states(pos: int): Status\n\
-        fn classify(id: Book::Id): int\n    \
+        fn classify(id: Id(^books)): int\n    \
         for s in values(^books(id).states)\n        \
         match s\n            \
         active\n                \
@@ -689,7 +692,7 @@ fn a_match_arm_resolves_through_a_two_name_saved_enum_layer_loop_binding() {
         archived\n\
         resource Book at ^books(id: int)\n    \
         states(pos: int): Status\n\
-        fn classify(id: Book::Id): int\n    \
+        fn classify(id: Id(^books)): int\n    \
         for pos, s in ^books(id).states\n        \
         match s\n            \
         active\n                \
@@ -732,7 +735,7 @@ fn a_saved_enum_layer_loop_match_records_its_scrutinee_enum() {
         archived\n\
         resource Book at ^books(id: int)\n    \
         states(pos: int): Status\n\
-        fn classify(id: Book::Id): int\n    \
+        fn classify(id: Id(^books)): int\n    \
         for s in values(^books(id).states)\n        \
         match s\n            \
         active\n                \
@@ -974,7 +977,7 @@ fn qualified_resource_constructor_uses_qualified_module_resource() {
 }
 
 #[test]
-fn qualified_resource_identity_constructor_uses_qualified_module_identity() {
+fn legacy_qualified_resource_identity_constructor_is_unresolved() {
     let state = "module shelf::state\n\
         resource Book at ^state_books(id: int)\n    \
         required title: string\n";
@@ -984,32 +987,22 @@ fn qualified_resource_identity_constructor_uses_qualified_module_identity() {
         required subtitle: string\n\
         fn make()\n    \
         const id = state::Book::Id(1)\n";
-    let (snapshot, paths) = analyze_snapshot(
-        "qualified-resource-identity-constructor",
+    let (snapshot, _paths) = analyze_snapshot(
+        "legacy-qualified-resource-identity-constructor",
         &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
     );
+    let unresolved: Vec<_> = snapshot
+        .report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_CALL)
+        .collect();
+    assert_eq!(unresolved.len(), 1, "{:#?}", snapshot.report.diagnostics);
     assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
+        unresolved[0].message.contains("state::Book::Id"),
+        "{:#?}",
+        unresolved
     );
-    let index = build_binding_index(&snapshot);
-    let state_file = &paths[0];
-    let app_file = &paths[1];
-
-    let callee = app
-        .find("state::Book::Id")
-        .expect("qualified identity constructor");
-    let book_def = index
-        .definition(app_file, callee + "state::".len() + 1)
-        .expect("resource segment resolves to the generated identity");
-    assert_eq!(book_def.kind, SymbolKind::ResourceIdentity, "{book_def:?}");
-    assert_eq!(book_def.file, *state_file, "{book_def:?}");
-
-    let id_def = index
-        .definition(app_file, callee + "state::Book::".len() + 1)
-        .expect("identity segment resolves to the generated identity");
-    assert_eq!(id_def, book_def, "{id_def:?}");
 }
 
 #[test]
@@ -1044,7 +1037,7 @@ fn bare_resource_constructor_prefers_current_module_resource() {
 }
 
 #[test]
-fn qualified_resource_identity_type_ref_uses_qualified_module_identity() {
+fn legacy_qualified_resource_identity_type_ref_is_unknown() {
     let state = "module shelf::state\n\
         resource Book at ^state_books(id: int)\n    \
         required title: string\n";
@@ -1054,31 +1047,26 @@ fn qualified_resource_identity_type_ref_uses_qualified_module_identity() {
         required subtitle: string\n\
         fn load(ids: sequence[state::Book::Id])\n    \
         return\n";
-    let (snapshot, paths) = analyze_snapshot(
-        "qualified-resource-identity-type-ref",
+    let (snapshot, _paths) = analyze_snapshot(
+        "legacy-qualified-resource-identity-type-ref",
         &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
     );
+    let unknown_types: Vec<_> = snapshot
+        .report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == CHECK_UNKNOWN_TYPE)
+        .collect();
+    assert_eq!(unknown_types.len(), 1, "{:#?}", snapshot.report.diagnostics);
     assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
+        unknown_types[0].message.contains("state::Book::Id"),
+        "{:#?}",
+        unknown_types
     );
-    let index = build_binding_index(&snapshot);
-    let state_file = &paths[0];
-    let app_file = &paths[1];
-
-    let identity = app
-        .find("state::Book::Id")
-        .expect("qualified identity type ref");
-    let def = index
-        .definition(app_file, identity + "state::Book::".len() + 1)
-        .expect("qualified identity type annotation resolves");
-    assert_eq!(def.kind, SymbolKind::ResourceIdentity, "{def:?}");
-    assert_eq!(def.file, *state_file, "{def:?}");
 }
 
 #[test]
-fn alias_qualified_id_call_prefers_imported_function_over_local_resource_identity() {
+fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
     let imported = "module shelf::book\n\
         pub fn Id(): int\n    \
         return 1\n";
@@ -1115,7 +1103,7 @@ fn alias_qualified_id_call_prefers_imported_function_over_local_resource_identit
 }
 
 #[test]
-fn alias_qualified_id_call_prefers_imported_resource_over_local_resource_identity() {
+fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
     let imported = "module shelf::book\n\
         resource Id at ^imported_ids(id: int)\n    \
         required title: string\n";
@@ -1152,25 +1140,21 @@ fn alias_qualified_id_call_prefers_imported_resource_over_local_resource_identit
 }
 
 #[test]
-fn alias_qualified_identity_type_ref_expands_alias_before_resource_identity_lookup() {
+fn alias_qualified_id_type_ref_expands_alias_to_imported_resource() {
     let trap = "module traps\n\
         resource book at ^trap_books(id: int)\n    \
         required title: string\n";
-    let identity_owner = "module shelf\n\
-        resource book at ^shelf_books(id: int)\n    \
-        required title: string\n";
     let imported_module = "module shelf::book\n\
-        pub fn marker(): int\n    \
-        return 1\n";
+        resource Id at ^imported_ids(id: int)\n    \
+        required title: string\n";
     let app = "module app\n\
         use shelf::book\n\
         fn load(value: book::Id)\n    \
         return\n";
     let (snapshot, paths) = analyze_snapshot(
-        "alias-id-type-ref-imported-identity",
+        "alias-id-type-ref-imported-resource",
         &[
             ("src/traps.mw", trap),
-            ("src/shelf.mw", identity_owner),
             ("src/shelf/book.mw", imported_module),
             ("src/app.mw", app),
         ],
@@ -1181,15 +1165,15 @@ fn alias_qualified_identity_type_ref_expands_alias_before_resource_identity_look
         snapshot.report.diagnostics
     );
     let index = build_binding_index(&snapshot);
-    let identity_file = &paths[1];
-    let app_file = &paths[3];
+    let imported_file = &paths[1];
+    let app_file = &paths[2];
 
-    let type_ref = app.find("book::Id").expect("aliased identity type ref");
+    let type_ref = app.find("book::Id").expect("aliased resource type ref");
     let def = index
         .definition(app_file, type_ref + "book::".len() + 1)
         .expect("aliased type ref resolves");
-    assert_eq!(def.kind, SymbolKind::ResourceIdentity, "{def:?}");
-    assert_eq!(def.file, *identity_file, "{def:?}");
+    assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
+    assert_eq!(def.file, *imported_file, "{def:?}");
 }
 
 #[test]
@@ -1222,6 +1206,35 @@ fn a_saved_field_name_is_saved_data_backed_and_unsafe() {
         refs.len() >= 2,
         "the field declaration and its saved read are both references: {refs:?}",
     );
+}
+
+#[test]
+fn a_split_store_field_name_is_saved_data_backed_and_unsafe() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn peek(id: int): string\n    \
+        return ^books(id).title\n";
+    let (index, paths) = analyze("safety-split-store-field", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let decl_offset = source.find("title: string").expect("field decl") + 1;
+    let def = index
+        .definition(file, decl_offset)
+        .expect("the field declaration is a symbol");
+    assert_eq!(def.kind, SymbolKind::Field, "{def:?}");
+    assert_eq!(
+        index.rename_safety(&def),
+        RenameSafety::SavedDataBacked,
+        "split store fields are backed by the store root",
+    );
+
+    let read_offset = source.rfind("title").expect("saved read") + 1;
+    let read_def = index
+        .definition(file, read_offset)
+        .expect("the saved read resolves to the field");
+    assert_eq!(read_def.span, def.span, "{read_def:?}");
 }
 
 #[test]

@@ -28,14 +28,14 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-pub fn add(title: string, author: string, shelf: string, changedAt: instant): Book::Id
+pub fn add(title: string, author: string, shelf: string, changedAt: instant): Id(^books)
     var book: Book
     book.title = title
     book.author = author
     book.shelf = shelf
     book.currentVersion = 1
 
-    const id: Book::Id = nextId(^books)
+    const id: Id(^books) = nextId(^books)
 
     transaction
         ^books(id) = book
@@ -77,6 +77,87 @@ fn parses_documented_reference_sample() {
     );
     assert!(parsed.file.resource("Book").is_some());
     assert!(parsed.file.function("main").is_some());
+}
+
+#[test]
+fn parses_split_store_declaration() {
+    let parsed = parse_source(
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n",
+    );
+
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(parsed.file.resource("Book").is_some());
+    let store = parsed.file.store("books").expect("books store");
+    assert_eq!(store.root.root, "books");
+    assert_eq!(store.root.keys.len(), 1);
+    assert_eq!(store.root.keys[0].name, "id");
+    assert_eq!(store.root.keys[0].ty.text, "int");
+    assert_eq!(store.resource, "Book");
+}
+
+#[test]
+fn concise_resource_at_desugars_to_resource_and_store() {
+    let parsed = parse_source(
+        "module app\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         \x20   index byShelf(shelf, id)\n",
+    );
+
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert_eq!(parsed.file.declarations.len(), 2);
+    let resource = parsed.file.resource("Book").expect("Book resource");
+    assert_eq!(resource.members.len(), 2);
+    let store = parsed.file.store("books").expect("books store");
+    assert_eq!(store.resource, "Book");
+    assert_eq!(store.indexes.len(), 1);
+    assert_eq!(store.indexes[0].name, "byShelf");
+}
+
+#[test]
+fn split_resource_body_rejects_index_members() {
+    let parsed = parse_source(
+        "module app\n\
+         resource Book\n\
+         \x20   title: string\n\
+         \x20   index byTitle(title)\n\
+         store ^books(id: int): Book\n",
+    );
+
+    assert!(parsed.has_errors(), "expected parse rejection");
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("store body")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn rejects_adr_0209_tilde_roots() {
+    for source in [
+        "module app\ncache ~books(id: int): Book\n",
+        "module app\nensure ~books(id: int): Book\n",
+        "module app\nresource Book\n    author: Id(~authors)\n",
+        "module app\n~scratch(id: int): Book\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.has_errors(), "expected rejection for:\n{source}");
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "parse.syntax"),
+            "{:#?}",
+            parsed.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -452,7 +533,7 @@ fn parses_if_else_if_else_chain() {
 fn parses_transaction_and_lock_blocks() {
     let parsed = parse_source(
         "module app\n\
-         fn commit(id: Book::Id)\n\
+         fn commit(id: Id(^books))\n\
          \x20   lock ^books(id)\n\
          \x20       transaction\n\
          \x20           ^books(id).title = title\n",
@@ -765,10 +846,11 @@ fn parses_reference_sample_structure() {
     );
 
     let book = parsed.file.resource("Book").expect("Book resource");
-    let store = book.store.as_ref().expect("saved root");
-    assert_eq!(store.root, "books");
-    assert_eq!(store.keys[0].name, "id");
-    assert_eq!(store.keys[0].ty.text, "int");
+    let store = parsed.file.store("books").expect("books store");
+    assert_eq!(store.root.root, "books");
+    assert_eq!(store.root.keys[0].name, "id");
+    assert_eq!(store.root.keys[0].ty.text, "int");
+    assert_eq!(store.resource, "Book");
 
     assert!(book.members.iter().any(|member| matches!(
         member,
@@ -796,13 +878,12 @@ fn parses_reference_sample_structure() {
                             && field.ty.text == "instant"
                 ))
     )));
-    assert!(book.members.iter().any(|member| matches!(
-        member,
-        ResourceMember::Index(index)
-            if index.name == "byShelf"
-                && index.args == ["shelf", "id"]
-                && !index.unique
-    )));
+    assert!(
+        store
+            .indexes
+            .iter()
+            .any(|index| index.name == "byShelf" && index.args == ["shelf", "id"] && !index.unique)
+    );
 
     let add = parsed.file.function("add").expect("add function");
     assert!(add.public);
@@ -815,7 +896,7 @@ fn parses_reference_sample_structure() {
     );
     assert_eq!(
         add.return_type.as_ref().map(|ty| ty.text.as_str()),
-        Some("Book::Id")
+        Some("Id(^books)")
     );
 }
 
@@ -1457,8 +1538,8 @@ fn parses_conversion_and_constructor_calls() {
         "expected int callee, got {callee:?}"
     );
 
-    // Generated identity constructor `Book::Id(17)`.
-    let parsed = parse_source("const First = Book::Id(17)\n");
+    // Qualified calls keep their path segments.
+    let parsed = parse_source("const First = shelf::make(17)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
@@ -1467,8 +1548,8 @@ fn parses_conversion_and_constructor_calls() {
         panic!("expected constructor call, got {:?}", decl.value);
     };
     assert!(
-        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["Book", "Id"]),
-        "expected Book::Id callee, got {callee:?}"
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["shelf", "make"]),
+        "expected shelf::make callee, got {callee:?}"
     );
     assert_eq!(args.len(), 1);
 }
@@ -1913,6 +1994,7 @@ fn keeps_top_level_declarations_in_source_order() {
 const MaxLoans: int = 5
 resource Book
     title: string
+store ^books(id: int): Book
 fn normalize(title: string): string
     return title
 "#,
@@ -1926,11 +2008,12 @@ fn normalize(title: string): string
         .map(|decl| match decl {
             Declaration::Const(decl) => decl.name.as_str(),
             Declaration::Resource(decl) => decl.name.as_str(),
+            Declaration::Store(decl) => decl.root.root.as_str(),
             Declaration::Function(decl) => decl.name.as_str(),
             Declaration::Enum(decl) => decl.name.as_str(),
         })
         .collect::<Vec<_>>();
-    assert_eq!(names, ["MaxLoans", "Book", "normalize"]);
+    assert_eq!(names, ["MaxLoans", "Book", "books", "normalize"]);
 }
 
 // --- Wave 6 findings: single-report guard and grammar tightenings (A21/A23) ---

@@ -14,31 +14,34 @@ data has no `^` and exists only while code runs.
 
 ## Saved Roots
 
-A resource attaches to a saved root with an `at ^root(...)` clause. In the
-current source shorthand, that declares a store for the resource shape; writes
-under the root go through that store schema.
+A resource declares a typed tree shape. A store attaches that shape to a saved
+root, key schema, and durable lookup surface.
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
     shelf: string
+
+store ^books(id: int): Book
 ```
 
 `^books(id)` is now a saved `Book`. A saved root has exactly one managed store
 schema; another store cannot claim `^books` with a different shape. Use child
 layers, indexes, or a separate root instead.
 
-A resource can also own a root with no identity keys — a singleton:
+A store can also own a root with no identity keys — a singleton:
 
 ```mw
-resource Settings at ^settings
+resource Settings
     theme: string
     required maxLoans: int
+
+store ^settings: Settings
 ```
 
-A singleton has no store identity type; the root itself is the resource, and
-its fields live directly at `^settings.theme` and `^settings.maxLoans`.
+A singleton has no store identity type; the root itself is addressed directly,
+and its fields live directly at `^settings.theme` and `^settings.maxLoans`.
 
 Marrow stores no hidden existence marker. A store identity exists when its
 saved path has a value or children. If existence must be detectable for an
@@ -50,7 +53,7 @@ Indentation in a declaration mirrors the saved tree. There are two kinds of
 nesting:
 
 ```mw
-resource Patient at ^patients(id: string)
+resource Patient
     name
         first: string
         last: string
@@ -58,6 +61,8 @@ resource Patient at ^patients(id: string)
     visits(date: date)
         note: string
         provider: string
+
+store ^patients(id: string): Patient
 ```
 
 - An unkeyed group (`name`) is structural. It groups fields under the containing
@@ -83,37 +88,33 @@ for pos, tag in ^books(id).tags ; keyed layers read directly
 
 ## Identity Keys
 
-Keys in the `at ^root(...)` clause identify the record. The canonical identity
-type is store-aware: `Id(^books)` wraps the store plus its key. The executable
-syntax still uses the generated bridge alias until checked-model identity
-syntax lands.
+Keys in the `store ^root(...)` declaration identify the record. The canonical
+identity type is store-aware: `Id(^books)` wraps the store plus its key.
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
 
-const id = Book::Id(17)
+store ^books(id: int): Book
+
+const id: Id(^books) = nextId(^books)
 ^books(id).title = "Small Gods"
 ```
 
-`Book::Id` is only the current executable bridge until checked-model support
-for `Id(^store)` lands everywhere. Treat it as store-derived sugar, not as
-resource-owned identity.
+`Id(^books)` is store-owned identity. It is not generated from the resource name,
+so two stores over the same `Book` shape have distinct identity types.
 
-Composite identities list more than one key and still produce one store-aware
-identity type. In current executable source, the bridge alias carries the key
-shape:
+Composite identities list more than one key and still produce one opaque
+store-aware identity type:
 
 ```mw
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     required status: string
     enrolledAt: instant
 
-const id = Enrollment::Id(
-    studentId: "student-1",
-    courseId: "course-9",
-)
-^enrollments(id).status = "active"
+store ^enrollments(studentId: string, courseId: string): Enrollment
+
+^enrollments("student-1", "course-9").status = "active"
 ```
 
 `Id(^enrollments)` is treated as a single opaque identity, not a tuple. The
@@ -126,7 +127,7 @@ runtime lowers each key component into the saved path. With one record at
 
 Rules to model around:
 
-- Identity keys live in the path, not as fields. A resource keyed by `id` does
+- Identity keys live in the path, not as fields. A store keyed by `id` does
   not also declare a field, group, or layer named `id`. To also expose the same
   business value as a readable field, give the field a different name.
 - Identities are opaque and may have gaps. Do not encode business meaning into
@@ -139,15 +140,13 @@ Rules to model around:
 For a single `int` key, `nextId` allocates the next identity:
 
 ```mw
-const id: Book::Id = nextId(^books)
+const id: Id(^books) = nextId(^books)
 ```
 
 `nextId` is only available for a single-`int` identity. Composite and
-non-integer identities are allocated by application code, then constructed:
-`Enrollment::Id(studentId: ..., courseId: ...)` today, migrating to
-`Id(^enrollments)(...)` when the checked model accepts it. Convert at boundaries
-(URLs, command arguments, host IO) with the identity constructor, e.g.
-`Book::Id(17)`.
+non-integer identities are allocated by application code, carried as typed
+`Id(^store)` values when they come from saved traversal or lookup, or addressed
+by their declared scalar keys at the root boundary.
 
 ## Sparse vs Required Fields
 
@@ -216,18 +215,21 @@ relationship rules in code, or model the relationship as a resource plus an
 index.
 
 Model a reference by storing the related record's store-aware identity. The
-canonical type is `Id(^authors)`; the current executable bridge spells it
-`Author::Id`.
+canonical type is `Id(^authors)`.
 
 ```mw
-resource Author at ^authors(id: int)
+resource Author
     required name: string
 
-resource Book at ^books(id: int)
-    required title: string
-    required author: Author::Id
+store ^authors(id: int): Author
 
-pub fn link(author: Author::Id, title: string): Book::Id
+resource Book
+    required title: string
+    required author: Id(^authors)
+
+store ^books(id: int): Book
+
+pub fn link(author: Id(^authors), title: string): Id(^books)
     var bk: Book
     bk.title = title
     bk.author = author
@@ -235,18 +237,13 @@ pub fn link(author: Author::Id, title: string): Book::Id
     ^books(id) = bk
     return id
 
-pub fn printBook(id: Book::Id)
+pub fn printBook(id: Id(^books))
     const author = ^books(id).author
     print($"{^books(id).title} by {^authors(author).name}")
 ```
 
 Do not store raw scalar keys just to represent an ordinary forward reference.
-If a reverse lookup needs an index today, model that lookup explicitly until
-identity-typed index components are part of the checked model.
-
-The current executable bridge may still spell identity types as `Author::Id` and
-`Book::Id` until checked-model identity lands in the runtime. That bridge is a
-syntax/runtime limitation, not the durable data model.
+If a reverse lookup needs an index, model that lookup explicitly.
 
 Cascading cleanup is ordinary application or data-evolution code. `delete` does
 not follow identity values stored in other resources.
@@ -257,13 +254,15 @@ History is an ordinary keyed child layer. It is useful when only some fields are
 historical and others stay current:
 
 ```mw
-resource Policy at ^policies(policyId: string)
+resource Policy
     required status: string
     required currentVersion: int
 
     versions(version: int)
         required title: string
         required changedAt: instant
+
+store ^policies(policyId: string): Policy
 ```
 
 Current fields stay at the top:
@@ -285,7 +284,7 @@ history entries deliberately, usually together with the current update in a
 transaction:
 
 ```mw
-pub fn revise(id: Policy::Id, title: string, changedAt: instant)
+pub fn revise(id: Id(^policies), title: string, changedAt: instant)
     transaction
         const version: int = ^policies(id).currentVersion + 1
         ^policies(id).currentVersion = version
@@ -309,16 +308,15 @@ typed data-evolution transform.
 ## Indexes
 
 Use an index when a value is an alternate lookup path, not a different record.
-Indexes are store-owned lookup paths. The concise resource form below is the
-current source shorthand: its index declarations desugar to the generated store,
-not to durable resource-owned identity.
+Indexes are store-owned lookup paths.
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
     isbn: string
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
     index byIsbn(isbn) unique
 ```
@@ -366,7 +364,7 @@ const title = ^books(id).title
 By unique index, where one populated path resolves to one identity:
 
 ```mw
-const id: Book::Id = ^books.byIsbn(isbn)
+const id: Id(^books) = ^books.byIsbn(isbn)
 const title = ^books(id).title
 ```
 
@@ -378,8 +376,7 @@ for id in ^books.byShelf("fiction")
 ```
 
 Plain durable iteration streams keys or identities. On a managed root, `^books`
-yields store identities, canonically `Id(^books)` and currently `Book::Id` in
-executable source. On a non-unique index branch,
+yields `Id(^books)` values. On a non-unique index branch,
 `^books.byShelf("fiction")` yields the identities in that branch. Use two loop
 variables, `entries(...)`, or `values(...)` when record values are needed. The
 marker values that back non-unique index entries are a raw-inspection detail,
@@ -423,6 +420,5 @@ Some maintenance operations are not yet implemented:
 - `marrow data diff` and `marrow data load` are deferred, and restore today
   writes into an empty target only. Non-empty restore modes are deferred — see
   [future/data-tools.md](future/data-tools.md) and [future/cli.md](future/cli.md).
-- Store-aware identity fields are canonical; the current executable bridge may
-  still require resource-shaped aliases such as `Author::Id` until checked-model
-  identity reaches the runtime (see [Relationships](#relationships)).
+- Store-aware identity fields are canonical; relationship behavior remains
+  explicit application logic, not implicit foreign-key enforcement.

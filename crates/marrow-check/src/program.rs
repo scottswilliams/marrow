@@ -8,7 +8,7 @@
 //! module. The artifact never affects diagnostics; it is a structured view of the
 //! same parse the checker already produced.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
@@ -100,6 +100,7 @@ pub struct CheckedModule {
     pub constants: Vec<CheckedConst>,
     pub functions: Vec<CheckedFunction>,
     pub resources: Vec<marrow_schema::ResourceSchema>,
+    pub stores: Vec<marrow_schema::StoreSchema>,
     pub enums: Vec<marrow_schema::EnumSchema>,
     pub enum_public: HashMap<String, bool>,
 }
@@ -155,7 +156,7 @@ pub enum MarrowType {
         resource: String,
         layers: Vec<String>,
     },
-    /// A resource identity such as `Book::Id`, carrying the resource name.
+    /// A store identity such as `Id(^books)`, carrying the store root.
     Identity(String),
     /// An enum, identified by its owning module and bare name. Identity is
     /// module-qualified: a bare `Status` referenced in module `b` resolves to
@@ -211,7 +212,7 @@ impl MarrowType {
             Type::Sequence(element) => {
                 Self::Sequence(Box::new(Self::from_resolved(*element, names)))
             }
-            Type::Identity(resource) => Self::Identity(resource),
+            Type::Identity(root) => Self::Identity(root),
             Type::Unknown => Self::Unknown,
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
@@ -223,35 +224,6 @@ impl MarrowType {
                 name,
             },
             Type::Named(_) => Self::Unknown,
-        }
-    }
-
-    /// Whether `ty` names a type the checker recognizes: a scalar, `Error`,
-    /// `unknown`, a `sequence[...]` of a known type, a qualified or identity type
-    /// (anything containing `::`, validated more precisely later), or a resource
-    /// or enum declared anywhere in the project. Used to flag unknown type
-    /// annotations without false-flagging cross-module references.
-    pub(crate) fn names_known_type(
-        ty: &TypeRef,
-        resources: &HashSet<String>,
-        enums: &HashSet<String>,
-    ) -> bool {
-        Self::resolved_is_known(&Type::resolve(ty), resources, enums)
-    }
-
-    fn resolved_is_known(ty: &Type, resources: &HashSet<String>, enums: &HashSet<String>) -> bool {
-        match ty {
-            Type::Scalar(_) | Type::Identity(_) | Type::Unknown => true,
-            Type::Sequence(element) => Self::resolved_is_known(element, resources, enums),
-            // A qualified name (any `::`) is assumed a cross-module reference and
-            // accepted; `Error`, declared resources, and declared enums are known
-            // by name.
-            Type::Named(name) => {
-                name.contains("::")
-                    || name == "Error"
-                    || resources.contains(name)
-                    || enums.contains(name)
-            }
         }
     }
 }

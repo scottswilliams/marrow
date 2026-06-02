@@ -23,6 +23,12 @@ pub struct FunctionId(pub u32);
 pub struct ResourceId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StoreId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StoreIndexId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceMemberId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,6 +46,8 @@ pub struct CheckedFacts {
     functions: Vec<FunctionFact>,
     locals: Vec<LocalFact>,
     resources: Vec<ResourceFact>,
+    stores: Vec<StoreFact>,
+    store_indexes: Vec<StoreIndexFact>,
     resource_members: Vec<ResourceMemberFact>,
     enums: Vec<EnumFact>,
     enum_members: Vec<EnumMemberFact>,
@@ -65,6 +73,12 @@ impl CheckedFacts {
             let module_id = ModuleId(module_index as u32);
             let parsed = sources.get(&module.source_file);
             facts.collect_resource_facts(module_id, module, parsed.copied());
+        }
+
+        for (module_index, module) in modules.iter().enumerate() {
+            let module_id = ModuleId(module_index as u32);
+            let parsed = sources.get(&module.source_file);
+            facts.collect_store_facts(module_id, module, parsed.copied());
         }
 
         for (module_index, module) in modules.iter().enumerate() {
@@ -102,6 +116,26 @@ impl CheckedFacts {
         &self.resources
     }
 
+    pub fn resource(&self, id: ResourceId) -> &ResourceFact {
+        &self.resources[id.0 as usize]
+    }
+
+    pub fn stores(&self) -> &[StoreFact] {
+        &self.stores
+    }
+
+    pub fn store(&self, id: StoreId) -> &StoreFact {
+        &self.stores[id.0 as usize]
+    }
+
+    pub fn store_indexes(&self) -> &[StoreIndexFact] {
+        &self.store_indexes
+    }
+
+    pub fn store_index(&self, id: StoreIndexId) -> &StoreIndexFact {
+        &self.store_indexes[id.0 as usize]
+    }
+
     pub fn resource_members(&self) -> &[ResourceMemberFact] {
         &self.resource_members
     }
@@ -119,6 +153,8 @@ impl CheckedFacts {
         overwrite_prefix(&mut self.functions, &prefix.functions);
         overwrite_prefix(&mut self.locals, &prefix.locals);
         overwrite_prefix(&mut self.resources, &prefix.resources);
+        overwrite_prefix(&mut self.stores, &prefix.stores);
+        overwrite_prefix(&mut self.store_indexes, &prefix.store_indexes);
         overwrite_prefix(&mut self.resource_members, &prefix.resource_members);
         overwrite_prefix(&mut self.enums, &prefix.enums);
         overwrite_prefix(&mut self.enum_members, &prefix.enum_members);
@@ -136,6 +172,13 @@ impl CheckedFacts {
             .iter()
             .find(|resource| resource.module == module && resource.name == name)
             .map(|resource| resource.id)
+    }
+
+    pub fn store_id(&self, module: ModuleId, root: &str) -> Option<StoreId> {
+        self.stores
+            .iter()
+            .find(|store| store.module == module && store.root == root)
+            .map(|store| store.id)
     }
 
     pub fn resource_member_id(
@@ -259,7 +302,6 @@ impl CheckedFacts {
                 id: resource_id,
                 module: module_id,
                 name: resource.name.clone(),
-                saved_root: resource.saved_root.as_ref().map(|root| root.root.clone()),
                 span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
             });
             self.collect_resource_member_facts(
@@ -268,24 +310,56 @@ impl CheckedFacts {
                 &resource.members,
                 declaration.map(|resource| resource.members.as_slice()),
             );
-            for index in &resource.indexes {
+        }
+    }
+
+    fn collect_store_facts(
+        &mut self,
+        module_id: ModuleId,
+        module: &CheckedModule,
+        parsed: Option<&ParsedSource>,
+    ) {
+        for store in &module.stores {
+            let declaration = parsed.and_then(|parsed| {
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        marrow_syntax::Declaration::Store(candidate)
+                            if candidate.root.root == store.root =>
+                        {
+                            Some(candidate)
+                        }
+                        _ => None,
+                    })
+            });
+            let Some(resource) = self.resource_id(module_id, &store.resource) else {
+                continue;
+            };
+            let store_id = StoreId(self.stores.len() as u32);
+            self.stores.push(StoreFact {
+                id: store_id,
+                module: module_id,
+                root: store.root.clone(),
+                resource,
+                span: declaration.map_or(SourceSpan::default(), |store| store.span),
+            });
+            for index in &store.indexes {
                 let span = declaration
-                    .and_then(|resource| {
-                        resource.members.iter().find_map(|member| match member {
-                            ResourceMember::Index(candidate) if candidate.name == index.name => {
-                                Some(candidate.span)
-                            }
-                            _ => None,
-                        })
+                    .and_then(|store| {
+                        store
+                            .indexes
+                            .iter()
+                            .find(|candidate| candidate.name == index.name)
+                            .map(|candidate| candidate.span)
                     })
                     .unwrap_or_default();
-                let id = ResourceMemberId(self.resource_members.len() as u32);
-                self.resource_members.push(ResourceMemberFact {
+                let id = StoreIndexId(self.store_indexes.len() as u32);
+                self.store_indexes.push(StoreIndexFact {
                     id,
-                    resource: resource_id,
-                    parent: None,
+                    store: store_id,
                     name: index.name.clone(),
-                    kind: ResourceMemberKind::Index,
                     span,
                 });
             }
@@ -304,14 +378,12 @@ impl CheckedFacts {
                 declarations.iter().find(|member| match member {
                     ResourceMember::Field(field) => field.name == node.name,
                     ResourceMember::Group(group) => group.name == node.name,
-                    ResourceMember::Index(_) => false,
                 })
             });
             let span = declaration
                 .map(|member| match member {
                     ResourceMember::Field(field) => field.span,
                     ResourceMember::Group(group) => group.span,
-                    ResourceMember::Index(index) => index.span,
                 })
                 .unwrap_or_default();
             let kind = match node.kind {
@@ -413,11 +485,7 @@ impl CheckedFacts {
     ) -> Option<CheckedType> {
         match ty {
             Type::Scalar(scalar) => Some(CheckedType::Primitive(*scalar)),
-            Type::Identity(resource) => {
-                let segments = split_type_path(resource);
-                self.resolve_resource_segments(module_id, &segments, aliases)
-                    .map(CheckedType::Identity)
-            }
+            Type::Identity(identity) => self.store_for_root(identity).map(CheckedType::Identity),
             Type::Named(name) if name == "Error" => Some(CheckedType::Error),
             Type::Named(name) => {
                 let segments = split_type_path(name);
@@ -446,9 +514,7 @@ impl CheckedFacts {
                     members: self.member_path_ids(resource, &names)?,
                 })
             }
-            MarrowType::Identity(resource) => self
-                .resolve_resource_type(module_id, resource)
-                .map(CheckedType::Identity),
+            MarrowType::Identity(root) => self.store_for_root(root).map(CheckedType::Identity),
             MarrowType::Enum { module, name } => {
                 let module = self.module_id(module)?;
                 self.enum_id(module, name).map(CheckedType::Enum)
@@ -493,11 +559,11 @@ impl CheckedFacts {
             .and_then(|module_id| self.resource_id(module_id, resource))
     }
 
-    fn resource_for_root(&self, root: &str) -> Option<ResourceId> {
-        self.resources
+    fn store_for_root(&self, root: &str) -> Option<StoreId> {
+        self.stores
             .iter()
-            .find(|resource| resource.saved_root.as_deref() == Some(root))
-            .map(|resource| resource.id)
+            .find(|store| store.root == root)
+            .map(|store| store.id)
     }
 
     fn member_path_ids(
@@ -744,7 +810,8 @@ impl CheckedFacts {
 
     fn saved_place_effect(&self, expr: &Expression) -> Option<SavedPlaceEffect> {
         let (root, members) = saved_path_parts(expr)?;
-        let resource = self.resource_for_root(&root)?;
+        let store = self.store_for_root(&root)?;
+        let resource = self.store(store).resource;
         let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
         Some(SavedPlaceEffect {
             resource,
@@ -766,7 +833,23 @@ pub struct ResourceFact {
     pub id: ResourceId,
     pub module: ModuleId,
     pub name: String,
-    pub saved_root: Option<String>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreFact {
+    pub id: StoreId,
+    pub module: ModuleId,
+    pub root: String,
+    pub resource: ResourceId,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreIndexFact {
+    pub id: StoreIndexId,
+    pub store: StoreId,
+    pub name: String,
     pub span: SourceSpan,
 }
 
@@ -784,7 +867,6 @@ pub struct ResourceMemberFact {
 pub enum ResourceMemberKind {
     Field,
     Group,
-    Index,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -835,7 +917,7 @@ pub enum CheckedType {
         resource: ResourceId,
         members: Vec<ResourceMemberId>,
     },
-    Identity(ResourceId),
+    Identity(StoreId),
     Enum(EnumId),
     Sequence(Box<CheckedType>),
     LocalTree {

@@ -87,7 +87,7 @@ Delete or isolate:
 - production execution of syntax `Block`, `Statement`, or `Expression`;
 - temporary syntax-body bridge from the checked-model migration;
 - runtime splitting of `::`, saved paths, function names, enum members, or
-  resource identities;
+  store identities;
 - saved `inout` writeback;
 - runtime schema/path classifiers that duplicate checker facts;
 - hidden merge or lock semantics.

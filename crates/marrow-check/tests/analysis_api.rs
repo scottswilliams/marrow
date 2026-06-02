@@ -105,19 +105,24 @@ fn type_at_a_saved_field_read_is_the_declared_leaf_type() {
 
 #[test]
 fn type_at_an_identity_annotation_binding_is_the_identity_type() {
-    // `const id: Book::Id = ...` binds an identity; a reference to `id` types to
-    // `Book::Id`, the checker's `Identity("Book")`.
+    // `const id: Id(^books) = ...` binds an identity; a reference to `id` types to
+    // `Id(^books)`, the checker's `Identity("books")`.
     let source = "module m\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         required title: string\n\
-        fn f(): Book::Id\n    \
-        const id: Book::Id = nextId(^books)\n    \
+        store ^books(id: int): Book\n\
+        fn f(): Id(^books)\n    \
+        const id: Id(^books) = nextId(^books)\n    \
         return id\n";
     let (program, parsed, path) = analyze("type-at-identity", source);
     let offset = source.rfind("id\n").expect("use of id in return") + 1;
 
     let ty = type_at(&program, &path, &parsed, offset);
-    assert_eq!(ty, Some(MarrowType::Identity("Book".to_string())), "{ty:?}");
+    assert_eq!(
+        ty,
+        Some(MarrowType::Identity("books".to_string())),
+        "{ty:?}"
+    );
 }
 
 #[test]
@@ -201,7 +206,7 @@ fn scope_at_includes_a_saved_group_loop_binding_typed_to_the_entry() {
         resource Book at ^books(id: int)\n    \
         versions(version: int)\n        \
         required title: string\n\
-        fn f(id: Book::Id)\n    \
+        fn f(id: Id(^books))\n    \
         for n, version in ^books(id).versions\n        \
         print(version.title)\n";
     let (program, parsed, path) = analyze("scope-at-saved-group-loop", source);
@@ -218,7 +223,7 @@ fn scope_at_includes_a_saved_group_loop_binding_typed_to_the_entry() {
     assert_eq!(
         ty_of("version"),
         Some(&MarrowType::GroupEntry {
-            resource: "Book".to_string(),
+            resource: "m::Book".to_string(),
             layers: vec!["versions".to_string()],
         }),
         "{bindings:?}"

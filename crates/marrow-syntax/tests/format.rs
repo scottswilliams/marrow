@@ -84,6 +84,41 @@ fn format_const_value(source: &str) -> String {
 }
 
 #[test]
+fn formats_split_store_declaration() {
+    let source = "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title, id)\n";
+
+    assert_eq!(
+        format_source(source),
+        "module app\n\n\
+         resource Book\n\
+         \x20   required title: string\n\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title, id)\n"
+    );
+}
+
+#[test]
+fn formats_concise_resource_at_as_split_resource_and_store() {
+    let source = "module app\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   index byTitle(title, id)\n";
+
+    assert_eq!(
+        format_source(source),
+        "module app\n\n\
+         resource Book\n\
+         \x20   required title: string\n\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title, id)\n"
+    );
+}
+
+#[test]
 fn formats_expressions_to_canonical_source() {
     // Each input is already canonical, so formatting must reproduce it exactly.
     let canonical = [
@@ -98,7 +133,7 @@ fn formats_expressions_to_canonical_source() {
         "^books(id).title",
         "^books(id).\"old-title\"",
         "nextId(^books)",
-        "Book::Id(17)",
+        "shelf::make(17)",
         "save(book: draft, out result, inout total)",
         "60 * 60 + 1",
         "a and b or c",
@@ -200,7 +235,7 @@ fn formats_a_range_for_with_a_by_step() {
 #[test]
 fn formats_transaction_lock_and_try_blocks() {
     let source = "module app\n\
-         fn commit(id: Book::Id)\n\
+         fn commit(id: Id(^books))\n\
          \x20   lock ^books(id)\n\
          \x20       transaction\n\
          \x20           ^books(id).title = title\n\
@@ -300,14 +335,17 @@ fn formats_resource_declaration_with_members() {
          \x20   notes(noteId: string)\n\
          \x20       text: string\n\
          \x20   index byShelf(shelf, id) unique\n";
-    let expected = "resource Book at ^books(id: int)\n\
+    let expected = "module app\n\n\
+         resource Book\n\
          \x20   ;; Display title.\n\
          \x20   required title: string\n\
          \x20   tags(pos: int): string\n\
          \x20   notes(noteId: string)\n\
          \x20       text: string\n\
+         \n\
+         store ^books(id: int): Book\n\
          \x20   index byShelf(shelf, id) unique";
-    assert_eq!(format_decl(source, 0), expected);
+    assert_eq!(format_source(source).trim_end(), expected);
 }
 
 #[test]
@@ -340,8 +378,10 @@ fn formats_whole_file_with_blank_line_policy() {
          \n\
          const MaxLoans: int = 5\n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         \n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn add(title: string): int\n\
          \x20   return 1\n";

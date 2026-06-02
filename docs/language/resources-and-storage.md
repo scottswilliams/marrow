@@ -6,14 +6,14 @@ same shape can be used for local values, local keyed trees, or saved data.
 This page uses "saved data" for data marked with `^`. Saved data persists in
 the project database. Local data has no `^` and exists only while code runs.
 
-Ordinary application code declares resources for saved roots. Raw saved-tree
-access is for import, export, data evolution, repair, and tools.
+Ordinary application code declares stores for saved roots. Raw saved-tree access
+is for import, export, data evolution, repair, and tools.
 
 Saved path syntax is logical. Marrow decides how roots, keyed layers, fields,
 and indexes are encoded for the selected backend. Code depends on the resource
 shape, not on a backend key layout.
 
-Encoded resource keys are distinct from structural names. A record key such as
+Encoded record keys are distinct from structural names. A record key such as
 `"byShelf"` does not collide with an index named `byShelf`.
 
 Typed traversal keeps those segment kinds separate: `^books` streams book
@@ -40,10 +40,12 @@ draft.author = "Terry Pratchett"
 Attach the same shape to saved data:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
     shelf: string
+
+store ^books(id: int): Book
 ```
 
 Then `^books(id)` is a saved `Book`, where `id` is the store identity
@@ -61,13 +63,15 @@ A saved root has one managed store schema. If `^books` stores `Book`, another
 store cannot claim `^books` with a different shape. Use nested layers, indexes,
 or a separate root instead.
 
-A saved resource declaration may omit identity keys when the root itself is
-the resource:
+A store declaration may omit identity keys when the root itself is addressed
+directly:
 
 ```mw
-resource Settings at ^settings
+resource Settings
     theme: string
     required maxLoans: int
+
+store ^settings: Settings
 ```
 
 ## Tree Layers
@@ -75,7 +79,7 @@ resource Settings at ^settings
 Indentation in a resource declaration mirrors the saved/local tree:
 
 ```mw
-resource Patient at ^patients(id: string)
+resource Patient
     name
         first: string
         last: string
@@ -83,6 +87,8 @@ resource Patient at ^patients(id: string)
     visits(date: date)
         note: string
         provider: string
+
+store ^patients(id: string): Patient
 ```
 
 A plain nested block groups fields. A keyed nested block creates repeatable
@@ -98,29 +104,30 @@ lifecycle, or important lookup paths.
 
 ## Identity Keys
 
-Keys in the `at ^root(...)` clause identify the saved resource:
+Keys in the `store ^root(...)` declaration identify the saved resource:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     required title: string
 
-const id = Book::Id(17)
+store ^books(id: int): Book
+
+const id: Id(^books) = nextId(^books)
 ^books(id).title = "Small Gods"
 ```
 
 Identity is owned by the store. The canonical identity type is `Id(^books)`: the
-store plus its key. `Book::Id` is only the current executable bridge until the
-checked model accepts store-aware identity syntax everywhere. It is store-derived
-sugar, not identity owned by the resource. If one resource has several stores,
-each store needs a distinct alias. Ordinary typed code passes the identity value,
-not the raw key.
+store plus its key. Ordinary typed code passes the identity value, not the raw
+key.
 
 Composite identities work the same way:
 
 ```mw
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     status: string
     enrolledAt: instant
+
+store ^enrollments(studentId: string, courseId: string): Enrollment
 ```
 
 The enrollment is identified by both `studentId` and `courseId`.
@@ -128,16 +135,13 @@ The enrollment is identified by both `studentId` and `courseId`.
 Identity keys live in the saved path. They are not ordinary stored fields.
 If the resource also stores the same business values as fields, those fields
 use separate field names.
-Key names are part of the managed layer namespace. A resource keyed by `id`
+Key names are part of the managed layer namespace. A store keyed by `id`
 does not also declare a field or child layer named `id`.
 
 Ordinary typed code addresses a managed root through the store identity:
 
 ```mw
-const id = Enrollment::Id(
-    studentId: "student-1",
-    courseId: "course-9",
-)
+const id: Id(^enrollments) = loadEnrollmentId("student-1", "course-9")
 
 ^enrollments(id).status = "active"
 ```
@@ -155,9 +159,11 @@ under the old identity.
 Resource fields may have documentation comments:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     ;; Display title shown in search and shelf views.
     title: string
+
+store ^books(id: int): Book
 ```
 
 Documentation comments feed generated docs, editor hover, inspect output, and
@@ -183,17 +189,17 @@ generated index tree when matching base data already exists.
 Use an index when a value is only an alternate lookup path:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     title: string
     shelf: string
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
 ```
 
-Indexes are owned by stores. The concise `resource ... at ^books(...)` form
-currently lets index declarations appear inside the resource block; that source
-form desugars to indexes on the generated store and is not durable
-resource-owned identity.
+Indexes are owned by stores. The concise `resource ... at ^books(...)` source
+form is accepted as declaration sugar and desugars to the split resource plus
+store form above.
 
 Changing `shelf` moves the same book to a different lookup path. It does not
 create a different book. The index remains inspectable saved data, and user
@@ -202,13 +208,13 @@ Index entries lead back to store identities; the primary resource remains
 the place to read fields.
 
 Declared indexes require keyed stores. A singleton
-saved root has no generated identity for an index entry to point to.
+saved root has no store identity for an index entry to point to.
 Nested-layer indexing is modeled as a separate resource when it needs a
 first-class lookup path.
 
 Generated index entries are populated paths. Non-unique indexes use generated
-marker values at identity lookup paths. Unique indexes store the resource
-store identity at the lookup path.
+marker values at identity lookup paths. Unique indexes store the store identity
+at the lookup path.
 Typed code reads non-unique index identities through direct iteration or
 `keys(...)`. It reads a unique index identity from the lookup path. Generated
 marker values are visible only through raw inspection.
@@ -227,8 +233,10 @@ for id in ^books.byShelf("fiction")
 Indexes may be unique:
 
 ```mw
-resource Book at ^books(id: int)
+resource Book
     isbn: string
+
+store ^books(id: int): Book
     index byIsbn(isbn) unique
 ```
 
@@ -236,11 +244,11 @@ A unique index can omit the identity key because each populated lookup path
 points to one store identity.
 
 ```mw
-const id: Book::Id = ^books.byIsbn(isbn)
+const id: Id(^books) = ^books.byIsbn(isbn)
 ```
 
 For a composite store identity, a non-unique index includes all identity
-key names. Typed traversal reconstructs the generated identity value instead
+key names. Typed traversal reconstructs the store identity value instead
 of exposing a tuple of raw key components.
 
 An index entry exists only when every indexed value is populated. Sparse
@@ -303,7 +311,7 @@ tree and a saved one. The concern is not large loops but hidden ones — an acce
 that hides traversal with no matching index is what the checker flags.
 
 Marrow does not add a separate storage query language. If code needs a new lookup
-path, add an index to the resource and rebuild the generated tree when existing
+path, add an index to the store and rebuild the generated tree when existing
 data should appear through it.
 
 ## Managed Writes
@@ -325,7 +333,7 @@ If `shelf` participates in an index, Marrow handles the full update:
 That managed write is internally coherent or it reports a typed capability or
 storage error before success is visible. Ordinary app code does not call a
 special `set(...)` function for indexed fields. Untyped writes that bypass a
-managed resource root are rejected unless code runs in an explicit maintenance
+managed store root are rejected unless code runs in an explicit maintenance
 mode.
 
 Group several field writes under one root with an `edit` block. Like a field
@@ -351,7 +359,7 @@ History is an ordinary keyed child layer inside a resource. It is useful when
 only some fields are historical and other fields stay current:
 
 ```mw
-resource Policy at ^policies(policyId: string)
+resource Policy
     status: string
     currentVersion: int
 
@@ -359,6 +367,8 @@ resource Policy at ^policies(policyId: string)
         title: string
         body: string
         approvedAt: instant
+
+store ^policies(policyId: string): Policy
 ```
 
 This keeps current fields at:
@@ -518,7 +528,7 @@ delete ^books(id)
 ```
 
 When `delete` targets a managed saved resource, Marrow also updates the
-generated index entries for that resource.
+generated index entries for that store.
 
 Deleting a required field is rejected unless the surrounding keyed entry or
 resource is being deleted, or code is running in explicit maintenance mode.

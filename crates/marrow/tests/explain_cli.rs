@@ -148,12 +148,11 @@ fn explains_a_not_visible_qualified_name() {
 }
 
 #[test]
-fn explains_a_module_qualified_resource_identity() {
-    // `shelf::Book::Id` is a 3-segment identity request: strip `Id`, resolve the
-    // remaining `shelf::Book` as a resource, and report the resource identity.
-    let project = book_project("explain-qualified-identity");
+fn explains_a_module_qualified_resource_name() {
+    // A module-qualified resource name resolves to the resource declaration.
+    let project = book_project("explain-qualified-resource");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "shelf::Book::Id"]);
+    let output = marrow(&["explain", "--format", "json", &dir, "shelf::Book"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -167,19 +166,21 @@ fn explains_a_module_qualified_resource_identity() {
 
 #[test]
 fn explains_a_typed_reference_field() {
-    // `^books(1).authorId` is a typed-reference field (`authorId: Author::Id`),
-    // classified as an identity leaf naming the referenced resource — not a scalar.
+    // `^books(1).authorId` is a typed-reference field (`authorId: Id(^authors)`),
+    // classified as an identity leaf naming the referenced store — not a scalar.
     let project = temp_project("explain-ref-field", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
         write(
             root,
             "src/shelf.mw",
             "module shelf\n\n\
-             resource Author at ^authors(id: int)\n\
+             resource Author\n\
              \x20\x20\x20\x20required name: string\n\n\
-             resource Book at ^books(id: int)\n\
+             store ^authors(id: int): Author\n\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
-             \x20\x20\x20\x20authorId: Author::Id\n",
+             \x20\x20\x20\x20authorId: Id(^authors)\n\n\
+             store ^books(id: int): Book\n",
         );
     });
     let dir = project.to_str().unwrap().to_string();
@@ -191,7 +192,7 @@ fn explains_a_typed_reference_field() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
     assert_eq!(value["kind"], "saved_path");
     assert_eq!(value["class"], "identity");
-    assert_eq!(value["type"], "Author::Id");
+    assert_eq!(value["type"], "Id(^authors)");
     assert_eq!(value["root"], "books");
 }
 

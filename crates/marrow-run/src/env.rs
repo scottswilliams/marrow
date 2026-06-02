@@ -1,6 +1,21 @@
 //! The evaluation environment: scopes, bindings, and control flow.
 
-use crate::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use marrow_check::{CheckedModule, CheckedProgram};
+use marrow_store::backend::{Backend, Presence};
+use marrow_store::path::{PathSegment, SavedKey, decode_path, encode_path};
+use marrow_syntax::SourceSpan;
+
+use crate::error::{
+    Located, RUN_STORE, RUN_TRAVERSAL, RuntimeError, raise_fault, unsupported, write_fault,
+};
+use crate::host::{Host, StepHook};
+use crate::schema_query::find_store_resource;
+use crate::value::Value;
+use crate::write::{WriteError, WriteOp, WritePlan, validate_required_fields_for_entry};
 
 /// Where control flow stands after a statement or block.
 pub(crate) enum Flow {
@@ -356,15 +371,17 @@ impl<'p> Env<'p> {
                 .filter(|deleted| deleted.root == check.root && deleted.identity == check.identity)
                 .map(RequiredEntryCheck::entry_layers)
                 .collect();
-            let resource = find_resource(self.program, &check.root).ok_or_else(|| {
-                unsupported("validating required fields for this saved root", span)
-            })?;
+            let (store_schema, resource) = find_store_resource(self.program, &check.root)
+                .ok_or_else(|| {
+                    unsupported("validating required fields for this saved root", span)
+                })?;
             let layer_refs: Vec<(&str, &[SavedKey])> = check
                 .layers
                 .iter()
                 .map(|(name, keys)| (name.as_str(), keys.as_slice()))
                 .collect();
             validate_required_fields_for_entry(
+                store_schema,
                 resource,
                 &check.identity,
                 &layer_refs,

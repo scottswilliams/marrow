@@ -38,7 +38,7 @@ fn builds_a_module_for_a_clean_library_file() {
             "module shelf::books\n\
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
-             pub fn add(title: string): Book::Id\n\
+             pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
     });
@@ -81,7 +81,7 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
              \x20   required title: string\n\
              enum Status\n\
              \x20   active\n\
-             pub fn fresh(): Book::Id\n\
+             pub fn fresh(): Id(^books_a)\n\
              \x20   return nextId(^books_a)\n",
         );
         write(
@@ -92,7 +92,7 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
              \x20   required title: string\n\
              enum Status\n\
              \x20   active\n\
-             pub fn fresh(): Book::Id\n\
+             pub fn fresh(): Id(^books_b)\n\
              \x20   return nextId(^books_b)\n",
         );
     });
@@ -109,6 +109,9 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
     let a_book = facts.resource_id(a, "Book").expect("a::Book");
     let b_book = facts.resource_id(b, "Book").expect("b::Book");
     assert_ne!(a_book, b_book);
+    let a_books = facts.store_id(a, "books_a").expect("^books_a");
+    let b_books = facts.store_id(b, "books_b").expect("^books_b");
+    assert_ne!(a_books, b_books);
 
     let a_status = facts.enum_id(a, "Status").expect("a::Status");
     let b_status = facts.enum_id(b, "Status").expect("b::Status");
@@ -117,7 +120,7 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
     let fresh = facts.function_id(a, "fresh").expect("a::fresh");
     assert_eq!(
         facts.function(fresh).return_type.as_ref(),
-        Some(&CheckedType::Identity(a_book))
+        Some(&CheckedType::Identity(a_books))
     );
 }
 
@@ -131,12 +134,12 @@ fn checked_facts_record_function_effects_with_typed_places() {
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
              \x20   tags(pos: int): string\n\
-             fn readTitle(id: Book::Id): string\n\
+             fn readTitle(id: Id(^books)): string\n\
              \x20   return ^books(id).title\n\
-             fn rename(id: Book::Id, title: string)\n\
+             fn rename(id: Id(^books), title: string)\n\
              \x20   transaction\n\
              \x20       ^books(id).title = title\n\
-             fn addTag(id: Book::Id, tag: string): int\n\
+             fn addTag(id: Id(^books), tag: string): int\n\
              \x20   return append(^books(id).tags, tag)\n\
              fn logTitle(title: string)\n\
              \x20   print(title)\n\
@@ -220,7 +223,7 @@ fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
             "module a\n\
              resource Book at ^a_books(id: int)\n\
              \x20   required title: string\n\
-             fn borrowed(id: b::Book::Id): b::Book::Id\n\
+             fn borrowed(id: Id(^b_books)): Id(^b_books)\n\
              \x20   return id\n",
         );
         write(
@@ -243,8 +246,9 @@ fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
     assert_ne!(a_book, b_book);
 
     let borrowed = facts.function(facts.function_id(a, "borrowed").expect("borrowed"));
-    assert_eq!(borrowed.params[0].ty, CheckedType::Identity(b_book));
-    assert_eq!(borrowed.return_type, Some(CheckedType::Identity(b_book)));
+    let b_books = facts.store_id(b, "b_books").expect("b::^b_books");
+    assert_eq!(borrowed.params[0].ty, CheckedType::Identity(b_books));
+    assert_eq!(borrowed.return_type, Some(CheckedType::Identity(b_books)));
 }
 
 #[test]
@@ -256,7 +260,7 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
             "module a\n\
              resource Book at ^a_books(id: int)\n\
              \x20   required title: string\n\
-             pub fn borrowed(id: b::Book::Id): b::Book::Id\n\
+             pub fn borrowed(id: Id(^b_books)): Id(^b_books)\n\
              \x20   return id\n",
         );
         write(
@@ -270,7 +274,7 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
             root,
             "tests/facts_test.mw",
             "use b\n\
-             fn helper(id: b::Book::Id): b::Book::Id\n\
+             fn helper(id: Id(^b_books)): Id(^b_books)\n\
              \x20   return id\n\
              pub fn smoke()\n\
              \x20   return\n",
@@ -296,12 +300,13 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
     assert_ne!(a_book, b_book);
 
     let borrowed = facts.function(facts.function_id(a, "borrowed").expect("borrowed"));
-    assert_eq!(borrowed.params[0].ty, CheckedType::Identity(b_book));
-    assert_eq!(borrowed.return_type, Some(CheckedType::Identity(b_book)));
+    let b_books = facts.store_id(b, "b_books").expect("b::^b_books");
+    assert_eq!(borrowed.params[0].ty, CheckedType::Identity(b_books));
+    assert_eq!(borrowed.return_type, Some(CheckedType::Identity(b_books)));
 
     let helper = facts.function(facts.function_id(test, "helper").expect("helper"));
-    assert_eq!(helper.params[0].ty, CheckedType::Identity(b_book));
-    assert_eq!(helper.return_type, Some(CheckedType::Identity(b_book)));
+    assert_eq!(helper.params[0].ty, CheckedType::Identity(b_books));
+    assert_eq!(helper.return_type, Some(CheckedType::Identity(b_books)));
 }
 
 #[test]
@@ -388,11 +393,11 @@ fn checked_facts_record_saved_reads_inside_saved_path_keys() {
     );
 }
 
-/// `nextId(^books)` over a single-`int` root types to `Book::Id`, so a function
-/// returning it under a declared `Book::Id` return type checks clean. (`nextId`
+/// `nextId(^books)` over a single-`int` root types to `Id(^books)`, so a function
+/// returning it under a declared `Id(^books)` return type checks clean. (`nextId`
 /// is a saved-data read, so it lives in a function body, not a module const.)
 /// Previously `nextId` typed to `Unknown`. The local-const annotation
-/// `const id: Book::Id = nextId(^books)` likewise checks clean.
+/// `const id: Id(^books) = nextId(^books)` likewise checks clean.
 #[test]
 fn next_id_types_to_the_resource_identity() {
     let root = temp_project("program-nextid-id", |root| {
@@ -402,8 +407,8 @@ fn next_id_types_to_the_resource_identity() {
             "module shelf::books\n\
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
-             pub fn fresh(): Book::Id\n\
-             \x20   const id: Book::Id = nextId(^books)\n\
+             pub fn fresh(): Id(^books)\n\
+             \x20   const id: Id(^books) = nextId(^books)\n\
              \x20   return id\n",
         );
     });
@@ -563,9 +568,9 @@ fn local_collections_can_be_subscripted() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
-/// `next(^root(id))` over a keyed root types to the resource identity, so
+/// `next(^root(id))` over a keyed root types to the store identity, so
 /// `^root(next(^root(id))).field` reads the neighbor's field and checks clean —
-/// the navigated neighbor is a `Resource::Id`. `prev` mirrors it.
+/// the navigated neighbor is an `Id(^root)`. `prev` mirrors it.
 #[test]
 fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
     let root = temp_project("program-next-identity", |root| {
@@ -651,7 +656,7 @@ fn next_over_a_composite_identity_record_is_flagged() {
              resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
              \x20   required grade: string\n\
              fn step(s: string, c: string)\n\
-             \x20   const n = next(^enrollments(Enrollment::Id(studentId: s, courseId: c)))\n",
+             \x20   const n = next(^enrollments(s, c))\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
@@ -702,7 +707,7 @@ fn next_over_a_bare_identity_value_is_flagged() {
             "module shelf::books\n\
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
-             fn step(id: Book::Id)\n\
+             fn step(id: Id(^books))\n\
              \x20   const n = next(id)\n",
         );
     });
@@ -1158,8 +1163,8 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
 /// Build a project declaring `fn takes(e: Error)` and calling it with `arg` from
 /// inside a `try`/`catch e: Error` (so the name `e` is an `Error` value in scope),
 /// and return the diagnostic codes. An `Error`-typed parameter is a reachable user
-/// type (`names_known_type` accepts "Error"; `from_resolved` maps it to
-/// `MarrowType::Error`), so the argument loop must check it like a scalar.
+/// type (`from_resolved` maps it to `MarrowType::Error`), so the argument loop must
+/// check it like a scalar.
 fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
     let root = temp_project(&format!("program-error-param-{slot}"), |root| {
         write(
@@ -1352,8 +1357,8 @@ fn untyped_argument_to_std_log_error_is_an_untyped_value_error() {
 
 // --- Nominal identity typing ---
 
-/// Two keyed resources whose identities are byte-identical (`Book::Id` and
-/// `Magazine::Id` are both single-`int`) but nominally distinct. Used by the
+/// Two keyed resources whose identities are byte-identical (`Id(^books)` and
+/// `Id(^magazines)` are both single-`int`) but nominally distinct. Used by the
 /// nominal-identity tests below.
 const TWO_BOOKISH_RESOURCES: &str = "module shelf::lib\n\
      resource Book at ^books(id: int)\n\
@@ -1361,20 +1366,20 @@ const TWO_BOOKISH_RESOURCES: &str = "module shelf::lib\n\
      resource Magazine at ^magazines(id: int)\n\
      \x20   required title: string\n";
 
-/// Passing a `Magazine::Id` where a function parameter expects `Book::Id` is a
+/// Passing a `Id(^magazines)` where a function parameter expects `Id(^books)` is a
 /// nominal mismatch: the identities share a key shape but name different
-/// resources, so the call is rejected as `check.call_argument`.
+/// store roots, so the call is rejected as `check.call_argument`.
 #[test]
-fn wrong_resource_identity_argument_is_flagged() {
+fn wrong_store_identity_argument_is_flagged() {
     let root = temp_project("program-id-arg", |root| {
         write(
             root,
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn takes(b: Book::Id)\n\
+                 fn takes(b: Id(^books))\n\
                  \x20   return\n\
-                 fn f(m: Magazine::Id)\n\
+                 fn f(m: Id(^magazines))\n\
                  \x20   takes(m)\n"
             ),
         );
@@ -1392,17 +1397,17 @@ fn wrong_resource_identity_argument_is_flagged() {
     );
 }
 
-/// Returning a `Magazine::Id` from a function declared to return `Book::Id` is a
+/// Returning a `Id(^magazines)` from a function declared to return `Id(^books)` is a
 /// nominal mismatch reported as `check.return_type`.
 #[test]
-fn wrong_resource_identity_return_is_flagged() {
+fn wrong_store_identity_return_is_flagged() {
     let root = temp_project("program-id-return", |root| {
         write(
             root,
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn f(m: Magazine::Id): Book::Id\n\
+                 fn f(m: Id(^magazines)): Id(^books)\n\
                  \x20   return m\n"
             ),
         );
@@ -1420,19 +1425,19 @@ fn wrong_resource_identity_return_is_flagged() {
     );
 }
 
-/// Storing a `Magazine::Id` into a `Book::Id` place is a nominal mismatch reported
+/// Storing a `Id(^magazines)` into a `Id(^books)` place is a nominal mismatch reported
 /// as `check.assignment_type` — closing the value-side asymmetry where a
 /// non-primitive place used to be left alone.
 #[test]
-fn wrong_resource_identity_assignment_is_flagged() {
+fn wrong_store_identity_assignment_is_flagged() {
     let root = temp_project("program-id-assign", |root| {
         write(
             root,
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn f(m: Magazine::Id)\n\
-                 \x20   var b: Book::Id = m\n"
+                 fn f(m: Id(^magazines))\n\
+                 \x20   var b: Id(^books) = m\n"
             ),
         );
     });
@@ -1460,11 +1465,11 @@ fn scalar_and_identity_are_not_interchangeable_arguments() {
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn takesId(b: Book::Id)\n\
+                 fn takesId(b: Id(^books))\n\
                  \x20   return\n\
                  fn takesInt(n: int)\n\
                  \x20   return\n\
-                 fn f(b: Book::Id)\n\
+                 fn f(b: Id(^books))\n\
                  \x20   takesId(1)\n\
                  \x20   takesInt(b)\n"
             ),
@@ -1481,21 +1486,21 @@ fn scalar_and_identity_are_not_interchangeable_arguments() {
     assert!(count >= 2, "{:#?}", report.diagnostics);
 }
 
-/// Same-resource identity flow checks clean: passing, returning, and storing a
-/// `Book::Id` where a `Book::Id` is expected is well-typed and reports nothing.
+/// Same-store identity flow checks clean: passing, returning, and storing a
+/// `Id(^books)` where a `Id(^books)` is expected is well-typed and reports nothing.
 #[test]
-fn same_resource_identity_checks_clean() {
+fn same_store_identity_checks_clean() {
     let root = temp_project("program-id-same", |root| {
         write(
             root,
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn takes(b: Book::Id)\n\
+                 fn takes(b: Id(^books))\n\
                  \x20   return\n\
-                 fn f(b: Book::Id): Book::Id\n\
+                 fn f(b: Id(^books)): Id(^books)\n\
                  \x20   takes(b)\n\
-                 \x20   var c: Book::Id = b\n\
+                 \x20   var c: Id(^books) = b\n\
                  \x20   return c\n"
             ),
         );
@@ -1511,25 +1516,25 @@ fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
     let root = temp_project("program-id-qualified", |root| {
         write(
             root,
-            "src/store.mw",
-            "module store\n\
+            "src/inventory.mw",
+            "module inventory\n\
              resource Item at ^items(id: int)\n\
              \x20   required name: string\n\
-             pub fn add(name: string): Item::Id\n\
-             \x20   const id: Item::Id = nextId(^items)\n\
+             pub fn add(name: string): Id(^items)\n\
+             \x20   const id: Id(^items) = nextId(^items)\n\
              \x20   ^items(id).name = name\n\
              \x20   return id\n\
-             pub fn nameOf(id: Item::Id): string\n\
+             pub fn nameOf(id: Id(^items)): string\n\
              \x20   return ^items(id).name\n",
         );
         write(
             root,
             "src/caller.mw",
             "module caller\n\
-             use store\n\
+             use inventory\n\
              pub fn demo(): string\n\
-             \x20   const id: store::Item::Id = store::add(\"widget\")\n\
-             \x20   return store::nameOf(id)\n",
+             \x20   const id: Id(^items) = inventory::add(\"widget\")\n\
+             \x20   return inventory::nameOf(id)\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
@@ -1554,7 +1559,7 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
             "module audit::query\n\
              use audit::log\n\
              pub fn actor(): string\n\
-             \x20   const id: log::Event::Id = nextId(^events)\n\
+             \x20   const id: Id(^events) = nextId(^events)\n\
              \x20   ^events(id).actor = \"scott\"\n\
              \x20   const ev: log::Event = ^events(id)\n\
              \x20   return ev.actor\n",
@@ -1567,51 +1572,22 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
 }
 
 #[test]
-fn qualified_identity_constructor_resolves_and_checks_clean() {
+fn legacy_qualified_identity_constructor_is_unresolved() {
     let root = temp_project("program-id-qualified-ctor", |root| {
         write(
             root,
-            "src/store.mw",
-            "module store\n\
-             resource Item at ^items(id: int)\n\
+            "src/inventory.mw",
+            "module inventory\n\
+             resource Book at ^books(id: int)\n\
              \x20   required name: string\n",
         );
         write(
             root,
             "src/caller.mw",
             "module caller\n\
-             use store\n\
-             pub fn fromKey(): store::Item::Id\n\
-             \x20   return store::Item::Id(1)\n",
-        );
-    });
-    let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
-
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-}
-
-#[test]
-fn identity_constructor_key_shape_errors_are_checked_statically() {
-    let root = temp_project("program-id-ctor-static", |root| {
-        write(
-            root,
-            "src/school/registrar.mw",
-            "module school::registrar\n\
-             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
-             \x20   required credits: int\n",
-        );
-        write(
-            root,
-            "src/caller.mw",
-            "module caller\n\
-             use school::registrar\n\
-             fn wrongType()\n\
-             \x20   const id = registrar::Enrollment::Id(studentId: 1, courseId: 2)\n\
-             fn missingKey()\n\
-             \x20   const id = registrar::Enrollment::Id(studentId: \"only-one\")\n\
-             fn tooMany()\n\
-             \x20   const id = registrar::Enrollment::Id(\"s\", \"c\", \"extra\")\n",
+             use inventory\n\
+             pub fn fromKey(): Id(^books)\n\
+             \x20   return inventory::Book::Id(1)\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
@@ -1621,25 +1597,8 @@ fn identity_constructor_key_shape_errors_are_checked_statically() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
-        "{:#?}",
-        report.diagnostics
-    );
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "check.call_argument")
-            .count()
-            >= 2,
-        "{:#?}",
-        report.diagnostics
-    );
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.code != "check.unresolved_call"),
+            .any(|diagnostic| diagnostic.code == "check.unresolved_call"
+                && diagnostic.message.contains("inventory::Book::Id")),
         "{:#?}",
         report.diagnostics
     );
@@ -1749,7 +1708,7 @@ fn cross_resource_identity_equality_is_an_operator_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id, m: Magazine::Id): bool\n\
+                 fn f(b: Id(^books), m: Id(^magazines)): bool\n\
                  \x20   return b == m\n"
             ),
         );
@@ -1766,18 +1725,18 @@ fn cross_resource_identity_equality_is_an_operator_type_error() {
     );
 }
 
-/// Compare two identities of the *same* resource with `==`. Identity equality is
+/// Compare two identities of the *same* store with `==`. Identity equality is
 /// usable, so the comparison checks clean and types to `bool` — a function that
 /// returns that comparison from a `: bool` body has no diagnostic.
 #[test]
-fn same_resource_identity_equality_checks_clean() {
+fn same_store_identity_equality_checks_clean() {
     let root = temp_project("program-eq-id-same", |root| {
         write(
             root,
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(a: Book::Id, b: Book::Id): bool\n\
+                 fn f(a: Id(^books), b: Id(^books)): bool\n\
                  \x20   return a == b\n"
             ),
         );
@@ -1809,7 +1768,7 @@ fn raw_scalar_equality_still_checks_clean() {
 
 /// Coalescing two identities of different resources with `??` is a nominal
 /// mismatch reported as `check.operator_type`: the unique-index read on the left
-/// yields a `Book::Id`, and a `Magazine::Id` default cannot stand in for it. The
+/// yields a `Id(^books)`, and a `Id(^magazines)` default cannot stand in for it. The
 /// left is a genuine path read (the only operand `??` accepts).
 #[test]
 fn cross_resource_identity_coalesce_is_flagged() {
@@ -1823,7 +1782,7 @@ fn cross_resource_identity_coalesce_is_flagged() {
              \x20   index byTitle(title) unique\n\
              resource Magazine at ^magazines(id: int)\n\
              \x20   required title: string\n\
-             fn f(m: Magazine::Id): Magazine::Id\n\
+             fn f(m: Id(^magazines)): Id(^magazines)\n\
              \x20   return ^books.byTitle(\"a\") ?? m\n",
         );
     });
@@ -1840,7 +1799,7 @@ fn cross_resource_identity_coalesce_is_flagged() {
 }
 
 /// A unary operator on an identity-typed value is operator misuse: no unary op
-/// applies to an identity, so `-b` over a `Book::Id` is `check.operator_type`, not
+/// applies to an identity, so `-b` over a `Id(^books)` is `check.operator_type`, not
 /// a silent `Unknown`.
 #[test]
 fn unary_on_identity_is_an_operator_type_error() {
@@ -1850,7 +1809,7 @@ fn unary_on_identity_is_an_operator_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id): bool\n\
+                 fn f(b: Id(^books)): bool\n\
                  \x20   return not b\n"
             ),
         );
@@ -1874,7 +1833,7 @@ fn unary_on_identity_is_an_operator_type_error() {
 // dropped a concrete non-scalar operand to `Unknown` with no diagnostic. Each
 // non-scalar operand is operator misuse, like the unary and `Error` cases.
 
-/// Adding a scalar to an identity (`b + 1` where `b: Book::Id`) is operator misuse:
+/// Adding a scalar to an identity (`b + 1` where `b: Id(^books)`) is operator misuse:
 /// arithmetic does not apply to an identity, so it is `check.operator_type`, not a
 /// silent `Unknown`.
 #[test]
@@ -1885,7 +1844,7 @@ fn arithmetic_with_identity_operand_is_an_operator_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id): int\n\
+                 fn f(b: Id(^books)): int\n\
                  \x20   return b + 1\n"
             ),
         );
@@ -1912,7 +1871,7 @@ fn ordering_two_identities_is_an_operator_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id, c: Book::Id): bool\n\
+                 fn f(b: Id(^books), c: Id(^books)): bool\n\
                  \x20   return b < c\n"
             ),
         );
@@ -1939,7 +1898,7 @@ fn logical_with_identity_operand_is_an_operator_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id): bool\n\
+                 fn f(b: Id(^books)): bool\n\
                  \x20   return b and true\n"
             ),
         );
@@ -1966,7 +1925,7 @@ fn concat_with_identity_operand_is_an_operator_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id): string\n\
+                 fn f(b: Id(^books)): string\n\
                  \x20   return \"a\" _ b\n"
             ),
         );
@@ -2019,7 +1978,7 @@ fn if_identity_condition_is_a_condition_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id)\n\
+                 fn f(b: Id(^books))\n\
                  \x20   if b\n\
                  \x20       var x = 1\n"
             ),
@@ -2047,7 +2006,7 @@ fn while_identity_condition_is_a_condition_type_error() {
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
-                 fn f(b: Book::Id)\n\
+                 fn f(b: Id(^books))\n\
                  \x20   while b\n\
                  \x20       var x = 1\n"
             ),
@@ -2150,7 +2109,7 @@ fn bool_condition_still_checks_clean() {
 // `Unknown` and pass it through. `type_compatible` drives the verdict.
 
 /// A string-leaf read defaulted with an identity (`book.title ?? id`) is a category
-/// error reported as `check.operator_type`: a `Book::Id` cannot default a `string`
+/// error reported as `check.operator_type`: a `Id(^books)` cannot default a `string`
 /// leaf.
 #[test]
 fn string_leaf_coalesced_with_identity_is_flagged() {
@@ -2161,7 +2120,7 @@ fn string_leaf_coalesced_with_identity_is_flagged() {
             "module shelf::ops\n\
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
-             fn f(id: Book::Id): string\n\
+             fn f(id: Id(^books)): string\n\
              \x20   return ^books(1).title ?? id\n",
         );
     });
@@ -2254,7 +2213,7 @@ fn string_key_into_int_keyspace_is_flagged() {
     );
 }
 
-/// A cross-resource read end-to-end: addressing `^books` with a `Magazine::Id`
+/// A cross-resource read end-to-end: addressing `^books` with a `Id(^magazines)`
 /// splices a foreign identity into the book keyspace. The identity is single-`int`
 /// like a book's, so the raw key shape matches, but the nominal resource does not,
 /// and it is rejected as `check.key_type`.
@@ -2266,7 +2225,7 @@ fn cross_resource_key_identity_is_flagged() {
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn f(m: Magazine::Id): string\n\
+                 fn f(m: Id(^magazines)): string\n\
                  \x20   return ^books(m).title\n"
             ),
         );
@@ -2284,17 +2243,17 @@ fn cross_resource_key_identity_is_flagged() {
     );
 }
 
-/// Addressing `^books` with its own `Book::Id` is well-typed — the splice check
+/// Addressing `^books` with its own `Id(^books)` is well-typed — the splice check
 /// accepts the matching nominal identity — and reports nothing.
 #[test]
-fn same_resource_key_identity_checks_clean() {
-    let root = temp_project("program-key-same-resource", |root| {
+fn same_store_key_identity_checks_clean() {
+    let root = temp_project("program-key-same-store", |root| {
         write(
             root,
             "src/shelf/lib.mw",
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
-                 fn f(b: Book::Id): string\n\
+                 fn f(b: Id(^books)): string\n\
                  \x20   return ^books(b).title\n"
             ),
         );
@@ -2356,7 +2315,7 @@ fn cross_module_qualified_identity_splice_defers() {
             "src/app/main.mw",
             "module app::main\n\
              use shelf::lib\n\
-             fn read(b: shelf::lib::Book::Id): string\n\
+             fn read(b: Id(^books)): string\n\
              \x20   return ^books(b).title\n",
         );
     });

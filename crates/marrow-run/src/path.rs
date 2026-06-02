@@ -1,6 +1,23 @@
 //! Saved-path lowering near the managed-write layer.
 
-use crate::*;
+use marrow_check::CheckedProgram;
+use marrow_schema::KeyDef;
+use marrow_store::backend::Presence;
+use marrow_store::path::{PathSegment, SavedKey, encode_path};
+use marrow_syntax::{Argument, Expression, SourceSpan};
+
+use crate::collection::{ReadPosition, absent_read};
+use crate::env::Env;
+use crate::error::{Located, RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
+use crate::expr::eval_expr;
+use crate::read::{enumerate_layer, read_resource};
+use crate::schema_query::{
+    LeafKind, find_store, is_saved_path, layer_key_params, resource_field_leaf,
+    resource_nested_member_leaf, root_identity_arity, root_identity_keys,
+};
+use crate::stdlib::{is_iterable_index_branch, unique_index_lookup_path};
+use crate::value::{Value, decode_leaf, value_to_key};
+use crate::write_dispatch::{write_nested_field, write_resource, write_saved_field};
 
 /// A saved path lowered from its source expression: the saved root, the record
 /// identity keys, the chain of group/keyed-layer levels from outermost to
@@ -225,8 +242,8 @@ pub(crate) fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, R
     if let Expression::Call { callee, .. } = expr
         && let Expression::Field { base, name, .. } = callee.as_ref()
         && let Expression::SavedRoot { name: root, .. } = base.as_ref()
-        && find_resource(env.program, root)
-            .is_some_and(|resource| resource.indexes.iter().any(|index| &index.name == name))
+        && find_store(env.program, root)
+            .is_some_and(|store| store.indexes.iter().any(|index| &index.name == name))
     {
         return Ok(SavedPath {
             root: root.clone(),
@@ -251,7 +268,7 @@ pub(crate) fn lower(expr: &Expression, env: &mut Env<'_>) -> Result<SavedPath, R
             .chain(std::iter::once(name.as_str()))
             .collect();
         let expected = layer_key_params(env.program, &path.root, &chain);
-        let keys = lower_keys(args, *span, false, expected, env)?;
+        let keys = lower_keys(args, *span, false, &expected, env)?;
         path.layers.push((name.clone(), keys));
         return Ok(path);
     }
@@ -366,7 +383,7 @@ pub(crate) fn saved_path_present(
 
 /// Evaluate a keyed lookup's arguments to saved key segments, rejecting named/out
 /// arguments. When `allow_identity_splice` (the record-identity position), a sole
-/// identity-valued argument (`^root(id)` where `id: Resource::Id`) splices its
+/// identity-valued argument (`^root(id)` where `id: Id(^root)`) splices its
 /// lowered keys in as the full key vector and an identity mixed with raw keys is
 /// rejected; otherwise (a keyed layer or index lookup) each argument is one raw
 /// key.
@@ -391,7 +408,7 @@ pub(crate) fn lower_keys(
         match eval_expr(&arg.value, env)? {
             // An identity is the whole lookup key only as the sole argument of a
             // record lookup; it cannot be one component among raw keys. The
-            // identity carries no resource name, so a foreign one laundered through
+            // identity carries no store root, so a foreign one laundered through
             // a dynamic value can reach here; its key scalars are guarded against
             // the declared key types just like raw keys, so a wrong-scalar splice
             // faults before any store write rather than corrupting the keyspace.
@@ -420,7 +437,7 @@ pub(crate) fn lower_keys(
 }
 
 /// Guard a spliced identity's keys against the target keyspace, the same scalar
-/// and arity check raw keys pass. A `Value::Identity` carries no resource name, so
+/// and arity check raw keys pass. A `Value::Identity` carries no store root, so
 /// a foreign identity laundered through a dynamic value can be spliced into the
 /// wrong root; this catches the byte-incompatible cases (a different key count, or
 /// a key whose scalar kind the declared key position does not allow) before any
@@ -451,10 +468,10 @@ pub(crate) fn check_spliced_identity(
 }
 
 /// Guard one lowered key's scalar kind against its declared key type, the single
-/// typed-keyspace check every key path shares — a record/layer lookup, a spliced
-/// identity, and an `Name::Id(...)` constructor all route their keys through it. A
-/// non-scalar (defer) declaration passes no expectation, so the guard skips and
-/// any arity fault still fires downstream. A wrong scalar is a `key_type_fault`.
+/// typed-keyspace check every key path shares: record lookups, layer lookups, and
+/// spliced identities all route through it. A non-scalar (defer) declaration
+/// passes no expectation, so the guard skips and any arity fault still fires
+/// downstream. A wrong scalar is a `key_type_fault`.
 pub(crate) fn guard_key_type(
     declared: &KeyDef,
     key: &SavedKey,
@@ -470,7 +487,9 @@ pub(crate) fn guard_key_type(
 
 #[cfg(test)]
 mod to_segments_tests {
-    use super::*;
+    use marrow_store::path::{PathSegment, SavedKey};
+
+    use crate::path::{SavedPath, Terminal};
 
     fn book_path(terminal: Terminal) -> SavedPath {
         SavedPath {

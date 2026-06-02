@@ -88,6 +88,7 @@ pub enum Keyword {
     Pub,
     Fn,
     Resource,
+    Store,
     Enum,
     Match,
     At,
@@ -180,6 +181,7 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
         "pub" => Keyword::Pub,
         "fn" => Keyword::Fn,
         "resource" => Keyword::Resource,
+        "store" => Keyword::Store,
         "enum" => Keyword::Enum,
         "match" => Keyword::Match,
         "at" => Keyword::At,
@@ -279,6 +281,12 @@ pub(crate) fn is_type_text(text: &str) -> bool {
     }
     if let Some((key, value)) = map_type_parts(text) {
         return is_type_text(key) && is_type_text(value);
+    }
+    if let Some(root) = text
+        .strip_prefix("Id(^")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return is_identifier(root);
     }
     is_qualified_name(text)
 }

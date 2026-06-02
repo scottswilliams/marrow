@@ -2,10 +2,36 @@
 //! condition, assignment, call, and saved-key argument checks.
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
+use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 use marrow_store::Decimal;
+use marrow_store::value::ScalarType;
+use marrow_syntax::{Severity, SourceSpan};
 
-use super::*;
+use crate::enums::{check_match, private_enum_type_reference, resolve_type};
+use crate::infer::{
+    bind, infer_only, infer_type, layer_key_type, lift_member_type, local_binding,
+    record_identity_type, saved_group_chain, saved_group_entry_type, saved_layer_chain,
+    saved_leaf_type,
+};
+use crate::typerules::{
+    as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric, is_ordered,
+    is_steppable, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
+};
+use crate::{
+    CHECK_AMBIGUOUS_CALL, CHECK_ASSIGNMENT_TYPE, CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED,
+    CHECK_CONDITION_TYPE, CHECK_KEY_TYPE, CHECK_MISSING_RETURN, CHECK_NEIGHBOR_UNSUPPORTED,
+    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM,
+    CHECK_PRIVATE_FUNCTION, CHECK_RANGE, CHECK_RANGE_VALUE, CHECK_RETURN_TYPE, CHECK_RETURN_VALUE,
+    CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
+    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram, Def, DefItem, MarrowType,
+    Resolution, ResolvableKind, TypeNames, build_alias_map, builtin_return_type,
+    check_prototype_only, conversion_return_type, expand_alias, find_store_resource,
+    identity_type_for_store, is_builtin_call, is_resolved_import, module_of_file,
+    push_schema_error, resolve, resource_type_name, std_call_params, std_call_return_type,
+};
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
 /// file against `program` with `project_resources`, then suppress resolution
@@ -249,6 +275,15 @@ pub(crate) fn check_file_types(
         resources: project_resources,
         enums: project_enums,
     };
+    let stored_resources: HashSet<&str> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Store(store) => Some(store.resource.as_str()),
+            _ => None,
+        })
+        .collect();
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
@@ -304,14 +339,51 @@ pub(crate) fn check_file_types(
                     check_type_annotation(ty, constant.span, &annotation_context, diagnostics);
                 }
             }
-            // Resource and enum member types are validated by schema compilation.
-            marrow_syntax::Declaration::Resource(_) | marrow_syntax::Declaration::Enum(_) => {}
+            marrow_syntax::Declaration::Resource(resource) => {
+                check_resource_identity_annotations(
+                    &resource.members,
+                    &annotation_context,
+                    diagnostics,
+                );
+                if stored_resources.contains(resource.name.as_str()) {
+                    check_qualified_saved_named_field_annotations(
+                        &resource.members,
+                        &annotation_context,
+                        diagnostics,
+                    );
+                }
+            }
+            // Store and enum member types are validated by schema compilation.
+            marrow_syntax::Declaration::Store(_) | marrow_syntax::Declaration::Enum(_) => {}
         }
     }
 }
 
+fn check_qualified_saved_named_field_annotations(
+    members: &[marrow_syntax::ResourceMember],
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for error in marrow_schema::check_saved_named_member_fields_with(members, |name| {
+        if !name.contains("::") {
+            return true;
+        }
+        matches!(
+            crate::enums::resolve_enum_type(
+                &Type::Named(name.to_string()),
+                context.program,
+                context.aliases,
+                context.file,
+            ),
+            Some(MarrowType::Enum { .. })
+        )
+    }) {
+        push_schema_error(context.file, diagnostics, error);
+    }
+}
+
 /// Record a `check.unknown_type` diagnostic when `ty` names a type the checker
-/// does not recognize or uses unsupported map syntax outside saved-resource
+/// does not recognize or uses unsupported map syntax outside saved keyed-leaf
 /// member sugar. Located at `span` (the declaration), since a type annotation
 /// carries no span of its own.
 struct TypeAnnotationContext<'a> {
@@ -342,17 +414,118 @@ fn check_type_annotation(
         });
         return;
     }
+    let unknown_identity = unknown_identity_type_ref(ty, context);
     if marrow_schema::contains_map_type_syntax(&ty.text)
-        || !MarrowType::names_known_type(ty, context.resources, context.enums)
+        || unknown_identity.is_some()
+        || !known_type_ref(ty, context)
     {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
             file: context.file.to_path_buf(),
-            message: format!("unknown type `{}`", ty.text.trim()),
+            message: format!(
+                "unknown type `{}`",
+                unknown_identity
+                    .as_deref()
+                    .unwrap_or_else(|| ty.text.trim())
+            ),
             span,
         });
     }
+}
+
+fn known_type_ref(ty: &marrow_syntax::TypeRef, context: &TypeAnnotationContext<'_>) -> bool {
+    known_type(&Type::resolve(ty), context)
+}
+
+fn known_type(ty: &Type, context: &TypeAnnotationContext<'_>) -> bool {
+    match ty {
+        Type::Scalar(_) | Type::Identity(_) | Type::Unknown => true,
+        Type::Sequence(element) => known_type(element, context),
+        Type::Named(name) if name == "Error" => true,
+        Type::Named(name) if !name.contains("::") => {
+            context.resources.contains(name) || context.enums.contains(name)
+        }
+        Type::Named(_) => {
+            crate::enums::resolve_enum_type(ty, context.program, context.aliases, context.file)
+                .is_some()
+                || crate::enums::resolve_resource_type(
+                    ty,
+                    context.program,
+                    context.aliases,
+                    context.file,
+                )
+                .is_some()
+        }
+    }
+}
+
+fn check_resource_identity_annotations(
+    members: &[marrow_syntax::ResourceMember],
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for member in members {
+        match member {
+            marrow_syntax::ResourceMember::Field(field) => {
+                if let Some(identity) = unknown_identity_type_ref(&field.ty, context) {
+                    diagnostics.push(CheckDiagnostic {
+                        code: CHECK_UNKNOWN_TYPE,
+                        severity: Severity::Error,
+                        file: context.file.to_path_buf(),
+                        message: format!("unknown type `{identity}`"),
+                        span: field.span,
+                    });
+                }
+            }
+            marrow_syntax::ResourceMember::Group(group) => {
+                check_resource_identity_annotations(&group.members, context, diagnostics);
+            }
+        }
+    }
+}
+
+fn unknown_identity_type_ref(
+    ty: &marrow_syntax::TypeRef,
+    context: &TypeAnnotationContext<'_>,
+) -> Option<String> {
+    unknown_identity_type(&Type::resolve(ty), Some(ty.text.trim()), context)
+}
+
+fn unknown_identity_type(
+    ty: &Type,
+    source_text: Option<&str>,
+    context: &TypeAnnotationContext<'_>,
+) -> Option<String> {
+    match ty {
+        Type::Identity(identity) if !identity_type_known(context, identity, source_text) => {
+            Some(render_identity_type(identity, source_text))
+        }
+        Type::Identity(_) => None,
+        Type::Sequence(element) => unknown_identity_type(element, source_text, context),
+        Type::Scalar(_) | Type::Named(_) | Type::Unknown => None,
+    }
+}
+
+fn render_identity_type(identity: &str, _source_text: Option<&str>) -> String {
+    format!("Id(^{identity})")
+}
+
+fn identity_type_known(
+    context: &TypeAnnotationContext<'_>,
+    identity: &str,
+    source_text: Option<&str>,
+) -> bool {
+    let _ = source_text;
+    store_root_known(context.program, identity)
+}
+
+fn store_root_known(program: &CheckedProgram, identity: &str) -> bool {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| &module.stores)
+        .any(|store| store.root == identity)
 }
 
 fn check_block_type_annotations(
@@ -968,11 +1141,15 @@ fn collection_loop_binding_types(
     }
     if is_saved_index_branch_path(program, iterable) {
         if two_name {
-            let (resource, index, arg_count) = saved_index_branch(program, iterable)?;
-            if non_unique_index_branch_yields_identity(resource, index, arg_count) {
+            let (store, resource, index, module, arg_count) =
+                saved_index_branch(program, iterable)?;
+            if non_unique_index_branch_yields_identity(store, index, arg_count) {
                 return Some((
                     saved_path_key_type(program, iterable)?,
-                    Some(MarrowType::Resource(resource.name.clone())),
+                    Some(MarrowType::Resource(resource_type_name(
+                        module,
+                        &resource.name,
+                    ))),
                 ));
             }
             return None;
@@ -999,17 +1176,18 @@ fn check_for_collection_support(
         return;
     }
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
-    let Some((resource, index, arg_count)) = saved_index_branch(program, iterable) else {
+    let Some((store, _resource, index, _module, arg_count)) = saved_index_branch(program, iterable)
+    else {
         return;
     };
-    if non_unique_index_branch_yields_identity(resource, index, arg_count) {
+    if non_unique_index_branch_yields_identity(store, index, arg_count) {
         return;
     }
     diagnostics.push(CheckDiagnostic {
         code: CHECK_COLLECTION_UNSUPPORTED,
         severity: Severity::Error,
         file: file.to_path_buf(),
-        message: "a two-name loop over an index branch must yield resource identities".to_string(),
+        message: "a two-name loop over an index branch must yield identity values".to_string(),
         span: iterable.span(),
     });
 }
@@ -1056,12 +1234,11 @@ fn saved_path_key_type(
     use marrow_syntax::Expression;
     match path {
         Expression::SavedRoot { name, .. } => {
-            let resource = find_resource_schema(program, name)?;
-            resource
-                .saved_root
-                .as_ref()
-                .filter(|root| !root.identity_keys.is_empty())?;
-            Some(MarrowType::Identity(resource.name.clone()))
+            let store = find_store_resource(program, name)?;
+            if store.store.identity_keys.is_empty() {
+                return None;
+            }
+            Some(identity_type_for_store(store.store))
         }
         Expression::Call { .. } => saved_index_branch_type(program, path),
         Expression::Field { .. } if is_saved_index_branch_path(program, path) => {
@@ -1083,12 +1260,14 @@ fn saved_path_direct_value_type(
     use marrow_syntax::Expression;
     match path {
         Expression::SavedRoot { name, .. } => {
-            let resource = find_resource_schema(program, name)?;
-            resource
-                .saved_root
-                .as_ref()
-                .filter(|root| !root.identity_keys.is_empty())?;
-            Some(MarrowType::Resource(resource.name.clone()))
+            let store = find_store_resource(program, name)?;
+            if store.store.identity_keys.is_empty() {
+                return None;
+            }
+            Some(MarrowType::Resource(resource_type_name(
+                &store.module.name,
+                &store.resource.name,
+            )))
         }
         Expression::Field { .. } => saved_leaf_type(program, path)
             .or_else(|| saved_group_entry_type(program, path))
@@ -1101,62 +1280,59 @@ fn saved_index_branch_type(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
-    let (resource, index, arg_count) = saved_index_branch(program, path)?;
+    let (store, resource, index, module, arg_count) = saved_index_branch(program, path)?;
     if index.unique {
-        return Some(MarrowType::Identity(resource.name.clone()));
+        return Some(identity_type_for_store(store));
     }
-    let identity_arity = resource
-        .saved_root
-        .as_ref()
-        .map_or(0, |root| root.identity_keys.len());
+    let identity_arity = store.identity_keys.len();
     let identity_start = index.args.len().saturating_sub(identity_arity);
     if arg_count < identity_start {
         return index
             .args
             .get(arg_count)
-            .map(|name| index_component_type(program, resource, name));
+            .map(|name| index_component_type(store, resource, module, name));
     }
-    Some(MarrowType::Identity(resource.name.clone()))
+    Some(identity_type_for_store(store))
 }
 
 fn non_unique_index_branch_yields_identity(
-    resource: &ResourceSchema,
+    store: &StoreSchema,
     index: &IndexSchema,
     arg_count: usize,
 ) -> bool {
     if index.unique {
         return false;
     }
-    let identity_arity = resource
-        .saved_root
-        .as_ref()
-        .map_or(0, |root| root.identity_keys.len());
+    let identity_arity = store.identity_keys.len();
     let identity_start = index.args.len().saturating_sub(identity_arity);
     arg_count >= identity_start
 }
 
 fn index_component_type(
-    program: &CheckedProgram,
+    store: &StoreSchema,
     resource: &ResourceSchema,
+    module: &str,
     name: &str,
 ) -> MarrowType {
-    if let Some(key) = resource
-        .saved_root
-        .as_ref()
-        .and_then(|root| root.identity_keys.iter().find(|key| key.name == name))
-    {
+    if let Some(key) = store.identity_keys.iter().find(|key| key.name == name) {
         return MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
     }
     resource
         .field_type(&[name])
-        .map(|ty| lift_member_type(ty.clone(), resource_module(program, &resource.name)))
+        .map(|ty| lift_member_type(ty.clone(), module))
         .unwrap_or(MarrowType::Unknown)
 }
 
 fn saved_index_branch<'p>(
     program: &'p CheckedProgram,
     path: &marrow_syntax::Expression,
-) -> Option<(&'p ResourceSchema, &'p IndexSchema, usize)> {
+) -> Option<(
+    &'p StoreSchema,
+    &'p ResourceSchema,
+    &'p IndexSchema,
+    &'p str,
+    usize,
+)> {
     match path {
         marrow_syntax::Expression::Call { callee, args, .. } => {
             if args
@@ -1165,12 +1341,11 @@ fn saved_index_branch<'p>(
             {
                 return None;
             }
-            let (resource, index) = saved_index_schema(program, callee)?;
-            (args.len() <= index.args.len()).then_some((resource, index, args.len()))
+            let (store, resource, index, module) = saved_index_schema(program, callee)?;
+            (args.len() <= index.args.len()).then_some((store, resource, index, module, args.len()))
         }
-        marrow_syntax::Expression::Field { .. } => {
-            saved_index_schema(program, path).map(|(resource, index)| (resource, index, 0))
-        }
+        marrow_syntax::Expression::Field { .. } => saved_index_schema(program, path)
+            .map(|(store, resource, index, module)| (store, resource, index, module, 0)),
         _ => None,
     }
 }
@@ -1178,16 +1353,25 @@ fn saved_index_branch<'p>(
 fn saved_index_schema<'p>(
     program: &'p CheckedProgram,
     callee: &marrow_syntax::Expression,
-) -> Option<(&'p ResourceSchema, &'p IndexSchema)> {
+) -> Option<(
+    &'p StoreSchema,
+    &'p ResourceSchema,
+    &'p IndexSchema,
+    &'p str,
+)> {
     let marrow_syntax::Expression::Field { base, name, .. } = callee else {
         return None;
     };
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
         return None;
     };
-    let resource = find_resource_schema(program, root)?;
-    let index = resource.indexes.iter().find(|index| &index.name == name)?;
-    Some((resource, index))
+    let store = find_store_resource(program, root)?;
+    let index = store
+        .store
+        .indexes
+        .iter()
+        .find(|index| &index.name == name)?;
+    Some((store.store, store.resource, index, &store.module.name))
 }
 
 fn is_saved_index_branch_path(program: &CheckedProgram, path: &marrow_syntax::Expression) -> bool {
@@ -1198,7 +1382,7 @@ fn is_saved_unique_index_branch_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
 ) -> bool {
-    saved_index_branch(program, path).is_some_and(|(_, index, _)| index.unique)
+    saved_index_branch(program, path).is_some_and(|(_, _, index, _, _)| index.unique)
 }
 
 /// The endpoint scalar type of a range iterable when both endpoints are the same
@@ -1833,32 +2017,44 @@ pub(crate) fn check_saved_key_args(
     // resource's own identity value (a splice), checked nominally; otherwise the
     // per-key scalars are checked against the declared identity keys.
     if let Expression::SavedRoot { name: root, .. } = callee {
-        let Some(resource) = find_resource_schema(program, root) else {
+        let Some(store) = find_store_resource(program, root) else {
             return;
         };
-        let Some(saved_root) = &resource.saved_root else {
-            return;
-        };
-        if let [MarrowType::Identity(spliced)] = arg_types {
-            // A bare identity names a resource in the accessor's own module and is
-            // matched nominally against the root. A qualified identity imported from
-            // another module keeps its module path, which cannot be placed against
-            // the root's bare resource name without the unified type IR, so it
-            // defers to the runtime key guard rather than being rejected here.
-            if !spliced.contains("::") && spliced != &resource.name {
+        if let [MarrowType::Identity(_)] = arg_types {
+            let expected = identity_type_for_store(store.store);
+            if type_compatible(&expected, &arg_types[0]) == Some(false) {
                 diagnostics.push(key_type_diagnostic(
                     file,
                     span,
                     format!(
-                        "`^{root}` is addressed by `{}::Id`, but this value is `{spliced}::Id`",
-                        resource.name,
+                        "`^{root}` is addressed by `{}`, but this value is `{}`",
+                        marrow_type_name(&expected),
+                        marrow_type_name(&arg_types[0]),
                     ),
                 ));
             }
             return;
         }
         check_keys_against(
-            &saved_root.identity_keys,
+            &store.store.identity_keys,
+            arg_types,
+            span,
+            file,
+            diagnostics,
+        );
+        return;
+    }
+    // A declared index access `^root.index(args...)`: unique indexes read a
+    // single identity only at a complete lookup key, while non-unique branches
+    // accept typed prefixes for traversal.
+    if let Some((store, resource, index, module)) = saved_index_schema(program, callee) {
+        check_index_args_against(
+            IndexArgTarget {
+                store,
+                resource,
+                index,
+                module,
+            },
             arg_types,
             span,
             file,
@@ -1869,10 +2065,75 @@ pub(crate) fn check_saved_key_args(
     // A keyed-layer access `^root(key…).layer(key…)`: check this layer's key
     // parameters. The layer chain peels the named layers from the accessor.
     if let Some((root, layers)) = saved_layer_chain(callee)
-        && let Some(resource) = find_resource_schema(program, root)
-        && let Some(node) = resource.descend_layers(&layers)
+        && let Some(store) = find_store_resource(program, root)
+        && let Some(node) = store.resource.descend_layers(&layers)
     {
         check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
+    }
+}
+
+struct IndexArgTarget<'a> {
+    store: &'a StoreSchema,
+    resource: &'a ResourceSchema,
+    index: &'a IndexSchema,
+    module: &'a str,
+}
+
+fn check_index_args_against(
+    target: IndexArgTarget<'_>,
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let IndexArgTarget {
+        store,
+        resource,
+        index,
+        module,
+    } = target;
+    let expected_len = index.args.len();
+    if index.unique {
+        if expected_len != arg_types.len() {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "unique index `{}` expects {} key argument(s), but {} were given",
+                    index.name,
+                    expected_len,
+                    arg_types.len(),
+                ),
+            ));
+            return;
+        }
+    } else if arg_types.len() > expected_len {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "index `{}` accepts at most {} key argument(s), but {} were given",
+                index.name,
+                expected_len,
+                arg_types.len(),
+            ),
+        ));
+        return;
+    }
+
+    for (component, arg_type) in index.args.iter().zip(arg_types) {
+        let expected = index_component_type(store, resource, module, component);
+        if type_compatible(&expected, arg_type) == Some(false) {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "index component `{component}` expects `{}`, but this value is `{}`",
+                    marrow_type_name(&expected),
+                    marrow_type_name(arg_type),
+                ),
+            ));
+        }
     }
 }
 
@@ -1913,116 +2174,6 @@ pub(crate) fn check_keys_against(
                 ),
             ));
         }
-    }
-}
-
-/// Type-check the key arguments of an identity constructor `Name::Id(key…)`
-/// against the referenced resource's declared identity keys. Positional keys map
-/// by position; named (composite) keys map to the declared key of the same name,
-/// so a swapped type under the right name is still caught. A wrong-scalar key, or
-/// a non-key value such as another identity, is a `check.key_type` — the same
-/// keyspace guard a record lookup passes. Malformed constructor argument shape
-/// (wrong count, mixed positional/named keys, unknown key names, duplicate key
-/// names, or missing named keys) is a `check.call_argument`.
-pub(crate) fn check_identity_constructor_keys(
-    label: &str,
-    keys: &[marrow_schema::KeyDef],
-    args: &[marrow_syntax::Argument],
-    arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    let named = args.iter().filter(|arg| arg.name.is_some()).count();
-    if named != 0 && named != args.len() {
-        diagnostics.push(call_diagnostic(
-            file,
-            span,
-            format!("`{label}` takes either positional or named keys, not both"),
-        ));
-        return;
-    }
-
-    if named == 0 {
-        if keys.len() != args.len() {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!(
-                    "`{label}` expects {} key argument(s), but {} were given",
-                    keys.len(),
-                    args.len(),
-                ),
-            ));
-            return;
-        }
-        for (key, arg_type) in keys.iter().zip(arg_types) {
-            check_identity_key_type(key, arg_type, span, file, diagnostics);
-        }
-        return;
-    }
-
-    let mut supplied = vec![false; keys.len()];
-    let mut malformed_names = false;
-    for (arg, arg_type) in args.iter().zip(arg_types) {
-        let Some(name) = &arg.name else {
-            continue;
-        };
-        let Some(index) = keys.iter().position(|key| &key.name == name) else {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("`{label}` has no identity key `{name}`"),
-            ));
-            malformed_names = true;
-            continue;
-        };
-        if supplied[index] {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("identity key `{name}` is supplied more than once"),
-            ));
-            malformed_names = true;
-            continue;
-        }
-        supplied[index] = true;
-        check_identity_key_type(&keys[index], arg_type, span, file, diagnostics);
-    }
-
-    if malformed_names {
-        return;
-    }
-    for (key, supplied) in keys.iter().zip(supplied) {
-        if !supplied {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("`{label}` requires identity key `{}`", key.name),
-            ));
-        }
-    }
-}
-
-fn check_identity_key_type(
-    key: &marrow_schema::KeyDef,
-    arg_type: &MarrowType,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
-    if type_compatible(&expected, arg_type) == Some(false) {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
-            format!(
-                "identity key `{}` expects `{}`, but this value is `{}`",
-                key.name,
-                marrow_type_name(&expected),
-                marrow_type_name(arg_type),
-            ),
-        ));
     }
 }
 
@@ -2127,8 +2278,8 @@ pub(crate) fn check_binary(
     // Equality is decided over concrete non-scalar types before the `as_primitive`
     // gate, which would otherwise drop them to `Unknown`. Whole records and
     // sequences have no equality; identities and enums compare nominally, so a
-    // same-resource identity or same-enum pair is equatable (`bool`) while a
-    // cross-resource pair, a different enum, or either against a scalar is a
+    // same-store identity or same-enum pair is equatable (`bool`) while a
+    // cross-store pair, a different enum, or either against a scalar is a
     // category error. An `Unknown` operand defers to the scalar path, where untyped
     // values are handled.
     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
@@ -2218,7 +2369,7 @@ pub(crate) fn check_binary(
 /// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`
 /// once a verdict is reached and `None` to defer to the scalar path. Whole records
 /// and sequences are not equatable; identities and enums compare nominally, so a
-/// same-resource identity or same-enum pair is `bool` and any other pairing —
+/// same-store identity or same-enum pair is `bool` and any other pairing —
 /// different identities, different enums, or either against a scalar — is a
 /// category error. An `Unknown` operand defers (the untyped-value path owns it); a
 /// scalar pair defers to the ordinary scalar-equality check. A diagnostic is pushed
@@ -2317,11 +2468,12 @@ pub(crate) fn check_coalesce(
         return MarrowType::Unknown;
     }
     // A concrete non-scalar leaf (an identity, record, or sequence read) defaults
-    // only with a value of the same nominal type, so a `Book::Id` leaf cannot take
-    // a `Magazine::Id` default, and a non-scalar paired with a scalar is a category
-    // error either way. The scalar path below would drop the non-scalar to `Unknown`
-    // and silently accept the mismatch, so resolve any pairing with a non-scalar
-    // side here; an `Unknown` operand still defers there.
+    // only with a value of the same nominal type, so an identity from `^books`
+    // cannot take an identity from `^magazines` as its default, and a non-scalar
+    // paired with a scalar is a category error either way. The scalar path below
+    // would drop the non-scalar to `Unknown` and silently accept the mismatch, so
+    // resolve any pairing with a non-scalar side here; an `Unknown` operand still
+    // defers there.
     if is_concrete_nonscalar(left_type) || is_concrete_nonscalar(right_type) {
         return match type_compatible(left_type, right_type) {
             Some(true) => left_type.clone(),
@@ -2425,10 +2577,8 @@ pub(crate) fn check_call(
     let expanded = expand_alias(segments, aliases);
     let segments = expanded.as_slice();
     // `nextId(^root)` needs the argument *expression* (the `^root`), not just its
-    // type, to know which resource is allocated — so it is handled here, before the
-    // generic builtin branch typed only from `arg_types`. It types to `Resource::Id`
-    // for a single-`int` root and reports `check.next_id_requires_single_int` for
-    // any other shape (composite/non-int/singleton).
+    // type, to know which store is allocated, so it is handled here before the
+    // generic builtin branch typed only from `arg_types`.
     if let [name] = segments
         && name == "nextId"
     {
@@ -2499,26 +2649,6 @@ pub(crate) fn check_call(
     // qualifier and the target must be `pub`). A module-less script contributes the
     // empty module, so its bare calls resolve against its own functions.
     let from_module = module_of_file(program, file).unwrap_or_default();
-    // `Book::Id(...)` is the identity constructor even if `Book::Id` could also
-    // spell a qualified resource name. Keep the checker aligned with runtime
-    // dispatch, where identity constructors run before resource values.
-    if let Some((ty @ MarrowType::Identity(_), resource)) =
-        resource_constructor_resource(program, from_module, segments)
-    {
-        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
-        if let Some(saved_root) = &resource.saved_root {
-            check_identity_constructor_keys(
-                &format!("{}::Id", resource.name),
-                &saved_root.identity_keys,
-                args,
-                arg_types,
-                span,
-                file,
-                diagnostics,
-            );
-        }
-        return ty;
-    }
     // A callee naming a declared resource is a value constructor, not a function:
     // `Book(...)` and `module::Book(...)` build resource values. Recognize it so
     // a valid constructor is not a false `check.unresolved_call`.
@@ -2553,7 +2683,7 @@ pub(crate) fn check_call(
             file,
             diagnostics,
         );
-        return MarrowType::Resource(resource.name.clone());
+        return MarrowType::Resource(resource_type_name(&module.name, &resource.name));
     }
     // Resolving as a `Function` can only ever Find a function, so the other arms
     // never carry a non-function item. Only calls in a file that is part of the
@@ -2738,7 +2868,9 @@ fn saved_layer_node<'p>(
     expr: &marrow_syntax::Expression,
 ) -> Option<&'p marrow_schema::Node> {
     let (root, layers) = saved_group_chain(expr)?;
-    find_resource_schema(program, root)?.descend_layers(&layers)
+    find_store_resource(program, root)?
+        .resource
+        .descend_layers(&layers)
 }
 
 fn check_conversion_arg(
@@ -3060,8 +3192,8 @@ pub(crate) fn check_args_against(
 }
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root. A single-`int`
-/// root types to `Resource::Id`; any other
-/// identity shape reports `check.next_id_requires_single_int`. A non-`^root` or
+/// root types to `Id(^root)`; any other identity shape reports
+/// `check.next_id_requires_single_int`. A non-`^root` or
 /// wrong-arity argument is left to the runtime (matching how other builtins
 /// behave), and an undeclared root is already reported elsewhere (a `^bogus` read
 /// has no schema), so neither is double-reported here.
@@ -3078,24 +3210,21 @@ pub(crate) fn check_next_id(
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &arg.value else {
         return MarrowType::Unknown;
     };
-    let Some(resource) = find_resource_schema(program, root) else {
+    let Some(store) = find_store_resource(program, root) else {
         return MarrowType::Unknown;
     };
-    let Some(saved_root) = &resource.saved_root else {
-        return MarrowType::Unknown;
-    };
-    if saved_root.single_int_root() {
-        return MarrowType::Identity(resource.name.clone());
+    if store.store.single_int_root() {
+        return identity_type_for_store(store.store);
     }
     diagnostics.push(CheckDiagnostic {
         code: CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: format!(
-            "`nextId` requires a resource with one `int` identity key, but `^{root}` \
+            "`nextId` requires a store with one `int` identity key, but `^{root}` \
              ({}) has no default allocation policy; composite and non-integer \
              identities are application-provided",
-            saved_root.next_id_shape(),
+            store.store.next_id_shape(),
         ),
         span,
     });
@@ -3104,8 +3233,8 @@ pub(crate) fn check_next_id(
 
 /// Type `next(<element>)` / `prev(<element>)`: the navigated neighbor's identity
 /// type. A primary keyed root `^root` or a single-key record `^root(id)` navigates
-/// among record identities, so the result is the owning resource's `Resource::Id` —
-/// the type that makes `^root(next(^root(id))).field` check. A keyed child-layer
+/// among record identities, so the result is the owning store's `Id(^root)` — the
+/// type that makes `^root(next(^root(id))).field` check. A keyed child-layer
 /// position `^root(id…).layer(k)` or a bare child layer `^root(id…).layer`
 /// navigates among that layer's keys, so the result is the layer's single key type.
 /// A composite-identity record and an index branch are statically unsupported — the
@@ -3212,13 +3341,11 @@ pub(crate) fn check_append(
     }
 }
 
-/// Whether the resource at saved root `root` has a composite (multi-key) identity.
+/// Whether the store at saved root `root` has a composite (multi-key) identity.
 /// `next`/`prev` over a record anchor at one key level, so a composite identity is
 /// out of scope. A non-keyed root or an unknown root is not composite.
 pub(crate) fn composite_identity(program: &CheckedProgram, root: &str) -> bool {
-    find_resource_schema(program, root)
-        .and_then(|resource| resource.saved_root.as_ref())
-        .is_some_and(|saved_root| saved_root.identity_keys.len() > 1)
+    find_store_resource(program, root).is_some_and(|store| store.store.identity_keys.len() > 1)
 }
 
 /// Report a `check.neighbor_unsupported` error for a statically-unnavigable

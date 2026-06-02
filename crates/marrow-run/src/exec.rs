@@ -1,6 +1,37 @@
 //! The statement spine: blocks, statements, matches, and loops.
 
-use crate::*;
+use std::cmp::Ordering;
+
+use marrow_schema::{MemberPathResolution, Type};
+use marrow_store::Decimal;
+use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
+use marrow_syntax::{BinaryOp, Block, Expression, ForBinding, MatchArm, SourceSpan, Statement};
+
+use crate::call::{default_value, eval_call};
+use crate::collection::{
+    Direction, ReadPosition, SimpleSavedLayerLoop, StreamBinding, StreamValueSource,
+    enumerate_local_collection_dir, eval_local_collection_write, identity_keys, materialize_layer,
+    materialize_layer_dir, materialize_local_collection_dir, simple_saved_layer_loop,
+    stream_child_segment, values_or_entries,
+};
+use crate::env::{Env, Flow};
+use crate::error::{
+    Located, RUN_STORE, RuntimeError, assign_error, overflow, type_error, unsupported,
+};
+use crate::expr::{eval_condition, eval_expr};
+use crate::host::Frame;
+use crate::read::{
+    LayerEntryAddress, collected_identity_value, enumerate_layer, enumerate_layer_dir,
+    keys_argument, read_layer_entry, read_layer_entry_at, read_resource, read_terminal_identity,
+    reversed_argument, traversed_layer_prefix,
+};
+use crate::schema_query::{enum_in, is_resource_type, is_saved_path};
+use crate::stdlib::{check_key_collection, unique_index_lookup_values};
+use crate::value::{Value, value_to_key};
+use crate::write_dispatch::{
+    eval_delete, eval_group_entry_write, eval_local_field_set, eval_resource_write,
+    eval_saved_field_write,
+};
 
 /// Evaluate a block in its own scope, stopping at the first `return`. The scope
 /// is popped on every exit, including when a statement raises an error, so the

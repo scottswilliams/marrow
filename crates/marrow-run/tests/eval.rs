@@ -14,7 +14,7 @@ use marrow_run::{
     RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput,
     SavedPathClass, Value, classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
 };
-use marrow_schema::{compile_enum, compile_resource};
+use marrow_schema::{compile_enum, compile_resource, compile_store};
 use marrow_store::Decimal;
 use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::mem::MemStore;
@@ -90,6 +90,7 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
     assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
     let mut functions = Vec::new();
     let mut resources = Vec::new();
+    let mut stores = Vec::new();
     let mut enums = Vec::new();
     for declaration in parsed.file.declarations {
         match declaration {
@@ -115,6 +116,15 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
                 assert!(errors.is_empty(), "{errors:?}");
                 resources.push(schema);
             }
+            Declaration::Store(store) => {
+                let resource = resources
+                    .iter()
+                    .find(|resource| resource.name == store.resource)
+                    .expect("store resource declared before store");
+                let (schema, errors) = compile_store(&store, resource);
+                assert!(errors.is_empty(), "{errors:?}");
+                stores.push(schema);
+            }
             Declaration::Enum(decl) => {
                 let (schema, errors) = compile_enum(&decl);
                 assert!(errors.is_empty(), "{errors:?}");
@@ -131,6 +141,7 @@ fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedProgra
         constants: Vec::new(),
         functions,
         resources,
+        stores,
         enums,
         enum_public: HashMap::new(),
     }])
@@ -143,6 +154,7 @@ fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
         assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
         let mut functions = Vec::new();
         let mut resources = Vec::new();
+        let mut stores = Vec::new();
         let mut enums = Vec::new();
         for declaration in parsed.file.declarations {
             match declaration {
@@ -167,6 +179,15 @@ fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
                     let (schema, errors) = compile_resource(&resource);
                     assert!(errors.is_empty(), "{errors:?}");
                     resources.push(schema);
+                }
+                Declaration::Store(store) => {
+                    let resource = resources
+                        .iter()
+                        .find(|resource| resource.name == store.resource)
+                        .expect("store resource declared before store");
+                    let (schema, errors) = compile_store(&store, resource);
+                    assert!(errors.is_empty(), "{errors:?}");
+                    stores.push(schema);
                 }
                 Declaration::Enum(decl) => {
                     let (schema, errors) = compile_enum(&decl);
@@ -194,6 +215,7 @@ fn checked_program_modules(sources: &[&str]) -> CheckedProgram {
             constants: Vec::new(),
             functions,
             resources,
+            stores,
             enums,
             enum_public: HashMap::new(),
         });
@@ -3254,7 +3276,7 @@ fn next_id_over_a_string_keyed_root_faults() {
     );
 }
 
-/// `nextId` of a saved root no resource declares is a `run.unsupported`: there is
+/// `nextId` of a saved root no store declares is a `run.unsupported`: there is
 /// no schema to decide an allocation policy (mirrors `eval_append`'s unknown-root
 /// path).
 #[test]
@@ -3900,7 +3922,7 @@ fn titleOf(id: int): string
 fn isbnOf(id: int): string
     return ^books(id).isbn
 
-fn ownerOf(isbn: string): Book::Id
+fn ownerOf(isbn: string): Id(^books)
     return ^books.byIsbn(isbn)
 ";
 
@@ -5400,24 +5422,58 @@ fn the_sample_update_functions_run() {
 
 // --- Resource-identity values ---
 
-/// A single-key resource where code constructs an identity with `Book::Id(1)`,
-/// passes it to a saved read, and writes through it. The identity carries the
-/// lowered key so `^books(id)` reads the same record `^books(1)` does.
+#[test]
+fn multiple_stores_over_one_resource_keep_runtime_roots_separate() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   title: string\n\
+         \n\
+         store ^books(id: int): Book\n\
+         store ^archivedBooks(id: int): Book\n\
+         \n\
+         fn seed()\n\
+         \x20   ^books(1).title = \"live\"\n\
+         \x20   ^archivedBooks(1).title = \"archived\"\n\
+         \n\
+         fn live(): string\n\
+         \x20   return ^books(1).title\n\
+         \n\
+         fn archived(): string\n\
+         \x20   return ^archivedBooks(1).title\n",
+    );
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+
+    let live = run_entry(&program, &store, "test::live", &[])
+        .expect("live")
+        .value;
+    assert_eq!(live, Some(Value::Str("live".into())));
+
+    let archived = run_entry(&program, &store, "test::archived", &[])
+        .expect("archived")
+        .value;
+    assert_eq!(archived, Some(Value::Str("archived".into())));
+}
+
+/// A single-key store identity from `nextId(^books)` can be passed to saved reads
+/// and writes. The identity carries the lowered key so `^books(id)` reads the
+/// same record `^books(1)` does.
 const BOOK_IDENTITY: &str = "\
 resource Book at ^books(id: int)
     required title: string
 
 fn save(t: string)
-    const id = Book::Id(1)
+    const id = nextId(^books)
     ^books(id).title = t
 
 fn title(): string
-    const id = Book::Id(1)
-    return ^books(id).title
+    for id in ^books
+        return ^books(id).title
+    return \"\"
 ";
 
 #[test]
-fn constructs_and_uses_a_single_key_identity() {
+fn allocates_and_uses_a_single_key_store_identity() {
     let program = checked_program(BOOK_IDENTITY);
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::save", &[Value::Str("Mort".into())]).expect("save");
@@ -5442,10 +5498,9 @@ fn constructs_and_uses_a_single_key_identity() {
 
 #[test]
 fn a_plain_int_identity_still_works() {
-    // `^books(Book::Id(1))` and `^books(1)` address the same record: the bare
-    // int path (the `nextId` flow) is unchanged by the identity variant.
+    // The bare int path remains the executable single-key store identity path.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn save()\n    ^books(Book::Id(1)).title = \"a\"\n\nfn read(): string\n    return ^books(1).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn save()\n    ^books(1).title = \"a\"\n\nfn read(): string\n    return ^books(1).title\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::save", &[]).expect("save");
@@ -5456,44 +5511,25 @@ fn a_plain_int_identity_still_works() {
 }
 
 #[test]
-fn identity_constructor_faults_on_a_wrong_typed_key() {
-    // A dynamic `unknown` value reaches the constructor untyped, so the checker
-    // cannot see it; the runtime must guard each key against the declared key type,
-    // the same `key_type_fault` a record lookup `^books(key)` raises. A string into
-    // an `int`-keyed identity faults cleanly rather than settling a wrong scalar
-    // into the keyspace.
+fn legacy_resource_identity_constructor_is_not_a_runtime_entrypoint() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn make(x: unknown)\n    const id = Book::Id(x)\n",
     );
     let error = run(&program, "test::make", &[Value::Str("not-an-int".into())]).unwrap_err();
-    assert_eq!(error.code, RUN_TYPE, "{error:#?}");
+    assert_eq!(error.code, RUN_UNKNOWN_FUNCTION, "{error:#?}");
 }
 
-#[test]
-fn identity_constructor_faults_on_a_wrong_typed_composite_key() {
-    // A composite identity built with a wrong-scalar component (an `int` where the
-    // second key is declared `string`) must fault on that key, not store it.
-    let program = checked_program(
-        "resource Pair at ^pairs(a: int, b: string)\n    note: string\n\nfn make(x: unknown)\n    const id = Pair::Id(7, x)\n",
-    );
-    let error = run(&program, "test::make", &[Value::Int(9)]).unwrap_err();
-    assert_eq!(error.code, RUN_TYPE, "{error:#?}");
-}
-
-/// A composite-key resource: `Enrollment::Id(studentId:..., courseId:...)` builds
-/// one identity from named keys, in declared order, and `^enrollments(id)` lowers
-/// it back into both key segments.
+/// A composite-key resource can still be addressed directly by its declared store
+/// key order. Composite identity values come from traversal and indexes.
 const ENROLLMENT_IDENTITY: &str = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
 
 fn enroll(s: string, c: string, st: string)
-    const id = Enrollment::Id(studentId: s, courseId: c)
-    ^enrollments(id).status = st
+    ^enrollments(s, c).status = st
 
 fn statusOf(s: string, c: string): string
-    const id = Enrollment::Id(studentId: s, courseId: c)
-    return ^enrollments(id).status
+    return ^enrollments(s, c).status
 ";
 
 #[test]
@@ -5540,10 +5576,9 @@ fn constructs_and_uses_a_composite_identity_round_trips() {
 }
 
 #[test]
-fn composite_identity_orders_keys_by_declaration_not_arguments() {
-    // Named args supplied in reverse order still lower in declared key order.
+fn composite_root_keys_write_in_declaration_order() {
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn enroll()\n    const id = Enrollment::Id(courseId: \"c\", studentId: \"s\")\n    ^enrollments(id).status = \"active\"\n",
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::enroll", &[]).expect("enroll");
@@ -5564,9 +5599,10 @@ fn composite_identity_orders_keys_by_declaration_not_arguments() {
 
 #[test]
 fn whole_resource_read_through_an_identity() {
-    // `var e: Enrollment = ^enrollments(id)` round-trips through an identity.
+    // The primary-root iterator yields a composite identity that can be used for
+    // a whole-resource read.
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn statusOf(s: string, c: string): string\n    const id = Enrollment::Id(studentId: s, courseId: c)\n    var e: Enrollment = ^enrollments(id)\n    return e.status\n",
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
     );
     let store = RefCell::new(MemStore::new());
     store.borrow_mut().write(
@@ -5578,20 +5614,15 @@ fn whole_resource_read_through_an_identity() {
         ]),
         encode_value(&SavedValue::Str("active".into())).expect("encodes"),
     );
-    let value = run_entry(
-        &program,
-        &store,
-        "test::statusOf",
-        &[Value::Str("s".into()), Value::Str("c".into())],
-    )
-    .expect("statusOf")
-    .value;
+    let value = run_entry(&program, &store, "test::statusOf", &[])
+        .expect("statusOf")
+        .value;
     assert_eq!(value, Some(Value::Str("active".into())));
 }
 
-// --- Singleton resources end-to-end ---
+// --- Singleton stores end-to-end ---
 
-/// A singleton resource (`Settings at ^settings`, no identity keys). Field
+/// A singleton store (no identity keys). Field
 /// read/write address the root directly, and whole read/write materialize and
 /// replace the root as a resource value.
 const SETTINGS: &str = "\
@@ -5699,7 +5730,7 @@ fn singleton_whole_read_and_write_round_trip() {
 /// record, with no keyed layer in between.
 #[test]
 fn a_whole_read_of_a_keyed_root_without_an_identity_is_rejected() {
-    // `^books` is a keyed resource root, not a singleton; reading it whole without
+    // `^books` is a keyed store root, not a singleton; reading it whole without
     // an identity must error (run.type), not silently read the empty-identity path.
     let program = checked_program(
         "module test\n\
@@ -5816,7 +5847,7 @@ fn register(id: int, t: string, isbn: string)
     ^books(id).isbn = isbn
 
 fn titleByIsbn(isbn: string): string
-    const id: Book::Id = ^books.byIsbn(isbn)
+    const id: Id(^books) = ^books.byIsbn(isbn)
     return ^books(id).title
 
 fn hasIsbn(isbn: string): bool
@@ -5831,11 +5862,17 @@ fn countKeysByIsbn(isbn: string): int
         c = c + 1
     return c
 
+fn badIsbnMissing()
+    return ^books.byIsbn()
+
+fn badIsbnExtra(isbn: string)
+    return ^books.byIsbn(isbn, 1)
+
 fn iterTitlesByIsbn(isbn: string)
     for id in ^books.byIsbn(isbn)
         print(^books(id).title)
 
-fn changeIsbn(id: Book::Id)
+fn changeIsbn(id: Id(^books))
     ^books(id).isbn = \"978-1\"
 
 fn changeIsbnThroughHelper(isbn: string)
@@ -5867,6 +5904,29 @@ fn reads_an_identity_from_a_unique_index() {
     .expect("titleByIsbn")
     .value;
     assert_eq!(value, Some(Value::Str("Mort".into())));
+}
+
+#[test]
+fn a_unique_index_value_read_rejects_the_wrong_arity_at_runtime() {
+    let program = checked_program(BOOK_ISBN);
+    let store = RefCell::new(MemStore::new());
+
+    let missing = run_entry(&program, &store, "test::badIsbnMissing", &[]).unwrap_err();
+    assert_eq!(missing.code, RUN_TYPE, "{missing:?}");
+    assert!(
+        missing.message.contains("expects 1 key argument"),
+        "{missing:?}"
+    );
+
+    let extra = run_entry(
+        &program,
+        &store,
+        "test::badIsbnExtra",
+        &[Value::Str("978-0".into())],
+    )
+    .unwrap_err();
+    assert_eq!(extra.code, RUN_TYPE, "{extra:?}");
+    assert!(extra.message.contains("but 2 were given"), "{extra:?}");
 }
 
 #[test]
@@ -6078,7 +6138,7 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-fn firstOnShelf(shelf: string): Book::Id
+fn firstOnShelf(shelf: string): Id(^books)
     return ^books.byShelf(shelf)
 ";
 
@@ -6099,9 +6159,9 @@ fn a_non_unique_index_in_value_position_is_rejected() {
 
 // --- Composite-identity index traversal ---
 
-/// A composite-identity resource indexed by status. The non-unique index ends
-/// with both identity keys, so traversal must descend both levels per entry and
-/// reconstruct the full `Enrollment::Id` (not just the first key component).
+/// A composite-identity store indexed by status. The non-unique index ends with
+/// both identity keys, so traversal must descend both levels per entry and
+/// reconstruct the full `Id(^enrollments)` (not just the first key component).
 const ENROLLMENT_STATUS: &str = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
@@ -6111,10 +6171,9 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
     index byStatus(status, studentId, courseId)
 
 fn enroll(s: string, c: string, st: string)
-    const id = Enrollment::Id(studentId: s, courseId: c)
-    ^enrollments(id).status = st
-    ^enrollments(id).student = s
-    ^enrollments(id).course = c
+    ^enrollments(s, c).status = st
+    ^enrollments(s, c).student = s
+    ^enrollments(s, c).course = c
 
 fn activeStatuses()
     for id in keys(^enrollments.byStatus(\"active\"))
@@ -6143,7 +6202,7 @@ fn activeCourseExactKeys(student: string, course: string)
 fn activeCourseExactCount(student: string, course: string): int
     return count(^enrollments.byStatus(\"active\", student, course))
 
-fn markInactive(id: Enrollment::Id)
+fn markInactive(id: Id(^enrollments))
     ^enrollments(id).status = \"inactive\"
 
 fn deactivateExact(student: string, course: string)
@@ -6515,8 +6574,7 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
 
 fn enroll(s: string, c: string, st: string)
-    const id = Enrollment::Id(studentId: s, courseId: c)
-    ^enrollments(id).status = st
+    ^enrollments(s, c).status = st
 
 fn statuses()
     for id, enrollment in ^enrollments
@@ -7641,7 +7699,7 @@ fn keys_saved_layer_loops_stream_in_both_directions() {
 #[test]
 fn count_over_a_composite_root_matches_direct_iteration() {
     let program = checked_program(
-        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\nfn put(x: int, y: int, value: int)\n    ^cells(Cell::Id(x: x, y: y)).value = value\n\nfn countRoot(): int\n    return count(^cells)\n\nfn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
+        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\nfn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\nfn countRoot(): int\n    return count(^cells)\n\nfn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
     );
     let store = RefCell::new(MemStore::new());
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
@@ -8142,7 +8200,7 @@ resource Book at ^books(id: int)
     isbn: string
     index byIsbn(isbn) unique
 fn save(i: int, code: string)
-    ^books(Book::Id(i)).isbn = code
+    ^books(i).isbn = code
 ";
 
 #[test]
@@ -8969,20 +9027,49 @@ fn classify_saved_path_flags_a_wrong_typed_record_key() {
     );
 }
 
+#[test]
+fn classify_identity_leaf_uses_the_store_named_by_id_type() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   name: string\n\
+         \n\
+         store ^authors(id: int): Author\n\
+         store ^archivedAuthors(id: int): Author\n\
+         \n\
+         resource Book\n\
+         \x20   author: Id(^authors)\n\
+         \n\
+         store ^books(id: int): Book\n",
+    );
+    let author_field = vec![
+        PathSegment::Root("books".into()),
+        PathSegment::RecordKey(SavedKey::Int(1)),
+        PathSegment::Field("author".into()),
+    ];
+
+    assert_eq!(
+        classify_saved_path(&program, &author_field),
+        SavedPathClass::Identity {
+            store_root: "authors".into(),
+            arity: 1,
+        }
+    );
+}
+
 // --- Saved-path lowering (the one `lower` pass) ---
 //
 // These pin the equivalence-risk corners of the unified lowering: the identity
 // splice versus raw keys, the keyed-root arity message, the unkeyed-group hop
 // versus keyed-layer distinction, and the index-branch terminal classification.
 
-/// An identity value (`Book::Id(1)`) splices in as the whole key, addressing the
-/// same record a bare int key does — the sole-argument identity-splice rule.
+/// A single-key store identity splices in as the whole key, addressing the same
+/// record a bare int key does.
 #[test]
 fn an_identity_argument_splices_in_as_the_record_key() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn save()\n    const id = Book::Id(7)\n    ^books(id).title = \"a\"\n\n\
-         fn read(): string\n    return ^books(7).title\n",
+         fn save()\n    const id = nextId(^books)\n    ^books(id).title = \"a\"\n\n\
+         fn read(): string\n    return ^books(1).title\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::save", &[]).expect("save");
@@ -9016,41 +9103,44 @@ fn a_wrong_typed_key_faults_at_lowering_and_does_not_write() {
     );
 }
 
-/// A spliced identity whose key scalar does not match the target keyspace faults
-/// at lowering, exactly as a raw wrong-typed key does. A `Magazine::Id("issn")` is
-/// a single-`string` identity; splicing it into `^books(id: int)` would write a
-/// string key into an int keyspace, so it must fault with `RUN_TYPE` and leave the
-/// store empty. The constructor's own resource is the wrong scalar shape here, so
-/// the splice guard rejects it on scalar kind alone, independent of resource name.
+/// A single-key identity from a string-keyed store cannot be spliced into an
+/// int-keyed root; lowering rejects the scalar mismatch before writing.
 #[test]
 fn a_wrong_scalar_spliced_identity_faults_and_does_not_write() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
          resource Magazine at ^magazines(issn: string)\n    required title: string\n\n\
-         fn save()\n    const id = Magazine::Id(\"issn\")\n    ^books(id).title = \"a\"\n",
+         fn seed()\n    ^magazines(\"issn\").title = \"m\"\n\n\
+         fn save()\n    for id in ^magazines\n        ^books(id).title = \"a\"\n",
     );
     let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
     let error = run_entry(&program, &store, "test::save", &[])
         .expect_err("a string-scalar identity into an int root must fault");
     assert_eq!(error.code, RUN_TYPE);
+    let books_prefix = encode_path(&[PathSegment::Root("books".into())]);
     assert!(
-        store.borrow().scan(&[], usize::MAX).entries.is_empty(),
-        "a faulted splice leaves the store empty"
+        store
+            .borrow()
+            .scan(&books_prefix, usize::MAX)
+            .entries
+            .is_empty(),
+        "a faulted splice leaves the target store empty"
     );
 }
 
-/// A spliced identity whose key scalar matches the target keyspace still succeeds:
-/// the splice guard checks scalar kind and arity, so a same-scalar splice is not a
-/// false positive. `Magazine::Id(7)` is single-`int`, matching `^books(id: int)`.
+/// A single-key identity produced from the target store still writes through the
+/// saved path lowering.
 #[test]
-fn a_matching_scalar_spliced_identity_still_writes() {
+fn a_single_key_store_identity_splice_still_writes() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         resource Magazine at ^magazines(id: int)\n    required title: string\n\n\
-         fn save()\n    const id = Magazine::Id(7)\n    ^books(id).title = \"a\"\n",
+         fn seed()\n    ^books(7).title = \"seed\"\n\n\
+         fn save()\n    for id in ^books\n        ^books(id).title = \"a\"\n",
     );
     let store = RefCell::new(MemStore::new());
-    run_entry(&program, &store, "test::save", &[]).expect("a same-scalar splice writes");
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    run_entry(&program, &store, "test::save", &[]).expect("store identity splice writes");
     let store = store.borrow();
     let bytes = store
         .read(&encode_path(&[
@@ -9071,9 +9161,12 @@ fn a_matching_scalar_spliced_identity_still_writes() {
 fn an_identity_mixed_with_a_raw_key_is_rejected() {
     let program = checked_program(
         "resource Pair at ^pairs(a: int, b: int)\n    required title: string\n\n\
-         fn save()\n    const id = Pair::Id(7, 8)\n    ^pairs(id, 5).title = \"a\"\n",
+         fn seed()\n    ^pairs(7, 8).title = \"seed\"\n\n\
+         fn save()\n    for id in ^pairs\n        ^pairs(id, 5).title = \"a\"\n",
     );
-    let result = run(&program, "test::save", &[]);
+    let store = RefCell::new(MemStore::new());
+    run_entry(&program, &store, "test::seed", &[]).expect("seed");
+    let result = run_entry(&program, &store, "test::save", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -9528,6 +9621,7 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedProgram {
                 constants: Vec::new(),
                 functions,
                 resources: Vec::new(),
+                stores: Vec::new(),
                 enums: Vec::new(),
                 enum_public: HashMap::new(),
             }
@@ -9999,20 +10093,24 @@ fn typed_ref_program() -> CheckedProgram {
          \x20   name: string\n\
          \n\
          resource Book at ^books(id: int)\n\
-         \x20   authorId: Author::Id\n\
+         \x20   authorId: Id(^authors)\n\
          \n\
          pub fn seed()\n\
-         \x20   ^books(1).authorId = Author::Id(7)\n\
+         \x20   const author = nextId(^authors)\n\
+         \x20   ^authors(author).name = \"Ada\"\n\
+         \x20   ^books(1).authorId = author\n\
          \n\
          pub fn read(): bool\n\
-         \x20   return ^books(1).authorId == Author::Id(7)\n",
+         \x20   for author in ^authors\n\
+         \x20       return ^books(1).authorId == author\n\
+         \x20   return false\n",
     )
 }
 
 #[test]
 fn an_identity_field_round_trips_through_saved_data() {
-    // A `Book.authorId: Author::Id` field stores an identity and reads it back as
-    // the same identity value: `^books(1).authorId == Author::Id(7)` is true.
+    // A `Book.authorId: Id(^authors)` field stores an identity and reads it back as
+    // the same identity value produced by the author store.
     let program = typed_ref_program();
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
@@ -10033,16 +10131,18 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
          \x20   name: string\n\
          \n\
          resource Book at ^books(id: int)\n\
-         \x20   authorId: Author::Id\n\
+         \x20   authorId: Id(^authors)\n\
          \n\
          pub fn seed()\n\
-         \x20   ^books(1).authorId = Author::Id(7)\n",
+         \x20   const author = nextId(^authors)\n\
+         \x20   ^authors(author).name = \"Ada\"\n\
+         \x20   ^books(1).authorId = author\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
     // The stored leaf is the canonical identity encoding — the same
-    // order-preserving key bytes a unique index entry stores — so it equals
-    // `encode_key_value(Author::Id(7))`, not a scalar `encode_value`.
+    // order-preserving key bytes a unique index entry stores — not a scalar
+    // `encode_value`.
     let store = store.borrow();
     let stored = store
         .read(&encode_path(&[
@@ -10053,7 +10153,7 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
         .map(<[u8]>::to_vec);
     assert_eq!(
         stored,
-        Some(encode_key_value(&SavedKey::Int(7))),
+        Some(encode_key_value(&SavedKey::Int(1))),
         "identity field stored as its canonical key encoding"
     );
 }
@@ -10061,13 +10161,13 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
 #[test]
 fn an_identity_field_assigned_via_next_id_round_trips() {
     // Constructing the reference from `nextId(^authors)` (the first allocated id is
-    // `1` on an empty root) round-trips the same way the explicit constructor does.
+    // `1` on an empty root) round-trips through the saved identity field.
     let program = checked_program(
         "resource Author at ^authors(id: int)\n\
          \x20   name: string\n\
          \n\
          resource Book at ^books(id: int)\n\
-         \x20   authorId: Author::Id\n\
+         \x20   authorId: Id(^authors)\n\
          \n\
          pub fn seed()\n\
          \x20   const a = nextId(^authors)\n\
@@ -10075,7 +10175,9 @@ fn an_identity_field_assigned_via_next_id_round_trips() {
          \x20   ^books(1).authorId = a\n\
          \n\
          pub fn read(): bool\n\
-         \x20   return ^books(1).authorId == Author::Id(1)\n",
+         \x20   for author in ^authors\n\
+         \x20       return ^books(1).authorId == author\n\
+         \x20   return false\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
@@ -10089,17 +10191,20 @@ fn an_identity_field_assigned_via_next_id_round_trips() {
 
 #[test]
 fn a_self_referencing_identity_field_round_trips() {
-    // A field of the same resource (`managerId: Person::Id` on `Person`) is a valid
+    // A field of the same resource (`managerId: Id(^people)` on `Person`) is a valid
     // self-reference that stores and reads back like any other typed reference.
     let program = checked_program(
         "resource Person at ^people(id: int)\n\
-         \x20   managerId: Person::Id\n\
+         \x20   managerId: Id(^people)\n\
          \n\
          pub fn seed()\n\
-         \x20   ^people(1).managerId = Person::Id(2)\n\
+         \x20   const person = nextId(^people)\n\
+         \x20   ^people(person).managerId = person\n\
+         \x20   const manager = nextId(^people)\n\
+         \x20   ^people(person).managerId = manager\n\
          \n\
          pub fn read(): bool\n\
-         \x20   return ^people(1).managerId == Person::Id(2)\n",
+         \x20   return int(^people(1).managerId) == 2\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed runs");
@@ -10112,18 +10217,24 @@ fn a_self_referencing_identity_field_round_trips() {
 }
 
 #[test]
-fn equality_on_two_identities_of_the_same_resource_evaluates() {
-    // `==` on two identities of the same resource is value equality of their keys:
-    // equal keys are `true`, differing keys `false`.
+fn equality_on_two_identities_of_the_same_store_evaluates() {
+    // `==` on two identities of the same store is value equality of their keys:
+    // equal keys are `true`, differing keys are `false`.
     let program = checked_program(
         "resource Author at ^authors(id: int)\n\
          \x20   name: string\n\
          \n\
          pub fn same(): bool\n\
-         \x20   return Author::Id(7) == Author::Id(7)\n\
+         \x20   const author = nextId(^authors)\n\
+         \x20   ^authors(author).name = \"Ada\"\n\
+         \x20   return author == author\n\
          \n\
          pub fn different(): bool\n\
-         \x20   return Author::Id(7) == Author::Id(8)\n",
+         \x20   const ada = nextId(^authors)\n\
+         \x20   ^authors(ada).name = \"Ada\"\n\
+         \x20   const grace = nextId(^authors)\n\
+         \x20   ^authors(grace).name = \"Grace\"\n\
+         \x20   return ada == grace\n",
     );
     assert_eq!(
         run(&program, "test::same", &[]).unwrap(),
@@ -10136,35 +10247,50 @@ fn equality_on_two_identities_of_the_same_resource_evaluates() {
 }
 
 #[test]
-fn single_key_identity_constructor_behaves_like_other_identity_origins() {
+fn single_key_store_identity_behaves_like_other_identity_origins() {
     let program = checked_program(
         "resource Doc at ^docs(id: int)\n\
          \x20   title: string\n\
          \n\
-         pub fn ctorInt(): int\n\
-         \x20   return int(Doc::Id(99))\n\
+         pub fn idInt(): int\n\
+         \x20   const id = nextId(^docs)\n\
+         \x20   ^docs(id).title = \"T\"\n\
+         \x20   for doc in ^docs\n\
+         \x20       return int(doc)\n\
+         \x20   return 0\n\
          \n\
-         pub fn ctorString(): string\n\
-         \x20   return string(Doc::Id(99))\n\
+         pub fn idString(): string\n\
+         \x20   const id = nextId(^docs)\n\
+         \x20   ^docs(id).title = \"T\"\n\
+         \x20   for doc in ^docs\n\
+         \x20       return string(doc)\n\
+         \x20   return \"\"\n\
          \n\
-         pub fn ctorRender(): string\n\
-         \x20   return $\"id={Doc::Id(99)}\"\n\
+         pub fn idRender(): string\n\
+         \x20   const id = nextId(^docs)\n\
+         \x20   ^docs(id).title = \"T\"\n\
+         \x20   for doc in ^docs\n\
+         \x20       return $\"id={doc}\"\n\
+         \x20   return \"\"\n\
          \n\
          pub fn mixedEq(): bool\n\
          \x20   const id = nextId(^docs)\n\
-         \x20   return id == Doc::Id(1)\n",
+         \x20   ^docs(id).title = \"T\"\n\
+         \x20   for doc in ^docs\n\
+         \x20       return id == doc\n\
+         \x20   return false\n",
     );
     assert_eq!(
-        run(&program, "test::ctorInt", &[]).unwrap(),
-        Some(Value::Int(99))
+        run(&program, "test::idInt", &[]).unwrap(),
+        Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, "test::ctorString", &[]).unwrap(),
-        Some(Value::Str("99".into()))
+        run(&program, "test::idString", &[]).unwrap(),
+        Some(Value::Str("1".into()))
     );
     assert_eq!(
-        run(&program, "test::ctorRender", &[]).unwrap(),
-        Some(Value::Str("id=99".into()))
+        run(&program, "test::idRender", &[]).unwrap(),
+        Some(Value::Str("id=1".into()))
     );
     assert_eq!(
         run(&program, "test::mixedEq", &[]).unwrap(),
@@ -10187,7 +10313,7 @@ fn unique_index_identity_compares_with_the_allocated_identity() {
          \x20   const id = nextId(^books)\n\
          \x20   ^books(id) = b\n\
          \x20   const found = ^books.byIsbn(\"I-1\")\n\
-         \x20   return id == found and found == Book::Id(1)\n",
+         \x20   return id == found\n",
     );
     assert_eq!(
         run(&program, "test::seed", &[]).unwrap(),
@@ -10205,17 +10331,21 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
          \n\
          resource Book at ^books(id: int)\n\
          \x20   required title: string\n\
-         \x20   authorId: Author::Id\n\
+         \x20   authorId: Id(^authors)\n\
          \n\
          pub fn seed()\n\
+         \x20   const author = nextId(^authors)\n\
+         \x20   ^authors(author).name = \"Ada\"\n\
          \x20   var b: Book\n\
          \x20   b.title = \"Mort\"\n\
-         \x20   b.authorId = Author::Id(7)\n\
+         \x20   b.authorId = author\n\
          \x20   ^books(1) = b\n\
          \n\
          pub fn read(): bool\n\
          \x20   const b = ^books(1)\n\
-         \x20   return b.authorId == Author::Id(7)\n",
+         \x20   for author in ^authors\n\
+         \x20       return b.authorId == author\n\
+         \x20   return false\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[]).expect("seed runs");

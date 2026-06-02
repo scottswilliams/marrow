@@ -16,47 +16,6 @@
 //! The evaluator is carved into sibling modules along the call spine
 //! (`expr`/`call`/`exec`/`read`/`write_dispatch`/`path`) plus its leaf
 //! supports (`error`/`value`/`host`/`env`/`stdlib`/`collection`/`schema_query`).
-//! Every cross-module reference is a plain crate-internal call; the modules are
-//! flattened back into the crate root so each one reaches the rest through a
-//! single glob.
-
-pub(crate) use std::cell::RefCell;
-pub(crate) use std::cmp::Ordering;
-pub(crate) use std::collections::HashMap;
-pub(crate) use std::rc::Rc;
-pub(crate) use std::time::{SystemTime, UNIX_EPOCH};
-
-pub(crate) use marrow_check::{
-    CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, FileId, MarrowType,
-    Resolution, ResolvableKind, resolve,
-};
-pub(crate) use marrow_schema::stdlib::Capability;
-pub(crate) use marrow_schema::{
-    EnumSchema, IndexSchema, KeyDef, MemberPathResolution, Node, NodeKind, ResourceSchema, Type,
-};
-pub(crate) use marrow_store::Decimal;
-pub(crate) use marrow_store::backend::{Backend, Presence, StoreError};
-pub(crate) use marrow_store::mem::MemStore;
-pub(crate) use marrow_store::path::{
-    ChildSegment, PathSegment, SavedKey, decode_path, encode_path,
-};
-pub(crate) use marrow_store::value::{
-    SavedValue, ScalarType, ValueError, decode_value, encode_value,
-};
-pub(crate) use marrow_syntax::{
-    ArgMode, Argument, BinaryOp, Block, Expression, ForBinding, FunctionDecl, InterpolationPart,
-    LiteralKind, MatchArm, ParamMode, SourceSpan, Statement, UnaryOp, duration_unit_seconds,
-};
-pub(crate) use write::{
-    ResourceValue, SuppliedIdentity, WRITE_RAW_DECLARED_FIELD, WRITE_RAW_REQUIRES_MAINTENANCE,
-    WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, WritePlan, decode_identity,
-    next_id, next_layer_pos, next_nested_layer_pos, plan_field_delete, plan_field_write,
-    plan_identity_field_write, plan_layer_group_write, plan_layer_identity_leaf_write,
-    plan_layer_leaf_write, plan_nested_field_write, plan_nested_identity_field_write,
-    plan_nested_layer_identity_leaf_write, plan_nested_layer_leaf_write, plan_resource_delete,
-    plan_resource_write, validate_required_fields_after_field_write,
-    validate_required_fields_for_entry,
-};
 
 pub mod base64;
 pub(crate) mod write;
@@ -76,19 +35,6 @@ mod schema_query;
 mod stdlib;
 mod value;
 mod write_dispatch;
-
-pub(crate) use call::*;
-pub(crate) use collection::*;
-pub(crate) use env::*;
-pub(crate) use error::*;
-pub(crate) use exec::*;
-pub(crate) use expr::*;
-pub(crate) use path::*;
-pub(crate) use read::*;
-pub(crate) use schema_query::*;
-pub(crate) use stdlib::*;
-pub(crate) use value::*;
-pub(crate) use write_dispatch::*;
 
 pub use call::{evaluate_function, run_entry, run_entry_with_debugger, run_entry_with_host};
 pub use error::{

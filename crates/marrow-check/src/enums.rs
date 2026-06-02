@@ -1,11 +1,27 @@
 //! Enum resolution and `match` checking, plus cross-module named-type
 //! normalization the call boundary relies on.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use marrow_schema::{MemberPathResolution, ResourceSchema, Type};
+use marrow_store::value::ScalarType;
+use marrow_syntax::{Severity, SourceSpan};
+
+use crate::checks::{check_block_types, for_frame};
+use crate::infer::{bind, binding_type, infer_only, infer_type};
+use crate::typerules::marrow_type_name;
+use crate::{
+    CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
+    CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
+    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CheckDiagnostic, CheckedModule, CheckedProgram,
+    Def, DefItem, MarrowType, Resolution, ResolvableKind, TypeNames, build_alias_map, expand_alias,
+    expand_module_alias, find_store_resource, module_of_file, resolve, resource_type_name,
+};
 
 /// Re-resolve every named signature slot in the assembled program against the
 /// whole project, so a parameter, return, or constant annotation carries its true
-/// enum owner or resource identity.
+/// enum owner or store identity.
 ///
 /// Each module's signatures are first resolved per-file against that module's own
 /// names, which cannot place a qualified `mod::Status` or a bare name owned by
@@ -726,10 +742,9 @@ pub(crate) fn resolve_type(
     )
 }
 
-/// Resolve a resource or resource-identity type annotation to the resource's
-/// canonical checker type. Qualified spellings (`module::Book` and
-/// `module::Book::Id`) use the same import-alias expansion as calls, so an alias
-/// can name a module without minting a second nominal type.
+/// Resolve a resource or store-identity type annotation to the checker type.
+/// Qualified resource spellings use the same import-alias expansion as calls, so
+/// an alias can name a module without minting a second nominal type.
 fn resolve_resource_annotation(
     ty: &marrow_syntax::TypeRef,
     program: &CheckedProgram,
@@ -739,7 +754,7 @@ fn resolve_resource_annotation(
     resolve_resource_type(&Type::resolve(ty), program, aliases, file)
 }
 
-fn resolve_resource_type(
+pub(crate) fn resolve_resource_type(
     ty: &Type,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
@@ -748,22 +763,15 @@ fn resolve_resource_type(
     match ty {
         Type::Sequence(element) => resolve_resource_type(element, program, aliases, file)
             .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
-        Type::Identity(resource) => {
-            let mut segments = split_type_path(resource);
-            segments.push("Id".to_string());
-            resolve_resource_path(
-                program,
-                aliases,
-                file,
-                &segments,
-                ResolvableKind::ResourceIdentity,
-            )
-            .map(|resource| MarrowType::Identity(resource.name.clone()))
-        }
+        Type::Identity(store_root) => find_store_resource(program, store_root)
+            .map(|_| MarrowType::Identity(store_root.clone())),
         Type::Named(name) => {
             let segments = split_type_path(name);
-            resolve_resource_path(program, aliases, file, &segments, ResolvableKind::Resource)
-                .map(|resource| MarrowType::Resource(resource.name.clone()))
+            resolve_resource_path(program, aliases, file, &segments, ResolvableKind::Resource).map(
+                |(resource, module)| {
+                    MarrowType::Resource(resource_type_name(module, &resource.name))
+                },
+            )
         }
         _ => None,
     }
@@ -779,7 +787,7 @@ fn resolve_resource_path<'p>(
     file: &Path,
     segments: &[String],
     kind: ResolvableKind,
-) -> Option<&'p ResourceSchema> {
+) -> Option<(&'p ResourceSchema, &'p str)> {
     match resolve(
         program,
         module_of_file(program, file).unwrap_or_default(),
@@ -787,9 +795,10 @@ fn resolve_resource_path<'p>(
         kind,
     ) {
         Resolution::Found(Def {
+            module,
             item: DefItem::Resource(resource),
             ..
-        }) => Some(resource),
+        }) => Some((resource, module.name.as_str())),
         _ => None,
     }
 }

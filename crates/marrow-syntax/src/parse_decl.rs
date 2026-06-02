@@ -4,8 +4,21 @@
 //! helpers they structure everything above the expression level.
 
 use crate::parse_expr::{ExprParser, join_spans};
-use crate::token::{is_identifier, is_qualified_name, is_type_text, keyword, tokens_in_range};
-use crate::*;
+use crate::{
+    PARSE_SYNTAX,
+    ast::{
+        Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration,
+        ElseIf, EnumDecl, EnumMember, Expression, FieldDecl, ForBinding, FunctionDecl, GroupDecl,
+        IndexDecl, KeyParam, MatchArm, ModuleDecl, ParamDecl, ParamMode, ParsedSource,
+        ResourceDecl, ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, TypeRef,
+        UseDecl,
+    },
+    diagnostic::{Diagnostic, Severity, SourceSpan},
+    token::{
+        Keyword, Token, TokenKind, is_identifier, is_qualified_name, is_type_text, keyword,
+        tokens_in_range,
+    },
+};
 
 struct FunctionHead {
     public: bool,
@@ -768,8 +781,17 @@ impl<'a> DeclParser<'a> {
                 }
                 TokenKind::Keyword(Keyword::Resource) if self.keyword_introduces_decl() => {
                     let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
-                    let resource = self.parse_resource(decl_docs);
+                    let (resource, store) = self.parse_resource(decl_docs);
                     file.declarations.push(Declaration::Resource(resource));
+                    if let Some(store) = store {
+                        file.declarations.push(Declaration::Store(store));
+                    }
+                    saw_top_level_item = true;
+                }
+                TokenKind::Keyword(Keyword::Store) if self.keyword_introduces_decl() => {
+                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
+                    let store = self.parse_store(decl_docs);
+                    file.declarations.push(Declaration::Store(store));
                     saw_top_level_item = true;
                 }
                 _ if self.starts_enum_header() => {
@@ -796,7 +818,9 @@ impl<'a> DeclParser<'a> {
                 }
                 _ => {
                     self.flush_docs_as_comments(&mut docs, &mut file.comments);
-                    self.error_header("expected module, use, const, resource, or fn declaration");
+                    self.error_header(
+                        "expected module, use, const, resource, store, or fn declaration",
+                    );
                     saw_top_level_item = true;
                 }
             }
@@ -955,7 +979,7 @@ impl<'a> DeclParser<'a> {
         (name, ty)
     }
 
-    fn parse_resource(&mut self, docs: Vec<String>) -> ResourceDecl {
+    fn parse_resource(&mut self, docs: Vec<String>) -> (ResourceDecl, Option<StoreDecl>) {
         let span = self.header_span();
         let header = self.take_header_line();
         let (name, store) = match parse_resource_head(self.source, &header[1..]) {
@@ -965,26 +989,80 @@ impl<'a> DeclParser<'a> {
                 (String::new(), None)
             }
         };
-        let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
-            self.parse_resource_members()
+        let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.parse_resource_members(store.is_some())
         } else {
             self.error_span(span, "expected an indented resource body");
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
-        ResourceDecl {
+        let store_decl = store.clone().map(|root| StoreDecl {
+            docs: Vec::new(),
+            root,
+            resource: name.clone(),
+            indexes,
+            comments: Vec::new(),
+            span,
+        });
+        let resource = ResourceDecl {
             docs,
             name,
-            store,
             members,
+            comments,
+            span,
+        };
+        (resource, store_decl)
+    }
+
+    fn parse_store(&mut self, docs: Vec<String>) -> StoreDecl {
+        let span = self.header_span();
+        let header = self.take_header_line();
+        let (root, resource) = match parse_store_head(self.source, &header[1..]) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                self.error_span(span, message);
+                (
+                    SavedRoot {
+                        root: String::new(),
+                        keys: Vec::new(),
+                    },
+                    String::new(),
+                )
+            }
+        };
+        let (indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.parse_store_members()
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        StoreDecl {
+            docs,
+            root,
+            resource,
+            indexes,
             comments,
             span,
         }
     }
 
+    fn parse_store_members(&mut self) -> (Vec<IndexDecl>, Vec<Comment>) {
+        let (members, indexes, comments) = self.parse_resource_members(true);
+        for member in members {
+            self.error_span(
+                resource_member_span(&member),
+                "store bodies accept only index declarations",
+            );
+        }
+        (indexes, comments)
+    }
+
     /// Parse an `INDENT … DEDENT` block of resource members. Nested groups recurse
     /// on their own child block. Each member's span is its whole header line.
-    fn parse_resource_members(&mut self) -> (Vec<ResourceMember>, Vec<Comment>) {
+    fn parse_resource_members(
+        &mut self,
+        allow_indexes: bool,
+    ) -> (Vec<ResourceMember>, Vec<IndexDecl>, Vec<Comment>) {
         let mut members = Vec::new();
+        let mut indexes = Vec::new();
         let mut comments = Vec::new();
         let mut docs: Vec<Token> = Vec::new();
         self.advance(); // INDENT
@@ -1037,11 +1115,20 @@ impl<'a> DeclParser<'a> {
                         let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                         let header = self.take_header_line();
                         match parse_index_tokens(self.source, &header[1..]) {
-                            Ok(index) => members.push(ResourceMember::Index(IndexDecl {
-                                docs: member_docs,
-                                span,
-                                ..index
-                            })),
+                            Ok(index) => {
+                                if allow_indexes {
+                                    indexes.push(IndexDecl {
+                                        docs: member_docs,
+                                        span,
+                                        ..index
+                                    });
+                                } else {
+                                    self.error_span(
+                                        err,
+                                        "index declarations belong in a store body",
+                                    );
+                                }
+                            }
                             Err(message) => self.error_span(err, message),
                         }
                         continue;
@@ -1068,16 +1155,22 @@ impl<'a> DeclParser<'a> {
                             }));
                         }
                         Ok(MemberHead::Group { name, keys }) => {
-                            let (children, child_comments) =
+                            let (children, child_indexes, child_comments) =
                                 if matches!(self.peek(), Some(TokenKind::Indent)) {
-                                    self.parse_resource_members()
+                                    self.parse_resource_members(false)
                                 } else {
                                     self.error_span(
                                         err,
                                         "expected an indented resource group body",
                                     );
-                                    (Vec::new(), Vec::new())
+                                    (Vec::new(), Vec::new(), Vec::new())
                                 };
+                            for index in child_indexes {
+                                self.error_span(
+                                    index.span,
+                                    "index declarations belong in a store body",
+                                );
+                            }
                             members.push(ResourceMember::Group(GroupDecl {
                                 docs: member_docs,
                                 name,
@@ -1093,7 +1186,7 @@ impl<'a> DeclParser<'a> {
             }
         }
         self.flush_docs_as_comments(&mut docs, &mut comments);
-        (members, comments)
+        (members, indexes, comments)
     }
 
     fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
@@ -1699,6 +1792,53 @@ fn parse_resource_head(
         parse_paren_key_params(source, rest)?
     };
     Ok((name, Some(SavedRoot { root, keys })))
+}
+
+/// Parse a store header's tokens after the `store` keyword:
+/// `^root [(key: type, ...)]: Resource`.
+fn parse_store_head(source: &str, tokens: &[Token]) -> Result<(SavedRoot, String), &'static str> {
+    if !matches!(
+        tokens.first().map(|token| token.kind),
+        Some(TokenKind::Caret)
+    ) {
+        return Err("expected saved root beginning with `^`");
+    }
+    let root = match tokens.get(1) {
+        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+        _ => return Err("expected saved root name"),
+    };
+    let rest = &tokens[2..];
+    let colon = rest
+        .iter()
+        .scan(0usize, |depth, token| {
+            let top_level_colon = *depth == 0 && token.kind == TokenKind::Colon;
+            match token.kind {
+                TokenKind::LeftParen => *depth += 1,
+                TokenKind::RightParen => *depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            Some(top_level_colon)
+        })
+        .position(|top_level_colon| top_level_colon)
+        .ok_or("expected `: Resource` after store root")?;
+    let keys = if colon == 0 {
+        Vec::new()
+    } else {
+        parse_paren_key_params(source, &rest[..colon])?
+    };
+    let resource_tokens = &rest[colon + 1..];
+    let resource = match resource_tokens {
+        [token] if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+        _ => return Err("expected resource name after store root"),
+    };
+    Ok((SavedRoot { root, keys }, resource))
+}
+
+fn resource_member_span(member: &ResourceMember) -> SourceSpan {
+    match member {
+        ResourceMember::Field(field) => field.span,
+        ResourceMember::Group(group) => group.span,
+    }
 }
 
 /// Parse a parenthesized `(name: type, ...)` key parameter list spanning the

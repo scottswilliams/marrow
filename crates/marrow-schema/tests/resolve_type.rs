@@ -3,8 +3,9 @@
 //! These pin the cases where the structured [`Type`] must classify a spelling
 //! exactly as the old string probes did: scalar names (including the
 //! `string`/`Str` bridge), the `sequence[T]` sugar (including trimming and
-//! nesting), `X::Id` identity, explicit `unknown`, and the bare/qualified names
-//! that stay `Named` for the checker to resolve against the project.
+//! nesting), canonical `Id(^store)` identity, explicit `unknown`, and the
+//! bare/qualified names that stay `Named` for the checker to resolve against the
+//! project.
 
 use marrow_schema::{ScalarType, Type};
 use marrow_syntax::{SourceSpan, TypeRef};
@@ -66,8 +67,13 @@ fn nested_sequence_recurses_on_the_element() {
 }
 
 #[test]
-fn id_suffix_resolves_to_an_identity_of_the_named_resource() {
-    assert_eq!(resolve("Book::Id"), Type::Identity("Book".to_string()));
+fn canonical_store_id_resolves_to_an_identity() {
+    assert_eq!(resolve("Id(^books)"), Type::Identity("books".to_string()));
+}
+
+#[test]
+fn resource_id_suffix_stays_named() {
+    assert_eq!(resolve("Book::Id"), Type::Named("Book::Id".to_string()));
 }
 
 #[test]
@@ -98,7 +104,7 @@ fn display_round_trips_the_canonical_spelling() {
     assert_eq!(resolve("int").to_string(), "int");
     assert_eq!(resolve("string").to_string(), "string");
     assert_eq!(resolve("sequence[string]").to_string(), "sequence[string]");
-    assert_eq!(resolve("Book::Id").to_string(), "Book::Id");
+    assert_eq!(resolve("Id(^books)").to_string(), "Id(^books)");
     assert_eq!(resolve("unknown").to_string(), "unknown");
     assert_eq!(resolve("Book").to_string(), "Book");
 }
@@ -121,5 +127,5 @@ fn an_enum_field_stores_as_an_int_ordinal() {
     assert_eq!(resolve("string").stored_scalar(), Some(ScalarType::Str));
     assert_eq!(resolve("Status").stored_scalar(), Some(ScalarType::Int));
     assert_eq!(resolve("sequence[int]").stored_scalar(), None);
-    assert_eq!(resolve("Book::Id").stored_scalar(), None);
+    assert_eq!(resolve("Id(^books)").stored_scalar(), None);
 }

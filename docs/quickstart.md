@@ -46,21 +46,22 @@ Create `src/shelf/books.mw`:
 ```mw
 module shelf::books
 
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
     required shelf: string
     loanedTo: string
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
 
-pub fn add(title: string, author: string, shelf: string): Book::Id
+pub fn add(title: string, author: string, shelf: string): Id(^books)
     var book: Book
     book.title = title
     book.author = author
     book.shelf = shelf
 
-    const id: Book::Id = nextId(^books)
+    const id: Id(^books) = nextId(^books)
     ^books(id) = book
     return id
 
@@ -76,13 +77,13 @@ pub fn main()
 
 What this declares:
 
-- `resource Book at ^books(id: int)` is a typed tree shape stored under the
-  saved root `^books`, keyed by an `int` identity. It generates the `Book::Id`
-  type.
+- `resource Book` declares the typed tree shape. `store ^books(id: int): Book`
+  saves that shape under `^books`, keyed by an `int` identity whose type is
+  `Id(^books)`.
 - `required` fields must be present; sparse fields like `loanedTo` may be
   absent.
-- `index byShelf(shelf, id)` declares an alternate lookup tree. Assigning a
-  `Book` updates the index in the same managed write.
+- `index byShelf(shelf, id)` belongs to the store and declares an alternate
+  lookup tree. Assigning a `Book` updates the index in the same managed write.
 - `nextId(^books)` allocates the next identity for the root.
 - `^books(id) = book` saves the local `book` value under that identity. The `^`
   is what makes data saved rather than local to the run.
