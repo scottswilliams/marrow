@@ -106,7 +106,11 @@ pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {
 
 pub(crate) fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
     match *bytes.first()? {
-        KEY_BOOL => Some(SavedKey::Bool(*bytes.get(1)? != 0)),
+        KEY_BOOL => match *bytes.get(1)? {
+            0 => Some(SavedKey::Bool(false)),
+            1 => Some(SavedKey::Bool(true)),
+            _ => None,
+        },
         KEY_INT => {
             let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
             Some(SavedKey::Int(

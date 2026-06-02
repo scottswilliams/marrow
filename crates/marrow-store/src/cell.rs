@@ -22,8 +22,9 @@ const NODE_END: u8 = 0x00;
 const LEAF_CELL: u8 = 0x10;
 const SEQUENCE_CELL: u8 = 0x20;
 const INDEX_IDENTITY: u8 = 0x00;
+const INDEX_ENTRY_END: u8 = 0x00;
 
-/// An opaque stable catalog ID from accepted catalog metadata.
+/// An opaque catalog ID in the tree-cell storage key shape.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CatalogId(String);
 
@@ -69,6 +70,7 @@ pub enum MetaCell {
     CatalogEpoch,
     LayoutEpoch,
     EngineProfile,
+    Commit,
 }
 
 impl MetaCell {
@@ -77,6 +79,7 @@ impl MetaCell {
             Self::CatalogEpoch => 0x01,
             Self::LayoutEpoch => 0x02,
             Self::EngineProfile => 0x03,
+            Self::Commit => 0x04,
         }
     }
 }
@@ -146,6 +149,7 @@ impl CellKey {
         encode_keys(index_keys, &mut bytes);
         bytes.push(INDEX_IDENTITY);
         encode_keys(identity, &mut bytes);
+        bytes.push(INDEX_ENTRY_END);
         Self(bytes)
     }
 

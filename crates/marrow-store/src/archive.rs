@@ -1,21 +1,21 @@
-//! Raw saved-path archive format for a saved tree.
+//! Raw saved-path archive format for the ordered-byte backend.
 //!
-//! An archive is the store's whole-tree dump — the ordered (path, value) pairs
-//! [`Backend::scan`](crate::backend::Backend) yields from the empty prefix —
-//! framed with a small manifest. This stream remains portable between the memory
-//! and redb ordered-byte engines. The typed tree-cell backup boundary is a
-//! separate storage-layer contract. Restore replays the records inside one
-//! transaction, so a target either gains the whole archive or is left unchanged.
+//! An archive is a raw ordered (path, value) stream framed with a small manifest.
+//! It remains useful for saved-path inspection and tests, but typed tree-cell
+//! export is a storage-layer contract above this raw byte stream. Reading an
+//! archive replays the records inside one transaction, so a target either gains
+//! the whole archive or is left unchanged.
 
 use std::io::{ErrorKind, Read, Write};
 
 use crate::backend::{Backend, StoreError};
 
-/// The archive magic, identifying the file and guarding against restoring
+/// The archive magic, identifying the file and guarding against accepting
 /// arbitrary bytes.
 const MAGIC: &[u8; 8] = b"MARROW\0A";
 /// The archive format version this build writes and accepts.
 const FORMAT_VERSION: u32 = 1;
+const ARCHIVE_SCAN_LIMIT: usize = 1024;
 
 fn io(op: &'static str) -> impl Fn(std::io::Error) -> StoreError {
     move |error| StoreError::Io {
@@ -24,30 +24,68 @@ fn io(op: &'static str) -> impl Fn(std::io::Error) -> StoreError {
     }
 }
 
-/// Write `backend`'s whole saved tree to `out` as a raw archive, returning the
+/// Write `backend`'s ordered saved-path stream to `out` as a raw archive, returning the
 /// number of records written.
 pub fn write_archive(backend: &dyn Backend, out: &mut dyn Write) -> Result<u64, StoreError> {
-    let page = backend.scan(&[], usize::MAX)?;
-    out.write_all(MAGIC).map_err(io("backup"))?;
+    let count = count_records(backend)?;
+    out.write_all(MAGIC).map_err(io("archive.write"))?;
     out.write_all(&FORMAT_VERSION.to_le_bytes())
-        .map_err(io("backup"))?;
-    let count = page.entries.len() as u64;
-    out.write_all(&count.to_le_bytes()).map_err(io("backup"))?;
-    for (path, value) in &page.entries {
-        write_chunk(out, path)?;
-        write_chunk(out, value)?;
-    }
+        .map_err(io("archive.write"))?;
+    out.write_all(&count.to_le_bytes())
+        .map_err(io("archive.write"))?;
+    write_records(backend, out)?;
     Ok(count)
 }
 
-/// Restore an archive read from `input` into `backend`, returning the number of
-/// records restored. The replay runs in one transaction: any read or write error
-/// rolls the target back to its prior state. The caller decides target policy
-/// (e.g. requiring an empty target for a normal restore).
+fn count_records(backend: &dyn Backend) -> Result<u64, StoreError> {
+    let mut count = 0u64;
+    scan_records(backend, |_, _| {
+        count = count.checked_add(1).ok_or(StoreError::LimitExceeded {
+            limit: "archive record count",
+        })?;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+fn write_records(backend: &dyn Backend, out: &mut dyn Write) -> Result<(), StoreError> {
+    scan_records(backend, |path, value| {
+        write_chunk(out, path)?;
+        write_chunk(out, value)
+    })
+}
+
+fn scan_records(
+    backend: &dyn Backend,
+    mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let mut cursor = None;
+    loop {
+        let page = match cursor.as_deref() {
+            Some(cursor) => backend.scan_after(&[], cursor, ARCHIVE_SCAN_LIMIT)?,
+            None => backend.scan(&[], ARCHIVE_SCAN_LIMIT)?,
+        };
+        for (path, value) in &page.entries {
+            visit(path, value)?;
+        }
+        if !page.truncated {
+            return Ok(());
+        }
+        cursor = page.entries.last().map(|(path, _)| path.clone());
+        if cursor.is_none() {
+            return Ok(());
+        }
+    }
+}
+
+/// Read an archive from `input` into `backend`, returning the number of records
+/// replayed. The replay runs in one transaction: any read or write error rolls
+/// the target back to its prior state.
 pub fn read_archive(input: &mut dyn Read, backend: &mut dyn Backend) -> Result<u64, StoreError> {
     let count = read_header(input)?;
     backend.begin()?;
-    let result = restore_records(input, backend, count).and_then(|()| require_archive_eof(input));
+    let result =
+        read_records_into_backend(input, backend, count).and_then(|()| require_archive_eof(input));
     match result {
         Ok(()) => {
             backend.commit()?;
@@ -63,7 +101,7 @@ pub fn read_archive(input: &mut dyn Read, backend: &mut dyn Backend) -> Result<u
 /// Read and validate the archive manifest, returning its record count.
 fn read_header(input: &mut dyn Read) -> Result<u64, StoreError> {
     let mut magic = [0u8; 8];
-    input.read_exact(&mut magic).map_err(io("restore"))?;
+    input.read_exact(&mut magic).map_err(io("archive.read"))?;
     if &magic != MAGIC {
         return Err(StoreError::Corruption {
             message: "not a Marrow archive".into(),
@@ -77,12 +115,12 @@ fn read_header(input: &mut dyn Read) -> Result<u64, StoreError> {
         });
     }
     let mut count = [0u8; 8];
-    input.read_exact(&mut count).map_err(io("restore"))?;
+    input.read_exact(&mut count).map_err(io("archive.read"))?;
     Ok(u64::from_le_bytes(count))
 }
 
 /// Replay `count` (path, value) records from `input` into `backend`.
-fn restore_records(
+fn read_records_into_backend(
     input: &mut dyn Read,
     backend: &mut dyn Backend,
     count: u64,
@@ -107,7 +145,7 @@ fn require_archive_eof(input: &mut dyn Read) -> Result<(), StoreError> {
                 });
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            Err(error) => return Err(io("restore")(error)),
+            Err(error) => return Err(io("archive.read")(error)),
         }
     }
 }
@@ -115,16 +153,16 @@ fn require_archive_eof(input: &mut dyn Read) -> Result<(), StoreError> {
 /// Write a length-prefixed byte chunk: `u32` little-endian length, then bytes.
 fn write_chunk(out: &mut dyn Write, bytes: &[u8]) -> Result<(), StoreError> {
     let len = chunk_len(bytes.len())?;
-    out.write_all(&len.to_le_bytes()).map_err(io("backup"))?;
-    out.write_all(bytes).map_err(io("backup"))?;
+    out.write_all(&len.to_le_bytes())
+        .map_err(io("archive.write"))?;
+    out.write_all(bytes).map_err(io("archive.write"))?;
     Ok(())
 }
 
-/// The `u32` length prefix for a chunk of `len` bytes. Archive framing is the sole
-/// producer of [`StoreError::LimitExceeded`]: a chunk longer than `u32::MAX` would
-/// not fit the length prefix, so it is a typed limit error rather than a silent
-/// truncation. (No backend enforces a key/value size limit; this is the only path
-/// that yields `store.limit`.)
+/// The `u32` length prefix for a chunk of `len` bytes. A chunk longer than
+/// `u32::MAX` would not fit the length prefix, so it is a typed limit error
+/// rather than a silent truncation. No backend enforces a key/value size limit;
+/// Marrow-owned framing layers are what yield `store.limit`.
 fn chunk_len(len: usize) -> Result<u32, StoreError> {
     u32::try_from(len).map_err(|_| StoreError::LimitExceeded {
         limit: "archive chunk length",
@@ -140,7 +178,7 @@ fn read_chunk(input: &mut dyn Read) -> Result<Vec<u8>, StoreError> {
     let read = input
         .take(len)
         .read_to_end(&mut bytes)
-        .map_err(io("restore"))?;
+        .map_err(io("archive.read"))?;
     if read as u64 != len {
         return Err(StoreError::Corruption {
             message: "archive ended mid-record".into(),
@@ -151,7 +189,7 @@ fn read_chunk(input: &mut dyn Read) -> Result<Vec<u8>, StoreError> {
 
 fn read_u32(input: &mut dyn Read) -> Result<u32, StoreError> {
     let mut bytes = [0u8; 4];
-    input.read_exact(&mut bytes).map_err(io("restore"))?;
+    input.read_exact(&mut bytes).map_err(io("archive.read"))?;
     Ok(u32::from_le_bytes(bytes))
 }
 

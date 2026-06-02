@@ -135,21 +135,18 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
     assert!(!created, "dump must not create the store");
 }
 
-/// Write `records` to `path` as a Marrow archive, reusing the store's own
-/// archive writer over an in-memory store so the bytes match a real backup. This
-/// lets a test plant a deliberately-malformed value at a declared path, then
-/// restore it through the CLI to exercise integrity over corruption.
-fn write_archive_with(path: &Path, records: &[(Vec<u8>, Vec<u8>)]) {
-    use marrow_store::mem::MemStore;
-    let mut store = MemStore::new();
+/// Plant exact raw saved-path records in the native store fixture.
+fn write_native_store_with(project: &Path, records: &[(Vec<u8>, Vec<u8>)]) {
+    use marrow_store::backend::Backend;
+    use marrow_store::redb::RedbStore;
+    let store_dir = project.join(".data");
+    fs::create_dir_all(&store_dir).expect("create store dir");
+    let mut store = RedbStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     for (key, value) in records {
-        store.write(key, value.clone());
+        store
+            .write(key, value.clone())
+            .expect("write native record");
     }
-    let file = fs::File::create(path).expect("create archive");
-    let mut writer = std::io::BufWriter::new(file);
-    marrow_store::archive::write_archive(&store, &mut writer).expect("write archive");
-    use std::io::Write;
-    writer.flush().expect("flush archive");
 }
 
 #[test]
@@ -204,25 +201,17 @@ fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
 fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     use marrow_store::path::{PathSegment, SavedKey, encode_path};
 
-    // An empty project, with a hand-built archive planting a bad value at the
-    // declared int field `^counter(1).value`. Restore writes it as-is, then
-    // integrity finds the mismatch.
+    // An empty project with a hand-built bad value at the declared int field
+    // `^counter(1).value`. Integrity must find the mismatch.
     let project = native_project("data-integrity-decode");
     let dir = project.to_str().unwrap().to_string();
-    let archive = project.join("corrupt.mra");
     let bad_path = encode_path(&[
         PathSegment::Root("counter".into()),
         PathSegment::RecordKey(SavedKey::Int(1)),
         PathSegment::Field("value".into()),
     ]);
     // `+1` is not a canonical int form, so `decode_value` rejects it.
-    write_archive_with(&archive, &[(bad_path, b"+1".to_vec())]);
-    assert_eq!(
-        marrow(&["restore", &dir, archive.to_str().unwrap()])
-            .status
-            .code(),
-        Some(0)
-    );
+    write_native_store_with(&project, &[(bad_path, b"+1".to_vec())]);
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -258,7 +247,6 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
          \x20\x20\x20\x20authorId: Id(^authors)\n",
     );
     let dir = project.to_str().unwrap().to_string();
-    let archive = project.join("corrupt.mra");
     let leaf_path = encode_path(&[
         PathSegment::Root("books".into()),
         PathSegment::RecordKey(SavedKey::Int(1)),
@@ -268,13 +256,7 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
     // leaves bytes over, which `decode_identity_arity` rejects.
     let mut corrupt = encode_key_value(&SavedKey::Int(7));
     corrupt.push(0xFF);
-    write_archive_with(&archive, &[(leaf_path, corrupt)]);
-    assert_eq!(
-        marrow(&["restore", &dir, archive.to_str().unwrap()])
-            .status
-            .code(),
-        Some(0)
-    );
+    write_native_store_with(&project, &[(leaf_path, corrupt)]);
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -312,7 +294,6 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
          \x20\x20\x20\x20authorId: Id(^authors)\n",
     );
     let dir = project.to_str().unwrap().to_string();
-    let archive = project.join("wrongkey.mra");
     let leaf_path = encode_path(&[
         PathSegment::Root("books".into()),
         PathSegment::RecordKey(SavedKey::Int(1)),
@@ -321,13 +302,7 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
     // One clean string key where `^authors` declares `int`: decodes
     // by arity but is the wrong scalar for the referenced keyspace.
     let wrong_typed = encode_key_value(&SavedKey::Str("not-an-int".into()));
-    write_archive_with(&archive, &[(leaf_path, wrong_typed)]);
-    assert_eq!(
-        marrow(&["restore", &dir, archive.to_str().unwrap()])
-            .status
-            .code(),
-        Some(0)
-    );
+    write_native_store_with(&project, &[(leaf_path, wrong_typed)]);
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -344,20 +319,13 @@ fn data_integrity_reports_orphan_data_under_an_unknown_root() {
 
     let project = native_project("data-integrity-orphan");
     let dir = project.to_str().unwrap().to_string();
-    let archive = project.join("orphan.mra");
     // `^ghosts(1).value` is under a root the schema does not declare.
     let orphan_path = encode_path(&[
         PathSegment::Root("ghosts".into()),
         PathSegment::RecordKey(SavedKey::Int(1)),
         PathSegment::Field("value".into()),
     ]);
-    write_archive_with(&archive, &[(orphan_path, b"7".to_vec())]);
-    assert_eq!(
-        marrow(&["restore", &dir, archive.to_str().unwrap()])
-            .status
-            .code(),
-        Some(0)
-    );
+    write_native_store_with(&project, &[(orphan_path, b"7".to_vec())]);
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -377,19 +345,12 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
     // orphan — and integrity must flag it as data the schema cannot trust.
     let project = native_project("data-integrity-key-type");
     let dir = project.to_str().unwrap().to_string();
-    let archive = project.join("badkey.mra");
     let bad_path = encode_path(&[
         PathSegment::Root("counter".into()),
         PathSegment::RecordKey(SavedKey::Str("oops".into())),
         PathSegment::Field("value".into()),
     ]);
-    write_archive_with(&archive, &[(bad_path, b"7".to_vec())]);
-    assert_eq!(
-        marrow(&["restore", &dir, archive.to_str().unwrap()])
-            .status
-            .code(),
-        Some(0)
-    );
+    write_native_store_with(&project, &[(bad_path, b"7".to_vec())]);
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -488,6 +449,52 @@ fn data_stats_format_json_emits_counts() {
 }
 
 #[test]
+fn data_commands_page_through_large_native_store() {
+    use marrow_store::path::{PathSegment, SavedKey, encode_path};
+
+    const RECORDS: usize = 150;
+
+    let project = native_project("data-paged");
+    let dir = project.to_str().unwrap().to_string();
+    let records = (1..=RECORDS)
+        .map(|id| {
+            (
+                encode_path(&[
+                    PathSegment::Root("counter".into()),
+                    PathSegment::RecordKey(SavedKey::Int(id as i64)),
+                    PathSegment::Field("value".into()),
+                ]),
+                b"7".to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    write_native_store_with(&project, &records);
+
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
+    let dump = marrow(&["data", "dump", "--format", "jsonl", &dir]);
+    let integrity = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(stats.status.code(), Some(0), "{stats:?}");
+    let stats_json: serde_json::Value = serde_json::from_slice(&stats.stdout).expect("stats json");
+    assert_eq!(stats_json["records"], serde_json::json!(RECORDS));
+
+    assert_eq!(dump.status.code(), Some(0), "{dump:?}");
+    let dump_stdout = String::from_utf8(dump.stdout).expect("dump utf8");
+    let lines = dump_stdout.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), RECORDS + 1);
+    let summary: serde_json::Value = serde_json::from_str(lines[RECORDS]).expect("summary json");
+    assert_eq!(summary["records"], serde_json::json!(RECORDS));
+
+    assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
+    let integrity_stdout = String::from_utf8(integrity.stdout).expect("integrity utf8");
+    assert!(
+        integrity_stdout.contains(&format!("({RECORDS} records)")),
+        "{integrity_stdout}"
+    );
+}
+
+#[test]
 fn data_dump_format_jsonl_emits_a_record_then_a_summary() {
     let (project, dir) = seeded_project("data-dump-jsonl");
     let output = marrow(&["data", "dump", "--format", "jsonl", &dir]);
@@ -511,19 +518,12 @@ fn data_integrity_format_json_problems_carry_a_tooling_kind() {
 
     let project = native_project("data-integrity-json");
     let dir = project.to_str().unwrap().to_string();
-    let archive = project.join("orphan.mra");
     let orphan_path = encode_path(&[
         PathSegment::Root("ghosts".into()),
         PathSegment::RecordKey(SavedKey::Int(1)),
         PathSegment::Field("value".into()),
     ]);
-    write_archive_with(&archive, &[(orphan_path, b"7".to_vec())]);
-    assert_eq!(
-        marrow(&["restore", &dir, archive.to_str().unwrap()])
-            .status
-            .code(),
-        Some(0)
-    );
+    write_native_store_with(&project, &[(orphan_path, b"7".to_vec())]);
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();

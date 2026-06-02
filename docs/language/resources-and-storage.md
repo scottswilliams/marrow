@@ -544,17 +544,15 @@ data-evolution code.
 
 ## Backup And Restore
 
-Backups are portable saved-data archives. They contain ordered paths, values,
-and a small manifest. They are not engine files.
+Typed backup/restore is deferred until the tree-cell backup manifest exists.
+Backups are not engine files: they must carry enough source, catalog, typed data,
+index, sequence, and engine-profile facts to restore under the Marrow storage
+contract.
 
-Generated index trees are included as saved paths.
+Generated index data is restored by validation or rebuild, not by treating raw
+saved paths as the production backup contract.
 
-With matching or bundled source available, tools can show backup entries as
-typed resources. Without source, tools can still restore or inspect the raw
-tree.
-
-Normal restore writes into an empty target. Non-empty restore modes are explicit
-maintenance actions.
+Non-empty restore modes are explicit maintenance actions.
 
 ## Transactions
 

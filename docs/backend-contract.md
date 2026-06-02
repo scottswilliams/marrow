@@ -16,12 +16,15 @@ Two backends implement the same contract and pass the same conformance suite:
 Marrow tree-cell key construction lives above those engines. The v0 physical
 key-construction substrate defines data, index, sequence, catalog/meta, and blob
 cell addresses. `Backend` traversal, runtime callers, CLI inspection, and raw
-archive operations use the saved-path operations below. Tree-cell data/index/
-sequence keys derive from stable catalog IDs and typed key values; no physical
-tree-cell key derives from source root names, member names, index names, enum
-member spelling, or source order. Typed record and index identity uses the same
-`SavedKey` ordering as Marrow saved keys. Catalog/meta and blob families occupy
-disjoint byte ranges from data cells.
+archive operations use the saved-path operations below. The typed tree-cell
+store facade is the production boundary for tree-cell writes: it constructs
+physical keys through `CellKey` and exposes narrow operations for nodes, leaves,
+sequence positions, exact index entries, exact index tuple scans, and metadata.
+Tree-cell data/index/sequence keys derive from stable catalog IDs and typed key
+values; no physical tree-cell key derives from source root names, member names,
+index names, enum member spelling, or source order. Typed record and index
+identity uses the same `SavedKey` ordering as Marrow saved keys. Catalog/meta
+and blob families occupy disjoint byte ranges from data cells.
 
 ## Tree-Cell Keys And Marrow Order
 
@@ -43,19 +46,55 @@ prefix instead of changing the meaning of existing v0 keys.
 | Placement prefix | `00` | Reserved empty/default placement prefix for v0. |
 | Profile byte | `01` | Tree-cell key profile v0. |
 | Family tags | `10`, `11`, `20`, `30`, `40` | Meta, catalog, data, index, and blob families. Other family tags are reserved. |
-| Catalog/blob IDs | `cat_` + 16 lowercase hex + optional `_<n>` | Accepted opaque ID shape. `n` is positive decimal with no leading zero. Source-like names are rejected before encoding. |
+| Catalog/blob IDs | `cat_` + 16 lowercase hex + optional `_<n>` | Tree-cell storage ID shape. `n` is positive decimal with no leading zero. Source-like names are rejected before encoding. |
 | ID bytes | escaped bytes + `00 00` | IDs use the same escaped byte-run terminator as typed string keys; the accepted shape makes escaping a no-op except for the terminator. |
 | Node cell | data family + store ID + record-key tuple + `00` | Node key and prefix for the record's leaf and sequence cells. |
 | Leaf cell | node prefix + `10` + member ID | A typed leaf under a node. Other data subcell tags are reserved. |
 | Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
-| Index cell | index family + index ID + index-key tuple + `00` + record-key tuple | Sorts by exact index tuple, then record identity. The `00` delimiter marks the start of identity keys. |
-| Catalog/meta cells | catalog family + catalog ID; meta family + `01`, `02`, or `03` | Catalog entry state and catalog epoch, layout epoch, or engine profile metadata. Other meta tags are reserved. |
+| Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. The first `00` delimiter marks the start of identity keys; the final `00` terminates the entry so exact deletes cannot remove longer identities. |
+| Catalog/meta cells | catalog family + storage catalog ID; meta family + `01`, `02`, `03`, or `04` | Catalog entry state and catalog epoch, layout epoch, engine profile digest, or latest commit metadata. Other meta tags are reserved. |
 | Blob chunk | blob family + blob ID + `u64_be(chunk)` | Chunked blob storage, ordered by chunk number. |
 | Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
 
 Index tuple scans use an exact tuple prefix: the API appends the identity
 delimiter before deriving the range, so scanning the exact tuple `["a"]`
 excludes longer tuples such as `["a", false]`.
+
+## Tree-Cell Facade And Metadata
+
+The typed tree-cell facade wraps any `Backend` and keeps tree-cell callers away
+from raw physical keys. Node writes create a node marker at the typed node key.
+Leaf, sequence, and index methods read, write, and delete only their exact
+`CellKey` addresses. An absent leaf reads as absent even when the node marker
+exists. Exact index tuple scans derive the range from
+`CellKey::index_tuple_prefix(...).range()` and return only entries under that
+typed tuple prefix. They are paged: a caller supplies a limit and receives an
+opaque cursor only when more entries remain.
+
+Store-level metadata is written through typed meta cells:
+
+| Meta cell | Tag | Value |
+|---|---|---|
+| Catalog epoch | `01` | `u64_be(catalog_epoch)` |
+| Layout epoch | `02` | `u64_be(layout_epoch)` |
+| Engine profile digest | `03` | 8 bytes, the stable v0 engine-profile digest |
+| Commit metadata | `04` | commit id, catalog epoch, layout epoch, profile digest, changed root catalog IDs, and changed index catalog IDs |
+
+The v0 engine profile records the layout epoch and key profile version `0`. Its
+digest is a deterministic FNV-1a 64-bit digest over a fixed profile label, the
+key profile version, and the big-endian layout epoch. The digest is stored as
+big-endian bytes and can also be rendered as a fixed 16-character lowercase hex
+string.
+
+Commit metadata stores the commit id, catalog epoch, and layout epoch as
+big-endian `u64` values. The engine profile digest and catalog ID lists are
+length-prefixed with big-endian `u32` counts or byte lengths. Catalog IDs remain
+opaque `cat_<16 lowercase hex>[_n]` values inside the metadata value; they do
+not become source spellings or physical saved paths.
+
+Malformed tree-cell metadata or index cells report `store.corruption`. The
+saved-path decoder's `store.corrupt_path` code is reserved for malformed saved
+path keys.
 
 ## Current Saved-Path Operations
 
@@ -264,25 +303,24 @@ it carries extra duties. Each maps to a stable `store.*` code (see
 
 `store.corrupt_path` is reported by either backend when a *stored key* does not
 decode as a valid segment sequence — the data is malformed, not the engine.
+Malformed tree-cell metadata and malformed tree-cell index identity suffixes
+report `store.corruption`, because they are not saved-path keys.
 Backends enforce no key/value size limit, so `store.limit` comes only from
-archive framing, never from a `read`/`write`.
+Marrow framing layers such as archive chunks or tree-cell metadata, never from a
+backend `read`/`write`.
 
 ## Archives And Backup Boundary
 
-The raw archive is live backup/restore behavior for the saved-path backend: an
-ordered byte dump behind a small manifest (magic, format version, record count).
-It is portable between the memory and redb engines, but it is a raw saved-path
-stream rather than the typed backup contract for tree-cell Marrow data.
+The raw archive is an ordered-byte saved-path stream behind a small manifest
+(magic, format version, record count). It is portable between the memory and redb
+engines for debug/admin saved-path transfer, but it is not the typed backup
+contract for tree-cell Marrow data.
 
 Portable backup/restore belongs at the tree-cell boundary: catalog IDs, typed
 keys, typed values, index cells, sequence cells, catalog epochs, and blob chunks
 must be interpreted through the Marrow storage profile rather than by copying a
 raw saved-path stream. The portable backup format over this profile is a
 separate backup-format contract.
-
-`marrow restore` writes into an empty target only; a non-empty target fails
-with `restore.not_empty`. Non-empty restore modes are outside this backend
-contract.
 
 ## Inspecting The Store From The CLI
 

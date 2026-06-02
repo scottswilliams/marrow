@@ -51,10 +51,12 @@ pub enum StoreError {
     FormatVersion { found: u32, supported: u32 },
     /// The persistent store is corrupt and could not be opened or read.
     Corruption { message: String },
-    /// An archive chunk exceeded the framing limit (a length above `u32::MAX`).
-    /// Backends enforce no key/value size limit, so archive framing is the sole
-    /// producer of this variant (`store.limit`).
+    /// A store-owned framing field could not hold a key, value, or metadata length.
+    /// Backends enforce no key/value size limit; only Marrow framing layers produce
+    /// this variant (`store.limit`).
     LimitExceeded { limit: &'static str },
+    /// A bounded scan cursor does not belong to the scan being resumed.
+    InvalidCursor { message: String },
     /// A write-capability operation was requested through a read-only store handle.
     ReadOnly { op: &'static str },
 }
@@ -69,6 +71,7 @@ impl StoreError {
             Self::FormatVersion { .. } => "store.format_version",
             Self::Corruption { .. } => "store.corruption",
             Self::LimitExceeded { .. } => "store.limit",
+            Self::InvalidCursor { .. } => "store.cursor",
             Self::ReadOnly { .. } => "store.read_only",
         }
     }
@@ -92,6 +95,7 @@ impl std::fmt::Display for StoreError {
             ),
             Self::Corruption { message } => write!(f, "the store is corrupt: {message}"),
             Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
+            Self::InvalidCursor { message } => write!(f, "storage cursor is invalid: {message}"),
             Self::ReadOnly { op } => write!(f, "cannot {op} through a read-only store handle"),
         }
     }

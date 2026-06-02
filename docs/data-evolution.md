@@ -191,16 +191,10 @@ your own code, verified before and after with `marrow data integrity`.
 
 ## Backup And Restore
 
-`marrow backup ./project <archive>` writes the store's saved tree to a portable
-archive: the canonical ordered path/value stream behind a small manifest.
-Generated index entries are included as saved paths.
-
-`marrow restore ./project <archive>` replays an archive into an empty store in
-one transaction. Empty-target restore is the only restore mode implemented
-today; restoring into a store that already holds data fails with
-`restore.not_empty`.
-
-Non-empty restore modes are deferred (see [future/cli.md](future/cli.md)).
+Typed backup/restore is deferred until the tree-cell backup manifest lands. The
+backup contract must compile source, accepted catalog metadata, typed values,
+index cells, sequence state, and engine-profile metadata together instead of
+copying a raw saved-path stream.
 
 ## Also Deferred
 

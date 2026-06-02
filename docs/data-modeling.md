@@ -417,8 +417,8 @@ the schema — note this checks decoding, not required-field completeness).
 
 Some maintenance operations are not yet implemented:
 
-- `marrow data diff` and `marrow data load` are deferred, and restore today
-  writes into an empty target only. Non-empty restore modes are deferred — see
-  [future/data-tools.md](future/data-tools.md) and [future/cli.md](future/cli.md).
+- `marrow data diff`, `marrow data load`, and typed backup/restore are deferred
+  — see [future/data-tools.md](future/data-tools.md) and
+  [future/cli.md](future/cli.md).
 - Store-aware identity fields are canonical; relationship behavior remains
   explicit application logic, not implicit foreign-key enforcement.

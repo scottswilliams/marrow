@@ -4,7 +4,6 @@ use std::process::ExitCode;
 use marrow_syntax::Diagnose;
 use serde_json::json;
 
-mod cmd_backup;
 mod cmd_check;
 mod cmd_data;
 mod cmd_explain;
@@ -24,8 +23,6 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run <projectdir>
   marrow test <projectdir>
-  marrow backup <projectdir> <archive>
-  marrow restore <projectdir> <archive>
   marrow data <roots|stats|dump|integrity> <projectdir>
   marrow data get <projectdir> <path>
   marrow explain [--format text|json|jsonl] <projectdir> <target>
@@ -46,8 +43,6 @@ fn main() -> ExitCode {
         "fmt" => cmd_fmt::fmt(rest),
         "run" => cmd_run::run(rest),
         "test" => cmd_test::test(rest),
-        "backup" => cmd_backup::backup(rest),
-        "restore" => cmd_backup::restore(rest),
         "data" => cmd_data::data(rest),
         "explain" => cmd_explain::explain(rest),
         "lsp" => lsp::run(rest),
@@ -219,25 +214,6 @@ pub(crate) fn resolve_store_path(
     Ok(Some(path))
 }
 
-/// Open the project's configured store for exclusive access (used by backup and
-/// restore, which own the store rather than sharing it with a run). Reports and
-/// returns the exit code on failure.
-pub(crate) fn open_owned_store(
-    dir: &str,
-    config: &marrow_project::ProjectConfig,
-) -> Result<Box<dyn marrow_store::backend::Backend>, ExitCode> {
-    match resolve_store_path(dir, config)? {
-        None => Ok(Box::new(marrow_store::mem::MemStore::new())),
-        Some(path) => match marrow_store::redb::RedbStore::open(&path) {
-            Ok(store) => Ok(Box::new(store)),
-            Err(error) => {
-                report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
-                Err(ExitCode::FAILURE)
-            }
-        },
-    }
-}
-
 /// Open the project's configured store read-only for inspection, or `Ok(None)` if
 /// it holds no saved data on disk yet (the in-memory default, or the native file
 /// does not exist). Never creates a store — inspection is read-only.
@@ -261,8 +237,8 @@ pub(crate) fn open_store_for_inspection(
 }
 
 /// Load `<dir>/marrow.json`. Reports and returns the exit code if it is missing or
-/// invalid. `load_checked_project` builds on this; backup and restore use it
-/// directly, since raw saved data needs no source checking.
+/// invalid. `load_checked_project` builds on this for commands that need checked
+/// source facts.
 pub(crate) fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, ExitCode> {
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = std::fs::read_to_string(&config_path).map_err(|error| {

@@ -70,7 +70,6 @@ Delete or prove absent:
 
 - AST runtime production path;
 - source-name physical key production path;
-- raw archive production backup path;
 - runtime fallback resolution;
 - duplicate semantic classifiers in checker, runtime, schema, and tools;
 - executable `Unknown` or recovery facts;
@@ -188,8 +187,7 @@ checked IR exclude `merge`, `lock`, and saved `inout`.
 **Lane 10 - Tooling And Protocols.** Replace raw backup, data, explain/CLI,
 LSP, and serve protocol/tool surfaces. Evidence:
 `crates/marrow-store/src/archive.rs:31`,
-`crates/marrow-store/src/archive.rs:49`, `crates/marrow/src/cmd_backup.rs:66`,
-`crates/marrow/src/cmd_backup.rs:119`, `crates/marrow/src/cmd_data.rs:242`,
+`crates/marrow-store/src/archive.rs:49`, `crates/marrow/src/cmd_data.rs:242`,
 `crates/marrow/src/cmd_data.rs:292`, `crates/marrow/src/cmd_data.rs:394`,
 `crates/marrow/src/cmd_data.rs:432`, `crates/marrow/src/cmd_explain.rs:89`,
 `crates/marrow/src/cmd_explain.rs:254`,

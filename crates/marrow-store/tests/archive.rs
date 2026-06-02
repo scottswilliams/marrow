@@ -1,5 +1,5 @@
-//! A raw archive is the saved-path stream, framed so it restores byte-for-byte
-//! into any backend.
+//! A raw archive is the saved-path stream, framed so it replays byte-for-byte into
+//! any backend.
 
 use std::io::Cursor;
 
@@ -8,6 +8,12 @@ use marrow_store::backend::{Backend, StoreError};
 use marrow_store::mem::MemStore;
 use marrow_store::path::{PathSegment, SavedKey, encode_path};
 use marrow_store::value::{SavedValue, encode_value};
+
+fn dump_fixture(store: &MemStore) -> marrow_store::backend::ScanPage {
+    let page = store.scan(&[], 32);
+    assert!(!page.truncated, "archive fixture exceeded its scan limit");
+    page
+}
 
 /// The encoded path `^books(id).title`.
 fn book_title(id: i64) -> Vec<u8> {
@@ -33,26 +39,26 @@ fn an_archive_round_trips_through_a_fresh_store() {
     let written = write_archive(&source, &mut buffer).expect("write archive");
     assert_eq!(written, 2);
 
-    let mut restored = MemStore::new();
-    let read = read_archive(&mut Cursor::new(&buffer), &mut restored).expect("read archive");
+    let mut target = MemStore::new();
+    let read = read_archive(&mut Cursor::new(&buffer), &mut target).expect("read archive");
     assert_eq!(read, 2);
 
-    // The restored store reproduces the source's dump byte-for-byte.
-    assert_eq!(restored.scan(&[], usize::MAX), source.scan(&[], usize::MAX));
+    // The target store reproduces the source's dump byte-for-byte.
+    assert_eq!(dump_fixture(&target), dump_fixture(&source));
 }
 
 #[test]
-fn an_empty_store_archives_and_restores_as_empty() {
+fn an_empty_store_archives_and_reads_as_empty() {
     let source = MemStore::new();
     let mut buffer = Vec::new();
     assert_eq!(write_archive(&source, &mut buffer).expect("write"), 0);
 
-    let mut restored = MemStore::new();
+    let mut target = MemStore::new();
     assert_eq!(
-        read_archive(&mut Cursor::new(&buffer), &mut restored).expect("read"),
+        read_archive(&mut Cursor::new(&buffer), &mut target).expect("read"),
         0
     );
-    assert!(restored.roots().expect("roots").is_empty());
+    assert!(target.roots().expect("roots").is_empty());
 }
 
 #[test]
@@ -87,10 +93,10 @@ fn an_unsupported_version_is_rejected() {
 }
 
 #[test]
-fn a_truncated_restore_rolls_the_target_back_whole() {
+fn a_truncated_archive_read_rolls_the_target_back_whole() {
     // A two-record archive cut off mid-second-record is the worst case for a
-    // restore: the first record's write already landed before the truncation is
-    // hit. Restore runs the replay in one transaction, so the target must end
+    // replay: the first record's write already landed before the truncation is
+    // hit. The read runs the replay in one transaction, so the target must end
     // exactly as it began — all-or-nothing, not half-written.
     let mut source = MemStore::new();
     source.write(&book_title(1), encoded(&SavedValue::Str("Dune".into())));
@@ -102,10 +108,10 @@ fn a_truncated_restore_rolls_the_target_back_whole() {
     // only then meets the corruption.
     archive.pop();
 
-    // A non-empty target whose prior contents must survive the failed restore.
+    // A non-empty target whose prior contents must survive the failed replay.
     let mut target = MemStore::new();
     target.write(&book_title(9), encoded(&SavedValue::Str("Keep".into())));
-    let before = target.scan(&[], usize::MAX);
+    let before = dump_fixture(&target);
 
     let result = read_archive(&mut Cursor::new(&archive), &mut target);
     assert!(
@@ -113,7 +119,7 @@ fn a_truncated_restore_rolls_the_target_back_whole() {
         "a truncated archive is a typed corruption error: {result:?}"
     );
     assert_eq!(
-        target.scan(&[], usize::MAX),
+        dump_fixture(&target),
         before,
         "the target is rolled back to its prior state, with no half-written record"
     );
@@ -132,7 +138,7 @@ fn an_archive_with_trailing_records_after_count_is_rejected() {
 
     let mut target = MemStore::new();
     target.write(&book_title(9), encoded(&SavedValue::Str("Keep".into())));
-    let before = target.scan(&[], usize::MAX);
+    let before = dump_fixture(&target);
 
     let result = read_archive(&mut Cursor::new(&archive), &mut target);
     assert!(
@@ -140,9 +146,9 @@ fn an_archive_with_trailing_records_after_count_is_rejected() {
         "an archive with body bytes after its declared record count is corrupt: {result:?}"
     );
     assert_eq!(
-        target.scan(&[], usize::MAX),
+        dump_fixture(&target),
         before,
-        "restore rolls back instead of committing a declared-count prefix"
+        "the archive read rolls back instead of committing a declared-count prefix"
     );
 }
 

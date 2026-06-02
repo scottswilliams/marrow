@@ -930,10 +930,9 @@ Files:
 
 - `crates/marrow/src/cmd_check.rs`
 - `crates/marrow/src/cmd_data.rs`
-- `crates/marrow/src/cmd_backup.rs`
 - `crates/marrow/src/lsp.rs`
 - `crates/marrow/src/serve/protocol.rs`
-- focused backup, data, serve, LSP, and protocol tests under
+- focused data, serve, LSP, and protocol tests under
   `crates/marrow/tests/`; do not claim `check_project_cli.rs`, `run_cli.rs`, or
   `*evolve*.rs`
 - `docs/cli.md`
@@ -1014,7 +1013,6 @@ Deletion targets:
 
 - AST runtime production path.
 - Source-name physical key production path.
-- Raw archive production backup path.
 - Runtime fallback resolution.
 - Duplicate semantic classifiers in checker/runtime/schema/tools.
 - Stale `docs/future` content whose constraints have moved into canonical docs.

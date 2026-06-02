@@ -9,8 +9,6 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
-marrow backup <projectdir> <archive>
-marrow restore <projectdir> <archive>
 marrow data <roots|stats|dump|integrity> <projectdir>
 marrow data get <projectdir> <path>
 marrow explain [--format text|json|jsonl] <projectdir> <target>
@@ -146,11 +144,11 @@ neither is present, `run` fails with `run.no_entry` (exit `1`).
 Output written with `print`/`write` goes to stdout. `std::log` output goes to
 stderr. The run reads the real system clock, environment, and filesystem.
 
-`--maintenance` grants the run the maintenance capability, for data evolution,
-repair, and restore tooling. It permits whole managed-root deletes,
-required-field deletes, and raw quoted-segment access that the default run
-rejects. An operator must type it; the default run and `run.defaultEntry` can
-never inject it. Use it deliberately.
+`--maintenance` grants the run the maintenance capability for data evolution and
+repair tooling. It permits whole managed-root deletes, required-field deletes,
+and raw quoted-segment access that the default run rejects. An operator must type
+it; the default run and `run.defaultEntry` can never inject it. Use it
+deliberately.
 
 `--trace` reports each statement as it runs — file, line, call depth, and the
 visible locals — and each managed write or delete, in execution order. Under text
@@ -265,58 +263,6 @@ $ marrow explain --format json ./proj shelf::add
 
 Exits `0` when it can explain the target, `1` if the project does not check, and
 `2` on command-line usage errors or a malformed saved-path target.
-
----
-
-## `marrow backup`
-
-```
-marrow backup <projectdir> <archive>
-```
-
-Write the store's whole saved tree to a portable archive at `<archive>` — the
-canonical ordered `(path, value)` stream behind a small framing, not an engine
-file. Generated index trees are included. The store is opened for owned access.
-
-Prints the record count and exits `0`; exits `1` on an I/O or store error.
-
-```console
-$ marrow backup ./proj ./shelf.mwa
-backed up 2 records to ./shelf.mwa
-```
-
-See [data-tools.md](data-tools.md) for the archive format and how backup relates
-to the `data` inspection commands.
-
----
-
-## `marrow restore`
-
-```
-marrow restore <projectdir> <archive>
-```
-
-Restore a project's saved data from an archive into an empty store.
-Empty-target restore is the only mode implemented today: if the target already
-holds data, restore refuses with `restore.not_empty` (exit `1`) rather than
-overwrite it.
-
-Non-empty restore modes are deferred — see [future/cli.md](future/cli.md).
-
-Prints the record count and exits `0`; exits `1` if the target is non-empty or on
-an I/O or store error.
-
-```console
-$ marrow restore ./fresh-proj ./shelf.mwa
-restored 2 records from ./shelf.mwa
-
-$ marrow restore ./proj ./shelf.mwa     # target already has data
-restore.not_empty: restore target already holds data; restore writes into an empty store
-$ echo $?
-1
-```
-
----
 
 ## `marrow data`
 

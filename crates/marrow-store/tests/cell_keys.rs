@@ -114,6 +114,7 @@ fn v0_layout_bytes_match_the_documented_profile() {
     index.extend_from_slice(&str_a);
     index.push(0x00);
     index.extend_from_slice(&int_one);
+    index.push(0x00);
     assert_eq!(
         CellKey::index(&index_id, &[SavedKey::Str("a".into())], &[SavedKey::Int(1)]).as_bytes(),
         index.as_slice()

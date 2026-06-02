@@ -210,3 +210,8 @@ fn decode_key_value_rejects_an_unknown_type_tag() {
     assert_eq!(decode_key_value(&[0xfe, 0x00]), None);
     assert_eq!(decode_key_value(&[]), None);
 }
+
+#[test]
+fn decode_key_value_rejects_a_non_canonical_bool() {
+    assert_eq!(decode_key_value(&[0x01, 0x02]), None);
+}

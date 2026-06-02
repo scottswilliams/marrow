@@ -190,6 +190,12 @@ fn store_errors_expose_stable_codes_and_messages() {
             },
             "store.limit",
         ),
+        (
+            StoreError::InvalidCursor {
+                message: "wrong scan".into(),
+            },
+            "store.cursor",
+        ),
         (StoreError::ReadOnly { op: "write" }, "store.read_only"),
     ];
     for (error, code) in cases {

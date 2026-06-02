@@ -83,7 +83,7 @@ that address-oriented shape, so `keys(...)` is mostly useful when an address lis
 is passed around as a value. `values(...)` and `entries(...)` explicitly read
 stored values. Key-only collections such as sets and non-unique index branches
 do not have separate values; their generated marker values are a raw inspection
-detail. Deep raw tree walks belong to inspection, backup, repair, and data
+detail. Deep saved-data walks belong to inspection, export, repair, and data
 evolution tools.
 
 ### Stored Entries In Key Order

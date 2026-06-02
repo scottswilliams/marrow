@@ -920,7 +920,7 @@ fn a_fault_with_no_origin_keeps_the_bare_fallback() {
 fn runs_a_module_less_script_bare_entry() {
     // A module-less script is self-resolvable: its `pub fn main` lives in the
     // empty module, so the bare entry `main` resolves to it and runs. This is the
-    // legitimate path the construction restores — no `run.no_entry`.
+    // legitimate path for this construction: no `run.no_entry`.
     let root = temp_project("run-module-less-script", |root| {
         write(
             root,

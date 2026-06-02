@@ -58,9 +58,10 @@ Storage errors include the failed operation, a safe path or prefix when one is
 available, and the capability or limit involved. Machine-readable facts belong
 in `data`; clients do not parse `message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.limit`, `store.read_only`, and `store.corrupt_path`. Backends enforce no
-key or value size limit, so `store.limit` is produced only by archive framing,
-when a record's length exceeds the archive's `u32` chunk-length field.
+`store.limit`, `store.cursor`, `store.read_only`, and `store.corrupt_path`.
+Backends enforce no key or value size limit, so `store.limit` is produced only
+when Marrow framing cannot encode a length, such as an archive chunk length or
+tree-cell metadata length above a `u32` field.
 
 Managed-root protection raises `write.*` codes when code attempts maintenance
 work without the maintenance capability: `write.requires_maintenance` for a
@@ -110,8 +111,7 @@ a category label, not a separate code prefix).
 Every code below is emitted by the current build. Codes are grouped by family.
 The "Surface" column says where a developer first meets the code: a single-file
 `check`, a project `check`/`run`/`test`, a managed write inside a running
-program, the store, the `serve` data server, or a `data`/`backup`/`restore`
-maintenance command.
+program, the store, the `serve` data server, or a `data` maintenance command.
 
 ### `parse.*` — kind `parse`
 
@@ -266,11 +266,12 @@ one is reported under its own `write.*` code.
 
 ### `store.*` — kind `storage`
 
-Backend faults. The in-memory store can only produce `store.corrupt_path`; a
-persistent backend can also produce the I/O, locking, format, corruption, limit,
-and read-only variants. A store fault met during a program read or write travels as
-`run.store` or `write.store`; the `serve` server passes the `store.*` code
-through unchanged.
+Backend faults. The in-memory saved-path backend can produce `store.corrupt_path`;
+the tree-cell facade can produce `store.corruption` for malformed tree-cell
+metadata or index cells; and a persistent backend can also produce the I/O,
+locking, format, corruption, limit, and read-only variants. A store fault met
+during a program read or write travels as `run.store` or `write.store`; the
+`serve` server passes the `store.*` code through unchanged.
 
 | Code | Meaning |
 |---|---|
@@ -278,8 +279,9 @@ through unchanged.
 | `store.io` | An I/O operation on a persistent backend failed. |
 | `store.locked` | The store file is already held open by another writer. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
-| `store.corruption` | The persistent store is corrupt and could not be opened or read. |
-| `store.limit` | An archive chunk exceeded the framing limit (a record length above the archive's `u32` chunk-length field). Backends enforce no key/value size limit, so archive framing is the sole producer. |
+| `store.corruption` | The store file, tree-cell metadata, or tree-cell index cell is corrupt and could not be opened or decoded. |
+| `store.limit` | A Marrow framing layer could not encode a length, such as an archive chunk length or tree-cell metadata length above a `u32` field. Backends enforce no key/value size limit. |
+| `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.read_only` | A write-capability operation was requested through a read-only store handle. |
 
 ### `protocol.*` — kind `protocol`
@@ -335,12 +337,6 @@ the store's `store.corrupt_path`, not a `data.*` code.)
 |---|---|
 | `test.none` | `marrow test` found no tests; check the `tests` patterns in `marrow.json`. Exit code `1`. (Failing tests are reported per test with their own `run.assertion` or other `run.*` code, not a `test.*` code.)|
 
-### `restore.*` — kind `tooling`
-
-| Code | Meaning |
-|---|---|
-| `restore.not_empty` | `marrow restore` targets a non-empty store; normal restore writes into an empty target only. (Non-empty restore modes are deferred — see [future/cli.md](future/cli.md).) Exit code `1`. |
-
 ## Typed Errors In Running Programs
 
 In `.mw` code an error is an `Error` value with its own dotted `code`, raised by
@@ -361,7 +357,6 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 
 ## Deferred Surfaces
 
-`marrow data diff`/`data load` and non-empty `marrow restore` modes are
-deferred — see [future/data-tools.md](future/data-tools.md) and
-[future/cli.md](future/cli.md). No new code family appears for a deferred
-surface until that surface ships.
+`marrow data diff`/`data load` and typed backup/restore are deferred — see
+[future/data-tools.md](future/data-tools.md) and [future/cli.md](future/cli.md).
+No new code family appears for a deferred surface until that surface ships.

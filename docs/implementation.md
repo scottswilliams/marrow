@@ -296,10 +296,9 @@ The native store stays small:
 - a recorded format version.
 
 A native data directory holds a single `marrow.redb` file in the local engine
-format, not the portable archive format. There is no separate lock file: the
-engine takes an advisory lock on `marrow.redb` itself, so a second writer for the
-same directory surfaces as a `store.locked` error rather than leaving a sidecar
-behind.
+format, not a typed export artifact. There is no separate lock file: the engine
+takes an advisory lock on `marrow.redb` itself, so a second writer for the same
+directory surfaces as a `store.locked` error rather than leaving a sidecar behind.
 
 ## Capability Profiles
 
@@ -338,21 +337,23 @@ separate packages when they are useful enough to maintain.
 
 ## Portability
 
-The portable form of saved data is an ordered path/value stream plus a small
-manifest. The stream uses Marrow canonical paths, not backend-native files,
-table rows, or engine keys.
+The raw ordered path/value stream plus small manifest is a debug/admin transfer
+format for ordered-byte saved-path engines. It is useful for inspection and test
+fixtures, but it is not the production portability contract for tree-cell Marrow
+data.
 
-With source present, tools can render paths as typed resources. Without
-source, tools can still restore or inspect the raw tree.
+With source present, tools can render paths as typed resources. Without source,
+tools can inspect the raw ordered path/value stream.
 
-Normal backups include generated index trees. Typed restore can verify them
-against primary resources or rebuild them when source is available.
+Typed export/import tooling is deferred. When it lands, it must account for
+catalog IDs, typed values, generated index trees, sequence state, and
+engine-profile metadata, and it must verify or rebuild derived structures from
+primary resources when source is available.
 
-Normal restore writes into an empty target. Non-empty restore modes are deferred
-— see [future/cli.md](future/cli.md).
+Import modes are deferred — see [future/cli.md](future/cli.md).
 
-Backend-native files can support fast local snapshots, but they are not the
-portable archive format.
+Backend-native files can support fast local snapshots, but they are not typed
+export artifacts.
 
 ## Data Evolution And Maintenance
 
@@ -381,13 +382,13 @@ There is no private admin database.
 Inspection has two modes:
 
 - typed inspection when project source is available;
-- raw tree inspection when only saved data is available.
+- raw saved-path inspection when only saved data is available.
 
 `marrow data` is the raw saved-tree command group for inspection, dump, diff,
 load, integrity checks, and stats. Today it provides `marrow data roots` (list
 the saved roots), `marrow data stats` (count saved roots and records), `marrow
-data dump` (print every stored path/value in encoded order — the same canonical
-stream backup writes), `marrow data integrity` (verify every stored value
+data dump` (print every stored path/value in encoded order for inspection),
+`marrow data integrity` (verify every stored value
 decodes as a canonical form of its declared schema type, reporting decode
 mismatches as `data.decode`, stale or foreign data as `data.orphan`, and a
 corrupt key as `store.corrupt_path`; it exits `1` when it finds a problem), and
@@ -396,14 +397,10 @@ never creates the store; `dump`/`get` need only `marrow.json`, while
 `integrity` typechecks against the project's checked schema. `diff` and `load`
 are deferred (see [future/data-tools.md](future/data-tools.md)).
 
-`marrow backup <projectdir> <archive>` writes the store's whole saved tree to a
-portable archive — the canonical ordered (path, value) stream behind a small
-manifest (format magic, version, and record count), not an engine file.
-`marrow restore <projectdir> <archive>`
-replays one into an empty store in a single transaction; a non-empty target fails
-with `restore.not_empty`, since restoring over existing data is an explicit
-maintenance action. Empty-target restore is the only mode implemented today;
-non-empty restore modes are deferred (see [future/cli.md](future/cli.md)).
+Typed backup/restore is deferred until the tree-cell backup manifest lands. It
+must compile source, accepted catalog metadata, typed values, index cells,
+sequence state, and engine-profile metadata together instead of treating a raw
+saved-path byte stream as the production backup contract.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and

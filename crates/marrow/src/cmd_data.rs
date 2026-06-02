@@ -1,8 +1,10 @@
 //! `marrow data`: read-only inspection of a project's saved data, plus the
 //! schema-typed integrity check and its saved-path rendering.
 
+use std::io::{self, Write};
 use std::process::ExitCode;
 
+use marrow_store::backend::{Backend, StoreError};
 use marrow_store::path::display_path;
 use marrow_syntax::Diagnose;
 use serde_json::json;
@@ -11,6 +13,8 @@ use crate::{
     CheckFormat, envelope, load_checked_project, load_config, open_store_for_inspection,
     report_simple_error, write_json,
 };
+
+const DATA_SCAN_LIMIT: usize = 128;
 
 /// Parse one positional project directory plus an optional `--format` flag, for
 /// the `data` inspection commands. Reuses `check`'s `--format` grammar so the
@@ -104,6 +108,46 @@ fn parse_format_value(value: Option<&String>) -> Result<CheckFormat, ExitCode> {
     })
 }
 
+fn scan_saved_records(
+    store: &dyn Backend,
+    mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
+) -> Result<usize, StoreError> {
+    let mut cursor = None;
+    let mut records = 0usize;
+    loop {
+        let page = match cursor.as_deref() {
+            Some(cursor) => store.scan_after(&[], cursor, DATA_SCAN_LIMIT)?,
+            None => store.scan(&[], DATA_SCAN_LIMIT)?,
+        };
+        records = records
+            .checked_add(page.entries.len())
+            .ok_or(StoreError::LimitExceeded {
+                limit: "data record count",
+            })?;
+        for (path, value) in &page.entries {
+            visit(path, value)?;
+        }
+        if !page.truncated {
+            return Ok(records);
+        }
+        let Some((last_path, _)) = page.entries.last() else {
+            return Err(StoreError::InvalidCursor {
+                message: "bounded data scan truncated without a cursor".into(),
+            });
+        };
+        cursor = Some(last_path.clone());
+    }
+}
+
+fn count_saved_records(store: &dyn Backend) -> Result<usize, StoreError> {
+    scan_saved_records(store, |_, _| Ok(()))
+}
+
+fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
+    report_simple_error(error.code(), &error.to_string(), format);
+    ExitCode::FAILURE
+}
+
 /// Inspect a project's saved data, read-only:
 /// `marrow data <roots|stats|dump|integrity|get> <projectdir>`.
 pub(crate) fn data(args: &[String]) -> ExitCode {
@@ -126,8 +170,8 @@ Usage:
   marrow data get [--format text|json|jsonl] <projectdir> <path> read one path's value
 
 Read-only inspection of a project's saved data; it never creates or modifies the
-store. `diff` and `load` are deferred: they overlap restore's replace/merge/repair
-modes and need typed source-fingerprinting; they will route through the
+store. `diff` and `load` are deferred: they overlap typed data-evolution and
+repair workflows and need source fingerprinting; they will route through the
 maintenance capability when implemented.
 "
             );
@@ -214,14 +258,9 @@ fn data_stats(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            // A full scan to count is fine for a local store; a bounded count
-            // primitive on the backend would replace this if stores grow large.
-            let records = match store.scan(&[], usize::MAX) {
-                Ok(page) => page.entries.len(),
-                Err(error) => {
-                    report_simple_error(error.code(), &error.to_string(), format);
-                    return ExitCode::FAILURE;
-                }
+            let records = match count_saved_records(store.as_ref()) {
+                Ok(records) => records,
+                Err(error) => return report_store_error(error, format),
             };
             (roots, records)
         }
@@ -255,44 +294,75 @@ fn data_dump(args: &[String]) -> ExitCode {
         Ok(store) => store,
         Err(code) => return code,
     };
-    let entries = match &store {
-        Some(store) => match store.scan(&[], usize::MAX) {
-            Ok(page) => page.entries,
-            Err(error) => {
-                report_simple_error(error.code(), &error.to_string(), format);
-                return ExitCode::FAILURE;
-            }
+    let records = match &store {
+        Some(store) => match count_saved_records(store.as_ref()) {
+            Ok(records) => records,
+            Err(error) => return report_store_error(error, format),
         },
-        None => Vec::new(),
+        None => 0,
     };
     match format {
         CheckFormat::Text => {
-            if entries.is_empty() {
+            if records == 0 {
                 println!("(no saved data)");
             } else {
-                for (path, value) in &entries {
+                let store = store.as_ref().expect("non-empty data dump has a store");
+                if let Err(error) = scan_saved_records(store.as_ref(), |path, value| {
                     println!("{}\t{}", display_path(path), render_value_bytes(value));
+                    Ok(())
+                }) {
+                    return report_store_error(error, format);
                 }
             }
         }
         CheckFormat::Json => {
-            let records = entries.iter().map(dump_record).collect::<Vec<_>>();
-            write_json(json!({ "project": dir, "records": records }));
+            if let Some(store) = &store {
+                if let Err(error) = write_dump_json(&dir, store.as_ref()) {
+                    return report_store_error(error, format);
+                }
+            } else {
+                write_json(json!({ "project": dir, "records": [] }));
+            }
         }
         CheckFormat::Jsonl => {
-            for entry in &entries {
-                write_json(dump_record(entry));
+            if let Some(store) = &store {
+                let result = scan_saved_records(store.as_ref(), |path, value| {
+                    write_json(dump_record(path, value));
+                    Ok(())
+                });
+                if let Err(error) = result {
+                    return report_store_error(error, format);
+                }
             }
-            write_json(json!({ "kind": "summary", "records": entries.len() }));
+            write_json(json!({ "kind": "summary", "records": records }));
         }
     }
     ExitCode::SUCCESS
 }
 
+fn write_dump_json(dir: &str, store: &dyn Backend) -> Result<(), StoreError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    write!(out, "{{\"project\":").expect("write dump JSON");
+    serde_json::to_writer(&mut out, dir).expect("serialize project path");
+    write!(out, ",\"records\":[").expect("write dump JSON");
+    let mut first = true;
+    scan_saved_records(store, |path, value| {
+        if !first {
+            write!(out, ",").expect("write dump JSON separator");
+        }
+        first = false;
+        serde_json::to_writer(&mut out, &dump_record(path, value)).expect("serialize dump record");
+        Ok(())
+    })?;
+    writeln!(out, "]}}").expect("write dump JSON");
+    Ok(())
+}
+
 /// Render a dump record as JSON: the human path plus base64 of the exact path and
 /// value bytes, so a machine consumer reads them losslessly while a person reads
 /// `path`. Uses the same base64 codec `serve` uses.
-fn dump_record((path, value): &(Vec<u8>, Vec<u8>)) -> serde_json::Value {
+fn dump_record(path: &[u8], value: &[u8]) -> serde_json::Value {
     json!({
         "path": display_path(path),
         "path_b64": marrow_run::base64::encode(path),
@@ -335,28 +405,44 @@ fn data_integrity(args: &[String]) -> ExitCode {
         Ok(store) => store,
         Err(code) => return code,
     };
-    let entries = match &store {
-        Some(store) => match store.scan(&[], usize::MAX) {
-            Ok(page) => page.entries,
-            Err(error) => {
-                report_simple_error(error.code(), &error.to_string(), format);
-                return ExitCode::FAILURE;
-            }
+    let (records, problems) = match &store {
+        Some(store) => match count_integrity_problems(store.as_ref(), &program) {
+            Ok(counts) => counts,
+            Err(error) => return report_store_error(error, format),
         },
-        None => Vec::new(),
+        None => (0, 0),
     };
 
-    let problems: Vec<IntegrityProblem> = entries
-        .iter()
-        .filter_map(|(path, value)| check_record(&program, path, value))
-        .collect();
-
-    report_integrity(&dir, entries.len(), &problems, format);
-    if problems.is_empty() {
+    if let Some(store) = &store {
+        if let Err(error) =
+            report_integrity(&dir, records, problems, store.as_ref(), &program, format)
+        {
+            return report_store_error(error, format);
+        }
+    } else {
+        report_empty_integrity(&dir, format);
+    }
+    if problems == 0 {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn count_integrity_problems(
+    store: &dyn Backend,
+    program: &marrow_check::CheckedProgram,
+) -> Result<(usize, usize), StoreError> {
+    let mut problems = 0usize;
+    let records = scan_saved_records(store, |path, value| {
+        if check_record(program, path, value).is_some() {
+            problems = problems.checked_add(1).ok_or(StoreError::LimitExceeded {
+                limit: "data integrity problem count",
+            })?;
+        }
+        Ok(())
+    })?;
+    Ok((records, problems))
 }
 
 /// One integrity finding: a dotted code and a message, located at a path string
@@ -450,39 +536,102 @@ fn check_record(
     }
 }
 
-/// Report integrity findings in the chosen format. Text prints one line per
-/// problem and a final `ok` line on a clean store; JSON wraps the problems in the
-/// standard envelope; jsonl streams one envelope per problem plus a summary.
-fn report_integrity(dir: &str, records: usize, problems: &[IntegrityProblem], format: CheckFormat) {
+fn report_integrity(
+    dir: &str,
+    records: usize,
+    problems: usize,
+    store: &dyn Backend,
+    program: &marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<(), StoreError> {
     match format {
         CheckFormat::Text => {
-            if problems.is_empty() {
+            if problems == 0 {
                 println!("ok: {dir} integrity verified ({records} records)");
             } else {
-                for problem in problems {
-                    eprintln!("{}: {}: {}", problem.path, problem.code, problem.message);
-                }
+                write_integrity_problems_text(store, program)?;
             }
         }
-        CheckFormat::Json => {
-            let records_json = problems.iter().map(integrity_record).collect::<Vec<_>>();
-            write_json(json!({
-                "project": dir,
-                "records": records,
-                "problems": records_json,
-            }));
-        }
+        CheckFormat::Json => write_integrity_json(dir, records, store, program)?,
         CheckFormat::Jsonl => {
-            for problem in problems {
-                write_json(integrity_record(problem));
-            }
+            write_integrity_problems_jsonl(store, program)?;
             write_json(json!({
                 "kind": "summary",
                 "records": records,
-                "problems": problems.len(),
+                "problems": problems,
             }));
         }
     }
+    Ok(())
+}
+
+fn report_empty_integrity(dir: &str, format: CheckFormat) {
+    match format {
+        CheckFormat::Text => println!("ok: {dir} integrity verified (0 records)"),
+        CheckFormat::Json => write_json(json!({
+            "project": dir,
+            "records": 0,
+            "problems": [],
+        })),
+        CheckFormat::Jsonl => write_json(json!({
+            "kind": "summary",
+            "records": 0,
+            "problems": 0,
+        })),
+    }
+}
+
+fn write_integrity_problems_text(
+    store: &dyn Backend,
+    program: &marrow_check::CheckedProgram,
+) -> Result<(), StoreError> {
+    scan_saved_records(store, |path, value| {
+        if let Some(problem) = check_record(program, path, value) {
+            eprintln!("{}: {}: {}", problem.path, problem.code, problem.message);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn write_integrity_problems_jsonl(
+    store: &dyn Backend,
+    program: &marrow_check::CheckedProgram,
+) -> Result<(), StoreError> {
+    scan_saved_records(store, |path, value| {
+        if let Some(problem) = check_record(program, path, value) {
+            write_json(integrity_record(&problem));
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn write_integrity_json(
+    dir: &str,
+    records: usize,
+    store: &dyn Backend,
+    program: &marrow_check::CheckedProgram,
+) -> Result<(), StoreError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    write!(out, "{{\"project\":").expect("write integrity JSON");
+    serde_json::to_writer(&mut out, dir).expect("serialize project path");
+    write!(out, ",\"records\":{records},\"problems\":[").expect("write integrity JSON");
+    let mut first = true;
+    scan_saved_records(store, |path, value| {
+        if let Some(problem) = check_record(program, path, value) {
+            if !first {
+                write!(out, ",").expect("write integrity JSON separator");
+            }
+            first = false;
+            serde_json::to_writer(&mut out, &integrity_record(&problem))
+                .expect("serialize integrity problem");
+        }
+        Ok(())
+    })?;
+    writeln!(out, "]}}").expect("write integrity JSON");
+    Ok(())
 }
 
 /// Render an integrity problem as the standard error envelope. These findings

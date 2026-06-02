@@ -25,10 +25,8 @@ rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
 `get` against an unseeded project prints `(no saved data)` (or `(absent)` for
 `get`) and leaves the data directory untouched — no `marrow.redb` is written.
 
-There is no in-place repair command. To rewrite a store, back it up, empty it,
-and `marrow restore` an archive into the empty store (see [cli.md](cli.md));
-`marrow restore` writes into an empty target only, and non-empty restore modes
-are deferred. `data` itself only reads.
+There is no in-place repair command. Typed backup/restore is deferred until the
+tree-cell backup manifest lands. `data` itself only reads.
 
 ## What needs source, what does not
 
@@ -209,19 +207,17 @@ These findings have no source line, so the location is a `path` field rather
 than a span. The `data.*` codes carry kind `tooling`. See
 [error-codes.md](error-codes.md) for the full code list.
 
-A typical repair flow when integrity reports problems: back up the store
-(`marrow backup`), correct the schema or the archive, then `marrow restore` into
-a fresh store. There is no in-place fix.
+When integrity reports problems, correct the schema or rebuild the store through
+a maintenance/evolution workflow. There is no in-place fix.
 
 ## Deferred: `diff` and `load`
 
-`marrow data diff` and `marrow data load` are not implemented — see
-[future/data-tools.md](future/data-tools.md). Until then, use `marrow backup` and
-`marrow restore` for bulk data movement.
+`marrow data diff`, `marrow data load`, and typed backup/restore are not
+implemented — see [future/data-tools.md](future/data-tools.md).
 
 ## See also
 
-- [cli.md](cli.md) — all `marrow` commands, including `backup` and `restore`.
+- [cli.md](cli.md) — all `marrow` commands.
 - [error-codes.md](error-codes.md) — exit codes and the error envelope.
 - [backend-contract.md](backend-contract.md) — path/value operations, presence
   states, child-key ordering, and store responsibilities the `data` commands

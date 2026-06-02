@@ -31,10 +31,8 @@ Own these files during the code pass:
 
 - `crates/marrow/src/cmd_check.rs`
 - `crates/marrow/src/cmd_data.rs`
-- `crates/marrow/src/cmd_backup.rs`
 - `crates/marrow/src/lsp.rs`
 - `crates/marrow/src/serve/protocol.rs`
-- `crates/marrow/tests/*backup*.rs`
 - `crates/marrow/tests/*data*.rs`
 - `crates/marrow/tests/*serve*.rs`
 - `crates/marrow/tests/*lsp*.rs`

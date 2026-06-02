@@ -1,8 +1,8 @@
 # Project Configuration
 
 A Marrow project is described by a single file, `marrow.json`, at the project
-root. Every project command — `check`, `run`, `test`, `fmt`, `backup`,
-`restore`, `data`, `serve` — reads `<projectdir>/marrow.json` first. The file
+root. Every project command — `check`, `run`, `test`, `fmt`, `data`, and `serve`
+— reads `<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
 backend and its data directory, test patterns, and the accepted catalog metadata
 path. It does not hold compiled schemas, index metadata, data-evolution history,

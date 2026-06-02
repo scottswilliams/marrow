@@ -68,10 +68,8 @@ Changing the storage engine is also compilation. Marrow should be able to read a
 consistent typed snapshot from the old store target, validate it against source
 and catalog, and write the same durable program data to the new target.
 
-## Repair, Backup, And Restore
+## Repair And Typed Artifacts
 
-Future backup and restore can become typed artifact operations: a portable
-archive may carry enough catalog/source fingerprinting to validate what its
-saved tree means, and restore can compile the archive into the target
-project/store. Today, backup and restore use the raw path/value archive contract
-documented in [`../data-evolution.md`](../data-evolution.md).
+Future export/import artifacts carry enough catalog/source fingerprinting to
+validate what their saved data means, and import compiles the artifact into the
+target project/store.
