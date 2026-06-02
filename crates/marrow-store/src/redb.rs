@@ -42,6 +42,8 @@ const META: TableDefinition<&str, u32> = TableDefinition::new("marrow.meta");
 /// different version is refused rather than misread (no auto-migration).
 const FORMAT_VERSION: u32 = 1;
 
+const DELETE_BATCH_LIMIT: usize = 256;
+
 /// One undone change: a path and the value it held before the change (`None` if
 /// it was absent). Replaying it restores that prior state.
 type Undo = (Vec<u8>, Option<Vec<u8>>);
@@ -303,9 +305,7 @@ enum SeekDir {
     Reverse,
 }
 
-/// The encoded keys of the subtree at `path` (the path's own entry and every
-/// descendant), in Marrow order.
-fn subtree_keys<T>(table: &T, path: &[u8]) -> Result<Vec<Vec<u8>>, StoreError>
+fn delete_key_batch<T>(table: &T, path: &[u8]) -> Result<Vec<Vec<u8>>, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
@@ -317,6 +317,9 @@ where
             break;
         }
         keys.push(key.to_vec());
+        if keys.len() == DELETE_BATCH_LIMIT {
+            break;
+        }
     }
     Ok(keys)
 }
@@ -540,28 +543,41 @@ impl Backend for RedbStore {
             let write = self.db.begin_write("delete")?;
             {
                 let mut table = write.open_table(TABLE).map_err(io("delete"))?;
-                for key in subtree_keys(&table, path)? {
-                    table.remove(key.as_slice()).map_err(io("delete"))?;
+                loop {
+                    let keys = delete_key_batch(&table, path)?;
+                    if keys.is_empty() {
+                        break;
+                    }
+                    for key in keys {
+                        table.remove(key.as_slice()).map_err(io("delete"))?;
+                    }
                 }
             }
             return write.commit().map_err(io("delete"));
         }
-        // In a transaction: remove each subtree key, journaling its prior value.
-        let undo = {
-            let write = self.txn.as_ref().expect("an open transaction");
-            let mut table = write.open_table(TABLE).map_err(io("delete"))?;
-            let mut undo = Vec::new();
-            for key in subtree_keys(&table, path)? {
-                let old = table
-                    .remove(key.as_slice())
-                    .map_err(io("delete"))?
-                    .map(|guard| guard.value().to_vec());
-                undo.push((key, old));
+        // In a transaction: journal each removed preimage before advancing to the
+        // next bounded key batch.
+        loop {
+            let undo = {
+                let write = self.txn.as_ref().expect("an open transaction");
+                let mut table = write.open_table(TABLE).map_err(io("delete"))?;
+                let keys = delete_key_batch(&table, path)?;
+                if keys.is_empty() {
+                    break;
+                }
+                let mut undo = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let old = table
+                        .remove(key.as_slice())
+                        .map_err(io("delete"))?
+                        .map(|guard| guard.value().to_vec());
+                    undo.push((key, old));
+                }
+                undo
+            };
+            for entry in undo {
+                self.record(entry);
             }
-            undo
-        };
-        for entry in undo {
-            self.record(entry);
         }
         Ok(())
     }
@@ -764,6 +780,72 @@ mod tests {
             let path = dir.path().join(format!("store-{counter}.redb"));
             RedbStore::open(&path).expect("open a fresh redb store")
         });
+    }
+
+    #[test]
+    fn delete_removes_more_than_one_bounded_batch() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let path = dir.path().join("bulk-delete.redb");
+        let mut store = RedbStore::open(&path).expect("open a fresh redb store");
+        let prefix = b"bulk/";
+        let outside = b"bulk0/kept".as_slice();
+
+        let mut keys = Vec::new();
+        for n in 0..DELETE_BATCH_LIMIT + 7 {
+            let key = format!("bulk/{n:04}").into_bytes();
+            Backend::write(&mut store, key.as_slice(), b"value".to_vec()).expect("write bulk key");
+            keys.push(key);
+        }
+        Backend::write(&mut store, outside, b"kept".to_vec()).expect("write outside key");
+
+        Backend::delete(&mut store, prefix).expect("delete bulk prefix");
+
+        for key in keys {
+            assert_eq!(
+                Backend::read(&store, key.as_slice()).expect("read bulk key"),
+                None
+            );
+        }
+        assert_eq!(
+            Backend::read(&store, outside).expect("read outside key"),
+            Some(b"kept".to_vec())
+        );
+    }
+
+    #[test]
+    fn rollback_restores_delete_across_more_than_one_bounded_batch() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let path = dir.path().join("bulk-delete-rollback.redb");
+        let mut store = RedbStore::open(&path).expect("open a fresh redb store");
+        let prefix = b"bulk/";
+        let outside = b"bulk0/kept".as_slice();
+
+        let mut keys = Vec::new();
+        for n in 0..DELETE_BATCH_LIMIT + 7 {
+            let key = format!("bulk/{n:04}").into_bytes();
+            Backend::write(&mut store, key.as_slice(), b"value".to_vec()).expect("write bulk key");
+            keys.push(key);
+        }
+        Backend::write(&mut store, outside, b"kept".to_vec()).expect("write outside key");
+
+        Backend::begin(&mut store).expect("begin transaction");
+        Backend::delete(&mut store, prefix).expect("delete bulk prefix");
+        assert_eq!(
+            Backend::read(&store, keys[0].as_slice()).expect("read deleted key"),
+            None
+        );
+        Backend::rollback(&mut store).expect("rollback delete");
+
+        for key in keys {
+            assert_eq!(
+                Backend::read(&store, key.as_slice()).expect("read restored key"),
+                Some(b"value".to_vec())
+            );
+        }
+        assert_eq!(
+            Backend::read(&store, outside).expect("read outside key"),
+            Some(b"kept".to_vec())
+        );
     }
 
     #[test]
