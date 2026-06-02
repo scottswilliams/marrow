@@ -590,19 +590,6 @@ pub(crate) fn decode_child_segment(bytes: &[u8]) -> Option<ChildSegment> {
     }
 }
 
-/// Whether a child segment is a *key* position (a record or index key) rather than
-/// a named member (a field, child layer, or declared index). `next`/`prev` navigate
-/// one key level, so the native backend's edge seek tests this to know its bounded
-/// row collection has reached a navigable child without decoding the whole key. The
-/// store keeps the kind tags here, so it asks this rather than matching the bytes
-/// itself. (The in-memory backend's edge seek collapses through the shared
-/// traversal walk, which decodes the child directly, so only the native backend
-/// needs this lighter check.)
-#[cfg(feature = "native")]
-pub(crate) fn is_key_child_segment(segment: &[u8]) -> bool {
-    matches!(segment.first(), Some(&KIND_RECORD_KEY | &KIND_INDEX_KEY))
-}
-
 /// The length of a tag-and-name segment: tag, name bytes, `0x00` terminator.
 fn name_segment_len(bytes: &[u8]) -> Option<usize> {
     let terminator = bytes.iter().skip(1).position(|&b| b == 0)?;

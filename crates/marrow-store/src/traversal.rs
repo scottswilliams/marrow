@@ -37,6 +37,12 @@ pub(crate) enum ChildStep {
     Child(ChildSegment),
 }
 
+pub(crate) enum NeighborStep {
+    Done,
+    Skip,
+    Child(ChildSegment),
+}
+
 pub(crate) struct ChildCollapse<'a> {
     path: &'a [u8],
     last: Option<Vec<u8>>,
@@ -63,6 +69,39 @@ impl<'a> ChildCollapse<'a> {
         let child = decode_child_segment(segment).ok_or_else(|| corrupt(key))?;
         self.last = Some(segment.to_vec());
         Ok(ChildStep::Child(child))
+    }
+}
+
+pub(crate) struct NeighborSeek<'a> {
+    parent_prefix: &'a [u8],
+    bound: &'a [u8],
+}
+
+impl<'a> NeighborSeek<'a> {
+    pub(crate) fn new(parent_prefix: &'a [u8], bound: &'a [u8]) -> Self {
+        Self {
+            parent_prefix,
+            bound,
+        }
+    }
+
+    pub(crate) fn step(&self, key: &[u8]) -> Result<NeighborStep, StoreError> {
+        if !key.starts_with(self.parent_prefix) {
+            return Ok(NeighborStep::Done);
+        }
+        if key.len() <= self.parent_prefix.len() {
+            return Ok(NeighborStep::Skip);
+        }
+        let rest = &key[self.parent_prefix.len()..];
+        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
+        let segment = &rest[..len];
+        if segment == self.bound {
+            return Ok(NeighborStep::Skip);
+        }
+        match decode_child_segment(segment).ok_or_else(|| corrupt(key))? {
+            ChildSegment::Name(_) => Ok(NeighborStep::Skip),
+            key @ ChildSegment::Key(_) => Ok(NeighborStep::Child(key)),
+        }
     }
 }
 
@@ -142,25 +181,13 @@ pub(crate) fn neighbor_child<'a>(
     parent_prefix: &[u8],
     bound: &[u8],
 ) -> Result<Option<ChildSegment>, StoreError> {
+    let seek = NeighborSeek::new(parent_prefix, bound);
     for entry in entries {
         let (key, _) = entry?;
-        if !key.starts_with(parent_prefix) {
-            break; // past the subtree (the bound was the edge child)
-        }
-        if key.len() <= parent_prefix.len() {
-            continue; // the parent's own entry, not a child
-        }
-        let rest = &key[parent_prefix.len()..];
-        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
-        let segment = &rest[..len];
-        if segment == bound {
-            continue; // the bound child's own entry or one of its descendants
-        }
-        match decode_child_segment(segment).ok_or_else(|| corrupt(key))? {
-            // A named member is not a navigable key position; skip it (and its
-            // subtree) and keep seeking the adjacent key child.
-            ChildSegment::Name(_) => continue,
-            key @ ChildSegment::Key(_) => return Ok(Some(key)),
+        match seek.step(key)? {
+            NeighborStep::Done => break,
+            NeighborStep::Skip => {}
+            NeighborStep::Child(child) => return Ok(Some(child)),
         }
     }
     Ok(None)
