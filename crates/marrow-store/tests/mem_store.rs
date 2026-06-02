@@ -94,8 +94,7 @@ fn dump_and_restore_reproduce_the_store() {
     store.write(&book_field(1, "author"), b"Herbert".to_vec());
     store.write(&book_field(2, "title"), b"Sand".to_vec());
 
-    // Dumping from the empty prefix yields every entry in Marrow order — the
-    // portable path/value stream.
+    // Dumping from the empty prefix yields every entry in Marrow order.
     let dump = store.scan(&[], usize::MAX);
     assert_eq!(dump.entries.len(), 4);
 

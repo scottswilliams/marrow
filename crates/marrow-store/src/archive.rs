@@ -1,12 +1,11 @@
-//! A portable backup archive of a saved tree.
+//! Raw saved-path archive format for a saved tree.
 //!
 //! An archive is the store's whole-tree dump — the ordered (path, value) pairs
 //! [`Backend::scan`](crate::backend::Backend) yields from the empty prefix —
-//! framed with a small manifest. Paths and values are Marrow's canonical encoded
-//! bytes (see [`crate::path`] and [`crate::value`]), so an archive restores
-//! byte-for-byte into any backend and is independent of any engine's on-disk
-//! files. Restore replays the records inside one transaction, so a target either
-//! gains the whole archive or is left unchanged.
+//! framed with a small manifest. This stream remains portable between the memory
+//! and redb ordered-byte engines. The typed tree-cell backup boundary is a
+//! separate storage-layer contract. Restore replays the records inside one
+//! transaction, so a target either gains the whole archive or is left unchanged.
 
 use std::io::{ErrorKind, Read, Write};
 
@@ -25,9 +24,8 @@ fn io(op: &'static str) -> impl Fn(std::io::Error) -> StoreError {
     }
 }
 
-/// Write `backend`'s whole saved tree to `out` as an archive, returning the
-/// number of records written. The records are in Marrow order, so two archives of
-/// equal data are byte-identical.
+/// Write `backend`'s whole saved tree to `out` as a raw archive, returning the
+/// number of records written.
 pub fn write_archive(backend: &dyn Backend, out: &mut dyn Write) -> Result<u64, StoreError> {
     let page = backend.scan(&[], usize::MAX)?;
     out.write_all(MAGIC).map_err(io("backup"))?;

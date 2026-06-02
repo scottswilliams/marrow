@@ -1,5 +1,5 @@
-//! A backup archive is the store's canonical (path, value) stream, framed so it
-//! restores byte-for-byte into any backend.
+//! A raw archive is the saved-path stream, framed so it restores byte-for-byte
+//! into any backend.
 
 use std::io::Cursor;
 

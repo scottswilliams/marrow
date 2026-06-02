@@ -74,7 +74,7 @@ fn open_read_only_allows_simultaneous_readers() {
 }
 
 #[test]
-fn live_read_only_handle_refuses_read_write_open_until_dropped() {
+fn read_only_handle_blocks_read_write_open_before_drop() {
     let dir = tempfile::tempdir().expect("create a temp dir");
     let path = dir.path().join("store.redb");
 
@@ -148,7 +148,7 @@ fn book_title(id: i64) -> Vec<u8> {
     ])
 }
 
-/// Dump the whole store as the portable path/value stream.
+/// Dump the whole store as the raw ordered stream.
 fn dump(store: &dyn Backend) -> ScanPage {
     store.scan(&[], usize::MAX).expect("dump")
 }
@@ -162,8 +162,7 @@ fn restore(store: &mut dyn Backend, source: &ScanPage) {
 
 #[test]
 fn dumps_round_trip_between_memory_and_native() {
-    // The dump is a backend-independent path/value stream: a memory
-    // dump restores byte-for-byte into native storage, and back again.
+    // The dump is backend-independent for the memory and redb ordered-byte engines.
     let dir = tempfile::tempdir().expect("create a temp dir");
 
     let mut mem = MemStore::new();

@@ -493,8 +493,8 @@ fn dump_and_restore_reproduce_the_store<B: Backend>(make: &mut impl FnMut() -> B
         .write(&book_field(2, "title"), b"Sand".to_vec())
         .unwrap();
 
-    // Dump the portable path/value stream from the empty prefix, then replay it
-    // into a fresh store.
+    // Dump the raw ordered stream from the empty prefix, then replay it into a
+    // fresh store.
     let dump = source.scan(&[], usize::MAX).unwrap();
     let mut restored = make();
     for (path, value) in &dump.entries {

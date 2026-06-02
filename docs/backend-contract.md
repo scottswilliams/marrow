@@ -1,10 +1,10 @@
 # Backend Contract
 
-A Marrow store is a dumb ordered path/value backend. It maps encoded saved
-paths to encoded value bytes, keeps them in one byte-lexicographic order, and
-serves a fixed set of traversal and transaction operations over that order. It
-does not parse `.mw`, resolve schemas, know fields from index keys, or maintain
-indexes. Those are the checker's and runtime's job, above the store.
+A Marrow store is an ordered-byte engine plus a Marrow-owned tree-cell key
+profile above it. The engine stores opaque byte keys and byte values in one
+byte-lexicographic order and provides traversal, scan, and transaction
+operations over that order. It does not parse `.mw`, resolve schemas, know
+fields from indexes, or construct physical Marrow keys.
 
 Two backends implement the same contract and pass the same conformance suite:
 
@@ -13,18 +13,61 @@ Two backends implement the same contract and pass the same conformance suite:
 - the native store (`native`), persisted with [redb](https://docs.rs/redb)
   in a single `marrow.redb` file under the project's `dataDir`.
 
-Because the store is path/value only, the same encoded stream restores
-byte-for-byte into either backend (see [Archives And Portability](#archives-and-portability)).
+Marrow tree-cell key construction lives above those engines. The v0 physical
+key-construction substrate defines data, index, sequence, catalog/meta, and blob
+cell addresses. `Backend` traversal, runtime callers, CLI inspection, and raw
+archive operations use the saved-path operations below. Tree-cell data/index/
+sequence keys derive from stable catalog IDs and typed key values; no physical
+tree-cell key derives from source root names, member names, index names, enum
+member spelling, or source order. Typed record and index identity uses the same
+`SavedKey` ordering as Marrow saved keys. Catalog/meta and blob families occupy
+disjoint byte ranges from data cells.
 
-## Encoded Paths And Marrow Order
+## Tree-Cell Keys And Marrow Order
+
+Tree-cell keys are byte-ordered by construction, so redb and memory only need
+ordinary byte ordering. A node key is the prefix for its leaf and sequence cells.
+An index key sorts by the declared index key tuple first and by record identity
+as the tie-breaker. Sequence cells sort by their unsigned position. The
+tree-cell API exposes ranges from typed cell keys and exact index tuple prefixes
+without letting callers manufacture arbitrary raw byte ranges.
+
+The empty placement prefix is reserved in v0 even though only the default
+placement exists today. Future placement profiles must allocate a different
+prefix instead of changing the meaning of existing v0 keys.
+
+### V0 Byte Layout
+
+| Component | Bytes | Meaning |
+|---|---|---|
+| Placement prefix | `00` | Reserved empty/default placement prefix for v0. |
+| Profile byte | `01` | Tree-cell key profile v0. |
+| Family tags | `10`, `11`, `20`, `30`, `40` | Meta, catalog, data, index, and blob families. Other family tags are reserved. |
+| Catalog/blob IDs | `cat_` + 16 lowercase hex + optional `_<n>` | Accepted opaque ID shape. `n` is positive decimal with no leading zero. Source-like names are rejected before encoding. |
+| ID bytes | escaped bytes + `00 00` | IDs use the same escaped byte-run terminator as typed string keys; the accepted shape makes escaping a no-op except for the terminator. |
+| Node cell | data family + store ID + record-key tuple + `00` | Node key and prefix for the record's leaf and sequence cells. |
+| Leaf cell | node prefix + `10` + member ID | A typed leaf under a node. Other data subcell tags are reserved. |
+| Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
+| Index cell | index family + index ID + index-key tuple + `00` + record-key tuple | Sorts by exact index tuple, then record identity. The `00` delimiter marks the start of identity keys. |
+| Catalog/meta cells | catalog family + catalog ID; meta family + `01`, `02`, or `03` | Catalog entry state and catalog epoch, layout epoch, or engine profile metadata. Other meta tags are reserved. |
+| Blob chunk | blob family + blob ID + `u64_be(chunk)` | Chunked blob storage, ordered by chunk number. |
+| Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
+
+Index tuple scans use an exact tuple prefix: the API appends the identity
+delimiter before deriving the range, so scanning the exact tuple `["a"]`
+excludes longer tuples such as `["a", false]`.
+
+## Current Saved-Path Operations
 
 A saved path is a sequence of segments — a root, identity record keys, named
 members (fields, child layers, index names), and index keys inside a layer or
-index. Each segment encodes to a self-delimiting byte run, and a path's bytes
-are its segments concatenated. The encoding makes raw byte-lexicographic order
-exactly Marrow order, so a backend that merely sorts bytes — a `BTreeMap`, or
-redb's `&[u8]` keys — yields Marrow order with no custom comparator and
-regardless of any host locale or collation.
+index. This text-shaped path encoding is the `Backend` traversal surface and is
+also what CLI inspection and raw archive operations expose. It is not the
+tree-cell physical key identity. Each segment encodes to a self-delimiting byte
+run, and a path's bytes are its segments concatenated. The encoding makes raw
+byte-lexicographic order exactly Marrow order, so a backend that merely sorts
+bytes yields Marrow order with no custom comparator and regardless of any host
+locale or collation.
 
 The order the bytes encode:
 
@@ -211,7 +254,7 @@ it carries extra duties. Each maps to a stable `store.*` code (see
 - Lock. redb holds an OS lock on the file, so a second writer for an open
   store is refused as `store.locked` rather than racing it. Read-only inspecting
   opens use redb's read-only handle, may coexist with other read-only opens, and
-  release their shared read access when dropped so they do not block a later
+  release their shared read access when dropped so they do not block a subsequent
   read-write open. Write-capability operations through a read-only handle are
   refused as `store.read_only`.
 - Corruption. A file that is not a Marrow store is rejected rather than
@@ -224,28 +267,31 @@ decode as a valid segment sequence — the data is malformed, not the engine.
 Backends enforce no key/value size limit, so `store.limit` comes only from
 archive framing, never from a `read`/`write`.
 
-## Archives And Portability
+## Archives And Backup Boundary
 
-An archive is the store's whole-tree dump — the ordered `(path, value)`
-pairs `scan` yields from the empty prefix — behind a small manifest (magic,
-format version, record count). Paths and values are Marrow's canonical encoded
-bytes, independent of any engine's files, so two archives of equal data are
-byte-identical and an archive restores into either backend. Restore replays the
-records inside one transaction, so a target either gains the whole archive or is
-left unchanged.
+The raw archive is live backup/restore behavior for the saved-path backend: an
+ordered byte dump behind a small manifest (magic, format version, record count).
+It is portable between the memory and redb engines, but it is a raw saved-path
+stream rather than the typed backup contract for tree-cell Marrow data.
+
+Portable backup/restore belongs at the tree-cell boundary: catalog IDs, typed
+keys, typed values, index cells, sequence cells, catalog epochs, and blob chunks
+must be interpreted through the Marrow storage profile rather than by copying a
+raw saved-path stream. The portable backup format over this profile is a
+separate backup-format contract.
 
 `marrow restore` writes into an empty target only; a non-empty target fails
-with `restore.not_empty`. Non-empty restore modes are deferred (see
-[future/cli.md](future/cli.md)).
+with `restore.not_empty`. Non-empty restore modes are outside this backend
+contract.
 
 ## Inspecting The Store From The CLI
 
 `marrow data` exposes the backend's read operations over a project's saved tree.
 Inspection is read-only and never creates the store — a project that has not
 yet written reports no saved data and leaves no `marrow.redb` behind. All
-subcommands accept `--format text|json|jsonl` (text is the default). The store
-is path/value only, so these commands show raw encoded paths and bytes, with no
-field or index interpretation. For each subcommand's full output shapes, see
+subcommands accept `--format text|json|jsonl` (text is the default). These
+commands currently expose raw encoded saved paths and bytes, with no field or
+index interpretation. For each subcommand's full output shapes, see
 [data-tools.md](data-tools.md).
 
 ```console
@@ -269,12 +315,12 @@ $ marrow data get ./proj '^books(99).title'
 (absent)
 ```
 
-`dump` is exactly the canonical ordered stream `backup` writes; record keys are
-numeric-ordered (`^books(1)` before `^books(10)`), and the `jsonl`/`json` forms
-add base64 `path_b64` and `value_b64` for the raw bytes. `data integrity`
+`dump` is the raw ordered stream; record keys are numeric-ordered (`^books(1)`
+before `^books(10)`), and the `jsonl`/`json` forms add base64 `path_b64` and
+`value_b64` for the raw bytes. `data integrity`
 verifies stored values against the project's checked schema, exiting `1` on a
 finding (`data.decode`, `data.orphan`, or a `store.corrupt_path` key). `data
-diff` and `data load` are deferred (see [future/data-tools.md](future/data-tools.md)).
+diff` and `data load` are outside this backend contract.
 
 These commands are raw backend inspection. Application access to saved data is
 Marrow code over typed resources — see

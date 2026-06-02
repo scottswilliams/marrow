@@ -1,19 +1,20 @@
 //! Marrow's saved-tree storage layer.
 //!
-//! This crate defines how Marrow saved paths encode to ordered bytes, the
-//! [`Backend`](backend::Backend) contract every store implements, and an
-//! in-memory store. It sits below language facts: it does not parse `.mw`,
-//! resolve schemas, or maintain indexes. Those belong to the checker and runtime
-//! above it.
+//! This crate defines Marrow's ordered-byte backend contract, the tree-cell
+//! physical key profile above that contract, and an in-memory store. It sits
+//! below language facts: it does not parse `.mw`, resolve schemas, or decide
+//! source-name identity.
 //!
-//! The saved-path encoding ([`path`]) has byte order that is Marrow's own and
-//! independent of any backend's collation; the in-memory store ([`mem`]) serves
-//! values over those ordered paths and implements the [`Backend`](backend::Backend)
-//! contract.
+//! Tree-cell keys ([`cell`]) derive from stable catalog IDs and typed key values.
+//! Saved-path encoding ([`path`]) is the backend traversal and raw archive
+//! surface. [`mem`] and the native backend serve opaque ordered bytes through the
+//! [`Backend`](backend::Backend) contract.
 
 pub mod archive;
 pub mod backend;
+pub mod cell;
 pub mod decimal;
+pub mod key;
 pub mod mem;
 pub mod path;
 #[cfg(feature = "native")]
