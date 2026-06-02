@@ -810,6 +810,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn redb_table_orders_raw_byte_keys_lexicographically() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("ordered-bytes.redb");
+
+        let store = RedbStore::open(&path).expect("open");
+        let db = match store.db {
+            DatabaseHandle::ReadWrite(db) => db,
+            DatabaseHandle::ReadOnly(_) => panic!("expected a read-write redb handle"),
+        };
+
+        let write = db.begin_write().expect("begin write transaction");
+        {
+            let mut table = write.open_table(TABLE).expect("open table for write");
+            let value: &[u8] = b"value";
+            for key in [b"b".as_slice(), b"a", &[0x00], &[0x00, 0xff], b"aa"] {
+                table.insert(key, value).expect("insert raw byte key");
+            }
+        }
+        write.commit().expect("commit raw byte keys");
+
+        let read = db.begin_read().expect("begin read transaction");
+        let table = read.open_table(TABLE).expect("open table for read");
+        let all_keys = table
+            .range::<&[u8]>(..)
+            .expect("range all raw byte keys")
+            .map(|entry| {
+                let (key, _) = entry.expect("read raw byte key");
+                key.value().to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_keys,
+            vec![
+                vec![0x00],
+                vec![0x00, 0xff],
+                b"a".to_vec(),
+                b"aa".to_vec(),
+                b"b".to_vec()
+            ]
+        );
+
+        let a_to_b_keys = table
+            .range::<&[u8]>(b"a".as_slice()..b"b".as_slice())
+            .expect("range raw byte keys from a to b")
+            .map(|entry| {
+                let (key, _) = entry.expect("read raw byte key in half-open range");
+                key.value().to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(a_to_b_keys, vec![b"a".to_vec(), b"aa".to_vec()]);
+    }
+
     /// A foreign or meta-less redb file — one with tables but no `marrow.meta` —
     /// must be rejected as corruption, not silently adopted and stamped as a
     /// Marrow store. (`Database::create` opens existing files too, so `open` tells
