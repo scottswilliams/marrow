@@ -225,11 +225,6 @@ aggregator before review. Evidence: `crates/marrow-run/tests/eval.rs`,
 `crates/marrow-check/tests/checked_program.rs`, and
 `crates/marrow-run/src/write_tests.rs` are thousand-line aggregators.
 
-Lane 5 must remove duplicated schema classifiers from tests when it touches the
-schema surface. Evidence: `crates/marrow-schema/tests/compile_resource.rs:53`
-and `crates/marrow-schema/tests/compile_resource.rs:58` reimplement the
-production plain-field predicate. Use production schema query helpers instead.
-
 Any lane touching these areas must delete comment sediment. Evidence:
 `crates/marrow-check/src/lib.rs:31`, `crates/marrow-run/src/lib.rs:20`,
 `crates/marrow-run/src/lib.rs:80`, and

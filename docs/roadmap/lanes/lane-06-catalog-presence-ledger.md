@@ -1,8 +1,8 @@
 # Lane 6: Catalog Identity Binding And Presence Ledger
 
 > For agentic workers: use the lane loop in `/Users/scottwilliams/Dev/AGENTS.md`.
-> This lane is checker/catalog critical; do not start production code until Lane
-> 5 store facts are integrated.
+> This lane is checker/catalog critical and consumes Lane 5's stable
+> resource/store facts.
 
 Goal: bind durable identity through a committed accepted catalog file and record
 one checked-program presence proof ledger that source checks, activation,
@@ -18,10 +18,9 @@ classifiers still active.
 
 ## Parallel Safety
 
-This lane may run read-only ADR/spec review in parallel with Lane 5. Production
-code starts only after Lane 5 exposes stable resource, store, identity, and
-index facts. Do not edit store physical key code, runtime execution, or
-source-native evolution here.
+This lane consumes Lane 5's stable resource, store, identity, and index facts.
+Do not edit store physical key code, runtime execution, or source-native
+evolution here.
 
 Own these files during the code pass:
 

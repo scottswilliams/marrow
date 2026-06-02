@@ -1,16 +1,12 @@
-# Lane 5: Resource Store Surface Perfection Ledger
+# Lane 5: Resource Store Surface
 
 Lane 5 owns the public resource/store surface for Marrow v0.1: split resource
 shape from store identity, store-owned indexes, canonical `Id(^store)` identity
 types, and the checker/schema/docs contract that exposes those facts.
 
-Current pass:
+Status: complete for the Marrow v0.1 public resource/store surface.
 
-- Worktree: `/Users/scottwilliams/Dev/marrow-lane-05-perfect`
-- Cargo target dir: `/Users/scottwilliams/Dev/.cargo-targets/lane-05-perfect`
-- Branch: `lane-05-resource-store-perfection`
-
-## Public Contract
+## Durable Contract
 
 - Split `resource` and `store` declarations are the semantic model.
 - `store ^books(id: int): Book` owns durable identity, keys, and indexes.
@@ -24,7 +20,7 @@ Current pass:
   explain Book` from outside `Book`'s module does not perform project-wide
   resource-name fallback.
 
-## Current Required State
+## Maintained Invariants
 
 - `marrow explain` resolves resource names only through the checked,
   module-aware resolver; no production helper performs a project-wide
@@ -43,7 +39,7 @@ Current pass:
 - Touched checker/runtime code is split around explicit context structs and
   focused helpers instead of clippy shape suppressions.
 
-## Blocking Review Criteria
+## Audit Criteria
 
 - No production path resolves resources by project-wide first match.
 - No test or CLI path preserves bare-resource fallback behavior.
@@ -54,7 +50,7 @@ Current pass:
 - Touched Rust does not rely on clippy shape suppressions, oversized dispatcher
   functions, compatibility shims, or comments that stand in for decomposition.
 
-## Explicit Non-Blockers
+## Stable Boundaries
 
 - Lane 6 enum and presence semantics are unchanged except where type annotations
   must obey this lane's resource-first contract.
