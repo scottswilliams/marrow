@@ -3,7 +3,7 @@ use marrow_store::cell::{CatalogId, CellKey, MetaCell, SequencePosition};
 use marrow_store::key::SavedKey;
 use marrow_store::mem::MemStore;
 use marrow_store::tree::{
-    CommitMetadata, EngineProfile, TreeCellStore, TreeEnumMember, TreeReference,
+    CommitMetadata, EngineProfile, IndexPage, TreeCellStore, TreeEnumMember, TreeReference,
     decode_tree_enum_member, decode_tree_reference, encode_tree_enum_member, encode_tree_reference,
 };
 
@@ -21,6 +21,13 @@ fn raw_keys(store: &dyn Backend) -> Vec<Vec<u8>> {
     let page = store.scan(&[], 32).expect("scan raw backend");
     assert!(!page.truncated, "raw-key fixture exceeded its scan limit");
     page.entries.into_iter().map(|(key, _)| key).collect()
+}
+
+fn index_rows(page: IndexPage) -> Vec<(Vec<SavedKey>, Vec<u8>)> {
+    page.entries
+        .into_iter()
+        .map(|entry| (entry.identity, entry.value))
+        .collect()
 }
 
 #[test]
@@ -215,11 +222,9 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
 }
 
 #[test]
-fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
+fn node_and_leaf_operations_are_typed() {
     let store_id = catalog_id("1111111111111111");
     let title = catalog_id("2222222222222222");
-    let tags = catalog_id("3333333333333333");
-    let by_shelf = catalog_id("4444444444444444");
     let identity = [SavedKey::Int(7)];
     let mut backend = MemStore::new();
     let mut store = TreeCellStore::new(&mut backend);
@@ -255,6 +260,15 @@ fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
             .expect("read leaf"),
         None
     );
+}
+
+#[test]
+fn sequence_positions_are_typed_cells() {
+    let store_id = catalog_id("1111111111111111");
+    let tags = catalog_id("3333333333333333");
+    let identity = [SavedKey::Int(7)];
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
 
     store
         .write_sequence_position(
@@ -280,6 +294,14 @@ fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
             .expect("read sequence"),
         None
     );
+}
+
+#[test]
+fn exact_index_tuple_scan_pages_by_identity() {
+    let by_shelf = catalog_id("4444444444444444");
+    let identity = [SavedKey::Int(7)];
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
 
     store
         .write_index_entry(
@@ -311,16 +333,12 @@ fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
             .expect("read index"),
         Some(b"present".to_vec())
     );
+
     let first_page = store
         .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 1)
         .expect("scan index tuple");
     assert_eq!(
-        first_page
-            .entries
-            .clone()
-            .into_iter()
-            .map(|entry| (entry.identity, entry.value))
-            .collect::<Vec<_>>(),
+        index_rows(first_page.clone()),
         vec![(vec![SavedKey::Int(7)], b"present".to_vec())]
     );
     assert!(first_page.truncated);
@@ -329,15 +347,41 @@ fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
     let second_page = store
         .scan_index_tuple_after(&by_shelf, &[SavedKey::Str("fiction".into())], cursor, 10)
         .expect("scan next index tuple page");
+    assert!(!second_page.truncated);
     assert_eq!(
-        second_page
-            .entries
-            .into_iter()
-            .map(|entry| (entry.identity, entry.value))
-            .collect::<Vec<_>>(),
+        index_rows(second_page),
         vec![(vec![SavedKey::Int(8)], b"other".to_vec())]
     );
-    assert!(!second_page.truncated);
+}
+
+#[test]
+fn exact_index_tuple_cursor_rejects_another_tuple() {
+    let by_shelf = catalog_id("4444444444444444");
+    let identity = [SavedKey::Int(7)];
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
+
+    store
+        .write_index_entry(
+            &by_shelf,
+            &[SavedKey::Str("fiction".into())],
+            &identity,
+            b"present".to_vec(),
+        )
+        .expect("write index");
+    store
+        .write_index_entry(
+            &by_shelf,
+            &[SavedKey::Str("fiction".into())],
+            &[SavedKey::Int(8)],
+            b"other".to_vec(),
+        )
+        .expect("write other index");
+    let page = store
+        .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 1)
+        .expect("scan index tuple");
+    assert!(page.truncated);
+    let cursor = page.cursor.as_ref().expect("cursor");
 
     store
         .write_index_entry(
@@ -351,6 +395,13 @@ fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
         .scan_index_tuple_after(&by_shelf, &[SavedKey::Str("nonfiction".into())], cursor, 10)
         .expect_err("cursor from another exact tuple is invalid");
     assert_eq!(error.code(), "store.cursor");
+}
+
+#[test]
+fn exact_index_tuple_zero_limit_returns_empty_page() {
+    let by_shelf = catalog_id("4444444444444444");
+    let mut backend = MemStore::new();
+    let store = TreeCellStore::new(&mut backend);
 
     let empty_page = store
         .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 0)
@@ -358,22 +409,24 @@ fn nodes_leaves_sequences_and_indexes_use_typed_operations() {
     assert!(empty_page.entries.is_empty());
     assert!(empty_page.cursor.is_none());
     assert!(!empty_page.truncated);
+}
 
-    let full_page = store
-        .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 10)
-        .expect("scan index tuple");
-    assert_eq!(
-        full_page
-            .entries
-            .into_iter()
-            .map(|entry| (entry.identity, entry.value))
-            .collect::<Vec<_>>(),
-        vec![
-            (vec![SavedKey::Int(7)], b"present".to_vec()),
-            (vec![SavedKey::Int(8)], b"other".to_vec())
-        ]
-    );
+#[test]
+fn exact_index_tuple_delete_removes_only_the_exact_identity() {
+    let by_shelf = catalog_id("4444444444444444");
+    let identity = [SavedKey::Int(7)];
     let extended_identity = [SavedKey::Int(7), SavedKey::Bool(false)];
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
+
+    store
+        .write_index_entry(
+            &by_shelf,
+            &[SavedKey::Str("fiction".into())],
+            &identity,
+            b"present".to_vec(),
+        )
+        .expect("write index");
     store
         .write_index_entry(
             &by_shelf,

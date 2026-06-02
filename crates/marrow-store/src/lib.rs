@@ -6,13 +6,15 @@
 //! source-name identity.
 //!
 //! Tree-cell keys ([`cell`]) derive from stable catalog IDs and typed key values.
-//! Saved-path encoding ([`path`]) is the backend traversal and raw archive
-//! surface. [`mem`] and the native backend serve opaque ordered bytes through the
+//! Saved-path encoding ([`path`]) is the raw backend boundary. [`debug_admin`]
+//! exposes raw saved-path archives only for inspection and repair tooling.
+//! [`mem`] and the native backend serve opaque ordered bytes through the
 //! [`Backend`](backend::Backend) contract.
 
-pub mod archive;
+mod archive;
 pub mod backend;
 pub mod cell;
+pub mod debug_admin;
 pub mod decimal;
 pub mod key;
 pub mod mem;

@@ -1,10 +1,7 @@
-//! Raw saved-path archive format for the ordered-byte backend.
+//! Raw saved-path archive format for debug/admin access to the ordered-byte backend.
 //!
 //! An archive is a raw ordered (path, value) stream framed with a small manifest.
-//! It remains useful for saved-path inspection and tests, but typed tree-cell
-//! export is a storage-layer contract above this raw byte stream. Reading an
-//! archive replays the records inside one transaction, so a target either gains
-//! the whole archive or is left unchanged.
+//! This module is crate-private; the public surface is [`crate::debug_admin`].
 
 use std::io::{ErrorKind, Read, Write};
 
@@ -24,9 +21,10 @@ fn io(op: &'static str) -> impl Fn(std::io::Error) -> StoreError {
     }
 }
 
-/// Write `backend`'s ordered saved-path stream to `out` as a raw archive, returning the
-/// number of records written.
-pub fn write_archive(backend: &dyn Backend, out: &mut dyn Write) -> Result<u64, StoreError> {
+pub(crate) fn write_raw_saved_path_archive(
+    backend: &dyn Backend,
+    out: &mut dyn Write,
+) -> Result<u64, StoreError> {
     let count = count_records(backend)?;
     out.write_all(MAGIC).map_err(io("archive.write"))?;
     out.write_all(&FORMAT_VERSION.to_le_bytes())
@@ -78,10 +76,10 @@ fn scan_records(
     }
 }
 
-/// Read an archive from `input` into `backend`, returning the number of records
-/// replayed. The replay runs in one transaction: any read or write error rolls
-/// the target back to its prior state.
-pub fn read_archive(input: &mut dyn Read, backend: &mut dyn Backend) -> Result<u64, StoreError> {
+pub(crate) fn read_raw_saved_path_archive(
+    input: &mut dyn Read,
+    backend: &mut dyn Backend,
+) -> Result<u64, StoreError> {
     let count = read_header(input)?;
     backend.begin()?;
     let result =

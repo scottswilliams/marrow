@@ -139,11 +139,10 @@ traversal, plus the duplicate read/presence classifiers still active in checker
 facts and presence modules. Declaration order may remain a source traversal
 index only; it must not be stored meaning or index-key meaning.
 
-The Lane 7 store work is mostly clean, but stale dirty Lane 7 worktrees and raw
-archive surfaces are not integration candidates. Retire stale worktrees after
-preserving any explicitly requested patch, and route raw archive/backup cleanup
-to Lane 10 unless the store owner can delete the surface without colliding with
-active tooling work.
+The Lane 7 store pass owns the tree-cell store boundary. Raw archive behavior may
+remain only as explicitly debug/admin store access; typed backup manifests,
+raw data tooling, and serve protocol replacement belong to Lane 10 once shared
+runtime and store facts are available.
 
 Every active orchestrator must include these items in the next handoff:
 

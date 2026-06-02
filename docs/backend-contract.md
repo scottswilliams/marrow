@@ -15,11 +15,13 @@ Two backends implement the same contract and pass the same conformance suite:
 
 Marrow tree-cell key construction lives above those engines. The v0 physical
 key-construction substrate defines data, index, sequence, catalog/meta, and blob
-cell addresses. `Backend` traversal, runtime callers, CLI inspection, and raw
-archive operations use the saved-path operations below. The typed tree-cell
-store facade is the production boundary for tree-cell writes: it constructs
-physical keys through `CellKey` and exposes narrow operations for nodes, leaves,
-sequence positions, exact index entries, exact index tuple scans, and metadata.
+cell addresses. `Backend` traversal uses the saved-path operations below;
+current runtime callers and CLI inspection still consume that raw surface until
+their owning lanes replace it. Raw archive access is debug/admin only. The typed
+tree-cell store facade is the production boundary for tree-cell writes: it
+constructs physical keys through `CellKey` and exposes narrow operations for
+nodes, leaves, sequence positions, exact index entries, exact index tuple scans,
+and metadata.
 Tree-cell data/index/sequence keys derive from stable catalog IDs and typed key
 values; no physical tree-cell key derives from source root names, member names,
 index names, enum member spelling, or source order. Typed record and index
@@ -121,7 +123,7 @@ enum member spelling, and source order are not inputs to these codecs.
 A saved path is a sequence of segments — a root, identity record keys, named
 members (fields, child layers, index names), and index keys inside a layer or
 index. This text-shaped path encoding is the `Backend` traversal surface and is
-also what CLI inspection and raw archive operations expose. It is not the
+also what CLI inspection and debug/admin raw archive operations expose. It is not the
 tree-cell physical key identity. Each segment encodes to a self-delimiting byte
 run, and a path's bytes are its segments concatenated. The encoding makes raw
 byte-lexicographic order exactly Marrow order, so a backend that merely sorts
@@ -288,17 +290,12 @@ The laws cover:
   full child walk, and keeping record keys separate from index positions;
 - ordered roots, deduped;
 - bounded scans returning only the subtree, in order, truncating at the limit;
-- bounded raw record copies reproducing the store byte-for-byte;
 - a corrupt path surfacing as a typed `store.corrupt_path` error;
 - transaction laws: a committed transaction keeps its writes; a rolled-back one
   discards them; an unbalanced `commit`/`rollback` is a no-op; nested savepoints;
   inner-commit-then-outer-rollback discarding everything; three-level nesting
   with a middle commit and outer rollback; and a transaction seeing its writes in
   traversal.
-
-Holding both stores to one suite is why a bounded raw record copy from one
-backend reproduces faithfully in the other.
-
 ## Native-Store Responsibilities
 
 The persistent backend can fail and corrupt where the in-memory store cannot, so

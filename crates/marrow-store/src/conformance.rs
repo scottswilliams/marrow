@@ -3,7 +3,7 @@
 //! Every store — the in-memory store and any persistent backend — must satisfy
 //! the same laws over Marrow-ordered encoded paths: value round-trips, the four
 //! presence states, subtree deletes, ordered traversal, bounded scans, root
-//! listing, bounded raw record copies, typed corruption errors, and transaction savepoints.
+//! listing, typed corruption errors, and transaction savepoints.
 //! [`run_all`] drives every law against fresh stores from `make`; a backend's
 //! test calls it with its own factory, so memory and native storage are held to
 //! one contract.
@@ -13,8 +13,6 @@
 
 use crate::backend::{Backend, Presence, StoreError};
 use crate::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-
-const RAW_COPY_SCAN_LIMIT: usize = 2;
 
 /// Run every conformance law against fresh stores produced by `make`. `make` is
 /// `FnMut` so a backend factory can vary state per store (e.g. a redb file name).
@@ -45,7 +43,6 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     scan_returns_only_the_subtree_in_order(&mut make());
     scan_is_bounded_by_the_limit(&mut make());
     scan_after_resumes_inside_the_subtree(&mut make());
-    bounded_raw_copy_reproduces_the_store(&mut make);
     a_corrupt_path_is_a_typed_error(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
@@ -92,34 +89,6 @@ fn keyed_field(root: &str, key: SavedKey, field: &str) -> Vec<u8> {
 /// `RecordKey` segment. (The runtime builds this from a terminal record key.)
 fn record_seg(key: SavedKey) -> Vec<u8> {
     encode_path(&[PathSegment::RecordKey(key)])
-}
-
-fn collect_raw_records(store: &dyn Backend) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut records = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match cursor.as_deref() {
-            Some(cursor) => store
-                .scan_after(&[], cursor, RAW_COPY_SCAN_LIMIT)
-                .expect("scan next raw record page"),
-            None => store
-                .scan(&[], RAW_COPY_SCAN_LIMIT)
-                .expect("scan raw records"),
-        };
-        let next_cursor = page.entries.last().map(|(path, _)| path.clone());
-        records.extend(page.entries);
-        if !page.truncated {
-            return records;
-        }
-        if let (Some(previous), Some(next)) = (cursor.as_ref(), next_cursor.as_ref()) {
-            assert!(
-                next > previous,
-                "truncated scan did not advance the raw record cursor"
-            );
-        }
-        cursor = next_cursor;
-        assert!(cursor.is_some(), "truncated scan returned no record cursor");
-    }
 }
 
 fn values_round_trip(store: &mut dyn Backend) {
@@ -511,34 +480,6 @@ fn scan_after_resumes_inside_the_subtree(store: &mut dyn Backend) {
         "resume stays inside the requested subtree"
     );
     assert!(!second.truncated);
-}
-
-fn bounded_raw_copy_reproduces_the_store<B: Backend>(make: &mut impl FnMut() -> B) {
-    let mut source = make();
-    source.write(&book(1), b"whole".to_vec()).unwrap();
-    source
-        .write(&book_field(1, "title"), b"Dune".to_vec())
-        .unwrap();
-    source
-        .write(&book_field(2, "title"), b"Sand".to_vec())
-        .unwrap();
-
-    let source_records = collect_raw_records(&source);
-    assert_eq!(source_records.len(), 3);
-    let mut copied = make();
-    for (path, value) in &source_records {
-        copied.write(path, value.clone()).unwrap();
-    }
-    assert_eq!(
-        collect_raw_records(&copied),
-        source_records,
-        "raw records copied"
-    );
-    assert_eq!(
-        copied.roots().unwrap(),
-        source.roots().unwrap(),
-        "roots reproduced"
-    );
 }
 
 fn a_corrupt_path_is_a_typed_error(store: &mut dyn Backend) {
