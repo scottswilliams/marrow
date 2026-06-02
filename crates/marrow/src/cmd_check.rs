@@ -135,6 +135,7 @@ fn check_one_file_project(
         default_entry: None,
         store: None,
         tests: Vec::new(),
+        accepted_catalog: "marrow.catalog.json".to_string(),
     };
     // The scratch root holds exactly one file, so discovery cannot walk a source
     // root it failed to create; an error here would be a genuine I/O fault.

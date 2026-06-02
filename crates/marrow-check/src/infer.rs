@@ -193,7 +193,15 @@ pub(crate) fn infer_type(
             // path read or `?.` chain — a present non-path value is never absent
             // and has nothing to default. The result is the leaf type of that read.
             if matches!(op, marrow_syntax::BinaryOp::Coalesce) {
-                return check_coalesce(left, &left_type, &right_type, *span, file, diagnostics);
+                return check_coalesce(
+                    program,
+                    left,
+                    &left_type,
+                    &right_type,
+                    *span,
+                    file,
+                    diagnostics,
+                );
             }
             check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
         }

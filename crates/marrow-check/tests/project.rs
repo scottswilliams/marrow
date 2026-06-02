@@ -3795,9 +3795,7 @@ fn type_surface_singleton_keyed_group_field_read_feeds_type_checks() {
 }
 
 #[test]
-fn a_singleton_whole_read_and_write_are_not_flagged() {
-    // `var s: Settings = ^settings` and `^settings = s` address the keyless
-    // root directly; neither should raise a false unresolved or type diagnostic.
+fn a_singleton_whole_read_requires_read_site_resolution() {
     let report = check_module_report(
         "singleton-whole",
         "module m\n\
@@ -3805,7 +3803,8 @@ fn a_singleton_whole_read_and_write_are_not_flagged() {
          fn snapshot(): Settings\n    return ^settings\n\n\
          fn restore(s: Settings)\n    ^settings = s\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -4329,10 +4328,7 @@ fn a_typed_whole_resource_write_is_not_an_untyped_value() {
 }
 
 #[test]
-fn a_typed_whole_group_entry_write_is_not_an_untyped_value() {
-    // A whole-group-entry write of a value typed as the owning resource (a
-    // `Book`-typed local or another read group entry) is the nominal match, not the
-    // untyped-value path.
+fn a_whole_group_entry_copy_read_requires_read_site_resolution() {
     let report = check_module_report(
         "whole-group-entry-typed-ok",
         "module m\n\
@@ -4343,7 +4339,8 @@ fn a_typed_whole_group_entry_write_is_not_an_untyped_value() {
          fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(0) = b\n\n\
          fn copy()\n    ^books(1).chapters(1) = ^books(1).chapters(0)\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -5777,8 +5774,8 @@ fn a_singleton_keyed_enum_leaf_read_types_as_that_enum() {
          enum Kind\n    number\n    plus\n\n\
          resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
          fn readBack(): int\n    \
-         var k: Kind = ^session.kinds(1)\n    \
-         match ^session.kinds(1)\n        number\n            return 0\n        plus\n            return 1\n",
+         var k: Kind = ^session.kinds(1) ?? Kind::number\n    \
+         match k\n        number\n            return 0\n        plus\n            return 1\n",
     );
     assert!(
         !report.has_errors(),

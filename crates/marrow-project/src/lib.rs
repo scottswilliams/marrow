@@ -6,10 +6,11 @@
 //! holds project choices only, never compiled schemas, index metadata, or
 //! secrets.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Stable error code for an invalid `marrow.json`.
 pub const CONFIG_INVALID: &str = "config.invalid";
@@ -25,6 +26,8 @@ pub struct ProjectConfig {
     pub store: Option<StoreConfig>,
     /// Test file glob patterns.
     pub tests: Vec<String>,
+    /// Generated accepted catalog metadata, relative to the project root.
+    pub accepted_catalog: String,
 }
 
 /// The storage selection: which backend, and where its data lives.
@@ -59,6 +62,133 @@ pub struct ConfigError {
     pub code: &'static str,
     pub message: String,
 }
+
+/// Stable error code for an invalid accepted catalog metadata file.
+pub const CATALOG_INVALID: &str = "catalog.invalid";
+
+/// A committed accepted catalog snapshot. Source checks may read it and propose
+/// replacement contents, but they never write it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CatalogMetadata {
+    pub epoch: u64,
+    pub digest: String,
+    pub entries: Vec<CatalogEntry>,
+}
+
+impl CatalogMetadata {
+    pub fn new(epoch: u64, entries: Vec<CatalogEntry>) -> Self {
+        let digest = catalog_digest(epoch, &entries);
+        Self {
+            epoch,
+            digest,
+            entries,
+        }
+    }
+
+    pub fn from_json(json: &str) -> Result<Self, CatalogError> {
+        let catalog: Self =
+            serde_json::from_str(json).map_err(|error| CatalogError::new(error.to_string()))?;
+        let expected = catalog_digest(catalog.epoch, &catalog.entries);
+        if catalog.digest != expected {
+            return Err(CatalogError::new(format!(
+                "catalog digest `{}` does not match computed digest `{expected}`",
+                catalog.digest
+            )));
+        }
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
+    pub fn to_json_pretty(&self) -> String {
+        serde_json::to_string_pretty(self).expect("catalog metadata serializes")
+    }
+
+    fn validate(&self) -> Result<(), CatalogError> {
+        let mut paths: HashMap<(CatalogEntryKind, &str), usize> = HashMap::new();
+        let mut stable_ids: HashMap<&str, usize> = HashMap::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if entry.path.is_empty() {
+                return Err(CatalogError::new("catalog entry path must not be empty"));
+            }
+            if entry.stable_id.is_empty() {
+                return Err(CatalogError::new("catalog stable ID must not be empty"));
+            }
+            if let Some(first) = stable_ids.insert(entry.stable_id.as_str(), index) {
+                return Err(CatalogError::new(format!(
+                    "catalog stable ID `{}` is used by entries {first} and {index}",
+                    entry.stable_id
+                )));
+            }
+            insert_catalog_path(&mut paths, entry.kind, &entry.path, index)?;
+            for alias in &entry.aliases {
+                if alias.is_empty() {
+                    return Err(CatalogError::new("catalog alias must not be empty"));
+                }
+                if alias == &entry.path {
+                    return Err(CatalogError::new(format!(
+                        "catalog alias `{alias}` repeats its canonical path"
+                    )));
+                }
+                insert_catalog_path(&mut paths, entry.kind, alias, index)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One accepted durable identity binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CatalogEntry {
+    pub kind: CatalogEntryKind,
+    pub path: String,
+    pub stable_id: String,
+    pub aliases: Vec<String>,
+    pub lifecycle: CatalogLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CatalogEntryKind {
+    Resource,
+    Store,
+    StoreIndex,
+    ResourceMember,
+    Enum,
+    EnumMember,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CatalogLifecycle {
+    Active,
+    Deprecated,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl CatalogError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            code: CATALOG_INVALID,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for CatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for CatalogError {}
 
 impl ConfigError {
     fn new(message: impl Into<String>) -> Self {
@@ -121,11 +251,17 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         None => None,
     };
 
+    let accepted_catalog = raw
+        .accepted_catalog
+        .unwrap_or_else(|| "marrow.catalog.json".to_string());
+    check_under_root("acceptedCatalog", &accepted_catalog)?;
+
     Ok(ProjectConfig {
         source_roots: raw.source_roots,
         default_entry: raw.run.and_then(|run| run.default_entry),
         store,
         tests: raw.tests,
+        accepted_catalog,
     })
 }
 
@@ -380,6 +516,8 @@ struct RawConfig {
     store: Option<RawStore>,
     #[serde(default)]
     tests: Vec<String>,
+    #[serde(default)]
+    accepted_catalog: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -395,4 +533,40 @@ struct RawStore {
     backend: String,
     #[serde(default)]
     data_dir: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DigestPayload<'a> {
+    epoch: u64,
+    entries: &'a [CatalogEntry],
+}
+
+fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
+    let json = serde_json::to_string(&DigestPayload { epoch, entries })
+        .expect("catalog digest payload serializes");
+    format!("fnv1a64:{:016x}", fnv1a64(json.as_bytes()))
+}
+
+fn insert_catalog_path<'a>(
+    paths: &mut HashMap<(CatalogEntryKind, &'a str), usize>,
+    kind: CatalogEntryKind,
+    path: &'a str,
+    index: usize,
+) -> Result<(), CatalogError> {
+    if let Some(first) = paths.insert((kind, path), index) {
+        return Err(CatalogError::new(format!(
+            "catalog path `{path}` for `{kind:?}` is used by entries {first} and {index}"
+        )));
+    }
+    Ok(())
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }

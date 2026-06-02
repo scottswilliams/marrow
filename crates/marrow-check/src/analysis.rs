@@ -357,6 +357,8 @@ pub(crate) fn analyze_source_project(
             .iter()
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
+    crate::catalog::bind_catalog(project_root, config, &mut program, &mut report.diagnostics);
+    crate::presence::check_presence(&mut program, &mut report.diagnostics);
 
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are

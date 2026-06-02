@@ -208,9 +208,9 @@ The optional read `?.` accesses a field that may be absent. An absent step
 short-circuits the rest of the chain to absent rather than failing the read, so
 `^books(id)?.binding?.shelf` is absent when any step along the way is. An
 unresolved maybe-present read — including a `?.` chain not terminated by a
-resolution — is a compile error, not a runtime fault; resolve it with `??`, an
-`else` diverging binding, or an `if let`. Only absence is short-circuited — schema
-and decoding errors still surface.
+resolution — is a compile error, not a runtime fault; resolve it with `??` or
+an `if exists(...)` branch. Only absence is short-circuited — schema and decoding
+errors still surface.
 
 Ranges use `int` endpoints and yield `int` values when iterated. The checker
 accepts them for `for` loops, not as saved values.
@@ -337,7 +337,7 @@ Marrow reserves:
 module use pub fn resource at index unique
 required
 enum match is
-const var if let else while for in break continue return delete edit assert merge
+const var if else while for in break continue return delete edit assert merge
 transaction lock try catch finally throw out inout true false
 not and or
 int decimal bool string bytes date instant duration

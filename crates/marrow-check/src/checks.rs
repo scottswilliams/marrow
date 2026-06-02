@@ -2449,6 +2449,7 @@ pub(crate) fn check_equality(
 /// default), so the default must be the same scalar type. A non-path left operand
 /// is rejected: only a read that can be absent has anything to default.
 pub(crate) fn check_coalesce(
+    program: &CheckedProgram,
     left: &marrow_syntax::Expression,
     left_type: &MarrowType,
     right_type: &MarrowType,
@@ -2459,7 +2460,7 @@ pub(crate) fn check_coalesce(
     if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
-    if !is_path_read(left) {
+    if crate::presence::read_target(program, left).is_none() {
         diagnostics.push(operator_diagnostic(
             file,
             span,
@@ -2514,19 +2515,6 @@ pub(crate) fn check_coalesce(
         (None, _) => right_type.clone(),
         (Some(leaf), None) => MarrowType::Primitive(leaf),
     }
-}
-
-/// Whether an expression is a path read whose value can be absent — the only
-/// left operand `??` accepts. A field read (`book.title`, `^books(id).title`),
-/// an optional field read (`book?.shelf`), or a call-shaped saved read
-/// (`^books(id)`, `^books(id).tags(1)`) can be absent; a bare local, literal, or
-/// computed value is always present and has nothing to default.
-pub(crate) fn is_path_read(expr: &marrow_syntax::Expression) -> bool {
-    use marrow_syntax::Expression;
-    matches!(
-        expr,
-        Expression::Field { .. } | Expression::OptionalField { .. } | Expression::Call { .. }
-    )
 }
 
 pub(crate) fn operator_diagnostic(

@@ -4,9 +4,9 @@ A Marrow project is described by a single file, `marrow.json`, at the project
 root. Every project command — `check`, `run`, `test`, `fmt`, `backup`,
 `restore`, `data`, `serve` — reads `<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
-backend and its data directory, and test patterns. It does not hold compiled
-schemas, index metadata, data-evolution history, permissions, connection strings,
-or secrets.
+backend and its data directory, test patterns, and the accepted catalog metadata
+path. It does not hold compiled schemas, index metadata, data-evolution history,
+permissions, connection strings, or secrets.
 
 Unknown keys are rejected, so a typo is an error rather than a silently ignored
 setting.
@@ -18,6 +18,7 @@ setting.
   "sourceRoots": ["src"],
   "run": { "defaultEntry": "shelf::sample::main" },
   "store": { "backend": "native", "dataDir": ".marrow/data" },
+  "acceptedCatalog": "marrow.catalog.json",
   "tests": ["tests/**/*.mw"]
 }
 ```
@@ -30,7 +31,7 @@ The minimal valid file is just the required field:
 
 With this minimal file there is no default entry (you must pass `--entry` to
 `run`), the store is in-memory (nothing is persisted), and no tests are
-discovered.
+discovered. The accepted catalog path defaults to `marrow.catalog.json`.
 
 ## Fields
 
@@ -40,6 +41,7 @@ discovered.
 | `run.defaultEntry` | string | no | none |
 | `store.backend` | `"memory"` \| `"native"` | no | in-memory |
 | `store.dataDir` | string | only when `backend` is `"native"` | — |
+| `acceptedCatalog` | string | no | `marrow.catalog.json` |
 | `tests` | array of strings | no | `[]` |
 
 All keys are camelCase. Any other top-level key, or any other key inside `run`
@@ -118,6 +120,20 @@ in-memory store: nothing is persisted, and each `run` or `test` starts empty.
 Code checks store capabilities, not backend names; `memory` and `native` are
 configuration vocabulary, not a permission layer.
 
+### `acceptedCatalog`
+
+The generated accepted catalog metadata file, relative to the project root.
+When omitted, commands read `marrow.catalog.json`.
+
+The catalog file is committed project metadata. It records stable IDs, aliases,
+lifecycle state, an epoch, and a digest for durable declarations such as
+resources, stores, indexes, resource members, enums, and enum members. Source
+checks read the file when present and return an in-memory replacement proposal
+when it is missing or stale; they do not write the file.
+
+Renames fail closed unless the accepted catalog already records the new
+canonical path and the old path as an alias for the same stable ID.
+
 ### `tests`
 
 Glob-style patterns selecting `.mw` test files. Each test file lives outside the
@@ -154,9 +170,10 @@ rules:
 - A `native` store must have a non-empty `dataDir`. (A `native` store cannot
   open without a directory, so this is rejected at parse time, not at open
   time.)
-- Every path value — each `sourceRoots` entry, `dataDir`, each `tests` entry —
-  must be relative and must not be empty, absolute, or contain a `..`
-  component. Such a value would escape the project root, so it is rejected.
+- Every path value — each `sourceRoots` entry, `dataDir`, `acceptedCatalog`, and
+  each `tests` entry — must be relative and must not be empty, absolute, or
+  contain a `..` component. Such a value would escape the project root, so it is
+  rejected.
 - Unknown top-level keys, and unknown keys inside `run` or `store`, are
   rejected.
 - Malformed JSON is rejected.
@@ -179,7 +196,7 @@ $ marrow check ./proj          # sourceRoots missing or empty
 config.invalid: `sourceRoots` must list at least one source directory
 
 $ marrow check ./proj          # unknown top-level key "globals"
-config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests` at line 1 column 35
+config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `acceptedCatalog` at line 1 column 35
 
 $ marrow check ./proj          # sourceRoots: ["/etc"]
 config.invalid: `sourceRoots entry` `/etc` must be relative to the project root, not absolute

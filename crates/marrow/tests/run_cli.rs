@@ -853,7 +853,7 @@ fn an_absent_element_fault_is_located() {
         write(
             root,
             "src/app.mw",
-            "module app\n\nresource Book at ^books(id: int)\n    title: string\n\n\
+            "module app\n\nresource Book at ^books(id: int)\n    required title: string\n\n\
              pub fn main(): string\n    return ^books(99).title\n",
         );
     });

@@ -568,9 +568,9 @@ fn local_collections_can_be_subscripted() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
-/// `next(^root(id))` over a keyed root types to the store identity, so
-/// `^root(next(^root(id))).field` reads the neighbor's field and checks clean —
-/// the navigated neighbor is an `Id(^root)`. `prev` mirrors it.
+/// `next(^root(id))` over a keyed root types to the store identity; the absent
+/// edge is resolved before the identity feeds the next saved read. `prev`
+/// mirrors it.
 #[test]
 fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
     let root = temp_project("program-next-identity", |root| {
@@ -580,10 +580,10 @@ fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
             "module shelf::books\n\
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
-             pub fn afterTitle(id: int): string\n\
-             \x20   return ^books(next(^books(id))).title\n\
-             pub fn beforeTitle(id: int): string\n\
-             \x20   return ^books(prev(^books(id))).title\n",
+             pub fn afterTitle(id: int, fallback: Id(^books)): string\n\
+             \x20   return ^books(next(^books(id)) ?? fallback).title\n\
+             pub fn beforeTitle(id: int, fallback: Id(^books)): string\n\
+             \x20   return ^books(prev(^books(id)) ?? fallback).title\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
@@ -1558,10 +1558,9 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
             "src/audit/query.mw",
             "module audit::query\n\
              use audit::log\n\
-             pub fn actor(): string\n\
+             pub fn actor(ev: log::Event): string\n\
              \x20   const id: Id(^events) = nextId(^events)\n\
              \x20   ^events(id).actor = \"scott\"\n\
-             \x20   const ev: log::Event = ^events(id)\n\
              \x20   return ev.actor\n",
         );
     });

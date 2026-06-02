@@ -30,6 +30,7 @@ pub struct FileId(pub u32);
 pub struct CheckedProgram {
     pub modules: Vec<CheckedModule>,
     pub facts: CheckedFacts,
+    pub catalog: ProgramCatalog,
 }
 
 impl CheckedProgram {
@@ -37,6 +38,7 @@ impl CheckedProgram {
         let mut program = Self {
             modules,
             facts: CheckedFacts::default(),
+            catalog: ProgramCatalog::default(),
         };
         program.rebuild_facts();
         program
@@ -87,6 +89,13 @@ impl CheckedProgram {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProgramCatalog {
+    pub accepted_epoch: Option<u64>,
+    pub accepted_digest: Option<String>,
+    pub proposal: Option<marrow_project::CatalogMetadata>,
+}
+
 /// One library module: its qualified name, the file it came from, and the
 /// declarations it contributes. Names within a module are kept in source order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,8 +124,8 @@ pub struct CheckedConst {
     pub span: SourceSpan,
 }
 
-/// A checked function: its resolved signature, effect summary, and the temporary
-/// syntax body bridge the current runtime still evaluates.
+/// A checked function: its resolved signature, effect summary, and executable
+/// syntax body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedFunction {
     pub name: String,
@@ -126,8 +135,6 @@ pub struct CheckedFunction {
     pub span: SourceSpan,
     /// True when the body reads or writes any saved root (`^...`).
     pub touches_saved_data: bool,
-    /// Temporary syntax body bridge. Checked executable IR will replace this as
-    /// the runtime stops evaluating source syntax directly.
     pub body: Block,
 }
 

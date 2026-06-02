@@ -237,15 +237,9 @@ statement       =
     ;
 
 const_stmt      =
-    "const" identifier type_annotation? "=" expression binding_tail ;
+    "const" identifier type_annotation? "=" expression NEWLINE ;
 var_stmt        =
-    "var" identifier key_params? type_annotation? ("=" expression)? binding_tail ;
-
-binding_tail    = NEWLINE | else_bind ;
-else_bind       = "else" ( divergent | NEWLINE block ) ;
-divergent       =
-    ("return" expression? | "throw" expression
-     | "break" identifier? | "continue" identifier?) NEWLINE ;
+    "var" identifier key_params? type_annotation? ("=" expression)? NEWLINE ;
 
 assignment_stmt = assignable "=" expression NEWLINE ;
 edit_stmt       = "edit" assignable NEWLINE block ;
@@ -261,20 +255,16 @@ expression_stmt = expression NEWLINE ;
 
 An `edit place` block groups field and path assignments under one root,
 preserving omitted fields and children. `assert exists(place)` and
-`assert not exists(place)` state existence preconditions. A binding `else` (on
-`const`/`var`) and `if let` resolve a maybe-present read: they bind the value when
-present, and the `else` branch must diverge (`return`, `throw`, `break`, or
-`continue`).
+`assert not exists(place)` state existence preconditions. `if exists(place)`
+narrows a maybe-present read inside the guarded block.
 
 ## Conditionals And Loops
 
 ```ebnf
-if_stmt         = if_cond | if_let ;
-if_cond         =
+if_stmt         =
     "if" expression NEWLINE block
     else_if_clause*
     else_clause? ;
-if_let          = "if" "let" identifier "=" expression NEWLINE block else_clause? ;
 
 else_if_clause  = "else" "if" expression NEWLINE block ;
 else_clause     = "else" NEWLINE block ;

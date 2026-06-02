@@ -722,8 +722,8 @@ Fixture/oracle:
 - Fresh clone and source rollback fixtures fail or bind through explicit
   catalog metadata.
 - A bare maybe-present read with no read-site resolution produces a source-check
-  diagnostic. Positive tests prove `??`, `else`, `if let`, `if exists`, and
-  optional chaining flow through the single proof ledger rather than duplicating
+  diagnostic. Positive tests prove `??`, `if exists`, and optional chaining
+  flow through the single proof ledger rather than duplicating
   read-totality classifiers. Attached-data obligations remain explicit pending
   facts until the data-attached check discharges them.
 

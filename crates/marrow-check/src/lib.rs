@@ -14,10 +14,12 @@ use marrow_syntax::{Severity, SourceSpan, parse_source};
 
 pub mod analysis;
 pub mod binding;
+mod catalog;
 mod checks;
 mod enums;
 pub mod facts;
 mod infer;
+mod presence;
 pub mod program;
 mod prototype;
 pub mod resolve;
@@ -27,16 +29,19 @@ mod typerules;
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
 pub use enums::resolve_match_enums;
+pub use facts::PresenceProofRead;
 pub use facts::{
     CheckedFacts, CheckedType, DirectEffectFacts, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
     FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
     StoreFact, StoreId, StoreIndexFact, StoreIndexId,
 };
+pub use facts::{PresenceProofFact, PresenceProofPlace, PresenceProofSource};
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};
 use program::TypeNames;
 pub use program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
+    ProgramCatalog,
 };
 pub(crate) use prototype::check_prototype_only;
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
@@ -121,6 +126,12 @@ pub const CHECK_COLLECTION_UNSUPPORTED: &str = "check.collection_unsupported";
 /// A parsed construct belongs to the prototype language surface and is rejected
 /// for the v0.1 language contract.
 pub const CHECK_PROTOTYPE_ONLY: &str = "check.prototype_only";
+/// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
+/// identity binding for a source declaration.
+pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
+/// A maybe-present saved read appears in value position without a read-site
+/// resolution form such as `??`, `exists(...)`, or optional chaining.
+pub const CHECK_BARE_MAYBE_PRESENT_READ: &str = "check.bare_maybe_present_read";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.

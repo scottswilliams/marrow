@@ -115,29 +115,19 @@ and `crates/marrow-syntax/src/format.rs:296` keep `ResourceMember::Index` and
 resource-owned schema indexes alive. Delete production resource-owned index
 handling except any accepted concise-form desugaring.
 
-**Lane 6 - Catalog And Presence.** Replace ad hoc read-presence checks.
-Evidence: `crates/marrow-check/src/infer.rs:174`,
-`crates/marrow-check/src/checks.rs:2311`, and
-`crates/marrow-check/src/checks.rs:2367` classify `??` proof sources from
-syntax. `??` must consume the per-read presence ledger, not a local
-`Expression::Call` predicate.
+**Lane 7 And Lane 8 - Enum Storage And Runtime.** Consume catalog-backed enum
+member identity for storage, indexes, and runtime values. Evidence:
+`crates/marrow-schema/src/lib.rs:83`, `crates/marrow-schema/src/lib.rs:334`,
+`crates/marrow-run/src/expr.rs:43`, `crates/marrow-run/src/write.rs:1576`, and
+`crates/marrow-run/tests/eval.rs:9703` still encode enum members by declaration
+or pre-order ordinal. Declaration/pre-order ordinals may survive only as schema
+traversal indexes, not durable stored meaning.
 
-**Lane 6 - Catalog And Presence.** Replace source-order enum ordinals as stored
-meaning. Evidence: `docs/language/enums.md:39`,
-`crates/marrow-schema/src/lib.rs:302`, `crates/marrow-run/src/expr.rs:23`,
-`crates/marrow-run/src/write.rs:1564`, and
-`crates/marrow-run/tests/eval.rs:9609` still encode enum members by
-declaration or pre-order ordinal. Catalog-backed enum member identity must be
-the checked fact; Lane 7 and Lane 8 then consume that identity for storage,
-indexes, and runtime values.
-
-**Lane 6 And Lane 8 - Checked Facts And Runtime IR.** Ensure
-diagnostic/recovery `Unknown` cannot enter checked executable facts or checked
-runtime IR. Evidence: `crates/marrow-check/src/infer.rs:99`,
-`crates/marrow-check/src/program.rs:174`, and `docs/language/types.md:104`.
-Keep explicit user `unknown` dynamic-boundary types separate from recovery
-sentinels. Lane 11 owns only the final absence scan after these semantic lanes
-land.
+**Lane 8 - Checked Runtime IR.** Ensure diagnostic/recovery `Unknown` cannot
+enter checked runtime IR. Evidence: `crates/marrow-check/src/program.rs:129`
+still exposes source-body functions with best-effort types, and runtime still
+consumes that bridge. Keep explicit user `unknown` dynamic-boundary types
+separate from recovery sentinels.
 
 **Lane 7 - Tree-Cell Store.** Replace source-name physical path identity.
 Evidence: `crates/marrow-store/src/path.rs:64`,

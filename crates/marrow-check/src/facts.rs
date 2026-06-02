@@ -10,6 +10,9 @@ use marrow_syntax::{
     Statement, TypeRef,
 };
 
+use crate::catalog::{
+    CatalogKey, enum_path, resource_member_path, resource_path, store_index_path, store_path,
+};
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias};
 
@@ -51,6 +54,7 @@ pub struct CheckedFacts {
     resource_members: Vec<ResourceMemberFact>,
     enums: Vec<EnumFact>,
     enum_members: Vec<EnumMemberFact>,
+    presence_proofs: Vec<PresenceProofFact>,
 }
 
 impl CheckedFacts {
@@ -146,6 +150,150 @@ impl CheckedFacts {
 
     pub fn enum_members(&self) -> &[EnumMemberFact] {
         &self.enum_members
+    }
+
+    pub fn presence_proofs(&self) -> &[PresenceProofFact] {
+        &self.presence_proofs
+    }
+
+    pub(crate) fn bind_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        self.bind_resource_catalog_ids(modules, ids);
+        self.bind_store_catalog_ids(modules, ids);
+        self.bind_store_index_catalog_ids(modules, ids);
+        self.bind_resource_member_catalog_ids(modules, ids);
+        self.bind_enum_catalog_ids(modules, ids);
+        self.bind_enum_member_catalog_ids(modules, ids);
+    }
+
+    fn bind_resource_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        let resource_paths: Vec<String> = self
+            .resources
+            .iter()
+            .map(|resource| {
+                let module = &modules[resource.module.0 as usize];
+                resource_path(&module.name, &resource.name)
+            })
+            .collect();
+        for (resource, path) in self.resources.iter_mut().zip(resource_paths) {
+            resource.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::Resource, path);
+        }
+    }
+
+    fn bind_store_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        let store_paths: Vec<String> = self
+            .stores
+            .iter()
+            .map(|store| {
+                let module = &modules[store.module.0 as usize];
+                store_path(&module.name, &store.root)
+            })
+            .collect();
+        for (store, path) in self.stores.iter_mut().zip(store_paths) {
+            store.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::Store, path);
+        }
+    }
+
+    fn bind_store_index_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        let store_index_paths: Vec<String> = self
+            .store_indexes
+            .iter()
+            .map(|index| {
+                let store = &self.stores[index.store.0 as usize];
+                let module = &modules[store.module.0 as usize];
+                store_index_path(&module.name, &store.root, &index.name)
+            })
+            .collect();
+        for (index, path) in self.store_indexes.iter_mut().zip(store_index_paths) {
+            index.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::StoreIndex, path);
+        }
+    }
+
+    fn bind_resource_member_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        let resource_member_paths: Vec<String> = self
+            .resource_members
+            .iter()
+            .map(|member| {
+                let resource = &self.resources[member.resource.0 as usize];
+                let module = &modules[resource.module.0 as usize];
+                resource_member_path(
+                    &module.name,
+                    &resource.name,
+                    &resource_member_name_path(&self.resource_members, member.id),
+                )
+            })
+            .collect();
+        for (member, path) in self.resource_members.iter_mut().zip(resource_member_paths) {
+            member.catalog_id =
+                catalog_id(ids, marrow_project::CatalogEntryKind::ResourceMember, path);
+        }
+    }
+
+    fn bind_enum_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        let enum_paths: Vec<String> = self
+            .enums
+            .iter()
+            .map(|enum_fact| {
+                let module = &modules[enum_fact.module.0 as usize];
+                enum_path(&module.name, &enum_fact.name)
+            })
+            .collect();
+        for (enum_fact, path) in self.enums.iter_mut().zip(enum_paths) {
+            enum_fact.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::Enum, path);
+        }
+    }
+
+    fn bind_enum_member_catalog_ids(
+        &mut self,
+        modules: &[CheckedModule],
+        ids: &HashMap<CatalogKey, String>,
+    ) {
+        let enum_member_paths: Vec<String> = self
+            .enum_members
+            .iter()
+            .map(|member| {
+                let enum_fact = &self.enums[member.enum_id.0 as usize];
+                let module = &modules[enum_fact.module.0 as usize];
+                let path = enum_member_name_path(&self.enum_members, member.id);
+                format!(
+                    "{}::{}",
+                    enum_path(&module.name, &enum_fact.name),
+                    path.join("::")
+                )
+            })
+            .collect();
+        for (member, path) in self.enum_members.iter_mut().zip(enum_member_paths) {
+            member.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::EnumMember, path);
+        }
+    }
+
+    pub(crate) fn record_presence_proof(&mut self, proof: PresenceProofFact) {
+        if !self.presence_proofs.contains(&proof) {
+            self.presence_proofs.push(proof);
+        }
     }
 
     pub(crate) fn overwrite_prefix_from(&mut self, prefix: &Self) {
@@ -302,6 +450,7 @@ impl CheckedFacts {
                 id: resource_id,
                 module: module_id,
                 name: resource.name.clone(),
+                catalog_id: String::new(),
                 span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
             });
             self.collect_resource_member_facts(
@@ -343,6 +492,7 @@ impl CheckedFacts {
                 module: module_id,
                 root: store.root.clone(),
                 resource,
+                catalog_id: String::new(),
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
             for index in &store.indexes {
@@ -360,6 +510,7 @@ impl CheckedFacts {
                     id,
                     store: store_id,
                     name: index.name.clone(),
+                    catalog_id: String::new(),
                     span,
                 });
             }
@@ -397,6 +548,7 @@ impl CheckedFacts {
                 parent,
                 name: node.name.clone(),
                 kind,
+                catalog_id: String::new(),
                 span,
             });
             let nested = declaration.and_then(|member| match member {
@@ -433,6 +585,7 @@ impl CheckedFacts {
                 id: enum_id,
                 module: module_id,
                 name: enum_schema.name.clone(),
+                catalog_id: String::new(),
                 span: declaration.map_or(SourceSpan::default(), |decl| decl.span),
             });
 
@@ -450,6 +603,7 @@ impl CheckedFacts {
                         .map(|parent| EnumMemberId(member_start + parent as u32)),
                     name: member.name.clone(),
                     category: member.category,
+                    catalog_id: String::new(),
                     span: member_spans.get(index).copied().unwrap_or_default(),
                 });
             }
@@ -833,6 +987,7 @@ pub struct ResourceFact {
     pub id: ResourceId,
     pub module: ModuleId,
     pub name: String,
+    pub catalog_id: String,
     pub span: SourceSpan,
 }
 
@@ -842,6 +997,7 @@ pub struct StoreFact {
     pub module: ModuleId,
     pub root: String,
     pub resource: ResourceId,
+    pub catalog_id: String,
     pub span: SourceSpan,
 }
 
@@ -850,6 +1006,7 @@ pub struct StoreIndexFact {
     pub id: StoreIndexId,
     pub store: StoreId,
     pub name: String,
+    pub catalog_id: String,
     pub span: SourceSpan,
 }
 
@@ -860,6 +1017,7 @@ pub struct ResourceMemberFact {
     pub parent: Option<ResourceMemberId>,
     pub name: String,
     pub kind: ResourceMemberKind,
+    pub catalog_id: String,
     pub span: SourceSpan,
 }
 
@@ -874,6 +1032,7 @@ pub struct EnumFact {
     pub id: EnumId,
     pub module: ModuleId,
     pub name: String,
+    pub catalog_id: String,
     pub span: SourceSpan,
 }
 
@@ -884,6 +1043,7 @@ pub struct EnumMemberFact {
     pub parent: Option<EnumMemberId>,
     pub name: String,
     pub category: bool,
+    pub catalog_id: String,
     pub span: SourceSpan,
 }
 
@@ -941,6 +1101,35 @@ pub struct DirectEffectFacts {
 pub struct SavedPlaceEffect {
     pub resource: ResourceId,
     pub members: Vec<ResourceMemberId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresenceProofFact {
+    pub place: PresenceProofPlace,
+    pub keys: Vec<String>,
+    pub read: PresenceProofRead,
+    pub source: PresenceProofSource,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PresenceProofPlace {
+    Saved(SavedPlaceEffect),
+    StoreIndex(StoreIndexId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceProofRead {
+    Direct,
+    Next,
+    Prev,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceProofSource {
+    Declaration,
+    Narrowing,
+    AttachedDataPending,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1027,6 +1216,36 @@ where
     if !items.contains(&item) {
         items.push(item);
     }
+}
+
+fn catalog_id(
+    ids: &HashMap<CatalogKey, String>,
+    kind: marrow_project::CatalogEntryKind,
+    path: String,
+) -> String {
+    ids.get(&CatalogKey::new(kind, path))
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn resource_member_name_path(members: &[ResourceMemberFact], id: ResourceMemberId) -> Vec<String> {
+    let member = &members[id.0 as usize];
+    let mut path = match member.parent {
+        Some(parent) => resource_member_name_path(members, parent),
+        None => Vec::new(),
+    };
+    path.push(member.name.clone());
+    path
+}
+
+fn enum_member_name_path(members: &[EnumMemberFact], id: EnumMemberId) -> Vec<String> {
+    let member = &members[id.0 as usize];
+    let mut path = match member.parent {
+        Some(parent) => enum_member_name_path(members, parent),
+        None => Vec::new(),
+    };
+    path.push(member.name.clone());
+    path
 }
 
 fn overwrite_prefix<T>(target: &mut [T], prefix: &[T])

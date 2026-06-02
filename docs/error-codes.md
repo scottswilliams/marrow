@@ -151,6 +151,8 @@ over every configured source and test file.
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.prototype_only` | Source uses a rejected prototype construct, such as `@id`, source-level `lock` or `merge`, saved-path `inout` call arguments, or old saved traversal method shapers such as `.take(...)`, `.window(...)`, and `.resume(...)`. |
+| `check.catalog_intent` | Accepted catalog metadata is invalid or lacks an accepted durable identity binding for a source declaration. Renames require an accepted entry with the new canonical path and old alias. |
+| `check.bare_maybe_present_read` | A maybe-present saved read appears in value position without a read-site resolution form such as `??`, `exists(...)`, optional chaining, or an attached-data traversal. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop, or names no enclosing loop. |
@@ -190,7 +192,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as an identity, a name, or a sequence; a key must be an orderable scalar. |
-| `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; a saved field stores a scalar or an enum ordinal. |
+| `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; saved fields store scalars or declared enum values. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |
 | `schema.nested_index_arg` | An index argument names a field nested through an unkeyed group (not yet resolved by the write planner). |
@@ -219,7 +221,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.unknown_function` | A call named a function the program does not declare. Fatal runtime backstop for unchecked programs. |
 | `run.private_function` | A qualified call reached a function that exists but is not `pub` to the calling module. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
-| `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `else` / `if let` / `?.`) or is a compile error. |
+| `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. |
 | `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. Fatal storage/backend failure while evaluating a read. |
 | `run.unsupported` | A construct this slice of the runtime does not yet evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |

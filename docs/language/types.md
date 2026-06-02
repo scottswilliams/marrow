@@ -118,9 +118,8 @@ subtitle: string
 
 Absence is a fork resolved at the read. Reading a maybe-present place never
 raises an absent-element error and never yields a stored null. The read must be
-resolved at the read site by one of: an absence-default `place ?? fallback`; a
-binding that diverges on absence (`const x = place else return`); an
-`if let x = place` or `if exists(place)` branch; or optional chaining
+resolved at the read site by one of: an absence-default `place ?? fallback`; an
+`if exists(place)` branch; or optional chaining
 `a?.b?.c` that ends in one of those. An unresolved maybe-present read is a
 compile error that names the place and the available resolutions.
 

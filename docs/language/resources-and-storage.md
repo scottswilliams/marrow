@@ -498,9 +498,8 @@ Rules:
 - A maybe-present field must be resolved at the read. An unresolved read of a
   maybe-present place is a compile error that names the place and its resolutions;
   it never raises a runtime fault and never returns a stored null. Resolve it with
-  `place ?? fallback`, `const x = place else <diverge>` (return, throw, break, or
-  continue), an `if let x = place` or `if exists(place)` branch, or optional
-  chaining `a?.b?.c` that ends in one of those.
+  `place ?? fallback`, an `if exists(place)` branch, or optional chaining
+  `a?.b?.c` that ends in one of those.
 - `path ?? default` returns `default` for an unpopulated sparse path. It
   does not hide schema errors.
 - `exists(path)` checks whether a value or child exists and narrows the path

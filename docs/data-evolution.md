@@ -78,11 +78,17 @@ marrow run --entry app::backfillPages ./project
 
 ## Renames
 
-A field's source name is how code spells it. A rename changes that spelling, and
-saved data keyed by the old name does not move on its own.
+A field's source name is how code spells it. Its durable identity is owned by
+the accepted catalog metadata file, not by source annotations or source order. A
+rename changes the spelling; saved data keyed by the old name does not move on
+its own.
 
-For v0.1, rename work is explicit maintenance code or a tool workflow that names
-the old and new saved paths:
+For v0.1, rename work has two parts:
+
+- the accepted catalog records the new canonical path, the old path as an alias,
+  and the same stable ID;
+- explicit maintenance code or a tool workflow moves any saved data that must
+  move physically.
 
 ```mw
 pub fn renameTitle()
@@ -92,7 +98,28 @@ pub fn renameTitle()
 ```
 
 Source stable-id annotations are not a production rename contract or v0.1
-syntax. Use explicit maintenance code until catalog-owned identity lands.
+syntax. A source rename without accepted catalog intent is a check error.
+
+## Accepted Catalog Metadata
+
+The accepted catalog file is generated metadata committed in the source tree. Its
+path is configured by `acceptedCatalog` in `marrow.json` and defaults to
+`marrow.catalog.json`.
+
+Each entry records:
+
+- the declaration kind;
+- the canonical catalog path and any old aliases;
+- the stable ID;
+- lifecycle state;
+- the catalog epoch and digest.
+
+Source-only checks read this file when present. They propose replacement metadata
+when it is missing or stale, but never write it. Checked facts expose
+catalog-backed IDs for resources, stores, store indexes, resource members, enums,
+and enum members. Runtime value encoding remains a separate storage concern; the
+catalog is the durable schema identity exposed to tools, evolution, and checked
+facts.
 
 ## Index Rebuilds
 
@@ -179,8 +206,7 @@ Non-empty restore modes are deferred (see [future/cli.md](future/cli.md)).
 
 These do not exist yet:
 
-- automatic source/catalog/data compilation;
-- catalog-owned opaque stable identities;
+- automatic source/catalog/data activation against attached data;
 - typed transforms as a dedicated planning surface;
 - `marrow data diff` and `marrow data load` (see
   [future/data-tools.md](future/data-tools.md));

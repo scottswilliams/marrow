@@ -111,11 +111,11 @@ Write failing production-pipeline checks first:
 - accepted rename preserves stable identity without moving data cells;
 - fresh clone and source rollback bind only through accepted catalog metadata;
 - bare maybe-present read with no read-site resolution emits a diagnostic;
-- positive reads using `??`, `else`, `if let`, `if exists`, and optional
+- positive reads using `??`, `if exists`, and optional
   chaining flow through the single ledger;
 - declaration, narrowing, and attached-data proof sources are recorded in
-  checked facts; read-site resolutions (`??`, `else`, `if let`, `if exists`,
-  and optional chaining) flow through the same ledger without adding a fourth
+  checked facts; read-site resolutions (`??`, `if exists`, and optional
+  chaining) flow through the same ledger without adding a fourth
   proof source;
 - attached-data obligations remain pending in source-only check output.
 
