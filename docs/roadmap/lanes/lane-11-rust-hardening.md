@@ -311,9 +311,13 @@ Use branch `lane-11-rust-hardening`, use
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
 Start with read-only scans for prototype paths, duplicate classifiers, `unsafe`,
 glob preludes, stale docs, and low-value comments. Do not race active semantic
-lanes; send semantic findings back to their owner. After owning lanes land,
-delete remaining vestiges with focused tests or absence checks. Before review,
-satisfy the Area Cleanup Gate: keep hardening batches file-disjoint, return
-active-lane smells to their owner, split or delete the touched production path in
-the same focused change, and avoid generic cleanup grabs. Leave the worktree
-dirty for soundness and idiom/spec review.
+lanes; send semantic findings back to their owner. Final hardening edits wait
+until the owning semantic lanes land, except truly file-disjoint style fixes
+that do not touch active lane files. No legacy survival for green tests: reject
+leftover legacy paths kept only for obsolete tests, fixtures, compile-time
+callers, or runtime green-bar pressure, and send them back to the active owner.
+After owning lanes land, delete remaining vestiges with focused tests or absence
+checks. Before review, satisfy the Area Cleanup Gate: keep hardening batches
+file-disjoint, return active-lane smells to their owner, split or delete the
+touched production path in the same focused change, and avoid generic cleanup
+grabs. Leave the worktree dirty for soundness and idiom/spec review.

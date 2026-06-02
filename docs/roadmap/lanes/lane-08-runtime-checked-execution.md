@@ -155,13 +155,16 @@ Continue Marrow v0.1 Lane 8 in `/Users/scottwilliams/Dev/marrow-lane-08-runtime-
 Use branch `lane-08-runtime-checked`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Do not start production runtime edits until Lane 5 store facts, Lane 6 presence
-ledger, and Lane 7 tree-cell address API are on main. Replace AST-body execution
-with checked facts or checked IR, implement explicit write plans and transaction
-behavior, delete runtime string/path classifiers, and prove ADR 0209 `~` roots
-have no production runtime behavior beyond a named future checked-effect slot.
-Before review, satisfy the Area Cleanup Gate: split checked execution,
+Do read-only inventory/design now if needed, but do not start production runtime
+edits until Lane 5 store facts, Lane 6 catalog/presence/enum facts, and the Lane
+7 tree-cell address API are on `main`. Replace AST-body execution with checked
+facts or checked IR, implement explicit write plans and transaction behavior,
+delete runtime string/path classifiers, and prove ADR 0209 `~` roots have no
+production runtime behavior beyond a named future checked-effect slot. No
+legacy survival for green tests: migrate runtime tests, fixtures, and callers to
+checked facts or checked IR instead of keeping the syntax interpreter, raw
+`FunctionDecl` entrypoints, fallback dispatch, `lock`, `merge`, or saved
+`inout`. Before review, satisfy the Area Cleanup Gate: split checked execution,
 durable-place reads, write planning, transactions, index maintenance, and
-host-effect handling; delete syntax-body execution, runtime path/schema
-classifiers, `lock`, `merge`, and saved `inout`. Leave the worktree dirty for
-soundness and idiom/spec review.
+host-effect handling; delete syntax-body execution and runtime path/schema
+classifiers. Leave the worktree dirty for soundness and idiom/spec review.

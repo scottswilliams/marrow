@@ -169,12 +169,16 @@ Use branch `lane-10-tooling-protocols`, use
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
 Do a read-only inventory of stale raw protocol docs now; do not edit tracked
 protocol docs, define replacement typed protocol shapes, or patch around missing
-semantic facts in tools before dependencies land. Once shared facts, proof
-ledger, store contracts, runtime facts, and generation facts exist, first define
-the typed backup manifest and production backup/restore API, then make
-CLI/LSP/data/serve/backup render or consume those facts directly and restrict
-raw surfaces to debug/admin. Before review, satisfy the Area Cleanup Gate: split
-backup manifest validation, restore activation, CLI rendering, LSP rendering,
-data preview, and serve adapters; delete raw protocol, saved-path re-resolution,
-raw archive, unbounded preview, and LSP semantic-patch helpers. Leave the
-worktree dirty for soundness and idiom/spec review.
+semantic facts in tools before dependencies land. Production code waits for Lane
+5/6 shared checker facts, Lane 7 store/tree-cell facts, Lane 8 runtime facts,
+and Lane 9 evolution/generation/activation facts. Once those dependencies
+exist, first define the typed backup manifest and production backup/restore API,
+then make CLI/LSP/data/serve/backup render or consume those facts directly and
+restrict raw surfaces to debug/admin. No legacy survival for green tests:
+migrate/delete tests, fixtures, and clients that depend on raw protocol bytes,
+raw path JSON, tool-local semantic classifiers, or unbounded previews. Before
+review, satisfy the Area Cleanup Gate: split backup manifest validation, restore
+activation, CLI rendering, LSP rendering, data preview, and serve adapters;
+delete raw protocol, saved-path re-resolution, raw archive, unbounded preview,
+and LSP semantic-patch helpers. Leave the worktree dirty for soundness and
+idiom/spec review.

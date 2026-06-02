@@ -163,12 +163,17 @@ Continue Marrow v0.1 Lane 6 in `/Users/scottwilliams/Dev/marrow-lane-06-catalog-
 Use branch `lane-06-catalog-presence`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Do not start production code unless Lane 5 store facts are on main. Implement
-the committed accepted catalog file and the ADR 0210 presence proof ledger with
-TDD. Delete/reject source `@id` annotations entirely from canonical source, keep
-valid read-site absence resolution flowing through one checked-program ledger.
-Before review, satisfy the Area Cleanup Gate: keep proof-source classification in
-the ledger; split catalog file IO, identity binding, epoch/digest validation,
-proof recording, and diagnostics; delete `@id`, regenerated-ID, read-totality,
-and maybe-present helpers. Leave the worktree dirty for soundness and idiom/spec
+Do read-only design/review now if needed, but do not start production code until
+Lane 5 resource/store facts are on `main`. Then implement the committed accepted
+catalog file, stable catalog identity, catalog-backed enum member identity, and
+the ADR 0210 presence proof ledger with TDD. Delete/reject source `@id`
+annotations entirely from canonical source; keep valid read-site absence
+resolution flowing through one checked-program ledger. Do not edit store
+physical keys or runtime execution in this lane. No legacy survival for green
+tests: migrate/delete tests, fixtures, and callers that depend on regenerated
+IDs, source-order enum ordinals, `@id`, or ad hoc maybe-read behavior. Before
+review, satisfy the Area Cleanup Gate: keep proof-source classification in the
+ledger; split catalog file IO, identity binding, epoch/digest validation, proof
+recording, and diagnostics; delete `@id`, regenerated-ID, read-totality, and
+maybe-present helpers. Leave the worktree dirty for soundness and idiom/spec
 review.

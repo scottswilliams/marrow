@@ -146,13 +146,15 @@ Continue Marrow v0.1 Lane 9 in `/Users/scottwilliams/Dev/marrow-lane-09-evolutio
 Use branch `lane-09-evolution-activation`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-09-evolution-activation`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Do not start production code until catalog identity, the presence ledger,
-tree-cell store contracts, and runtime checked facts are integrated. Implement
+Do read-only witness-matrix design now if needed, but do not start production
+code until Lane 6 catalog identity and presence ledger, Lane 7 tree-cell store
+contracts, and Lane 8 runtime checked facts are integrated on `main`. Implement
 one proof-discharge pipeline for check/catalog/evolve/repair surfaces, exact
 witness preview/apply, compatibility windows, and rejection of migration-script
-or transform shims. Before those dependencies land, do read-only design only and
-make no tracked edits. Before review, satisfy the Area Cleanup Gate: split
-preview, exact witness validation, apply, compatibility-window checks, repair
-admission, and CLI rendering; delete migration-script, source-diff identity,
-best-effort rename, and transform-shim helpers. Leave the worktree dirty for
-soundness and idiom/spec review.
+or transform shims. No legacy survival for green tests: migrate/delete tests,
+fixtures, and callers that depend on migration scripts, source-diff identity
+inference, best-effort transforms, or stale activation behavior. Before review,
+satisfy the Area Cleanup Gate: split preview, exact witness validation, apply,
+compatibility-window checks, repair admission, and CLI rendering; delete
+migration-script, source-diff identity, best-effort rename, and transform-shim
+helpers. Leave the worktree dirty for soundness and idiom/spec review.

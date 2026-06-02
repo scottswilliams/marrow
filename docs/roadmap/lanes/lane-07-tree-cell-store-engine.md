@@ -156,14 +156,17 @@ Continue Marrow v0.1 Lane 7 in `/Users/scottwilliams/Dev/marrow-lane-07-tree-cel
 Use branch `lane-07-tree-cell-store`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-07-tree-cell-store`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-If Lane 6 catalog identity is not integrated, limit work to read-only design and
+If Lane 5 and Lane 6 are not both integrated, limit work to read-only design and
 engine-substrate checks only: ordered bytes, snapshots, one writer, rollback,
 typed engine errors, and read-only opens. Do not write semantic store fixtures,
 stable-ID physical-key tests, typed-reference tests, index-cell tests, archive
-format changes, or tree-cell address code until Lane 6 lands. Once dependencies
-land, implement stable-ID tree-cell storage, commit metadata, sequence/index
-cells, and engine profile behavior. Before review, satisfy the Area Cleanup
-Gate: keep redb limited to ordered bytes and transactions; split engine
+format changes, or tree-cell address code until Lane 6 catalog identity is on
+`main`. Once dependencies land, implement
+stable-ID tree-cell storage, commit metadata, sequence/index cells, and engine
+profile behavior. No legacy survival for green tests: migrate/delete tests,
+fixtures, and callers that depend on source-name physical keys, raw archive
+production behavior, or flat-list storage. Before review, satisfy the Area
+Cleanup Gate: keep redb limited to ordered bytes and transactions; split engine
 substrate, tree-cell address encoding, commit metadata, index cells,
 archive/backup inputs, and conformance helpers; delete source-name key, raw
 archive, schema-in-backend, and flat-list helpers. Leave the worktree dirty for

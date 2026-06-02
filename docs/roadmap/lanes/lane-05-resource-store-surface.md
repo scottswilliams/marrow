@@ -175,14 +175,18 @@ Continue Marrow v0.1 Lane 5 in `/Users/scottwilliams/Dev/marrow-lane-05-resource
 Create or reuse the branch `lane-05-resource-store`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-05-resource-store`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Implement the resource/store split with TDD: split `store` declarations,
-store-owned indexes, canonical `Id(^store)`, concise-form desugaring if kept,
-ADR 0209 `~` source-form reservation/rejection, and migration of v0.1 fixtures
-away from resource-owned identity. Do not touch catalog persistence, runtime
-execution, tree-cell keys, backup, or evolution. Before review, satisfy the Area
-Cleanup Gate: remove resource-owned store/index/identity helpers, delete any
-runtime-facing merged resource/store view, split resource/store checker
-dispatchers, and make `ResourceSchema.saved_root`, `ResourceSchema.indexes`,
-`ResourceMember::Index`, `Book::Id`, and `Author::Id` absent outside allowed
-rejection or compatibility docs. Leave the worktree dirty for two read-only
-reviews: soundness and idiom/spec.
+Lane 5 is the first semantic code lane and may start now; do not run Lane 6
+checker/presence code beside it. Implement the resource/store split with TDD:
+split `store` declarations, store-owned indexes, canonical `Id(^store)`,
+concise-form desugaring if kept, ADR 0209 `~` source-form reservation/rejection,
+and migration of v0.1 fixtures away from resource-owned identity. Do not touch
+catalog persistence, runtime execution, tree-cell keys, backup, or evolution.
+No legacy survival for green tests: migrate/delete tests, fixtures, and callers
+that depend on resource-owned identity or resource-owned indexes instead of
+keeping fallback paths. Before review, satisfy the Area Cleanup Gate: remove
+resource-owned store/index/identity helpers, delete any runtime-facing merged
+resource/store view, split resource/store checker dispatchers, and make
+`ResourceSchema.saved_root`, `ResourceSchema.indexes`, `ResourceMember::Index`,
+`Book::Id`, and `Author::Id` absent outside allowed rejection, explicit
+store-declared alias, or debug/admin docs. Leave the worktree dirty for two
+read-only reviews: soundness and idiom/spec.
