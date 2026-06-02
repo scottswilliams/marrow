@@ -80,7 +80,7 @@ impl<'e, 'p> Frame<'e, 'p> {
     }
 
     /// The source file this activation runs in, so a trace can render a statement
-    /// as `file:line`. `None` for the bare-program path, which has no module and
+    /// as `file:line`. `None` when the activation has no module context and
     /// thus no source file. Found by the activation's module name, since a span
     /// carries only its line and column, not its file.
     pub fn file(&self) -> Option<&std::path::Path> {

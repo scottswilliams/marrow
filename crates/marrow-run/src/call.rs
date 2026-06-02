@@ -11,10 +11,9 @@ use marrow_schema::stdlib::Capability;
 use marrow_schema::{KeyDef, Node, NodeKind, ResourceSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::backend::Backend;
-use marrow_store::mem::MemStore;
 use marrow_store::path::SavedKey;
 use marrow_store::value::ScalarType;
-use marrow_syntax::{ArgMode, Argument, Block, Expression, FunctionDecl, ParamMode, SourceSpan};
+use marrow_syntax::{ArgMode, Argument, Block, Expression, ParamMode, SourceSpan};
 
 use crate::collection::{
     Direction, eval_append, eval_entries, eval_keys, eval_neighbor, eval_next_id, eval_reversed,
@@ -41,60 +40,6 @@ use crate::stdlib::{
 };
 use crate::value::{RunOutput, Value, value_to_key};
 use crate::write_dispatch::write_local_field;
-
-/// Evaluate a standalone function with positional `args`, returning its returned
-/// value or `None`. Calls to other functions are not resolved (there is no
-/// surrounding program), and no host capabilities are provided; use [`run_entry`]
-/// to run a function that calls others.
-pub fn evaluate_function(
-    function: &FunctionDecl,
-    args: &[Value],
-) -> Result<Option<Value>, RuntimeError> {
-    let program = CheckedProgram::default();
-    let store = RefCell::new(MemStore::new());
-    let host = Host::new();
-    let output = Rc::new(RefCell::new(String::new()));
-    let names: Vec<&str> = function
-        .params
-        .iter()
-        .map(|param| param.name.as_str())
-        .collect();
-    let ctx = Context {
-        program: &program,
-        store: &store,
-        host: &host,
-        transaction: Rc::new(RefCell::new(TransactionState::default())),
-    };
-    match invoke(
-        ctx,
-        output,
-        // The bare-program path has no module, so no name resolution, import
-        // aliases, or owning module to qualify a bare `Enum::member`.
-        None,
-        &names,
-        &function.body,
-        function.span,
-        args,
-        &[],
-        &[],
-        &[],
-        // No debugger; the entry activation is depth 1.
-        None,
-        1,
-    )? {
-        (Completion::Returned(value), ..) => Ok(value),
-        (Completion::Threw { error, origin }, ..) => Err(raise(error, function.span, origin)),
-        (
-            Completion::Faulted {
-                error,
-                code,
-                span,
-                origin,
-            },
-            ..,
-        ) => Err(reraise_fault(error, code, span, origin)),
-    }
-}
 
 /// Run the function named by `entry` — `"module::function"`, or a bare name
 /// searched across modules — from a checked `program` with positional `args`,
@@ -254,8 +199,8 @@ pub(crate) type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut
 /// `depth`, and surface how it finished plus, for each `out`/`inout` parameter
 /// named in `writeback`, its final value (param-order-aligned, `Some` only when
 /// the body returned normally — a throw or fault skips write-back). Shared by
-/// [`evaluate_function`], [`run_entry`], and call evaluation; non-`out`/`inout`
-/// calls pass an empty `writeback`.
+/// [`run_entry`] and call evaluation; non-`out`/`inout` calls pass an empty
+/// `writeback`.
 ///
 /// Traversal guards carry the caller's active saved-layer and generated-index
 /// prefixes across helper calls, so dynamic writes are checked the same way

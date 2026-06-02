@@ -247,7 +247,7 @@ fn find_module<'p>(program: &'p CheckedProgram, name: &str) -> Option<&'p Checke
 }
 
 /// The resolved `use` targets of `name`, or an empty list when no such module is
-/// in the program (the bare-program path). Drives alias expansion.
+/// in the program. Drives alias expansion.
 fn module_imports(program: &CheckedProgram, name: &str) -> Vec<String> {
     find_module(program, name)
         .map(|module| module.imports.clone())

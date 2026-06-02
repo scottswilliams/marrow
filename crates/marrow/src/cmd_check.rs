@@ -260,8 +260,8 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
 
 /// Report an uncaught runtime fault on stderr. When the fault carries an origin
 /// file, it renders located — `file:line:col: code: message`, the same shape
-/// `check` and `test` already print. A fault with no origin (the bare-program
-/// path, or an entry that never reached a project file) falls back to the bare
+/// `check` and `test` already print. A fault with no origin (for example, an
+/// entry that never reached a project file) falls back to the bare
 /// `code: message`, so nothing gains a spurious `:0:0:` location.
 pub(crate) fn report_runtime_fault(
     program: &marrow_check::CheckedProgram,

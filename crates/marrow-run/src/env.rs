@@ -126,14 +126,13 @@ pub(crate) struct Env<'p> {
     /// resolves from the right module (a bare name in its own module, a qualified
     /// name elsewhere) through the unified resolver, and a bare `Enum::member`
     /// resolves to that module's enum first — the same same-module identity the
-    /// checker recorded. Empty for the bare-program [`evaluate_function`] path,
-    /// where no project module hosts the body and enums are project-unique.
+    /// checker recorded. Empty only for internal activations with no module
+    /// context, where no project module hosts the body.
     pub(crate) module: &'p str,
     /// The active function's module short→full import alias map, so a short-form
     /// call (`clock::now()`) expands to its full path (`std::clock::now`) before
-    /// dispatch, exactly as the checker resolved it. Empty for the bare-program
-    /// [`evaluate_function`] path and any module with no imports, making expansion
-    /// a strict no-op there.
+    /// dispatch, exactly as the checker resolved it. Empty for modules with no
+    /// imports, making expansion a strict no-op there.
     pub(crate) aliases: HashMap<String, Vec<String>>,
     /// Transaction state is shared across helper calls so writes in callees obey
     /// the surrounding transaction's commit-time validation and savepoint rules.
@@ -168,8 +167,6 @@ impl<'p> Env<'p> {
     ) -> Self {
         // The activation's module supplies both its name (for resolving the calls
         // inside it and a bare `Enum::member`) and its short→full import aliases.
-        // The bare-program path has no module: an empty name and no aliases
-        // (expansion is a no-op).
         let aliases = module
             .map(|module| marrow_check::build_alias_map(&module.imports))
             .unwrap_or_default();

@@ -44,8 +44,8 @@ Before handing the lane to review:
 - split checked execution, durable-place reads, write planning, transactions,
   index maintenance, and host-effect handling by invariant;
 - migrate runtime tests, fixtures, and callers to checked facts or checked IR
-  instead of keeping the syntax interpreter, raw `FunctionDecl` entrypoints, or
-  fallback dispatch so old tests keep passing;
+  instead of keeping the syntax interpreter or fallback dispatch so old tests
+  keep passing;
 - delete production syntax execution paths instead of wrapping them in mode
   flags or compatibility helpers;
 - delete dead `lock`, `merge`, saved `inout`, string/path classifier, and raw
@@ -158,9 +158,9 @@ checked IR, implement explicit write plans and transaction behavior, delete
 runtime string/path classifiers, and prove ADR 0209 `~` roots have no production
 runtime behavior beyond a named future checked-effect slot. No legacy survival
 for green tests: migrate runtime tests, fixtures, and callers to checked facts or
-checked IR instead of keeping the syntax interpreter, raw `FunctionDecl`
-entrypoints, fallback dispatch, `lock`, `merge`, or saved `inout`. Before review,
-satisfy the Area Cleanup Gate: split checked execution, durable-place reads,
+checked IR instead of keeping the syntax interpreter, fallback dispatch, `lock`,
+`merge`, or saved `inout`. Before review, satisfy the Area Cleanup Gate: split
+checked execution, durable-place reads,
 write planning, transactions, index maintenance, and host-effect handling;
 delete syntax-body execution and runtime path/schema classifiers. Leave the
 worktree dirty for soundness and idiom/spec review.

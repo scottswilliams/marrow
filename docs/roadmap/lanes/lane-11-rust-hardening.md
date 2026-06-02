@@ -130,12 +130,10 @@ still exposes source-body functions with best-effort types, and runtime still
 consumes that bridge. Keep explicit user `unknown` dynamic-boundary types
 separate from recovery sentinels.
 
-**Lane 8 - Checked Runtime.** Delete production AST execution and raw
-`FunctionDecl` execution. Evidence: `crates/marrow-run/src/lib.rs:46`,
-`crates/marrow-run/src/call.rs:9`, `crates/marrow-run/src/call.rs:148`,
-`crates/marrow-run/src/exec.rs:29`, `crates/marrow-run/tests/eval.rs:26`, and
-`crates/marrow-run/tests/eval.rs:228`. Runtime entry, invocation, and tests
-must move to checked executable facts or checked IR.
+**Lane 8 - Checked Runtime.** Delete production AST execution. Evidence:
+`crates/marrow-run/src/call.rs:138` still invokes source bodies, and
+`crates/marrow-run/src/exec.rs:39` still interprets syntax blocks. Runtime
+invocation must move to checked executable facts or checked IR.
 
 **Lane 8 - Checked Runtime.** Stop resolving function and call targets by
 strings at runtime. Evidence: `crates/marrow-run/src/call.rs:120`,

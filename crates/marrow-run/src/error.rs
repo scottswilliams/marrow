@@ -35,7 +35,7 @@ pub struct RuntimeError {
     /// [`CheckedProgram`]. The `span`'s byte offsets are per-file, so this
     /// supplies the file identity they lack. It is `None` until the fault leaves
     /// the activation that raised it (where [`invoke`] stamps it) and stays
-    /// `None` for the bare-program path, which has no project file.
+    /// `None` for activations without module context.
     pub origin: Option<FileId>,
 }
 
@@ -53,8 +53,8 @@ impl RuntimeError {
 
     /// Stamp `module`'s file id as this fault's origin, but only if it has none
     /// yet, so the deepest frame — the one that actually raised the fault — wins
-    /// as the fault unwinds through outer frames. With no module (the bare
-    /// program) or an unrecognized one, the origin is left as it was.
+    /// as the fault unwinds through outer frames. With no module or an
+    /// unrecognized one, the origin is left as it was.
     pub(crate) fn with_origin_from(
         mut self,
         program: &CheckedProgram,

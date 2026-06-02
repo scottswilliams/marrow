@@ -12,7 +12,7 @@ use marrow_run::{
     Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO,
     RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE,
     RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput,
-    SavedPathClass, Value, classify_saved_path, evaluate_function, run_entry, run_entry_with_host,
+    SavedPathClass, Value, classify_saved_path, run_entry, run_entry_with_host,
 };
 use marrow_schema::{compile_enum, compile_resource, compile_store};
 use marrow_store::Decimal;
@@ -21,22 +21,7 @@ use marrow_store::mem::MemStore;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_key_value, encode_path};
 use marrow_store::redb::RedbStore;
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
-use marrow_syntax::{Declaration, FunctionDecl, parse_source};
-
-/// Parse `source` and return the single function it declares.
-fn function(source: &str) -> FunctionDecl {
-    let parsed = parse_source(source);
-    assert!(!parsed.has_errors(), "{:?}", parsed.diagnostics);
-    parsed
-        .file
-        .declarations
-        .into_iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Function(function) => Some(function),
-            _ => None,
-        })
-        .expect("a function declaration")
-}
+use marrow_syntax::{Declaration, parse_source};
 
 /// Wrap every function in `source` into a one-module checked program named
 /// `test`, so `run(&program, "test::name", ...)` resolves calls between
@@ -243,11 +228,24 @@ fn run_full(
     run_entry(program, &store, entry, args)
 }
 
+/// Evaluate `entry` from a single checked `test` module against an empty store.
+fn eval_source(
+    source: &str,
+    entry: &str,
+    args: &[Value],
+) -> Result<Option<Value>, marrow_run::RuntimeError> {
+    let program = checked_program(source);
+    run(&program, &format!("test::{entry}"), args)
+}
+
 #[test]
 fn evaluates_arithmetic_over_parameters() {
-    let add = function("fn add(a: int, b: int): int\n    return a + b\n");
     assert_eq!(
-        evaluate_function(&add, &[Value::Int(2), Value::Int(40)]),
+        eval_source(
+            "fn add(a: int, b: int): int\n    return a + b\n",
+            "add",
+            &[Value::Int(2), Value::Int(40)]
+        ),
         Ok(Some(Value::Int(42)))
     );
 }
@@ -255,8 +253,10 @@ fn evaluates_arithmetic_over_parameters() {
 #[test]
 fn respects_arithmetic_precedence() {
     // 2 + 3 * 4 == 14, not 20.
-    let f = function("fn f(): int\n    return 2 + 3 * 4\n");
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(14))));
+    assert_eq!(
+        eval_source("fn f(): int\n    return 2 + 3 * 4\n", "f", &[]),
+        Ok(Some(Value::Int(14)))
+    );
 }
 
 #[test]
@@ -1196,14 +1196,13 @@ fn a_conversion_error_message_is_grammar_independent() {
 
 #[test]
 fn evaluates_conditionals() {
-    let max =
-        function("fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n");
+    let source = "fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n";
     assert_eq!(
-        evaluate_function(&max, &[Value::Int(7), Value::Int(3)]),
+        eval_source(source, "max", &[Value::Int(7), Value::Int(3)]),
         Ok(Some(Value::Int(7)))
     );
     assert_eq!(
-        evaluate_function(&max, &[Value::Int(3), Value::Int(7)]),
+        eval_source(source, "max", &[Value::Int(3), Value::Int(7)]),
         Ok(Some(Value::Int(7)))
     );
 }
@@ -2106,23 +2105,25 @@ fn throw_inside_a_transaction_rolls_back() {
 
 #[test]
 fn evaluates_locals_and_reassignment() {
-    let f =
-        function("fn f(n: int): int\n    var total = n\n    total = total + 1\n    return total\n");
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(41)]),
+        eval_source(
+            "fn f(n: int): int\n    var total = n\n    total = total + 1\n    return total\n",
+            "f",
+            &[Value::Int(41)]
+        ),
         Ok(Some(Value::Int(42)))
     );
 }
 
 #[test]
 fn evaluates_boolean_logic() {
-    let f = function("fn f(a: bool, b: bool): bool\n    return a and not b\n");
+    let source = "fn f(a: bool, b: bool): bool\n    return a and not b\n";
     assert_eq!(
-        evaluate_function(&f, &[Value::Bool(true), Value::Bool(false)]),
+        eval_source(source, "f", &[Value::Bool(true), Value::Bool(false)]),
         Ok(Some(Value::Bool(true)))
     );
     assert_eq!(
-        evaluate_function(&f, &[Value::Bool(true), Value::Bool(true)]),
+        eval_source(source, "f", &[Value::Bool(true), Value::Bool(true)]),
         Ok(Some(Value::Bool(false)))
     );
 }
@@ -2131,13 +2132,13 @@ fn evaluates_boolean_logic() {
 fn equality_compares_values() {
     // Marrow spells equality `==` (and inequality `!=`); assignment is the
     // single `=`, so equality in expression position uses `==`.
-    let f = function("fn f(a: int, b: int): bool\n    return a == b\n");
+    let source = "fn f(a: int, b: int): bool\n    return a == b\n";
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(5), Value::Int(5)]),
+        eval_source(source, "f", &[Value::Int(5), Value::Int(5)]),
         Ok(Some(Value::Bool(true)))
     );
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(5), Value::Int(6)]),
+        eval_source(source, "f", &[Value::Int(5), Value::Int(6)]),
         Ok(Some(Value::Bool(false)))
     );
 }
@@ -2145,14 +2146,19 @@ fn equality_compares_values() {
 #[test]
 fn a_function_that_returns_nothing_yields_none() {
     // Falls off the end with no `return`.
-    let f = function("fn f(a: int)\n    const x = a + 1\n");
-    assert_eq!(evaluate_function(&f, &[Value::Int(1)]), Ok(None));
+    assert_eq!(
+        eval_source("fn f(a: int)\n    const x = a + 1\n", "f", &[Value::Int(1)]),
+        Ok(None)
+    );
 }
 
 #[test]
 fn rejects_division_by_zero() {
-    let f = function("fn f(a: int): int\n    return a / 0\n");
-    let result = evaluate_function(&f, &[Value::Int(10)]);
+    let result = eval_source(
+        "fn f(a: int): int\n    return a / 0\n",
+        "f",
+        &[Value::Int(10)],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_DIVIDE_BY_ZERO),
         "{result:?}"
@@ -2163,8 +2169,11 @@ fn rejects_division_by_zero() {
 fn integer_remainder_by_zero_reports_one_consistent_message() {
     // The `%` operator and `std::math::remainder`/`modulo` are the same integer
     // remainder, so a zero divisor must report the same divide-by-zero message.
-    let f = function("fn f(a: int): int\n    return a % 0\n");
-    let result = evaluate_function(&f, &[Value::Int(10)]);
+    let result = eval_source(
+        "fn f(a: int): int\n    return a % 0\n",
+        "f",
+        &[Value::Int(10)],
+    );
     let Err(error) = result else {
         panic!("expected an error, got {result:?}");
     };
@@ -2181,8 +2190,11 @@ fn integer_remainder_by_zero_reports_one_consistent_message() {
 
 #[test]
 fn detects_integer_overflow() {
-    let f = function("fn f(a: int): int\n    return a * a\n");
-    let result = evaluate_function(&f, &[Value::Int(i64::MAX)]);
+    let result = eval_source(
+        "fn f(a: int): int\n    return a * a\n",
+        "f",
+        &[Value::Int(i64::MAX)],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
         "{result:?}"
@@ -2192,8 +2204,11 @@ fn detects_integer_overflow() {
 #[test]
 fn detects_an_over_range_integer_literal() {
     // A literal beyond i64::MAX is a runtime overflow, not an arithmetic one.
-    let f = function("fn f(): int\n    return 99999999999999999999999999\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source(
+        "fn f(): int\n    return 99999999999999999999999999\n",
+        "f",
+        &[],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
         "{result:?}"
@@ -2204,8 +2219,11 @@ fn detects_an_over_range_integer_literal() {
 fn detects_an_over_envelope_decimal_literal() {
     // A decimal literal with more than 34 significant digits is outside the
     // decimal envelope and overflows at runtime.
-    let f = function("fn f(): decimal\n    return 9.9999999999999999999999999999999999\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source(
+        "fn f(): decimal\n    return 9.9999999999999999999999999999999999\n",
+        "f",
+        &[],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_DECIMAL_OVERFLOW),
         "{result:?}"
@@ -2214,8 +2232,7 @@ fn detects_an_over_envelope_decimal_literal() {
 
 #[test]
 fn rejects_an_unbound_name() {
-    let f = function("fn f(): int\n    return x\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source("fn f(): int\n    return x\n", "f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNBOUND_NAME),
         "{result:?}"
@@ -2224,8 +2241,11 @@ fn rejects_an_unbound_name() {
 
 #[test]
 fn rejects_assignment_to_an_immutable_binding() {
-    let f = function("fn f(): int\n    const x = 1\n    x = 2\n    return x\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source(
+        "fn f(): int\n    const x = 1\n    x = 2\n    return x\n",
+        "f",
+        &[],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
@@ -2244,8 +2264,11 @@ fn a_local_const_binds_a_runtime_computed_value() {
 
 #[test]
 fn rejects_an_argument_count_mismatch() {
-    let add = function("fn add(a: int, b: int): int\n    return a + b\n");
-    let result = evaluate_function(&add, &[Value::Int(1)]);
+    let result = eval_source(
+        "fn add(a: int, b: int): int\n    return a + b\n",
+        "add",
+        &[Value::Int(1)],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
@@ -2255,8 +2278,7 @@ fn rejects_an_argument_count_mismatch() {
 #[test]
 fn reports_an_unsupported_construct() {
     // A range is iterable in a `for` loop but is not a standalone value.
-    let f = function("fn f(): int\n    return 1..3\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source("fn f(): int\n    return 1..3\n", "f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -2265,8 +2287,11 @@ fn reports_an_unsupported_construct() {
 
 #[test]
 fn an_if_condition_must_be_boolean() {
-    let f = function("fn f(a: int): int\n    if a\n        return 1\n    return 0\n");
-    let result = evaluate_function(&f, &[Value::Int(5)]);
+    let result = eval_source(
+        "fn f(a: int): int\n    if a\n        return 1\n    return 0\n",
+        "f",
+        &[Value::Int(5)],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
@@ -2277,26 +2302,29 @@ fn an_if_condition_must_be_boolean() {
 fn an_inner_scope_shadows_then_restores_an_outer_binding() {
     // `const x = 1` inside the if-block shadows only within that block; after it,
     // the outer `x` (99) is what `return x` sees.
-    let f =
-        function("fn f(): int\n    const x = 99\n    if true\n        const x = 1\n    return x\n");
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(99))));
+    assert_eq!(
+        eval_source(
+            "fn f(): int\n    const x = 99\n    if true\n        const x = 1\n    return x\n",
+            "f",
+            &[]
+        ),
+        Ok(Some(Value::Int(99)))
+    );
 }
 
 #[test]
 fn an_else_if_chain_selects_the_matching_branch() {
-    let grade = function(
-        "fn grade(n: int): int\n    if n > 90\n        return 1\n    else if n > 80\n        return 2\n    else\n        return 3\n",
-    );
+    let source = "fn grade(n: int): int\n    if n > 90\n        return 1\n    else if n > 80\n        return 2\n    else\n        return 3\n";
     assert_eq!(
-        evaluate_function(&grade, &[Value::Int(95)]),
+        eval_source(source, "grade", &[Value::Int(95)]),
         Ok(Some(Value::Int(1)))
     );
     assert_eq!(
-        evaluate_function(&grade, &[Value::Int(85)]),
+        eval_source(source, "grade", &[Value::Int(85)]),
         Ok(Some(Value::Int(2)))
     );
     assert_eq!(
-        evaluate_function(&grade, &[Value::Int(50)]),
+        eval_source(source, "grade", &[Value::Int(50)]),
         Ok(Some(Value::Int(3)))
     );
 }
@@ -2305,8 +2333,11 @@ fn an_else_if_chain_selects_the_matching_branch() {
 fn detects_min_over_negative_one_overflow() {
     // `i64::MIN % -1` overflows. (`/` now yields a decimal, so `%` is the only
     // integer-division-family operator that can overflow this way.)
-    let f = function("fn f(a: int, b: int): int\n    return a % b\n");
-    let result = evaluate_function(&f, &[Value::Int(i64::MIN), Value::Int(-1)]);
+    let result = eval_source(
+        "fn f(a: int, b: int): int\n    return a % b\n",
+        "f",
+        &[Value::Int(i64::MIN), Value::Int(-1)],
+    );
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_OVERFLOW),
         "{result:?}"
@@ -2315,33 +2346,27 @@ fn detects_min_over_negative_one_overflow() {
 
 #[test]
 fn evaluates_a_while_loop() {
-    let sum = function(
-        "fn sum(n: int): int\n    var total = 0\n    var i = 1\n    while i <= n\n        total = total + i\n        i = i + 1\n    return total\n",
-    );
+    let source = "fn sum(n: int): int\n    var total = 0\n    var i = 1\n    while i <= n\n        total = total + i\n        i = i + 1\n    return total\n";
     assert_eq!(
-        evaluate_function(&sum, &[Value::Int(5)]),
+        eval_source(source, "sum", &[Value::Int(5)]),
         Ok(Some(Value::Int(15)))
     );
 }
 
 #[test]
 fn evaluates_an_inclusive_for_range() {
-    let sum = function(
-        "fn sum(n: int): int\n    var total = 0\n    for i in 1..=n\n        total = total + i\n    return total\n",
-    );
+    let source = "fn sum(n: int): int\n    var total = 0\n    for i in 1..=n\n        total = total + i\n    return total\n";
     assert_eq!(
-        evaluate_function(&sum, &[Value::Int(5)]),
+        eval_source(source, "sum", &[Value::Int(5)]),
         Ok(Some(Value::Int(15)))
     );
 }
 
 #[test]
 fn an_exclusive_for_range_stops_before_the_end() {
-    let count = function(
-        "fn count(n: int): int\n    var c = 0\n    for i in 0..n\n        c = c + 1\n    return c\n",
-    );
+    let source = "fn count(n: int): int\n    var c = 0\n    for i in 0..n\n        c = c + 1\n    return c\n";
     assert_eq!(
-        evaluate_function(&count, &[Value::Int(5)]),
+        eval_source(source, "count", &[Value::Int(5)]),
         Ok(Some(Value::Int(5)))
     );
 }
@@ -2349,40 +2374,38 @@ fn an_exclusive_for_range_stops_before_the_end() {
 #[test]
 fn an_int_range_steps_by_a_positive_by_value() {
     // `1..10 by 2` yields 1, 3, 5, 7, 9 (exclusive end), summing to 25.
-    let f = function(
-        "fn f(): int\n    var total = 0\n    for i in 1..10 by 2\n        total = total + i\n    return total\n",
+    assert_eq!(
+        eval_source(
+            "fn f(): int\n    var total = 0\n    for i in 1..10 by 2\n        total = total + i\n    return total\n",
+            "f",
+            &[]
+        ),
+        Ok(Some(Value::Int(25)))
     );
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(25))));
 }
 
 #[test]
 fn an_int_range_steps_down_with_a_negative_by_value() {
     // `10..1 by -1` counts down 10..2 (exclusive end) — ten iterations from 10 to 2.
-    let f = function(
-        "fn f(): int\n    var last = 0\n    var count = 0\n    for i in 10..1 by -1\n        last = i\n        count = count + 1\n    return count * 100 + last\n",
-    );
+    let source = "fn f(): int\n    var last = 0\n    var count = 0\n    for i in 10..1 by -1\n        last = i\n        count = count + 1\n    return count * 100 + last\n";
     // 9 iterations (10 down to 2), last value 2.
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(902))));
+    assert_eq!(eval_source(source, "f", &[]), Ok(Some(Value::Int(902))));
 }
 
 #[test]
 fn an_inclusive_descending_range_reaches_its_end() {
     // `10..=1 by -1` includes 1, so the final bound is reached.
-    let f = function(
-        "fn f(): int\n    var last = 99\n    for i in 10..=1 by -1\n        last = i\n    return last\n",
-    );
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(1))));
+    let source = "fn f(): int\n    var last = 99\n    for i in 10..=1 by -1\n        last = i\n    return last\n";
+    assert_eq!(eval_source(source, "f", &[]), Ok(Some(Value::Int(1))));
 }
 
 #[test]
 fn a_wrong_direction_variable_step_is_an_empty_loop() {
     // A runtime wrong-direction step never loops forever: it iterates zero times.
     // `1..10 by step` with step = -1 runs the body never.
-    let f = function(
-        "fn f(step: int): int\n    var count = 0\n    for i in 1..10 by step\n        count = count + 1\n    return count\n",
-    );
+    let source = "fn f(step: int): int\n    var count = 0\n    for i in 1..10 by step\n        count = count + 1\n    return count\n";
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(-1)]),
+        eval_source(source, "f", &[Value::Int(-1)]),
         Ok(Some(Value::Int(0)))
     );
 }
@@ -2390,11 +2413,9 @@ fn a_wrong_direction_variable_step_is_an_empty_loop() {
 #[test]
 fn a_default_wrong_direction_range_is_an_empty_loop() {
     // `lo..hi` with lo > hi and the default +1 step iterates zero times.
-    let f = function(
-        "fn f(lo: int, hi: int): int\n    var count = 0\n    for i in lo..hi\n        count = count + 1\n    return count\n",
-    );
+    let source = "fn f(lo: int, hi: int): int\n    var count = 0\n    for i in lo..hi\n        count = count + 1\n    return count\n";
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(10), Value::Int(1)]),
+        eval_source(source, "f", &[Value::Int(10), Value::Int(1)]),
         Ok(Some(Value::Int(0)))
     );
 }
@@ -2402,10 +2423,9 @@ fn a_default_wrong_direction_range_is_an_empty_loop() {
 #[test]
 fn a_runtime_zero_step_faults() {
     // A zero step would never progress; a non-literal zero faults rather than hangs.
-    let f = function(
-        "fn f(step: int): int\n    for i in 1..10 by step\n        return i\n    return 0\n",
-    );
-    let result = evaluate_function(&f, &[Value::Int(0)]);
+    let source =
+        "fn f(step: int): int\n    for i in 1..10 by step\n        return i\n    return 0\n";
+    let result = eval_source(source, "f", &[Value::Int(0)]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
@@ -2415,10 +2435,14 @@ fn a_runtime_zero_step_faults() {
 #[test]
 fn a_decimal_range_steps_by_a_decimal() {
     // `0.0..1.0 by 0.25` yields 0.0, 0.25, 0.50, 0.75 (exclusive end): four values.
-    let f = function(
-        "fn f(): int\n    var count = 0\n    for x in 0.0..1.0 by 0.25\n        count = count + 1\n    return count\n",
+    assert_eq!(
+        eval_source(
+            "fn f(): int\n    var count = 0\n    for x in 0.0..1.0 by 0.25\n        count = count + 1\n    return count\n",
+            "f",
+            &[]
+        ),
+        Ok(Some(Value::Int(4)))
     );
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(4))));
 }
 
 #[test]
@@ -2466,49 +2490,40 @@ fn an_instant_range_steps_by_a_duration_in_utc() {
 
 #[test]
 fn break_exits_the_loop() {
-    let f = function(
-        "fn f(n: int): int\n    var i = 0\n    while true\n        if i > n\n            break\n        i = i + 1\n    return i\n",
-    );
+    let source = "fn f(n: int): int\n    var i = 0\n    while true\n        if i > n\n            break\n        i = i + 1\n    return i\n";
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(3)]),
+        eval_source(source, "f", &[Value::Int(3)]),
         Ok(Some(Value::Int(4)))
     );
 }
 
 #[test]
 fn continue_skips_to_the_next_iteration() {
-    let f = function(
-        "fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i == 1\n            continue\n        c = c + 1\n    return c\n",
-    );
+    let source = "fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i == 1\n            continue\n        c = c + 1\n    return c\n";
     // The first iteration is skipped; the rest count.
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(3)]),
+        eval_source(source, "f", &[Value::Int(3)]),
         Ok(Some(Value::Int(2)))
     );
 }
 
 #[test]
 fn a_labeled_break_exits_the_outer_loop() {
-    let f = function(
-        "fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                break outer\n            count = count + 1\n    return count\n",
-    );
+    let source = "fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                break outer\n            count = count + 1\n    return count\n";
     // i=1: j=1 counts (1), j=2 breaks the outer loop entirely.
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(1))));
+    assert_eq!(eval_source(source, "f", &[]), Ok(Some(Value::Int(1))));
 }
 
 #[test]
 fn an_unlabeled_break_exits_only_the_inner_loop() {
-    let f = function(
-        "fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j == 2\n                break\n            count = count + 1\n    return count\n",
-    );
+    let source = "fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j == 2\n                break\n            count = count + 1\n    return count\n";
     // Each outer iteration counts j=1 then breaks the inner loop: 2 total.
-    assert_eq!(evaluate_function(&f, &[]), Ok(Some(Value::Int(2))));
+    assert_eq!(eval_source(source, "f", &[]), Ok(Some(Value::Int(2))));
 }
 
 #[test]
 fn break_outside_a_loop_is_an_error() {
-    let f = function("fn f()\n    break\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source("fn f()\n    break\n", "f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_NO_ENCLOSING_LOOP),
         "{result:?}"
@@ -2517,9 +2532,8 @@ fn break_outside_a_loop_is_an_error() {
 
 #[test]
 fn returns_a_string_literal() {
-    let f = function("fn f(): string\n    return \"hello\"\n");
     assert_eq!(
-        evaluate_function(&f, &[]),
+        eval_source("fn f(): string\n    return \"hello\"\n", "f", &[]),
         Ok(Some(Value::Str("hello".into())))
     );
 }
@@ -2527,24 +2541,30 @@ fn returns_a_string_literal() {
 #[test]
 fn concatenates_strings() {
     // Marrow spells string concatenation `_`.
-    let greet = function("fn greet(name: string): string\n    return \"Hello, \" _ name\n");
     assert_eq!(
-        evaluate_function(&greet, &[Value::Str("World".into())]),
+        eval_source(
+            "fn greet(name: string): string\n    return \"Hello, \" _ name\n",
+            "greet",
+            &[Value::Str("World".into())]
+        ),
         Ok(Some(Value::Str("Hello, World".into())))
     );
 }
 
 #[test]
 fn compares_strings_for_equality_and_order() {
-    let eq = function("fn eq(a: string, b: string): bool\n    return a == b\n");
     assert_eq!(
-        evaluate_function(&eq, &[Value::Str("x".into()), Value::Str("x".into())]),
+        eval_source(
+            "fn eq(a: string, b: string): bool\n    return a == b\n",
+            "eq",
+            &[Value::Str("x".into()), Value::Str("x".into())]
+        ),
         Ok(Some(Value::Bool(true)))
     );
-    let lt = function("fn lt(a: string, b: string): bool\n    return a < b\n");
     assert_eq!(
-        evaluate_function(
-            &lt,
+        eval_source(
+            "fn lt(a: string, b: string): bool\n    return a < b\n",
+            "lt",
             &[Value::Str("apple".into()), Value::Str("banana".into())]
         ),
         Ok(Some(Value::Bool(true)))
@@ -2553,11 +2573,12 @@ fn compares_strings_for_equality_and_order() {
 
 #[test]
 fn string_escapes_are_decoded() {
-    let f = function(
-        "fn f(): string\n    return \"slash \\\\ quote \\\" line\\n carriage\\r tab\\t\"\n",
-    );
     assert_eq!(
-        evaluate_function(&f, &[]),
+        eval_source(
+            "fn f(): string\n    return \"slash \\\\ quote \\\" line\\n carriage\\r tab\\t\"\n",
+            "f",
+            &[]
+        ),
         Ok(Some(Value::Str(
             "slash \\ quote \" line\n carriage\r tab\t".into()
         )))
@@ -2566,8 +2587,7 @@ fn string_escapes_are_decoded() {
 
 #[test]
 fn unknown_string_escapes_are_rejected() {
-    let f = function("fn f(): string\n    return \"\\q\"\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source("fn f(): string\n    return \"\\q\"\n", "f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -2576,8 +2596,7 @@ fn unknown_string_escapes_are_rejected() {
 
 #[test]
 fn concatenation_requires_strings() {
-    let f = function("fn f(): string\n    return \"x\" _ 5\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source("fn f(): string\n    return \"x\" _ 5\n", "f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
@@ -2586,46 +2605,51 @@ fn concatenation_requires_strings() {
 
 #[test]
 fn evaluates_string_interpolation() {
-    let f = function("fn f(n: int): string\n    return $\"n is {n}\"\n");
     assert_eq!(
-        evaluate_function(&f, &[Value::Int(5)]),
+        eval_source(
+            "fn f(n: int): string\n    return $\"n is {n}\"\n",
+            "f",
+            &[Value::Int(5)]
+        ),
         Ok(Some(Value::Str("n is 5".into())))
     );
 }
 
 #[test]
 fn interpolation_renders_several_values() {
-    let f = function("fn f(name: string, ok: bool): string\n    return $\"{name}={ok}\"\n");
     assert_eq!(
-        evaluate_function(&f, &[Value::Str("ready".into()), Value::Bool(true)]),
+        eval_source(
+            "fn f(name: string, ok: bool): string\n    return $\"{name}={ok}\"\n",
+            "f",
+            &[Value::Str("ready".into()), Value::Bool(true)]
+        ),
         Ok(Some(Value::Str("ready=true".into())))
     );
 }
 
 #[test]
 fn interpolation_unescapes_literal_braces() {
-    let f = function("fn f(): string\n    return $\"a {{ b\"\n");
     assert_eq!(
-        evaluate_function(&f, &[]),
+        eval_source("fn f(): string\n    return $\"a {{ b\"\n", "f", &[]),
         Ok(Some(Value::Str("a { b".into())))
     );
 }
 
 #[test]
 fn interpolation_text_decodes_string_escapes() {
-    let f = function(
-        "fn f(name: string): string\n    return $\"slash \\\\ quote \\\" {{\\n{name}\\r\\t}}\"\n",
-    );
     assert_eq!(
-        evaluate_function(&f, &[Value::Str("Ada".into())]),
+        eval_source(
+            "fn f(name: string): string\n    return $\"slash \\\\ quote \\\" {{\\n{name}\\r\\t}}\"\n",
+            "f",
+            &[Value::Str("Ada".into())]
+        ),
         Ok(Some(Value::Str("slash \\ quote \" {\nAda\r\t}".into())))
     );
 }
 
 #[test]
 fn unknown_interpolation_escapes_are_rejected() {
-    let f = function("fn f(): string\n    return $\"\\q\"\n");
-    let result = evaluate_function(&f, &[]);
+    let result = eval_source("fn f(): string\n    return $\"\\q\"\n", "f", &[]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -10039,14 +10063,10 @@ fn uncaught_throw_from_cross_module_callee_carries_the_raising_frame_file_id() {
 }
 
 #[test]
-fn bare_program_fault_leaves_origin_none() {
-    // `evaluate_function` runs a single function with no project module, so a
-    // fault it raises has no file to name — origin stays `None` rather than a
-    // spurious id.
-    let f = function("fn f(): int\n    return 1 / 0\n");
-    let error = evaluate_function(&f, &[]).unwrap_err();
+fn checked_program_entry_fault_carries_origin() {
+    let error = eval_source("fn f(): int\n    return 1 / 0\n", "f", &[]).unwrap_err();
     assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
-    assert_eq!(error.origin, None);
+    assert_eq!(error.origin, Some(FileId(0)));
 }
 
 #[test]

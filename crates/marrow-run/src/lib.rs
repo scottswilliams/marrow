@@ -36,7 +36,7 @@ mod stdlib;
 mod value;
 mod write_dispatch;
 
-pub use call::{evaluate_function, run_entry, run_entry_with_debugger, run_entry_with_host};
+pub use call::{run_entry, run_entry_with_debugger, run_entry_with_host};
 pub use error::{
     RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO,
     RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_STORE,
