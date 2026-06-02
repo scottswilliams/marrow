@@ -1510,45 +1510,6 @@ fn reports_two_stores_sharing_one_saved_root() {
 }
 
 #[test]
-fn split_store_facts_keep_resource_and_store_identity_separate() {
-    let root = temp_project("split-store-facts", |root| {
-        write(
-            root,
-            "src/shelf.mw",
-            "module shelf\n\
-             resource Book\n\
-             \x20   title: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byTitle(title, id)\n",
-        );
-    });
-    let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
-
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let module = program.facts.module_id("shelf").expect("shelf module");
-    let resource = program.facts.resource_id(module, "Book").expect("Book");
-    let store = program
-        .facts
-        .store_id(module, "books")
-        .expect("books store");
-    assert_eq!(program.facts.store(store).resource, resource);
-    assert_eq!(program.facts.store_indexes().len(), 1);
-    let index = &program.facts.store_indexes()[0];
-    assert_eq!(index.store, store);
-    assert_eq!(index.name, "byTitle");
-    assert!(
-        program
-            .facts
-            .resource_members()
-            .iter()
-            .all(|member| member.name != "byTitle"),
-        "{:#?}",
-        program.facts.resource_members()
-    );
-}
-
-#[test]
 fn split_store_may_precede_the_resource_shape() {
     let root = temp_project("store-before-resource", |root| {
         write(

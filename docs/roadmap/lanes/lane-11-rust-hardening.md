@@ -98,22 +98,6 @@ parser/formatter output. Evidence: `crates/marrow-syntax/src/ast.rs:384`,
 `crates/marrow-check/src/prototype.rs:67`. Make them rejection-only or remove
 their v0.1 round-trip surface after checker rejection is established.
 
-**Lane 5 - Resource/Store Surface.** Remove resource-owned identity as a
-production model. Evidence: `crates/marrow-schema/src/lib.rs:35`,
-`crates/marrow-schema/src/lib.rs:63`,
-`crates/marrow-check/src/program.rs:158`,
-`crates/marrow-check/src/checks.rs:2502`, and `fixtures/v01/library.mw:8`
-still make `Book::Id` or `Author::Id` central. Replace this with store-scoped
-`Id(^store)` and keep any resource-named alias only if it is explicitly
-store-declared and tested as public compatibility.
-
-**Lane 5 - Resource/Store Surface.** Move index identity out of resource
-bodies. Evidence: `crates/marrow-syntax/src/parse_decl.rs:1040`,
-`crates/marrow-schema/src/lib.rs:129`, `crates/marrow-schema/src/lib.rs:619`,
-and `crates/marrow-syntax/src/format.rs:296` keep `ResourceMember::Index` and
-resource-owned schema indexes alive. Delete production resource-owned index
-handling except any accepted concise-form desugaring.
-
 **Lane 6 - Catalog Identity.** Remove source-order enum ordinals as stored
 meaning and index-key meaning. Evidence:
 `crates/marrow-schema/src/lib.rs:81`, `crates/marrow-schema/src/lib.rs:333`,
@@ -218,12 +202,6 @@ Evidence: `crates/marrow-check/src/checks.rs:619`,
 `crates/marrow-check/src/enums.rs:291`,
 `crates/marrow-check/src/binding.rs:739`, and
 `crates/marrow-check/src/facts.rs:541`.
-
-Any lane touching checker store/resource resolution must consolidate duplicate
-resolver loops before review. Evidence:
-`crates/marrow-check/src/lib.rs:292` and
-`crates/marrow-check/src/resolve.rs:182` scan module/store/resource structure
-through separate paths. Keep one typed resolver and make callers use it.
 
 Any lane touching checker or runtime module boundaries must remove crate-root
 glob plumbing and production `use super::*` in its changed area. Evidence:

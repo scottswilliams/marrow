@@ -4,8 +4,9 @@ use marrow_syntax::Expression;
 use super::calls::neighbor_read;
 use super::keys::{SavedPathParts, expression_key, saved_path_parts};
 use super::scope::NameScope;
+use crate::CheckedProgram;
 use crate::facts::{PresenceProofPlace, PresenceProofRead, SavedPlaceEffect, StoreIndexId};
-use crate::{CheckedProgram, find_store_resource};
+use crate::resolve::resolve_store_by_root;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReadTarget {
@@ -61,7 +62,7 @@ pub(super) fn declaration_proves_presence(program: &CheckedProgram, target: &Rea
     let ReadPlace::Saved { root, members } = &target.place else {
         return false;
     };
-    let Some(store) = find_store_resource(program, root) else {
+    let Some(store) = resolve_store_by_root(program, root) else {
         return false;
     };
     let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
@@ -144,7 +145,7 @@ fn saved_path_target(
             read: PresenceProofRead::Direct,
         });
     }
-    let store = find_store_resource(program, &path.root)?;
+    let store = resolve_store_by_root(program, &path.root)?;
     if !path.members.is_empty() {
         let member_names: Vec<&str> = path.members.iter().map(String::as_str).collect();
         node_for_path(&store.resource.members, &member_names)?;
@@ -167,7 +168,7 @@ fn store_index_read<'a>(
     let [index_name] = path.members.as_slice() else {
         return None;
     };
-    let schema = find_store_resource(program, &path.root)?;
+    let schema = resolve_store_by_root(program, &path.root)?;
     schema
         .store
         .indexes

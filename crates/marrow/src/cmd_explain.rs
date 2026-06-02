@@ -101,12 +101,10 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
     // covers.
     let root = root_of(&segments);
     let store_resource = root.and_then(|root| resolve_store_by_root(program, root));
-    let resource = store_resource.map(|(_, resource)| resource);
+    let resource = store_resource.map(|store| store.resource);
     let field = terminal_field(&segments);
-    let indexes = match (root, field) {
-        (Some(root), Some(field)) => store_by_root(program, root)
-            .map(|store| indexes_covering(store, field))
-            .unwrap_or_default(),
+    let indexes = match (store_resource, field) {
+        (Some(store), Some(field)) => indexes_covering(store.store, field),
         _ => Vec::new(),
     };
     let encoded = encode_path(&segments);
@@ -177,16 +175,6 @@ fn terminal_field(segments: &[PathSegment]) -> Option<&str> {
         PathSegment::Field(name) => Some(name.as_str()),
         _ => None,
     })
-}
-
-/// The declared indexes whose key arguments include `field` — the indexes a write
-/// to that field keeps coherent.
-fn store_by_root<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p StoreSchema> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.stores)
-        .find(|store| store.root == root)
 }
 
 fn indexes_covering<'r>(store: &'r StoreSchema, field: &str) -> Vec<&'r IndexSchema> {

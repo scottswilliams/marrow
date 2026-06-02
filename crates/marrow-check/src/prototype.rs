@@ -5,7 +5,8 @@ use marrow_syntax::{
 };
 
 use crate::infer::{is_saved_path_expression, saved_layer_chain};
-use crate::{CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram, find_store_resource};
+use crate::resolve::resolve_store_by_root;
+use crate::{CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram};
 
 pub(crate) fn check_prototype_only(
     program: &CheckedProgram,
@@ -249,7 +250,7 @@ fn declared_saved_member_or_index(program: &CheckedProgram, callee: &Expression)
         return false;
     };
     if let Expression::SavedRoot { name: root, .. } = base.as_ref()
-        && let Some(store) = find_store_resource(program, root)
+        && let Some(store) = resolve_store_by_root(program, root)
         && store.store.indexes.iter().any(|index| &index.name == name)
     {
         return true;
@@ -257,7 +258,7 @@ fn declared_saved_member_or_index(program: &CheckedProgram, callee: &Expression)
     let Some((root, layers)) = saved_layer_chain(callee) else {
         return false;
     };
-    let Some(store) = find_store_resource(program, root) else {
+    let Some(store) = resolve_store_by_root(program, root) else {
         return false;
     };
     let resource = store.resource;

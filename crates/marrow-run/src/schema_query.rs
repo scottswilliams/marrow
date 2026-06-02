@@ -1,5 +1,6 @@
 //! Program and schema lookups, and saved-path classification.
 
+use marrow_check::resolve::resolve_store_by_root;
 use marrow_check::{CheckedProgram, Def, DefItem, Resolution, ResolvableKind, resolve};
 use marrow_schema::{EnumSchema, KeyDef, ResourceSchema, StoreSchema, Type};
 use marrow_store::path::{PathSegment, SavedKey};
@@ -22,14 +23,8 @@ pub(crate) fn find_store_resource<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<(&'p StoreSchema, &'p ResourceSchema)> {
-    program.modules.iter().find_map(|module| {
-        let store = module.stores.iter().find(|store| store.root == root)?;
-        let resource = module
-            .resources
-            .iter()
-            .find(|resource| resource.name == store.resource)?;
-        Some((store, resource))
-    })
+    let store = resolve_store_by_root(program, root)?;
+    Some((store.store, store.resource))
 }
 
 pub(crate) fn find_store<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p StoreSchema> {

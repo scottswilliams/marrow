@@ -54,30 +54,6 @@ Before handing the lane to review:
 
 - split any expanded statement, loop, call, saved-path, or resource/store
   dispatcher into focused helpers or a focused module;
-- keep helper names carrying the explanation rather than adding branch-by-branch
-  comments;
-- delete dead resource-owned identity/index/store helpers and stale fixtures
-  introduced or exposed by this lane;
-- delete comments that narrate what the code does, explain temporary migration
-  state, or compensate for an oversized function;
-- preserve only comments that explain durable invariants or non-obvious
-  soundness constraints;
-- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
-  functions, duplicate semantic classifiers, compatibility glue, and comment
-  sediment.
-
-## Area Cleanup Gate
-
-This lane owns the complete cleanup of the resource/store surface across syntax,
-schema, checker facts, diagnostics, docs, fixtures, and tests. It must delete or
-rewrite resource-owned store, index, and identity paths in its area instead of
-leaving a second semantic model for a later lane. It must not leave
-`crates/marrow-check/src/checks.rs` as a larger catch-all pass.
-
-Before handing the lane to review:
-
-- split any expanded statement, loop, call, saved-path, or resource/store
-  dispatcher into focused helpers or a focused module;
 - migrate or delete tests, fixtures, and callers that depend on legacy
   resource-owned identity, resource-owned indexes, or old store syntax instead
   of keeping fallback branches for them;

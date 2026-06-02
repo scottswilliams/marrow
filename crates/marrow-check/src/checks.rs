@@ -16,6 +16,7 @@ use crate::infer::{
     record_identity_type, saved_group_chain, saved_group_entry_type, saved_layer_chain,
     saved_leaf_type,
 };
+use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
     as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric, is_ordered,
     is_steppable, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
@@ -28,9 +29,9 @@ use crate::{
     CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
     CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram, Def, DefItem, MarrowType,
     Resolution, ResolvableKind, TypeNames, build_alias_map, builtin_return_type,
-    check_prototype_only, conversion_return_type, expand_alias, find_store_resource,
-    identity_type_for_store, is_builtin_call, is_resolved_import, module_of_file,
-    push_schema_error, resolve, resource_type_name, std_call_params, std_call_return_type,
+    check_prototype_only, conversion_return_type, expand_alias, identity_type_for_store,
+    is_builtin_call, is_resolved_import, module_of_file, push_schema_error, resolve,
+    resource_type_name, std_call_params, std_call_return_type,
 };
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
@@ -1234,7 +1235,7 @@ fn saved_path_key_type(
     use marrow_syntax::Expression;
     match path {
         Expression::SavedRoot { name, .. } => {
-            let store = find_store_resource(program, name)?;
+            let store = resolve_store_by_root(program, name)?;
             if store.store.identity_keys.is_empty() {
                 return None;
             }
@@ -1260,7 +1261,7 @@ fn saved_path_direct_value_type(
     use marrow_syntax::Expression;
     match path {
         Expression::SavedRoot { name, .. } => {
-            let store = find_store_resource(program, name)?;
+            let store = resolve_store_by_root(program, name)?;
             if store.store.identity_keys.is_empty() {
                 return None;
             }
@@ -1365,7 +1366,7 @@ fn saved_index_schema<'p>(
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
         return None;
     };
-    let store = find_store_resource(program, root)?;
+    let store = resolve_store_by_root(program, root)?;
     let index = store
         .store
         .indexes
@@ -2017,7 +2018,7 @@ pub(crate) fn check_saved_key_args(
     // resource's own identity value (a splice), checked nominally; otherwise the
     // per-key scalars are checked against the declared identity keys.
     if let Expression::SavedRoot { name: root, .. } = callee {
-        let Some(store) = find_store_resource(program, root) else {
+        let Some(store) = resolve_store_by_root(program, root) else {
             return;
         };
         if let [MarrowType::Identity(_)] = arg_types {
@@ -2065,7 +2066,7 @@ pub(crate) fn check_saved_key_args(
     // A keyed-layer access `^root(key…).layer(key…)`: check this layer's key
     // parameters. The layer chain peels the named layers from the accessor.
     if let Some((root, layers)) = saved_layer_chain(callee)
-        && let Some(store) = find_store_resource(program, root)
+        && let Some(store) = resolve_store_by_root(program, root)
         && let Some(node) = store.resource.descend_layers(&layers)
     {
         check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
@@ -2856,7 +2857,7 @@ fn saved_layer_node<'p>(
     expr: &marrow_syntax::Expression,
 ) -> Option<&'p marrow_schema::Node> {
     let (root, layers) = saved_group_chain(expr)?;
-    find_store_resource(program, root)?
+    resolve_store_by_root(program, root)?
         .resource
         .descend_layers(&layers)
 }
@@ -3198,7 +3199,7 @@ pub(crate) fn check_next_id(
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &arg.value else {
         return MarrowType::Unknown;
     };
-    let Some(store) = find_store_resource(program, root) else {
+    let Some(store) = resolve_store_by_root(program, root) else {
         return MarrowType::Unknown;
     };
     if store.store.single_int_root() {
@@ -3333,7 +3334,7 @@ pub(crate) fn check_append(
 /// `next`/`prev` over a record anchor at one key level, so a composite identity is
 /// out of scope. A non-keyed root or an unknown root is not composite.
 pub(crate) fn composite_identity(program: &CheckedProgram, root: &str) -> bool {
-    find_store_resource(program, root).is_some_and(|store| store.store.identity_keys.len() > 1)
+    resolve_store_by_root(program, root).is_some_and(|store| store.store.identity_keys.len() > 1)
 }
 
 /// Report a `check.neighbor_unsupported` error for a statically-unnavigable

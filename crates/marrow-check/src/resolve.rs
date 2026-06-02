@@ -69,6 +69,13 @@ pub enum Resolution<'p> {
     Unresolved,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StoreResource<'p> {
+    pub module: &'p CheckedModule,
+    pub store: &'p StoreSchema,
+    pub resource: &'p ResourceSchema,
+}
+
 /// Resolve `path` as `kind`, referenced from `from_module`, against `program`.
 ///
 /// Import aliases are expanded once against `from_module`'s imports, so a
@@ -182,7 +189,7 @@ fn resolve_qualified<'p>(
 pub fn resolve_store_by_root<'p>(
     program: &'p CheckedProgram,
     root: &str,
-) -> Option<(&'p StoreSchema, &'p ResourceSchema)> {
+) -> Option<StoreResource<'p>> {
     for module in &program.modules {
         if let Some(store) = module.stores.iter().find(|store| store.root == root)
             && let Some(resource) = module
@@ -190,7 +197,11 @@ pub fn resolve_store_by_root<'p>(
                 .iter()
                 .find(|resource| resource.name == store.resource)
         {
-            return Some((store, resource));
+            return Some(StoreResource {
+                module,
+                store,
+                resource,
+            });
         }
     }
     None

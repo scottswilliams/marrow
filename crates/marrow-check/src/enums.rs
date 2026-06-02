@@ -10,13 +10,14 @@ use marrow_syntax::{Severity, SourceSpan};
 
 use crate::checks::{check_block_types, for_frame};
 use crate::infer::{bind, binding_type, infer_only, infer_type};
+use crate::resolve::resolve_store_by_root;
 use crate::typerules::marrow_type_name;
 use crate::{
     CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
     CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CheckDiagnostic, CheckedModule, CheckedProgram,
     Def, DefItem, MarrowType, Resolution, ResolvableKind, TypeNames, build_alias_map, expand_alias,
-    expand_module_alias, find_store_resource, module_of_file, resolve, resource_type_name,
+    expand_module_alias, module_of_file, resolve, resource_type_name,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -763,7 +764,7 @@ pub(crate) fn resolve_resource_type(
     match ty {
         Type::Sequence(element) => resolve_resource_type(element, program, aliases, file)
             .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
-        Type::Identity(store_root) => find_store_resource(program, store_root)
+        Type::Identity(store_root) => resolve_store_by_root(program, store_root)
             .map(|_| MarrowType::Identity(store_root.clone())),
         Type::Named(name) => {
             let segments = split_type_path(name);

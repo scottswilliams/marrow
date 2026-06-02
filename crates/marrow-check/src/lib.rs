@@ -283,33 +283,6 @@ pub fn check_project_with_sources(
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
-pub(crate) struct StoreResource<'p> {
-    pub(crate) module: &'p CheckedModule,
-    pub(crate) store: &'p marrow_schema::StoreSchema,
-    pub(crate) resource: &'p marrow_schema::ResourceSchema,
-}
-
-pub(crate) fn find_store_resource<'p>(
-    program: &'p CheckedProgram,
-    root: &str,
-) -> Option<StoreResource<'p>> {
-    for module in &program.modules {
-        if let Some(store) = module.stores.iter().find(|store| store.root == root)
-            && let Some(resource) = module
-                .resources
-                .iter()
-                .find(|resource| resource.name == store.resource)
-        {
-            return Some(StoreResource {
-                module,
-                store,
-                resource,
-            });
-        }
-    }
-    None
-}
-
 /// The schema of the resource stored at saved root `^root`, if any. Saved roots
 /// are project-wide (a `^books` write addresses the one `books` store from any
 /// module), so this resolves through the store table and returns only the
@@ -318,7 +291,7 @@ pub(crate) fn find_resource_schema<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<&'p marrow_schema::ResourceSchema> {
-    find_store_resource(program, root).map(|store| store.resource)
+    resolve::resolve_store_by_root(program, root).map(|store| store.resource)
 }
 
 pub(crate) fn identity_type_for_store(store: &marrow_schema::StoreSchema) -> MarrowType {
