@@ -9706,43 +9706,18 @@ fn an_index_branch_is_not_an_assignable_place() {
     );
 }
 
-/// An enum-typed field stores its member ordinal and reads back to that member.
-/// Writing `Status::archived` (ordinal 1) persists `1`, and a later read of the
-/// field equals `Status::archived` again — the round-trip the surface promises.
+/// An enum-typed field round-trips through saved data and reads back to the same
+/// member. The test observes the language behavior instead of the storage codec.
 #[test]
-fn an_enum_field_stores_its_ordinal_and_reads_back() {
+fn an_enum_field_round_trips_through_saved_data() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\
          resource Order at ^orders(id: int)\n    required state: Status\n\n\
          fn seed(id: int)\n    ^orders(id).state = Status::archived\n\n\
-         fn state_of(id: int): Status\n    return ^orders(id).state\n\n\
          fn matches_archived(id: int): bool\n    return ^orders(id).state == Status::archived\n",
     );
     let store = RefCell::new(MemStore::new());
     run_entry(&program, &store, "test::seed", &[Value::Int(7)]).expect("seed");
-
-    // The stored bytes are the ordinal int 1 (declaration-order position of
-    // `archived`), confirming an enum field stores as a compact ordinal.
-    let store_ref = store.borrow();
-    let raw = store_ref.read(&encode_path(&[
-        PathSegment::Root("orders".into()),
-        PathSegment::RecordKey(SavedKey::Int(7)),
-        PathSegment::Field("state".into()),
-    ]));
-    assert_eq!(
-        decode_value(raw.expect("present"), ScalarType::Int),
-        Some(SavedValue::Int(1))
-    );
-    drop(store_ref);
-
-    // Reading the field back yields the same ordinal, and a nominal `==` against
-    // the member is true.
-    assert_eq!(
-        run_entry(&program, &store, "test::state_of", &[Value::Int(7)])
-            .expect("read state")
-            .value,
-        Some(Value::Int(1))
-    );
     assert_eq!(
         run_entry(&program, &store, "test::matches_archived", &[Value::Int(7)])
             .expect("compare")
@@ -9771,8 +9746,7 @@ fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
 }
 
 /// Nominal `==` on enum values: comparing the same member is true, comparing two
-/// different members of the same enum is false. Both sides ride as ordinals, so
-/// equality is an ordinal comparison the checker has proven is same-enum.
+/// different members of the same enum is false.
 #[test]
 fn enum_equality_is_true_for_the_same_member_and_false_otherwise() {
     let program = checked_program(
@@ -9790,93 +9764,90 @@ fn enum_equality_is_true_for_the_same_member_and_false_otherwise() {
     );
 }
 
-/// `match` dispatches to the arm for the scrutinee's member, by ordinal. Each
-/// arm returns a distinct marker, so the returned value names the chosen arm.
+/// `match` dispatches to the arm for the scrutinee's member. Each arm returns a
+/// distinct marker, so the returned value names the chosen arm.
 #[test]
 fn match_dispatches_to_the_arm_for_the_scrutinees_member() {
     let program = checked_program_typed(
         "enum Status\n    active\n    archived\n    banned\n\n\
          fn label(s: Status): int\n    \
          match s\n        active\n            return 10\n        \
-         archived\n            return 20\n        banned\n            return 30\n",
+         archived\n            return 20\n        banned\n            return 30\n\n\
+         fn labelActive(): int\n    return label(Status::active)\n\n\
+         fn labelArchived(): int\n    return label(Status::archived)\n\n\
+         fn labelBanned(): int\n    return label(Status::banned)\n",
     );
-    // Each member dispatches to its own arm: ordinals 0/1/2 -> 10/20/30.
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(0)]).unwrap(),
+        run(&program, "test::labelActive", &[]).unwrap(),
         Some(Value::Int(10))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        run(&program, "test::labelArchived", &[]).unwrap(),
         Some(Value::Int(20))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(2)]).unwrap(),
+        run(&program, "test::labelBanned", &[]).unwrap(),
         Some(Value::Int(30))
     );
 }
 
 /// `match` dispatches by the scrutinee's resolved enum, not by the arm member
 /// set. Two enums share member names `x` and `y` but in opposite declaration
-/// order, so they share an arm set yet assign opposite ordinals. A `match` over
-/// a `B` value must read `B`'s ordinals: `B::x` (ordinal 1) takes the `x` arm,
-/// `B::y` (ordinal 0) the `y` arm. Dispatching by the arm set alone would pick
-/// `A` and invert the result.
+/// order, so dispatching by the arm set alone would pick `A` and invert the
+/// result for `B`.
 #[test]
 fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
     let program = checked_program_typed(
         "enum A\n    x\n    y\n\n\
          enum B\n    y\n    x\n\n\
          fn label(s: B): int\n    \
-         match s\n        x\n            return 1\n        y\n            return 2\n",
+         match s\n        x\n            return 1\n        y\n            return 2\n\n\
+         fn labelX(): int\n    return label(B::x)\n\n\
+         fn labelY(): int\n    return label(B::y)\n",
     );
-    // In `B`, `y` is ordinal 0 and `x` is ordinal 1. Passing `B::x` (1) must take
-    // the `x` arm (1); `B::y` (0) must take the `y` arm (2).
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        run(&program, "test::labelX", &[]).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(0)]).unwrap(),
+        run(&program, "test::labelY", &[]).unwrap(),
         Some(Value::Int(2))
     );
 }
 
-/// A nested `Cat::tiger::bengal` literal evaluates to its pre-order ordinal — the
-/// value is stored flat, the hierarchy lives only in the schema.
+/// Nested enum member paths resolve to distinct concrete members.
 #[test]
-fn a_nested_member_evaluates_to_its_pre_order_ordinal() {
+fn a_nested_member_path_resolves_to_the_right_member() {
     let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn bengal(): int\n    return Cat::bengal\n\n\
-         fn housecat(): int\n    return Cat::housecat\n",
-    );
-    // Pre-order: tiger(0), bengal(1), siberian(2), housecat(3).
-    assert_eq!(
-        run(&program, "test::bengal", &[]).unwrap(),
-        Some(Value::Int(1))
+         fn bengalMatches(): bool\n    return Cat::bengal == Cat::tiger::bengal\n\n\
+         fn bengalIsHousecat(): bool\n    return Cat::bengal == Cat::housecat\n",
     );
     assert_eq!(
-        run(&program, "test::housecat", &[]).unwrap(),
-        Some(Value::Int(3))
+        run(&program, "test::bengalMatches", &[]).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&program, "test::bengalIsHousecat", &[]).unwrap(),
+        Some(Value::Bool(false))
     );
 }
 
 /// `pet is Cat::tiger` is true for any value at or under `tiger` (a `bengal`),
-/// false for one outside it (a `housecat`) — the subtree test over the flat
-/// ordinal.
+/// false for one outside it (a `housecat`).
 #[test]
-fn is_tests_subtree_membership_over_the_ordinal() {
+fn is_tests_subtree_membership() {
     let program = checked_program_typed(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn isTiger(pet: Cat): bool\n    return pet is Cat::tiger\n",
+         fn bengalIsTiger(): bool\n    return Cat::bengal is Cat::tiger\n\n\
+         fn housecatIsTiger(): bool\n    return Cat::housecat is Cat::tiger\n",
     );
-    // bengal (ordinal 1) is under tiger; housecat (ordinal 3) is not.
     assert_eq!(
-        run(&program, "test::isTiger", &[Value::Int(1)]).unwrap(),
+        run(&program, "test::bengalIsTiger", &[]).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, "test::isTiger", &[Value::Int(3)]).unwrap(),
+        run(&program, "test::housecatIsTiger", &[]).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -9887,14 +9858,15 @@ fn is_tests_subtree_membership_over_the_ordinal() {
 fn is_against_a_leaf_is_exact() {
     let program = checked_program_typed(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn isBengal(pet: Cat): bool\n    return pet is Cat::bengal\n",
+         fn bengalIsBengal(): bool\n    return Cat::bengal is Cat::bengal\n\n\
+         fn siberianIsBengal(): bool\n    return Cat::siberian is Cat::bengal\n",
     );
     assert_eq!(
-        run(&program, "test::isBengal", &[Value::Int(1)]).unwrap(),
+        run(&program, "test::bengalIsBengal", &[]).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, "test::isBengal", &[Value::Int(2)]).unwrap(),
+        run(&program, "test::siberianIsBengal", &[]).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -9907,42 +9879,42 @@ fn match_runs_the_category_arm_for_any_descendant() {
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
          fn label(pet: Cat): int\n    \
          match pet\n        tiger\n            return 1\n        \
-         housecat\n            return 2\n",
+         housecat\n            return 2\n\n\
+         fn labelBengal(): int\n    return label(Cat::bengal)\n\n\
+         fn labelSiberian(): int\n    return label(Cat::siberian)\n\n\
+         fn labelHousecat(): int\n    return label(Cat::housecat)\n",
     );
-    // bengal(1) and siberian(2) both take the tiger arm; housecat(3) its own.
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        run(&program, "test::labelBengal", &[]).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(2)]).unwrap(),
+        run(&program, "test::labelSiberian", &[]).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(3)]).unwrap(),
+        run(&program, "test::labelHousecat", &[]).unwrap(),
         Some(Value::Int(2))
     );
 }
 
 /// Two `paw`s under different parents are distinct members: the full member paths
-/// `Cat::tiger::paw` and `Cat::lion::paw` evaluate to their own pre-order ordinals,
-/// the value stored flat. Pre-order: tiger(0), bengal(1), paw(2), lion(3), paw(4),
-/// mane(5).
+/// `Cat::tiger::paw` and `Cat::lion::paw` are not aliases.
 #[test]
-fn a_duplicated_member_resolves_by_its_full_path_to_a_distinct_ordinal() {
+fn a_duplicated_member_resolves_by_its_full_path_to_a_distinct_member() {
     let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        paw\n\
          \x20   category lion\n        paw\n        mane\n\n\
-         fn tigerPaw(): int\n    return Cat::tiger::paw\n\n\
-         fn lionPaw(): int\n    return Cat::lion::paw\n",
+         fn sameTigerPaw(): bool\n    return Cat::tiger::paw == Cat::tiger::paw\n\n\
+         fn differentPaws(): bool\n    return Cat::tiger::paw == Cat::lion::paw\n",
     );
     assert_eq!(
-        run(&program, "test::tigerPaw", &[]).unwrap(),
-        Some(Value::Int(2))
+        run(&program, "test::sameTigerPaw", &[]).unwrap(),
+        Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, "test::lionPaw", &[]).unwrap(),
-        Some(Value::Int(4))
+        run(&program, "test::differentPaws", &[]).unwrap(),
+        Some(Value::Bool(false))
     );
 }
 
@@ -9959,24 +9931,27 @@ fn match_with_qualified_arms_dispatches_each_duplicated_paw_to_its_own_arm() {
          tiger::bengal\n            return 1\n        \
          tiger::paw\n            return 2\n        \
          lion::paw\n            return 3\n        \
-         lion::mane\n            return 4\n",
+         lion::mane\n            return 4\n\n\
+         fn labelTigerBengal(): int\n    return label(Cat::tiger::bengal)\n\n\
+         fn labelTigerPaw(): int\n    return label(Cat::tiger::paw)\n\n\
+         fn labelLionPaw(): int\n    return label(Cat::lion::paw)\n\n\
+         fn labelLionMane(): int\n    return label(Cat::lion::mane)\n",
     );
-    // tiger::paw is ordinal 2, lion::paw is ordinal 4: each takes its own arm.
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(2)]).unwrap(),
+        run(&program, "test::labelTigerPaw", &[]).unwrap(),
         Some(Value::Int(2))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(4)]).unwrap(),
+        run(&program, "test::labelLionPaw", &[]).unwrap(),
         Some(Value::Int(3))
     );
     // The other leaves still dispatch to their arms.
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(1)]).unwrap(),
+        run(&program, "test::labelTigerBengal", &[]).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, "test::label", &[Value::Int(5)]).unwrap(),
+        run(&program, "test::labelLionMane", &[]).unwrap(),
         Some(Value::Int(4))
     );
 }
@@ -9989,25 +9964,25 @@ fn is_with_a_full_path_to_a_duplicated_leaf_is_exact() {
     let program = checked_program_typed(
         "enum Cat\n    category tiger\n        bengal\n        paw\n\
          \x20   category lion\n        paw\n        mane\n\n\
-         fn isTigerPaw(pet: Cat): bool\n    return pet is Cat::tiger::paw\n\n\
-         fn isTiger(pet: Cat): bool\n    return pet is Cat::tiger\n",
+         fn tigerPawIsTigerPaw(): bool\n    return Cat::tiger::paw is Cat::tiger::paw\n\n\
+         fn lionPawIsTigerPaw(): bool\n    return Cat::lion::paw is Cat::tiger::paw\n\n\
+         fn tigerPawIsTiger(): bool\n    return Cat::tiger::paw is Cat::tiger\n\n\
+         fn lionPawIsTiger(): bool\n    return Cat::lion::paw is Cat::tiger\n",
     );
-    // tiger::paw (2) is exactly Cat::tiger::paw; lion::paw (4) is not.
     assert_eq!(
-        run(&program, "test::isTigerPaw", &[Value::Int(2)]).unwrap(),
+        run(&program, "test::tigerPawIsTigerPaw", &[]).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, "test::isTigerPaw", &[Value::Int(4)]).unwrap(),
+        run(&program, "test::lionPawIsTigerPaw", &[]).unwrap(),
         Some(Value::Bool(false))
     );
-    // The category test covers the whole tiger subtree (bengal 1, paw 2).
     assert_eq!(
-        run(&program, "test::isTiger", &[Value::Int(2)]).unwrap(),
+        run(&program, "test::tigerPawIsTiger", &[]).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, "test::isTiger", &[Value::Int(4)]).unwrap(),
+        run(&program, "test::lionPawIsTiger", &[]).unwrap(),
         Some(Value::Bool(false))
     );
 }

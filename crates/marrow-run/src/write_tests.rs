@@ -202,9 +202,9 @@ resource Book at ^books(id: int)
     index byShelfCategory(shelf, category, id)
 ";
 
-/// `Book` with a non-unique index over an enum-typed field plus identity. An
-/// enum field stores its ordinal as an `int`, so the index keys on that ordinal
-/// and must read it back when an entry is torn down.
+/// `Book` with a non-unique index over an enum-typed field plus identity. This
+/// planner test works at the physical-key boundary: the index keys on the saved
+/// leaf value it is handed and reads that value back when an entry is torn down.
 const BOOK_ENUM_INDEXED: &str = "\
 resource Book at ^books(id: int)
     required title: string
@@ -921,10 +921,10 @@ fn deleting_a_resource_removes_its_fields_and_index_entries() {
 }
 
 #[test]
-fn an_enum_field_index_builds_and_tears_down_by_its_ordinal() {
+fn an_enum_field_index_builds_and_tears_down_by_its_physical_key() {
     let book = schema(BOOK_ENUM_INDEXED);
     let mut store = MemStore::new();
-    // `state` stores its enum ordinal as an int; the byState entry keys on it.
+    // `state` is represented here as an int leaf; the byState entry keys on it.
     write(
         &mut store,
         &book,
@@ -940,11 +940,11 @@ fn an_enum_field_index_builds_and_tears_down_by_its_ordinal() {
     assert_eq!(
         store.read(&by_state_entry(1, 42)),
         Some(&b"1"[..]),
-        "the enum-field index entry is built on the stored ordinal"
+        "the enum-field index entry is built on the saved leaf value"
     );
 
-    // Re-write with a different ordinal: the old entry must be torn down by
-    // reading the stored ordinal as its key, leaving no stale entry behind.
+    // Re-write with a different leaf value: the old entry must be torn down by
+    // reading the stored value as its key, leaving no stale entry behind.
     write(
         &mut store,
         &book,
@@ -960,15 +960,15 @@ fn an_enum_field_index_builds_and_tears_down_by_its_ordinal() {
     assert_eq!(
         store.read(&by_state_entry(1, 42)),
         None,
-        "the stale entry for the old ordinal is gone"
+        "the stale entry for the old key is gone"
     );
     assert_eq!(
         store.read(&by_state_entry(2, 42)),
         Some(&b"1"[..]),
-        "the entry for the new ordinal is present"
+        "the entry for the new key is present"
     );
 
-    // Deleting the resource reads the stored ordinal to remove its entry.
+    // Deleting the resource reads the stored leaf value to remove its entry.
     plan_resource_delete(&book, &[SavedKey::Int(42)], &store)
         .expect("delete")
         .commit(&mut store, false)

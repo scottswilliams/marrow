@@ -1,4 +1,4 @@
-use marrow_syntax::Expression;
+use marrow_syntax::{Argument, Expression};
 
 use crate::facts::PresenceProofRead;
 
@@ -22,6 +22,13 @@ pub(super) fn is_attached_data_call(callee: &Expression) -> bool {
 
 pub(super) fn is_append_call(callee: &Expression) -> bool {
     matches!(callee, Expression::Name { segments, .. } if segments.as_slice() == ["append"])
+}
+
+pub(crate) fn append_call_args<'a>(
+    callee: &Expression,
+    args: &'a [Argument],
+) -> Option<(&'a Argument, &'a [Argument])> {
+    is_append_call(callee).then(|| args.split_first()).flatten()
 }
 
 pub(super) fn neighbor_read(callee: &Expression) -> Option<PresenceProofRead> {

@@ -1,4 +1,4 @@
-//! Enum compilation tests: ordinal assignment, member lookup, and the one
+//! Enum compilation tests: source traversal indices, member lookup, and the one
 //! single-declaration rule an enum has (member uniqueness).
 
 use marrow_schema::{
@@ -33,7 +33,7 @@ fn compile_ok(source: &str) -> EnumSchema {
 }
 
 #[test]
-fn members_take_declaration_order_ordinals() {
+fn members_keep_source_traversal_indices() {
     let schema = compile_ok("module app\nenum Status\n    active\n    archived\n    banned\n");
     assert_eq!(schema.name, "Status");
     assert_eq!(schema.ordinal("active"), Some(0));
@@ -43,7 +43,7 @@ fn members_take_declaration_order_ordinals() {
 }
 
 #[test]
-fn member_name_inverts_the_ordinal() {
+fn member_name_uses_the_traversal_index() {
     let schema = compile_ok("module app\nenum Status\n    active\n    archived\n");
     assert_eq!(schema.member_name(0), Some("active"));
     assert_eq!(schema.member_name(1), Some("archived"));
@@ -64,34 +64,33 @@ fn rejects_a_duplicate_member() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(errors[0].code, SCHEMA_DUPLICATE_MEMBER);
     assert!(errors[0].message.contains("enum member"));
-    // The duplicate is reported but not stored, so members and ordinals reflect
-    // only the distinct members.
+    // The duplicate is reported and dropped, so traversal only sees the distinct
+    // members.
     assert_eq!(schema.members.len(), 1, "{:?}", schema.members);
     assert_eq!(schema.ordinal("active"), Some(0));
 }
 
-/// A flat enum stays the degenerate one-level tree: every member at the top level
-/// (`parent: None`), none a category, ordinals 0..n in source order — byte-identical
-/// to a non-hierarchical enum, so existing data needs no migration.
+/// A flat enum stays the degenerate one-level tree: every member at the top
+/// level (`parent: None`), none a category, with traversal matching source order.
 #[test]
-fn a_flat_enum_compiles_byte_identically() {
+fn a_flat_enum_compiles_as_one_traversal_level() {
     let schema = compile_ok("module app\nenum Status\n    active\n    archived\n    banned\n");
     assert_eq!(schema.members.len(), 3);
-    for (ordinal, member) in schema.members.iter().enumerate() {
+    for (index, member) in schema.members.iter().enumerate() {
         assert_eq!(member.parent, None, "{member:?}");
         assert!(!member.category, "{member:?}");
-        assert_eq!(schema.ordinal(&member.name), Some(ordinal));
+        assert_eq!(schema.ordinal(&member.name), Some(index));
     }
 }
 
-/// Nested members flatten in pre-order DFS — each parent before its children — so
-/// a member's ordinal is its pre-order index and `parent` links it to its parent.
+/// Nested members flatten in pre-order DFS — each parent before its children —
+/// and `parent` links each child to its parent traversal index.
 #[test]
-fn nested_members_take_pre_order_ordinals_and_parent_links() {
+fn nested_members_keep_pre_order_indices_and_parent_links() {
     let schema = compile_ok(
         "module app\nenum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n",
     );
-    // Pre-order: tiger(0), bengal(1), siberian(2), housecat(3).
+    // Pre-order traversal: tiger(0), bengal(1), siberian(2), housecat(3).
     assert_eq!(schema.ordinal("tiger"), Some(0));
     assert_eq!(schema.ordinal("bengal"), Some(1));
     assert_eq!(schema.ordinal("siberian"), Some(2));
@@ -157,7 +156,7 @@ fn duplicate_member_uniqueness_is_per_sibling_level() {
 
 /// The subtree queries answer the hierarchy: `is_descendant` is inclusive,
 /// `subtree_ordinals` lists a node and its descendants, and `selectable_leaves`
-/// is the set a value can hold (concrete childless members).
+/// is the set of concrete childless members.
 #[test]
 fn subtree_queries_describe_the_hierarchy() {
     let schema = compile_ok(
@@ -176,7 +175,7 @@ fn subtree_queries_describe_the_hierarchy() {
 }
 
 /// The duplicate-name enum used by the member-path walk tests: `paw` appears under
-/// both `tiger` and `lion`, a blessed feature. Pre-order ordinals: tiger(0),
+/// both `tiger` and `lion`, a blessed feature. Pre-order traversal: tiger(0),
 /// bengal(1), paw(2), lion(3), paw(4), mane(5).
 fn duplicate_paw_enum() -> EnumSchema {
     compile_ok(
@@ -187,7 +186,7 @@ fn duplicate_paw_enum() -> EnumSchema {
 }
 
 /// A qualified path walks parent→child to a single member, so two `paw`s under
-/// different parents resolve to their own distinct ordinals.
+/// different parents resolve to their own distinct traversal indices.
 #[test]
 fn walk_member_path_resolves_a_qualified_path_to_a_distinct_member() {
     use marrow_schema::MemberPathResolution::Found;

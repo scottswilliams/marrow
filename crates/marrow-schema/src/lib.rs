@@ -78,15 +78,10 @@ impl Type {
         }
     }
 
-    /// The scalar a stored field of this type encodes as: a plain scalar's own
-    /// type, or `int` for an enum field, whose value is the selected member's
-    /// declaration-order ordinal. A saved field that is an unqualified
-    /// [`Type::Named`] is always an enum: [`check_saved_named_fields`] rejects
-    /// any other unqualified name (an undefined name or a resource type) at
-    /// compile time. Qualified names need project context, but once a checked
-    /// `Named` field reaches the store it stores its enum ordinal as an `int`.
-    /// The storage boundary — value type-checks, field reads, whole-resource
-    /// reads — uses this.
+    /// The physical scalar envelope used by the runtime for a flat saved leaf:
+    /// a plain scalar's own type, or `int` for a checked enum field. Durable enum
+    /// value meaning is catalog member identity; the checker exposes that through
+    /// checked facts after project-level enum resolution.
     pub fn stored_scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
@@ -331,23 +326,21 @@ pub struct IndexSchema {
 }
 
 /// The compiled form of an enum: a named, fixed set of members. Members are held
-/// flat in pre-order DFS, so a member's index is its stored ordinal; the tree
-/// shape lives in each member's `parent` link. A flat enum is the degenerate
-/// one-level tree — every member at the top level, in source order — so its
-/// compiled form is byte-identical to a non-hierarchical enum and existing data
-/// needs no migration. An enum is its own construct, not a [`ResourceSchema`]; it
-/// owns no saved root and stores as the ordinal of the selected member.
+/// flat in pre-order DFS; those positions are source traversal indices for tree
+/// queries, not durable value identity. The tree shape lives in each member's
+/// `parent` link. An enum is its own construct, not a [`ResourceSchema`]; it owns
+/// no saved root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumSchema {
     pub name: String,
     pub docs: Vec<String>,
-    /// Members in pre-order DFS; a member's index is its stored ordinal.
+    /// Members in pre-order DFS; a member's index is a source traversal handle.
     pub members: Vec<EnumMemberSchema>,
 }
 
-/// One enum member. `parent` is the ordinal of the enclosing member, `None` at the
-/// top level. A `category` member groups its descendants and is not selectable as a
-/// value.
+/// One enum member. `parent` is the traversal index of the enclosing member,
+/// `None` at the top level. A `category` member groups its descendants and is not
+/// selectable as a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMemberSchema {
     pub name: String,
@@ -362,7 +355,7 @@ pub struct EnumMemberSchema {
 /// member and reports ambiguity with the same actionable wording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberPathResolution {
-    /// The path names exactly this member ordinal.
+    /// The path names exactly this member traversal index.
     Found(usize),
     /// A single bare name appears under more than one parent, so it cannot pick
     /// one member. Carries the full disambiguating paths of every match
@@ -374,10 +367,10 @@ pub enum MemberPathResolution {
 }
 
 impl EnumSchema {
-    /// The stored ordinal of `member` — its index in pre-order DFS — or `None` if
-    /// the enum has no such member. When two members at different levels share a
-    /// bare name, the first in pre-order wins; the checker rejects an ambiguous
-    /// reference before this is reached for a value or arm.
+    /// The source traversal index of `member`, or `None` if the enum has no such
+    /// member. When two members at different levels share a bare name, the first
+    /// in pre-order wins; the checker rejects an ambiguous reference before this
+    /// is reached for a value or arm.
     pub fn ordinal(&self, member: &str) -> Option<usize> {
         self.members.iter().position(|m| m.name == member)
     }
@@ -436,29 +429,29 @@ impl EnumSchema {
         MemberPathResolution::Found(current)
     }
 
-    /// Whether the member at `ordinal` has the given name.
+    /// Whether the member at this traversal index has the given name.
     fn member_is(&self, ordinal: usize, name: &str) -> bool {
         self.members.get(ordinal).is_some_and(|m| m.name == name)
     }
 
-    /// The ordinal of the child of `parent` named `name`, if any. Children are the
-    /// members whose `parent` link is `parent`; sibling names are unique, so at most
-    /// one matches.
+    /// The traversal index of the child of `parent` named `name`, if any.
+    /// Children are the members whose `parent` link is `parent`; sibling names are
+    /// unique, so at most one matches.
     fn child_named(&self, parent: usize, name: &str) -> Option<usize> {
         (0..self.members.len()).find(|&ordinal| {
             self.members[ordinal].parent == Some(parent) && self.members[ordinal].name == name
         })
     }
 
-    /// The member name an ordinal selects, or `None` if it is out of range.
+    /// The member name a traversal index selects, or `None` if it is out of range.
     pub fn member_name(&self, ordinal: usize) -> Option<&str> {
         self.members.get(ordinal).map(|m| m.name.as_str())
     }
 
-    /// Whether `ordinal` sits at or under `ancestor` in the member tree — the
-    /// `is` primitive. Inclusive: a member is its own descendant, so a concrete
-    /// leaf on both sides is exact equality and a category ancestor matches its
-    /// whole subtree. Walks `parent` links up from `ordinal`.
+    /// Whether one traversal index sits at or under `ancestor` in the member tree
+    /// — the `is` primitive. Inclusive: a member is its own descendant, so a
+    /// concrete leaf on both sides is exact equality and a category ancestor
+    /// matches its whole subtree.
     pub fn is_descendant(&self, ordinal: usize, ancestor: usize) -> bool {
         let mut current = Some(ordinal);
         while let Some(index) = current {
@@ -470,28 +463,28 @@ impl EnumSchema {
         false
     }
 
-    /// Whether the member at `ordinal` is a category — a grouping node that is not
-    /// selectable as a value but may name a whole subtree in `match` or `is`.
+    /// Whether the member at this traversal index is a category — a grouping node
+    /// that is not selectable as a value but may name a whole subtree in `match`
+    /// or `is`.
     pub fn is_category(&self, ordinal: usize) -> bool {
         self.members.get(ordinal).is_some_and(|m| m.category)
     }
 
-    /// The ordinals at or under `ancestor` in pre-order, inclusive — the members a
+    /// The traversal indices at or under `ancestor`, inclusive — the members a
     /// category arm or an `is` test covers.
     pub fn subtree_ordinals(&self, ancestor: usize) -> impl Iterator<Item = usize> + '_ {
         (0..self.members.len()).filter(move |&ordinal| self.is_descendant(ordinal, ancestor))
     }
 
-    /// The ordinals a value can actually hold: the concrete (non-category) leaves.
-    /// A category is never selectable, and a member with children is a grouping
-    /// node whose value is one of its descendants, so only childless non-category
-    /// members are selectable.
+    /// The traversal indices for concrete leaves. A category is never selectable,
+    /// and a member with children is a grouping node whose value is one of its
+    /// descendants, so only childless non-category members are selectable.
     pub fn selectable_leaves(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.members.len()).filter(move |&ordinal| self.is_selectable_leaf(ordinal))
     }
 
-    /// Whether `ordinal` is a selectable leaf: concrete (not a category) and with
-    /// no children.
+    /// Whether a traversal index is a selectable leaf: concrete (not a category)
+    /// and with no children.
     pub fn is_selectable_leaf(&self, ordinal: usize) -> bool {
         let Some(member) = self.members.get(ordinal) else {
             return false;
@@ -499,13 +492,13 @@ impl EnumSchema {
         !member.category && !self.has_children(ordinal)
     }
 
-    /// Whether any member names `ordinal` as its parent.
+    /// Whether any member names this traversal index as its parent.
     pub fn has_children(&self, ordinal: usize) -> bool {
         self.members.iter().any(|m| m.parent == Some(ordinal))
     }
 
     /// The dotted path of names from the root to `ordinal` (`["tiger", "bengal"]`),
-    /// for diagnostics. Empty when the ordinal is out of range.
+    /// for diagnostics. Empty when the traversal index is out of range.
     pub fn member_path(&self, ordinal: usize) -> Vec<&str> {
         let mut path = Vec::new();
         let mut current = Some(ordinal);
@@ -596,17 +589,15 @@ pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_
 pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
 
 /// A managed saved field's type is a bare name that is not a declared enum. A
-/// saved field stores a scalar; a bare name reaches the store only as an enum,
-/// whose value is its member ordinal. An undefined name or a resource type has
-/// no stored scalar form, so it cannot be a saved field.
+/// saved field stores a scalar or a checked enum value; an undefined name or a
+/// resource type has no saved leaf form, so it cannot be a saved field.
 pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = "schema.non_enum_named_field";
 
 /// A saved key (an identity key, a keyed-layer key parameter, or an index
 /// argument) is typed as a non-scalar. A key must be an orderable scalar, because
-/// the store projects a key from its scalar value and the key guard cannot tell
-/// a member ordinal from a raw string or int written into a non-scalar position.
-/// Every bare or qualified name — a local enum, a cross-module enum, a resource,
-/// or a typo — every sequence, and every store identity is rejected
+/// the store projects a key from its scalar value. Every bare or qualified name
+/// in identity-key and keyed-layer positions — a local enum, a cross-module enum,
+/// a resource, or a typo — every sequence, and every store identity is rejected
 /// structurally, since the rule asks only whether the type is an orderable scalar.
 pub const SCHEMA_NONSCALAR_KEY: &str = "schema.nonscalar_key";
 
@@ -757,11 +748,11 @@ pub fn check_saved_member_rules(members: &[ResourceMember]) -> Vec<SchemaError> 
 
 /// Compile a parsed enum into an [`EnumSchema`], with any errors.
 ///
-/// Members flatten in pre-order DFS, so a member's index is its stored ordinal and
-/// a flat enum keeps its 0..n ordinals byte-identical. Member-name uniqueness is
-/// per sibling level (two `tiger`s under one parent collide; `Cat::tiger` and
-/// `Dog::tiger` do not), reported with the shared duplicate-member code so it reads
-/// like a resource's. The `category` flag and having children are held in lockstep:
+/// Members flatten in pre-order DFS, so each member has a source traversal index.
+/// Member-name uniqueness is per sibling level (two `tiger`s under one parent
+/// collide; `Cat::tiger` and `Dog::tiger` do not), reported with the shared
+/// duplicate-member code so it reads like a resource's. The `category` flag and
+/// having children are held in lockstep:
 /// a `category` with no children is dead, and a non-`category` with children is a
 /// grouping node a value could never select — both are rejected, so every parent is
 /// a category and every non-category is a leaf.
@@ -778,9 +769,9 @@ pub fn compile_enum(decl: &EnumDecl) -> (EnumSchema, Vec<SchemaError>) {
 }
 
 /// Append one sibling level to `members` in pre-order — each member before its
-/// own children — recording its `parent` ordinal and recursing into its nested
-/// members. A duplicate name at the same level is reported and dropped, so the
-/// stored members and their ordinals reflect only the distinct ones.
+/// own children — recording its parent traversal index and recursing into its
+/// nested members. A duplicate name at the same level is reported and dropped, so
+/// the flattened tree reflects only the distinct members.
 fn flatten_enum_members(
     siblings: &[EnumMember],
     parent: Option<usize>,
@@ -1061,7 +1052,7 @@ fn check_named_field_type(
             code: SCHEMA_NON_ENUM_NAMED_FIELD,
             message: format!(
                 "saved field `{}` has type `{name}`, which is not a declared enum; \
-                 a saved field stores a scalar or an enum ordinal",
+                 a saved field stores a scalar or checked enum value",
                 field.name
             ),
             span: field.span,

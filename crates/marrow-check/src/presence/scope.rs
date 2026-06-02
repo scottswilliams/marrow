@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
-pub(super) struct NameScope {
+pub(crate) struct NameScope {
     frames: Vec<HashMap<String, u32>>,
     next_binding: u32,
 }

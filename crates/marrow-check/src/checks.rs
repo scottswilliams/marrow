@@ -1137,9 +1137,7 @@ fn collection_loop_binding_types(
             Some(saved_path_value_type(program, path)),
         ));
     }
-    if !is_saved_path_syntax(program, iterable) {
-        return None;
-    }
+    saved_path_key_type(program, iterable)?;
     if is_saved_index_branch_path(program, iterable) {
         if two_name {
             let (store, resource, index, module, arg_count) =
@@ -1216,18 +1214,6 @@ fn collection_wrapper_arg<'a>(
     }
 }
 
-fn is_saved_path_syntax(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
-    use marrow_syntax::Expression;
-    match expr {
-        Expression::SavedRoot { .. } => true,
-        Expression::Field { .. } => {
-            is_saved_index_branch_path(program, expr) || saved_layer_chain(expr).is_some()
-        }
-        Expression::Call { .. } => is_saved_index_branch_path(program, expr),
-        _ => false,
-    }
-}
-
 fn saved_path_key_type(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
@@ -1245,7 +1231,10 @@ fn saved_path_key_type(
         Expression::Field { .. } if is_saved_index_branch_path(program, path) => {
             saved_index_branch_type(program, path)
         }
-        Expression::Field { .. } => Some(layer_key_type(program, path)),
+        Expression::Field { .. } if saved_layer_chain(path).is_some() => {
+            Some(layer_key_type(program, path))
+        }
+        Expression::Field { .. } => None,
         _ => None,
     }
 }

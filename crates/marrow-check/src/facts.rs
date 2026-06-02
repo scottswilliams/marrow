@@ -13,6 +13,7 @@ use marrow_syntax::{
 use crate::catalog::{
     CatalogKey, enum_path, resource_member_path, resource_path, store_index_path, store_path,
 };
+use crate::presence::{NameScope, append_call_args, saved_path_parts};
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias};
 
@@ -76,6 +77,12 @@ impl CheckedFacts {
         for (module_index, module) in modules.iter().enumerate() {
             let module_id = ModuleId(module_index as u32);
             let parsed = sources.get(&module.source_file);
+            facts.collect_enum_facts(module_id, module, parsed.copied());
+        }
+
+        for (module_index, module) in modules.iter().enumerate() {
+            let module_id = ModuleId(module_index as u32);
+            let parsed = sources.get(&module.source_file);
             facts.collect_resource_facts(module_id, module, parsed.copied());
         }
 
@@ -83,12 +90,6 @@ impl CheckedFacts {
             let module_id = ModuleId(module_index as u32);
             let parsed = sources.get(&module.source_file);
             facts.collect_store_facts(module_id, module, parsed.copied());
-        }
-
-        for (module_index, module) in modules.iter().enumerate() {
-            let module_id = ModuleId(module_index as u32);
-            let parsed = sources.get(&module.source_file);
-            facts.collect_enum_facts(module_id, module, parsed.copied());
         }
 
         for (module_index, module) in modules.iter().enumerate() {
@@ -453,11 +454,14 @@ impl CheckedFacts {
                 catalog_id: String::new(),
                 span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
             });
+            let aliases = build_alias_map(&module.imports);
             self.collect_resource_member_facts(
+                module_id,
                 resource_id,
                 None,
                 &resource.members,
                 declaration.map(|resource| resource.members.as_slice()),
+                &aliases,
             );
         }
     }
@@ -506,10 +510,27 @@ impl CheckedFacts {
                     })
                     .unwrap_or_default();
                 let id = StoreIndexId(self.store_indexes.len() as u32);
+                let keys = module
+                    .resources
+                    .iter()
+                    .find(|resource| resource.name == store.resource)
+                    .map(|resource_schema| {
+                        let aliases = build_alias_map(&module.imports);
+                        self.store_index_keys(
+                            module_id,
+                            resource,
+                            store,
+                            resource_schema,
+                            index,
+                            &aliases,
+                        )
+                    })
+                    .unwrap_or_default();
                 self.store_indexes.push(StoreIndexFact {
                     id,
                     store: store_id,
                     name: index.name.clone(),
+                    keys,
                     catalog_id: String::new(),
                     span,
                 });
@@ -519,10 +540,12 @@ impl CheckedFacts {
 
     fn collect_resource_member_facts(
         &mut self,
+        module_id: ModuleId,
         resource_id: ResourceId,
         parent: Option<ResourceMemberId>,
         nodes: &[marrow_schema::Node],
         declarations: Option<&[ResourceMember]>,
+        aliases: &HashMap<String, Vec<String>>,
     ) {
         for node in nodes {
             let declaration = declarations.and_then(|declarations| {
@@ -541,6 +564,10 @@ impl CheckedFacts {
                 NodeKind::Slot { .. } => ResourceMemberKind::Field,
                 NodeKind::Group => ResourceMemberKind::Group,
             };
+            let value_meaning = match &node.kind {
+                NodeKind::Slot { ty, .. } => self.stored_value_meaning(module_id, ty, aliases),
+                NodeKind::Group => None,
+            };
             let id = ResourceMemberId(self.resource_members.len() as u32);
             self.resource_members.push(ResourceMemberFact {
                 id,
@@ -548,6 +575,7 @@ impl CheckedFacts {
                 parent,
                 name: node.name.clone(),
                 kind,
+                value_meaning,
                 catalog_id: String::new(),
                 span,
             });
@@ -555,7 +583,14 @@ impl CheckedFacts {
                 ResourceMember::Group(group) => Some(group.members.as_slice()),
                 _ => None,
             });
-            self.collect_resource_member_facts(resource_id, Some(id), &node.members, nested);
+            self.collect_resource_member_facts(
+                module_id,
+                resource_id,
+                Some(id),
+                &node.members,
+                nested,
+                aliases,
+            );
         }
     }
 
@@ -711,6 +746,114 @@ impl CheckedFacts {
         }
         self.module_id(&module.join("::"))
             .and_then(|module_id| self.resource_id(module_id, resource))
+    }
+
+    fn resolve_enum_segments(
+        &self,
+        module_id: ModuleId,
+        segments: &[String],
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<EnumId> {
+        let expanded = expand_alias(segments, aliases);
+        let (enum_name, module) = expanded.split_last()?;
+        if module.is_empty() {
+            return self.enum_id(module_id, enum_name);
+        }
+        self.module_id(&module.join("::"))
+            .and_then(|module_id| self.enum_id(module_id, enum_name))
+    }
+
+    fn stored_value_meaning(
+        &self,
+        module_id: ModuleId,
+        ty: &Type,
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<StoredValueMeaning> {
+        match ty {
+            Type::Scalar(scalar) => Some(StoredValueMeaning::Scalar(*scalar)),
+            Type::Identity(identity) => self
+                .store_for_root(identity)
+                .map(StoredValueMeaning::Identity),
+            Type::Named(name) => {
+                let segments = split_type_path(name);
+                let enum_id = self.resolve_enum_segments(module_id, &segments, aliases)?;
+                Some(StoredValueMeaning::Enum {
+                    enum_id,
+                    members: self.selectable_enum_members(enum_id),
+                })
+            }
+            Type::Sequence(_) | Type::Unknown => None,
+        }
+    }
+
+    fn selectable_enum_members(&self, enum_id: EnumId) -> Vec<EnumMemberId> {
+        self.enum_members
+            .iter()
+            .filter(|member| {
+                member.enum_id == enum_id
+                    && !member.category
+                    && !self.enum_member_has_children(member.id)
+            })
+            .map(|member| member.id)
+            .collect()
+    }
+
+    fn enum_member_has_children(&self, id: EnumMemberId) -> bool {
+        self.enum_members
+            .iter()
+            .any(|member| member.parent == Some(id))
+    }
+
+    fn store_index_keys(
+        &self,
+        module_id: ModuleId,
+        resource: ResourceId,
+        store: &marrow_schema::StoreSchema,
+        resource_schema: &marrow_schema::ResourceSchema,
+        index: &marrow_schema::IndexSchema,
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Vec<StoreIndexKeyFact> {
+        index
+            .args
+            .iter()
+            .filter_map(|arg| {
+                self.identity_index_key(module_id, store, arg, aliases)
+                    .or_else(|| self.resource_member_index_key(resource, resource_schema, arg))
+            })
+            .collect()
+    }
+
+    fn identity_index_key(
+        &self,
+        module_id: ModuleId,
+        store: &marrow_schema::StoreSchema,
+        arg: &str,
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<StoreIndexKeyFact> {
+        let key = store.identity_keys.iter().find(|key| key.name == arg)?;
+        Some(StoreIndexKeyFact {
+            name: arg.to_string(),
+            source: StoreIndexKeySource::IdentityKey,
+            value_meaning: self.stored_value_meaning(module_id, &key.ty, aliases)?,
+        })
+    }
+
+    fn resource_member_index_key(
+        &self,
+        resource: ResourceId,
+        resource_schema: &marrow_schema::ResourceSchema,
+        arg: &str,
+    ) -> Option<StoreIndexKeyFact> {
+        let member = self.resource_member_id(resource, &[arg])?;
+        let value_meaning = self.resource_members[member.0 as usize]
+            .value_meaning
+            .clone()?;
+        resource_schema.field_type(&[arg])?;
+        Some(StoreIndexKeyFact {
+            name: arg.to_string(),
+            source: StoreIndexKeySource::ResourceMember(member),
+            value_meaning,
+        })
     }
 
     fn store_for_root(&self, root: &str) -> Option<StoreId> {
@@ -880,14 +1023,11 @@ impl CheckedFacts {
         expr: &Expression,
         effects: &mut DirectEffectFacts,
     ) {
-        let is_saved_path = is_saved_path_syntax(expr);
-        let saved_place = self.saved_place_effect(expr);
-        if let Some(effect) = saved_place.clone() {
-            push_unique(&mut effects.saved_reads, effect);
-            self.collect_saved_path_key_reads(aliases, expr, effects);
-            return;
-        }
-        if is_saved_path {
+        let scope = NameScope::default();
+        if let Some(path) = saved_path_parts(expr, &scope) {
+            if let Some(effect) = self.saved_place_effect(&path) {
+                push_unique(&mut effects.saved_reads, effect);
+            }
             self.collect_saved_path_key_reads(aliases, expr, effects);
             return;
         }
@@ -896,12 +1036,10 @@ impl CheckedFacts {
         }
         match expr {
             Expression::Call { callee, args, .. } => {
-                if is_append_call(callee) {
-                    if let Some(target) = args.first() {
-                        self.collect_saved_write(&target.value, effects);
-                        self.collect_saved_path_key_reads(aliases, &target.value, effects);
-                    }
-                    for arg in args.iter().skip(1) {
+                if let Some((target, rest)) = append_call_args(callee, args) {
+                    self.collect_saved_write(&target.value, effects);
+                    self.collect_saved_path_key_reads(aliases, &target.value, effects);
+                    for arg in rest {
                         self.collect_expr_reads(aliases, &arg.value, effects);
                     }
                     return;
@@ -957,16 +1095,21 @@ impl CheckedFacts {
     }
 
     fn collect_saved_write(&self, expr: &Expression, effects: &mut DirectEffectFacts) {
-        if let Some(effect) = self.saved_place_effect(expr) {
+        let scope = NameScope::default();
+        if let Some(path) = saved_path_parts(expr, &scope)
+            && let Some(effect) = self.saved_place_effect(&path)
+        {
             push_unique(&mut effects.saved_writes, effect);
         }
     }
 
-    fn saved_place_effect(&self, expr: &Expression) -> Option<SavedPlaceEffect> {
-        let (root, members) = saved_path_parts(expr)?;
-        let store = self.store_for_root(&root)?;
+    fn saved_place_effect(
+        &self,
+        path: &crate::presence::SavedPathParts,
+    ) -> Option<SavedPlaceEffect> {
+        let store = self.store_for_root(&path.root)?;
         let resource = self.store(store).resource;
-        let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
+        let member_names: Vec<&str> = path.members.iter().map(String::as_str).collect();
         Some(SavedPlaceEffect {
             resource,
             members: self.member_path_ids(resource, &member_names)?,
@@ -1006,8 +1149,22 @@ pub struct StoreIndexFact {
     pub id: StoreIndexId,
     pub store: StoreId,
     pub name: String,
+    pub keys: Vec<StoreIndexKeyFact>,
     pub catalog_id: String,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreIndexKeyFact {
+    pub name: String,
+    pub source: StoreIndexKeySource,
+    pub value_meaning: StoredValueMeaning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreIndexKeySource {
+    IdentityKey,
+    ResourceMember(ResourceMemberId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1017,6 +1174,7 @@ pub struct ResourceMemberFact {
     pub parent: Option<ResourceMemberId>,
     pub name: String,
     pub kind: ResourceMemberKind,
+    pub value_meaning: Option<StoredValueMeaning>,
     pub catalog_id: String,
     pub span: SourceSpan,
 }
@@ -1086,6 +1244,16 @@ pub enum CheckedType {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredValueMeaning {
+    Scalar(ScalarType),
+    Identity(StoreId),
+    Enum {
+        enum_id: EnumId,
+        members: Vec<EnumMemberId>,
+    },
+}
+
 /// Effects directly visible in a function body. Calls to user functions are not
 /// expanded here; transitive summaries belong to the checked-executable lane.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1145,38 +1313,6 @@ fn flatten_enum_member_spans(members: &[marrow_syntax::EnumMember], spans: &mut 
     }
 }
 
-fn saved_path_parts(expr: &Expression) -> Option<(String, Vec<String>)> {
-    match expr {
-        Expression::SavedRoot { name, .. } => Some((name.clone(), Vec::new())),
-        Expression::Call { callee, .. } => saved_path_parts(callee),
-        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
-            let (root, mut members) = saved_path_parts(base)?;
-            members.push(name.clone());
-            Some((root, members))
-        }
-        Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::Unary { .. }
-        | Expression::Binary { .. }
-        | Expression::Interpolation { .. } => None,
-    }
-}
-
-fn is_saved_path_syntax(expr: &Expression) -> bool {
-    match expr {
-        Expression::SavedRoot { .. } => true,
-        Expression::Call { callee, .. } => is_saved_path_syntax(callee),
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            is_saved_path_syntax(base)
-        }
-        Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::Unary { .. }
-        | Expression::Binary { .. }
-        | Expression::Interpolation { .. } => false,
-    }
-}
-
 fn split_type_path(path: &str) -> Vec<String> {
     path.split("::").map(str::to_string).collect()
 }
@@ -1200,13 +1336,6 @@ fn host_effect(expr: &Expression, aliases: &HashMap<String, Vec<String>>) -> Opt
         },
         _ => None,
     }
-}
-
-fn is_append_call(callee: &Expression) -> bool {
-    matches!(
-        callee,
-        Expression::Name { segments, .. } if segments.as_slice() == ["append"]
-    )
 }
 
 fn push_unique<T>(items: &mut Vec<T>, item: T)

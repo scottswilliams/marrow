@@ -969,8 +969,6 @@ fn rejects_a_sequence_index_argument() {
 
 #[test]
 fn an_enum_field_index_argument_checks_clean() {
-    // An enum field stores its ordinal as an orderable `int`, so an index over it
-    // keys on that ordinal — the staged enum-field-index behavior, unchanged.
     let report = check_module_report(
         "enum-index-ok",
         "module m\n\
@@ -5389,7 +5387,7 @@ fn the_checked_program_carries_enum_schemas() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let status = &program.modules[0].enums[0];
     assert_eq!(status.name, "Status");
-    assert_eq!(status.ordinal("banned"), Some(2));
+    assert_eq!(status.members[2].name, "banned");
 }
 
 #[test]

@@ -398,13 +398,9 @@ fn marrow(args: &[&str]) -> std::process::Output {
 #[test]
 fn a_same_named_enum_in_another_module_does_not_alias() {
     // Two modules each declare an enum `Status`, with members in opposite order:
-    // discovery is path-sorted so `a::Status` ({active, archived}, active=0) is
-    // seen before `b::Status` ({archived, active}, active=1). Module `b` stores
-    // its own `Status::active` to a saved `state: Status` field. Enum identity is
-    // module-qualified, so `Status::active` in `b` is `b`'s ordinal 1, and the
-    // raw stored byte is `1`. Resolving the bare name `Status` project-wide would
-    // first-match `a::Status`, making `Status::active` ordinal 0 — the value `a`
-    // and `b` would alias to.
+    // module `b` stores its own `Status::active` to a saved `state: Status`
+    // field. Enum identity is module-qualified, so reading the field back through
+    // `b` must match `b::Status::active`, not the same-named enum in `a`.
     let root = temp_project("run-enum-same-name", |root| {
         write(
             root,
@@ -424,37 +420,30 @@ fn a_same_named_enum_in_another_module_does_not_alias() {
              resource Order at ^orders(id: int)\n    required state: Status\n\n\
              pub fn seed()\n    \
              var o: Order\n    o.state = Status::active\n    \
-             transaction\n        ^orders(1) = o\n",
+             transaction\n        ^orders(1) = o\n\n\
+             pub fn show()\n    \
+             match ^orders(1).state\n        active\n            print(\"active\")\n        archived\n            print(\"archived\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();
     let run = run_run(&[&dir]);
     assert_eq!(run.status.code(), Some(0), "seed: {run:?}");
 
-    // The raw stored byte is the ordinal of `b`'s `Status::active`, which is 1.
-    // Aliasing to `a::Status` would store 0.
-    let got = marrow(&["data", "get", &dir, "^orders(1).state"]);
+    let got = run_run(&["--entry", "b::show", &dir]);
     fs::remove_dir_all(&root).ok();
-    assert_eq!(got.status.code(), Some(0), "get: {got:?}");
+    assert_eq!(got.status.code(), Some(0), "show: {got:?}");
     let stdout = String::from_utf8(got.stdout).expect("stdout utf8");
-    assert!(
-        stdout.contains('1'),
-        "expected stored ordinal 1, got: {stdout}"
-    );
-    assert!(
-        !stdout.contains('0'),
-        "stored ordinal aliased to a::Status: {stdout}"
-    );
+    assert_eq!(stdout, "active\n");
 }
 
 #[test]
 fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
     // A `match` whose scrutinee is a saved enum-field read `^orders(1).state` must
     // type as `Status` so the checker records the scrutinee's enum on the match and
-    // the runtime dispatches by `Status`'s ordinals. Before the field read was
+    // the runtime dispatches through `Status`'s traversal table. Before the field read was
     // typed it was `Unknown`: the checker recorded no enum, and the match faulted
-    // at runtime instead of dispatching. Seeding `Status::archived` (ordinal 1)
-    // then matching must take the `archived` arm and print its marker.
+    // at runtime instead of dispatching. Seeding `Status::archived` then matching
+    // must take the `archived` arm and print its marker.
     let root = temp_project("run-enum-field-match", |root| {
         write(
             root,
@@ -562,7 +551,7 @@ fn a_nested_module_qualified_enum_program_checks_and_runs() {
     // `take(s: a::b::Status)` and is called with `a::b::Status::active` — a
     // four-segment qualified literal. The checker must resolve the parameter and
     // argument to the same `a::b::Status`, and the runtime must evaluate the
-    // four-segment literal to its ordinal (active = 0) so `take` returns 1. A
+    // four-segment literal as that enum's `active` value so `take` returns 1. A
     // first-separator split would leave the parameter `Unknown` (silent pass) and
     // the literal would fault as an unsupported qualified name at runtime.
     let root = temp_project("run-enum-nested-module", |root| {
@@ -650,9 +639,9 @@ fn an_aliased_annotation_rejects_a_foreign_enum_argument() {
 fn an_aliased_enum_literal_checks_and_runs() {
     // `var v: c::Status = c::Status::active` under `use a::b::c`. Both the
     // annotation and the literal must expand `c` to `a::b::c`, so the program
-    // checks clean and the match dispatches `active` (ordinal 0) to return 1.
-    // Before expansion the annotation was `Unknown` and the literal faulted at
-    // runtime as an unsupported qualified name.
+    // checks clean and the match dispatches `active` to return 1. Before
+    // expansion the annotation was `Unknown` and the literal faulted at runtime
+    // as an unsupported qualified name.
     let root = temp_project("run-alias-literal", |root| {
         write(
             root,

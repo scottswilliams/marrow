@@ -867,10 +867,9 @@ resource Book at ^books(id: int)
 
 #[test]
 fn an_enum_field_index_argument_is_clean() {
-    // An enum field stores its member ordinal as an orderable `int`, so an index
-    // keys on that ordinal. This is the staged enum-field-index behavior: the index
-    // position projects the stored scalar, which for an enum is `int`, not the
-    // free-floating path-key case that identity and layer keys are.
+    // Schema admits an enum-typed top-level field as an index argument. Project
+    // checking attaches the catalog-member key meaning once the enum identity is
+    // known.
     let source = "\
 resource Order at ^orders(id: int)
     state: Status
@@ -879,7 +878,7 @@ resource Order at ^orders(id: int)
     let errors = compile_store_errors(source);
     assert!(
         errors.is_empty(),
-        "an enum-field index keys on its ordinal: {errors:?}"
+        "an enum-field index argument should be accepted: {errors:?}"
     );
 }
 
@@ -1241,8 +1240,8 @@ resource Order at ^orders(id: int)
         check_saved_named_member_fields(&decl.members, &["Status".to_string()]).is_empty(),
         "an enum-typed saved field is allowed"
     );
-    // With no such enum declared, the bare-named field has no stored scalar form
-    // (it would otherwise silently decode as an int) and is rejected.
+    // With no such enum declared, the bare-named field has no checked enum value
+    // form and is rejected.
     let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
     assert!(errors[0].message.contains("state"));

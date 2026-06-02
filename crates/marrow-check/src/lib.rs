@@ -34,7 +34,8 @@ pub use facts::{
     CheckedFacts, CheckedType, DirectEffectFacts, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
     FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
-    StoreFact, StoreId, StoreIndexFact, StoreIndexId,
+    StoreFact, StoreId, StoreIndexFact, StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource,
+    StoredValueMeaning,
 };
 pub use facts::{PresenceProofFact, PresenceProofPlace, PresenceProofSource};
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};

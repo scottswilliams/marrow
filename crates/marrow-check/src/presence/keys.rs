@@ -4,11 +4,11 @@ use super::scope::NameScope;
 use super::util::extend_unique;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SavedPathParts {
-    pub(super) root: String,
-    pub(super) members: Vec<String>,
-    pub(super) keys: Vec<String>,
-    pub(super) key_bindings: Vec<u32>,
+pub(crate) struct SavedPathParts {
+    pub(crate) root: String,
+    pub(crate) members: Vec<String>,
+    pub(crate) keys: Vec<String>,
+    pub(crate) key_bindings: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub(super) struct ExprKey {
     pub(super) bindings: Vec<u32>,
 }
 
-pub(super) fn saved_path_parts(expr: &Expression, scope: &NameScope) -> Option<SavedPathParts> {
+pub(crate) fn saved_path_parts(expr: &Expression, scope: &NameScope) -> Option<SavedPathParts> {
     match expr {
         Expression::SavedRoot { name, .. } => Some(SavedPathParts {
             root: name.clone(),
