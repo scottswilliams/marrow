@@ -1,8 +1,8 @@
 # Lane 7: Tree-Cell Store And Engine Profile
 
 > For agentic workers: use the lane loop in `/Users/scottwilliams/Dev/AGENTS.md`.
-> Store conformance planning can run early; production key-shape code and
-> semantic store fixtures wait for Lane 6 catalog identity.
+> Lane 7 is integrated on main. Use this file as the store contract record; new
+> runtime/tooling work starts from Lane 8 or Lane 10.
 
 Goal: replace source-name physical storage with tree-cell storage keyed by
 stable catalog IDs, typed key values, sequence state, index cells, commit
@@ -12,17 +12,14 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-07-tree-cell-store`
 
-Status: read-only planning and engine-substrate checks may start now; production
-key work waits for Lane 6.
+Status: integrated on main; Lane 8 may consume the tree-cell address and value
+codec APIs.
 
 ## Parallel Safety
 
-Read-only planning and engine-substrate checks may run beside Lane 5 and Lane 6.
-Allowed early checks cover ordered bytes, snapshots, one-writer behavior,
-rollback, typed engine errors, and read-only opens. Production key encoding,
-tree-cell addresses, index cells, typed-reference encoding, archive format, and
-redb layout changes wait until store IDs, catalog epoch, and proof-ledger
-contracts are available on main.
+Follow-up store fixes stay inside this lane's store/backend ownership. Runtime
+write planning, tooling protocols, backup formats, and evolution activation use
+the tree-cell APIs from their own lanes.
 
 Own these files during the code pass:
 
@@ -93,21 +90,23 @@ Delete or isolate:
 - in-memory list materialization where tree, sequence, or keyed-layer state is
   the actual contract.
 
-Production bridge: none for store semantics. If old data needs repair input
-later, the owning evolution/restore lane may add a read-only repair adapter
-outside production open/write paths. This lane must not preserve source-name key
-readers or writers as a second storage model.
+Production bridge: none inside tree-cell store semantics. The saved-path
+backend, path, and raw archive APIs are tracked as Lane 8 and Lane 10 cleanup
+until runtime and tools stop consuming them; they must not become a second
+tree-cell storage model. If old data needs repair input later, the owning
+evolution/restore lane may add a read-only repair adapter outside production
+open/write paths.
 
 ## TDD Start
 
-Start with engine-substrate checks that do not construct Marrow identity:
+Engine-substrate checks cover:
 
 - snapshot isolation and one-writer behavior;
 - rollback;
 - typed engine errors;
 - read-only opens cannot acquire writer capability.
 
-After Lane 6 is integrated, add semantic tree-cell checks:
+Semantic tree-cell checks cover:
 
 - commit metadata with catalog epoch and engine profile digest;
 - node-cell existence and leaf absence;
@@ -149,25 +148,3 @@ rg -n 'path|root|field|index|enum|name' \
 
 Every production match must be typed metadata, debug rendering, or a rejection
 test; source spelling cannot be the production key identity.
-
-## Starter Prompt
-
-Continue Marrow v0.1 Lane 7 in `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store`.
-Use branch `lane-07-tree-cell-store`, use
-`CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-07-tree-cell-store`
-on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-If Lane 5 and Lane 6 are not both integrated, limit work to read-only design and
-engine-substrate checks only: ordered bytes, snapshots, one writer, rollback,
-typed engine errors, and read-only opens. Do not write semantic store fixtures,
-stable-ID physical-key tests, typed-reference tests, index-cell tests, archive
-format changes, or tree-cell address code until Lane 6 catalog identity is on
-`main`. Once dependencies land, implement
-stable-ID tree-cell storage, commit metadata, sequence/index cells, and engine
-profile behavior. No legacy survival for green tests: migrate/delete tests,
-fixtures, and callers that depend on source-name physical keys, raw archive
-production behavior, or flat-list storage. Before review, satisfy the Area
-Cleanup Gate: keep redb limited to ordered bytes and transactions; split engine
-substrate, tree-cell address encoding, commit metadata, index cells,
-archive/backup inputs, and conformance helpers; delete source-name key, raw
-archive, schema-in-backend, and flat-list helpers. Leave the worktree dirty for
-soundness and idiom/spec review.

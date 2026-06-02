@@ -114,28 +114,21 @@ and `crates/marrow-syntax/src/format.rs:296` keep `ResourceMember::Index` and
 resource-owned schema indexes alive. Delete production resource-owned index
 handling except any accepted concise-form desugaring.
 
-**Lane 7 And Lane 8 - Enum Storage And Runtime.** Consume catalog-backed enum
-member identity for storage, indexes, and runtime values. Evidence:
+**Lane 8 - Enum Runtime Values.** Consume catalog-backed enum member identity for
+runtime values and index maintenance. Evidence:
 `crates/marrow-schema/src/lib.rs:83`, `crates/marrow-schema/src/lib.rs:334`,
 `crates/marrow-run/src/expr.rs:43`, `crates/marrow-run/src/write.rs:1576`, and
 `crates/marrow-run/tests/eval.rs:9703` still encode enum members by declaration
-or pre-order ordinal. Declaration/pre-order ordinals may survive only as schema
-traversal indexes, not durable stored meaning.
+or pre-order ordinal. Lane 7 provides the tree-cell enum value codec; runtime
+must consume catalog-backed member IDs instead of raw ordinals. Declaration or
+pre-order ordinals may survive only as schema traversal indexes, not durable
+stored meaning.
 
 **Lane 8 - Checked Runtime IR.** Ensure diagnostic/recovery `Unknown` cannot
 enter checked runtime IR. Evidence: `crates/marrow-check/src/program.rs:129`
 still exposes source-body functions with best-effort types, and runtime still
 consumes that bridge. Keep explicit user `unknown` dynamic-boundary types
 separate from recovery sentinels.
-
-**Lane 7 - Tree-Cell Store.** Replace source-name physical path identity.
-Evidence: `crates/marrow-store/src/path.rs:64`,
-`crates/marrow-store/src/path.rs:82`, `crates/marrow-store/src/path.rs:121`,
-and `crates/marrow-store/src/path.rs:720` keep source root, field, layer, and
-index names as physical key text and even round-trip child layers or indexes as
-fields. Physical keys must derive from catalog IDs, typed key values, and
-reserved placement prefixes; raw path parsing/rendering may remain only for a
-reviewed debug/admin surface.
 
 **Lane 8 - Checked Runtime.** Delete production AST execution and raw
 `FunctionDecl` execution. Evidence: `crates/marrow-run/src/lib.rs:46`,
@@ -154,10 +147,17 @@ lookup. Checked entry and call target IDs must be authoritative.
 production semantics. Evidence: `crates/marrow-run/src/schema_query.rs:206`,
 `crates/marrow-run/src/path.rs:221`, `crates/marrow-run/src/read.rs:14`,
 `crates/marrow-run/src/collection.rs:65`,
-`crates/marrow-run/src/stdlib.rs:183`, and
-`crates/marrow-run/src/schema_query.rs:365` rederive durable meaning from
-syntax or decoded raw paths. Runtime should consume checked durable-place,
-traversal, index, and catalog/store facts.
+`crates/marrow-run/src/stdlib.rs:183`,
+`crates/marrow-run/src/schema_query.rs:365`,
+`crates/marrow-run/src/write_dispatch.rs:205`,
+`crates/marrow-store/src/lib.rs:13`, `crates/marrow-store/src/path.rs:20`,
+`crates/marrow-store/src/path.rs:47`, `crates/marrow-store/src/backend.rs:114`,
+and `crates/marrow-store/src/conformance.rs:1` rederive or expose durable
+meaning through syntax, decoded raw paths, or source-spelled saved-path bytes.
+Runtime should consume checked durable-place, traversal, index, catalog/store,
+and tree-cell facts. After runtime and tooling stop consuming saved paths, the
+store backend/path surface must be debug/admin-only or deleted rather than a
+production storage law.
 
 **Lane 8 - Checked Runtime.** Stop building write addresses from source
 spellings. Evidence: `crates/marrow-run/src/path.rs:195`,
@@ -179,8 +179,9 @@ checked IR exclude `merge`, `lock`, and saved `inout`.
 
 **Lane 10 - Tooling And Protocols.** Replace raw backup, data, explain/CLI,
 LSP, and serve protocol/tool surfaces. Evidence:
-`crates/marrow-store/src/archive.rs:31`,
-`crates/marrow-store/src/archive.rs:49`, `crates/marrow/src/cmd_data.rs:242`,
+`crates/marrow-store/src/archive.rs:29`,
+`crates/marrow-store/src/archive.rs:84`,
+`crates/marrow-store/src/archive.rs:122`, `crates/marrow/src/cmd_data.rs:242`,
 `crates/marrow/src/cmd_data.rs:292`, `crates/marrow/src/cmd_data.rs:394`,
 `crates/marrow/src/cmd_data.rs:432`, `crates/marrow/src/cmd_explain.rs:89`,
 `crates/marrow/src/cmd_explain.rs:254`,
@@ -189,8 +190,9 @@ LSP, and serve protocol/tool surfaces. Evidence:
 `crates/marrow/src/serve/protocol.rs:200` expose raw bytes, raw path JSON,
 physical key bytes, or tool-local classifiers. Replace them with typed backup
 manifests, opaque cursors, bounded snapshot/paging APIs, and shared
-checked/catalog/store facts; restore must validate or rebuild derived data
-before commit.
+checked/catalog/store facts; raw archive replay must be debug/admin-only or
+deleted as a backup/restore path, and restore must validate or rebuild derived
+data before commit.
 
 Priority 2:
 

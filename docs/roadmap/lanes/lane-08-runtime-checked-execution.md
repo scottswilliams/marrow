@@ -11,16 +11,13 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-08-runtime-checked`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked`
 
-Status: inventory and design may start now; production code waits for Lane 5,
-Lane 6, and the Lane 7 tree-cell address API.
+Status: ready for production code; Lane 5 store facts, Lane 6 catalog/presence
+facts, and Lane 7 tree-cell APIs are on main.
 
 ## Parallel Safety
 
-This lane may run read-only runtime inventory in parallel with earlier lanes.
-Do not edit production runtime code until store facts, durable places, the
-presence ledger, and the tree-cell address API are available. Do not split
-runtime files across competing orchestrators; `marrow-run` is one vertical
-replacement.
+Production runtime code may now start in this lane. Do not split runtime files
+across competing orchestrators; `marrow-run` is one vertical replacement.
 
 Own these files during the code pass:
 
@@ -155,16 +152,15 @@ Continue Marrow v0.1 Lane 8 in `/Users/scottwilliams/Dev/marrow-lane-08-runtime-
 Use branch `lane-08-runtime-checked`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Do read-only inventory/design now if needed, but do not start production runtime
-edits until Lane 5 store facts, Lane 6 catalog/presence/enum facts, and the Lane
-7 tree-cell address API are on `main`. Replace AST-body execution with checked
-facts or checked IR, implement explicit write plans and transaction behavior,
-delete runtime string/path classifiers, and prove ADR 0209 `~` roots have no
-production runtime behavior beyond a named future checked-effect slot. No
-legacy survival for green tests: migrate runtime tests, fixtures, and callers to
-checked facts or checked IR instead of keeping the syntax interpreter, raw
-`FunctionDecl` entrypoints, fallback dispatch, `lock`, `merge`, or saved
-`inout`. Before review, satisfy the Area Cleanup Gate: split checked execution,
-durable-place reads, write planning, transactions, index maintenance, and
-host-effect handling; delete syntax-body execution and runtime path/schema
-classifiers. Leave the worktree dirty for soundness and idiom/spec review.
+Start production runtime edits now that the store facts, presence ledger, and
+tree-cell APIs are on `main`. Replace AST-body execution with checked facts or
+checked IR, implement explicit write plans and transaction behavior, delete
+runtime string/path classifiers, and prove ADR 0209 `~` roots have no production
+runtime behavior beyond a named future checked-effect slot. No legacy survival
+for green tests: migrate runtime tests, fixtures, and callers to checked facts or
+checked IR instead of keeping the syntax interpreter, raw `FunctionDecl`
+entrypoints, fallback dispatch, `lock`, `merge`, or saved `inout`. Before review,
+satisfy the Area Cleanup Gate: split checked execution, durable-place reads,
+write planning, transactions, index maintenance, and host-effect handling;
+delete syntax-body execution and runtime path/schema classifiers. Leave the
+worktree dirty for soundness and idiom/spec review.
