@@ -31,6 +31,41 @@ pub(crate) trait Entries<'a>:
 
 impl<'a, I> Entries<'a> for I where I: Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {}
 
+pub(crate) enum ChildStep {
+    Done,
+    Skip,
+    Child(ChildSegment),
+}
+
+pub(crate) struct ChildCollapse<'a> {
+    path: &'a [u8],
+    last: Option<Vec<u8>>,
+}
+
+impl<'a> ChildCollapse<'a> {
+    pub(crate) fn new(path: &'a [u8]) -> Self {
+        Self { path, last: None }
+    }
+
+    pub(crate) fn step(&mut self, key: &[u8]) -> Result<ChildStep, StoreError> {
+        if !key.starts_with(self.path) {
+            return Ok(ChildStep::Done);
+        }
+        if key.len() <= self.path.len() {
+            return Ok(ChildStep::Skip);
+        }
+        let rest = &key[self.path.len()..];
+        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
+        let segment = &rest[..len];
+        if self.last.as_deref() == Some(segment) {
+            return Ok(ChildStep::Skip);
+        }
+        let child = decode_child_segment(segment).ok_or_else(|| corrupt(key))?;
+        self.last = Some(segment.to_vec());
+        Ok(ChildStep::Child(child))
+    }
+}
+
 /// Build a [`StoreError::CorruptPath`] for a stored key that failed to decode.
 fn corrupt(key: &[u8]) -> StoreError {
     StoreError::CorruptPath { path: key.to_vec() }
@@ -51,23 +86,14 @@ pub(crate) fn child_keys<'a>(
     path: &[u8],
 ) -> Result<Vec<ChildSegment>, StoreError> {
     let mut children = Vec::new();
-    let mut last: Option<Vec<u8>> = None;
+    let mut collapse = ChildCollapse::new(path);
     for entry in entries {
         let (key, _) = entry?;
-        if !key.starts_with(path) {
-            break; // past the subtree
+        match collapse.step(key)? {
+            ChildStep::Done => break,
+            ChildStep::Skip => {}
+            ChildStep::Child(child) => children.push(child),
         }
-        if key.len() <= path.len() {
-            continue; // the path's own entry, not a child
-        }
-        let rest = &key[path.len()..];
-        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
-        let segment = &rest[..len];
-        if last.as_deref() == Some(segment) {
-            continue; // same immediate child as the previous descendant
-        }
-        last = Some(segment.to_vec());
-        children.push(decode_child_segment(segment).ok_or_else(|| corrupt(key))?);
     }
     Ok(children)
 }
@@ -77,26 +103,14 @@ pub(crate) fn child_keys<'a>(
 /// collapse as [`child_keys`], but it tallies instead of building a child list.
 pub(crate) fn child_count<'a>(entries: impl Entries<'a>, path: &[u8]) -> Result<usize, StoreError> {
     let mut count = 0;
-    let mut last: Option<Vec<u8>> = None;
+    let mut collapse = ChildCollapse::new(path);
     for entry in entries {
         let (key, _) = entry?;
-        if !key.starts_with(path) {
-            break; // past the subtree
+        match collapse.step(key)? {
+            ChildStep::Done => break,
+            ChildStep::Skip => {}
+            ChildStep::Child(_) => count += 1,
         }
-        if key.len() <= path.len() {
-            continue; // the path's own entry, not a child
-        }
-        let rest = &key[path.len()..];
-        let len = segment_len(rest).ok_or_else(|| corrupt(key))?;
-        let segment = &rest[..len];
-        if last.as_deref() == Some(segment) {
-            continue; // same immediate child as the previous descendant
-        }
-        if decode_child_segment(segment).is_none() {
-            return Err(corrupt(key));
-        }
-        last = Some(segment.to_vec());
-        count += 1;
     }
     Ok(count)
 }

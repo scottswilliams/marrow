@@ -340,6 +340,63 @@ where
     Ok(roots)
 }
 
+fn streamed_child_keys<T>(table: &T, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut children = Vec::new();
+    let mut collapse = traversal::ChildCollapse::new(path);
+    for entry in table.range::<&[u8]>(path..).map_err(io("child_keys"))? {
+        let (key, _) = entry.map_err(io("child_keys"))?;
+        match collapse.step(key.value())? {
+            traversal::ChildStep::Done => break,
+            traversal::ChildStep::Skip => {}
+            traversal::ChildStep::Child(child) => children.push(child),
+        }
+    }
+    Ok(children)
+}
+
+fn streamed_child_keys_rev<T>(table: &T, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let (lo, hi) = subtree_band(path);
+    let range = match &hi {
+        Some(hi) => table.range::<&[u8]>(lo.as_slice()..hi.as_slice()),
+        None => table.range::<&[u8]>(lo.as_slice()..),
+    }
+    .map_err(io("child_keys_rev"))?;
+    let mut children = Vec::new();
+    let mut collapse = traversal::ChildCollapse::new(path);
+    for entry in range.rev() {
+        let (key, _) = entry.map_err(io("child_keys_rev"))?;
+        match collapse.step(key.value())? {
+            traversal::ChildStep::Done => break,
+            traversal::ChildStep::Skip => {}
+            traversal::ChildStep::Child(child) => children.push(child),
+        }
+    }
+    Ok(children)
+}
+
+fn streamed_child_count<T>(table: &T, path: &[u8]) -> Result<usize, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut count = 0;
+    let mut collapse = traversal::ChildCollapse::new(path);
+    for entry in table.range::<&[u8]>(path..).map_err(io("child_count"))? {
+        let (key, _) = entry.map_err(io("child_count"))?;
+        match collapse.step(key.value())? {
+            traversal::ChildStep::Done => break,
+            traversal::ChildStep::Skip => {}
+            traversal::ChildStep::Child(_) => count += 1,
+        }
+    }
+    Ok(count)
+}
+
 /// Run a read `$body` over the current view's table: the open transaction's
 /// table (so a transaction reads its own writes), or a fresh read transaction
 /// otherwise. A macro, not a `&dyn` helper, because redb's `ReadableTable` is not
@@ -596,22 +653,19 @@ impl Backend for RedbStore {
 
     fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         read_view!(self, "child_keys", |table| {
-            let rows = collect_rows(&table, path, |_| false, "child_keys")?;
-            traversal::child_keys(entries(&rows), path)
+            streamed_child_keys(&table, path)
         })
     }
 
     fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
         read_view!(self, "child_keys_rev", |table| {
-            let rows = collect_rows_rev(&table, path, |_| false, "child_keys_rev")?;
-            traversal::child_keys(entries(&rows), path)
+            streamed_child_keys_rev(&table, path)
         })
     }
 
     fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
         read_view!(self, "child_count", |table| {
-            let rows = collect_rows(&table, path, |_| false, "child_count")?;
-            traversal::child_count(entries(&rows), path)
+            streamed_child_count(&table, path)
         })
     }
 
