@@ -77,6 +77,187 @@ Delete or prove absent:
 
 Production bridge: none after this lane.
 
+## Code Smell Fix List
+
+These are live blockers from read-only scans. Priority 1 blocks the named owner
+before integration. Priority 2 blocks any lane that touches the area; Lane 11
+owns only final absence scans and file-disjoint cleanup in already-integrated
+areas. Delete each bullet once its owner proves absence or moves a real
+out-of-scope item to the forward-only backlog; do not retain completed scan
+history.
+
+Priority 1:
+
+**Lane 2 - Prototype Rejection.** Stop `merge` and `lock` from remaining normal
+parser/formatter output. Evidence: `crates/marrow-syntax/src/ast.rs:384`,
+`crates/marrow-syntax/src/ast.rs:437`,
+`crates/marrow-syntax/src/format.rs:486`,
+`crates/marrow-syntax/src/format.rs:568`, and
+`crates/marrow-check/src/prototype.rs:67`. Make them rejection-only or remove
+their v0.1 round-trip surface after checker rejection is established.
+
+**Lane 5 - Resource/Store Surface.** Remove resource-owned identity as a
+production model. Evidence: `crates/marrow-schema/src/lib.rs:35`,
+`crates/marrow-schema/src/lib.rs:63`,
+`crates/marrow-check/src/program.rs:158`,
+`crates/marrow-check/src/checks.rs:2502`, and `fixtures/v01/library.mw:8`
+still make `Book::Id` or `Author::Id` central. Replace this with store-scoped
+`Id(^store)` and keep any resource-named alias only if it is explicitly
+store-declared and tested as public compatibility.
+
+**Lane 5 - Resource/Store Surface.** Move index identity out of resource
+bodies. Evidence: `crates/marrow-syntax/src/parse_decl.rs:1040`,
+`crates/marrow-schema/src/lib.rs:129`, `crates/marrow-schema/src/lib.rs:619`,
+and `crates/marrow-syntax/src/format.rs:296` keep `ResourceMember::Index` and
+resource-owned schema indexes alive. Delete production resource-owned index
+handling except any accepted concise-form desugaring.
+
+**Lane 6 - Catalog And Presence.** Replace ad hoc read-presence checks.
+Evidence: `crates/marrow-check/src/infer.rs:174`,
+`crates/marrow-check/src/checks.rs:2311`, and
+`crates/marrow-check/src/checks.rs:2367` classify `??` proof sources from
+syntax. `??` must consume the per-read presence ledger, not a local
+`Expression::Call` predicate.
+
+**Lane 6 - Catalog And Presence.** Replace source-order enum ordinals as stored
+meaning. Evidence: `docs/language/enums.md:39`,
+`crates/marrow-schema/src/lib.rs:302`, `crates/marrow-run/src/expr.rs:23`,
+`crates/marrow-run/src/write.rs:1564`, and
+`crates/marrow-run/tests/eval.rs:9609` still encode enum members by
+declaration or pre-order ordinal. Catalog-backed enum member identity must be
+the checked fact; Lane 7 and Lane 8 then consume that identity for storage,
+indexes, and runtime values.
+
+**Lane 6 And Lane 8 - Checked Facts And Runtime IR.** Ensure
+diagnostic/recovery `Unknown` cannot enter checked executable facts or checked
+runtime IR. Evidence: `crates/marrow-check/src/infer.rs:99`,
+`crates/marrow-check/src/program.rs:174`, and `docs/language/types.md:104`.
+Keep explicit user `unknown` dynamic-boundary types separate from recovery
+sentinels. Lane 11 owns only the final absence scan after these semantic lanes
+land.
+
+**Lane 7 - Tree-Cell Store.** Replace source-name physical path identity.
+Evidence: `crates/marrow-store/src/path.rs:64`,
+`crates/marrow-store/src/path.rs:82`, `crates/marrow-store/src/path.rs:121`,
+and `crates/marrow-store/src/path.rs:720` keep source root, field, layer, and
+index names as physical key text and even round-trip child layers or indexes as
+fields. Physical keys must derive from catalog IDs, typed key values, and
+reserved placement prefixes; raw path parsing/rendering may remain only for a
+reviewed debug/admin surface.
+
+**Lane 7 - Tree-Cell Store.** Avoid whole-subtree buffering in the persistent
+backend. Evidence: `crates/marrow-store/src/redb.rs:114`,
+`crates/marrow-store/src/redb.rs:306`, `crates/marrow-store/src/redb.rs:565`,
+and `crates/marrow-store/src/redb.rs:661` collect full row/key sets for range,
+delete, child, or root operations. Split redb traversal into bounded streaming
+helpers and delete in bounded batches.
+
+**Lane 8 - Checked Runtime.** Delete production AST execution and raw
+`FunctionDecl` execution. Evidence: `crates/marrow-run/src/lib.rs:46`,
+`crates/marrow-run/src/call.rs:9`, `crates/marrow-run/src/call.rs:148`,
+`crates/marrow-run/src/exec.rs:29`, `crates/marrow-run/tests/eval.rs:26`, and
+`crates/marrow-run/tests/eval.rs:228`. Runtime entry, invocation, and tests
+must move to checked executable facts or checked IR.
+
+**Lane 8 - Checked Runtime.** Stop resolving function and call targets by
+strings at runtime. Evidence: `crates/marrow-run/src/call.rs:120`,
+`crates/marrow-run/src/call.rs:357`, `crates/marrow-run/src/call.rs:929`, and
+`crates/marrow-run/src/call.rs:1034` split `::`, expand aliases, and retry
+lookup. Checked entry and call target IDs must be authoritative.
+
+**Lane 8 - Checked Runtime.** Remove runtime saved-path classifiers as
+production semantics. Evidence: `crates/marrow-run/src/schema_query.rs:206`,
+`crates/marrow-run/src/path.rs:221`, `crates/marrow-run/src/read.rs:14`,
+`crates/marrow-run/src/collection.rs:65`,
+`crates/marrow-run/src/stdlib.rs:183`, and
+`crates/marrow-run/src/schema_query.rs:365` rederive durable meaning from
+syntax or decoded raw paths. Runtime should consume checked durable-place,
+traversal, index, and catalog/store facts.
+
+**Lane 8 - Checked Runtime.** Stop building write addresses from source
+spellings. Evidence: `crates/marrow-run/src/path.rs:195`,
+`crates/marrow-run/src/write.rs:1210`, `crates/marrow-run/src/write.rs:1217`,
+and `crates/marrow-run/src/write.rs:1477`. Writes must be driven by checked
+durable-place and store-address facts, with source-spelling helpers limited to
+debug rendering if they survive.
+
+**Lane 8 - Checked Runtime.** Remove runtime compatibility fallbacks, raw
+maintenance backdoors, and branches for rejected prototype constructs. Evidence:
+`crates/marrow-run/src/call.rs:988`, `crates/marrow-run/src/call.rs:1012`,
+`crates/marrow-run/src/stdlib.rs:618`,
+`crates/marrow-run/src/write_dispatch.rs:114`,
+`crates/marrow-run/src/write_dispatch.rs:140`, `crates/marrow-run/src/read.rs:768`,
+`crates/marrow-run/src/exec.rs:132`, `crates/marrow-run/src/exec.rs:322`, and
+`crates/marrow-run/src/call.rs:432`. Dispatch only checked std descriptors;
+move any raw repair path to a typed admin/data-tool API or delete it, and let
+checked IR exclude `merge`, `lock`, and saved `inout`.
+
+**Lane 10 - Tooling And Protocols.** Replace raw backup, data, explain/CLI,
+LSP, and serve protocol/tool surfaces. Evidence:
+`crates/marrow-store/src/archive.rs:31`,
+`crates/marrow-store/src/archive.rs:49`, `crates/marrow/src/cmd_backup.rs:66`,
+`crates/marrow/src/cmd_backup.rs:119`, `crates/marrow/src/cmd_data.rs:242`,
+`crates/marrow/src/cmd_data.rs:292`, `crates/marrow/src/cmd_data.rs:394`,
+`crates/marrow/src/cmd_data.rs:432`, `crates/marrow/src/cmd_explain.rs:89`,
+`crates/marrow/src/cmd_explain.rs:254`,
+`crates/marrow/src/serve/protocol.rs:78`,
+`crates/marrow/src/serve/protocol.rs:121`, and
+`crates/marrow/src/serve/protocol.rs:200` expose raw bytes, raw path JSON,
+physical key bytes, or tool-local classifiers. Replace them with typed backup
+manifests, opaque cursors, bounded snapshot/paging APIs, and shared
+checked/catalog/store facts; restore must validate or rebuild derived data
+before commit.
+
+**Lane 10 - Tooling And Protocols.** Remove unbounded scans from tools.
+Evidence: `crates/marrow-store/src/archive.rs:32`,
+`crates/marrow/src/cmd_data.rs:219`, `crates/marrow/src/cmd_data.rs:259`, and
+`crates/marrow/src/cmd_data.rs:339` call `scan(&[], usize::MAX)`. Stream
+bounded pages through backup, stats, dump, and integrity.
+
+Priority 2:
+
+Any active lane touching checker traversal or scope mechanics must split
+duplicate walks and broad dispatchers before review. Lane 11 owns only the
+final absence scan and file-disjoint cleanup in already-integrated areas.
+Evidence: `crates/marrow-check/src/checks.rs:619`,
+`crates/marrow-check/src/checks.rs:2408`,
+`crates/marrow-check/src/enums.rs:291`,
+`crates/marrow-check/src/binding.rs:739`, and
+`crates/marrow-check/src/facts.rs:541`.
+
+Any lane touching checker or runtime module boundaries must remove crate-root
+glob plumbing and production `use super::*` in its changed area. Evidence:
+`crates/marrow-check/src/lib.rs:31`,
+`crates/marrow-check/src/checks.rs:8`, `crates/marrow-check/src/infer.rs:3`,
+`crates/marrow-check/src/enums.rs:4`, and
+`crates/marrow-run/src/call.rs:3`.
+
+Any lane touching call/check/enum dispatch must eliminate clippy allowances that
+hide weak structure. Evidence: `crates/marrow-run/src/call.rs:232`,
+`crates/marrow-check/src/checks.rs:2407`,
+`crates/marrow-check/src/checks.rs:2917`,
+`crates/marrow-check/src/enums.rs:96`, and
+`crates/marrow-check/src/enums.rs:492` suppress
+`clippy::too_many_arguments`.
+
+Any lane touching the catch-all test suites must move changed coverage into
+source-driven invariant fixtures and delete migrated assertions from the
+aggregator before review. Evidence: `crates/marrow-run/tests/eval.rs`,
+`crates/marrow-check/tests/project.rs`, `crates/marrow-syntax/tests/parse.rs`,
+`crates/marrow-check/tests/checked_program.rs`, and
+`crates/marrow-run/src/write_tests.rs` are thousand-line aggregators.
+
+Lane 5 must remove duplicated schema classifiers from tests when it touches the
+schema surface. Evidence: `crates/marrow-schema/tests/compile_resource.rs:53`
+and `crates/marrow-schema/tests/compile_resource.rs:58` reimplement the
+production plain-field predicate. Use production schema query helpers instead.
+
+Any lane touching these areas must delete comment sediment. Evidence:
+`crates/marrow-check/src/lib.rs:31`, `crates/marrow-run/src/lib.rs:20`,
+`crates/marrow-run/src/lib.rs:80`, and
+`crates/marrow-run/tests/eval.rs:7706` narrate migration or module plumbing.
+Retain only durable rationale that explains a non-obvious invariant.
+
 ## TDD And Scan Start
 
 Start with fresh scans, then turn each valid finding into the smallest focused
