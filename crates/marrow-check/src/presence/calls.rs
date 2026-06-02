@@ -24,7 +24,7 @@ pub(super) fn is_append_call(callee: &Expression) -> bool {
     matches!(callee, Expression::Name { segments, .. } if segments.as_slice() == ["append"])
 }
 
-pub(crate) fn append_call_args<'a>(
+pub(super) fn append_call_args<'a>(
     callee: &Expression,
     args: &'a [Argument],
 ) -> Option<(&'a Argument, &'a [Argument])> {

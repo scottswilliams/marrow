@@ -78,14 +78,11 @@ impl Type {
         }
     }
 
-    /// The physical scalar envelope used by the runtime for a flat saved leaf:
-    /// a plain scalar's own type, or `int` for a checked enum field. Durable enum
-    /// value meaning is catalog member identity; the checker exposes that through
-    /// checked facts after project-level enum resolution.
+    /// The scalar envelope for a plain saved leaf. Named types need project-level
+    /// resolution before the compiler can attach their durable value meaning.
     pub fn stored_scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
-            Self::Named(_) => Some(ScalarType::Int),
             _ => None,
         }
     }
@@ -1275,8 +1272,8 @@ fn index_arg_type_key_error(
     resolved: &Type,
     span: SourceSpan,
 ) -> Option<SchemaError> {
-    match resolved.stored_scalar() {
-        Some(ScalarType::Decimal) => Some(SchemaError {
+    match resolved {
+        Type::Scalar(ScalarType::Decimal) => Some(SchemaError {
             code: SCHEMA_UNORDERABLE_KEY,
             message: format!(
                 "index `{index}` argument `{arg}` is a `decimal`, which has no key \
@@ -1284,8 +1281,8 @@ fn index_arg_type_key_error(
             ),
             span,
         }),
-        Some(_) => None,
-        None => Some(SchemaError {
+        Type::Scalar(_) | Type::Named(_) => None,
+        Type::Sequence(_) | Type::Identity(_) | Type::Unknown => Some(SchemaError {
             code: SCHEMA_NONSCALAR_KEY,
             message: format!(
                 "index `{index}` argument `{arg}` must be an orderable scalar type, \

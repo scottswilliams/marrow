@@ -8,13 +8,14 @@ Goal: bind durable identity through a committed accepted catalog file and record
 one checked-program presence proof ledger that source checks, activation,
 runtime, evolution, and tools consume.
 
-Worktree: `/Users/scottwilliams/Dev/marrow-lane-06-catalog-presence`
+Worktree: `/Users/scottwilliams/Dev/marrow-lane-06-perfect`
 
-Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence`
+Target dir: `/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect`
 
-Status: landed once, but reopened for corrective foundation cleanup after
-read-only audit found old enum ordinal storage and duplicate presence
-classifiers still active.
+Status: checker/schema/presence corrective pass. Lane 6 owns catalog member
+identity in checked facts and the presence/effect ledger. Production runtime
+enum-value conversion and index maintenance remain Lane 8 until `marrow-run`
+consumes catalog-backed enum member values instead of raw scalar ordinals.
 
 ## Parallel Safety
 
@@ -136,13 +137,29 @@ Write failing production-pipeline checks first:
 Focused commands:
 
 ```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-catalog-presence/Cargo.toml \
-    -p marrow-check
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-perfect/Cargo.toml \
+    -p marrow-check --test catalog_presence
 
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-catalog-presence/Cargo.toml \
-    -p marrow --test check_project_cli
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-perfect/Cargo.toml \
+    -p marrow-check --test presence_architecture
+
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-perfect/Cargo.toml \
+    -p marrow-schema --test compile_enum
+
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-perfect/Cargo.toml \
+    -p marrow-schema --test resolve_type
+
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-perfect/Cargo.toml \
+    -p marrow-schema --test compile_resource
+
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-06-perfect/Cargo.toml \
+    -p marrow-run
 ```
 
 ## Review Lenses
@@ -159,36 +176,17 @@ sediment, and lane-local cleanup deferred to Lane 11.
 
 ## Integration Gate
 
-Run the full central gate. Add scans for forbidden identity and proof paths:
+Run the full central gate once the Lane 8 runtime enum-value dependency is
+landed. Before that dependency, Lane 6 gates the checker/schema scope and records
+the runtime package failure as blocking end-to-end enum identity. Add scans for
+forbidden identity and proof paths:
 
 ```sh
 rg -n '@id|regenerat.*id|read.*total|maybe.*present|presence' \
-    /Users/scottwilliams/Dev/marrow-lane-06-catalog-presence/crates \
-    /Users/scottwilliams/Dev/marrow-lane-06-catalog-presence/docs
+    /Users/scottwilliams/Dev/marrow-lane-06-perfect/crates \
+    /Users/scottwilliams/Dev/marrow-lane-06-perfect/docs
 ```
 
 `@id` matches are allowed only in rejection diagnostics/tests or
 historical/debug docs. Presence and read-totality matches may appear in canonical
 catalog/proof-ledger docs or tests.
-
-## Starter Prompt
-
-Continue Marrow v0.1 Lane 6 in `/Users/scottwilliams/Dev/marrow-lane-06-catalog-presence`.
-Use branch `lane-06-catalog-presence`, use
-`CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-06-catalog-presence`
-on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-This lane is reopened because the landed code still blesses source-order enum
-ordinals and duplicate read/presence classifiers. Implement the committed
-accepted catalog file, stable catalog identity, catalog-backed enum member
-identity, and the ADR 0210 presence proof ledger with TDD. Delete/reject source
-`@id` annotations entirely from canonical source; keep valid read-site absence
-resolution flowing through one checked-program ledger. Do not edit store
-physical keys or runtime execution in this lane. No legacy survival for green
-tests: migrate/delete tests, fixtures, and callers that depend on regenerated
-IDs, source-order enum ordinals, `@id`, duplicated saved-path classifiers, or ad
-hoc maybe-read behavior. Before review, satisfy the Area Cleanup Gate: keep
-proof-source classification in the ledger; split catalog file IO, identity
-binding, epoch/digest validation, proof recording, diagnostics, and broad
-presence walkers; delete `@id`, regenerated-ID, read-totality, maybe-present,
-and duplicate classifier helpers. Leave the worktree dirty for soundness and
-idiom/spec review.

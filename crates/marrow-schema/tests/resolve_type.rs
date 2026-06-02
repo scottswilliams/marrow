@@ -122,7 +122,7 @@ fn embeds_unknown_sees_through_sequences() {
 fn stored_scalar_reports_the_runtime_leaf_envelope() {
     assert_eq!(resolve("int").stored_scalar(), Some(ScalarType::Int));
     assert_eq!(resolve("string").stored_scalar(), Some(ScalarType::Str));
-    assert_eq!(resolve("Status").stored_scalar(), Some(ScalarType::Int));
+    assert_eq!(resolve("Status").stored_scalar(), None);
     assert_eq!(resolve("sequence[int]").stored_scalar(), None);
     assert_eq!(resolve("Id(^books)").stored_scalar(), None);
 }

@@ -1,14 +1,15 @@
 mod calls;
+mod direct;
 mod effects;
 mod keys;
+mod proofs;
 mod scope;
 mod target;
 mod util;
 mod walk;
+mod writes;
 
-pub(crate) use calls::append_call_args;
-pub(crate) use keys::{SavedPathParts, saved_path_parts};
-pub(crate) use scope::NameScope;
+pub(crate) use direct::direct_effects_for_block;
 pub(crate) use target::read_target;
 
 pub(crate) fn check_presence(

@@ -5,15 +5,11 @@ use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
 use marrow_schema::{NodeKind, ScalarType, Type};
-use marrow_syntax::{
-    Block, Expression, InterpolationPart, ParamMode, ParsedSource, ResourceMember, SourceSpan,
-    Statement, TypeRef,
-};
+use marrow_syntax::{ParamMode, ParsedSource, ResourceMember, SourceSpan, TypeRef};
 
 use crate::catalog::{
     CatalogKey, enum_path, resource_member_path, resource_path, store_index_path, store_path,
 };
-use crate::presence::{NameScope, append_call_args, saved_path_parts};
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias};
 
@@ -420,7 +416,11 @@ impl CheckedFacts {
             public: function.public,
             params,
             return_type,
-            direct_effects: self.direct_effects_for_block(&aliases, &function.body),
+            direct_effects: crate::presence::direct_effects_for_block(
+                self,
+                &aliases,
+                &function.body,
+            ),
             span: function.span,
         })
     }
@@ -874,242 +874,6 @@ impl CheckedFacts {
         }
         Some(result)
     }
-
-    fn direct_effects_for_block(
-        &self,
-        aliases: &HashMap<String, Vec<String>>,
-        block: &Block,
-    ) -> DirectEffectFacts {
-        let mut effects = DirectEffectFacts::default();
-        self.collect_block_effects(aliases, block, &mut effects);
-        effects
-    }
-
-    fn collect_block_effects(
-        &self,
-        aliases: &HashMap<String, Vec<String>>,
-        block: &Block,
-        effects: &mut DirectEffectFacts,
-    ) {
-        for statement in &block.statements {
-            self.collect_statement_effects(aliases, statement, effects);
-        }
-    }
-
-    fn collect_statement_effects(
-        &self,
-        aliases: &HashMap<String, Vec<String>>,
-        statement: &Statement,
-        effects: &mut DirectEffectFacts,
-    ) {
-        match statement {
-            Statement::Const { value, .. } | Statement::Throw { value, .. } => {
-                if matches!(statement, Statement::Throw { .. }) {
-                    effects.throws = true;
-                }
-                self.collect_expr_reads(aliases, value, effects);
-            }
-            Statement::Var { value, .. } => {
-                if let Some(value) = value {
-                    self.collect_expr_reads(aliases, value, effects);
-                }
-            }
-            Statement::Assign { target, value, .. } => {
-                self.collect_saved_write(target, effects);
-                self.collect_saved_path_key_reads(aliases, target, effects);
-                self.collect_expr_reads(aliases, value, effects);
-            }
-            Statement::Delete { path, .. } => {
-                self.collect_saved_write(path, effects);
-                self.collect_saved_path_key_reads(aliases, path, effects);
-            }
-            Statement::Merge { target, value, .. } => {
-                self.collect_expr_reads(aliases, target, effects);
-                self.collect_expr_reads(aliases, value, effects);
-            }
-            Statement::Return { value, .. } => {
-                if let Some(value) = value {
-                    self.collect_expr_reads(aliases, value, effects);
-                }
-            }
-            Statement::Expr { value, .. } => self.collect_expr_reads(aliases, value, effects),
-            Statement::If {
-                condition,
-                then_block,
-                else_ifs,
-                else_block,
-                ..
-            } => {
-                if let Some(condition) = condition {
-                    self.collect_expr_reads(aliases, condition, effects);
-                }
-                self.collect_block_effects(aliases, then_block, effects);
-                for else_if in else_ifs {
-                    if let Some(condition) = &else_if.condition {
-                        self.collect_expr_reads(aliases, condition, effects);
-                    }
-                    self.collect_block_effects(aliases, &else_if.block, effects);
-                }
-                if let Some(block) = else_block {
-                    self.collect_block_effects(aliases, block, effects);
-                }
-            }
-            Statement::While {
-                condition, body, ..
-            } => {
-                if let Some(condition) = condition {
-                    self.collect_expr_reads(aliases, condition, effects);
-                }
-                self.collect_block_effects(aliases, body, effects);
-            }
-            Statement::For {
-                iterable,
-                step,
-                body,
-                ..
-            } => {
-                self.collect_expr_reads(aliases, iterable, effects);
-                if let Some(step) = step {
-                    self.collect_expr_reads(aliases, step, effects);
-                }
-                self.collect_block_effects(aliases, body, effects);
-            }
-            Statement::Transaction { body, .. } => {
-                effects.transactions = true;
-                self.collect_block_effects(aliases, body, effects);
-            }
-            Statement::Lock { path, body, .. } => {
-                if let Some(path) = path {
-                    self.collect_expr_reads(aliases, path, effects);
-                }
-                self.collect_block_effects(aliases, body, effects);
-            }
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => {
-                self.collect_block_effects(aliases, body, effects);
-                if let Some(catch) = catch {
-                    self.collect_block_effects(aliases, &catch.block, effects);
-                }
-                if let Some(finally) = finally {
-                    self.collect_block_effects(aliases, finally, effects);
-                }
-            }
-            Statement::Match {
-                scrutinee, arms, ..
-            } => {
-                if let Some(scrutinee) = scrutinee {
-                    self.collect_expr_reads(aliases, scrutinee, effects);
-                }
-                for arm in arms {
-                    self.collect_block_effects(aliases, &arm.block, effects);
-                }
-            }
-            Statement::Break { .. } | Statement::Continue { .. } => {}
-        }
-    }
-
-    fn collect_expr_reads(
-        &self,
-        aliases: &HashMap<String, Vec<String>>,
-        expr: &Expression,
-        effects: &mut DirectEffectFacts,
-    ) {
-        let scope = NameScope::default();
-        if let Some(path) = saved_path_parts(expr, &scope) {
-            if let Some(effect) = self.saved_place_effect(&path) {
-                push_unique(&mut effects.saved_reads, effect);
-            }
-            self.collect_saved_path_key_reads(aliases, expr, effects);
-            return;
-        }
-        if let Some(effect) = host_effect(expr, aliases) {
-            push_unique(&mut effects.host_calls, effect);
-        }
-        match expr {
-            Expression::Call { callee, args, .. } => {
-                if let Some((target, rest)) = append_call_args(callee, args) {
-                    self.collect_saved_write(&target.value, effects);
-                    self.collect_saved_path_key_reads(aliases, &target.value, effects);
-                    for arg in rest {
-                        self.collect_expr_reads(aliases, &arg.value, effects);
-                    }
-                    return;
-                }
-                self.collect_expr_reads(aliases, callee, effects);
-                for arg in args {
-                    self.collect_expr_reads(aliases, &arg.value, effects);
-                }
-            }
-            Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-                self.collect_expr_reads(aliases, base, effects);
-            }
-            Expression::Unary { operand, .. } => self.collect_expr_reads(aliases, operand, effects),
-            Expression::Binary { left, right, .. } => {
-                self.collect_expr_reads(aliases, left, effects);
-                self.collect_expr_reads(aliases, right, effects);
-            }
-            Expression::Interpolation { parts, .. } => {
-                for part in parts {
-                    if let InterpolationPart::Expr(expr) = part {
-                        self.collect_expr_reads(aliases, expr, effects);
-                    }
-                }
-            }
-            Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {
-            }
-        }
-    }
-
-    fn collect_saved_path_key_reads(
-        &self,
-        aliases: &HashMap<String, Vec<String>>,
-        expr: &Expression,
-        effects: &mut DirectEffectFacts,
-    ) {
-        match expr {
-            Expression::Call { callee, args, .. } => {
-                self.collect_saved_path_key_reads(aliases, callee, effects);
-                for arg in args {
-                    self.collect_expr_reads(aliases, &arg.value, effects);
-                }
-            }
-            Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-                self.collect_saved_path_key_reads(aliases, base, effects);
-            }
-            Expression::SavedRoot { .. }
-            | Expression::Literal { .. }
-            | Expression::Name { .. }
-            | Expression::Unary { .. }
-            | Expression::Binary { .. }
-            | Expression::Interpolation { .. } => {}
-        }
-    }
-
-    fn collect_saved_write(&self, expr: &Expression, effects: &mut DirectEffectFacts) {
-        let scope = NameScope::default();
-        if let Some(path) = saved_path_parts(expr, &scope)
-            && let Some(effect) = self.saved_place_effect(&path)
-        {
-            push_unique(&mut effects.saved_writes, effect);
-        }
-    }
-
-    fn saved_place_effect(
-        &self,
-        path: &crate::presence::SavedPathParts,
-    ) -> Option<SavedPlaceEffect> {
-        let store = self.store_for_root(&path.root)?;
-        let resource = self.store(store).resource;
-        let member_names: Vec<&str> = path.members.iter().map(String::as_str).collect();
-        Some(SavedPlaceEffect {
-            resource,
-            members: self.member_path_ids(resource, &member_names)?,
-        })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1310,36 +1074,6 @@ fn flatten_enum_member_spans(members: &[marrow_syntax::EnumMember], spans: &mut 
 
 fn split_type_path(path: &str) -> Vec<String> {
     path.split("::").map(str::to_string).collect()
-}
-
-fn host_effect(expr: &Expression, aliases: &HashMap<String, Vec<String>>) -> Option<HostEffect> {
-    match expr {
-        Expression::Call { callee, .. } => match callee.as_ref() {
-            Expression::Name { segments, .. } => {
-                let expanded = expand_alias(segments, aliases);
-                match expanded.as_slice() {
-                    [name] if name == "print" || name == "write" => Some(HostEffect::Output),
-                    [std, module, op] if std == "std" => marrow_schema::stdlib::lookup(module, op)
-                        .and_then(|entry| match entry.capability {
-                            Capability::Pure => None,
-                            capability => Some(HostEffect::Capability(capability)),
-                        }),
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn push_unique<T>(items: &mut Vec<T>, item: T)
-where
-    T: PartialEq,
-{
-    if !items.contains(&item) {
-        items.push(item);
-    }
 }
 
 fn catalog_id(

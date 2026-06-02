@@ -5,7 +5,10 @@ use super::calls::neighbor_read;
 use super::keys::{SavedPathParts, expression_key, saved_path_parts};
 use super::scope::NameScope;
 use crate::CheckedProgram;
-use crate::facts::{PresenceProofPlace, PresenceProofRead, SavedPlaceEffect, StoreIndexId};
+use crate::facts::{
+    CheckedFacts, PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect,
+    StoreIndexId,
+};
 use crate::resolve::resolve_store_by_root;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +53,9 @@ pub(super) fn proof_place(
 ) -> Option<PresenceProofPlace> {
     match &target.place {
         ReadPlace::Saved { root, members } => Some(PresenceProofPlace::Saved(saved_place(
-            program, root, members,
+            &program.facts,
+            root,
+            members,
         )?)),
         ReadPlace::StoreIndex { root, index } => Some(PresenceProofPlace::StoreIndex(
             store_index_place(program, root, index)?,
@@ -97,36 +102,29 @@ pub(super) fn read_file(
     )
 }
 
-fn saved_place(
-    program: &CheckedProgram,
+pub(super) fn saved_place(
+    facts: &CheckedFacts,
     root: &str,
     members: &[String],
 ) -> Option<SavedPlaceEffect> {
-    let store = program
-        .facts
-        .stores()
-        .iter()
-        .find(|store| store.root == root)?;
+    let store = facts.stores().iter().find(|store| store.root == root)?;
     let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
-    let member_ids = if member_names.is_empty() {
-        Vec::new()
-    } else {
-        let mut ids = Vec::new();
-        let mut parent_path = Vec::new();
-        for member in member_names {
-            parent_path.push(member);
-            ids.push(
-                program
-                    .facts
-                    .resource_member_id(store.resource, &parent_path)?,
-            );
-        }
-        ids
-    };
     Some(SavedPlaceEffect {
         resource: store.resource,
-        members: member_ids,
+        members: member_path_ids(facts, store.resource, &member_names)?,
     })
+}
+
+fn member_path_ids(
+    facts: &CheckedFacts,
+    resource: crate::facts::ResourceId,
+    path: &[&str],
+) -> Option<Vec<ResourceMemberId>> {
+    let mut ids = Vec::new();
+    for index in 0..path.len() {
+        ids.push(facts.resource_member_id(resource, &path[..=index])?);
+    }
+    Some(ids)
 }
 
 fn saved_path_target(

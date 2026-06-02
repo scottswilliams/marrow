@@ -98,35 +98,17 @@ parser/formatter output. Evidence: `crates/marrow-syntax/src/ast.rs:384`,
 `crates/marrow-check/src/prototype.rs:67`. Make them rejection-only or remove
 their v0.1 round-trip surface after checker rejection is established.
 
-**Lane 6 - Catalog Identity.** Remove source-order enum ordinals as stored
-meaning and index-key meaning. Evidence:
-`crates/marrow-schema/src/lib.rs:81`, `crates/marrow-schema/src/lib.rs:333`,
-`crates/marrow-schema/src/lib.rs:760`,
-`crates/marrow-schema/tests/compile_enum.rs:36`, and
-`crates/marrow-schema/tests/compile_resource.rs:870` still document or test
-enum fields as declaration-order integers. Migrate schema facts and tests to
-catalog member IDs, keeping declaration order only as a source traversal index.
-
-**Lane 6 - Presence Ledger.** Delete duplicate read and saved-path classifiers
-instead of letting presence replay checker semantics. Evidence:
-`crates/marrow-check/src/presence/calls.rs:5`,
-`crates/marrow-check/src/presence/calls.rs:9`,
-`crates/marrow-check/src/presence/calls.rs:27`,
-`crates/marrow-check/src/presence/keys.rs:20`,
-`crates/marrow-check/src/facts.rs:1148`, and
-`crates/marrow-check/src/facts.rs:1165` classify builtin reads or saved paths
-outside one canonical ledger/query. Keep one semantic owner used by facts,
-checks, and presence.
-
 **Lane 8 - Enum Runtime Values.** Consume catalog-backed enum member identity for
 runtime values and index maintenance. Evidence:
-`crates/marrow-schema/src/lib.rs:83`, `crates/marrow-schema/src/lib.rs:334`,
-`crates/marrow-run/src/expr.rs:43`, `crates/marrow-run/src/write.rs:1576`, and
-`crates/marrow-run/tests/eval.rs:9703` still encode enum members by declaration
-or pre-order ordinal. Lane 7 provides the tree-cell enum value codec; runtime
-must consume catalog-backed member IDs instead of raw ordinals. Declaration or
-pre-order ordinals may survive only as schema traversal indexes, not durable
-stored meaning.
+`crates/marrow-run/src/expr.rs:43`, `crates/marrow-run/src/exec.rs:364`,
+`crates/marrow-run/src/write.rs:1425`, `crates/marrow-run/src/write.rs:1563`,
+`crates/marrow-run/src/schema_query.rs:153`,
+`crates/marrow-run/src/write_tests.rs:924`, and
+`crates/marrow-run/tests/eval.rs:9745` still encode enum members by declaration
+or pre-order ordinal. Lane 7 provides the tree-cell enum value codec, and Lane 6
+provides catalog-backed enum member facts; runtime must consume those checked
+facts instead of raw ordinals. Declaration or pre-order ordinals may survive only
+as schema traversal indexes, not durable stored meaning.
 
 **Lane 8 - Checked Runtime IR.** Ensure diagnostic/recovery `Unknown` cannot
 enter checked runtime IR. Evidence: `crates/marrow-check/src/program.rs:129`
