@@ -42,6 +42,9 @@ When this lane does edit Rust or docs:
 
 - split or delete the touched production path in the same focused change that
   exposes the smell;
+- reject any leftover legacy path whose only purpose is keeping obsolete tests,
+  fixtures, or compile-time callers alive; send it back to the owning lane when
+  that owner is still active;
 - keep each hardening batch file-disjoint from active semantic lanes;
 - delete comments that narrate old edits, temporary migration state, or obvious
   control flow;

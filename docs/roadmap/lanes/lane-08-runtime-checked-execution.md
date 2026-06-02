@@ -46,6 +46,9 @@ Before handing the lane to review:
 
 - split checked execution, durable-place reads, write planning, transactions,
   index maintenance, and host-effect handling by invariant;
+- migrate runtime tests, fixtures, and callers to checked facts or checked IR
+  instead of keeping the syntax interpreter, raw `FunctionDecl` entrypoints, or
+  fallback dispatch so old tests keep passing;
 - delete production syntax execution paths instead of wrapping them in mode
   flags or compatibility helpers;
 - delete dead `lock`, `merge`, saved `inout`, string/path classifier, and raw

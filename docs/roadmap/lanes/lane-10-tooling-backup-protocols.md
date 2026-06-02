@@ -57,6 +57,9 @@ Before handing the lane to review:
 
 - split backup manifest validation, restore activation, CLI rendering, LSP
   rendering, data preview, and serve protocol adapters by invariant;
+- migrate or delete tests, fixtures, and clients that depend on raw protocol
+  bytes, raw path JSON, tool-local semantic classifiers, or unbounded previews
+  instead of keeping legacy tool surfaces for them;
 - send missing semantic facts back to owning lanes instead of reclassifying paths
   or diagnostics in tools;
 - delete dead raw protocol, saved-path re-resolution, raw archive, unbounded

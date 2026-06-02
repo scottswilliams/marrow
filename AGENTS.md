@@ -23,6 +23,15 @@ obsolete examples, or transition shims for their own sake. When the design
 changes, clean the repository as if the new design had been here from the
 beginning: simple, direct, and inspectable.
 
+Green tests or compile success are not reasons to keep legacy prototype paths.
+If a test or fixture depends on outdated behavior, update or delete it so it
+asserts the v0.1 contract. Runtime or CLI callers must migrate unless the
+lane's prototype-removal ledger names a live production bridge with caller,
+isolation boundary, absence test, and deletion lane, or the surface is
+explicitly debug/admin-only and excluded from production semantics. Do not keep
+fallback branches, mode flags, compatibility shims, test-only production entry
+points, or duplicate semantic models just to preserve old behavior.
+
 Avoid agentic slop and documentation sediment at all costs, including in code.
 
 ## Working Rules

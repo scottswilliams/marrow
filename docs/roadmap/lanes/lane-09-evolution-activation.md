@@ -46,6 +46,9 @@ Before handing the lane to review:
 
 - split preview, exact witness validation, apply, compatibility-window checks,
   repair admission, and CLI rendering by invariant;
+- migrate or delete tests, fixtures, and callers that depend on migration
+  scripts, source-diff identity inference, best-effort transforms, or stale
+  activation behavior instead of keeping legacy evolution branches for them;
 - keep transform-required rejection in the shared proof-discharge path, not in
   adapter-local fallbacks;
 - delete dead migration-script, source-diff identity, best-effort rename, and

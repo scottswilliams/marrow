@@ -52,6 +52,9 @@ Before handing the lane to review:
 
 - split any expanded statement, loop, call, saved-path, or resource/store
   dispatcher into focused helpers or a focused module;
+- migrate or delete tests, fixtures, and callers that depend on legacy
+  resource-owned identity, resource-owned indexes, or old store syntax instead
+  of keeping fallback branches for them;
 - keep helper names carrying the explanation rather than adding branch-by-branch
   comments;
 - delete dead resource-owned identity/index/store helpers and stale fixtures

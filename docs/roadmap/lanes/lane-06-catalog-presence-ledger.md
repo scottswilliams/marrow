@@ -48,6 +48,9 @@ Before handing the lane to review:
 - split catalog file handling, identity binding, epoch/digest validation,
   read-presence proof recording, and diagnostics into focused helpers or modules
   with one invariant each;
+- migrate or delete tests, fixtures, and callers that depend on regenerated IDs,
+  source-order enum ordinals, `@id`, or ad hoc maybe-read behavior instead of
+  keeping legacy compatibility paths for them;
 - keep proof-source classification in one ledger path, not scattered helper
   predicates;
 - delete dead `@id`, regenerated-ID, read-totality, and maybe-present helpers

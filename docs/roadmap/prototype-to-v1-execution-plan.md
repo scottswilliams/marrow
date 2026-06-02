@@ -76,6 +76,15 @@ that the current lane already knows it must do. If a prototype bridge has no
 current production caller, delete it instead of preserving it as a future
 handoff.
 
+Green tests or compile success are not reasons to keep legacy behavior alive.
+If an old test, fixture, CLI path, runtime caller, or helper depends on rejected
+prototype semantics, the lane must migrate or delete that dependency and make
+the v0.1 path pass. Do not add fallback branches, boolean compatibility modes,
+test-only production entrypoints, or duplicate semantic models so the old
+runtime continues to pass. A production bridge exists only for a named live
+production caller that cannot move inside the same file-disjoint lane; test
+continuity and compile convenience are not live callers.
+
 Use one cargo target directory per lane, for example:
 
 ```sh
@@ -157,7 +166,9 @@ Production bridges are exceptional. They are allowed only when a live production
 caller cannot be moved in the same file-disjoint lane, and the bridge is named,
 isolated, reviewed, covered by an absence test, and assigned to a deletion lane
 at creation time. A bridge with no current production caller is deleted, not
-handed off. A bridge may not create a new semantic owner or let production
+handed off. Old tests, obsolete fixtures, compile errors, and runtime green-bar
+pressure do not justify a bridge; migrate the caller or delete the obsolete
+expectation. A bridge may not create a new semantic owner or let production
 callers choose between old and new semantics. The only acceptable
 runtime-replacement bridge is a syntax-to-IR adapter for one named live caller;
 it may not preserve runtime name resolution as a second checker.
@@ -192,6 +203,9 @@ Rust cleanup is also lane-scoped:
   "just for compatibility" functions are deleted. Explicit debug/admin product
   surfaces may remain only when excluded from production semantics and reviewed
   as such;
+- when tests fail because the old runtime, old schema shape, or old path model
+  disappeared, update the tests to the v0.1 contract instead of preserving a
+  legacy codepath for them;
 - comments added by a lane must explain durable rationale. Comments that narrate
   control flow, summarize obvious branches, or explain temporary migration state
   are deleted or replaced with better names and smaller helpers.

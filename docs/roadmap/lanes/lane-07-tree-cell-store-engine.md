@@ -51,6 +51,9 @@ Before handing the lane to review:
 
 - split engine substrate, tree-cell address encoding, commit metadata, index
   cells, archive/backup inputs, and conformance helpers by invariant;
+- migrate or delete tests, fixtures, and callers that depend on source-name
+  physical keys, raw archive production behavior, or flat-list storage instead
+  of keeping legacy storage branches for them;
 - keep redb as ordered bytes and transactions only; semantic key decisions live
   in Marrow storage modules, not backend adapters;
 - delete dead source-name key, raw archive, schema-in-backend, and flat-list
