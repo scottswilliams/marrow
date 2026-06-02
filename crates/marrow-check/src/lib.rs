@@ -307,6 +307,36 @@ pub(crate) fn resource_type_name(module: &str, resource: &str) -> String {
     }
 }
 
+/// Resolve resource references inside a schema type through the checked,
+/// module-aware resolver and return the canonical checker type.
+pub fn resolve_resource_schema_type(
+    program: &CheckedProgram,
+    from_module: &str,
+    ty: &marrow_schema::Type,
+) -> Option<MarrowType> {
+    match ty {
+        marrow_schema::Type::Sequence(element) => {
+            resolve_resource_schema_type(program, from_module, element)
+                .map(|element_type| MarrowType::Sequence(Box::new(element_type)))
+        }
+        marrow_schema::Type::Named(name) => {
+            let segments: Vec<String> = name.split("::").map(str::to_string).collect();
+            match resolve(program, from_module, &segments, ResolvableKind::Resource) {
+                Resolution::Found(Def {
+                    module,
+                    item: DefItem::Resource(resource),
+                    ..
+                }) => Some(MarrowType::Resource(resource_type_name(
+                    &module.name,
+                    &resource.name,
+                ))),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn resolve_resource_type<'p>(
     program: &'p CheckedProgram,
     name: &str,
@@ -324,13 +354,17 @@ pub(crate) fn resolve_resource_type<'p>(
                     .map(|resource| (resource, module.name.as_str()))
             });
     }
-    program.modules.iter().find_map(|module| {
-        module
-            .resources
-            .iter()
-            .find(|resource| resource.name == name)
-            .map(|resource| (resource, module.name.as_str()))
-    })
+    program
+        .modules
+        .iter()
+        .find(|module| module.name.is_empty())
+        .and_then(|module| {
+            module
+                .resources
+                .iter()
+                .find(|resource| resource.name == name)
+                .map(|resource| (resource, module.name.as_str()))
+        })
 }
 
 fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<String, bool> {
@@ -795,8 +829,7 @@ pub(crate) fn check_tests_with_sources_analysis(
     // reported at check time rather than only at run time. Types resolve against a
     // program holding both the already-checked project modules and the clean test
     // modules — cross-module calls and resource constructors resolve, and the
-    // `nextId` gate finds the project's resource schemas. Resource annotations are
-    // recognized project-wide (project plus test resources).
+    // `nextId` gate finds the project's resource schemas.
     let project_count = project.modules.len();
     let mut combined =
         CheckedProgram::from_modules(project.modules.iter().cloned().chain(modules).collect());
@@ -812,19 +845,6 @@ pub(crate) fn check_tests_with_sources_analysis(
     // signatures already.
     let resolver = combined.clone();
     enums::normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
-    let project_resources: HashSet<String> = combined
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .map(|resource| resource.name.clone())
-        .collect();
-    let project_enums: HashSet<String> = combined
-        .modules
-        .iter()
-        .flat_map(|module| &module.enums)
-        .map(|enum_schema| enum_schema.name.clone())
-        .collect();
-
     // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look
     // unresolved; the shared suppression handles that qualified-call case.
@@ -835,8 +855,6 @@ pub(crate) fn check_tests_with_sources_analysis(
             module_name_policy: checks::ModuleNamePolicy::PathOnly,
             resolvable: &resolvable,
             program: &combined,
-            project_resources: &project_resources,
-            project_enums: &project_enums,
         },
         &mut report,
     );
@@ -949,17 +967,6 @@ fn check_file_source(
 
     check_duplicate_declarations(file_path, &parsed.file, diagnostics);
 
-    // Named types resolve first so a module's function and constant types can
-    // refer to its own resources and enums.
-    let module_resources: Vec<String> = parsed
-        .file
-        .declarations
-        .iter()
-        .filter_map(|declaration| match declaration {
-            marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
-            _ => None,
-        })
-        .collect();
     let module_enums: Vec<String> = parsed
         .file
         .declarations
@@ -988,7 +995,6 @@ fn check_file_source(
         .map_or("", |module| module.name.as_str());
     let names = TypeNames {
         module: module_name,
-        resources: &module_resources,
         enums: &module_enums,
     };
     let resources = checked_resources(

@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use marrow_check::resolve::{resolve_resource_by_name_any, resolve_store_by_root};
+use marrow_check::resolve::resolve_store_by_root;
 use marrow_check::{
     CheckedProgram, Def, DefItem, IndexSchema, Resolution, ResolvableKind, ResourceSchema,
     StoreSchema, resolve,
@@ -247,14 +247,13 @@ fn saved_path_record(
     })
 }
 
-/// Explain a name: resolve it as each applicable kind through the one resolver the
+/// Explain a name: resolve it as each applicable kind through the resolver the
 /// checker and runtime use, and report `found`/`ambiguous`/`not_visible`/
-/// `unresolved`. A bare or qualified name is tried as a function first, then a
-/// resource, so the first concrete declaration wins.
+/// `unresolved`. A name is tried as a function first, then a resource.
 fn explain_name(program: &CheckedProgram, target: &str, format: CheckFormat) {
     let segments: Vec<String> = target.split("::").map(str::to_string).collect();
     let resolution = match resolve(program, "", &segments, ResolvableKind::Function) {
-        Resolution::Unresolved => resolve_resource_name(program, &segments),
+        Resolution::Unresolved => resolve(program, "", &segments, ResolvableKind::Resource),
         resolution => resolution,
     };
     match format {
@@ -263,38 +262,6 @@ fn explain_name(program: &CheckedProgram, target: &str, format: CheckFormat) {
             write_json(name_record(target, &resolution));
         }
     }
-}
-
-/// Resolve a `Resource` / `module::Resource` name to its resource declaration. The
-/// shared resolver handles the qualified form and a bare resource in the empty
-/// module; a bare resource living in some other module is not reachable by an
-/// unqualified name there, so it falls back to the project-wide resource-name
-/// lookup the checker uses.
-fn resolve_resource_name<'p>(program: &'p CheckedProgram, name: &[String]) -> Resolution<'p> {
-    match resolve(program, "", name, ResolvableKind::Resource) {
-        Resolution::Unresolved if name.len() == 1 => {
-            match resolve_resource_by_name_any(program, &name[0]) {
-                Some(resource) => resource_name(program, resource),
-                None => Resolution::Unresolved,
-            }
-        }
-        resolution => resolution,
-    }
-}
-
-/// Wrap a project-wide resource in a `Found` resolution, attributing it to the
-/// module that declares it (the resolver's `Def` carries the owning module).
-fn resource_name<'p>(program: &'p CheckedProgram, resource: &'p ResourceSchema) -> Resolution<'p> {
-    let module = program
-        .modules
-        .iter()
-        .find(|module| module.resources.iter().any(|r| r.name == resource.name))
-        .expect("resource came from a program module");
-    Resolution::Found(Def {
-        module,
-        kind: ResolvableKind::Resource,
-        item: DefItem::Resource(resource),
-    })
 }
 
 /// The human render of a name resolution.

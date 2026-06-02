@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 
+use marrow_check::resolve_resource_schema_type;
 use marrow_schema::{MemberPathResolution, Type};
 use marrow_store::Decimal;
 use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
@@ -25,7 +26,7 @@ use crate::read::{
     keys_argument, read_layer_entry, read_layer_entry_at, read_resource, read_terminal_identity,
     reversed_argument, traversed_layer_prefix,
 };
-use crate::schema_query::{enum_in, is_resource_type, is_saved_path};
+use crate::schema_query::{enum_in, is_saved_path};
 use crate::stdlib::{check_key_collection, unique_index_lookup_values};
 use crate::value::{Value, value_to_key};
 use crate::write_dispatch::{
@@ -100,7 +101,14 @@ pub(crate) fn eval_statement(
                 // `var n: int` then `f(out n)` pattern) is usable before its first
                 // assignment.
                 None => match ty.as_ref().map(Type::resolve) {
-                    Some(Type::Named(name)) if is_resource_type(env.program, env.module, &name) => {
+                    Some(Type::Named(name))
+                        if resolve_resource_schema_type(
+                            env.program,
+                            env.module,
+                            &Type::Named(name.clone()),
+                        )
+                        .is_some() =>
+                    {
                         Value::Resource(Vec::new())
                     }
                     Some(ty) => default_value(&ty).ok_or_else(|| {
@@ -287,8 +295,7 @@ pub(crate) fn eval_statement(
                 }
                 // The body errored, so the transaction rolls back. A failed
                 // rollback is a store-integrity error that supersedes the original
-                // cause (the staged writes may have partially survived), so report
-                // it; otherwise surface the original error as before.
+                // cause (the staged writes may have partially survived).
                 Err(error) => {
                     let rollback = env.store.borrow_mut().rollback();
                     env.discard_required_entry_checks(depth);

@@ -2778,6 +2778,69 @@ fn a_resource_constructor_checks_field_arguments() {
 }
 
 #[test]
+fn resource_constructor_fields_resolve_resource_types_by_declaring_module() {
+    let report = check_module_report(
+        "ctor-resource-field-owner",
+        "module m\n\
+         resource Address\n    city: string\n\n\
+         resource Person\n    required name: string\n    address: Address\n\n\
+         fn caller()\n    var p = Person(name: \"Sam\", address: Address(city: \"Paris\"))\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn same_module_resource_annotation_beats_foreign_enum_fallback() {
+    let root = temp_project("resource-type-before-foreign-enum", |root| {
+        write(root, "src/a.mw", "module a\npub enum Address\n    ok\n");
+        write(
+            root,
+            "src/m.mw",
+            "module m\n\
+             resource Address\n    city: string\n\n\
+             fn make(): Address\n    return Address(city: \"Paris\")\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.return_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn same_module_resource_annotation_beats_private_foreign_enum_diagnostic() {
+    let root = temp_project("resource-type-before-private-foreign-enum", |root| {
+        write(root, "src/a.mw", "module a\nenum Address\n    ok\n");
+        write(
+            root,
+            "src/m.mw",
+            "module m\n\
+             resource Address\n    city: string\n\n\
+             fn make(): Address\n    return Address(city: \"Paris\")\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        with_code(&report, "check.private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.return_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn a_resource_constructor_rejects_unknown_fields() {
     let found = check_module(
         "ctor-unknown-field",
@@ -3320,6 +3383,19 @@ fn a_whole_resource_read_into_a_local_types_its_fields() {
         "module m\n\
          resource Book at ^books(id: int)\n    title: string\n\n\
          fn f()\n    var b = ^books(1)\n    var x = b.title + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_local_resource_field_typed_as_a_resource_keeps_its_resource_shape() {
+    let found = check_module(
+        "local-resource-field-resource-type",
+        "module m\n\
+         resource Address\n    city: string\n\n\
+         resource Person\n    address: Address\n\n\
+         fn f()\n    var person = Person(address: Address(city: \"Paris\"))\n    var x = person.address.city + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -5261,6 +5337,30 @@ fn same_named_resources_constructor_resolves_by_module() {
         "a bare same-module constructor must resolve, not report unresolved: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn bare_foreign_resource_annotation_is_unknown_not_project_wide() {
+    let root = temp_project("foreign-resource-type", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\nresource Book\n    title: string\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             fn read(book: Book): string\n\
+             \x20   return book.title\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    let unknown_types = with_code(&report, "check.unknown_type");
+    assert_eq!(unknown_types.len(), 1, "{:#?}", report.diagnostics);
+    assert!(unknown_types[0].message.contains("Book"));
 }
 
 #[test]

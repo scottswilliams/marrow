@@ -1,7 +1,7 @@
 //! Program and schema lookups, and saved-path classification.
 
+use marrow_check::CheckedProgram;
 use marrow_check::resolve::resolve_store_by_root;
-use marrow_check::{CheckedProgram, Def, DefItem, Resolution, ResolvableKind, resolve};
 use marrow_schema::{EnumSchema, KeyDef, ResourceSchema, StoreSchema, Type};
 use marrow_store::path::{PathSegment, SavedKey};
 use marrow_store::value::ScalarType;
@@ -120,26 +120,6 @@ pub(crate) fn identity_key_defs<'p>(
     identity: &str,
 ) -> Option<&'p [KeyDef]> {
     find_store_resource(program, identity).map(|(store, _)| store.identity_keys.as_slice())
-}
-
-/// Whether `name` names a resource type (for an uninitialized `var book: Book`
-/// to start as an empty resource value).
-pub(crate) fn is_resource_type(program: &CheckedProgram, from_module: &str, name: &str) -> bool {
-    if !name.contains("::") {
-        return program
-            .modules
-            .iter()
-            .flat_map(|module| &module.resources)
-            .any(|resource| resource.name == name);
-    }
-    let segments: Vec<String> = name.split("::").map(str::to_string).collect();
-    matches!(
-        resolve(program, from_module, &segments, ResolvableKind::Resource),
-        Resolution::Found(Def {
-            item: DefItem::Resource(_),
-            ..
-        })
-    )
 }
 
 /// Whether an expression denotes a saved path (rooted at a `^root`), as opposed

@@ -26,8 +26,8 @@ pub use marrow_store::value::ScalarType;
 /// declaration can (a scalar, a `sequence[...]`, `Id(^store)`, or `unknown`), and
 /// leaves any other bare or qualified name as [`Type::Named`]. The checker,
 /// which knows the project's resource and enum names, promotes a `Named` to a
-/// resource or enum reference or flags it unknown; the runtime only ever reads the
-/// scalar leaves.
+/// resource or enum reference or flags it unknown; the runtime uses the checked
+/// resolver when it must backstop constructor field types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Scalar(ScalarType),

@@ -10,7 +10,7 @@ use marrow_store::Decimal;
 use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan};
 
-use crate::enums::{check_match, private_enum_type_reference, resolve_type};
+use crate::enums::{MatchCheck, check_match, private_enum_type_reference, resolve_type};
 use crate::infer::{
     bind, infer_only, infer_type, layer_key_type, lift_member_type, local_binding,
     record_identity_type, saved_group_chain, saved_group_entry_type, saved_layer_chain,
@@ -31,24 +31,20 @@ use crate::{
     Resolution, ResolvableKind, TypeNames, build_alias_map, builtin_return_type,
     check_prototype_only, conversion_return_type, expand_alias, identity_type_for_store,
     is_builtin_call, is_resolved_import, module_of_file, push_schema_error, resolve,
-    resource_type_name, std_call_params, std_call_return_type,
+    resolve_resource_schema_type, resource_type_name, std_call_params, std_call_return_type,
 };
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
-/// file against `program` with `project_resources`, then suppress resolution
-/// reports that target modules whose files failed to parse or read. This is the
-/// shared tail of check_project and check_tests: pass 1 (parse plus each caller's
-/// module and ownership construction) differs and stays in the caller, but once
-/// the resolvable module set, program, and resource set are known every step is
-/// identical.
+/// file against `program`, then suppress resolution reports that target modules
+/// whose files failed to parse or read. This is the shared tail of check_project
+/// and check_tests: pass 1 differs and stays in the caller, but once the
+/// resolvable module set and program are known every step is identical.
 pub(crate) struct ResolvedFileCheck<'a> {
     pub(crate) files: &'a [marrow_project::ModuleFile],
     pub(crate) parsed_files: &'a [(&'a marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
     pub(crate) module_name_policy: ModuleNamePolicy,
     pub(crate) resolvable: &'a HashMap<String, PathBuf>,
     pub(crate) program: &'a CheckedProgram,
-    pub(crate) project_resources: &'a HashSet<String>,
-    pub(crate) project_enums: &'a HashSet<String>,
 }
 
 pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut CheckReport) {
@@ -58,8 +54,6 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
         module_name_policy,
         resolvable,
         program,
-        project_resources,
-        project_enums,
     } = input;
 
     // Pass 2: every `use` must name a project module, a sibling module, or a
@@ -80,14 +74,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
 
     // Pass 3: flag type annotations that name an unknown type.
     for (file, parsed) in parsed_files {
-        check_file_types(
-            program,
-            project_resources,
-            project_enums,
-            &file.path,
-            parsed,
-            &mut report.diagnostics,
-        );
+        check_file_types(program, &file.path, parsed, &mut report.diagnostics);
     }
 
     // A file that failed to parse or read is excluded from the program, so exact
@@ -253,12 +240,9 @@ pub(crate) fn file_prelude(
 /// expression/statement type checks (operator/condition/assignment/call/argument
 /// types, std arity, the `nextId` single-`int` gate), and missing-return
 /// analysis. Library files (via [`check_project`]) and test scripts (via
-/// [`check_tests`]) share this pass. `project_resources` and `project_enums` are
-/// the project-wide name sets used to recognize type annotations.
+/// [`check_tests`]) share this pass.
 pub(crate) fn check_file_types(
     program: &CheckedProgram,
-    project_resources: &HashSet<String>,
-    project_enums: &HashSet<String>,
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -273,8 +257,6 @@ pub(crate) fn check_file_types(
         program,
         aliases: &aliases,
         file,
-        resources: project_resources,
-        enums: project_enums,
     };
     let stored_resources: HashSet<&str> = parsed
         .file
@@ -383,16 +365,12 @@ fn check_qualified_saved_named_field_annotations(
     }
 }
 
-/// Record a `check.unknown_type` diagnostic when `ty` names a type the checker
-/// does not recognize or uses unsupported map syntax outside saved keyed-leaf
-/// member sugar. Located at `span` (the declaration), since a type annotation
-/// carries no span of its own.
+/// Record diagnostics for a declaration type annotation. Located at `span` (the
+/// declaration), since a type annotation carries no span of its own.
 struct TypeAnnotationContext<'a> {
     program: &'a CheckedProgram,
     aliases: &'a HashMap<String, Vec<String>>,
     file: &'a Path,
-    resources: &'a HashSet<String>,
-    enums: &'a HashSet<String>,
 }
 
 fn check_type_annotation(
@@ -401,8 +379,11 @@ fn check_type_annotation(
     context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if let Some(private) =
-        private_enum_type_reference(ty, context.program, context.aliases, context.file)
+    let schema_type = Type::resolve(ty);
+    let resolved_type = resolve_type(ty, context.program, context.aliases, context.file);
+    if !contains_resource_type(&resolved_type)
+        && let Some(private) =
+            private_enum_type_reference(ty, context.program, context.aliases, context.file)
     {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_PRIVATE_ENUM,
@@ -418,7 +399,7 @@ fn check_type_annotation(
     let unknown_identity = unknown_identity_type_ref(ty, context);
     if marrow_schema::contains_map_type_syntax(&ty.text)
         || unknown_identity.is_some()
-        || !known_type_ref(ty, context)
+        || !annotation_type_known(&schema_type, &resolved_type)
     {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
@@ -435,29 +416,25 @@ fn check_type_annotation(
     }
 }
 
-fn known_type_ref(ty: &marrow_syntax::TypeRef, context: &TypeAnnotationContext<'_>) -> bool {
-    known_type(&Type::resolve(ty), context)
+fn contains_resource_type(ty: &MarrowType) -> bool {
+    match ty {
+        MarrowType::Resource(_) => true,
+        MarrowType::Sequence(element) => contains_resource_type(element),
+        MarrowType::LocalTree { keys, value } => {
+            keys.iter().any(contains_resource_type) || contains_resource_type(value)
+        }
+        _ => false,
+    }
 }
 
-fn known_type(ty: &Type, context: &TypeAnnotationContext<'_>) -> bool {
-    match ty {
-        Type::Scalar(_) | Type::Identity(_) | Type::Unknown => true,
-        Type::Sequence(element) => known_type(element, context),
-        Type::Named(name) if name == "Error" => true,
-        Type::Named(name) if !name.contains("::") => {
-            context.resources.contains(name) || context.enums.contains(name)
+fn annotation_type_known(schema_type: &Type, resolved_type: &MarrowType) -> bool {
+    match (schema_type, resolved_type) {
+        (Type::Unknown, _) => true,
+        (Type::Sequence(schema_element), MarrowType::Sequence(resolved_element)) => {
+            annotation_type_known(schema_element, resolved_element)
         }
-        Type::Named(_) => {
-            crate::enums::resolve_enum_type(ty, context.program, context.aliases, context.file)
-                .is_some()
-                || crate::enums::resolve_resource_type(
-                    ty,
-                    context.program,
-                    context.aliases,
-                    context.file,
-                )
-                .is_some()
-        }
+        (_, MarrowType::Unknown) => false,
+        _ => true,
     }
 }
 
@@ -799,272 +776,300 @@ pub(crate) fn check_statement_types(
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    use marrow_syntax::Statement;
-    match statement {
-        Statement::Const {
-            ty, value, span, ..
-        } => {
-            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
-            check_range_value(file, value, diagnostics);
-            if let Some(ty) = ty {
-                check_assignment(
-                    file,
-                    *span,
-                    &resolve_type(ty, program, aliases, file),
-                    &value_type,
-                    diagnostics,
-                );
+    StatementCheck {
+        program,
+        file,
+        return_type,
+        scope,
+        aliases,
+        diagnostics,
+    }
+    .check(statement);
+}
+
+struct StatementCheck<'a> {
+    program: &'a CheckedProgram,
+    file: &'a Path,
+    return_type: &'a MarrowType,
+    scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    aliases: &'a HashMap<String, Vec<String>>,
+    diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+impl StatementCheck<'_> {
+    fn check(&mut self, statement: &marrow_syntax::Statement) {
+        use marrow_syntax::Statement;
+        match statement {
+            Statement::Const {
+                ty, value, span, ..
+            } => self.check_binding_statement(statement, ty.as_ref(), Some(value), *span),
+            Statement::Var {
+                ty, value, span, ..
+            } => self.check_binding_statement(statement, ty.as_ref(), value.as_ref(), *span),
+            Statement::Assign {
+                target,
+                value,
+                span,
+            } => self.check_assignment_statement(target, value, *span),
+            Statement::Delete { path, .. } => {
+                self.infer(path);
             }
-            if let Some((name, ty)) = local_binding(program, statement, scope, aliases, file) {
-                bind(scope, &name, ty);
+            Statement::Return { value, span } => self.check_return(value.as_ref(), *span),
+            Statement::Throw { value, span } => self.check_throw(value, *span),
+            Statement::Expr { value, .. } => {
+                self.infer(value);
+                check_range_value(self.file, value, self.diagnostics);
             }
-        }
-        Statement::Var {
-            ty, value, span, ..
-        } => {
-            let value_type = match value {
-                Some(value) => {
-                    let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
-                    check_range_value(file, value, diagnostics);
-                    value_type
-                }
-                None => MarrowType::Unknown,
-            };
-            // An annotated initializer must match the declared type.
-            if let (Some(ty), Some(_)) = (ty, value) {
-                check_assignment(
-                    file,
-                    *span,
-                    &resolve_type(ty, program, aliases, file),
-                    &value_type,
-                    diagnostics,
-                );
-            }
-            if let Some((name, ty)) = local_binding(program, statement, scope, aliases, file) {
-                bind(scope, &name, ty);
-            }
-        }
-        Statement::Assign {
-            target,
-            value,
-            span,
-        } => {
-            // The target's type is known for a local variable or a saved field;
-            // for other places (a local resource field, a whole resource) it is
-            // unknown and the assignment is left alone.
-            let target_type = infer_type(program, target, scope, aliases, file, diagnostics);
-            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
-            check_range_value(file, value, diagnostics);
-            check_assignment(file, *span, &target_type, &value_type, diagnostics);
-        }
-        Statement::Merge { .. } => {}
-        Statement::Delete { path, .. } => {
-            infer_type(program, path, scope, aliases, file, diagnostics);
-        }
-        Statement::Return { value, span } => {
-            if let Some(value) = value {
-                let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
-                check_range_value(file, value, diagnostics);
-                check_return_type(file, *span, return_type, &value_type, diagnostics);
-            }
-        }
-        Statement::Throw { value, span } => {
-            let value_type = infer_type(program, value, scope, aliases, file, diagnostics);
-            check_range_value(file, value, diagnostics);
-            check_throw_type(file, *span, &value_type, diagnostics);
-        }
-        Statement::Expr { value, .. } => {
-            infer_type(program, value, scope, aliases, file, diagnostics);
-            check_range_value(file, value, diagnostics);
-        }
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            if let Some(condition) = condition {
-                check_condition(program, file, condition, scope, aliases, diagnostics);
-                check_range_value(file, condition, diagnostics);
-            }
-            check_block_types(
-                program,
-                file,
-                return_type,
+            Statement::If {
+                condition,
                 then_block,
-                scope,
-                aliases,
-                diagnostics,
-            );
-            for else_if in else_ifs {
-                if let Some(condition) = &else_if.condition {
-                    check_condition(program, file, condition, scope, aliases, diagnostics);
-                    check_range_value(file, condition, diagnostics);
-                }
-                check_block_types(
-                    program,
-                    file,
-                    return_type,
-                    &else_if.block,
-                    scope,
-                    aliases,
-                    diagnostics,
-                );
-            }
-            if let Some(block) = else_block {
-                check_block_types(
-                    program,
-                    file,
-                    return_type,
-                    block,
-                    scope,
-                    aliases,
-                    diagnostics,
-                );
-            }
-        }
-        Statement::While {
-            condition, body, ..
-        } => {
-            if let Some(condition) = condition {
-                check_condition(program, file, condition, scope, aliases, diagnostics);
-                check_range_value(file, condition, diagnostics);
-            }
-            check_block_types(
-                program,
-                file,
-                return_type,
+                else_ifs,
+                else_block,
+                ..
+            } => self.check_conditional(
+                condition.as_ref(),
+                then_block,
+                else_ifs,
+                else_block.as_ref(),
+            ),
+            Statement::While {
+                condition, body, ..
+            } => self.check_while(condition.as_ref(), body),
+            Statement::For {
+                binding,
+                iterable,
+                step,
                 body,
-                scope,
-                aliases,
-                diagnostics,
+                ..
+            } => self.check_for(binding, iterable, step.as_ref(), body),
+            Statement::Transaction { body, .. } | Statement::Lock { body, .. } => {
+                self.check_block(body);
+            }
+            Statement::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => self.check_try(body, catch.as_ref(), finally.as_ref()),
+            Statement::Match {
+                scrutinee,
+                arms,
+                span,
+                ..
+            } => self.check_match_statement(scrutinee.as_ref(), arms, *span),
+            Statement::Merge { .. } | Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+
+    fn infer(&mut self, expr: &marrow_syntax::Expression) -> MarrowType {
+        infer_type(
+            self.program,
+            expr,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.diagnostics,
+        )
+    }
+
+    fn check_block(&mut self, block: &marrow_syntax::Block) {
+        check_block_types(
+            self.program,
+            self.file,
+            self.return_type,
+            block,
+            self.scope,
+            self.aliases,
+            self.diagnostics,
+        );
+    }
+
+    fn check_binding_statement(
+        &mut self,
+        statement: &marrow_syntax::Statement,
+        annotation: Option<&marrow_syntax::TypeRef>,
+        value: Option<&marrow_syntax::Expression>,
+        span: SourceSpan,
+    ) {
+        let value_type = match value {
+            Some(value) => {
+                let value_type = self.infer(value);
+                check_range_value(self.file, value, self.diagnostics);
+                value_type
+            }
+            None => MarrowType::Unknown,
+        };
+        if let (Some(annotation), Some(_)) = (annotation, value) {
+            check_assignment(
+                self.file,
+                span,
+                &resolve_type(annotation, self.program, self.aliases, self.file),
+                &value_type,
+                self.diagnostics,
             );
         }
-        Statement::For {
-            binding,
+        self.bind_local(statement);
+    }
+
+    fn bind_local(&mut self, statement: &marrow_syntax::Statement) {
+        if let Some((name, ty)) =
+            local_binding(self.program, statement, self.scope, self.aliases, self.file)
+        {
+            bind(self.scope, &name, ty);
+        }
+    }
+
+    fn check_assignment_statement(
+        &mut self,
+        target: &marrow_syntax::Expression,
+        value: &marrow_syntax::Expression,
+        span: SourceSpan,
+    ) {
+        let target_type = self.infer(target);
+        let value_type = self.infer(value);
+        check_range_value(self.file, value, self.diagnostics);
+        check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+    }
+
+    fn check_return(&mut self, value: Option<&marrow_syntax::Expression>, span: SourceSpan) {
+        if let Some(value) = value {
+            let value_type = self.infer(value);
+            check_range_value(self.file, value, self.diagnostics);
+            check_return_type(
+                self.file,
+                span,
+                self.return_type,
+                &value_type,
+                self.diagnostics,
+            );
+        }
+    }
+
+    fn check_throw(&mut self, value: &marrow_syntax::Expression, span: SourceSpan) {
+        let value_type = self.infer(value);
+        check_range_value(self.file, value, self.diagnostics);
+        check_throw_type(self.file, span, &value_type, self.diagnostics);
+    }
+
+    fn check_condition_expr(&mut self, condition: &marrow_syntax::Expression) {
+        check_condition(
+            self.program,
+            self.file,
+            condition,
+            self.scope,
+            self.aliases,
+            self.diagnostics,
+        );
+        check_range_value(self.file, condition, self.diagnostics);
+    }
+
+    fn check_conditional(
+        &mut self,
+        condition: Option<&marrow_syntax::Expression>,
+        then_block: &marrow_syntax::Block,
+        else_ifs: &[marrow_syntax::ElseIf],
+        else_block: Option<&marrow_syntax::Block>,
+    ) {
+        if let Some(condition) = condition {
+            self.check_condition_expr(condition);
+        }
+        self.check_block(then_block);
+        for else_if in else_ifs {
+            if let Some(condition) = &else_if.condition {
+                self.check_condition_expr(condition);
+            }
+            self.check_block(&else_if.block);
+        }
+        if let Some(block) = else_block {
+            self.check_block(block);
+        }
+    }
+
+    fn check_while(
+        &mut self,
+        condition: Option<&marrow_syntax::Expression>,
+        body: &marrow_syntax::Block,
+    ) {
+        if let Some(condition) = condition {
+            self.check_condition_expr(condition);
+        }
+        self.check_block(body);
+    }
+
+    fn check_for(
+        &mut self,
+        binding: &marrow_syntax::ForBinding,
+        iterable: &marrow_syntax::Expression,
+        step: Option<&marrow_syntax::Expression>,
+        body: &marrow_syntax::Block,
+    ) {
+        self.infer(iterable);
+        check_range_iterable_value_parts(self.file, iterable, self.diagnostics);
+        if let Some(step) = step {
+            check_range_value(self.file, step, self.diagnostics);
+        }
+        check_range_header(
+            self.program,
+            self.file,
             iterable,
             step,
-            body,
-            ..
-        } => {
-            // Inferring the iterable here also operator-checks it; its diagnostics
-            // belong to the type pass, so `for_frame` re-infers with a discard sink.
-            infer_type(program, iterable, scope, aliases, file, diagnostics);
-            check_range_iterable_value_parts(file, iterable, diagnostics);
-            if let Some(step) = step {
-                check_range_value(file, step, diagnostics);
-            }
-            check_range_header(
-                program,
-                file,
-                iterable,
-                step.as_ref(),
-                scope,
-                aliases,
-                diagnostics,
-            );
-            check_for_collection_support(program, file, binding, iterable, diagnostics);
-            let frame = for_frame(program, binding, iterable, scope, aliases, file);
-            scope.push(frame);
-            check_block_types(
-                program,
-                file,
-                return_type,
-                body,
-                scope,
-                aliases,
-                diagnostics,
-            );
-            scope.pop();
+            self.scope,
+            self.aliases,
+            self.diagnostics,
+        );
+        check_for_collection_support(self.program, self.file, binding, iterable, self.diagnostics);
+        let frame = for_frame(
+            self.program,
+            binding,
+            iterable,
+            self.scope,
+            self.aliases,
+            self.file,
+        );
+        self.scope.push(frame);
+        self.check_block(body);
+        self.scope.pop();
+    }
+
+    fn check_try(
+        &mut self,
+        body: &marrow_syntax::Block,
+        catch: Option<&marrow_syntax::CatchClause>,
+        finally: Option<&marrow_syntax::Block>,
+    ) {
+        self.check_block(body);
+        if let Some(clause) = catch {
+            let mut frame = HashMap::new();
+            frame.insert(clause.name.clone(), MarrowType::Error);
+            self.scope.push(frame);
+            self.check_block(&clause.block);
+            self.scope.pop();
         }
-        Statement::Transaction { body, .. } => {
-            check_block_types(
-                program,
-                file,
-                return_type,
-                body,
-                scope,
-                aliases,
-                diagnostics,
-            );
+        if let Some(finally) = finally {
+            self.check_block(finally);
         }
-        Statement::Lock { body, .. } => {
-            check_block_types(
-                program,
-                file,
-                return_type,
-                body,
-                scope,
-                aliases,
-                diagnostics,
-            );
+    }
+
+    fn check_match_statement(
+        &mut self,
+        scrutinee: Option<&marrow_syntax::Expression>,
+        arms: &[marrow_syntax::MatchArm],
+        span: SourceSpan,
+    ) {
+        if let Some(scrutinee) = scrutinee {
+            check_range_value(self.file, scrutinee, self.diagnostics);
         }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            check_block_types(
-                program,
-                file,
-                return_type,
-                body,
-                scope,
-                aliases,
-                diagnostics,
-            );
-            if let Some(clause) = catch {
-                // The catch clause binds an Error value for the duration of its block.
-                let mut frame = HashMap::new();
-                frame.insert(clause.name.clone(), MarrowType::Error);
-                scope.push(frame);
-                check_block_types(
-                    program,
-                    file,
-                    return_type,
-                    &clause.block,
-                    scope,
-                    aliases,
-                    diagnostics,
-                );
-                scope.pop();
-            }
-            if let Some(finally) = finally {
-                check_block_types(
-                    program,
-                    file,
-                    return_type,
-                    finally,
-                    scope,
-                    aliases,
-                    diagnostics,
-                );
-            }
-        }
-        Statement::Match {
+        check_match(MatchCheck {
+            program: self.program,
+            file: self.file,
+            return_type: self.return_type,
             scrutinee,
             arms,
             span,
-            ..
-        } => {
-            if let Some(scrutinee) = scrutinee {
-                check_range_value(file, scrutinee, diagnostics);
-            }
-            check_match(
-                program,
-                file,
-                return_type,
-                scrutinee.as_ref(),
-                arms,
-                *span,
-                scope,
-                aliases,
-                diagnostics,
-            );
-        }
-        Statement::Break { .. } | Statement::Continue { .. } => {}
+            scope: self.scope,
+            aliases: self.aliases,
+            diagnostics: self.diagnostics,
+        });
     }
 }
 
@@ -1280,7 +1285,7 @@ fn saved_index_branch_type(
         return index
             .args
             .get(arg_count)
-            .map(|name| index_component_type(store, resource, module, name));
+            .map(|name| index_component_type(program, store, resource, module, name));
     }
     Some(identity_type_for_store(store))
 }
@@ -1299,6 +1304,7 @@ fn non_unique_index_branch_yields_identity(
 }
 
 fn index_component_type(
+    program: &CheckedProgram,
     store: &StoreSchema,
     resource: &ResourceSchema,
     module: &str,
@@ -1309,7 +1315,7 @@ fn index_component_type(
     }
     resource
         .field_type(&[name])
-        .map(|ty| lift_member_type(ty.clone(), module))
+        .map(|ty| lift_member_type(program, ty.clone(), module))
         .unwrap_or(MarrowType::Unknown)
 }
 
@@ -2040,6 +2046,7 @@ pub(crate) fn check_saved_key_args(
     if let Some((store, resource, index, module)) = saved_index_schema(program, callee) {
         check_index_args_against(
             IndexArgTarget {
+                program,
                 store,
                 resource,
                 index,
@@ -2063,6 +2070,7 @@ pub(crate) fn check_saved_key_args(
 }
 
 struct IndexArgTarget<'a> {
+    program: &'a CheckedProgram,
     store: &'a StoreSchema,
     resource: &'a ResourceSchema,
     index: &'a IndexSchema,
@@ -2077,6 +2085,7 @@ fn check_index_args_against(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let IndexArgTarget {
+        program,
         store,
         resource,
         index,
@@ -2112,7 +2121,7 @@ fn check_index_args_against(
     }
 
     for (component, arg_type) in index.args.iter().zip(arg_types) {
-        let expected = index_component_type(store, resource, module, component);
+        let expected = index_component_type(program, store, resource, module, component);
         if type_compatible(&expected, arg_type) == Some(false) {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -2521,239 +2530,284 @@ pub(crate) fn operator_diagnostic(
     }
 }
 
-/// Validate a call against the user function it resolves to and return that
-/// function's declared return type (or [`MarrowType::Unknown`]). Only a plain
-/// name call that resolves to a declared function is checked; a builtin, std
-/// helper, `Error` constructor, key-lookup (non-name callee), or
-/// unresolved name is left alone — mirroring the runtime's dispatch order — so the
-/// check never fires on a non-function or a call the checker cannot resolve.
-///
-/// It flags the argument count (every parameter is required), named arguments that
-/// name no parameter, out/inout marker mismatches, non-place out/inout arguments,
-/// and arguments whose type does not match the corresponding parameter.
-// Each argument is an independent input threaded through the type-check pipeline
-// (program/aliases/file/diagnostics are the cross-cutting context every node
-// carries, like `scope`); bundling them would not aid clarity here.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn check_call(
-    program: &CheckedProgram,
-    callee: &marrow_syntax::Expression,
-    args: &[marrow_syntax::Argument],
-    arg_types: &[MarrowType],
-    aliases: &HashMap<String, Vec<String>>,
+pub(crate) struct CallCheck<'a> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) callee: &'a marrow_syntax::Expression,
+    pub(crate) args: &'a [marrow_syntax::Argument],
+    pub(crate) arg_types: &'a [MarrowType],
+    pub(crate) aliases: &'a HashMap<String, Vec<String>>,
+    pub(crate) span: SourceSpan,
+    pub(crate) file: &'a Path,
+    pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+struct CallEnv<'a> {
+    program: &'a CheckedProgram,
     span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> MarrowType {
+    file: &'a Path,
+    diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+/// Validate a call and return its declared return type when known. Dispatch is
+/// kept in runtime order: special builtins, general builtins, constructors, then
+/// user functions.
+pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
+    let CallCheck {
+        program,
+        callee,
+        args,
+        arg_types,
+        aliases,
+        span,
+        file,
+        diagnostics,
+    } = input;
+    let mut env = CallEnv {
+        program,
+        span,
+        file,
+        diagnostics,
+    };
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
-        check_plain_call_modes("call", args, span, file, diagnostics);
+        check_plain_call_modes("call", args, env.span, env.file, env.diagnostics);
         return MarrowType::Unknown;
     };
-    // Expand a short-form leading segment through the file's imports once, up front,
-    // so `clock::now()` resolves like `std::clock::now()` and a project `books::add`
-    // like `shelf::books::add`. All downstream resolution uses the expanded form.
     let expanded = expand_alias(segments, aliases);
     let segments = expanded.as_slice();
-    // `nextId(^root)` needs the argument *expression* (the `^root`), not just its
-    // type, to know which store is allocated, so it is handled here before the
-    // generic builtin branch typed only from `arg_types`.
+
+    if let Some(ty) = check_special_single_name_call(&mut env, segments, args, arg_types) {
+        return ty;
+    }
+    if is_builtin_call(segments) {
+        return check_builtin_call(&mut env, segments, args, arg_types);
+    }
+
+    let from_module = module_of_file(env.program, env.file).unwrap_or_default();
+    if let Some(ty) =
+        check_resource_constructor_call(&mut env, from_module, segments, args, arg_types)
+    {
+        return ty;
+    }
+    check_user_function_call(&mut env, from_module, segments, args, arg_types)
+}
+
+fn check_special_single_name_call(
+    env: &mut CallEnv<'_>,
+    segments: &[String],
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> Option<MarrowType> {
     if let [name] = segments
         && name == "nextId"
     {
-        check_plain_call_modes(name, args, span, file, diagnostics);
-        return check_next_id(program, args, span, file, diagnostics);
+        check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
+        return Some(check_next_id(
+            env.program,
+            args,
+            env.span,
+            env.file,
+            env.diagnostics,
+        ));
     }
-    // `reversed` needs the argument expression for saved collections, whose element
-    // sequence type is not always the argument's direct value type. `next`/`prev`
-    // likewise need the `^path` expression to find the resource/layer they navigate,
-    // so these resolve here before the generic builtin branch typed only from
-    // `arg_types`.
     if let [name] = segments {
         match name.as_str() {
             "reversed" => {
-                check_plain_call_modes(name, args, span, file, diagnostics);
-                check_arity(name, 1, args, span, file, diagnostics);
-                return reversed_type(program, args, arg_types);
+                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
+                check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+                return Some(reversed_type(env.program, args, arg_types));
             }
             "next" | "prev" => {
-                check_plain_call_modes(name, args, span, file, diagnostics);
-                check_arity(name, 1, args, span, file, diagnostics);
-                return check_neighbor(program, name, args, arg_types, span, file, diagnostics);
+                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
+                check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+                return Some(check_neighbor(
+                    env.program,
+                    name,
+                    args,
+                    arg_types,
+                    env.span,
+                    env.file,
+                    env.diagnostics,
+                ));
             }
             "values" | "entries" => {
-                check_plain_call_modes(name, args, span, file, diagnostics);
-                check_arity(name, 1, args, span, file, diagnostics);
-                check_value_materialization_args(program, name, args, span, file, diagnostics);
-                return MarrowType::Unknown;
+                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
+                check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+                check_value_materialization_args(
+                    env.program,
+                    name,
+                    args,
+                    env.span,
+                    env.file,
+                    env.diagnostics,
+                );
+                return Some(MarrowType::Unknown);
             }
             "append" => {
-                check_plain_call_modes(name, args, span, file, diagnostics);
-                check_arity(name, 2, args, span, file, diagnostics);
-                check_append_args(program, args, span, file, diagnostics);
-                check_append(program, args, span, file, diagnostics);
-                return MarrowType::Primitive(ScalarType::Int);
+                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
+                check_arity(name, 2, args, env.span, env.file, env.diagnostics);
+                check_append_args(env.program, args, env.span, env.file, env.diagnostics);
+                check_append(env.program, args, env.span, env.file, env.diagnostics);
+                return Some(MarrowType::Primitive(ScalarType::Int));
             }
             _ => {}
         }
     }
-    // Builtins dispatch before user functions. Std helpers have fixed signatures,
-    // and a few single-name builtins have static shape rules; the rest leave their
-    // arguments to the runtime. A std helper's return type feeds the surrounding
-    // type checks.
-    if is_builtin_call(segments) {
-        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
-        check_builtin_call_args(segments, arg_types, span, file, diagnostics);
-        if let Some(params) = std_call_params(segments) {
-            check_args_against(
-                &segments.join("::"),
-                &params,
-                arg_types,
-                span,
-                file,
-                diagnostics,
-            );
-        }
-        return std_call_return_type(segments)
-            .or_else(|| conversion_return_type(segments))
-            .or_else(|| builtin_return_type(segments, arg_types))
-            // The `Error(...)` constructor builds a builtin Error value, so it types
-            // as `Error` (not `Unknown`) — e.g. `std::log::error(Error(...))` and
-            // `throw Error(...)` both expect an `Error`.
-            .or_else(|| (segments == ["Error"]).then_some(MarrowType::Error))
-            .unwrap_or(MarrowType::Unknown);
+    None
+}
+
+fn check_builtin_call(
+    env: &mut CallEnv<'_>,
+    segments: &[String],
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> MarrowType {
+    let label = segments.join("::");
+    check_plain_call_modes(&label, args, env.span, env.file, env.diagnostics);
+    check_builtin_call_args(segments, arg_types, env.span, env.file, env.diagnostics);
+    if let Some(params) = std_call_params(segments) {
+        check_args_against(
+            &label,
+            &params,
+            arg_types,
+            env.span,
+            env.file,
+            env.diagnostics,
+        );
     }
-    // Calls resolve from the module the file contributes: a bare name in its own
-    // module, a qualified `mod::name` in the named module (cross-module needs the
-    // qualifier and the target must be `pub`). A module-less script contributes the
-    // empty module, so its bare calls resolve against its own functions.
-    let from_module = module_of_file(program, file).unwrap_or_default();
-    // A callee naming a declared resource is a value constructor, not a function:
-    // `Book(...)` and `module::Book(...)` build resource values. Recognize it so
-    // a valid constructor is not a false `check.unresolved_call`.
-    if let Resolution::Found(Def {
+    std_call_return_type(segments)
+        .or_else(|| conversion_return_type(segments))
+        .or_else(|| builtin_return_type(segments, arg_types))
+        .or_else(|| (segments == ["Error"]).then_some(MarrowType::Error))
+        .unwrap_or(MarrowType::Unknown)
+}
+
+fn check_resource_constructor_call(
+    env: &mut CallEnv<'_>,
+    from_module: &str,
+    segments: &[String],
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> Option<MarrowType> {
+    let Resolution::Found(Def {
         module,
         item: DefItem::Resource(resource),
         ..
-    }) = resolve(program, from_module, segments, ResolvableKind::Resource)
-    {
-        check_plain_call_modes(&segments.join("::"), args, span, file, diagnostics);
-        let resource_names: Vec<String> = module
-            .resources
-            .iter()
-            .map(|resource| resource.name.clone())
-            .collect();
-        let enum_names: Vec<String> = module
-            .enums
-            .iter()
-            .map(|enum_| enum_.name.clone())
-            .collect();
-        check_resource_constructor_args(
-            &resource.name,
-            resource,
-            TypeNames {
-                module: &module.name,
-                resources: &resource_names,
-                enums: &enum_names,
-            },
-            args,
-            arg_types,
-            span,
-            file,
-            diagnostics,
-        );
-        return MarrowType::Resource(resource_type_name(&module.name, &resource.name));
-    }
-    // Resolving as a `Function` can only ever Find a function, so the other arms
-    // never carry a non-function item. Only calls in a file that is part of the
-    // program are reported, and a project that did not fully parse has its
-    // unresolved calls suppressed in `check_project` (the missing definition may
-    // live in an excluded module).
-    let function = match resolve(program, from_module, segments, ResolvableKind::Function) {
+    }) = resolve(env.program, from_module, segments, ResolvableKind::Resource)
+    else {
+        return None;
+    };
+    check_plain_call_modes(
+        &segments.join("::"),
+        args,
+        env.span,
+        env.file,
+        env.diagnostics,
+    );
+    let enum_names: Vec<String> = module
+        .enums
+        .iter()
+        .map(|enum_| enum_.name.clone())
+        .collect();
+    check_resource_constructor_args(ResourceConstructorCheck {
+        program: env.program,
+        label: &resource.name,
+        module_name: &module.name,
+        resource,
+        enum_names: &enum_names,
+        args,
+        arg_types,
+        span: env.span,
+        file: env.file,
+        diagnostics: env.diagnostics,
+    });
+    Some(MarrowType::Resource(resource_type_name(
+        &module.name,
+        &resource.name,
+    )))
+}
+
+fn check_user_function_call(
+    env: &mut CallEnv<'_>,
+    from_module: &str,
+    segments: &[String],
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> MarrowType {
+    let function = match resolve(env.program, from_module, segments, ResolvableKind::Function) {
         Resolution::Found(Def {
             item: DefItem::Function(function),
             ..
         }) => function,
-        // The function exists but is not `pub` to this module: a distinct
-        // visibility error, not "unresolved" (the name resolved, the access did
-        // not).
         Resolution::NotVisible(name) => {
-            if file_in_program(program, file) {
-                diagnostics.push(CheckDiagnostic {
+            if file_in_program(env.program, env.file) {
+                env.diagnostics.push(CheckDiagnostic {
                     code: CHECK_PRIVATE_FUNCTION,
                     severity: Severity::Error,
-                    file: file.to_path_buf(),
+                    file: env.file.to_path_buf(),
                     message: format!(
                         "function `{name}` is private to its module; mark it `pub` to call it \
                          from another module"
                     ),
-                    span,
+                    span: env.span,
                 });
             }
             return MarrowType::Unknown;
         }
-        // A bare name that names a `pub` function in two or more modules: each is
-        // reachable, but only as `module::fn`; the bare spelling must be qualified.
         Resolution::Ambiguous(candidates) => {
-            if file_in_program(program, file) {
+            if file_in_program(env.program, env.file) {
                 let leaf = segments.join("::");
                 let options = candidates
                     .iter()
                     .map(|module| format!("`{module}::{leaf}`"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                diagnostics.push(CheckDiagnostic {
+                env.diagnostics.push(CheckDiagnostic {
                     code: CHECK_AMBIGUOUS_CALL,
                     severity: Severity::Error,
-                    file: file.to_path_buf(),
+                    file: env.file.to_path_buf(),
                     message: format!(
                         "call to `{leaf}` is ambiguous; qualify it as one of {options}"
                     ),
-                    span,
+                    span: env.span,
                 });
             }
             return MarrowType::Unknown;
         }
-        // A non-builtin call that resolves to no declared function is unresolved.
         Resolution::Found(_) | Resolution::Unresolved => {
-            if file_in_program(program, file) {
-                diagnostics.push(CheckDiagnostic {
+            if file_in_program(env.program, env.file) {
+                env.diagnostics.push(CheckDiagnostic {
                     code: CHECK_UNRESOLVED_CALL,
                     severity: Severity::Error,
-                    file: file.to_path_buf(),
+                    file: env.file.to_path_buf(),
                     message: format!("function `{}` is not defined", segments.join("::")),
-                    span,
+                    span: env.span,
                 });
             }
             return MarrowType::Unknown;
         }
     };
-    // Every parameter is required (no defaults), so the argument count must match.
+
+    let callee = segments.join("::");
     if args.len() != function.params.len() {
-        diagnostics.push(call_diagnostic(
-            file,
-            span,
+        env.diagnostics.push(call_diagnostic(
+            env.file,
+            env.span,
             format!(
-                "function `{}` expects {} argument(s), but {} were given",
-                segments.join("::"),
+                "function `{callee}` expects {} argument(s), but {} were given",
                 function.params.len(),
                 args.len(),
             ),
         ));
     }
-    // Match each argument to its parameter — positional by position, named by name
-    // (the parser guarantees positional arguments precede named ones) — flagging a
-    // named argument that names no parameter, a parameter supplied more than once,
-    // and an argument whose known primitive type differs from the parameter's.
-    let callee = segments.join("::");
     let mut supplied = vec![false; function.params.len()];
     for (index, (arg, arg_type)) in args.iter().zip(arg_types).enumerate() {
         let param_index = match &arg.name {
             Some(name) => {
                 let param_index = function.params.iter().position(|param| &param.name == name);
                 if param_index.is_none() {
-                    diagnostics.push(call_diagnostic(
-                        file,
-                        span,
+                    env.diagnostics.push(call_diagnostic(
+                        env.file,
+                        env.span,
                         format!("function `{callee}` has no parameter `{name}`"),
                     ));
                 }
@@ -2761,15 +2815,12 @@ pub(crate) fn check_call(
             }
             None => function.params.get(index).map(|_| index),
         };
-        // Every concrete parameter type — scalar, identity, resource, sequence,
-        // enum, or the checker-only `Error` — is checked nominally; an `unknown`
-        // parameter places no constraint and is left to the runtime.
         if let Some(param_index) = param_index {
             let param = &function.params[param_index];
             if supplied[param_index] {
-                diagnostics.push(call_diagnostic(
-                    file,
-                    span,
+                env.diagnostics.push(call_diagnostic(
+                    env.file,
+                    env.span,
                     format!(
                         "function `{callee}` parameter `{}` is supplied more than once",
                         param.name
@@ -2778,8 +2829,22 @@ pub(crate) fn check_call(
                 continue;
             }
             supplied[param_index] = true;
-            check_call_mode(&callee, arg, param.mode, span, file, diagnostics);
-            check_one_arg(&callee, &param.ty, arg_type, span, file, diagnostics);
+            check_call_mode(
+                &callee,
+                arg,
+                param.mode,
+                env.span,
+                env.file,
+                env.diagnostics,
+            );
+            check_one_arg(
+                &callee,
+                &param.ty,
+                arg_type,
+                env.span,
+                env.file,
+                env.diagnostics,
+            );
         }
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
@@ -3024,17 +3089,32 @@ fn reversed_type(
     arg_types.first().cloned().unwrap_or(MarrowType::Unknown)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn check_resource_constructor_args(
-    label: &str,
-    resource: &ResourceSchema,
-    names: TypeNames<'_>,
-    args: &[marrow_syntax::Argument],
-    arg_types: &[MarrowType],
+struct ResourceConstructorCheck<'a> {
+    program: &'a CheckedProgram,
+    label: &'a str,
+    module_name: &'a str,
+    resource: &'a ResourceSchema,
+    enum_names: &'a [String],
+    args: &'a [marrow_syntax::Argument],
+    arg_types: &'a [MarrowType],
     span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+    file: &'a Path,
+    diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
+    let ResourceConstructorCheck {
+        program,
+        label,
+        module_name,
+        resource,
+        enum_names,
+        args,
+        arg_types,
+        span,
+        file,
+        diagnostics,
+    } = input;
     let fields: Vec<&marrow_schema::Node> = resource
         .members
         .iter()
@@ -3069,7 +3149,7 @@ fn check_resource_constructor_args(
         }
         supplied[index] = true;
         if let Some(ty) = fields[index].plain_field_type() {
-            let expected = MarrowType::from_resolved(ty.clone(), names);
+            let expected = constructor_field_type(program, module_name, enum_names, ty);
             check_one_arg(label, &expected, arg_type, span, file, diagnostics);
         }
     }
@@ -3090,13 +3170,31 @@ fn check_resource_constructor_args(
     }
 }
 
+fn constructor_field_type(
+    program: &CheckedProgram,
+    module_name: &str,
+    enum_names: &[String],
+    ty: &Type,
+) -> MarrowType {
+    if let Some(resource_type) = resolve_resource_schema_type(program, module_name, ty) {
+        return resource_type;
+    }
+    MarrowType::from_resolved(
+        ty.clone(),
+        TypeNames {
+            module: module_name,
+            enums: enum_names,
+        },
+    )
+}
+
 /// Check one positional/named argument against the type its parameter expects: a
 /// known-but-different type is a `check.call_argument`; an `Unknown` argument for a
 /// concrete parameter is a `check.untyped_value` (strict typing — convert dynamic
 /// data before typed use). Shared by the user-function and std argument loops;
 /// `label` names the callee for the message. The expectation is a scalar for every
-/// std slot except `std::log::error` (the checker-only `Error` value), and an enum
-/// for a user parameter typed as one.
+/// std slot except `std::log::error` (the checker-only `Error` value); user
+/// parameters and constructor fields can carry any checked type.
 pub(crate) fn check_one_arg(
     label: &str,
     parameter: &MarrowType,

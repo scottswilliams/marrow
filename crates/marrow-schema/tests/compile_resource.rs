@@ -116,12 +116,9 @@ fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a Node {
         .unwrap_or_else(|| panic!("layer `{name}` not found"))
 }
 
-/// The top-level plain-field nodes: `Slot`s with no key parameters.
+/// The top-level nodes classified by the production schema API as plain fields.
 fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
-    schema
-        .members
-        .iter()
-        .filter(|node| node.key_params.is_empty() && matches!(node.kind, NodeKind::Slot { .. }))
+    schema.members.iter().filter(|node| node.is_plain_field())
 }
 
 /// The canonical `Book` resource.
@@ -1053,9 +1050,6 @@ resource Book at ^books(id: int)
 
 #[test]
 fn index_over_a_nested_field_is_an_error() {
-    // The write planner matches index arguments by flat top-level name, so an
-    // index over a field nested in an unkeyed group is silently never maintained.
-    // Until nested index resolution lands, reject it.
     let source = "\
 resource Book at ^books(id: int)
     pricing
@@ -1069,7 +1063,6 @@ resource Book at ^books(id: int)
 
 #[test]
 fn index_arg_naming_nested_leaf_is_an_error() {
-    // A bare leaf inside an unkeyed group is a nested field, not an unknown name.
     let source = "\
 resource Book at ^books(id: int)
     location

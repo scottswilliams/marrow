@@ -197,10 +197,8 @@ fn explains_a_typed_reference_field() {
 }
 
 #[test]
-fn explains_a_bare_resource_name() {
-    // A bare `Book` is neither a function nor in the empty module; it falls back to
-    // a project-wide resource-name lookup and resolves to resource `Book`.
-    let project = book_project("explain-bare-resource");
+fn bare_resource_name_outside_its_module_is_unresolved() {
+    let project = book_project("explain-bare-resource-unresolved");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["explain", "--format", "json", &dir, "Book"]);
     fs::remove_dir_all(&project).ok();
@@ -209,9 +207,7 @@ fn explains_a_bare_resource_name() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
     assert_eq!(value["kind"], "name");
-    assert_eq!(value["resolution"], "found");
-    assert_eq!(value["module"], "shelf");
-    assert_eq!(value["resolved_kind"], "resource");
+    assert_eq!(value["resolution"], "unresolved");
 }
 
 #[test]
@@ -233,6 +229,34 @@ fn explains_an_ambiguous_bare_name() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["explain", "--format", "json", &dir, "widget"]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["resolution"], "ambiguous");
+    let candidates = value["candidates"].as_array().expect("candidates array");
+    let names: Vec<&str> = candidates.iter().filter_map(|c| c.as_str()).collect();
+    assert!(names.contains(&"a") && names.contains(&"b"), "{stdout}");
+}
+
+#[test]
+fn ambiguous_bare_resource_names_are_not_first_matched() {
+    let project = temp_project("explain-resource-ambiguous", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\nresource Book\n    title: string\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\nresource Book\n    title: string\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["explain", "--format", "json", &dir, "Book"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");

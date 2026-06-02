@@ -1,7 +1,7 @@
 //! Enum resolution and `match` checking, plus cross-module named-type
 //! normalization the call boundary relies on.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use marrow_schema::{MemberPathResolution, ResourceSchema, Type};
@@ -90,82 +90,72 @@ pub(crate) fn normalize_program_named_types_against(
     }
 }
 
-/// The enum names declared across every parsed file, including error-bearing
-/// ones, so a type annotation that names an enum is recognized regardless of
-/// whether its file passed.
-pub(crate) fn collect_enum_names(
-    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
-) -> HashSet<String> {
-    parsed_files
-        .iter()
-        .flat_map(|(_, parsed)| parsed.file.declarations.iter())
-        .filter_map(|declaration| match declaration {
-            marrow_syntax::Declaration::Enum(decl) => Some(decl.name.clone()),
-            _ => None,
-        })
-        .collect()
+pub(crate) struct MatchCheck<'a> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) file: &'a Path,
+    pub(crate) return_type: &'a MarrowType,
+    pub(crate) scrutinee: Option<&'a marrow_syntax::Expression>,
+    pub(crate) arms: &'a [marrow_syntax::MatchArm],
+    pub(crate) span: SourceSpan,
+    pub(crate) scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    pub(crate) aliases: &'a HashMap<String, Vec<String>>,
+    pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
-/// Check a `match` statement over an enum scrutinee: the scrutinee must be an
-/// enum, every arm must name a member of that enum, no member may be matched
-/// twice, and every member must be covered (exhaustive, no wildcard). Each arm
-/// block is checked regardless, so type errors inside an arm still surface.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn check_match(
-    program: &CheckedProgram,
-    file: &Path,
-    return_type: &MarrowType,
-    scrutinee: Option<&marrow_syntax::Expression>,
-    arms: &[marrow_syntax::MatchArm],
-    span: SourceSpan,
-    scope: &mut Vec<HashMap<String, MarrowType>>,
-    aliases: &HashMap<String, Vec<String>>,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    let scrutinee_type = scrutinee
-        .map(|expr| infer_type(program, expr, scope, aliases, file, diagnostics))
-        .unwrap_or(MarrowType::Unknown);
+struct MatchEnv<'a> {
+    program: &'a CheckedProgram,
+    file: &'a Path,
+    return_type: &'a MarrowType,
+    scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    aliases: &'a HashMap<String, Vec<String>>,
+    diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
 
-    // Check every arm body up front so type errors inside an arm surface even when
-    // the scrutinee is not an enum or an arm names an unknown member.
-    for arm in arms {
-        check_block_types(
-            program,
-            file,
-            return_type,
-            &arm.block,
-            scope,
-            aliases,
-            diagnostics,
-        );
-    }
+/// Check a `match` statement over an enum scrutinee.
+pub(crate) fn check_match(input: MatchCheck<'_>) {
+    let MatchCheck {
+        program,
+        file,
+        return_type,
+        scrutinee,
+        arms,
+        span,
+        scope,
+        aliases,
+        diagnostics,
+    } = input;
+    let mut env = MatchEnv {
+        program,
+        file,
+        return_type,
+        scope,
+        aliases,
+        diagnostics,
+    };
+    let scrutinee_type = scrutinee
+        .map(|expr| {
+            infer_type(
+                env.program,
+                expr,
+                env.scope,
+                env.aliases,
+                env.file,
+                env.diagnostics,
+            )
+        })
+        .unwrap_or(MarrowType::Unknown);
+    check_match_arm_bodies(&mut env, arms);
 
     let MarrowType::Enum {
         module: enum_module,
         name: enum_name,
     } = &scrutinee_type
     else {
-        // An unresolved scrutinee (an untyped call, a saved read) is left alone:
-        // the check never fires on an uncertain type. A known non-enum is rejected.
-        if !matches!(scrutinee_type, MarrowType::Unknown | MarrowType::Invalid) {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_MATCH_REQUIRES_ENUM,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
-                    "`match` requires an enum value, but the scrutinee is `{}`",
-                    marrow_type_name(&scrutinee_type)
-                ),
-                span,
-            });
-        }
+        report_non_enum_match(&mut env, &scrutinee_type, span);
         return;
     };
     let Some(schema) = enum_schema_in(program, enum_module, enum_name) else {
-        // The scrutinee typed as an enum, but no such enum is declared. Rather than
-        // silently skip exhaustiveness (which would let the match fault at runtime),
-        // reject it: a `match` needs a known enum to dispatch over.
-        diagnostics.push(CheckDiagnostic {
+        env.diagnostics.push(CheckDiagnostic {
             code: CHECK_MATCH_REQUIRES_ENUM,
             severity: Severity::Error,
             file: file.to_path_buf(),
@@ -177,18 +167,46 @@ pub(crate) fn check_match(
         return;
     };
 
-    // Coverage is over the enum's selectable leaves: each must be covered by
-    // exactly one arm. An arm is a member path relative to the scrutinee enum —
-    // a concrete leaf covers itself, a category covers every selectable leaf under
-    // it. A bare arm name duplicated under several parents is ambiguous; the full
-    // path always disambiguates. A leaf covered twice (a repeated arm, or a leaf
-    // already covered by an enclosing category) is an overlap; an uncovered leaf is
-    // non-exhaustive.
+    check_match_coverage(&mut env, schema, enum_name, arms, span);
+}
+
+fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchArm]) {
+    for arm in arms {
+        check_block_types(
+            env.program,
+            env.file,
+            env.return_type,
+            &arm.block,
+            env.scope,
+            env.aliases,
+            env.diagnostics,
+        );
+    }
+}
+
+fn report_non_enum_match(env: &mut MatchEnv<'_>, scrutinee_type: &MarrowType, span: SourceSpan) {
+    if !matches!(scrutinee_type, MarrowType::Unknown | MarrowType::Invalid) {
+        env.diagnostics.push(CheckDiagnostic {
+            code: CHECK_MATCH_REQUIRES_ENUM,
+            severity: Severity::Error,
+            file: env.file.to_path_buf(),
+            message: format!(
+                "`match` requires an enum value, but the scrutinee is `{}`",
+                marrow_type_name(scrutinee_type)
+            ),
+            span,
+        });
+    }
+}
+
+fn check_match_coverage(
+    env: &mut MatchEnv<'_>,
+    schema: &marrow_schema::EnumSchema,
+    enum_name: &str,
+    arms: &[marrow_syntax::MatchArm],
+    span: SourceSpan,
+) {
     let mut covered: Vec<usize> = Vec::new();
-    // An arm rejected as an overlap is already the one clear diagnostic for that arm.
-    // Reporting non-exhaustiveness on top — because the rejected arm's leaves were
-    // dropped from coverage — would be noise, so the exhaustiveness pass is skipped
-    // when any overlap fired. A genuinely uncovered leaf with no overlap still reports.
     let mut had_overlap = false;
     for arm in arms {
         let segments: Vec<&str> = arm.path.iter().map(String::as_str).collect();
@@ -196,22 +214,20 @@ pub(crate) fn check_match(
         let arm_ordinal = match schema.walk_member_path(&segments) {
             MemberPathResolution::Found(ordinal) => ordinal,
             MemberPathResolution::NotFound => {
-                diagnostics.push(CheckDiagnostic {
+                env.diagnostics.push(CheckDiagnostic {
                     code: CHECK_UNKNOWN_ENUM_MEMBER,
                     severity: Severity::Error,
-                    file: file.to_path_buf(),
+                    file: env.file.to_path_buf(),
                     message: format!("`{enum_name}` has no member `{arm_label}`"),
                     span: arm.span,
                 });
                 continue;
             }
-            // A bare name names a member under more than one parent; name the
-            // qualifying paths so the dev can pick one (`tiger::paw` or `lion::paw`).
             MemberPathResolution::Ambiguous(paths) => {
-                diagnostics.push(CheckDiagnostic {
+                env.diagnostics.push(CheckDiagnostic {
                     code: CHECK_AMBIGUOUS_MATCH_ARM,
                     severity: Severity::Error,
-                    file: file.to_path_buf(),
+                    file: env.file.to_path_buf(),
                     message: format!(
                         "`{arm_label}` names more than one member of `{enum_name}`; qualify as {}",
                         join_or(&paths)
@@ -226,10 +242,10 @@ pub(crate) fn check_match(
             .filter(|&ordinal| schema.is_selectable_leaf(ordinal))
             .collect();
         if arm_leaves.iter().any(|leaf| covered.contains(leaf)) {
-            diagnostics.push(CheckDiagnostic {
+            env.diagnostics.push(CheckDiagnostic {
                 code: CHECK_DUPLICATE_MATCH_ARM,
                 severity: Severity::Error,
-                file: file.to_path_buf(),
+                file: env.file.to_path_buf(),
                 message: format!("`match` has a duplicate arm for `{arm_label}`"),
                 span: arm.span,
             });
@@ -245,10 +261,10 @@ pub(crate) fn check_match(
         .map(|ordinal| schema.member_path(ordinal).join("::"))
         .collect();
     if !missing.is_empty() && !had_overlap {
-        diagnostics.push(CheckDiagnostic {
+        env.diagnostics.push(CheckDiagnostic {
             code: CHECK_NONEXHAUSTIVE_MATCH,
             severity: Severity::Error,
-            file: file.to_path_buf(),
+            file: env.file.to_path_buf(),
             message: format!(
                 "`match` on `{enum_name}` does not cover {}",
                 missing
@@ -500,22 +516,27 @@ pub(crate) fn join_or(paths: &[String]) -> String {
     }
 }
 
-/// Type-check `left is right`. `left` must be an enum value; `right` must be a
-/// member-path of the same enum (a concrete member or a category — a category is
-/// the whole point, testing subtree membership). The result is always `bool`. `is`
-/// is a separate nominal predicate, not an assignability relaxation: a value's type
-/// stays its exact enum, so no subtyping lattice is introduced and the totality of
-/// the type model is untouched.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn check_is(
-    program: &CheckedProgram,
-    left_type: &MarrowType,
-    right: &marrow_syntax::Expression,
-    aliases: &HashMap<String, Vec<String>>,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> MarrowType {
+pub(crate) struct IsCheck<'a> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) left_type: &'a MarrowType,
+    pub(crate) right: &'a marrow_syntax::Expression,
+    pub(crate) aliases: &'a HashMap<String, Vec<String>>,
+    pub(crate) span: SourceSpan,
+    pub(crate) file: &'a Path,
+    pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+/// Type-check `left is right`, Marrow's nominal enum-subtree predicate.
+pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
+    let IsCheck {
+        program,
+        left_type,
+        right,
+        aliases,
+        span,
+        file,
+        diagnostics,
+    } = input;
     let bool_type = MarrowType::Primitive(ScalarType::Bool);
     let MarrowType::Enum {
         module: left_module,
@@ -700,44 +721,29 @@ pub(crate) fn enum_schema_in<'p>(
         .find(|enum_schema| enum_schema.name == name)
 }
 
-/// Resolve a type annotation against the project's named types, so a resource
-/// type like `Book` resolves to `MarrowType::Resource("Book")` and an enum type to
-/// the enum it names — carrying that enum's owning module, so two same-named enums
-/// never alias and a foreign enum is never stamped with the referencing module.
+/// Resolve a type annotation against the project's named types.
 ///
-/// An enum annotation is resolved by its true owner, never the referencing module:
-/// a bare `Status` resolves same-module-first then to the project-wide owner (the
+/// Resource annotations resolve first through the module-aware checked resolver.
+/// If no resource is named, enum annotations resolve by their true owner: a bare
+/// `Status` resolves same-module-first then to the project-wide owner (the
 /// symmetry a bare `Status::member` literal already uses), and a qualified
-/// `mod::Status` resolves to `mod`'s enum when `mod` declares it. Resources are
-/// placed by `MarrowType::resolve` with no enum names, so it cannot mint a phantom
-/// enum from a foreign-only bare name.
+/// `mod::Status` resolves to `mod`'s enum when `mod` declares it.
 pub(crate) fn resolve_type(
     ty: &marrow_syntax::TypeRef,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> MarrowType {
-    if let Some(enum_type) = resolve_enum_annotation(ty, program, aliases, file) {
-        return enum_type;
-    }
     if let Some(resource_type) = resolve_resource_annotation(ty, program, aliases, file) {
         return resource_type;
     }
-    let resources: Vec<String> = program
-        .modules
-        .iter()
-        .flat_map(|module| {
-            module
-                .resources
-                .iter()
-                .map(|resource| resource.name.clone())
-        })
-        .collect();
+    if let Some(enum_type) = resolve_enum_annotation(ty, program, aliases, file) {
+        return enum_type;
+    }
     MarrowType::resolve(
         ty,
         TypeNames {
             module: module_of_file(program, file).unwrap_or_default(),
-            resources: &resources,
             enums: &[],
         },
     )

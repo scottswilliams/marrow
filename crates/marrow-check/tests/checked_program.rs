@@ -125,6 +125,40 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
 }
 
 #[test]
+fn checked_facts_do_not_first_match_bare_foreign_resource_annotations() {
+    let root = temp_project("program-no-foreign-resource-fact", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\nresource Book\n    title: string\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nfn read(book: Book)\n    print(\"x\")\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.unknown_type"
+                && diagnostic.message.contains("Book")),
+        "{:#?}",
+        report.diagnostics
+    );
+    let facts = &program.facts;
+    let b = facts.module_id("b").expect("module b");
+    assert!(
+        facts.function_id(b, "read").is_none(),
+        "invalid bare foreign resource annotation must not produce a first-matched function fact"
+    );
+}
+
+#[test]
 fn checked_facts_record_function_effects_with_typed_places() {
     let root = temp_project("program-fact-effects", |root| {
         write(

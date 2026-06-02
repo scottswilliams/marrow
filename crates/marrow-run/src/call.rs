@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use marrow_check::{
     CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, Def, DefItem, FileId, MarrowType,
-    Resolution, ResolvableKind, resolve,
+    Resolution, ResolvableKind, resolve, resolve_resource_schema_type,
 };
 use marrow_schema::stdlib::Capability;
 use marrow_schema::{KeyDef, Node, NodeKind, ResourceSchema, Type};
@@ -130,20 +130,20 @@ pub(crate) fn run_entry_impl<'p>(
         host,
         transaction: Rc::new(RefCell::new(TransactionState::default())),
     };
-    let value = match invoke(
+    let value = match invoke(Invocation {
         ctx,
-        Rc::clone(&output),
-        Some(module),
-        &names,
-        &function.body,
-        function.span,
+        output: Rc::clone(&output),
+        module: Some(module),
+        param_names: &names,
+        body: &function.body,
+        span: function.span,
         args,
-        &[],
-        &[],
-        &[],
+        writeback: &[],
+        traversed_layers: &[],
+        traversed_index_layers: &[],
         hook,
-        1,
-    )? {
+        depth: 1,
+    })? {
         (Completion::Returned(value), ..) => value,
         (Completion::Threw { error, origin }, ..) => {
             return Err(raise(error, function.span, origin));
@@ -211,24 +211,36 @@ pub(crate) type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut
 /// caller can keep stepping after the call returns. A fatal `Err` aborts the run
 /// and drops the borrow with it. Moving the `&mut` (rather than reborrowing)
 /// preserves its `'p` lifetime exactly, so no `unsafe` is needed.
-// The activation's inputs are independent (context, output, the module this
-// activation runs in, parameter names, body, span, args, write-back set, debugger
-// hook, call depth); bundling them would not aid clarity.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn invoke<'p>(
+pub(crate) struct Invocation<'a, 'p> {
     ctx: Context<'p>,
     output: Rc<RefCell<String>>,
     module: Option<&'p CheckedModule>,
-    param_names: &[&str],
-    body: &Block,
+    param_names: &'a [&'p str],
+    body: &'p Block,
     span: SourceSpan,
-    args: &[Value],
-    writeback: &[&str],
-    traversed_layers: &[Vec<u8>],
-    traversed_index_layers: &[Vec<u8>],
+    args: &'a [Value],
+    writeback: &'a [&'p str],
+    traversed_layers: &'a [Vec<u8>],
+    traversed_index_layers: &'a [Vec<u8>],
     hook: Option<&'p mut dyn StepHook>,
     depth: usize,
-) -> Result<Activation<'p>, RuntimeError> {
+}
+
+pub(crate) fn invoke<'a, 'p>(input: Invocation<'a, 'p>) -> Result<Activation<'p>, RuntimeError> {
+    let Invocation {
+        ctx,
+        output,
+        module,
+        param_names,
+        body,
+        span,
+        args,
+        writeback,
+        traversed_layers,
+        traversed_index_layers,
+        hook,
+        depth,
+    } = input;
     if args.len() != param_names.len() {
         return Err(RuntimeError::fault(
             RUN_TYPE,
@@ -624,6 +636,9 @@ fn runtime_type_from_schema(
     module: &CheckedModule,
     ty: &Type,
 ) -> MarrowType {
+    if let Some(resource_type) = resolve_resource_schema_type(program, &module.name, ty) {
+        return resource_type;
+    }
     match ty {
         Type::Scalar(scalar) => MarrowType::Primitive(*scalar),
         Type::Sequence(element) => {
@@ -634,21 +649,16 @@ fn runtime_type_from_schema(
         ),
         Type::Unknown => MarrowType::Unknown,
         Type::Named(name) if name == "Error" => MarrowType::Error,
-        Type::Named(name)
-            if module
-                .resources
-                .iter()
-                .any(|resource| &resource.name == name) =>
-        {
-            MarrowType::Resource(name.clone())
-        }
-        Type::Named(name) if module.enums.iter().any(|enum_| &enum_.name == name) => {
-            MarrowType::Enum {
-                module: module.name.clone(),
-                name: name.clone(),
+        Type::Named(name) => {
+            if module.enums.iter().any(|enum_| &enum_.name == name) {
+                MarrowType::Enum {
+                    module: module.name.clone(),
+                    name: name.clone(),
+                }
+            } else {
+                MarrowType::Unknown
             }
         }
-        Type::Named(_) => MarrowType::Unknown,
     }
 }
 
@@ -853,12 +863,10 @@ pub(crate) fn default_value(ty: &Type) -> Option<Value> {
     })
 }
 
-/// The value an `out` parameter is seeded with before the callee assigns it. A
-/// correct callee assigns it before returning (a checker rule to require this is
-/// still pending), so the placeholder is normally unobserved. Only the four
-/// scalars with a simple zero seed to that zero; any other type — a temporal or
-/// decimal scalar, a sequence, a resource, an identity — starts as an empty
-/// resource.
+/// The value an `out` parameter is seeded with before the callee assigns it.
+/// Only the four scalars with a simple zero seed to that zero; any other type —
+/// a temporal or decimal scalar, a sequence, a resource, an identity — starts as
+/// an empty resource.
 pub(crate) fn out_seed(ty: &MarrowType) -> Value {
     let zero = match ty {
         MarrowType::Primitive(
@@ -956,9 +964,8 @@ pub(crate) fn eval_call(
         }
         // `std::<module>::<op>` is a builtin module call. A recognized op routes
         // to its descriptor's capability family in the shared stdlib table; an
-        // unrecognized op under a known module still routes by module so its
-        // handler raises the same `unsupported` error as before, and an unknown
-        // module falls through to the program-function dispatch.
+        // unrecognized op under a known module routes to that module's handler,
+        // and an unknown module falls through to the program-function dispatch.
         if let [first, second, op] = segments.as_slice()
             && first == "std"
         {
@@ -1015,20 +1022,20 @@ pub(crate) fn eval_call(
     let depth = env.depth;
     let traversed_layers = env.traversed_layers.clone();
     let traversed_index_layers = env.traversed_index_layers.clone();
-    let (completion, _, hook) = invoke(
+    let (completion, _, hook) = invoke(Invocation {
         ctx,
-        Rc::clone(&env.output),
-        Some(module),
-        &names,
-        &function.body,
-        function.span,
-        &values,
-        &[],
-        &traversed_layers,
-        &traversed_index_layers,
-        env.hook.take(),
-        depth + 1,
-    )?;
+        output: Rc::clone(&env.output),
+        module: Some(module),
+        param_names: &names,
+        body: &function.body,
+        span: function.span,
+        args: &values,
+        writeback: &[],
+        traversed_layers: &traversed_layers,
+        traversed_index_layers: &traversed_index_layers,
+        hook: env.hook.take(),
+        depth: depth + 1,
+    })?;
     env.hook = hook;
     complete_call(completion, span)
 }
@@ -1088,20 +1095,20 @@ pub(crate) fn eval_call_with_modes<'p>(
     let depth = env.depth;
     let traversed_layers = env.traversed_layers.clone();
     let traversed_index_layers = env.traversed_index_layers.clone();
-    let (completion, finals, hook) = invoke(
+    let (completion, finals, hook) = invoke(Invocation {
         ctx,
-        Rc::clone(&env.output),
-        Some(module),
-        &names,
-        &function.body,
-        function.span,
-        &values,
-        &writeback,
-        &traversed_layers,
-        &traversed_index_layers,
-        env.hook.take(),
-        depth + 1,
-    )?;
+        output: Rc::clone(&env.output),
+        module: Some(module),
+        param_names: &names,
+        body: &function.body,
+        span: function.span,
+        args: &values,
+        writeback: &writeback,
+        traversed_layers: &traversed_layers,
+        traversed_index_layers: &traversed_index_layers,
+        hook: env.hook.take(),
+        depth: depth + 1,
+    })?;
     env.hook = hook;
     // Write each out/inout parameter's final value back to its place. On a throw
     // or fault `finals` is all `None`, so nothing is written.
@@ -1123,10 +1130,8 @@ mod default_value_tests {
     use crate::call::{default_value, out_seed};
     use crate::value::Value;
 
-    // Pin the `var` defaults exhaustively against the values the dedicated
-    // uninitialized-default table produced before it was folded into one fn.
     #[test]
-    fn var_default_matches_the_old_table() {
+    fn var_default_matches_the_runtime_contract() {
         assert_eq!(
             default_value(&Type::Scalar(ScalarType::Int)),
             Some(Value::Int(0))
@@ -1168,12 +1173,8 @@ mod default_value_tests {
         assert_eq!(default_value(&Type::Unknown), None);
     }
 
-    // Pin the `out` seed exhaustively against the values the dedicated zero-value
-    // table produced: only Int/Bool/Str/Bytes seed to a scalar zero; every other
-    // type (temporal, decimal, sequence, resource, identity, unknown) is an empty
-    // resource. The fold must not widen the seed to the new scalar defaults.
     #[test]
-    fn out_seed_matches_the_old_table() {
+    fn out_seed_matches_the_runtime_contract() {
         assert_eq!(
             out_seed(&MarrowType::Primitive(ScalarType::Int)),
             Value::Int(0)

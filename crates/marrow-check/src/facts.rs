@@ -737,12 +737,7 @@ impl CheckedFacts {
         let expanded = expand_alias(segments, aliases);
         let (resource, module) = expanded.split_last()?;
         if module.is_empty() {
-            return self.resource_id(module_id, resource).or_else(|| {
-                self.resources
-                    .iter()
-                    .find(|candidate| candidate.name == *resource)
-                    .map(|candidate| candidate.id)
-            });
+            return self.resource_id(module_id, resource);
         }
         self.module_id(&module.join("::"))
             .and_then(|module_id| self.resource_id(module_id, resource))

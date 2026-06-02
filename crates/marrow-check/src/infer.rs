@@ -8,17 +8,20 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan};
 
 use crate::checks::{
-    check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
+    CallCheck, check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
     key_type_diagnostic, operator_diagnostic,
 };
-use crate::enums::{check_is, join_or, resolve_enum_member_path, resolve_type};
+use crate::enums::{
+    IsCheck, check_is, enum_schema_in, join_or, resolve_enum_member_path, resolve_type,
+};
 use crate::program::TypeNames;
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_PRIVATE_ENUM,
     CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, MarrowType,
-    identity_type_for_store, resolve_resource_type, resource_type_name,
+    build_alias_map, expand_module_alias, identity_type_for_store, resolve_resource_schema_type,
+    resolve_resource_type, resource_type_name,
 };
 
 /// Infer an expression's type without recording diagnostics. Resolution runs after
@@ -179,15 +182,15 @@ pub(crate) fn infer_type(
             // rather than inferred as a value here — inferring it would reject a
             // category right operand as non-selectable.
             if matches!(op, marrow_syntax::BinaryOp::Is) {
-                return check_is(
+                return check_is(IsCheck {
                     program,
-                    &left_type,
+                    left_type: &left_type,
                     right,
                     aliases,
-                    *span,
+                    span: *span,
                     file,
                     diagnostics,
-                );
+                });
             }
             let right_type = infer_type(program, right, scope, aliases, file, diagnostics);
             // `??` only defaults an absent path read, so its left operand must be a
@@ -233,16 +236,16 @@ pub(crate) fn infer_type(
             ) {
                 return ty;
             }
-            let call_type = check_call(
+            let call_type = check_call(CallCheck {
                 program,
                 callee,
                 args,
-                &arg_types,
+                arg_types: &arg_types,
                 aliases,
-                *span,
+                span: *span,
                 file,
                 diagnostics,
-            );
+            });
             // A saved access `^root(key…)` or `^root(key…).layer(key…)` carries key
             // arguments the function-call path does not type. Check them against the
             // root's identity keys or the layer's key parameters here, where the
@@ -474,7 +477,7 @@ pub(crate) fn saved_field_type(
     if bare_root && !store.store.identity_keys.is_empty() {
         return None;
     }
-    field_member_type(store.resource, &[field], &store.module.name)
+    field_member_type(program, store.resource, &[field], &store.module.name)
 }
 
 /// The resource type of a whole-record read `^root(key…)`: the call's callee is
@@ -554,7 +557,7 @@ pub(crate) fn local_field_type(
     match base_type {
         MarrowType::Resource(name) => {
             let (resource, module) = resolve_resource_type(program, name)?;
-            field_member_type(resource, &[field], module)
+            field_member_type(program, resource, &[field], module)
         }
         MarrowType::GroupEntry {
             resource: name,
@@ -563,7 +566,7 @@ pub(crate) fn local_field_type(
             let (resource, module) = resolve_resource_type(program, name)?;
             let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
             chain.push(field);
-            field_member_type(resource, &chain, module)
+            field_member_type(program, resource, &chain, module)
         }
         MarrowType::Error => error_field_type(field),
         _ => None,
@@ -593,7 +596,7 @@ pub(crate) fn saved_group_field_type(
         return None;
     }
     chain.push(field);
-    field_member_type(store.resource, &chain, &store.module.name)
+    field_member_type(program, store.resource, &chain, &store.module.name)
 }
 
 fn singleton_saved_group_field_type(
@@ -609,7 +612,7 @@ fn singleton_saved_group_field_type(
     if !store.store.identity_keys.is_empty() {
         return None;
     }
-    field_member_type(store.resource, &[layer, field], &store.module.name)
+    field_member_type(program, store.resource, &[layer, field], &store.module.name)
 }
 
 /// Extract `(root, [member…])` from a group entry — the base of a group field
@@ -662,7 +665,7 @@ pub(crate) fn saved_leaf_type(
 ) -> Option<MarrowType> {
     let (root, layers) = saved_layer_chain(callee)?;
     let store = resolve_store_by_root(program, root)?;
-    leaf_member_type(store.resource, &layers, &store.module.name)
+    leaf_member_type(program, store.resource, &layers, &store.module.name)
 }
 
 fn singleton_saved_leaf_type(
@@ -674,7 +677,7 @@ fn singleton_saved_leaf_type(
     if !store.store.identity_keys.is_empty() {
         return None;
     }
-    leaf_member_type(store.resource, &[layer], &store.module.name)
+    leaf_member_type(program, store.resource, &[layer], &store.module.name)
 }
 
 fn singleton_saved_layer(callee: &marrow_syntax::Expression) -> Option<(&str, &str)> {
@@ -725,13 +728,14 @@ pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&st
 /// checker's lattice. `owning_module` is the module that declares the resource, so
 /// an enum-typed field reads as that module's enum rather than `Unknown`.
 pub(crate) fn field_member_type(
+    program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
     chain: &[&str],
     owning_module: &str,
 ) -> Option<MarrowType> {
     resource
         .field_type(chain)
-        .map(|ty| lift_member_type(ty.clone(), owning_module))
+        .map(|ty| lift_member_type(program, ty.clone(), owning_module))
 }
 
 /// The checker type of a keyed-leaf layer read named by its chain of layer names,
@@ -739,32 +743,66 @@ pub(crate) fn field_member_type(
 /// [`field_member_type`], differing only in that the terminal name is a keyed-leaf
 /// layer rather than a field.
 pub(crate) fn leaf_member_type(
+    program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
     layers: &[&str],
     owning_module: &str,
 ) -> Option<MarrowType> {
     resource
         .leaf_type(layers)
-        .map(|ty| lift_member_type(ty.clone(), owning_module))
+        .map(|ty| lift_member_type(program, ty.clone(), owning_module))
 }
 
-/// Lift a saved-member schema [`Type`] to the checker's lattice. A saved member is
-/// a scalar, sequence, identity, or — for a bare [`Type::Named`] — an enum, which
-/// the saved-field rule guarantees is declared in `owning_module`. So a `Named`
-/// member reads as that module's enum, carrying its nominal `{module, name}`
-/// identity, rather than collapsing to `Unknown`.
-pub(crate) fn lift_member_type(ty: Type, owning_module: &str) -> MarrowType {
-    match ty {
-        Type::Named(name) => MarrowType::Enum {
-            module: owning_module.to_string(),
-            name,
-        },
-        Type::Identity(identity) => MarrowType::Identity(identity),
-        Type::Sequence(element) => {
-            MarrowType::Sequence(Box::new(lift_member_type(*element, owning_module)))
-        }
-        other => MarrowType::from_resolved(other, TypeNames::default()),
+/// Lift a schema member [`Type`] through the same nominal resource placement used
+/// by annotations and constructors; enum members resolve only by the declaring
+/// module or an explicit qualified owner.
+pub(crate) fn lift_member_type(
+    program: &CheckedProgram,
+    ty: Type,
+    owning_module: &str,
+) -> MarrowType {
+    if let Some(resource_type) = resolve_resource_schema_type(program, owning_module, &ty) {
+        return resource_type;
     }
+    if let Some(enum_type) = resolve_member_enum_type(program, owning_module, &ty) {
+        return enum_type;
+    }
+    MarrowType::from_resolved(ty, TypeNames::default())
+}
+
+fn resolve_member_enum_type(
+    program: &CheckedProgram,
+    owning_module: &str,
+    ty: &Type,
+) -> Option<MarrowType> {
+    match ty {
+        Type::Sequence(element) => resolve_member_enum_type(program, owning_module, element)
+            .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
+        Type::Named(name) => resolve_member_enum_name(program, owning_module, name),
+        _ => None,
+    }
+}
+
+fn resolve_member_enum_name(
+    program: &CheckedProgram,
+    owning_module: &str,
+    name: &str,
+) -> Option<MarrowType> {
+    let (module, enum_name) = if let Some((module, enum_name)) = name.rsplit_once("::") {
+        let aliases = program
+            .modules
+            .iter()
+            .find(|module| module.name == owning_module)
+            .map(|module| build_alias_map(&module.imports))
+            .unwrap_or_default();
+        (expand_module_alias(module, &aliases), enum_name.to_string())
+    } else {
+        (owning_module.to_string(), name.to_string())
+    };
+    enum_schema_in(program, &module, &enum_name).map(|_| MarrowType::Enum {
+        module,
+        name: enum_name,
+    })
 }
 
 /// Look up a name's binding, innermost scope frame first; `None` when unbound.

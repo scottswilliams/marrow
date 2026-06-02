@@ -1,7 +1,7 @@
 //! The IDE-grade analysis surface: project analysis plus cursor type and
 //! scope queries. This is the stable path editor tooling consumes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
@@ -10,7 +10,7 @@ use marrow_syntax::{Severity, SourceSpan};
 use crate::checks::{
     ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude, for_frame,
 };
-use crate::enums::{collect_enum_names, normalize_program_named_types, resolve_type};
+use crate::enums::{normalize_program_named_types, resolve_type};
 use crate::infer::{bind, infer_type, local_binding};
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
@@ -315,21 +315,6 @@ pub(crate) fn analyze_source_project(
         }
     }
 
-    // Pass 3: flag type annotations on functions and constants that name an
-    // unknown type. Resource and enum member types are validated by schema
-    // compilation. Both name sets are gathered from every parsed file (not from
-    // `program`) so a type referencing a name in an error-bearing file is not
-    // false-flagged unknown.
-    let project_resources: HashSet<String> = parsed_files
-        .iter()
-        .flat_map(|(_, parsed)| parsed.file.declarations.iter())
-        .filter_map(|declaration| match declaration {
-            marrow_syntax::Declaration::Resource(resource) => Some(resource.name.clone()),
-            _ => None,
-        })
-        .collect();
-    let project_enums = collect_enum_names(&parsed_files);
-
     // Stamp each cross-module named-type signature slot with its true owner, now
     // that the whole program is known, before any pass reads parameter types.
     normalize_program_named_types(&mut program, &parsed_files);
@@ -342,8 +327,6 @@ pub(crate) fn analyze_source_project(
             module_name_policy: ModuleNamePolicy::DeclaredOrPath,
             resolvable: &declared,
             program: &program,
-            project_resources: &project_resources,
-            project_enums: &project_enums,
         },
         &mut report,
     );

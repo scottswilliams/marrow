@@ -64,6 +64,9 @@ Resource indentation mirrors tree layers:
 
 ```mw
 resource Patient
+    required mrn: string
+    required lastName: string
+
     name
         required first: string
         required last: string
@@ -89,7 +92,7 @@ Indexes are declared on stores:
 
 ```mw
 store ^patients(id: string): Patient
-    index byName(name.last, id)
+    index byLastName(lastName, id)
     index byMrn(mrn) unique
 ```
 

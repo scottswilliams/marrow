@@ -1750,6 +1750,20 @@ fn an_uninitialized_qualified_resource_var_starts_empty() {
 }
 
 #[test]
+fn uninitialized_bare_foreign_resource_var_is_not_project_wide() {
+    let program = checked_program_modules(&[
+        "module library\nresource Book\n    title: string\n",
+        "module app\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    return book.title\n",
+    ]);
+    let error = run(&program, "app::main", &[]).expect_err("foreign bare resource type");
+    assert_eq!(error.code, RUN_UNSUPPORTED);
+    assert!(
+        error.message.contains("uninitialized variable"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn an_inout_parameter_writes_back_to_a_local_resource_field() {
     // A field of a local resource, `book.title`, is an assignable place; passing it
     // `inout` reads it to seed the parameter and writes the result back.
@@ -4664,6 +4678,25 @@ fn constructs_a_qualified_resource_value() {
             Value::Str("Mort".into())
         )]))
     );
+}
+
+#[test]
+fn constructor_field_with_qualified_resource_type_rejects_scalar() {
+    let program = checked_program_modules(&[
+        "module library\n\
+         resource Address\n\
+         \x20\x20\x20\x20city: string\n",
+        "module app\n\
+         use library\n\
+         resource Person\n\
+         \x20\x20\x20\x20address: library::Address\n\
+         fn make(): unknown\n\
+         \x20\x20\x20\x20return Person(address: 1)\n",
+    ]);
+    let store = RefCell::new(MemStore::new());
+    let err = run_entry(&program, &store, "app::make", &[]).expect_err("field type rejected");
+    assert_eq!(err.code, RUN_TYPE);
+    assert!(err.message.contains("wrong type"), "{err:?}");
 }
 
 #[test]

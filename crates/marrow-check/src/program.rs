@@ -155,7 +155,8 @@ pub enum MarrowType {
     /// The checker-only type of a caught or thrown error value (`catch e: Error`,
     /// `throw Error(...)`). It has no storage form and never resolves to a scalar.
     Error,
-    /// A resource declared in the same module, by name.
+    /// A resource by canonical module-qualified name, or bare name for a
+    /// module-less script.
     Resource(String),
     /// A saved keyed-group entry, identified by its owning resource and group
     /// layer chain.
@@ -186,17 +187,15 @@ pub enum MarrowType {
     Unknown,
 }
 
-/// The module's named types — resources and enums — that resolution needs to
-/// promote a bare [`Type::Named`] to a reference rather than [`MarrowType::Unknown`].
-/// Both are looked up by name; an enum name and a resource name never collide
-/// (the checker reports that as a duplicate declaration).
+/// The module's enum names, used while resolving annotations that still follow
+/// Lane 6 enum ownership rules. Resource names resolve through the checked
+/// module-aware resolver instead.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TypeNames<'a> {
     /// The qualified name of the module these names belong to, so a bare enum
     /// annotation resolves to that module's enum (`module::name` identity). Empty
     /// for a module-less script, whose enums are project-unique by construction.
     pub module: &'a str,
-    pub resources: &'a [String],
     pub enums: &'a [String],
 }
 
@@ -209,10 +208,9 @@ impl MarrowType {
     }
 
     /// Promote a schema-resolved [`Type`] to the checker's lattice using the
-    /// module's named types. The structure (scalar, sequence, identity,
-    /// `unknown`) is already decided; this layer only places a bare [`Type::Named`]
-    /// as a resource reference, an enum reference, the checker-only `Error` type,
-    /// or `Unknown`.
+    /// module's enum names. The structure (scalar, sequence, identity, `unknown`)
+    /// is already decided; this layer only places a bare [`Type::Named`] as an enum
+    /// reference, the checker-only `Error` type, or `Unknown`.
     pub(crate) fn from_resolved(ty: Type, names: TypeNames<'_>) -> Self {
         match ty {
             Type::Scalar(scalar) => Self::Primitive(scalar),
@@ -224,7 +222,6 @@ impl MarrowType {
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
             Type::Named(name) if name == "Error" => Self::Error,
-            Type::Named(name) if names.resources.contains(&name) => Self::Resource(name),
             // A bare enum annotation names the owning module's enum.
             Type::Named(name) if names.enums.contains(&name) => Self::Enum {
                 module: names.module.to_string(),
