@@ -10,78 +10,18 @@ use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
-use crate::env::{Env, TraversedLayer};
+use crate::env::Env;
 use crate::error::{Located, RUN_ABSENT, RuntimeError, raise_fault, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
 use crate::value::{Value, saved_key_to_value, value_to_key};
 
-const INDEX_SCAN_PAGE_LIMIT: usize = 128;
-
-pub(crate) fn traversed_layer(
-    iterable: &ExecExpr,
-    env: &mut Env<'_>,
-) -> Result<Option<TraversedLayer>, RuntimeError> {
-    // `reversed(...)` traverses the same layer (just backward), so unwrap it the
-    // same way `keys`/`values`/`entries` are — the guarded prefix is unchanged by
-    // direction. A `reversed(keys(L))` peels both wrappers.
-    let unwrapped = reversed_argument(iterable).unwrap_or(iterable);
-    let path = traversal_argument(unwrapped).unwrap_or(unwrapped);
-    if path.saved_place().is_none() {
-        return Ok(None);
-    }
-    if let Some(place) = direct_root_place(path) {
-        return TraversedLayer::record(place, path.span()).map(Some);
-    }
-    if let Some(place) = path.saved_place()
-        && let Some(layer) = index_traversal_layer(place, path.span(), env)?
-    {
-        return Ok(Some(layer));
-    }
-    match path {
-        // A keyed/sequence child layer `^root(id…).layer`.
-        ExecExpr::Field { base, .. } => {
-            let base_path = lower(base, env)?;
-            let Some(place) = path.saved_place() else {
-                return Err(unsupported("iterating this saved path", path.span()));
-            };
-            let Some(layer_facts) = place.layers.last() else {
-                return Err(unsupported("iterating this saved path", path.span()));
-            };
-            let mut layers = base_path.layer_addresses;
-            layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
-            let address =
-                DataAddress::layer_prefix(place, &base_path.identity, &layers, path.span())?;
-            Ok(Some(TraversedLayer::data(address)))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
-/// expression. These wrap a saved layer without changing which layer is traversed.
-pub(crate) fn traversal_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
-    let ExecExpr::Call { target, args, .. } = expr else {
-        return None;
-    };
-    matches!(
-        target,
-        CheckedCallTarget::Builtin(
-            CheckedBuiltinCall::Keys | CheckedBuiltinCall::Values | CheckedBuiltinCall::Entries
-        )
-    )
-    .then_some(())?;
-    match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
-        _ => None,
-    }
-}
+pub(crate) const INDEX_SCAN_PAGE_LIMIT: usize = 128;
 
 /// The single argument of a `reversed(<iterable>)` call, or `None` for any other
-/// expression. Lets the loop materializer and write-guard see through the
-/// `reversed` wrapper to the layer it traverses (its inner `keys`/`values`/
-/// `entries` or bare saved path), exactly as [`traversal_argument`] does.
+/// expression. Lets collection helpers see through the wrapper without changing
+/// the saved layer they traverse.
 pub(crate) fn reversed_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
     let ExecExpr::Call { target, args, .. } = expr else {
         return None;
@@ -112,8 +52,8 @@ pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
 
 /// Enumerate the child keys of a saved layer for address-oriented traversal:
 /// `keys(...)`, direct index-branch loops, and the materialization helpers that
-/// pair keys with values. Classifies the path once and descends one shared
-/// key-collector ([`collect_child_identities`]):
+/// pair keys with values. Classifies the path once, then delegates to the
+/// collector for the resolved layer shape:
 ///
 /// - `^root` (a keyed primary root) yields its record identities — a bare key
 ///   value for a single-key identity, a [`Value::Identity`] for a composite one;
@@ -136,27 +76,22 @@ pub(crate) fn enumerate_layer_dir(
     dir: Direction,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    if let Some(place) = direct_root_place(path) {
-        let arity = place.identity_keys.len();
-        if arity == 0 {
-            return Err(type_error(
-                &format!(
-                    "`^{}` is a singleton with no identities to iterate",
-                    place.root
-                ),
-                path.span(),
-            ));
+    match iterable_layer(path, env)? {
+        IterableLayer::Root(place) => {
+            let arity = place.identity_keys.len();
+            if arity == 0 {
+                return Err(type_error(
+                    &format!(
+                        "`^{}` is a singleton with no identities to iterate",
+                        place.root
+                    ),
+                    path.span(),
+                ));
+            }
+            collect_record_identities(place, arity, &[], dir, path.span(), env)
         }
-        return collect_record_identities(place, arity, &[], dir, path.span(), env);
-    }
-    if let Some(place) = path.saved_place()
-        && let Some(branch) = iterable_index_branch(place, path.span(), env)?
-    {
-        return enumerate_index_branch(&branch, dir, path.span(), env);
-    }
-    match path {
-        ExecExpr::Field { .. } => enumerate_child_layer(path, dir, env),
-        other => Err(unsupported("iterating this saved path", other.span())),
+        IterableLayer::Index(_, branch) => enumerate_index_branch(&branch, dir, path.span(), env),
+        IterableLayer::ChildLayer => enumerate_child_layer(path, dir, env),
     }
 }
 
@@ -167,29 +102,28 @@ pub(crate) struct IndexBranchAddress {
     pub(crate) depth: usize,
 }
 
-pub(crate) fn index_traversal_layer(
-    place: &CheckedSavedPlace,
-    span: SourceSpan,
+pub(crate) enum IterableLayer<'a> {
+    Root(&'a CheckedSavedPlace),
+    Index(&'a CheckedSavedPlace, IndexBranchAddress),
+    ChildLayer,
+}
+
+pub(crate) fn iterable_layer<'a>(
+    path: &'a ExecExpr,
     env: &mut Env<'_>,
-) -> Result<Option<TraversedLayer>, RuntimeError> {
-    let CheckedSavedTerminal::Index { name, args, .. } = &place.terminal else {
-        return Ok(None);
-    };
-    let mut keys = Vec::new();
-    for arg in args {
-        if arg.mode.is_some() || arg.name.is_some() {
-            return Err(unsupported(
-                "an index lookup with named or out arguments",
-                span,
-            ));
-        }
-        keys.push(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("an index key of this type", span))?,
-        );
+) -> Result<IterableLayer<'a>, RuntimeError> {
+    if let Some(place) = direct_root_place(path) {
+        return Ok(IterableLayer::Root(place));
     }
-    let address = IndexAddress::from_place(place, name, keys, span)?;
-    Ok(Some(TraversedLayer::index(address)))
+    if let Some(place) = path.saved_place()
+        && let Some(branch) = iterable_index_branch(place, path.span(), env)?
+    {
+        return Ok(IterableLayer::Index(place, branch));
+    }
+    match path {
+        ExecExpr::Field { .. } => Ok(IterableLayer::ChildLayer),
+        other => Err(unsupported("iterating this saved path", other.span())),
+    }
 }
 
 pub(crate) fn iterable_index_branch(
@@ -423,7 +357,7 @@ fn collect_data_child_values(
     Ok(values)
 }
 
-fn first_record_child(
+pub(crate) fn first_record_child(
     store: &TreeStore,
     store_id: &CatalogId,
     prefix: &[SavedKey],
@@ -437,7 +371,7 @@ fn first_record_child(
     .map_err(|error| error.located(span))
 }
 
-fn next_record_child(
+pub(crate) fn next_record_child(
     store: &TreeStore,
     store_id: &CatalogId,
     prefix: &[SavedKey],
@@ -452,7 +386,7 @@ fn next_record_child(
     .map_err(|error| error.located(span))
 }
 
-fn first_index_child(
+pub(crate) fn first_index_child(
     store: &TreeStore,
     index: &CatalogId,
     prefix: &[SavedKey],
@@ -466,7 +400,7 @@ fn first_index_child(
     .map_err(|error| error.located(span))
 }
 
-fn next_index_child(
+pub(crate) fn next_index_child(
     store: &TreeStore,
     index: &CatalogId,
     prefix: &[SavedKey],
@@ -481,7 +415,7 @@ fn next_index_child(
     .map_err(|error| error.located(span))
 }
 
-fn first_data_child(
+pub(crate) fn first_data_child(
     store: &TreeStore,
     address: &DataAddress,
     dir: Direction,
@@ -498,7 +432,7 @@ fn first_data_child(
     .map_err(|error| error.located(span))
 }
 
-fn next_data_child(
+pub(crate) fn next_data_child(
     store: &TreeStore,
     address: &DataAddress,
     anchor: &SavedKey,

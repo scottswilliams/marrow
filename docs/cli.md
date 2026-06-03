@@ -241,7 +241,8 @@ marrow explain [--format text|json|jsonl] <projectdir> <target>
 ```
 
 Statically explain a target without running code. The target is either a saved
-`^path` or a name.
+`^path` or a name. Saved-path explanation is a diagnostic/admin inspection
+surface; typed production previews are deferred to the Lane 10 tooling protocol.
 
 A `^path` target reports its path/index plan: the root and resource it names,
 the resolved class — a scalar leaf and its type, a generated index entry, a
@@ -276,9 +277,11 @@ marrow data integrity [--format text|json|jsonl] <projectdir>
 marrow data get       [--format text|json|jsonl] <projectdir> <path>
 ```
 
-Read-only inspection of a project's saved data. It never creates or modifies the
-store; a project with no saved data on disk reports as empty. See
-[data-tools.md](data-tools.md) for full output shapes and the path syntax.
+Read-only diagnostic/admin inspection of a project's saved data. It never
+creates or modifies the store; a project with no saved data on disk reports as
+empty. See [data-tools.md](data-tools.md) for full output shapes and the path
+syntax. These commands are not the production backup/restore or typed preview
+contract; Lane 10 owns that protocol.
 
 `data diff` and `data load` are deferred — see
 [future/data-tools.md](future/data-tools.md).
@@ -312,9 +315,10 @@ $ marrow data stats --format json ./proj
 
 ### `data dump`
 
-Print every stored `(path, value)` in encoded order. Values render raw — as UTF-8
-text when valid, else `0x<hex>` — not schema-typed, so dump works without source.
-JSON/JSONL carry the path plus base64 of the exact path and value bytes.
+Print every stored `(path, value)` in encoded order for inspection. Values
+render raw — as UTF-8 text when valid, else `0x<hex>` — not schema-typed.
+JSON/JSONL carry the path plus base64 of the exact path and value bytes. This is
+not a production backup format.
 
 ```console
 $ marrow data dump ./proj
@@ -342,10 +346,10 @@ ok: ./proj integrity verified (2 records)
 
 ### `data get`
 
-Read one path's value. The value renders raw, like `dump`. Absence is a valid
-result (exit `0`): a path with no value but children prints `(no value; has
-children)`, a truly absent path prints `(absent)`. An unparseable path is a usage
-error (exit `2`).
+Read one path's value for inspection. The value renders raw, like `dump`.
+Absence is a valid result (exit `0`): a path with no value but children prints
+`(no value; has children)`, a truly absent path prints `(absent)`. An
+unparseable path is a usage error (exit `2`).
 
 ```console
 $ marrow data get ./proj '^books(1).title'

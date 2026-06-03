@@ -163,17 +163,14 @@ pub(crate) struct Env<'p> {
     /// Transaction state is shared across helper calls so writes in callees obey
     /// the surrounding transaction's commit-time validation and savepoint rules.
     pub(crate) transaction: Rc<RefCell<TransactionState>>,
-    /// The opt-in statement debugger, installed only by
-    /// [`run_entry_with_debugger`]; `None` for every ordinary run, where the
-    /// per-statement check is a single `Option::is_none`. The hook is moved
-    /// (`Option::take`) out before each call so it cannot alias the `&Env` that
-    /// the [`Frame`] borrows, then moved back. It rides each nested activation by
-    /// being moved into the callee's [`invoke`] and returned to the caller
-    /// afterward.
+    /// The opt-in statement debugger. It is `None` for every ordinary run, where
+    /// the per-statement check is a single `Option::is_none`. The hook is moved
+    /// out before each call so it cannot alias the `&Env` borrowed by the frame,
+    /// then moved back after nested activations return.
     pub(crate) hook: Option<&'p mut dyn StepHook>,
     /// This activation's call depth: 1 for the entry function, one more per
-    /// nested call. Exposed via [`Frame::depth`] so a debugger can express
-    /// step-over and step-out by comparing depths across statements.
+    /// nested call. A debugger uses it to express step-over and step-out by
+    /// comparing depths across statements.
     pub(crate) depth: usize,
 }
 
@@ -496,11 +493,11 @@ impl<'p> Env<'p> {
         for layer in &self.traversed_layers {
             match layer {
                 TraversedLayer::Record { store }
-                    if store == &address.store && !address.identity.is_empty() =>
+                    if store == &address.store
+                        && !address.identity.is_empty()
+                        && (address.path.is_empty() || !self.record_exists(address, span)?) =>
                 {
-                    if address.path.is_empty() || !self.record_exists(address, span)? {
-                        return Err(traversal_fault(span));
-                    }
+                    return Err(traversal_fault(span));
                 }
                 TraversedLayer::Data {
                     store,
@@ -508,11 +505,10 @@ impl<'p> Env<'p> {
                     path,
                 } if store == &address.store
                     && identity == &address.identity
-                    && data_child_under(path, &address.path).is_some() =>
+                    && data_child_under(path, &address.path).is_some()
+                    && !self.data_child_exists(address, path, span)? =>
                 {
-                    if !self.data_child_exists(address, path, span)? {
-                        return Err(traversal_fault(span));
-                    }
+                    return Err(traversal_fault(span));
                 }
                 _ => {}
             }

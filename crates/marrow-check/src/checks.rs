@@ -1172,14 +1172,27 @@ fn check_for_collection_support(
     iterable: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if binding.second.is_none() {
-        return;
-    }
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
     let Some((store, _resource, index, _module, arg_count)) = saved_index_branch(program, iterable)
     else {
         return;
     };
+    if index.unique && arg_count != index.args.len() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            iterable.span(),
+            format!(
+                "unique index `{}` expects {} key argument(s), but {} were given",
+                index.name,
+                index.args.len(),
+                arg_count,
+            ),
+        ));
+        return;
+    }
+    if binding.second.is_none() {
+        return;
+    }
     if non_unique_index_branch_yields_identity(store, index, arg_count) {
         return;
     }

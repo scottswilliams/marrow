@@ -16,8 +16,8 @@ use crate::write_plan::{WriteOp, WriteTarget};
 /// An opt-in debugger hook: the runtime calls [`StepHook::before_statement`]
 /// once for each statement it is about to evaluate, in program order, so an
 /// adapter (e.g. marrow-dap) can step statement-by-statement and inspect the
-/// activation. A hook is installed only by [`run_entry_with_debugger`]; an
-/// ordinary run installs none and pays at most one `if let Some` per statement.
+/// activation. An ordinary run installs none and pays at most one `if let Some`
+/// per statement.
 ///
 /// Returning `Err` aborts the run with that error (a debugger 'terminate'),
 /// surfacing it the way any runtime fault would.

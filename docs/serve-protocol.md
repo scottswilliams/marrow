@@ -154,24 +154,23 @@ plus whether the page was truncated and an optional cursor for the next page.
 
 ```
 REQ   {"id": 7, "op": "saved_walk", "path": [{"root": "books"}], "limit": 1}
-REPLY {"id":7,"ok":{"entries":[{"path":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB","value":"ZmF2b3JpdGU="}],"truncated":true,"nextCursor":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB"}}
+REPLY {"id":7,"ok":{"entries":[{"path":"^books(1).tags(1)","value":"ZmF2b3JpdGU="}],"truncated":true,"nextCursor":"eyJwYXRoIjoiXmJvb2tzKDEpLnRpdGxlIiwidiI6MX0="}}
 
 REQ   {"id": 8, "op": "saved_walk", "path": [{"root": "books"}], "limit": 1,
-       "cursor": "AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB"}
-REPLY {"id":8,"ok":{"entries":[{"path":"AWJvb2tzAAICgAAAAAAAAAEDdGl0bGUA","value":"TW9ydA=="}],"truncated":true,"nextCursor":"AWJvb2tzAAICgAAAAAAAAAEDdGl0bGUA"}}
+       "cursor": "eyJwYXRoIjoiXmJvb2tzKDEpLnRpdGxlIiwidiI6MX0="}
+REPLY {"id":8,"ok":{"entries":[{"path":"^books(1).title","value":"TW9ydA=="}],"truncated":true,"nextCursor":"eyJwYXRoIjoiXmJvb2tzKDIpLnRpdGxlIiwidiI6MX0="}}
 
 REQ   {"id": 9, "op": "saved_walk", "path": [{"root": "books"}], "limit": 100}
 REPLY {"id":9,"ok":{"entries":[
-         {"path":"AWJvb2tzAAICgAAAAAAAAAEDdGFncwAEAoAAAAAAAAAB","value":"ZmF2b3JpdGU="},
-         {"path":"AWJvb2tzAAICgAAAAAAAAAEDdGl0bGUA","value":"TW9ydA=="},
-         {"path":"AWJvb2tzAAICgAAAAAAAAAIDdGl0bGUA","value":"U291cmNlcnk="}],
+         {"path":"^books(1).tags(1)","value":"ZmF2b3JpdGU="},
+         {"path":"^books(1).title","value":"TW9ydA=="},
+         {"path":"^books(2).title","value":"U291cmNlcnk="}],
        "truncated":false,"nextCursor":null}}
 ```
 
-In a `saved_walk` entry, both `path` and `value` are base64. Unlike a request
-`path` (an array of segment objects) and unlike `saved_get`'s `value` (decodable
-with the schema type), the walk `path` bytes are the store's opaque internal key:
-in v1 the client does not decode them. They serve to order, compare, and resume.
+In a `saved_walk` entry, `path` is a checked saved path string and `value` is the
+stored bytes as standard padded base64. A client decodes the value with the
+schema for that checked path.
 
 Paging:
 
@@ -180,11 +179,11 @@ Paging:
 - `limit` is clamped to a server maximum of 10000; a larger request is silently
   capped, not rejected, so an unbounded request cannot force a huge scan.
 - `truncated` is `true` when more entries remained past the limit.
-- `nextCursor` is the last returned encoded path when the page is truncated, or
-  `null` otherwise. Send it back as `cursor` with the same `path` to resume
-  strictly after that entry.
-- `cursor` is a base64 encoded internal key previously returned as
-  `nextCursor`. A malformed cursor, or one outside the requested `path`, is a
+- `nextCursor` is an opaque server token for the next unread checked path when
+  the page is truncated, or `null` otherwise. Send it back as `cursor` with the
+  same `path` to resume at that position.
+- `cursor` must be a token previously returned as `nextCursor`. A malformed
+  cursor, a raw path string, or a cursor outside the requested `path`, is a
   `protocol.bad_request`.
 
 ## Path encoding
@@ -232,11 +231,11 @@ and JSON numbers cannot hold them. Sending one as a number is a
 
 ## Base64
 
-Values, `bytes` keys, and `saved_walk` paths use standard RFC 4648 base64 (the
-`+`/`/` alphabet) with required `=` padding. Decoding is strict: unpadded or
-over-padded text is rejected. There is exactly one base64 dialect across the
-serve surface and the runtime — `Zm8` and `Zg====` are invalid; the padded
-`Zm8=` is valid.
+Values, `bytes` keys, and opaque `saved_walk` cursors use standard RFC 4648
+base64 (the `+`/`/` alphabet) with required `=` padding. Decoding is strict:
+unpadded or over-padded text is rejected. There is exactly one base64 dialect
+across the serve surface and the runtime — `Zm8` and `Zg====` are invalid; the
+padded `Zm8=` is valid.
 
 ## Error replies
 

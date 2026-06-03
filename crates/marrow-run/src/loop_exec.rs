@@ -1,6 +1,7 @@
 //! Checked loop, range, and collection iteration.
 
 use std::cmp::Ordering;
+use std::ops::ControlFlow;
 
 use marrow_check::{
     CheckedBinaryOp as BinaryOp, CheckedBody as ExecBody, CheckedExpr as ExecExpr,
@@ -10,14 +11,13 @@ use marrow_store::Decimal;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, materialize_layer, materialize_layer_dir, values_or_entries};
-use crate::env::{Env, Flow, TraversedLayer};
+use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
 use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
-use crate::read::{
-    enumerate_layer, enumerate_layer_dir, keys_argument, reversed_argument, traversed_layer,
-};
+use crate::read::{enumerate_layer, enumerate_layer_dir, keys_argument, reversed_argument};
+use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};
 use crate::stdlib::{check_key_collection, unique_index_lookup_values};
 use crate::value::Value;
 
@@ -60,22 +60,6 @@ pub(crate) fn eval_while(
     Ok(Flow::Normal)
 }
 
-pub(crate) fn iterate_saved_layer(
-    layer: Option<TraversedLayer>,
-    env: &mut Env<'_>,
-    loop_body: impl FnOnce(&mut Env<'_>) -> Result<Flow, RuntimeError>,
-) -> Result<Flow, RuntimeError> {
-    let pushed = layer.is_some();
-    if let Some(layer) = layer {
-        env.traversed_layers.push(layer);
-    }
-    let result = loop_body(env);
-    if pushed {
-        env.traversed_layers.pop();
-    }
-    result
-}
-
 pub(crate) fn eval_for(
     label: &Option<String>,
     binding: &ForBinding,
@@ -111,19 +95,35 @@ fn eval_two_name_for(
     if is_range_expr(iterable) {
         return Err(unsupported("a two-name binding over a range", span));
     }
+    if let Some(saved_loop) = SavedLoopSpec::from_iterable(iterable, true) {
+        return saved_loop.run(env, &mut |row, env| {
+            let SavedLoopRow::Pair(key, value) = row else {
+                return Err(unsupported(
+                    "a two-name binding over a non-pair iterable (use entries(...))",
+                    span,
+                ));
+            };
+            loop_step_flow(run_two_name_body(
+                label,
+                &binding.first,
+                second,
+                key,
+                value,
+                body,
+                env,
+            )?)
+        });
+    }
     let entries = eval_collection_entries(iterable, env)?;
-    let layer = traversed_layer(iterable, env)?;
-    iterate_saved_layer(layer, env, |env| {
-        for entry in entries {
-            let (key, value) = pair_entry(entry, span)?;
-            match run_two_name_body(label, &binding.first, second, key, value, body, env)? {
-                LoopStep::Iterate => {}
-                LoopStep::Stop => break,
-                LoopStep::Propagate(flow) => return Ok(flow),
-            }
+    for entry in entries {
+        let (key, value) = pair_entry(entry, span)?;
+        match run_two_name_body(label, &binding.first, second, key, value, body, env)? {
+            LoopStep::Iterate => {}
+            LoopStep::Stop => break,
+            LoopStep::Propagate(flow) => return Ok(flow),
         }
-        Ok(Flow::Normal)
-    })
+    }
+    Ok(Flow::Normal)
 }
 
 fn eval_single_name_collection_for(
@@ -134,18 +134,30 @@ fn eval_single_name_collection_for(
     _span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
+    if let Some(saved_loop) = SavedLoopSpec::from_iterable(iterable, false) {
+        return saved_loop.run(env, &mut |row, env| {
+            let value = match row {
+                SavedLoopRow::Single(value) => value,
+                SavedLoopRow::Pair(key, value) => Value::Sequence(vec![key, value]),
+            };
+            loop_step_flow(run_single_name_body(
+                label,
+                &binding.first,
+                value,
+                body,
+                env,
+            )?)
+        });
+    }
     let values = eval_collection(iterable, env)?;
-    let layer = traversed_layer(iterable, env)?;
-    iterate_saved_layer(layer, env, |env| {
-        for value in values {
-            match run_single_name_body(label, &binding.first, value, body, env)? {
-                LoopStep::Iterate => {}
-                LoopStep::Stop => break,
-                LoopStep::Propagate(flow) => return Ok(flow),
-            }
+    for value in values {
+        match run_single_name_body(label, &binding.first, value, body, env)? {
+            LoopStep::Iterate => {}
+            LoopStep::Stop => break,
+            LoopStep::Propagate(flow) => return Ok(flow),
         }
-        Ok(Flow::Normal)
-    })
+    }
+    Ok(Flow::Normal)
 }
 
 fn eval_range_for(
@@ -223,6 +235,14 @@ fn run_two_name_body(
     let flow = eval_block(body, env);
     env.pop_scope();
     Ok(classify(flow?, label))
+}
+
+fn loop_step_flow(step: LoopStep) -> Result<ControlFlow<Flow>, RuntimeError> {
+    Ok(match step {
+        LoopStep::Iterate => ControlFlow::Continue(()),
+        LoopStep::Stop => ControlFlow::Break(Flow::Normal),
+        LoopStep::Propagate(flow) => ControlFlow::Break(flow),
+    })
 }
 
 const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;

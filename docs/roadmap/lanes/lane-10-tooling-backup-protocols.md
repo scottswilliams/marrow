@@ -16,6 +16,16 @@ wait for the relevant fact, store, runtime, and evolution generation contracts.
 The first code phase in this lane defines the typed backup manifest and
 production backup/restore API.
 
+Active blockers inherited from the Lane 8 repair:
+
+- `marrow data get`, `marrow data dump`, and `marrow explain ^path` are
+  diagnostic/admin inspection surfaces until Lane 10 replaces raw/path-addressed
+  production previews with a typed, bounded protocol.
+- `marrow serve` path JSON, child listing, walk cursors, and preview paging must
+  be checked-fact based, bounded, and snapshot/catalog-epoch scoped.
+- No backup, restore, LSP, or production preview client may depend on raw saved
+  path strings, backend bytes, or tool-local path classifiers.
+
 ## Parallel Safety
 
 This lane can inventory docs and protocol descriptions in parallel, but early

@@ -1,182 +1,59 @@
 # Lane 8: Runtime Checked Execution And Write Planner
 
 > For agentic workers: use the lane loop in `/Users/scottwilliams/Dev/AGENTS.md`.
-> This is the lane that deletes production syntax-body execution.
 
-Goal: make production runtime execution consume checked facts or checked IR,
-with explicit durable places, effects, write plans, transaction behavior, and
-index maintenance.
+Goal: production runtime execution consumes checked executable facts, checked
+durable places, explicit write plans, transaction state, and index-maintenance
+facts. Runtime must not execute source syntax bodies, split source names or saved
+paths to recover semantics, or preserve prototype runtime behavior for old tests.
 
-Worktree: `/Users/scottwilliams/Dev/marrow-lane-08-runtime-checked`
+Status: active repair. The runtime execution replacement is substantially
+landed, but the lane is not complete until the strict gate, soundness review, and
+idiom/spec review pass on the integrated branch. Remaining protocol and tooling
+surfaces that still expose raw/path-addressed inspection are Lane 10 blockers,
+not evidence that Lane 8 is perfect.
 
-Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked`
+## Runtime Contract
 
-Status: active, but not review-ready. Removing the raw public function
-entrypoint is only a small slice; the lane still owns deletion of production
-syntax-body execution, runtime string resolution, and runtime path/schema
-classification.
+- Runtime entry accepts checked entry calls and checked executable bodies.
+- Saved reads, writes, deletes, loop traversal guards, and index maintenance use
+  checked durable-place facts and catalog identities.
+- Durable saved loops stream typed traversal rows through the loop body; local
+  in-memory arrays/maps may still materialize as ordinary values.
+- Write plans own transaction rollback, required-field validation, root clearing,
+  index maintenance, and traversal-guard checks.
+- `lock`, `merge`, saved `inout`, raw syntax-body execution, and production `~`
+  roots are not v0.1 runtime features.
+- Debug/admin-only tooling may inspect stored bytes, but normal runtime behavior
+  is checked-fact driven.
 
-## Parallel Safety
+## Cleanup Gate
 
-Production runtime code may now start in this lane. Do not split runtime files
-across competing orchestrators; `marrow-run` is one vertical replacement.
+Before integration, review the touched runtime area for:
 
-Own these files during the code pass:
+- no production execution of syntax `Block`, `Statement`, or `Expression`;
+- no runtime-local saved-path, schema, function-name, enum-member, or store-id
+  classifier that duplicates checked facts;
+- no compatibility branch, mode flag, or fallback dispatch kept only for old
+  behavior;
+- no broad dispatcher that should be split by invariant;
+- no low-value comments narrating branches or migration history.
 
-- `crates/marrow-run/src/*.rs`
-- focused runtime fixtures under `crates/marrow-run/tests/`
-- runtime-facing checked facts under `crates/marrow-check/src/` when required
-- `crates/marrow/tests/run_cli.rs`
-- `docs/language/control-flow-and-effects.md`
-- `docs/language/resources-and-storage.md`
+## Tests And Gates
 
-Do not change parser syntax, catalog acceptance workflow, tree-cell physical
-keys, or evolution apply semantics in this lane.
+Lane 8 must pass focused runtime checks, CLI boundary checks that exercise the
+runtime, the full workspace test suite, strict clippy, formatter check, and
+`git diff --check` with an explicit isolated `CARGO_TARGET_DIR` on every cargo
+command.
 
-## Area Cleanup Gate
+## Lane 10 Blockers
 
-This lane owns the complete cleanup of the runtime execution area across
-checked runtime entry, durable-place reads, write planning, transactions, host
-effects, runtime tests, and runtime-facing docs. It must delete syntax-body
-execution and runtime-local path/schema classifiers in its area instead of
-leaving a second runtime model for a later lane.
+Lane 10 owns production cleanup for the data/serve/explain protocol surfaces:
 
-Before handing the lane to review:
-
-- replace `CheckedFunction.body: Block` and any production `Block`/`Statement`
-  execution with checked executable facts or checked IR;
-- migrate runtime tests away from hand-built checked functions that copy syntax
-  bodies into the checked artifact;
-- delete runtime call lookup by source strings, alias expansion, and fallback
-  dispatch in favor of checked call target descriptors;
-- delete runtime saved-path and schema classifiers in favor of checked durable
-  places and store-address facts;
-- split checked execution, durable-place reads, write planning, transactions,
-  index maintenance, and host-effect handling by invariant;
-- migrate runtime tests, fixtures, and callers to checked facts or checked IR
-  instead of keeping the syntax interpreter or fallback dispatch so old tests
-  keep passing;
-- delete production syntax execution paths instead of wrapping them in mode
-  flags or compatibility helpers;
-- delete dead `lock`, `merge`, saved `inout`, string/path classifier, and raw
-  syntax execution helpers introduced or exposed by this lane;
-- delete comments that narrate statement branches, migration state, or why a
-  large dispatcher is safe;
-- preserve only comments that explain durable write, rollback, or host-effect
-  soundness constraints;
-- ensure the idiom/spec reviewer explicitly checks touched Rust for oversized
-  runtime functions, duplicate path classifiers, syntax-execution glue, comment
-  sediment, and lane-local cleanup deferred to Lane 11.
-
-## Production Contract
-
-- Runtime entry accepts checked executable facts or IR, not syntax bodies.
-- Saved reads and writes use checked durable places.
-- Runtime consumes the presence ledger rather than recomputing read totality.
-- The checked-effect model retains a named future slot for ADR 0209 ephemeral
-  reads and writes, but runtime exposes no production `~` root behavior.
-- Assignments, `edit`, `delete`, and assertions lower to explicit write plans.
-- Root assignment exposes subtree clearing effects.
-- Field/path assignment and `edit` preserve omitted data and update indexes.
-- Irreversible host effects are forbidden inside rollback-sensitive
-  transactions.
-- Runtime preserves tree, sequence, and keyed-layer shapes; no flat list model
-  becomes the production collection contract.
-- `lock`, `merge`, and saved `inout` are not production runtime features.
-- Principal/request-context effects stay future-reserved.
-
-## Prototype Removal Ledger
-
-Replacement behavior: checked facts/IR fully determine what runtime executes.
-
-Delete or isolate:
-
-- production execution of syntax `Block`, `Statement`, or `Expression`;
-- temporary syntax-body bridge from the checked-model migration, including
-  checked-program fields that carry syntax bodies into production runtime;
-- runtime splitting of `::`, saved paths, function names, enum members, or
-  store identities;
-- saved `inout` writeback;
-- runtime schema/path classifiers that duplicate checker facts;
-- hidden merge or lock semantics.
-
-Production bridge: none for execution. Debug interpreters must be named
-debug/admin surfaces and excluded from `run` and normal CLI paths.
-
-## TDD Start
-
-Write failing checks first:
-
-- architecture test proving production runtime cannot execute raw syntax;
-- architecture test proving checked runtime artifacts do not carry syntax
-  `Block`, `Statement`, or `Expression` execution bodies;
-- exact root assignment reports subtree clearing;
-- field assignment and `edit` preserve omitted data;
-- delete and existence assertions lower to write plans;
-- transactions roll back nested failures and host effects correctly;
-- optional/default reads use checked proof facts;
-- missing required production data fails activation or run;
-- index maintenance covers unique duplicate rollback and absent-component
-  removal;
-- typed references read/write without implicit joins, cascade delete, or
-  existence checks;
-- `lock`, `merge`, and saved `inout` stay rejected.
-- accidental `cache ~`, `ensure ~`, `Id(~...)`, or production `~` root behavior
-  is absent from runtime execution.
-
-Focused commands:
-
-```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-08-runtime-checked/Cargo.toml \
-    -p marrow-run
-
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-08-runtime-checked/Cargo.toml \
-    -p marrow --test run_cli
-```
-
-## Review Lenses
-
-Soundness review attacks transaction branches, future loop element mutation,
-index updates, optional fields, host effects, stale proof facts, and any path
-that executes syntax.
-
-Idiom/spec review checks runtime consumes facts, write planners stay focused,
-compatibility code is deleted, and Rust modules have clear invariants. It also
-rejects oversized runtime dispatchers, duplicate path classifiers, syntax
-execution glue, comment sediment, and lane-local cleanup deferred to Lane 11.
-
-## Integration Gate
-
-Run the full central gate. Add syntax-runtime absence scans:
-
-```sh
-rg -n 'Block|Statement|Expression|split\\(\"::\"\\)|inout|merge|lock|cache\s*~|ensure\s*~|Id\s*\(\s*~' \
-    /Users/scottwilliams/Dev/marrow-lane-08-runtime-checked/crates/marrow-run/src
-```
-
-Every match must be a deleted-path test, debug/admin-only path, or non-runtime
-type name with no production execution role.
-
-## Starter Prompt
-
-Continue Marrow v0.1 Lane 8 in `/Users/scottwilliams/Dev/marrow-lane-08-runtime-checked`.
-Use branch `lane-08-runtime-checked`, use
-`CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-08-runtime-checked`
-on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Start production runtime edits now that the store facts, presence ledger, and
-tree-cell APIs are on `main`. Replace AST-body execution with checked facts or
-checked IR, implement explicit write plans and transaction behavior, delete
-runtime string/path classifiers, and prove ADR 0209 `~` roots have no production
-runtime behavior beyond a named future checked-effect slot. Do not treat removal
-of a public raw entrypoint as completion while `CheckedFunction` still carries a
-syntax `Block` or runtime executes `Statement`/`Expression`. No legacy survival
-for green tests: migrate runtime tests, fixtures, and callers to checked facts or
-checked IR instead of keeping hand-built syntax-body checked functions, the
-syntax interpreter, fallback dispatch, `lock`, `merge`, or saved `inout`. Before
-review, satisfy the Area Cleanup Gate: split checked execution, durable-place
-reads, write planning, transactions, index maintenance, and host-effect
-handling; delete syntax-body execution, runtime string resolution, and runtime
-path/schema classifiers. Leave the worktree dirty for soundness and idiom/spec
-review.
+- raw/path-addressed CLI inspection (`data get`, `data dump`, `explain ^path`)
+  must remain diagnostic/admin-only until a typed production preview protocol
+  lands;
+- serve protocol path JSON and cursors must be checked, bounded, and
+  snapshot/catalog-epoch scoped;
+- backup/restore must use a typed manifest and must not rely on raw path/value
+  dumps.

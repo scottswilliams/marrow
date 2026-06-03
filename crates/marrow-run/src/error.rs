@@ -34,8 +34,8 @@ pub struct RuntimeError {
     /// The file the fault was raised in, as a [`FileId`] into the running
     /// [`CheckedRuntimeProgram`]. The `span`'s byte offsets are per-file, so this
     /// supplies the file identity they lack. It is `None` until the fault leaves
-    /// the activation that raised it (where [`invoke`] stamps it) and stays
-    /// `None` for activations without module context.
+    /// the activation that raised it and stays `None` for activations without
+    /// module context.
     pub origin: Option<FileId>,
 }
 
@@ -137,12 +137,12 @@ pub const RUN_TRAVERSAL: &str = "run.traversal";
 
 /// Raise `error` as a catchable language throw on the `Err` channel: the value
 /// rides the [`RuntimeError`]'s `throw` field, so a surrounding `try`/`catch`
-/// binds it and, with none, the activation's [`invoke`] re-surfaces it. The
-/// `code`/`message` carry how it renders if it escapes uncaught — the sentinel
+/// binds it. With no surrounding handler, the activation re-surfaces it. The
+/// `code`/`message` carry how it renders if it escapes uncaught: the sentinel
 /// `run.uncaught_error` and `uncaught error [{code}]: {message}` from the
-/// `Error`'s own fields. Assumes a well-formed Error (string `code`/`message`);
-/// a malformed one renders blank, which the constructor and the throw guard make
-/// unreachable in practice.
+/// `Error`'s own fields. Assumes a well-formed Error with string `code` and
+/// `message`; a malformed one renders blank, which the constructor and the throw
+/// guard make unreachable in practice.
 pub(crate) fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> RuntimeError {
     let code = error_field(&error, "code").unwrap_or_default();
     let message = error_field(&error, "message").unwrap_or_default();

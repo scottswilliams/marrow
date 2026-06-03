@@ -45,7 +45,8 @@ pub(crate) mod test_support {
     const CONFIG: &str = r#"{ "sourceRoots": ["src"] }"#;
     const SOURCE: &str = "module app\n\n\
                          resource Book at ^books(id: int)\n\
-                         \x20\x20\x20\x20title: string\n";
+                         \x20\x20\x20\x20title: string\n\
+                         \x20\x20\x20\x20tags(pos: int): string\n";
 
     pub(crate) fn empty_state() -> ServeState {
         ServeState {

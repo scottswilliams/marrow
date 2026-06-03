@@ -121,7 +121,8 @@ not decode renders as `?<hex>`.
 
 ## `marrow data get`
 
-Reads one path's value.
+Reads one path's value for diagnostic/admin inspection. It is not the typed
+production preview protocol and is not a backup/restore format.
 
 ```
 $ marrow data get ./project '^counter(1).value'

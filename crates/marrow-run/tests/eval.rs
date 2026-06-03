@@ -6981,6 +6981,15 @@ fn unique_index_prefix_branch_presence_count_and_iteration_agree() {
     );
 }
 
+#[test]
+fn unique_index_prefix_branch_loops_are_rejected_by_the_checker() {
+    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\nfn titlesInSeries(series: string)\n    for id in ^items.bySeriesCode(series)\n        print(^items(id).title ?? \"\")\n";
+    checker_rejects(source, "check.key_type");
+
+    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\nfn titlesInAnySeries()\n    for id in ^items.bySeriesCode\n        print(^items(id).title ?? \"\")\n";
+    checker_rejects(source, "check.key_type");
+}
+
 /// A non-unique index in value position has no single identity to yield; the
 /// runtime rejects it and points the reader at `keys(...)`.
 const BOOK_SHELF_VALUE: &str = "\
@@ -8789,6 +8798,92 @@ fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
         .expect("loop")
         .value,
         Some(Value::Int(19))
+    );
+}
+
+#[test]
+fn direct_saved_root_loop_returns_before_scanning_later_pages() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = $\"Book {id}\"\n\nfn printFirstId()\n    for id in keys(^books)\n        print($\"{id}\")\n        return\n",
+    );
+    let probe = Rc::new(StoreProbe::default());
+    let store = TreeStore::new(ProbedStore::new(Rc::clone(&probe)));
+    for id in 1..=129 {
+        run_entry(
+            &program,
+            &store,
+            checked_entry!(&program, "test::seed", Value::Int(id)),
+        )
+        .expect("seed");
+    }
+
+    probe.reset();
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            checked_entry!(&program, "test::printFirstId")
+        )
+        .expect("first id")
+        .output,
+        "1\n"
+    );
+    assert_eq!(probe.scan_after.get(), 0);
+}
+
+#[test]
+fn saved_values_loop_returns_before_reading_later_records() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
+    );
+    let store = TreeStore::new(MemStore::new());
+    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(2)],
+        &data_path(&program, "books", &["note"]),
+        SavedValue::Str("legacy incomplete row".into()),
+    );
+
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            checked_entry!(&program, "test::firstTitle")
+        )
+        .expect("first title")
+        .value,
+        Some(Value::Str("Mort".into()))
+    );
+}
+
+#[test]
+fn saved_entries_loop_returns_before_reading_later_records() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
+    );
+    let store = TreeStore::new(MemStore::new());
+    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(2)],
+        &data_path(&program, "books", &["note"]),
+        SavedValue::Str("legacy incomplete row".into()),
+    );
+
+    assert_eq!(
+        run_entry(
+            &program,
+            &store,
+            checked_entry!(&program, "test::firstTitle")
+        )
+        .expect("first title")
+        .value,
+        Some(Value::Str("1: Mort".into()))
     );
 }
 

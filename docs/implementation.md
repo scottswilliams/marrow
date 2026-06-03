@@ -389,15 +389,18 @@ Inspection has two modes:
 `marrow data` is the raw saved-tree command group for inspection, dump, diff,
 load, integrity checks, and stats. Today it provides `marrow data roots` (list
 the saved roots), `marrow data stats` (count saved roots and records), `marrow
-data dump` (print every stored path/value in encoded order for inspection),
+data dump` (print every stored path/value in encoded order for diagnostic/admin
+inspection),
 `marrow data integrity` (verify every stored value
 decodes as a canonical form of its declared schema type, reporting decode
 mismatches as `data.decode`, stale or foreign data as `data.orphan`, and a
 corrupt key as `store.corrupt_path`; it exits `1` when it finds a problem), and
-`marrow data get <path>` (read one path's value). Inspection is read-only and
-never creates the store; `dump`/`get` need only `marrow.json`, while
-`integrity` typechecks against the project's checked schema. `diff` and `load`
-are deferred (see [future/data-tools.md](future/data-tools.md)).
+`marrow data get <path>` (read one path's raw value for inspection). Inspection
+is read-only and never creates the store; `dump`/`get` need only `marrow.json`,
+while `integrity` typechecks against the project's checked schema. These raw
+inspection commands are not the typed production preview or backup/restore
+contract. `diff` and `load` are deferred (see
+[future/data-tools.md](future/data-tools.md)).
 
 Typed backup/restore is deferred until the tree-cell backup manifest lands. It
 must compile source, accepted catalog metadata, typed values, index cells,
@@ -416,7 +419,8 @@ persistent backend, live reads, or local-session inspection.
 
 The server protocol is newline-delimited JSON over a loopback TCP connection
 (`127.0.0.1`); the bound address is printed on startup. It is a small, read-only
-inspection surface. The operations are the saved-tree reads:
+inspection surface. Path-addressed operations validate against checked saved
+facts before reading. The operations are the saved-tree reads:
 
 - list saved roots with `saved_roots`;
 - list child keys with `saved_children`;

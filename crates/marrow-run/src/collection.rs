@@ -16,8 +16,8 @@ mod materialize;
 
 pub(crate) use append::{eval_append, eval_next_id};
 pub(crate) use materialize::{
-    materialize_layer, materialize_layer_dir, reversed_keys, reversed_materialized, reversed_saved,
-    values_or_entries,
+    MaterializeKind, materialize_layer, materialize_layer_dir, reversed_keys,
+    reversed_materialized, reversed_saved, values_or_entries,
 };
 
 /// Where a saved read sits, which decides how an absent element fails. A

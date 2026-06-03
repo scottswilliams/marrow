@@ -66,8 +66,10 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[derive(Clone)]
 pub(crate) struct DataQuery {
     pub(crate) path: String,
+    pub(crate) root: String,
     pub(crate) store: CatalogId,
     pub(crate) identity: Vec<SavedKey>,
     pub(crate) identity_arity: usize,
@@ -81,7 +83,7 @@ pub(crate) enum DataQuerySegment {
     Key(SavedKey),
 }
 
-fn query_segments_from_path(segments: &[PathSegment]) -> Vec<DataQuerySegment> {
+pub(crate) fn query_segments_from_path(segments: &[PathSegment]) -> Vec<DataQuerySegment> {
     segments
         .iter()
         .map(|segment| match segment {
@@ -189,6 +191,7 @@ pub(crate) fn resolve_data_query(
 
     Ok(DataQuery {
         path: render_query_segments(segments),
+        root: root.clone(),
         store,
         identity,
         identity_arity: place.identity_keys.len(),

@@ -691,7 +691,15 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
         let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.next_child_after(prefix.as_bytes(), after, decode_data_child)
+        let mut cursor_path = path.to_vec();
+        cursor_path.push(DataPathSegment::Key(after.clone()));
+        let cursor = CellKey::data_path_prefix(store, identity, &cursor_path);
+        self.next_child_after_cursor(
+            prefix.as_bytes(),
+            cursor.as_bytes(),
+            after,
+            decode_data_child,
+        )
     }
 
     pub fn data_prev_child(
@@ -1116,6 +1124,39 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             decode,
         )?;
         Ok(result)
+    }
+
+    fn next_child_after_cursor(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        after: &SavedKey,
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut cursor = cursor.to_vec();
+        loop {
+            let page = self
+                .backend
+                .scan_after(prefix, &cursor, CHILD_SCAN_PAGE_LIMIT)?;
+            let next_cursor = page.entries.last().map(|(key, _)| key.clone());
+            for (key, _) in page.entries {
+                let rest = key.get(prefix.len()..).unwrap_or_default();
+                let Some(child) = decode(rest) else {
+                    continue;
+                };
+                if &child == after {
+                    continue;
+                }
+                return Ok(Some(child));
+            }
+            if !page.truncated {
+                break;
+            }
+            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+                message: "child scan page was truncated without a cursor".into(),
+            })?;
+        }
+        Ok(None)
     }
 
     fn prev_child_before(
