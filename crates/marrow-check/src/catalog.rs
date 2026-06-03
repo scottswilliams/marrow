@@ -4,7 +4,8 @@ use std::path::Path;
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_syntax::{Severity, SourceSpan};
 
-use crate::evolution::{EvolveIntents, RenameIntent, RetireIntent};
+use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
+use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CheckDiagnostic, CheckedProgram};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -43,6 +44,9 @@ pub(crate) fn bind_catalog(
         .bind_catalog_ids(&program.modules, &binding.ids);
     program.catalog.accepted_epoch = binding.accepted_epoch;
     program.catalog.accepted_digest = binding.accepted_digest;
+    program.catalog.accepted_entries = accepted.map(|catalog| catalog.entries).unwrap_or_default();
+    program.catalog.evolve_defaults = bound_defaults(&evolve.defaults, &binding.ids);
+    program.catalog.evolve_transforms = bound_transforms(&evolve.transforms, &binding.ids);
     program.catalog.proposal = binding.proposal;
 }
 
@@ -195,6 +199,48 @@ fn catalog_binding(
         ids,
         proposal,
     }
+}
+
+/// The stable id a member-target evolve path binds to, or `None` when it names no
+/// resource member (the type pass already reported it). A default or transform
+/// targets a resource member, so it is keyed by `ResourceMember`.
+fn member_target_id(path: &str, ids: &HashMap<CatalogKey, String>) -> Option<String> {
+    ids.get(&CatalogKey::new(
+        CatalogEntryKind::ResourceMember,
+        path.to_string(),
+    ))
+    .cloned()
+}
+
+/// Resolve each `evolve default` to the stable id its data cells use, carrying the
+/// constant value forward for discharge and the source digest.
+fn bound_defaults(
+    defaults: &[DefaultIntent],
+    ids: &HashMap<CatalogKey, String>,
+) -> Vec<EvolveDefault> {
+    defaults
+        .iter()
+        .filter_map(|default| {
+            member_target_id(&default.path, ids).map(|catalog_id| EvolveDefault {
+                catalog_id,
+                value: default.value.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Resolve each `evolve transform` to the stable id its data cells use, carrying the
+/// body fingerprint forward for the source digest.
+fn bound_transforms(
+    transforms: &[TransformIntent],
+    ids: &HashMap<CatalogKey, String>,
+) -> Vec<EvolveTransform> {
+    transforms
+        .iter()
+        .filter_map(|transform| {
+            member_target_id(&transform.path, ids).map(|catalog_id| EvolveTransform { catalog_id })
+        })
+        .collect()
 }
 
 /// The first source file a catalog entry came from, used to attach a
@@ -623,4 +669,112 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// A stable digest of the analyzed program's durable and evolution surface, in the
+/// same `fnv1a64:<hex>` form the catalog digest uses.
+///
+/// The digest is gap-free by construction: rather than enumerate durable facts field
+/// by field, it renders every durable and evolution declaration — each `resource`,
+/// `store`, `enum`, and `evolve` block — through the canonical formatter and hashes
+/// the normalized text. Reformatting binds every member type, required flag, identity
+/// key, index uniqueness and columns, keyed-layer key name and type at any nesting
+/// depth, enum member, evolve default value, and transform body, so any change to the
+/// shape a stored snapshot must satisfy drifts the digest while a pure whitespace
+/// reformat of the same declarations leaves it unchanged. The evolution witness
+/// records it so apply can abort if the source it activates no longer matches what was
+/// discharged.
+///
+/// The rendering reads each module's source file because the formatter operates on the
+/// syntax tree, which the checked program drops. A source file that no longer reads or
+/// parses (a checked-program invariant violation) contributes a path-tagged marker so
+/// the digest stays deterministic and never silently collides with a clean rendering.
+pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
+    let mut entries: Vec<DurableRendering> = Vec::new();
+    for module in &program.modules {
+        let source = std::fs::read_to_string(&module.source_file).ok();
+        let parsed = source.as_deref().map(marrow_syntax::parse_source);
+        match (&source, &parsed) {
+            (Some(source), Some(parsed)) => {
+                for declaration in &parsed.file.declarations {
+                    let Some(kind) = durable_kind(declaration) else {
+                        continue;
+                    };
+                    entries.push(DurableRendering {
+                        module: module.name.clone(),
+                        kind,
+                        name: declaration_name(declaration),
+                        text: marrow_syntax::format_declaration_normalized(source, declaration),
+                    });
+                }
+            }
+            _ => entries.push(DurableRendering {
+                module: module.name.clone(),
+                kind: DurableKind::Unreadable,
+                name: module.source_file.display().to_string(),
+                text: String::new(),
+            }),
+        }
+    }
+    entries.sort_by(|a, b| {
+        (&a.module, a.kind as u8, &a.name).cmp(&(&b.module, b.kind as u8, &b.name))
+    });
+    let payload = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}\0{}\0{}\0{}",
+                entry.module, entry.kind as u8, entry.name, entry.text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\0\n");
+    format!("fnv1a64:{:016x}", fnv1a64(payload.as_bytes()))
+}
+
+/// One durable declaration's normalized rendering, with the keys that order it
+/// deterministically: its module, declaration kind, and declaration name.
+struct DurableRendering {
+    module: String,
+    kind: DurableKind,
+    name: String,
+    text: String,
+}
+
+/// The declaration kinds whose shape a stored snapshot must satisfy. The discriminant
+/// orders renderings deterministically within a module; an evolve block carries no
+/// name, so its kind alone keeps it last.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DurableKind {
+    Resource = 0,
+    Store = 1,
+    Enum = 2,
+    Evolve = 3,
+    Unreadable = 4,
+}
+
+/// The durable kind of a declaration, or `None` for a const or function, which carry
+/// no durable shape the snapshot must satisfy.
+fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind> {
+    match declaration {
+        marrow_syntax::Declaration::Resource(_) => Some(DurableKind::Resource),
+        marrow_syntax::Declaration::Store(_) => Some(DurableKind::Store),
+        marrow_syntax::Declaration::Enum(_) => Some(DurableKind::Enum),
+        marrow_syntax::Declaration::Evolve(_) => Some(DurableKind::Evolve),
+        marrow_syntax::Declaration::Const(_) | marrow_syntax::Declaration::Function(_) => None,
+    }
+}
+
+/// The ordering name for a durable declaration: its declared name, the store root, or
+/// the empty string for a nameless evolve block. The normalized text disambiguates
+/// equal names, so this only needs a stable within-module sort key.
+fn declaration_name(declaration: &marrow_syntax::Declaration) -> String {
+    match declaration {
+        marrow_syntax::Declaration::Resource(decl) => decl.name.clone(),
+        marrow_syntax::Declaration::Store(decl) => decl.root.root.clone(),
+        marrow_syntax::Declaration::Enum(decl) => decl.name.clone(),
+        marrow_syntax::Declaration::Evolve(_)
+        | marrow_syntax::Declaration::Const(_)
+        | marrow_syntax::Declaration::Function(_) => String::new(),
+    }
 }

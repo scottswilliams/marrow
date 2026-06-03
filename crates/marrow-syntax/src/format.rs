@@ -138,6 +138,16 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     }
 }
 
+/// Render one top-level declaration as canonical Marrow source, normalized to a
+/// fixed layout. A drift anchor reads this as the declaration's stable shape: it
+/// changes when the declaration changes and ignores the surrounding source layout,
+/// so a digest built from it binds the whole declared surface with no field-by-field
+/// enumeration gap. `source` supplies the original text any statement body the
+/// declaration carries renders from.
+pub fn format_declaration_normalized(source: &str, declaration: &Declaration) -> String {
+    format_declaration(source, declaration)
+}
+
 /// Format a top-level declaration (const, resource, or function) as canonical
 /// Marrow source, including its documentation comments. The returned text has
 /// no trailing newline.

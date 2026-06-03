@@ -45,20 +45,44 @@ pub(crate) struct RetireIntent {
     pub(crate) span: SourceSpan,
 }
 
-/// The rename and retire intents an evolve block declares. The catalog binding
-/// consults these to carry stable identity forward across a rename and to mark a
-/// retired entity removed; a path that matches neither is a target diagnostic.
+/// One declared default: the module-qualified catalog path of the member an
+/// `evolve default` step targets and the constant value expression to backfill.
+/// Discharge evaluates the value to a typed fill and classifies the newly-required
+/// member as defaultable; the source digest binds the normalized value so a changed
+/// default drifts the witness.
+#[derive(Debug, Clone)]
+pub(crate) struct DefaultIntent {
+    pub(crate) path: String,
+    pub(crate) value: Expression,
+}
+
+/// One declared transform: the module-qualified catalog path an `evolve transform`
+/// step reshapes. Discharge classifies the member as a non-applyable typed-transform
+/// obligation.
+#[derive(Debug, Clone)]
+pub(crate) struct TransformIntent {
+    pub(crate) path: String,
+}
+
+/// The rename, retire, default, and transform intents an evolve block declares. The
+/// catalog binding consults the renames and retires to carry stable identity forward
+/// and to mark a retired entity removed; the default and transform intents flow to
+/// discharge. A rename or retire path that matches neither side is a target
+/// diagnostic.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct EvolveIntents {
     pub(crate) renames: Vec<RenameIntent>,
     pub(crate) retires: Vec<RetireIntent>,
+    pub(crate) defaults: Vec<DefaultIntent>,
+    pub(crate) transforms: Vec<TransformIntent>,
 }
 
-/// Extract the rename and retire intents every `evolve` block declares, mapping
-/// each target spelling to its module-qualified catalog path. Pure surface
-/// extraction: the catalog binding validates the paths against the accepted and
-/// source catalogs. A rename or retire target that is not a catalog-addressable
-/// reference shape is reported here, since no catalog lookup can recover it.
+/// Extract the rename, retire, default, and transform intents every `evolve` block
+/// declares, mapping each target spelling to its module-qualified catalog path. Pure
+/// surface extraction: the catalog binding validates the rename/retire paths against
+/// the accepted and source catalogs. A rename or retire target that is not a
+/// catalog-addressable reference shape is reported here, since no catalog lookup can
+/// recover it.
 pub(crate) fn collect_evolve_intents<'a, I>(
     parsed_files: I,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -96,9 +120,26 @@ where
                         }),
                         None => report_target(file, *span, diagnostics),
                     },
-                    // Default and transform do not move catalog identity; they are
-                    // type-checked against current source separately.
-                    EvolveStep::Default { .. } | EvolveStep::Transform { .. } => {}
+                    // A default does not move catalog identity, but discharge needs
+                    // its target and value to evaluate the constant fill; record both
+                    // here and let the catalog binding resolve the path to a stable
+                    // id. A non-reference target is reported by the type pass.
+                    EvolveStep::Default { target, value, .. } => {
+                        if let Some(path) = target_path(module, target) {
+                            intents.defaults.push(DefaultIntent {
+                                path,
+                                value: value.clone(),
+                            });
+                        }
+                    }
+                    // A transform reshapes stored meaning and is non-applyable without
+                    // a checked transform; discharge records it as a typed-transform
+                    // obligation. It carries no catalog identity move.
+                    EvolveStep::Transform { target, .. } => {
+                        if let Some(path) = target_path(module, target) {
+                            intents.transforms.push(TransformIntent { path });
+                        }
+                    }
                 }
             }
         }
@@ -222,10 +263,11 @@ impl TypeContext<'_> {
             return;
         }
         // A transform body is a function body in everything but the typed old/new
-        // views discharge supplies in Phase C. It is held to the same structural
-        // rules and run through the same name-resolution and type pass, so an
-        // undefined identifier or unknown call is caught at check time rather than
-        // surviving as unchecked free text. Only the old/new mapping is deferred.
+        // views the apply-time discharge supplies. Holding it to the same structural
+        // rules and the same name-resolution and type pass catches an undefined
+        // identifier or unknown call at check time rather than letting it survive as
+        // unchecked free text. Only the binding of the old/new mapping is deferred to
+        // when the records are read.
         crate::rules::check_transform_body(self.file, body, diagnostics);
         let mut scope = vec![self.prelude.module_constants.clone()];
         check_block_types(

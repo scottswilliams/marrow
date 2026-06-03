@@ -2,11 +2,9 @@
 
 use marrow_check::{
     CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedPlace, StoreIndexKeySource,
-    StoredValueMeaning,
 };
 use marrow_store::key::{SavedKey, encode_identity_payload};
-use marrow_store::tree::{TreeStore, decode_tree_enum_member};
-use marrow_store::value::decode_value;
+use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::store::{DataAddress, IndexAddress, read_data};
@@ -221,20 +219,8 @@ fn stored_arg_key(
             let Some(bytes) = read_data(store, &address, span).map_err(runtime_store_error)? else {
                 return Ok(None);
             };
-            Ok(stored_field_key(&key.value_meaning, &bytes))
+            Ok(key.value_meaning.stored_key(&bytes))
         }
-    }
-}
-
-fn stored_field_key(meaning: &StoredValueMeaning, bytes: &[u8]) -> Option<SavedKey> {
-    match meaning {
-        StoredValueMeaning::Enum { .. } => decode_tree_enum_member(bytes)
-            .ok()
-            .map(|member| SavedKey::Str(member.member_id().as_str().to_string())),
-        StoredValueMeaning::Scalar(scalar) => {
-            decode_value(bytes, *scalar).and_then(|value| value.as_key())
-        }
-        StoredValueMeaning::Identity(_) => None,
     }
 }
 

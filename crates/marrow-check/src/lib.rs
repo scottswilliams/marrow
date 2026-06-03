@@ -18,7 +18,7 @@ mod catalog;
 mod checks;
 pub mod durable_path;
 mod enums;
-mod evolution;
+pub mod evolution;
 pub mod executable;
 pub mod facts;
 mod infer;

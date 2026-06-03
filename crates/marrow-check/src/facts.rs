@@ -5,6 +5,9 @@ use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
 use marrow_schema::{NodeKind, ScalarType, Type};
+use marrow_store::key::SavedKey;
+use marrow_store::tree::decode_tree_enum_member;
+use marrow_store::value::decode_value;
 use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
 
 use crate::catalog::{
@@ -1105,6 +1108,24 @@ pub enum StoredValueMeaning {
         enum_id: EnumId,
         members: Vec<EnumMemberId>,
     },
+}
+
+impl StoredValueMeaning {
+    /// Decode a stored member value into the order-preserving key an index holds.
+    /// This is the one place that turns a member's durable bytes into a [`SavedKey`],
+    /// shared by the runtime that writes index entries and the evolution discharge
+    /// that derives prospective entries; a single owner keeps the two from drifting. A
+    /// scalar decodes by its type, an enum decodes to its member id, and an identity
+    /// value is not a stored field, so it has no key.
+    pub fn stored_key(&self, bytes: &[u8]) -> Option<SavedKey> {
+        match self {
+            Self::Scalar(scalar) => decode_value(bytes, *scalar).and_then(|value| value.as_key()),
+            Self::Enum { .. } => decode_tree_enum_member(bytes)
+                .ok()
+                .map(|member| SavedKey::Str(member.member_id().as_str().to_string())),
+            Self::Identity(_) => None,
+        }
+    }
 }
 
 /// Effects directly visible in a function body. Calls to user functions are not

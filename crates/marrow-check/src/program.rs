@@ -149,7 +149,35 @@ impl CheckedProgram {
 pub struct ProgramCatalog {
     pub accepted_epoch: Option<u64>,
     pub accepted_digest: Option<String>,
+    /// The accepted catalog entries the snapshot was computed against. Discharge
+    /// diffs these against current source to find a source-dropped or retired entry
+    /// the proposal alone, when unchanged, would not surface.
+    pub accepted_entries: Vec<marrow_project::CatalogEntry>,
+    /// The constant fill values an `evolve default` step supplies, keyed by the
+    /// member's stable catalog id. Discharge evaluates each value to a typed fill so
+    /// a newly-required member is defaultable rather than a fail-closed data
+    /// attachment; the source digest binds the normalized value expressions.
+    pub evolve_defaults: Vec<EvolveDefault>,
+    /// The transform obligations an `evolve transform` step declares, keyed by the
+    /// member's stable catalog id. Discharge classifies each as a non-applyable
+    /// typed-transform obligation.
+    pub evolve_transforms: Vec<EvolveTransform>,
     pub proposal: Option<marrow_project::CatalogMetadata>,
+}
+
+/// A bound `evolve default`: the member's stable catalog id and the constant value
+/// expression to backfill old records with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvolveDefault {
+    pub catalog_id: String,
+    pub value: marrow_syntax::Expression,
+}
+
+/// A bound `evolve transform`: the member's stable catalog id. Discharge classifies
+/// the member as a non-applyable typed-transform obligation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvolveTransform {
+    pub catalog_id: String,
 }
 
 /// One library module: its qualified name, the file it came from, and the

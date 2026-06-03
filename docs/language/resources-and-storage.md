@@ -628,6 +628,12 @@ is absent. `retire` is destructive: it states intent to remove an entity and its
 stored data. `transform` computes the new shape of an entity from the old through
 a checked body.
 
+A `default` value must be a constant the checker can evaluate when the change is
+discharged: a literal such as `"unknown"`, `0`, or `true`. The same fill is written
+into every record that lacks the member, so a value that varies per record is a
+`transform`, not a `default`. A non-constant `default` is rejected with a diagnostic
+pointing to `transform`.
+
 The intent is checked against the source and the accepted catalog; it does not
 itself rewrite stored data. Applying the change is an explicit maintenance action.
 

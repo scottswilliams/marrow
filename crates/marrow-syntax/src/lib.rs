@@ -16,7 +16,7 @@ mod token;
 
 pub use ast::*;
 pub use diagnostic::*;
-pub use format::{format_expression, format_source};
+pub use format::{format_declaration_normalized, format_expression, format_source};
 pub use lexer::lex_source;
 pub use token::{Keyword, LexedSource, Token, TokenKind, duration_unit_seconds};
 
