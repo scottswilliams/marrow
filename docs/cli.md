@@ -386,7 +386,8 @@ marrow serve [--port <port>] <projectdir>
 
 Run the Marrow data server: a long-lived owner of the project's saved data that
 answers newline-delimited JSON requests over a loopback (`127.0.0.1`) TCP
-connection. It is a read-only tooling surface and never writes managed data.
+connection. It is a read-only debug/admin tooling surface and never writes
+managed data.
 
 The bound address is printed on startup, then the server blocks accepting
 connections one at a time:
@@ -398,8 +399,9 @@ marrow serve listening on 127.0.0.1:52224
 
 `--port` chooses the TCP port; `--port 0` (the default) lets the OS pick a free
 port, printed on the line above. The server runs until interrupted. Its v0.1
-protocol is typed and read-only; it exposes `data_roots`, `data_get`,
-`data_children`, and `data_walk`. See [serve-protocol.md](serve-protocol.md).
+protocol exposes `debug_data_roots`, `debug_data_get`, `debug_data_children`,
+and `debug_data_walk` for local inspection. See
+[serve-protocol.md](serve-protocol.md).
 
 Exits `2` on a usage error, `1` if the project config cannot be loaded, the store
 cannot be opened, or the address cannot be bound.

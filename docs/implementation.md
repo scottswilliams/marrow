@@ -398,14 +398,14 @@ The server is useful when several local tools need one long-lived owner for a
 persistent backend, live reads, or local-session inspection.
 
 The server protocol is newline-delimited JSON over a loopback TCP connection
-(`127.0.0.1`); the bound address is printed on startup. It is a small, read-only
-inspection surface. Path-addressed operations validate against checked saved
-facts before reading. The operations are typed data reads:
+(`127.0.0.1`); the bound address is printed on startup. It is a small,
+read-only debug/admin inspection surface. Path-addressed operations validate
+against checked saved facts before reading. The operations are:
 
-- list stored roots with `data_roots`;
-- list child keys with `data_children`;
-- read an exact typed data query with `data_get`;
-- walk a bounded typed data subtree with `data_walk`.
+- list stored roots with `debug_data_roots`;
+- list child keys with `debug_data_children`;
+- read an exact typed data query with `debug_data_get`;
+- walk a bounded typed data subtree with `debug_data_walk`.
 
 Two read-only extensions are planned for later, not in the first release:
 evaluating one checked, non-mutating query in a session and returning its typed

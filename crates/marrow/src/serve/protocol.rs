@@ -67,10 +67,10 @@ impl ProtocolSession {
                 message: "request is missing a string `op`".to_string(),
             })?;
         match op {
-            "data_roots" => data::op_data_roots(program, store),
-            "data_get" => data::op_data_get(program, store, request),
-            "data_children" => data::op_data_children(program, store, request),
-            "data_walk" => walk::op_data_walk(program, store, request, &self.cursors),
+            "debug_data_roots" => data::op_debug_data_roots(program, store),
+            "debug_data_get" => data::op_debug_data_get(program, store, request),
+            "debug_data_children" => data::op_debug_data_children(program, store, request),
+            "debug_data_walk" => walk::op_debug_data_walk(program, store, request, &self.cursors),
             other => Err(ProtocolError {
                 code: PROTOCOL_UNKNOWN_OP,
                 message: format!("unknown operation `{other}`"),

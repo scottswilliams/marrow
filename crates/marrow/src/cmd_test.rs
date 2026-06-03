@@ -147,17 +147,11 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
             Err(error) => Err(error),
             Ok(call) if trace => {
                 let mut hook = TraceHook::new(format, name.clone(), &runtime_program);
-                let result = marrow_run::run_entry_with_debugger(
-                    &runtime_program,
-                    &store,
-                    &host,
-                    &mut hook,
-                    &call,
-                );
+                let result = marrow_run::run_entry_with_debugger(&store, &host, &mut hook, &call);
                 hook.flush();
                 result
             }
-            Ok(call) => marrow_run::run_entry_with_host(&runtime_program, &store, &host, &call),
+            Ok(call) => marrow_run::run_entry_with_host(&store, &host, &call),
         };
         match result {
             Ok(_) => {

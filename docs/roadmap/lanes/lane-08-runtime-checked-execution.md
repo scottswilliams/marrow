@@ -59,12 +59,12 @@ Known Lane 10 work:
 - `marrow data get`, `marrow data dump`, and `marrow explain ^path` are
   diagnostic/admin inspection surfaces until Lane 10 replaces raw/path-addressed
   production previews with a typed, bounded protocol.
-- The old raw `marrow serve saved_children` surface is gone from the production
-  protocol. Current serve uses typed `data_children`; Lane 10 owns any further
-  child-listing, paging, or preview protocol hardening.
-- `marrow serve data_walk` remains bounded, but Lane 10 must finish
-  snapshot/catalog-epoch cursor semantics before it can be a production preview
-  API.
+- The old raw `marrow serve saved_children` surface is gone. Current serve
+  inspection operations use the `debug_data_*` namespace; Lane 10 owns any
+  production child-listing, paging, or preview protocol.
+- `marrow serve debug_data_walk` is bounded and session-scoped, but it remains a
+  debug/admin inspection operation until Lane 10 defines production
+  snapshot/catalog-epoch protocol semantics.
 - Backup/restore must use a typed manifest and must not rely on raw path/value
   dumps or serve protocol bytes.
 

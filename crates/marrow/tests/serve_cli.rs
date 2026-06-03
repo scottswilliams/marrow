@@ -100,7 +100,7 @@ fn request(address: &str, body: &Value) -> Value {
 }
 
 #[test]
-fn serve_answers_data_roots_over_a_loopback_socket() {
+fn serve_answers_debug_data_roots_over_a_loopback_socket() {
     let project = native_project("serve-roots");
     let dir = project.to_str().unwrap().to_string();
     assert_eq!(
@@ -109,7 +109,7 @@ fn serve_answers_data_roots_over_a_loopback_socket() {
     );
 
     let (mut child, address) = spawn_serve(&dir);
-    let reply = request(&address, &json!({ "id": 1, "op": "data_roots" }));
+    let reply = request(&address, &json!({ "id": 1, "op": "debug_data_roots" }));
     child.kill().ok();
     child.wait().ok();
     fs::remove_dir_all(&project).ok();
@@ -131,17 +131,17 @@ fn serve_answers_path_addressed_reads_over_a_loopback_socket() {
     let get = request(
         &address,
         &json!({
-            "id": 1, "op": "data_get",
+            "id": 1, "op": "debug_data_get",
             "path": [{"root": "counter"}, {"key": {"int": 1}}, {"field": "value"}],
         }),
     );
     let children = request(
         &address,
-        &json!({ "id": 2, "op": "data_children", "path": [{"root": "counter"}] }),
+        &json!({ "id": 2, "op": "debug_data_children", "path": [{"root": "counter"}] }),
     );
     let walk = request(
         &address,
-        &json!({ "id": 3, "op": "data_walk", "path": [{"root": "counter"}], "limit": 100 }),
+        &json!({ "id": 3, "op": "debug_data_walk", "path": [{"root": "counter"}], "limit": 100 }),
     );
     child.kill().ok();
     child.wait().ok();
@@ -170,7 +170,7 @@ fn serving_an_unseeded_project_serves_empty_roots_and_creates_no_store() {
     let dir = project.to_str().unwrap().to_string();
 
     let (mut child, address) = spawn_serve(&dir);
-    let reply = request(&address, &json!({ "id": 2, "op": "data_roots" }));
+    let reply = request(&address, &json!({ "id": 2, "op": "debug_data_roots" }));
     child.kill().ok();
     child.wait().ok();
     // Serving is read-only: it must not materialize the store file.

@@ -163,33 +163,31 @@ Tracking is forward-only:
 - keep temporary worktree paths, target directories, review transcripts, and
   throwaway artifacts out of tracked files.
 
-Current queue:
+Current remaining queue:
 
 | Order | Lane | Why It Is Next | Must Prove |
 | --- | --- | --- | --- |
-| 1 | [Lane 6 corrective reopen: Catalog Identity Binding And Presence Ledger](lanes/lane-06-catalog-presence-ledger.md) | The corrective pass owns the checker/schema/presence split between catalog-backed enum identity and source traversal order. Runtime enum values remain Lane 8. | Schema no longer treats named enum fields as scalar-int storage, checker facts expose catalog member identity, and read/presence proof classification has one owner. |
-| 2 | [Lane 8: Runtime Checked Execution And Write Planner](lanes/lane-08-runtime-checked-execution.md) | Runtime can now consume store facts, the presence ledger, tree-cell APIs, and catalog-backed enum member facts instead of syntax bodies and raw saved paths. | Production execution is driven by checked facts or checked IR, with explicit durable places, enum member values, and write plans. |
-| 3 | [Lane 9: Source-Native Evolution And Activation](lanes/lane-09-evolution-activation.md) | Activation and evolution need the checked runtime and tree-cell store facts before they can prove saved data. | Catalog, source, and saved data evolve through one proof-discharge pipeline. |
-| 4 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces once runtime and evolution expose shared facts; its first deliverable is a feature-surface audit that deletes, demotes, or rebuilds prototype-only commands and protocols. | Raw bytes, raw paths, unsupported commands, broad server/query promises, and local semantic rediscovery disappear from production protocols. |
-| 5 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
+| 1 | [Lane 9: Source-Native Evolution And Activation](lanes/lane-09-evolution-activation.md) | Activation and evolution can now consume the checked runtime and tree-cell store facts before proving saved data changes. | Catalog, source, and saved data evolve through one proof-discharge pipeline. |
+| 2 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces once runtime and evolution expose shared facts; its first deliverable is a feature-surface audit that deletes, demotes, or rebuilds prototype-only commands and protocols. | Raw bytes, raw paths, unsupported commands, broad server/query promises, and local semantic rediscovery disappear from production protocols. |
+| 3 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
+
+Completed foundations:
+
+- [Lane 6](lanes/lane-06-catalog-presence-ledger.md) supplies catalog-backed
+  enum identity and the presence ledger consumed by runtime and tooling.
+- [Lane 8](lanes/lane-08-runtime-checked-execution.md) supplies checked runtime
+  execution, checked durable traversal, write planning, and enum/index runtime
+  value handling. Runtime no longer has a syntax-body production path or a
+  string-backed checked entry call.
 
 ## Active Quality Intervention
 
-Current status blocks review-ready and completion claims for the affected
-foundations while allowing file-disjoint implementation work to continue. Lane 8
-may keep replacing runtime syntax execution, but it may not claim review-ready or
-complete while the runtime still executes `CheckedFunction.body: Block`, resolves
-calls with source strings, or classifies saved paths locally. Removing one raw
-public entrypoint is an acceptable slice only when the deletion target stays
-intact and the next slice deletes the underlying prototype execution model.
-
-Lane 6 is reopened for a corrective pass before Lane 9 or Lane 10 production
-code starts, and before Lane 8 claims enum/index-value completion. The pass owns
-the checker/schema/presence split between catalog-backed enum identity and
-source-order schema traversal, plus the proof-ledger owner that checker facts
-and source checks consume. Declaration order may remain a source traversal index
-only; it must not be stored meaning or index-key meaning. Runtime conversion of
-enum values and index maintenance remains a Lane 8 dependency.
+Lane 10 is the next quality intervention for tooling/protocol surfaces. Its
+first deliverable is a feature-surface verdict matrix that deletes, demotes, or
+rebuilds every raw/path-addressed tool and protocol before production tooling
+claims. Declaration order may remain a source traversal index only; it must not
+be stored meaning or index-key meaning. Runtime enum values and index
+maintenance now consume catalog-backed checked facts.
 
 The Lane 7 store pass owns the tree-cell store boundary. Raw archive behavior may
 remain only as explicitly debug/admin store access; typed backup manifests,
@@ -244,8 +242,8 @@ edit the checker/schema identity surface.
 
 | Track | Lane Plan | Can Start Now | Code Timing | Collision Boundary |
 | --- | --- | --- | --- | --- |
-| Catalog/presence corrective | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Yes | Current corrective lane, sequenced with checker/schema edits | Owns checker/schema enum identity and presence classifier cleanup; no runtime/store physical-key edits. |
-| Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Yes | Current production lane | Owns runtime checked execution and enum value/index conversion; no syntax-body compatibility path survives. |
+| Catalog/presence corrective | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns checker/schema enum identity and presence classifier cleanup; no runtime/store physical-key edits. |
+| Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns runtime checked execution and enum value/index conversion; no syntax-body compatibility path survives. |
 | Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Read-only witness matrix design only | Code after checked runtime facts exist | Owns one proof-discharge pipeline with command-specific surfaces. |
 | Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Read-only feature-surface and stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the feature-surface verdict matrix, then the typed backup manifest, adapters, and rendering; no unsupported commands, raw public protocols, or tool-local semantic classifiers. |
 | Hardening | [Lane 11](lanes/lane-11-rust-hardening.md) | Read-only scans anytime | Final fixes after owning lanes land, except truly file-disjoint style fixes | Owns deletion proof, not postponed semantic rewrites. |
@@ -482,12 +480,12 @@ Current hotspot map:
   `binding.rs`, and `program.rs` move together behind the checked-model lane.
 - `crates/marrow-schema/src/lib.rs` is the collision point for resource/store,
   enum storage, indexes, stable IDs, and requiredness. Sequence those changes.
-- Lane 8 may add runtime-facing checked-fact APIs now that Lane 6 and Lane 7
-  have integrated the catalog, presence-ledger, and tree-cell facts. Treat this
-  as a handoff, not concurrent checker ownership.
-- `crates/marrow-run/src/call.rs`, `exec.rs`, `expr.rs`, `path.rs`,
-  `schema_query.rs`, `write.rs`, and `write_dispatch.rs` form one vertical
-  runtime replacement lane; do not split them into competing adapters.
+- Lane 8 has consumed the catalog, presence-ledger, and tree-cell facts for
+  runtime-facing checked execution. Future runtime changes should preserve that
+  single checked-fact boundary rather than reintroducing tool-local classifiers.
+- `crates/marrow-run/src/call.rs`, `expr.rs`, `path.rs`, `read.rs`,
+  `write.rs`, and `write_dispatch.rs` remain one runtime boundary; do not split
+  them into competing semantic adapters.
 - Runtime and tooling lanes consume the integrated store profile; they do not
   mutate tree-cell physical keys or re-promote raw saved paths to production
   semantics.

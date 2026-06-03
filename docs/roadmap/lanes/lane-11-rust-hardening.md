@@ -140,64 +140,13 @@ parser/formatter output. Evidence: `crates/marrow-syntax/src/ast.rs:384`,
 `crates/marrow-check/src/prototype.rs:67`. Make them rejection-only or remove
 their v0.1 round-trip surface after checker rejection is established.
 
-**Lane 8 - Enum Runtime Values.** Consume catalog-backed enum member identity for
-runtime values and index maintenance. Evidence:
-`crates/marrow-run/src/expr.rs:43`, `crates/marrow-run/src/exec.rs:364`,
-`crates/marrow-run/src/write.rs:1425`, `crates/marrow-run/src/write.rs:1563`,
-`crates/marrow-run/src/schema_query.rs:153`,
-`crates/marrow-run/src/write_tests.rs:924`, and
-`crates/marrow-run/tests/eval.rs:9745` still encode enum members by declaration
-or pre-order ordinal. Lane 7 provides the tree-cell enum value codec, and Lane 6
-provides catalog-backed enum member facts; runtime must consume those checked
-facts instead of raw ordinals. Declaration or pre-order ordinals may survive only
-as schema traversal indexes, not durable stored meaning.
-
-**Lane 8 - Checked Runtime IR.** Ensure diagnostic/recovery `Unknown` cannot
-enter checked runtime IR. Evidence: `crates/marrow-check/src/program.rs:129`
-still exposes source-body functions with best-effort types, and runtime still
-consumes that bridge. Keep explicit user `unknown` dynamic-boundary types
-separate from recovery sentinels.
-
-**Lane 8 - Checked Runtime.** Delete production AST execution. Evidence:
-`crates/marrow-run/src/call.rs:138` still invokes source bodies, and
-`crates/marrow-run/src/exec.rs:39` still interprets syntax blocks. Runtime
-invocation must move to checked executable facts or checked IR.
-
-**Lane 8 - Checked Runtime.** Stop resolving function and call targets by
-strings at runtime. Evidence: `crates/marrow-run/src/call.rs:120`,
-`crates/marrow-run/src/call.rs:357`, `crates/marrow-run/src/call.rs:929`, and
-`crates/marrow-run/src/call.rs:1034` split `::`, expand aliases, and retry
-lookup. Checked entry and call target IDs must be authoritative.
-
-**Lane 8 - Checked Runtime.** Remove runtime saved-path classifiers as
-production semantics. Evidence: `crates/marrow-run/src/schema_query.rs:206`,
-`crates/marrow-run/src/path.rs:221`, `crates/marrow-run/src/read.rs:14`,
-`crates/marrow-run/src/collection.rs:65`,
-`crates/marrow-run/src/stdlib.rs:183`,
-`crates/marrow-run/src/schema_query.rs:365`,
-`crates/marrow-store/src/lib.rs:13`, `crates/marrow-store/src/path.rs:20`,
-`crates/marrow-store/src/path.rs:47`, `crates/marrow-store/src/backend.rs:114`,
-and `crates/marrow-store/src/conformance.rs:1` rederive or expose durable
-meaning through syntax, decoded raw paths, or source-spelled saved-path bytes.
-Runtime should consume checked durable-place, traversal, index, catalog/store,
-and tree-cell facts. After runtime and tooling stop consuming saved paths, the
-store backend/path surface must be debug/admin-only or deleted rather than a
-production storage law.
-
-**Lane 8 - Checked Runtime.** Stop building write addresses from source
-spellings. Evidence: `crates/marrow-run/src/path.rs:195`,
-`crates/marrow-run/src/write.rs:1210`, `crates/marrow-run/src/write.rs:1217`,
-and `crates/marrow-run/src/write.rs:1477`. Writes must be driven by checked
-durable-place and store-address facts, with source-spelling helpers limited to
-debug rendering if they survive.
-
-**Lane 8 - Checked Runtime.** Remove runtime compatibility fallbacks and
-branches for rejected prototype constructs. Evidence:
-`crates/marrow-run/src/call.rs:988`, `crates/marrow-run/src/call.rs:1012`,
-`crates/marrow-run/src/stdlib.rs:618`,
-`crates/marrow-run/src/exec.rs:132`, `crates/marrow-run/src/exec.rs:322`, and
-`crates/marrow-run/src/call.rs:432`. Dispatch only checked std descriptors;
-let checked IR exclude `merge`, `lock`, and saved `inout`.
+**Lane 8 - Checked Runtime Regression Scans.** Lane 8 is integrated. Lane 11
+does not carry stale Lane 8 implementation evidence; it runs absence scans for
+regressions such as syntax-body execution, string-backed checked entry calls,
+runtime-local saved-path classifiers, enum ordinal storage meaning, unbounded
+durable materialization, and compatibility branches for rejected constructs. A
+real regression reopens the owning runtime surface instead of becoming a Lane 11
+cleanup patch.
 
 **Lane 10 - Tooling And Protocols.** Replace raw backup, data, explain/CLI,
 LSP, and serve protocol/tool surfaces. Evidence:
@@ -246,8 +195,8 @@ Any lane touching the catch-all test suites must move changed coverage into
 source-driven invariant fixtures and delete migrated assertions from the
 aggregator before review. Evidence: `crates/marrow-run/tests/eval.rs`,
 `crates/marrow-check/tests/project.rs`, `crates/marrow-syntax/tests/parse.rs`,
-`crates/marrow-check/tests/checked_program.rs`, and
-`crates/marrow-run/src/write_tests.rs` are thousand-line aggregators.
+and `crates/marrow-check/tests/checked_program.rs` are thousand-line
+aggregators.
 
 Any lane touching these areas must delete comment sediment. Evidence:
 `crates/marrow-check/src/lib.rs:31`, `crates/marrow-run/src/lib.rs:20`,

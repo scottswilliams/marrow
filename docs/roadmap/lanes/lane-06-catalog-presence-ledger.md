@@ -12,10 +12,10 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-06-perfect`
 
 Target dir: `/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect`
 
-Status: checker/schema/presence corrective pass. Lane 6 owns catalog member
-identity in checked facts and the presence/effect ledger. Production runtime
-enum-value conversion and index maintenance remain Lane 8 until `marrow-run`
-consumes catalog-backed enum member values instead of raw scalar ordinals.
+Status: complete/integrated for the catalog member identity and presence-ledger
+foundation. Lane 8 has consumed these facts for runtime enum-value conversion
+and index maintenance; future runtime issues are regressions or owning-lane
+blockers, not pending Lane 6 work.
 
 ## Parallel Safety
 
@@ -210,9 +210,7 @@ sediment, and lane-local cleanup deferred to Lane 11.
 
 ## Integration Gate
 
-Run the full central gate once the Lane 8 runtime enum-value dependency is
-landed. Before that dependency, Lane 6 gates the checker/schema scope and records
-the runtime package failure as blocking end-to-end enum identity. Add scans for
+Run the full central gate with the current checked runtime and add scans for
 forbidden identity and proof paths:
 
 ```sh

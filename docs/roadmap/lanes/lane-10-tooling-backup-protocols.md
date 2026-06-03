@@ -22,9 +22,9 @@ Active blockers inherited from the Lane 8 repair:
 - `marrow data get`, `marrow data dump`, and `marrow explain ^path` are
   diagnostic/admin inspection surfaces until Lane 10 replaces raw/path-addressed
   production previews with a typed, bounded protocol.
-- Raw `marrow serve saved_children` is gone from the production protocol.
-  Current `data_children`, path JSON, walk cursor, and preview paging surfaces
-  must be checked-fact based, bounded, and snapshot/catalog-epoch scoped.
+- Raw `marrow serve saved_children` is gone. Current serve inspection operations
+  are explicitly `debug_data_*`; the production protocol must be checked-fact
+  based, bounded, and snapshot/catalog-epoch scoped.
 - No backup, restore, LSP, or production preview client may depend on raw saved
   path strings, backend bytes, or tool-local path classifiers.
 
@@ -39,8 +39,8 @@ and typed backup/restore/protocol code passes review.
 Before any completion claim, Lane 10 must prove all sibling protocol surfaces
 were checked after each fix:
 
-- fixing `serve data_walk` also audits `data_children`, data previews, cursor
-  format, snapshot/catalog epoch, CLI docs, and serve tests;
+- fixing `serve debug_data_walk` also audits `debug_data_children`, data
+  previews, cursor format, snapshot/catalog epoch, CLI docs, and serve tests;
 - demoting raw saved paths also audits `data get`, `data dump`, `explain ^path`,
   backup, restore, LSP, docs, and tests;
 - keeping trace, dry-run, maintenance, or debug/admin tools requires a product

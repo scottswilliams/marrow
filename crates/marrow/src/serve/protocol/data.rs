@@ -11,7 +11,7 @@ use crate::cmd_data::inspect::{checked_catalog_id, data_roots_in_store};
 use super::codec::{encode_key, request_path, request_query};
 use super::{ProtocolError, bad_request, store_error};
 
-pub(super) fn op_data_roots(
+pub(super) fn op_debug_data_roots(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> Result<Value, ProtocolError> {
@@ -19,7 +19,7 @@ pub(super) fn op_data_roots(
     Ok(json!({ "roots": roots }))
 }
 
-pub(super) fn op_data_get(
+pub(super) fn op_debug_data_get(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,
@@ -32,7 +32,7 @@ pub(super) fn op_data_get(
     }))
 }
 
-pub(super) fn op_data_children(
+pub(super) fn op_debug_data_children(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,

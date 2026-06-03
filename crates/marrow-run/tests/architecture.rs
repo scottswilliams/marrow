@@ -411,9 +411,6 @@ fn production_runtime_uses_typed_tree_cell_store_boundary() {
     let mut violations = Vec::new();
 
     for path in runtime_rs_files() {
-        if path.file_name().and_then(|name| name.to_str()) == Some("write_tests.rs") {
-            continue;
-        }
         let text = fs::read_to_string(&path).expect("runtime source");
         for forbidden in [
             "marrow_store::backend",
@@ -1222,11 +1219,47 @@ fn public_runtime_entrypoints_take_checked_entry_calls() {
     for forbidden in [
         "entry: &str,\n    args: &[Value]",
         "pub fn args(&self) -> &[Value]",
+        "entry: String",
+        "entry.to_string()",
+        "entry_target(program, &call.entry)",
     ] {
         assert!(
             !entry_text.contains(forbidden),
             "public runtime entrypoint still exposes raw argument shape `{forbidden}` in {}",
             entry.display()
+        );
+    }
+    assert!(
+        entry_text.contains("target: CheckedFunctionRef"),
+        "checked entry calls should carry the resolved checked function target"
+    );
+    assert!(
+        entry_text.contains("program: &'p CheckedRuntimeProgram"),
+        "checked entry calls should be tied to the checked runtime program they were built from"
+    );
+}
+
+#[test]
+fn runtime_eval_helpers_follow_checked_entry_call_shape() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/eval.rs");
+    let text = fs::read_to_string(&tests).expect("runtime eval tests");
+
+    for forbidden in [
+        "fn run(\n    _program: &CheckedRuntimeProgram",
+        "fn run_full(\n    _program: &CheckedRuntimeProgram",
+        "fn run_entry(\n    _program: &CheckedRuntimeProgram",
+        "fn run_entry_with_host(\n    _program: &CheckedRuntimeProgram",
+        "fn run_entry_with_debugger(\n    _program: &CheckedRuntimeProgram",
+        "run(&program,",
+        "run_full(&program,",
+        "run_entry(&program,",
+        "run_entry_with_host(&program,",
+        "run_entry_with_debugger(&program,",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "runtime eval tests still preserve obsolete checked entry helper shape `{forbidden}` in {}",
+            tests.display()
         );
     }
 }

@@ -15,7 +15,7 @@ use super::{ProtocolError, bad_request, store_error};
 
 const MAX_WALK: usize = 10_000;
 
-pub(super) fn op_data_walk(
+pub(super) fn op_debug_data_walk(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,
@@ -38,22 +38,22 @@ pub(super) fn op_data_walk(
 fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
     let value = request
         .get("limit")
-        .ok_or_else(|| bad_request("`data_walk` requires an integer `limit`"))?;
+        .ok_or_else(|| bad_request("`debug_data_walk` requires an integer `limit`"))?;
     if let Some(limit) = value.as_u64() {
         if limit == 0 {
             return Err(bad_request(
-                "`data_walk` requires a positive integer `limit`",
+                "`debug_data_walk` requires a positive integer `limit`",
             ));
         }
         return Ok(limit.min(MAX_WALK as u64) as usize);
     }
     if value.as_i64().is_some() {
         return Err(bad_request(
-            "`data_walk` requires a positive integer `limit`",
+            "`debug_data_walk` requires a positive integer `limit`",
         ));
     }
     let Some(number) = value.as_number() else {
-        return Err(bad_request("`data_walk` requires an integer `limit`"));
+        return Err(bad_request("`debug_data_walk` requires an integer `limit`"));
     };
     if number
         .as_f64()
@@ -65,7 +65,7 @@ fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
     if text.bytes().all(|byte| byte.is_ascii_digit()) && text != "0" {
         return Ok(MAX_WALK);
     }
-    Err(bad_request("`data_walk` requires an integer `limit`"))
+    Err(bad_request("`debug_data_walk` requires an integer `limit`"))
 }
 
 struct WalkPage {
@@ -91,10 +91,10 @@ fn checked_walk(
         return Err(bad_request("`cursor` is outside the requested path"));
     }
     if cursor.is_some() && start.identity.len() != query.identity_arity {
-        return Err(bad_request("`cursor` is not a data_walk position"));
+        return Err(bad_request("`cursor` is not a debug_data_walk position"));
     }
     if cursor.is_some() && !cursor_names_value_path(&place.root_members, &start.data_path)? {
-        return Err(bad_request("`cursor` is not a data_walk position"));
+        return Err(bad_request("`cursor` is not a debug_data_walk position"));
     }
 
     let mut identity = if cursor.is_some() {
@@ -127,7 +127,9 @@ fn checked_walk(
             &mut path,
         )?;
         if waiting_for_cursor {
-            return Err(bad_request("`cursor` does not name a data_walk entry"));
+            return Err(bad_request(
+                "`cursor` does not name a debug_data_walk entry",
+            ));
         }
         if state.next_cursor_path.is_some() {
             break;

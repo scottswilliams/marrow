@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use marrow_check::{
-    CheckedEntryFunction, CheckedRuntimeFunction, CheckedRuntimeProgram, CheckedRuntimeValueType,
+    CheckedEntryFunction, CheckedFunctionRef, CheckedRuntimeFunction, CheckedRuntimeProgram,
+    CheckedRuntimeValueType,
 };
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
@@ -18,14 +19,15 @@ use crate::host::{Host, StepHook};
 use crate::value::{RunOutput, Value, enum_value_from_member};
 
 #[derive(Debug, Clone)]
-pub struct CheckedEntryCall {
-    entry: String,
+pub struct CheckedEntryCall<'p> {
+    program: &'p CheckedRuntimeProgram,
+    target: CheckedFunctionRef,
     args: Vec<Value>,
 }
 
-impl CheckedEntryCall {
+impl<'p> CheckedEntryCall<'p> {
     pub fn new(
-        program: &CheckedRuntimeProgram,
+        program: &'p CheckedRuntimeProgram,
         entry: &str,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
@@ -33,53 +35,47 @@ impl CheckedEntryCall {
         let (_, function) = function_by_ref(program, target, SourceSpan::default())?;
         let args = canonicalize_entry_args(program, function, args)?;
         Ok(Self {
-            entry: entry.to_string(),
+            program,
+            target,
             args,
         })
-    }
-
-    pub(crate) fn args(&self) -> &[Value] {
-        &self.args
     }
 }
 
 pub fn run_entry(
-    program: &CheckedRuntimeProgram,
     store: &TreeStore,
-    call: &CheckedEntryCall,
+    call: &CheckedEntryCall<'_>,
 ) -> Result<RunOutput, RuntimeError> {
-    run_entry_with_host(program, store, &Host::new(), call)
+    run_entry_with_host(store, &Host::new(), call)
 }
 
 pub fn run_entry_with_host(
-    program: &CheckedRuntimeProgram,
     store: &TreeStore,
     host: &Host,
-    call: &CheckedEntryCall,
+    call: &CheckedEntryCall<'_>,
 ) -> Result<RunOutput, RuntimeError> {
-    run_entry_impl(program, store, host, call, None)
+    run_entry_impl(store, host, call, None)
 }
 
 pub fn run_entry_with_debugger(
-    program: &CheckedRuntimeProgram,
     store: &TreeStore,
     host: &Host,
     hook: &mut dyn StepHook,
-    call: &CheckedEntryCall,
+    call: &CheckedEntryCall<'_>,
 ) -> Result<RunOutput, RuntimeError> {
-    run_entry_impl(program, store, host, call, Some(hook))
+    run_entry_impl(store, host, call, Some(hook))
 }
 
 fn run_entry_impl<'p>(
-    program: &'p CheckedRuntimeProgram,
     store: &'p TreeStore,
     host: &'p Host,
-    call: &CheckedEntryCall,
+    call: &'p CheckedEntryCall<'p>,
     hook: Option<&'p mut dyn StepHook>,
 ) -> Result<RunOutput, RuntimeError> {
-    let target = entry_target(program, &call.entry)?;
+    let program = call.program;
+    let target = call.target;
     let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
-    let args = canonicalize_entry_args(program, function, call.args().to_vec())?;
+    let args = canonicalize_entry_args(program, function, call.args.clone())?;
     let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params

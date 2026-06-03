@@ -1,22 +1,21 @@
 # Serve Protocol
 
-`marrow serve` is a tooling protocol over typed Marrow data. It is not a raw
-saved-path server and it does not expose backend keys, raw tree-cell bytes, raw
-archive replay, or local semantic re-resolution as production protocol
-behavior.
+`marrow serve` is a loopback debug/admin inspection protocol over typed Marrow
+data. It is not a production app server, sync protocol, backup protocol, or raw
+saved-path compatibility surface.
 
-The v0.1 serve protocol must read through checked source, accepted catalog
-metadata, and typed tree-cell store APIs. Requests name typed resources,
-durable places, query facts, or opaque cursors. Replies render data through
-checked/catalog facts and carry stable dotted error codes.
+The current v0.1 operations are intentionally named `debug_data_*` because they
+can expose canonical stored payload bytes for local inspection. They still read
+through checked source, accepted catalog metadata, and typed tree-cell store
+APIs. Lane 10 owns the future production protocol surface.
 
-The production operations are:
+The debug inspection operations are:
 
-- `data_roots`: stored root names visible through checked facts;
-- `data_get`: presence plus optional base64 canonical payload at a typed data
+- `debug_data_roots`: stored root names visible through checked facts;
+- `debug_data_get`: presence plus optional base64 canonical payload at a typed data
   query;
-- `data_children`: immediate typed children below a data query;
-- `data_walk`: paged typed data entries below a query, with an opaque cursor.
+- `debug_data_children`: immediate typed children below a data query;
+- `debug_data_walk`: paged typed data entries below a query, with an opaque cursor.
 
 Protocol errors use the `protocol.*` family. Store faults that reach the
 protocol boundary pass through as `store.*`; typed data findings use `data.*`.
@@ -72,21 +71,21 @@ the message text.
 ## Operations
 
 A request is `{"id": <any>, "op": "<name>", ...}`. The four operations are
-typed data reads. All but `data_roots` take a `path` (see
+debug/admin typed data reads. All but `debug_data_roots` take a `path` (see
 [Path encoding](#path-encoding)).
 
-### `data_roots`
+### `debug_data_roots`
 
 The checked project's stored root names, in store order.
 
 ```
-REQ   {"id": 1, "op": "data_roots"}
+REQ   {"id": 1, "op": "debug_data_roots"}
 REPLY {"id":1,"ok":{"roots":["books"]}}
 ```
 
 An empty store replies `{"id":1,"ok":{"roots":[]}}`.
 
-### `data_children`
+### `debug_data_children`
 
 The distinct immediate children directly below `path`, in Marrow order. Each
 child is one of:
@@ -98,22 +97,22 @@ The checked schema classifies fields and layers; the protocol renders their
 local member names as `{"name": ...}`.
 
 ```
-REQ   {"id": 2, "op": "data_children", "path": [{"root": "books"}]}
+REQ   {"id": 2, "op": "debug_data_children", "path": [{"root": "books"}]}
 REPLY {"id":2,"ok":{"children":[{"key":{"int":1}},{"key":{"int":2}}]}}
 
-REQ   {"id": 3, "op": "data_children", "path": [{"root": "books"}, {"key": {"int": 1}}]}
+REQ   {"id": 3, "op": "debug_data_children", "path": [{"root": "books"}, {"key": {"int": 1}}]}
 REPLY {"id":3,"ok":{"children":[{"name":"tags"},{"name":"title"}]}}
 ```
 
 Record and keyed-layer keys sort before named members at one tree level; that
 order is preserved in the reply.
 
-### `data_get`
+### `debug_data_get`
 
 The presence at an exact typed data query plus its stored value.
 
 ```
-REQ   {"id": 4, "op": "data_get",
+REQ   {"id": 4, "op": "debug_data_get",
        "path": [{"root": "books"}, {"key": {"int": 1}}, {"field": "title"}]}
 REPLY {"id":4,"ok":{"presence":"value_only","value":"TW9ydA=="}}
 ```
@@ -134,32 +133,32 @@ is the string `Mort`.
 A record node has children but no value of its own:
 
 ```
-REQ   {"id": 5, "op": "data_get", "path": [{"root": "books"}, {"key": {"int": 1}}]}
+REQ   {"id": 5, "op": "debug_data_get", "path": [{"root": "books"}, {"key": {"int": 1}}]}
 REPLY {"id":5,"ok":{"presence":"children_only","value":null}}
 ```
 
 An absent path:
 
 ```
-REQ   {"id": 6, "op": "data_get",
+REQ   {"id": 6, "op": "debug_data_get",
        "path": [{"root": "books"}, {"key": {"int": 99}}, {"field": "title"}]}
 REPLY {"id":6,"ok":{"presence":"absent","value":null}}
 ```
 
-### `data_walk`
+### `debug_data_walk`
 
 Up to `limit` `(path, value)` entries in the subtree at `path`, in Marrow order,
 plus whether the page was truncated and an optional cursor for the next page.
 
 ```
-REQ   {"id": 7, "op": "data_walk", "path": [{"root": "books"}], "limit": 1}
+REQ   {"id": 7, "op": "debug_data_walk", "path": [{"root": "books"}], "limit": 1}
 REPLY {"id":7,"ok":{"entries":[{"path":"^books(1).tags(1)","value":"ZmF2b3JpdGU="}],"truncated":true,"nextCursor":"<cursor-1>"}}
 
-REQ   {"id": 8, "op": "data_walk", "path": [{"root": "books"}], "limit": 1,
+REQ   {"id": 8, "op": "debug_data_walk", "path": [{"root": "books"}], "limit": 1,
        "cursor": "<cursor-1>"}
 REPLY {"id":8,"ok":{"entries":[{"path":"^books(1).title","value":"TW9ydA=="}],"truncated":true,"nextCursor":"<cursor-2>"}}
 
-REQ   {"id": 9, "op": "data_walk", "path": [{"root": "books"}], "limit": 100}
+REQ   {"id": 9, "op": "debug_data_walk", "path": [{"root": "books"}], "limit": 100}
 REPLY {"id":9,"ok":{"entries":[
          {"path":"^books(1).tags(1)","value":"ZmF2b3JpdGU="},
          {"path":"^books(1).title","value":"TW9ydA=="},
@@ -167,7 +166,7 @@ REPLY {"id":9,"ok":{"entries":[
        "truncated":false,"nextCursor":null}}
 ```
 
-In a `data_walk` entry, `path` is a checked data path string and `value` is the
+In a `debug_data_walk` entry, `path` is a checked data path string and `value` is the
 stored canonical payload as standard padded base64. A client decodes the value
 with the schema for that checked path.
 
@@ -209,7 +208,7 @@ Example: `^books(1).title` is
 
 ## Key encoding
 
-A key (in a `key` segment and in `data_children` output) is a one-field object
+A key (in a `key` segment and in `debug_data_children` output) is a one-field object
 tagged by the key's type:
 
 | Tag          | JSON form                  | Notes                                       |
@@ -228,7 +227,7 @@ and JSON numbers cannot hold them. Sending one as a number is a
 
 ## Base64
 
-Values, `bytes` keys, and opaque `data_walk` cursors use standard RFC 4648
+Values, `bytes` keys, and opaque `debug_data_walk` cursors use standard RFC 4648
 base64 (the `+`/`/` alphabet) with required `=` padding. Decoding is strict:
 unpadded or over-padded text is rejected. There is exactly one base64 dialect
 across the serve surface and the runtime — `Zm8` and `Zg====` are invalid; the
@@ -243,7 +242,7 @@ of the contract. The protocol-level codes:
 |------------------------|----------------------------------------------------------------------|
 | `protocol.malformed`   | the line is not JSON, the request is not an object, or it has no string `op` |
 | `protocol.unknown_op`  | a known envelope but an `op` the server does not implement           |
-| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive or missing `data_walk` limit, or a malformed/forged/out-of-subtree `data_walk` cursor |
+| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive or missing `debug_data_walk` limit, or a malformed/forged/out-of-subtree `debug_data_walk` cursor |
 
 A request that parses but cannot be answered by the store carries the store's
 own `store.*` code through unchanged (for example `store.corruption` on an
@@ -261,20 +260,20 @@ Observed replies:
 {"id": 11, "op": "frobnicate"}
   -> {"error":{"code":"protocol.unknown_op","message":"unknown operation `frobnicate`"},"id":11}
 
-{"id": 12, "op": "data_get", "path": [{"frob": "x"}]}
+{"id": 12, "op": "debug_data_get", "path": [{"frob": "x"}]}
   -> {"error":{"code":"protocol.bad_request","message":"unknown path segment `frob`"},"id":12}
 
-{"id": 13, "op": "data_get", "path": [{"root": "books"}, {"key": {"frob": 1}}]}
+{"id": 13, "op": "debug_data_get", "path": [{"root": "books"}, {"key": {"frob": 1}}]}
   -> {"error":{"code":"protocol.bad_request","message":"unknown key type `frob`"},"id":13}
 
-{"id": 14, "op": "data_get", "path": [{"root": "books"}, {"key": {"bytes": "!!!"}}]}
+{"id": 14, "op": "debug_data_get", "path": [{"root": "books"}, {"key": {"bytes": "!!!"}}]}
   -> {"error":{"code":"protocol.bad_request","message":"`bytes` is not valid base64"},"id":14}
 
-{"id": 15, "op": "data_get"}
+{"id": 15, "op": "debug_data_get"}
   -> {"error":{"code":"protocol.bad_request","message":"request is missing `path`"},"id":15}
 
-{"id": 16, "op": "data_walk", "path": [{"root": "books"}]}
-  -> {"error":{"code":"protocol.bad_request","message":"`data_walk` requires an integer `limit`"},"id":16}
+{"id": 16, "op": "debug_data_walk", "path": [{"root": "books"}]}
+  -> {"error":{"code":"protocol.bad_request","message":"`debug_data_walk` requires an integer `limit`"},"id":16}
 ```
 
 A line that cannot be parsed gets a `protocol.malformed` reply with `id: null`
@@ -284,16 +283,18 @@ holds for a non-UTF-8 line or one over the 64 MiB size limit.
 ## Security
 
 The listener binds loopback (`127.0.0.1`) only. The protocol has no
-authentication or transport security, so binding beyond loopback is not supported
-by the server; it would require both. The read-only guarantee is what lets serve
-be a long-lived shared owner of the store: several local tools can read one
-live-owned store without risking a write through this surface.
+authentication or transport security, so binding beyond loopback is not
+supported by the server; it would require both. This surface is read-only, but
+it can expose stored payload bytes and unpaged child listings for local
+inspection, so clients must treat it as debug/admin-only.
 
 ## Status
 
-What works today: the four read operations (`data_roots`, `data_children`,
-`data_get`, `data_walk`) over loopback TCP, with the path/key/base64 encodings
-and `protocol.*` / `store.*` error replies described above.
+What works today: the four debug read operations (`debug_data_roots`,
+`debug_data_children`, `debug_data_get`, `debug_data_walk`) over loopback TCP,
+with the path/key/base64 encodings and `protocol.*` / `store.*` error replies
+described above. Production preview, backup, restore, sync, and generated API
+protocols are not implemented here.
 
 Designed read extensions that are not yet implemented — local IPC over Unix
 sockets or Windows named pipes, and two read-only session extensions — are

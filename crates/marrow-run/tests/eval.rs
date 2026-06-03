@@ -209,11 +209,11 @@ macro_rules! checked_entry {
     };
 }
 
-fn checked_entry_call(
-    program: &CheckedRuntimeProgram,
+fn checked_entry_call<'p>(
+    program: &'p CheckedRuntimeProgram,
     entry: &str,
     args: Vec<Value>,
-) -> CheckedEntryCall {
+) -> CheckedEntryCall<'p> {
     CheckedEntryCall::new(program, entry, args).expect("checked entry call")
 }
 
@@ -407,48 +407,39 @@ fn read_data_bytes(
 }
 
 /// Run an entry function against an empty store, returning only its value.
-fn run(
-    program: &CheckedRuntimeProgram,
-    call: CheckedEntryCall,
-) -> Result<Option<Value>, marrow_run::RuntimeError> {
+fn run(call: CheckedEntryCall<'_>) -> Result<Option<Value>, marrow_run::RuntimeError> {
     let store = empty_store();
-    run_entry(program, &store, call).map(|outcome| outcome.value)
+    marrow_run::run_entry(&store, &call).map(|outcome| outcome.value)
 }
 
 /// Run an entry function against an empty store, returning its value and output.
-fn run_full(
-    program: &CheckedRuntimeProgram,
-    call: CheckedEntryCall,
-) -> Result<RunOutput, marrow_run::RuntimeError> {
+fn run_full(call: CheckedEntryCall<'_>) -> Result<RunOutput, marrow_run::RuntimeError> {
     let store = empty_store();
-    run_entry(program, &store, call)
+    marrow_run::run_entry(&store, &call)
 }
 
 fn run_entry(
-    program: &CheckedRuntimeProgram,
     store: &TreeStore,
-    call: CheckedEntryCall,
+    call: CheckedEntryCall<'_>,
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
-    marrow_run::run_entry(program, store, &call)
+    marrow_run::run_entry(store, &call)
 }
 
 fn run_entry_with_host(
-    program: &CheckedRuntimeProgram,
     store: &TreeStore,
     host: &Host,
-    call: CheckedEntryCall,
+    call: CheckedEntryCall<'_>,
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
-    marrow_run::run_entry_with_host(program, store, host, &call)
+    marrow_run::run_entry_with_host(store, host, &call)
 }
 
 fn run_entry_with_debugger(
-    program: &CheckedRuntimeProgram,
     store: &TreeStore,
     host: &Host,
     hook: &mut dyn StepHook,
-    call: CheckedEntryCall,
+    call: CheckedEntryCall<'_>,
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
-    marrow_run::run_entry_with_debugger(program, store, host, hook, &call)
+    marrow_run::run_entry_with_debugger(store, host, hook, &call)
 }
 
 /// Evaluate `entry` from a single checked `test` module against an empty store.
@@ -458,10 +449,11 @@ fn eval_source(
     args: Vec<Value>,
 ) -> Result<Option<Value>, marrow_run::RuntimeError> {
     let program = checked_program(source);
-    run(
+    run(checked_entry_call(
         &program,
-        checked_entry_call(&program, &format!("test::{entry}"), args),
-    )
+        &format!("test::{entry}"),
+        args,
+    ))
 }
 
 #[test]
@@ -492,7 +484,7 @@ fn evaluates_decimal_literals_and_arithmetic() {
         "pub fn f(): string\n    return $\"{1.5 + 2.5} {1.5 * 2.0} {5.5 - 0.5}\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("4 3 5".into()))
     );
 }
@@ -502,7 +494,7 @@ fn negates_a_decimal() {
     // Unary `-` on a decimal, and a subtraction that produces a negative decimal.
     let program = checked_program("pub fn f(): string\n    return $\"{-1.5} {0.0 - 2.5}\"\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("-1.5 -2.5".into()))
     );
 }
@@ -513,7 +505,7 @@ fn division_yields_a_decimal() {
     let program =
         checked_program("pub fn f(): string\n    return $\"{1 / 2} {7 / 2} {1.0 / 4.0}\"\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("0.5 3.5 0.25".into()))
     );
 }
@@ -523,7 +515,7 @@ fn decimal_division_rounds_half_even() {
     // 1/3 rounds half-even to 34 significant digits.
     let program = checked_program("pub fn f(): string\n    return $\"{1 / 3}\"\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str(format!("0.{}", "3".repeat(34))))
     );
 }
@@ -534,9 +526,7 @@ fn decimal_multiplication_must_fit_exactly() {
         "pub fn f(): decimal\n    return 0.123456789012345678 * 0.123456789012345678\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::f")).unwrap_err().code,
         RUN_DECIMAL_OVERFLOW
     );
 }
@@ -545,9 +535,7 @@ fn decimal_multiplication_must_fit_exactly() {
 fn decimal_division_by_zero_is_a_runtime_error() {
     let program = checked_program("pub fn f(): decimal\n    return 1.0 / 0.0\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::f")).unwrap_err().code,
         RUN_DIVIDE_BY_ZERO
     );
 }
@@ -559,7 +547,7 @@ fn compares_decimal_values() {
         "pub fn f(): string\n    return $\"{1.5 < 2.0} {1.50 == 1.5} {2.5 > 3.0}\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("true true false".into()))
     );
 }
@@ -578,9 +566,9 @@ fn decimal_round_trips_through_saved_data() {
          \x20   return $\"{^accts(1).balance ?? 0.0}\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::balance"))
+        run_entry(&store, checked_entry!(&program, "test::balance"))
             .unwrap()
             .value,
         Some(Value::Str("9.99".into()))
@@ -594,11 +582,11 @@ fn evaluates_bytes_literals_and_equality() {
          pub fn different(): bool\n    return b\"abc\" == b\"abd\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::same")).unwrap(),
+        run(checked_entry!(&program, "test::same")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::different")).unwrap(),
+        run(checked_entry!(&program, "test::different")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -609,7 +597,7 @@ fn bytes_escapes_are_decoded() {
         "pub fn f(): bytes\n    return b\"slash \\\\ quote \\\" line\\n carriage\\r tab\\t hex \\x00\\x7f\\xff café\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Bytes(
             b"slash \\ quote \" line\n carriage\r tab\t hex \x00\x7f\xff caf\xc3\xa9".to_vec()
         ))
@@ -624,7 +612,7 @@ fn malformed_bytes_escapes_are_rejected() {
         "pub fn f(): bytes\n    return b\"\\x0\"\n",
     ] {
         let program = checked_program(source);
-        let result = run(&program, checked_entry!(&program, "test::f"));
+        let result = run(checked_entry!(&program, "test::f"));
         assert!(
             matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
             "{result:?}"
@@ -639,11 +627,11 @@ fn compares_bytes_by_byte_order() {
          pub fn g(): bool\n    return b\"ab\" > b\"a\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::g")).unwrap(),
+        run(checked_entry!(&program, "test::g")).unwrap(),
         Some(Value::Bool(true))
     );
 }
@@ -661,9 +649,9 @@ fn bytes_round_trip_through_saved_data() {
          \x20   return (^blobs(1).data ?? b\"\") == b\"xy\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::matches"))
+        run_entry(&store, checked_entry!(&program, "test::matches"))
             .unwrap()
             .value,
         Some(Value::Bool(true))
@@ -677,12 +665,12 @@ fn converts_string_to_bytes_and_measures_length() {
          pub fn utf8(): int\n    return std::bytes::length(bytes(\"café\"))\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::short")).unwrap(),
+        run(checked_entry!(&program, "test::short")).unwrap(),
         Some(Value::Int(2))
     );
     // `café` is 4 characters but 5 UTF-8 bytes; std::bytes::length counts bytes.
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::utf8")).unwrap(),
+        run(checked_entry!(&program, "test::utf8")).unwrap(),
         Some(Value::Int(5))
     );
 }
@@ -691,7 +679,7 @@ fn converts_string_to_bytes_and_measures_length() {
 fn bytes_conversion_equals_a_bytes_literal() {
     let program = checked_program("pub fn f(): bool\n    return bytes(\"xy\") == b\"xy\"\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Bool(true))
     );
 }
@@ -705,20 +693,20 @@ fn base64_encodes_with_padding() {
          pub fn d(): string\n    return std::bytes::base64Encode(b\"abc\")\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::a")).unwrap(),
+        run(checked_entry!(&program, "test::a")).unwrap(),
         Some(Value::Str("aGVsbG8=".into()))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::b")).unwrap(),
+        run(checked_entry!(&program, "test::b")).unwrap(),
         Some(Value::Str("YQ==".into()))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::c")).unwrap(),
+        run(checked_entry!(&program, "test::c")).unwrap(),
         Some(Value::Str("YWI=".into()))
     );
     // An exact 3-byte group needs no padding.
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::d")).unwrap(),
+        run(checked_entry!(&program, "test::d")).unwrap(),
         Some(Value::Str("YWJj".into()))
     );
 }
@@ -730,11 +718,11 @@ fn base64_decodes_and_round_trips() {
          pub fn round(): bool\n    return std::bytes::base64Decode(std::bytes::base64Encode(b\"hi there\")) == b\"hi there\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::known")).unwrap(),
+        run(checked_entry!(&program, "test::known")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::round")).unwrap(),
+        run(checked_entry!(&program, "test::round")).unwrap(),
         Some(Value::Bool(true))
     );
 }
@@ -746,8 +734,8 @@ fn base64_decode_rejects_invalid_text() {
         "pub fn bad_chars(): bytes\n    return std::bytes::base64Decode(\"!!!!\")\n\n\
          pub fn early_pad(): bytes\n    return std::bytes::base64Decode(\"AAA=AAAA\")\n",
     );
-    assert!(run(&program, checked_entry!(&program, "test::bad_chars")).is_err());
-    assert!(run(&program, checked_entry!(&program, "test::early_pad")).is_err());
+    assert!(run(checked_entry!(&program, "test::bad_chars")).is_err());
+    assert!(run(checked_entry!(&program, "test::early_pad")).is_err());
 }
 
 #[test]
@@ -761,7 +749,7 @@ fn splits_a_string_and_iterates_the_sequence() {
          \x20   return result\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("abc".into()))
     );
 }
@@ -776,7 +764,7 @@ fn iterates_a_sequence_counting_its_elements() {
          \x20   return n\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::split_count")).unwrap(),
+        run(checked_entry!(&program, "test::split_count")).unwrap(),
         Some(Value::Int(4))
     );
 }
@@ -806,7 +794,7 @@ fn reads_and_writes_a_local_sequence_by_position() {
          \x20   return xs(1)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::seq_index")).unwrap(),
+        run(checked_entry!(&program, "test::seq_index")).unwrap(),
         Some(Value::Int(15))
     );
 }
@@ -835,11 +823,7 @@ fn reads_and_writes_a_multi_key_local_tree() {
          \x20   return counts(day, \"open\")\n",
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::keyed", Value::Date(1))
-        )
-        .unwrap(),
+        run(checked_entry!(&program, "test::keyed", Value::Date(1))).unwrap(),
         Some(Value::Int(3))
     );
 }
@@ -853,15 +837,15 @@ fn std_math_decimal_helpers() {
          pub fn down(): int\n    return std::math::floor(-2.7)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::a")).unwrap(),
+        run(checked_entry!(&program, "test::a")).unwrap(),
         Some(Value::Str("2.5".into()))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::up")).unwrap(),
+        run(checked_entry!(&program, "test::up")).unwrap(),
         Some(Value::Int(2))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::down")).unwrap(),
+        run(checked_entry!(&program, "test::down")).unwrap(),
         Some(Value::Int(-3))
     );
 }
@@ -873,7 +857,7 @@ fn formats_and_parses_instants() {
         "pub fn f(): string\n    return std::clock::formatInstant(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"))\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("2026-05-28T12:00:00Z".into()))
     );
 }
@@ -883,7 +867,7 @@ fn parse_instant_rejects_invalid_text() {
     let program = checked_program(
         "pub fn f(): instant\n    return std::clock::parseInstant(\"not a time\")\n",
     );
-    assert!(run(&program, checked_entry!(&program, "test::f")).is_err());
+    assert!(run(checked_entry!(&program, "test::f")).is_err());
 }
 
 #[test]
@@ -893,7 +877,7 @@ fn formats_and_parses_dates() {
         "pub fn f(): string\n    return std::clock::formatDate(std::clock::parseDate(\"2024-02-29\"))\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("2024-02-29".into()))
     );
 }
@@ -905,7 +889,7 @@ fn formats_and_parses_durations() {
         "pub fn f(): string\n    return std::clock::formatDuration(std::clock::parseDuration(\"PT90S\"))\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("PT90S".into()))
     );
 }
@@ -929,8 +913,8 @@ fn duration_literals_evaluate_to_their_fixed_spans() {
             "pub fn f(): duration\n    return std::clock::parseDuration(\"{canonical}\")\n"
         ));
         assert_eq!(
-            run(&program, checked_entry!(&program, "test::f")).unwrap(),
-            run(&reference, checked_entry!(&reference, "test::f")).unwrap(),
+            run(checked_entry!(&program, "test::f")).unwrap(),
+            run(checked_entry!(&reference, "test::f")).unwrap(),
             "{literal} should equal duration(\"{canonical}\")"
         );
     }
@@ -943,7 +927,7 @@ fn duration_literal_is_usable_where_a_duration_value_is() {
         "pub fn f(): string\n    return std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour))\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("2026-05-28T13:00:00Z".into()))
     );
 }
@@ -955,7 +939,7 @@ fn clock_add_offsets_an_instant_by_a_duration() {
         "pub fn f(): string\n    return std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), std::clock::parseDuration(\"PT3600S\")))\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("2026-05-28T13:00:00Z".into()))
     );
 }
@@ -969,8 +953,8 @@ fn clock_today_reads_the_host_clock_capability() {
     let store = TreeStore::memory();
     // 2023-11-14T22:13:20Z.
     let host = Host::new().with_clock(1_700_000_000_000_000_000);
-    let outcome = run_entry_with_host(&program, &store, &host, checked_entry!(&program, "test::f"))
-        .expect("today");
+    let outcome =
+        run_entry_with_host(&store, &host, checked_entry!(&program, "test::f")).expect("today");
     assert_eq!(outcome.value, Some(Value::Str("2023-11-14".into())));
 }
 
@@ -978,7 +962,7 @@ fn clock_today_reads_the_host_clock_capability() {
 fn clock_today_without_a_clock_capability_is_a_capability_error() {
     let program = checked_program("fn t(): date\n    return std::clock::today()\n");
     let store = TreeStore::memory();
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::t"));
+    let result = run_entry(&store, checked_entry!(&program, "test::t"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
         "{result:?}"
@@ -993,7 +977,6 @@ fn a_date_round_trips_through_saved_data() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -1004,7 +987,6 @@ fn a_date_round_trips_through_saved_data() {
     )
     .expect("record");
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::dateOf", Value::Int(1)),
     )
@@ -1020,10 +1002,12 @@ fn temporal_values_order_and_equate() {
         "fn dateBefore(a: string, b: string): bool\n    return std::clock::parseDate(a) < std::clock::parseDate(b)\nfn dateSame(a: string, b: string): bool\n    return std::clock::parseDate(a) == std::clock::parseDate(b)\nfn instantBefore(a: string, b: string): bool\n    return std::clock::parseInstant(a) < std::clock::parseInstant(b)\nfn durationBefore(a: string, b: string): bool\n    return std::clock::parseDuration(a) < std::clock::parseDuration(b)\n",
     );
     let call = |entry: &str, a: &str, b: &str| {
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, entry, Value::Str(a.into()), Value::Str(b.into())),
-        )
+            entry,
+            Value::Str(a.into()),
+            Value::Str(b.into())
+        ))
     };
     assert_eq!(
         call("test::dateBefore", "2024-01-01", "2024-12-31"),
@@ -1060,10 +1044,11 @@ fn short_form_std_call_runs() {
         &["std::clock"],
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::roundtrip", Value::Str("2024-02-29".into()))
-        ),
+            "test::roundtrip",
+            Value::Str("2024-02-29".into())
+        )),
         Ok(Some(Value::Str("2024-02-29".into())))
     );
 }
@@ -1076,24 +1061,19 @@ fn scalar_conversions_validate_a_dynamic_value() {
         "fn asInt(v: int): int\n    return int(v)\nfn asString(v: string): string\n    return string(v)\nfn asBool(v: bool): bool\n    return bool(v)\n",
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::asInt", Value::Int(42))
-        ),
+        run(checked_entry!(&program, "test::asInt", Value::Int(42))),
         Ok(Some(Value::Int(42)))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::asString", Value::Str("hi".into()))
-        ),
+            "test::asString",
+            Value::Str("hi".into())
+        )),
         Ok(Some(Value::Str("hi".into())))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::asBool", Value::Bool(true))
-        ),
+        run(checked_entry!(&program, "test::asBool", Value::Bool(true))),
         Ok(Some(Value::Bool(true)))
     );
 }
@@ -1114,17 +1094,19 @@ fn temporal_conversions_validate_their_values() {
         "fn d(t: string): string\n    return std::clock::formatDate(date(std::clock::parseDate(t)))\nfn span(t: string): string\n    return std::clock::formatDuration(duration(std::clock::parseDuration(t)))\n",
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::d", Value::Str("2024-02-29".into()))
-        ),
+            "test::d",
+            Value::Str("2024-02-29".into())
+        )),
         Ok(Some(Value::Str("2024-02-29".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::span", Value::Str("PT90S".into()))
-        ),
+            "test::span",
+            Value::Str("PT90S".into())
+        )),
         Ok(Some(Value::Str("PT90S".into())))
     );
 }
@@ -1134,11 +1116,11 @@ fn bool_conversion_accepts_canonical_int_forms() {
     // `bool(...)` accepts only the canonical integer forms at runtime: 0 and 1.
     let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::b", Value::Int(0))),
+        run(checked_entry!(&program, "test::b", Value::Int(0))),
         Ok(Some(Value::Bool(false)))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::b", Value::Int(1))),
+        run(checked_entry!(&program, "test::b", Value::Int(1))),
         Ok(Some(Value::Bool(true)))
     );
 }
@@ -1147,7 +1129,7 @@ fn bool_conversion_accepts_canonical_int_forms() {
 fn bool_conversion_rejects_non_canonical_values() {
     let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::b", Value::Int(2)))
+        run(checked_entry!(&program, "test::b", Value::Int(2)))
             .unwrap_err()
             .code,
         RUN_TYPE
@@ -1162,17 +1144,11 @@ fn bool_conversion_rejects_non_canonical_values() {
 fn int_conversion_parses_canonical_text() {
     let program = checked_program("fn n(v: string): int\n    return int(v)\n");
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::n", Value::Str("12".into()))
-        ),
+        run(checked_entry!(&program, "test::n", Value::Str("12".into()))),
         Ok(Some(Value::Int(12)))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::n", Value::Str("-7".into()))
-        ),
+        run(checked_entry!(&program, "test::n", Value::Str("-7".into()))),
         Ok(Some(Value::Int(-7)))
     );
 }
@@ -1183,10 +1159,11 @@ fn decimal_conversion_parses_canonical_text() {
     // round-trips to its canonical text.
     let program = checked_program("fn d(v: string): string\n    return $\"{decimal(v)}\"\n");
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::d", Value::Str("1.5".into()))
-        ),
+            "test::d",
+            Value::Str("1.5".into())
+        )),
         Ok(Some(Value::Str("1.5".into())))
     );
 }
@@ -1201,7 +1178,7 @@ fn error_code_conversion_validates_and_returns_text() {
          \x20   return \"mismatch\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::code")),
+        run(checked_entry!(&program, "test::code")),
         Ok(Some(Value::Str("x.y".into())))
     );
 }
@@ -1211,10 +1188,11 @@ fn error_code_conversion_accepts_dynamic_text() {
     let program =
         checked_program("fn code(raw: string): string\n    return string(ErrorCode(raw))\n");
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::code", Value::Str("app.missing".into()))
-        ),
+            "test::code",
+            Value::Str("app.missing".into())
+        )),
         Ok(Some(Value::Str("app.missing".into())))
     );
 }
@@ -1230,10 +1208,11 @@ fn error_code_conversion_failures_are_catchable_type_errors() {
     );
     for raw in ["Bad.Code", "missing_dot"] {
         assert_eq!(
-            run(
+            run(checked_entry!(
                 &program,
-                checked_entry!(&program, "test::code", Value::Str(raw.into()))
-            ),
+                "test::code",
+                Value::Str(raw.into())
+            )),
             Ok(Some(Value::Str(RUN_TYPE.into())))
         );
     }
@@ -1254,101 +1233,83 @@ fn conversion_builtins_accept_documented_sources() {
          fn durationFromText(v: string): string\n    return string(duration(v))\n",
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::intFromDecimal",
-                Value::Decimal(Decimal::parse("42").expect("decimal"))
-            )
-        ),
+            "test::intFromDecimal",
+            Value::Decimal(Decimal::parse("42").expect("decimal"))
+        )),
         Ok(Some(Value::Int(42)))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::decimalFromInt", Value::Int(42))
-        ),
+            "test::decimalFromInt",
+            Value::Int(42)
+        )),
         Ok(Some(Value::Str("42".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::stringFromInt", Value::Int(-7))
-        ),
+            "test::stringFromInt",
+            Value::Int(-7)
+        )),
         Ok(Some(Value::Str("-7".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::stringFromDecimal",
-                Value::Decimal(Decimal::parse("1.5").expect("decimal"))
-            )
-        ),
+            "test::stringFromDecimal",
+            Value::Decimal(Decimal::parse("1.5").expect("decimal"))
+        )),
         Ok(Some(Value::Str("1.5".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::stringFromBool", Value::Bool(true))
-        ),
+            "test::stringFromBool",
+            Value::Bool(true)
+        )),
         Ok(Some(Value::Str("true".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::stringFromBytes",
-                Value::Bytes("snow".as_bytes().to_vec())
-            )
-        ),
+            "test::stringFromBytes",
+            Value::Bytes("snow".as_bytes().to_vec())
+        )),
         Ok(Some(Value::Str("snow".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::bytesFromBytes",
-                Value::Bytes(vec![0, 1, 2])
-            )
-        ),
+            "test::bytesFromBytes",
+            Value::Bytes(vec![0, 1, 2])
+        )),
         Ok(Some(Value::Bytes(vec![0, 1, 2])))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::dateFromText",
-                Value::Str("2024-02-29".into())
-            )
-        ),
+            "test::dateFromText",
+            Value::Str("2024-02-29".into())
+        )),
         Ok(Some(Value::Str("2024-02-29".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::instantFromText",
-                Value::Str("1970-01-01T00:00:00Z".into())
-            )
-        ),
+            "test::instantFromText",
+            Value::Str("1970-01-01T00:00:00Z".into())
+        )),
         Ok(Some(Value::Str("1970-01-01T00:00:00Z".into())))
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::durationFromText",
-                Value::Str("PT90S".into())
-            )
-        ),
+            "test::durationFromText",
+            Value::Str("PT90S".into())
+        )),
         Ok(Some(Value::Str("PT90S".into())))
     );
 }
@@ -1361,36 +1322,31 @@ fn documented_conversions_reject_invalid_dynamic_values() {
          fn dateFromText(v: string): date\n    return date(v)\n",
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::intFromDecimal",
-                Value::Decimal(Decimal::parse("1.5").expect("decimal"))
-            )
-        )
+            "test::intFromDecimal",
+            Value::Decimal(Decimal::parse("1.5").expect("decimal"))
+        ))
         .unwrap_err()
         .code,
         RUN_TYPE
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::stringFromBytes", Value::Bytes(vec![0xff]))
-        )
+            "test::stringFromBytes",
+            Value::Bytes(vec![0xff])
+        ))
         .unwrap_err()
         .code,
         RUN_TYPE
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(
-                &program,
-                "test::dateFromText",
-                Value::Str("2021-02-29".into())
-            )
-        )
+            "test::dateFromText",
+            Value::Str("2021-02-29".into())
+        ))
         .unwrap_err()
         .code,
         RUN_TYPE
@@ -1403,10 +1359,11 @@ fn documented_conversion_failures_are_catchable_type_errors() {
         "fn code(v: bytes): string\n    try\n        return string(v)\n    catch err: Error\n        return err.code\n",
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::code", Value::Bytes(vec![0xff]))
-        ),
+            "test::code",
+            Value::Bytes(vec![0xff])
+        )),
         Ok(Some(Value::Str(RUN_TYPE.into())))
     );
 }
@@ -1416,20 +1373,22 @@ fn a_numeric_conversion_rejects_malformed_text() {
     // Malformed text is a typed numeric error, not a silent zero.
     let program = checked_program("fn n(v: string): int\n    return int(v)\n");
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::n", Value::Str("nope".into()))
-        )
+            "test::n",
+            Value::Str("nope".into())
+        ))
         .unwrap_err()
         .code,
         RUN_TYPE
     );
     let program = checked_program("fn d(v: string): decimal\n    return decimal(v)\n");
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::d", Value::Str("1.2.3".into()))
-        )
+            "test::d",
+            Value::Str("1.2.3".into())
+        ))
         .unwrap_err()
         .code,
         RUN_TYPE
@@ -1443,10 +1402,11 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
          fn caught(v: string): string\n    try\n        var d: decimal = decimal(v)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::d", Value::Str("1.2.3".into()))
-        )
+            "test::d",
+            Value::Str("1.2.3".into())
+        ))
         .unwrap_err()
         .code,
         RUN_TYPE
@@ -1455,11 +1415,7 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
         "99999999999999999999999999999999999",
         "0.11111111111111111111111111111111111",
     ] {
-        let error = run(
-            &program,
-            checked_entry!(&program, "test::d", Value::Str(raw.into())),
-        )
-        .unwrap_err();
+        let error = run(checked_entry!(&program, "test::d", Value::Str(raw.into()))).unwrap_err();
         assert_eq!(error.code, RUN_DECIMAL_OVERFLOW);
         assert!(
             error.message.contains("decimal arithmetic exceeded"),
@@ -1467,10 +1423,11 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
             error.message
         );
         assert_eq!(
-            run(
+            run(checked_entry!(
                 &program,
-                checked_entry!(&program, "test::caught", Value::Str(raw.into()))
-            ),
+                "test::caught",
+                Value::Str(raw.into())
+            )),
             Ok(Some(Value::Str(RUN_DECIMAL_OVERFLOW.into())))
         );
     }
@@ -1482,10 +1439,11 @@ fn a_conversion_error_message_is_grammar_independent() {
     // vowel-initial type names (not 'requires a int value').
     let program = checked_program("fn n(v: string): int\n    return int(v)\n");
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::n", Value::Str("nope".into()))
-        )
+            "test::n",
+            Value::Str("nope".into())
+        ))
         .unwrap_err()
         .message,
         "cannot convert this value to int"
@@ -1508,16 +1466,11 @@ fn evaluates_conditionals() {
 #[test]
 fn std_assert_is_true_passes_and_fails() {
     let program = checked_program("pub fn ok()\n    std::assert::isTrue(1 == 1)\n");
-    assert_eq!(
-        run(&program, checked_entry!(&program, "test::ok")),
-        Ok(None)
-    );
+    assert_eq!(run(checked_entry!(&program, "test::ok")), Ok(None));
 
     let program = checked_program("pub fn bad()\n    std::assert::isTrue(1 == 2)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bad"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::bad")).unwrap_err().code,
         RUN_ASSERT
     );
 }
@@ -1525,16 +1478,11 @@ fn std_assert_is_true_passes_and_fails() {
 #[test]
 fn std_assert_is_false_passes_and_fails() {
     let program = checked_program("pub fn ok()\n    std::assert::isFalse(1 == 2)\n");
-    assert_eq!(
-        run(&program, checked_entry!(&program, "test::ok")),
-        Ok(None)
-    );
+    assert_eq!(run(checked_entry!(&program, "test::ok")), Ok(None));
 
     let program = checked_program("pub fn bad()\n    std::assert::isFalse(1 == 1)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bad"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::bad")).unwrap_err().code,
         RUN_ASSERT
     );
 }
@@ -1542,7 +1490,7 @@ fn std_assert_is_false_passes_and_fails() {
 #[test]
 fn std_assert_fail_raises_with_its_message() {
     let program = checked_program("pub fn bad()\n    std::assert::fail(\"boom\")\n");
-    let error = run(&program, checked_entry!(&program, "test::bad")).unwrap_err();
+    let error = run(checked_entry!(&program, "test::bad")).unwrap_err();
     assert_eq!(error.code, RUN_ASSERT);
     assert!(error.message.contains("boom"), "{}", error.message);
 }
@@ -1554,10 +1502,7 @@ fn std_assert_absent_passes_when_nothing_is_saved() {
          \n\
          pub fn ok()\n    std::assert::absent(^books(1))\n",
     );
-    assert_eq!(
-        run(&program, checked_entry!(&program, "test::ok")),
-        Ok(None)
-    );
+    assert_eq!(run(checked_entry!(&program, "test::ok")), Ok(None));
 }
 
 #[test]
@@ -1576,7 +1521,7 @@ fn std_assert_absent_fails_when_a_value_is_present() {
         &data_path(&program, "books", &["title"]),
         SavedValue::Str("present".into()),
     );
-    let error = run_entry(&program, &store, checked_entry!(&program, "test::bad")).unwrap_err();
+    let error = run_entry(&store, checked_entry!(&program, "test::bad")).unwrap_err();
     assert_eq!(error.code, RUN_ASSERT);
 }
 
@@ -1598,7 +1543,7 @@ fn a_passing_assert_lets_execution_continue() {
     let program =
         checked_program("pub fn ok(): int\n    std::assert::isTrue(1 == 1)\n    return 7\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::ok")),
+        run(checked_entry!(&program, "test::ok")),
         Ok(Some(Value::Int(7)))
     );
 }
@@ -1623,15 +1568,11 @@ fn a_whole_group_entry_write_creates_the_entry() {
          \x20\x20\x20\x20return ^books(1).versions(2).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::version_title")
-        )
-        .unwrap()
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::version_title"))
+            .unwrap()
+            .value,
         Some(Value::Str("v2".into()))
     );
 }
@@ -1658,9 +1599,9 @@ fn a_nested_group_field_round_trips() {
          \x20\x20\x20\x20return ^books(1).versions(2).comments(3).text ?? \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::comment"))
+        run_entry(&store, checked_entry!(&program, "test::comment"))
             .unwrap()
             .value,
         Some(Value::Str("deep".into()))
@@ -1689,15 +1630,11 @@ fn a_whole_group_entry_can_be_read_and_copied() {
          \x20\x20\x20\x20return ^books(1).versions(2).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::copied_title")
-        )
-        .unwrap()
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::copied_title"))
+            .unwrap()
+            .value,
         Some(Value::Str("v1".into()))
     );
 }
@@ -1707,20 +1644,20 @@ fn std_text_builtins_operate_on_strings() {
     // `length` counts Unicode scalar values, not bytes ("café" is 4 scalars).
     let program = checked_program("pub fn f(): int\n    return std::text::length(\"café\")\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(4)))
     );
 
     let program = checked_program("pub fn f(): string\n    return std::text::trim(\"  hi  \")\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Str("hi".into())))
     );
 
     let program =
         checked_program("pub fn f(): bool\n    return std::text::contains(\"hello\", \"ell\")\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Bool(true)))
     );
 }
@@ -1729,21 +1666,21 @@ fn std_text_builtins_operate_on_strings() {
 fn std_math_builtins_compute_over_integers() {
     let program = checked_program("pub fn f(): int\n    return std::math::absInt(0 - 7)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(7)))
     );
 
     // remainder is truncated (sign of the dividend): -7 rem 3 = -1.
     let program = checked_program("pub fn f(): int\n    return std::math::remainder(0 - 7, 3)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(-1)))
     );
 
     // modulo is floored (sign of the divisor): -7 mod 3 = 2.
     let program = checked_program("pub fn f(): int\n    return std::math::modulo(0 - 7, 3)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(2)))
     );
 }
@@ -1752,9 +1689,7 @@ fn std_math_builtins_compute_over_integers() {
 fn std_math_modulo_by_zero_is_a_runtime_error() {
     let program = checked_program("pub fn f(): int\n    return std::math::modulo(7, 0)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::f")).unwrap_err().code,
         RUN_DIVIDE_BY_ZERO
     );
 }
@@ -1776,7 +1711,7 @@ fn throw_surfaces_as_an_uncaught_error() {
     let program = checked_program(
         "pub fn bad()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
     );
-    let error = run(&program, checked_entry!(&program, "test::bad")).unwrap_err();
+    let error = run(checked_entry!(&program, "test::bad")).unwrap_err();
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
     // The rendered message is byte-identical to the `uncaught error [code]: msg`
     // formula, pinning the format the CLI surfaces for an uncaught throw.
@@ -1787,9 +1722,7 @@ fn throw_surfaces_as_an_uncaught_error() {
 fn error_constructor_requires_code_and_message() {
     let program = checked_program("pub fn bad()\n    throw Error(code: \"x.y\")\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bad"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::bad")).unwrap_err().code,
         RUN_TYPE
     );
 }
@@ -1805,7 +1738,7 @@ fn catch_binds_the_thrown_error_and_recovers() {
         "pub fn safe(): string\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    catch err: Error\n        return err.message\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::safe")),
+        run(checked_entry!(&program, "test::safe")),
         Ok(Some(Value::Str("boom".into())))
     );
 }
@@ -1816,7 +1749,7 @@ fn a_try_that_succeeds_skips_catch() {
         "pub fn ok(): int\n    try\n        return 1\n    catch err: Error\n        return 2\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::ok")),
+        run(checked_entry!(&program, "test::ok")),
         Ok(Some(Value::Int(1)))
     );
 }
@@ -1827,12 +1760,9 @@ fn finally_runs_on_success_and_on_throw() {
         "pub fn run_it(do_throw: bool)\n    try\n        if do_throw\n            throw Error(code: \"x.y\", message: \"b\")\n    catch err: Error\n        write(\"caught \")\n    finally\n        write(\"cleanup\")\n",
     );
     let out = |b| {
-        run_full(
-            &program,
-            checked_entry!(&program, "test::run_it", Value::Bool(b)),
-        )
-        .unwrap()
-        .output
+        run_full(checked_entry!(&program, "test::run_it", Value::Bool(b)))
+            .unwrap()
+            .output
     };
     assert_eq!(out(false), "cleanup");
     assert_eq!(out(true), "caught cleanup");
@@ -1844,7 +1774,7 @@ fn a_runtime_fault_in_try_is_caught() {
         "pub fn f(): int\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 2\n    return 0\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(2)))
     );
 }
@@ -1905,43 +1835,31 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
          \x20   return \"none\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::overflow_code")),
+        run(checked_entry!(&program, "test::overflow_code")),
         Ok(Some(Value::Str(RUN_OVERFLOW.into())))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::remainder_code")),
+        run(checked_entry!(&program, "test::remainder_code")),
         Ok(Some(Value::Str(RUN_DIVIDE_BY_ZERO.into())))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::parse_date_code")),
+        run(checked_entry!(&program, "test::parse_date_code")),
         Ok(Some(Value::Str(RUN_TYPE.into())))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::parse_duration_code")
-        ),
+        run(checked_entry!(&program, "test::parse_duration_code")),
         Ok(Some(Value::Str(RUN_TYPE.into())))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::duration_conversion_code")
-        ),
+        run(checked_entry!(&program, "test::duration_conversion_code")),
         Ok(Some(Value::Str(RUN_TYPE.into())))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::instant_range_code")
-        ),
+        run(checked_entry!(&program, "test::instant_range_code")),
         Ok(Some(Value::Str("value.range".into())))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::decimal_overflow_code")
-        ),
+        run(checked_entry!(&program, "test::decimal_overflow_code")),
         Ok(Some(Value::Str("run.decimal_overflow".into())))
     );
 }
@@ -1954,7 +1872,7 @@ fn a_throw_from_a_callee_is_caught_by_the_caller() {
         "fn boom()\n    throw Error(code: \"x.y\", message: \"deep\")\npub fn safe(): string\n    try\n        boom()\n    catch err: Error\n        return err.message\n    return \"none\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::safe")),
+        run(checked_entry!(&program, "test::safe")),
         Ok(Some(Value::Str("deep".into())))
     );
 }
@@ -1969,7 +1887,7 @@ fn an_expression_position_call_throw_is_caught_like_a_statement_throw() {
         "fn boom(): int\n    throw Error(code: \"x.y\", message: \"mid\")\npub fn safe(): string\n    try\n        var total: int = boom() + 1\n    catch err: Error\n        return err.message\n    return \"none\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::safe")),
+        run(checked_entry!(&program, "test::safe")),
         Ok(Some(Value::Str("mid".into())))
     );
 }
@@ -1981,7 +1899,7 @@ fn a_throw_propagates_through_intermediate_calls() {
         "fn c()\n    throw Error(code: \"deep.fail\", message: \"from c\")\nfn b()\n    c()\npub fn a(): string\n    try\n        b()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::a")),
+        run(checked_entry!(&program, "test::a")),
         Ok(Some(Value::Str("deep.fail".into())))
     );
 }
@@ -1994,12 +1912,12 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
         "resource Account at ^accts(id: int)\n    balance: int\n\nfn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
     );
     let store = TreeStore::memory();
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::run_it"));
+    let result = run_entry(&store, checked_entry!(&program, "test::run_it"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNCAUGHT_THROW),
         "{result:?}"
     );
-    let after = run_entry(&program, &store, checked_entry!(&program, "test::read"))
+    let after = run_entry(&store, checked_entry!(&program, "test::read"))
         .expect("read")
         .value;
     assert_eq!(after, Some(Value::Int(-1)));
@@ -2013,7 +1931,7 @@ fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
         "fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::check")),
+        run(checked_entry!(&program, "test::check")),
         Ok(Some(Value::Int(99)))
     );
 }
@@ -2027,7 +1945,7 @@ fn a_throwing_finally_does_not_leak_a_pending_throw() {
         "fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::leak")),
+        run(checked_entry!(&program, "test::leak")),
         Ok(Some(Value::Int(99)))
     );
 }
@@ -2040,7 +1958,7 @@ fn a_throw_from_a_call_in_finally_propagates() {
         "fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::run_it")),
+        run(checked_entry!(&program, "test::run_it")),
         Ok(Some(Value::Str("deep".into())))
     );
 }
@@ -2052,7 +1970,7 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
     let program = checked_program(
         "fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
-    let outcome = run_full(&program, checked_entry!(&program, "test::run_it")).expect("caught");
+    let outcome = run_full(checked_entry!(&program, "test::run_it")).expect("caught");
     assert_eq!(outcome.value, Some(Value::Str("deep".into())));
     assert_eq!(outcome.output, "cleanup");
 }
@@ -2065,7 +1983,7 @@ fn an_out_parameter_writes_back_to_a_local() {
         "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 0\n    give(out n)\n    return n\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(42)))
     );
 }
@@ -2076,7 +1994,7 @@ fn an_uninitialized_scalar_var_starts_at_its_zero() {
     // type's default, so plain declaration-then-use works.
     let program = checked_program("pub fn main(): int\n    var n: int\n    return n\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(0)))
     );
 }
@@ -2089,7 +2007,7 @@ fn an_out_parameter_writes_back_to_an_uninitialized_var() {
         "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int\n    give(out n)\n    return n\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(42)))
     );
 }
@@ -2101,7 +2019,7 @@ fn an_out_parameter_ignores_the_caller_value_and_overwrites_it() {
         "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 99\n    give(out n)\n    return n\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(42)))
     );
 }
@@ -2113,7 +2031,7 @@ fn an_inout_parameter_reads_then_writes_a_local() {
         "fn bump(inout n: int)\n    n = n + 1\npub fn main(): int\n    var n: int = 41\n    bump(inout n)\n    return n\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(42)))
     );
 }
@@ -2126,7 +2044,7 @@ fn an_inout_parameter_mutates_a_local_resource() {
         "resource Book at ^books(id: int)\n    title: string\n\nfn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Str("Small Gods".into())))
     );
 }
@@ -2138,7 +2056,7 @@ fn an_uninitialized_qualified_resource_var_starts_empty() {
         "module app\nuse library\npub fn main(): string\n    var book: library::Book\n    book.title = \"draft\"\n    return book.title\n",
     ]);
     assert_eq!(
-        run(&program, checked_entry!(&program, "app::main")),
+        run(checked_entry!(&program, "app::main")),
         Ok(Some(Value::Str("draft".into())))
     );
 }
@@ -2162,7 +2080,7 @@ fn an_inout_parameter_writes_back_to_a_local_resource_field() {
         "resource Book at ^books(id: int)\n    title: string\n\nfn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Str("UPPER".into())))
     );
 }
@@ -2174,7 +2092,7 @@ fn an_out_parameter_writes_back_to_a_local_resource_field() {
         "resource Book at ^books(id: int)\n    title: string\n\nfn fill(out s: string)\n    s = \"FILLED\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    fill(out book.title)\n    return book.title\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Str("FILLED".into())))
     );
 }
@@ -2187,7 +2105,7 @@ fn write_back_is_skipped_when_the_callee_throws() {
         "fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"x\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        write(\"caught\")\n    return n\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::main")),
+        run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(1)))
     );
 }
@@ -2229,7 +2147,6 @@ fn io_round_trips_text_through_a_file() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("note.txt").to_string_lossy().into_owned();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(
@@ -2241,7 +2158,6 @@ fn io_round_trips_text_through_a_file() {
     )
     .expect("write");
     let loaded = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::loadText", Value::Str(path)),
@@ -2261,7 +2177,6 @@ fn irreversible_host_effects_inside_a_transaction_are_rejected_before_the_effect
     let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
     let error = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(
@@ -2284,11 +2199,7 @@ fn output_inside_a_transaction_is_rejected_before_the_effect() {
     let program =
         checked_program("pub fn print_in_txn()\n    transaction\n        print(\"leaked\")\n");
     let store = TreeStore::memory();
-    let result = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::print_in_txn"),
-    );
+    let result = run_entry(&store, checked_entry!(&program, "test::print_in_txn"));
     let error = result.expect_err("print inside transaction must fail");
 
     assert_eq!(error.code, RUN_CAPABILITY);
@@ -2302,13 +2213,8 @@ fn log_inside_a_transaction_is_rejected_before_the_effect() {
     let store = TreeStore::memory();
     let log = Rc::new(RefCell::new(String::new()));
     let host = Host::new().with_log_sink(Rc::clone(&log));
-    let error = run_entry_with_host(
-        &program,
-        &store,
-        &host,
-        checked_entry!(&program, "test::log_in_txn"),
-    )
-    .expect_err("log inside transaction must fail");
+    let error = run_entry_with_host(&store, &host, checked_entry!(&program, "test::log_in_txn"))
+        .expect_err("log inside transaction must fail");
 
     assert_eq!(error.code, RUN_CAPABILITY);
     assert_eq!(log.borrow().as_str(), "");
@@ -2323,7 +2229,6 @@ fn io_round_trips_bytes_through_a_file() {
     let path = dir.path().join("blob.bin").to_string_lossy().into_owned();
     let data = Value::Bytes(vec![0, 1, 2, 255, 128]);
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(
@@ -2335,7 +2240,6 @@ fn io_round_trips_bytes_through_a_file() {
     )
     .expect("write");
     let loaded = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::loadBytes", Value::Str(path)),
@@ -2351,7 +2255,6 @@ fn io_without_a_filesystem_capability_is_a_capability_error() {
     let store = TreeStore::memory();
     // Plain `run_entry` provides no host capabilities.
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::loadText", Value::Str("x".into())),
     );
@@ -2371,7 +2274,6 @@ fn an_io_error_raises_a_catchable_error() {
     let dir = tempfile::tempdir().expect("temp dir");
     let missing = dir.path().join("absent.txt").to_string_lossy().into_owned();
     let code = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::loadOrCode", Value::Str(missing)),
@@ -2401,14 +2303,10 @@ fn out_creates_a_saved_field() {
     let program = checked_program(SAVED_MODE_SAMPLE);
     let store = TreeStore::memory();
     // `out` never reads the place, so the field need not exist beforehand.
-    run_entry(&program, &store, checked_entry!(&program, "test::produce")).expect("produce");
-    let balance = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::balanceOf"),
-    )
-    .expect("read")
-    .value;
+    run_entry(&store, checked_entry!(&program, "test::produce")).expect("produce");
+    let balance = run_entry(&store, checked_entry!(&program, "test::balanceOf"))
+        .expect("read")
+        .value;
     assert_eq!(balance, Some(Value::Int(7)));
 }
 
@@ -2435,14 +2333,10 @@ fn out_creates_a_group_entry_field() {
     // `out` never reads the place, so the group-entry field need not exist first.
     let program = checked_program(GROUP_FIELD_MODE_SAMPLE);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::produce")).expect("produce");
-    let title = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::producedTitle"),
-    )
-    .expect("read")
-    .value;
+    run_entry(&store, checked_entry!(&program, "test::produce")).expect("produce");
+    let title = run_entry(&store, checked_entry!(&program, "test::producedTitle"))
+        .expect("read")
+        .value;
     assert_eq!(title, Some(Value::Str("made".into())));
 }
 
@@ -2453,7 +2347,7 @@ fn finally_runs_after_a_fault_and_can_replace_it() {
     let program = checked_program(
         "pub fn f(): int\n    try\n        const boom = 1 / 0\n    finally\n        throw Error(code: \"cleanup.failed\", message: \"x\")\n    return 0\n",
     );
-    let error = run(&program, checked_entry!(&program, "test::f")).unwrap_err();
+    let error = run(checked_entry!(&program, "test::f")).unwrap_err();
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
     assert!(
         error.message.contains("cleanup.failed"),
@@ -2468,9 +2362,7 @@ fn an_uncaught_throw_without_a_catch_propagates_through_finally() {
         "pub fn f()\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    finally\n        write(\"cleanup\")\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f"))
-            .unwrap_err()
-            .code,
+        run(checked_entry!(&program, "test::f")).unwrap_err().code,
         RUN_UNCAUGHT_THROW
     );
 }
@@ -2480,7 +2372,7 @@ fn a_throw_in_finally_replaces_the_outcome() {
     let program = checked_program(
         "pub fn f(): int\n    try\n        return 1\n    finally\n        throw Error(code: \"from.finally\", message: \"x\")\n",
     );
-    let error = run(&program, checked_entry!(&program, "test::f")).unwrap_err();
+    let error = run(checked_entry!(&program, "test::f")).unwrap_err();
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
     assert!(error.message.contains("from.finally"), "{}", error.message);
 }
@@ -2492,7 +2384,7 @@ fn a_clean_finally_preserves_a_return() {
         "pub fn f(): int\n    try\n        return 7\n    finally\n        write(\"cleanup\")\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(7)))
     );
 }
@@ -2508,14 +2400,12 @@ fn a_throw_caught_inside_a_transaction_commits() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::safe", Value::Int(1)),
     )
     .expect("safe runs");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::title", Value::Int(1))
         )
@@ -2536,7 +2426,6 @@ fn throw_inside_a_transaction_rolls_back() {
     let store = TreeStore::memory();
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::risky", Value::Int(1))
         )
@@ -2546,7 +2435,6 @@ fn throw_inside_a_transaction_rolls_back() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_book", Value::Int(1))
         )
@@ -2640,7 +2528,7 @@ fn integer_remainder_by_zero_reports_one_consistent_message() {
     // std::math::modulo routes through the same integer-remainder path.
     let program = checked_program("pub fn g(): int\n    return std::math::modulo(7, 0)\n");
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::g"))
+        run(checked_entry!(&program, "test::g"))
             .unwrap_err()
             .message,
         "integer remainder by zero"
@@ -2702,7 +2590,7 @@ fn a_local_const_binds_a_runtime_computed_value() {
         "fn double(n: int): int\n    return n * 2\nfn f(): int\n    const x = double(5)\n    return x\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")),
+        run(checked_entry!(&program, "test::f")),
         Ok(Some(Value::Int(10)))
     );
 }
@@ -2888,7 +2776,7 @@ fn a_date_range_steps_one_calendar_day_across_a_leap_boundary() {
         "pub fn f(): string\n    var acc = \"\"\n    for d in std::clock::parseDate(\"2024-02-27\")..=std::clock::parseDate(\"2024-03-02\") by 1.day\n        acc = acc _ std::clock::formatDate(d) _ \";\"\n    return acc\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str(
             "2024-02-27;2024-02-28;2024-02-29;2024-03-01;2024-03-02;".into()
         ))
@@ -2911,7 +2799,7 @@ fn an_instant_range_steps_by_a_duration_in_utc() {
         "pub fn f(): string\n    var acc = \"\"\n    for t in std::clock::parseInstant(\"2024-03-10T12:00:00Z\")..std::clock::parseInstant(\"2024-03-10T15:00:00Z\") by 1.hour\n        acc = acc _ std::clock::formatInstant(t) _ \";\"\n    return acc\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str(
             "2024-03-10T12:00:00Z;2024-03-10T13:00:00Z;2024-03-10T14:00:00Z;".into()
         ))
@@ -3093,7 +2981,7 @@ fn interpolation_rejects_later_bad_escapes_before_evaluating_holes() {
         "fn boom(): decimal\n    return 1.0 / 0.0\n\n\
          fn f(): string\n    return $\"{boom()}\\q\"\n",
     );
-    let result = run(&program, checked_entry!(&program, "test::f"));
+    let result = run(checked_entry!(&program, "test::f"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -3104,10 +2992,12 @@ fn interpolation_rejects_later_bad_escapes_before_evaluating_holes() {
 fn run_entry_evaluates_a_function_by_qualified_name() {
     let program = checked_program("fn add(a: int, b: int): int\n    return a + b\n");
     assert_eq!(
-        run(
+        run(checked_entry!(
             &program,
-            checked_entry!(&program, "test::add", Value::Int(2), Value::Int(3))
-        ),
+            "test::add",
+            Value::Int(2),
+            Value::Int(3)
+        )),
         Ok(Some(Value::Int(5)))
     );
 }
@@ -3138,16 +3028,6 @@ fn run_entry_rejects_ambiguous_bare_entries() {
     let error = rejected_entry_call(&program, "widget", vec![]);
 
     assert_eq!(error.code, "run.ambiguous_function");
-}
-
-#[test]
-fn checked_entry_call_is_revalidated_against_the_program_it_runs() {
-    let int_program = checked_program("fn f(v: int): int\n    return v\n");
-    let string_program = checked_program("fn f(v: string): string\n    return v\n");
-    let call = checked_entry!(&int_program, "test::f", Value::Int(7));
-
-    let error = run(&string_program, call).expect_err("call cannot be reused across programs");
-    assert_eq!(error.code, RUN_TYPE);
 }
 
 #[test]
@@ -3189,10 +3069,7 @@ fn a_function_can_call_another() {
         "fn double(n: int): int\n    return n + n\n\nfn quad(n: int): int\n    return double(n) + double(n)\n",
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::quad", Value::Int(3))
-        ),
+        run(checked_entry!(&program, "test::quad", Value::Int(3))),
         Ok(Some(Value::Int(12)))
     );
 }
@@ -3203,10 +3080,7 @@ fn functions_recurse() {
         "fn fact(n: int): int\n    if n <= 1\n        return 1\n    return n * fact(n - 1)\n",
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::fact", Value::Int(5))
-        ),
+        run(checked_entry!(&program, "test::fact", Value::Int(5))),
         Ok(Some(Value::Int(120)))
     );
 }
@@ -3217,7 +3091,7 @@ fn a_void_call_runs_as_a_statement() {
         "fn note(n: int)\n    const doubled = n + n\n\nfn caller(): int\n    note(3)\n    return 2\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::caller")),
+        run(checked_entry!(&program, "test::caller")),
         Ok(Some(Value::Int(2)))
     );
 }
@@ -3254,14 +3128,14 @@ fn a_unique_index_lookup_loop_skips_an_absent_entry() {
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn f()\n    for id in ^books.byIsbn(\"978-0\")\n        print($\"{id}\")\n",
     );
 
-    let outcome = run_full(&program, checked_entry!(&program, "test::f")).expect("run");
+    let outcome = run_full(checked_entry!(&program, "test::f")).expect("run");
     assert_eq!(outcome.output, "");
 }
 
 #[test]
 fn print_writes_a_line_to_output() {
     let program = checked_program("fn main()\n    print($\"hello {1}\")\n");
-    let outcome = run_full(&program, checked_entry!(&program, "test::main")).expect("run");
+    let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.output, "hello 1\n");
 }
@@ -3269,7 +3143,7 @@ fn print_writes_a_line_to_output() {
 #[test]
 fn write_does_not_add_a_newline() {
     let program = checked_program("fn main()\n    write(\"a\")\n    write(\"b\")\n");
-    let outcome = run_full(&program, checked_entry!(&program, "test::main")).expect("run");
+    let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.output, "ab");
 }
 
@@ -3278,14 +3152,14 @@ fn output_accumulates_across_calls() {
     let program = checked_program(
         "fn greet(name: string)\n    print($\"hi {name}\")\n\nfn main()\n    greet(\"a\")\n    greet(\"b\")\n",
     );
-    let outcome = run_full(&program, checked_entry!(&program, "test::main")).expect("run");
+    let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.output, "hi a\nhi b\n");
 }
 
 #[test]
 fn print_takes_one_argument() {
     let program = checked_program("fn main()\n    print()\n");
-    let result = run_full(&program, checked_entry!(&program, "test::main"));
+    let result = run_full(checked_entry!(&program, "test::main"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
         "{result:?}"
@@ -3322,7 +3196,6 @@ fn reads_a_scalar_field_from_saved_data() {
     let program = checked_program(BOOK_READER);
     let store = store_with_title(&program, 1, "Mort");
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::title_of", Value::Int(1)),
     )
@@ -3335,7 +3208,6 @@ fn reading_an_absent_field_is_an_error() {
     let program = checked_program(BOOK_READER);
     let store = TreeStore::memory(); // empty: the title is absent
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::title_of", Value::Int(1)),
     );
@@ -3350,7 +3222,6 @@ fn a_saved_read_interpolates_and_prints() {
     let program = checked_program(BOOK_READER);
     let store = store_with_title(&program, 7, "Mort");
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::show", Value::Int(7)),
     )
@@ -3373,7 +3244,6 @@ fn whole_resource_read_rejects_missing_required_durable_fields() {
         SavedValue::Str("fiction".into()),
     );
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::read", Value::Int(1)),
     );
@@ -3401,7 +3271,6 @@ fn a_field_write_updates_saved_data() {
     let program = checked_program(BOOK_WRITER);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3413,7 +3282,6 @@ fn a_field_write_updates_saved_data() {
     .expect("write");
     // Read it back through the runtime against the same store.
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::title_of", Value::Int(1)),
     )
@@ -3434,7 +3302,6 @@ fn out_of_transaction_field_write_rejects_partial_required_record() {
     );
     let store = TreeStore::memory();
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::set_shelf", Value::Int(1)),
     );
@@ -3444,7 +3311,6 @@ fn out_of_transaction_field_write_rejects_partial_required_record() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_item", Value::Int(1))
         )
@@ -3469,7 +3335,6 @@ fn out_of_transaction_group_field_write_rejects_partial_required_record() {
     );
     let store = TreeStore::memory();
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::set_cover", Value::Int(1)),
     );
@@ -3479,7 +3344,6 @@ fn out_of_transaction_group_field_write_rejects_partial_required_record() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_book", Value::Int(1))
         )
@@ -3504,7 +3368,6 @@ fn transaction_commit_rejects_partial_required_record() {
     );
     let store = TreeStore::memory();
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::set_shelf", Value::Int(1)),
     );
@@ -3514,7 +3377,6 @@ fn transaction_commit_rejects_partial_required_record() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_item", Value::Int(1))
         )
@@ -3542,14 +3404,12 @@ fn transaction_required_field_checks_cross_helper_calls() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::create", Value::Int(1)),
     )
     .expect("commit");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::name_of", Value::Int(1))
         )
@@ -3575,14 +3435,12 @@ fn nested_transaction_defers_required_check_until_outer_commit() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::create", Value::Int(1)),
     )
     .expect("commit");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::name_of", Value::Int(1))
         )
@@ -3622,13 +3480,9 @@ fn exists_reports_record_and_field_presence() {
     let program = checked_program(BOOK_QUERY);
     let store = store_with_title(&program, 1, "Mort");
     let value = |entry, id| {
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, entry, Value::Int(id)),
-        )
-        .expect("run")
-        .value
+        run_entry(&store, checked_entry!(&program, entry, Value::Int(id)))
+            .expect("run")
+            .value
     };
     // Record 1 exists (it has the title child); record 2 does not.
     assert_eq!(value("test::has_book", 1), Some(Value::Bool(true)));
@@ -3642,7 +3496,6 @@ fn coalesce_returns_the_default_for_an_absent_field() {
     let program = checked_program(BOOK_QUERY);
     let store = store_with_title(&program, 1, "Mort"); // subtitle is absent
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3670,7 +3523,6 @@ fn coalesce_returns_the_value_when_present() {
         SavedValue::Str("A Discworld Novel".into()),
     );
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3716,7 +3568,6 @@ fn optional_chain_with_default_reads_a_present_value() {
     let program = checked_program(PATIENT_CHAIN);
     let store = store_with_first_name(&program, 1, "Granny");
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3737,7 +3588,6 @@ fn optional_chain_defaults_when_the_record_is_absent() {
     // short-circuits and `??` supplies the default.
     let store = store_with_first_name(&program, 1, "Granny");
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3766,7 +3616,6 @@ fn optional_chain_defaults_when_an_intermediate_field_is_absent() {
         SavedValue::Str("Weatherwax".into()),
     );
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3796,7 +3645,7 @@ fn next_id_allocates_past_the_highest_record() {
     let store = empty_store();
     // Empty root: the next id is 1.
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::fresh"))
+        run_entry(&store, checked_entry!(&program, "test::fresh"))
             .expect("run")
             .value,
         Some(Value::Int(1))
@@ -3813,7 +3662,7 @@ fn next_id_allocates_past_the_highest_record() {
         );
     }
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::fresh"))
+        run_entry(&store, checked_entry!(&program, "test::fresh"))
             .expect("run")
             .value,
         Some(Value::Int(5))
@@ -3837,7 +3686,7 @@ fn next_id_skips_ahead_after_restore() {
         SavedValue::Str("t".into()),
     );
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::fresh"))
+        run_entry(&store, checked_entry!(&program, "test::fresh"))
             .expect("run")
             .value,
         Some(Value::Int(901))
@@ -3893,7 +3742,6 @@ fn delete_removes_a_record() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -3905,7 +3753,6 @@ fn delete_removes_a_record() {
     .expect("write");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_book", Value::Int(1))
         )
@@ -3914,14 +3761,12 @@ fn delete_removes_a_record() {
         Some(Value::Bool(true))
     );
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::remove", Value::Int(1)),
     )
     .expect("delete");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_book", Value::Int(1))
         )
@@ -3940,14 +3785,12 @@ fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_subtitle", Value::Int(1))
         )
@@ -3956,14 +3799,12 @@ fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
         Some(Value::Bool(true))
     );
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::drop_subtitle", Value::Int(1)),
     )
     .expect("delete");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_subtitle", Value::Int(1))
         )
@@ -3974,7 +3815,6 @@ fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::title_of", Value::Int(1))
         )
@@ -3994,7 +3834,6 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4007,7 +3846,6 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
     .expect("add");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::count_on", Value::Str("fiction".into()))
         )
@@ -4016,14 +3854,12 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
         Some(Value::Int(1))
     );
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::drop_shelf", Value::Int(1)),
     )
     .expect("delete");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::count_on", Value::Str("fiction".into()))
         )
@@ -4042,13 +3878,11 @@ fn deleting_a_required_field_is_rejected() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::drop_title", Value::Int(1)),
     );
@@ -4068,20 +3902,17 @@ fn deleting_a_layer_entry_leaves_other_entries() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::drop_version", Value::Int(1), Value::Int(1)),
     )
     .expect("delete");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4097,7 +3928,6 @@ fn deleting_a_layer_entry_leaves_other_entries() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4123,20 +3953,17 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::drop_tag", Value::Int(1), Value::Int(1)),
     )
     .expect("delete");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag_count", Value::Int(1))
         )
@@ -4147,7 +3974,6 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag_at", Value::Int(1), Value::Int(1))
         )
@@ -4157,7 +3983,6 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag_at", Value::Int(1), Value::Int(2))
         )
@@ -4175,14 +4000,12 @@ fn a_transaction_commits_on_normal_exit() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::save", Value::Int(1)),
     )
     .expect("commit");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::title_of", Value::Int(1))
         )
@@ -4199,7 +4022,6 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
     );
     let store = TreeStore::memory();
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::risky", Value::Int(1)),
     );
@@ -4210,7 +4032,6 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
     // The write staged before the error was rolled back.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::has_book", Value::Int(1))
         )
@@ -4272,7 +4093,6 @@ fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
     let program = checked_program(UNIQUE_RECOVERY);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4284,7 +4104,6 @@ fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4297,7 +4116,6 @@ fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
     .expect("seed");
     // Book 2 tries to claim book 1's isbn: a unique conflict the catch binds.
     let caught = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4318,7 +4136,6 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     let program = checked_program(UNIQUE_RECOVERY);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4330,7 +4147,6 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4342,7 +4158,6 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     )
     .expect("seed");
     let title = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4359,7 +4174,6 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     // unique index still maps the conflicting isbn to book 1, not book 2.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::isbnOf", Value::Int(2))
         )
@@ -4370,7 +4184,6 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::ownerOf", Value::Str("978-0".into()))
         )
@@ -4389,7 +4202,6 @@ fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
     let program = checked_program(UNIQUE_RECOVERY);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4401,7 +4213,6 @@ fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4413,7 +4224,6 @@ fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
     )
     .expect("seed");
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4434,7 +4244,6 @@ fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4446,7 +4255,6 @@ fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4458,7 +4266,6 @@ fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4472,7 +4279,6 @@ fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
     // The transaction's other write (the title) committed.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::titleOf", Value::Int(2))
         )
@@ -4491,7 +4297,6 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4503,7 +4308,6 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4515,7 +4319,7 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
     )
     .expect("seed");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::run_it"))
+        run_entry(&store, checked_entry!(&program, "test::run_it"))
             .unwrap_err()
             .code,
         RUN_DIVIDE_BY_ZERO,
@@ -4536,12 +4340,8 @@ fn reads_inside_a_transaction_see_earlier_writes() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title\n",
     );
     let store = TreeStore::memory();
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::rww", Value::Int(1)),
-    )
-    .expect("run");
+    let outcome =
+        run_entry(&store, checked_entry!(&program, "test::rww", Value::Int(1))).expect("run");
     assert_eq!(outcome.value, Some(Value::Str("fresh".into())));
 }
 
@@ -4553,7 +4353,6 @@ fn append_writes_at_the_next_position() {
     let store = TreeStore::memory();
     let appended = |t: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4595,7 +4394,6 @@ fn appends_then_reads_back_keyed_leaf_entries() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4606,7 +4404,6 @@ fn appends_then_reads_back_keyed_leaf_entries() {
     )
     .expect("append");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4618,7 +4415,6 @@ fn appends_then_reads_back_keyed_leaf_entries() {
     .expect("append");
     let tag = |pos: i64| {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag_at", Value::Int(5), Value::Int(pos)),
         )
@@ -4639,7 +4435,6 @@ fn explicit_keyed_leaf_write_then_reads_back() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4651,7 +4446,6 @@ fn explicit_keyed_leaf_write_then_reads_back() {
     )
     .expect("explicit keyed-leaf write");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4665,7 +4459,6 @@ fn explicit_keyed_leaf_write_then_reads_back() {
 
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag_at", Value::Int(5), Value::Int(3))
         )
@@ -4675,7 +4468,6 @@ fn explicit_keyed_leaf_write_then_reads_back() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4700,7 +4492,6 @@ fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     let store = TreeStore::memory();
     // Write position 5 directly, leaving 1..=4 as holes.
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4714,7 +4505,6 @@ fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     // Append lands at 6 (one past the highest positive key), skipping the holes.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4729,7 +4519,6 @@ fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag_at", Value::Int(9), Value::Int(6))
         )
@@ -4783,7 +4572,6 @@ fn iterates_index_keys() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4801,7 +4589,6 @@ fn iterates_index_keys() {
 
     let count = |shelf: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::count_on", Value::Str(shelf.into())),
         )
@@ -4819,7 +4606,6 @@ fn bare_index_iteration_yields_first_level_keys() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4836,7 +4622,6 @@ fn bare_index_iteration_yields_first_level_keys() {
     add(3, "Guards", "history");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::count_via_bare_index"),
     )
@@ -4850,7 +4635,6 @@ fn updating_an_indexed_field_while_iterating_that_index_faults() {
     let store = TreeStore::memory();
     for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4864,14 +4648,12 @@ fn updating_an_indexed_field_while_iterating_that_index_faults() {
     }
 
     let error = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::reshelve_while_iterating"),
     )
     .unwrap_err();
     assert_eq!(error.code, RUN_TRAVERSAL, "{error:?}");
     let remaining = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::count_on", Value::Str("fiction".into())),
     )
@@ -4885,7 +4667,6 @@ fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
     let program = checked_program(BOOK_SHELF);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -4898,7 +4679,6 @@ fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
     .expect("add");
 
     let error = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::reshelve_while_iterating_direct"),
     )
@@ -4912,7 +4692,6 @@ fn prints_titles_in_index_key_order() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -4929,7 +4708,6 @@ fn prints_titles_in_index_key_order() {
 
     // The index yields ids in key order (1 then 2), regardless of insert order.
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::titles_on", Value::Str("fiction".into())),
     )
@@ -4986,7 +4764,6 @@ fn reads_a_whole_resource() {
     seed_field(&program, &store, 1, "title", "Mort");
     seed_field(&program, &store, 1, "shelf", "fiction");
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::read", Value::Int(1)),
     )
@@ -5011,8 +4788,7 @@ fn constructs_a_resource_value() {
          \x20\x20\x20\x20return Book(title: \"Mort\", shelf: \"fiction\")\n",
     );
     let store = TreeStore::memory();
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::draft")).expect("draft");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::draft")).expect("draft");
     assert_eq!(
         outcome.value,
         Some(Value::Resource(vec![
@@ -5035,8 +4811,7 @@ fn constructs_a_resource_value_with_a_local_resource_field() {
          \x20\x20\x20\x20return person.address.city\n",
     );
     let store = TreeStore::memory();
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::city")).expect("city");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::city")).expect("city");
     assert_eq!(outcome.value, Some(Value::Str("Paris".into())));
 }
 
@@ -5052,8 +4827,7 @@ fn constructs_a_qualified_resource_value() {
          \x20\x20\x20\x20return library::Book(title: \"Mort\")\n",
     ]);
     let store = TreeStore::memory();
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "app::draft")).expect("draft");
+    let outcome = run_entry(&store, checked_entry!(&program, "app::draft")).expect("draft");
     assert_eq!(
         outcome.value,
         Some(Value::Resource(vec![(
@@ -5095,10 +4869,9 @@ fn resource_constructor_value_can_be_saved() {
          \x20\x20\x20\x20return ^books(1).title\n",
     );
     let store = TreeStore::memory();
-    let saved = run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
+    let saved = run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
     assert_eq!(saved.value, Some(Value::Int(1)));
-    let title =
-        run_entry(&program, &store, checked_entry!(&program, "test::title")).expect("title");
+    let title = run_entry(&store, checked_entry!(&program, "test::title")).expect("title");
     assert_eq!(title.value, Some(Value::Str("Small Gods".into())));
 }
 
@@ -5120,19 +4893,14 @@ fn copies_a_whole_resource() {
     seed_field(&program, &store, 1, "title", "Mort");
     seed_field(&program, &store, 1, "shelf", "fiction");
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::copy", Value::Int(1), Value::Int(2)),
     )
     .expect("copy");
     let read = |entry: &str| {
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, entry, Value::Int(2)),
-        )
-        .expect("run")
-        .value
+        run_entry(&store, checked_entry!(&program, entry, Value::Int(2)))
+            .expect("run")
+            .value
     };
     assert_eq!(read("test::title_of"), Some(Value::Str("Mort".into())));
     assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
@@ -5168,7 +4936,6 @@ fn whole_resource_read_materializes_unkeyed_groups() {
     seed_patient_field(&program, &store, 1, "mrn", "A1");
     seed_patient_name_field(&program, &store, 1, "first", "Sam");
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::read", Value::Int(1)),
     )
@@ -5192,14 +4959,12 @@ fn whole_resource_write_copies_unkeyed_group_fields() {
     seed_patient_field(&program, &store, 1, "mrn", "A1");
     seed_patient_name_field(&program, &store, 1, "first", "Sam");
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::copy", Value::Int(1), Value::Int(2)),
     )
     .expect("copy");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::first_of", Value::Int(2))
         )
@@ -5226,14 +4991,12 @@ fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups()
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::save", Value::Int(1)),
     )
     .expect("write");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::title_of", Value::Int(1))
         )
@@ -5304,7 +5067,6 @@ fn builds_a_local_resource_and_saves_it() {
     let program = checked_program(BOOK_ADD);
     let store = TreeStore::memory();
     let id = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5317,13 +5079,9 @@ fn builds_a_local_resource_and_saves_it() {
     .value;
     assert_eq!(id, Some(Value::Int(1)));
     let read = |entry: &str| {
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, entry, Value::Int(1)),
-        )
-        .expect("run")
-        .value
+        run_entry(&store, checked_entry!(&program, entry, Value::Int(1)))
+            .expect("run")
+            .value
     };
     assert_eq!(read("test::title_of"), Some(Value::Str("Mort".into())));
     assert_eq!(read("test::shelf_of"), Some(Value::Str("fiction".into())));
@@ -5336,7 +5094,6 @@ fn reads_a_local_resource_field() {
     );
     let store = TreeStore::memory();
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::echo", Value::Str("Mort".into())),
     )
@@ -5367,7 +5124,6 @@ fn clock_now_reads_the_host_clock_capability() {
     // 1970-01-01T00:00:01Z, one second after the epoch.
     let host = Host::new().with_clock(1_000_000_000);
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::record", Value::Int(1)),
@@ -5375,7 +5131,6 @@ fn clock_now_reads_the_host_clock_capability() {
     .expect("record");
     // The instant round-trips through the managed write and a typed read.
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::changed_at_of", Value::Int(1)),
     )
@@ -5388,7 +5143,7 @@ fn clock_now_without_a_clock_capability_is_a_capability_error() {
     let program = checked_program("fn t(): instant\n    return std::clock::now()\n");
     let store = TreeStore::memory();
     // Plain `run_entry` supplies no host capabilities.
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::t"));
+    let result = run_entry(&store, checked_entry!(&program, "test::t"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
         "{result:?}"
@@ -5422,7 +5177,7 @@ fn env_reads_variables_from_the_host_capability() {
     let store = TreeStore::memory();
     let host = env_host();
     let call = |entry: CheckedEntryCall| {
-        run_entry_with_host(&program, &store, &host, entry)
+        run_entry_with_host(&store, &host, entry)
             .expect("env call")
             .value
     };
@@ -5469,7 +5224,6 @@ fn env_get_falls_back_to_the_default_when_absent() {
     let host = env_host();
     let call = |name: &str, fallback: &str| {
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(
@@ -5501,7 +5255,6 @@ fn env_require_missing_variable_is_an_absent_error() {
     let store = TreeStore::memory();
     let host = env_host();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::must", Value::Str("MISSING".into())),
@@ -5519,7 +5272,6 @@ fn env_without_an_environment_capability_is_a_capability_error() {
     // Plain `run_entry` supplies no host capabilities, so the whole module is
     // unavailable — even presence checks.
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::has", Value::Str("HOME".into())),
     );
@@ -5548,26 +5300,18 @@ fn log_writes_each_level_to_the_host_sink() {
     let sink = Rc::new(RefCell::new(String::new()));
     let host = Host::new().with_log_sink(Rc::clone(&sink));
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::note", Value::Str("hello".into())),
     )
     .expect("info");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::careful", Value::Str("watch out".into())),
     )
     .expect("warn");
-    run_entry_with_host(
-        &program,
-        &store,
-        &host,
-        checked_entry!(&program, "test::boom"),
-    )
-    .expect("error");
+    run_entry_with_host(&store, &host, checked_entry!(&program, "test::boom")).expect("error");
     assert_eq!(
         sink.borrow().as_str(),
         "INFO hello\nWARN watch out\nERROR [E_BOOM] kaboom\n"
@@ -5580,7 +5324,6 @@ fn log_without_a_log_capability_is_a_capability_error() {
     let store = TreeStore::memory();
     // Plain `run_entry` supplies no host capabilities.
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::note", Value::Str("hi".into())),
     );
@@ -5605,13 +5348,11 @@ fn a_group_entry_field_write_lands_in_saved_data() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(5)),
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5664,7 +5405,6 @@ fn group_entry_field_writes_compose_in_a_transaction() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5678,7 +5418,6 @@ fn group_entry_field_writes_compose_in_a_transaction() {
     // The top-level field reads back through the runtime.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::title_of", Value::Int(1))
         )
@@ -5707,7 +5446,7 @@ fn a_call_binds_named_arguments_by_name() {
         "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(b: 10, a: 3)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::go")),
+        run(checked_entry!(&program, "test::go")),
         Ok(Some(Value::Int(-7)))
     );
 }
@@ -5718,7 +5457,7 @@ fn a_call_mixes_positional_then_named_arguments() {
         "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(10, b: 3)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::go")),
+        run(checked_entry!(&program, "test::go")),
         Ok(Some(Value::Int(7)))
     );
 }
@@ -5772,7 +5511,6 @@ fn the_reference_sample_runs_end_to_end() {
     let store = TreeStore::memory();
     let host = Host::new().with_clock(1_700_000_000_000_000_000); // 2023-11-14T22:13:20Z
     let outcome = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "shelf::sample::main"),
@@ -5792,7 +5530,6 @@ fn the_reference_sample_runs_on_native_storage() {
     let store = TreeStore::open(&dir.path().join("sample.redb")).expect("open redb");
     let host = Host::new().with_clock(1_700_000_000_000_000_000);
     let outcome = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "shelf::sample::main"),
@@ -5824,7 +5561,6 @@ fn reads_a_field_from_a_group_entry() {
     let program = checked_program(BOOK_VERSIONS);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5835,7 +5571,6 @@ fn reads_a_field_from_a_group_entry() {
     )
     .expect("seed");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5847,7 +5582,6 @@ fn reads_a_field_from_a_group_entry() {
     )
     .expect("write");
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5866,7 +5600,6 @@ fn reading_an_absent_group_field_is_an_error() {
     let program = checked_program(BOOK_VERSIONS);
     let store = TreeStore::memory();
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -5907,7 +5640,6 @@ fn the_sample_update_functions_run() {
     let when = Value::Instant(1_700_000_000_000_000_000);
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "shelf::sample::exerciseUpdates", when)
         )
@@ -5917,7 +5649,6 @@ fn the_sample_update_functions_run() {
     );
     let shelf = |name: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -5954,14 +5685,14 @@ fn multiple_stores_over_one_resource_keep_runtime_roots_separate() {
          \x20   return ^archivedBooks(1).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let live = run_entry(&program, &store, checked_entry!(&program, "test::live"))
+    let live = run_entry(&store, checked_entry!(&program, "test::live"))
         .expect("live")
         .value;
     assert_eq!(live, Some(Value::Str("live".into())));
 
-    let archived = run_entry(&program, &store, checked_entry!(&program, "test::archived"))
+    let archived = run_entry(&store, checked_entry!(&program, "test::archived"))
         .expect("archived")
         .value;
     assert_eq!(archived, Some(Value::Str("archived".into())));
@@ -5989,12 +5720,11 @@ fn allocates_and_uses_a_single_key_store_identity() {
     let program = checked_program(BOOK_IDENTITY);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::save", Value::Str("Mort".into())),
     )
     .expect("save");
-    let value = run_entry(&program, &store, checked_entry!(&program, "test::title"))
+    let value = run_entry(&store, checked_entry!(&program, "test::title"))
         .expect("title")
         .value;
     assert_eq!(value, Some(Value::Str("Mort".into())));
@@ -6019,8 +5749,8 @@ fn a_plain_int_identity_still_works() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn save()\n    ^books(1).title = \"a\"\n\nfn read(): string\n    return ^books(1).title\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
-    let value = run_entry(&program, &store, checked_entry!(&program, "test::read"))
+    run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
+    let value = run_entry(&store, checked_entry!(&program, "test::read"))
         .expect("read")
         .value;
     assert_eq!(value, Some(Value::Str("a".into())));
@@ -6044,7 +5774,6 @@ fn constructs_and_uses_a_composite_identity_round_trips() {
     let program = checked_program(ENROLLMENT_IDENTITY);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6056,7 +5785,6 @@ fn constructs_and_uses_a_composite_identity_round_trips() {
     )
     .expect("enroll");
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6091,7 +5819,7 @@ fn composite_root_keys_write_in_declaration_order() {
         "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::enroll")).expect("enroll");
+    run_entry(&store, checked_entry!(&program, "test::enroll")).expect("enroll");
     assert_eq!(
         read_data_value(
             &program,
@@ -6121,7 +5849,7 @@ fn whole_resource_read_through_an_identity() {
         &data_path(&program, "enrollments", &["status"]),
         SavedValue::Str("active".into()),
     );
-    let value = run_entry(&program, &store, checked_entry!(&program, "test::statusOf"))
+    let value = run_entry(&store, checked_entry!(&program, "test::statusOf"))
         .expect("statusOf")
         .value;
     assert_eq!(value, Some(Value::Str("active".into())));
@@ -6172,7 +5900,6 @@ fn singleton_field_read_and_write() {
     let program = checked_program(SETTINGS);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6183,18 +5910,16 @@ fn singleton_field_read_and_write() {
     )
     .expect("init");
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::setMaxLoans", Value::Int(5)),
     )
     .expect("setMaxLoans");
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::setTheme", Value::Str("dark".into())),
     )
     .expect("setTheme");
-    let value = run_entry(&program, &store, checked_entry!(&program, "test::theme"))
+    let value = run_entry(&store, checked_entry!(&program, "test::theme"))
         .expect("theme")
         .value;
     assert_eq!(value, Some(Value::Str("dark".into())));
@@ -6234,7 +5959,7 @@ fn singleton_whole_read_and_write_round_trip() {
         SavedValue::Int(5),
     );
     // A whole read materializes the singleton's present fields.
-    let snapshot = run_entry(&program, &store, checked_entry!(&program, "test::snapshot"))
+    let snapshot = run_entry(&store, checked_entry!(&program, "test::snapshot"))
         .expect("snapshot")
         .value;
     assert_eq!(
@@ -6246,7 +5971,6 @@ fn singleton_whole_read_and_write_round_trip() {
     );
     // A whole write replaces it; read it back via the field reader.
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6256,7 +5980,7 @@ fn singleton_whole_read_and_write_round_trip() {
         ),
     )
     .expect("restore");
-    let value = run_entry(&program, &store, checked_entry!(&program, "test::theme"))
+    let value = run_entry(&store, checked_entry!(&program, "test::theme"))
         .expect("theme")
         .value;
     assert_eq!(value, Some(Value::Str("solar".into())));
@@ -6314,7 +6038,6 @@ fn unkeyed_group_field_write_then_read_round_trips() {
     let program = checked_program(PATIENT_UNKEYED_GROUP);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6326,13 +6049,9 @@ fn unkeyed_group_field_write_then_read_round_trips() {
     )
     .expect("setName");
     let read = |entry: &str| {
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, entry, Value::Int(7)),
-        )
-        .expect("read")
-        .value
+        run_entry(&store, checked_entry!(&program, entry, Value::Int(7)))
+            .expect("read")
+            .value
     };
     assert_eq!(read("test::firstOf"), Some(Value::Str("Terry".into())));
     assert_eq!(read("test::lastOf"), Some(Value::Str("Pratchett".into())));
@@ -6355,7 +6074,6 @@ fn an_absent_unkeyed_group_field_read_uses_the_default() {
     let program = checked_program(PATIENT_UNKEYED_GROUP);
     let store = TreeStore::memory();
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::firstOf", Value::Int(1)),
     )
@@ -6408,7 +6126,6 @@ fn reads_an_identity_from_a_unique_index() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6420,7 +6137,6 @@ fn reads_an_identity_from_a_unique_index() {
     )
     .expect("register");
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6452,7 +6168,6 @@ fn an_absent_unique_index_lookup_uses_the_fallback_identity() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6464,7 +6179,6 @@ fn an_absent_unique_index_lookup_uses_the_fallback_identity() {
     )
     .expect("register fallback");
     let value = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6483,7 +6197,6 @@ fn unique_index_presence_and_count_follow_the_lookup_value() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6497,7 +6210,6 @@ fn unique_index_presence_and_count_follow_the_lookup_value() {
 
     let call = |entry: &str, isbn: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, entry, Value::Str(isbn.into())),
         )
@@ -6515,7 +6227,6 @@ fn unique_index_lookup_iteration_yields_the_stored_identity() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6528,7 +6239,6 @@ fn unique_index_lookup_iteration_yields_the_stored_identity() {
     .expect("register");
 
     let present = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6540,7 +6250,6 @@ fn unique_index_lookup_iteration_yields_the_stored_identity() {
     assert_eq!(present.output, "Mort\n");
 
     let absent = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6557,7 +6266,6 @@ fn helper_call_mutating_a_traversed_unique_index_faults() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6570,7 +6278,6 @@ fn helper_call_mutating_a_traversed_unique_index_faults() {
     .expect("register");
 
     let error = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6589,7 +6296,6 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6602,7 +6308,6 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     .expect("register");
 
     let error = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6704,7 +6409,6 @@ fn traverses_a_composite_identity_index() {
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -6722,16 +6426,10 @@ fn traverses_a_composite_identity_index() {
 
     // Each reconstructed identity addresses its record: every active enrollment
     // reads back `active`. Two such entries exist, in (studentId, courseId) order.
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::activeStatuses"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::activeStatuses")).expect("run");
     assert_eq!(outcome.output, "active\nactive\n");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6743,7 +6441,6 @@ fn traverses_a_composite_identity_index() {
     assert_eq!(outcome.output, "course-8\ncourse-9\n");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6756,7 +6453,6 @@ fn traverses_a_composite_identity_index() {
     assert_eq!(outcome.output, "course-8\n");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6769,7 +6465,6 @@ fn traverses_a_composite_identity_index() {
     assert_eq!(outcome.output, "course-8:course-8\n");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6782,7 +6477,6 @@ fn traverses_a_composite_identity_index() {
     assert_eq!(outcome.output, "course-8\n");
 
     let exact_count = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6796,7 +6490,6 @@ fn traverses_a_composite_identity_index() {
     assert_eq!(exact_count, Some(Value::Int(1)));
 
     let inactive_count = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6817,7 +6510,6 @@ fn helper_mutating_a_traversed_composite_index_faults_at_runtime() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6829,7 +6521,6 @@ fn helper_mutating_a_traversed_composite_index_faults_at_runtime() {
     )
     .expect("enroll");
     let error = run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -6848,7 +6539,6 @@ fn direct_composite_identity_index_loop_yields_identities() {
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -6865,7 +6555,6 @@ fn direct_composite_identity_index_loop_yields_identities() {
     enroll("student-1", "course-7", "dropped");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::activeEnrollmentsDirect"),
     )
@@ -6917,7 +6606,6 @@ fn iterates_a_primary_keyed_root() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -6932,8 +6620,7 @@ fn iterates_a_primary_keyed_root() {
     add(1, "Mort");
 
     // Direct root iteration yields ids in key order, each addressing its record.
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::titles")).expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::titles")).expect("run");
     assert_eq!(outcome.output, "Mort\nSourcery\n");
 }
 
@@ -6943,7 +6630,6 @@ fn primary_root_loop_yields_identities() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -6957,12 +6643,7 @@ fn primary_root_loop_yields_identities() {
     add(2, "Sourcery");
     add(1, "Mort");
 
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::directIds"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::directIds")).expect("run");
     assert_eq!(outcome.output, "1\n2\n");
 }
 
@@ -6972,7 +6653,6 @@ fn two_name_primary_root_loop_yields_id_and_resource() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -6987,7 +6667,6 @@ fn two_name_primary_root_loop_yields_id_and_resource() {
     add(1, "Mort");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::idsAndElementTitles"),
     )
@@ -7001,7 +6680,6 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7016,7 +6694,6 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
     add(1, "Mort");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::reversedElementTitles"),
     )
@@ -7030,7 +6707,6 @@ fn reversed_primary_root_as_a_value_is_rejected() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7044,12 +6720,8 @@ fn reversed_primary_root_as_a_value_is_rejected() {
     add(2, "Sourcery");
     add(1, "Mort");
 
-    let error = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::reversedIdsAsValue"),
-    )
-    .unwrap_err();
+    let error =
+        run_entry(&store, checked_entry!(&program, "test::reversedIdsAsValue")).unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
@@ -7058,7 +6730,6 @@ fn keys_of_a_primary_root_as_a_value_is_rejected() {
     let program = checked_program(BOOK_PRIMARY);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -7069,7 +6740,6 @@ fn keys_of_a_primary_root_as_a_value_is_rejected() {
     )
     .expect("add");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -7080,7 +6750,7 @@ fn keys_of_a_primary_root_as_a_value_is_rejected() {
     )
     .expect("add");
 
-    let error = run_entry(&program, &store, checked_entry!(&program, "test::ids")).unwrap_err();
+    let error = run_entry(&store, checked_entry!(&program, "test::ids")).unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
@@ -7092,7 +6762,7 @@ fn iterating_a_singleton_root_is_a_type_error() {
         "resource Settings at ^settings\n    theme: string\n\nfn each()\n    for s in ^settings\n        print(\"x\")\n",
     );
     let store = TreeStore::memory();
-    let error = run_entry(&program, &store, checked_entry!(&program, "test::each")).unwrap_err();
+    let error = run_entry(&store, checked_entry!(&program, "test::each")).unwrap_err();
     assert_eq!(error.code, RUN_TYPE, "{error:?}");
 }
 
@@ -7115,7 +6785,6 @@ fn iterates_a_composite_primary_root() {
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7131,8 +6800,7 @@ fn iterates_a_composite_primary_root() {
     enroll("student-2", "course-1", "dropped");
 
     // Two-name iteration reads each materialized enrollment record.
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::statuses")).expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::statuses")).expect("run");
     assert_eq!(outcome.output, "active\ndropped\n");
 }
 
@@ -7177,20 +6845,14 @@ fn keysOf()
 fn iterates_a_sequence_child_layer() {
     let program = checked_program(BOOK_TAGS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     // Direct layer iteration yields 1-based positions in key order.
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::positions"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::positions")).expect("run");
     assert_eq!(outcome.output, "1\n2\n");
 
     // `keys(^books(1).tags)` yields the same positions.
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::keysOf")).expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::keysOf")).expect("run");
     assert_eq!(outcome.output, "1\n2\n");
 }
 
@@ -7198,14 +6860,9 @@ fn iterates_a_sequence_child_layer() {
 fn sequence_child_layer_two_name_loop_yields_element_values() {
     let program = checked_program(BOOK_TAGS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::tagValues"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::tagValues")).expect("run");
     assert_eq!(outcome.output, "fiction\nfunny\n");
 }
 
@@ -7213,14 +6870,9 @@ fn sequence_child_layer_two_name_loop_yields_element_values() {
 fn two_name_sequence_child_layer_loop_yields_key_and_value() {
     let program = checked_program(BOOK_TAGS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::tagEntries"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::tagEntries")).expect("run");
     assert_eq!(outcome.output, "1=fiction\n2=funny\n");
 }
 
@@ -7228,10 +6880,9 @@ fn two_name_sequence_child_layer_loop_yields_key_and_value() {
 fn reversed_sequence_child_layer_loop_yields_values_descending() {
     let program = checked_program(BOOK_TAGS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagValuesDescending"),
     )
@@ -7243,10 +6894,9 @@ fn reversed_sequence_child_layer_loop_yields_values_descending() {
 fn reversed_sequence_child_layer_keys_loop_yields_positions_descending() {
     let program = checked_program(BOOK_TAGS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::positionsDescending"),
     )
@@ -7292,13 +6942,11 @@ fn iterates_a_keyed_child_tree() {
     score("alice", 10);
 
     // Keys iterate in sorted key order (alice before bob).
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::players")).expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::players")).expect("run");
     assert_eq!(outcome.output, "alice\nbob\n");
 
     // Two-name child-layer iteration yields values in key order.
-    let outcome =
-        run_entry(&program, &store, checked_entry!(&program, "test::scores")).expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::scores")).expect("run");
     assert_eq!(outcome.output, "10\n7\n");
 }
 
@@ -7329,14 +6977,9 @@ fn versionEntries()
 fn keyed_group_layer_loop_yields_materialized_entries() {
     let program = checked_program(BOOK_VERSION_LOOPS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::versionTitles"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::versionTitles")).expect("run");
     assert_eq!(outcome.output, "first\nsecond\n");
 }
 
@@ -7344,14 +6987,9 @@ fn keyed_group_layer_loop_yields_materialized_entries() {
 fn two_name_keyed_group_layer_loop_yields_key_and_entry() {
     let program = checked_program(BOOK_VERSION_LOOPS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::versionEntries"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::versionEntries")).expect("run");
     assert_eq!(outcome.output, "1: first\n2: second\n");
 }
 
@@ -7377,8 +7015,8 @@ fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let faulted = run_entry(&program, &store, checked_entry!(&program, "test::grow"));
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let faulted = run_entry(&store, checked_entry!(&program, "test::grow"));
     assert!(
         matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
         "{faulted:?}"
@@ -7391,8 +7029,8 @@ fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    append(^books(1).tags, \"x\")\n\nfn grow()\n    append(^books(1).tags, \"y\")\n\nfn walk()\n    for tag in ^books(1).tags\n        grow()\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let faulted = run_entry(&program, &store, checked_entry!(&program, "test::walk"));
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let faulted = run_entry(&store, checked_entry!(&program, "test::walk"));
     assert!(
         matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
         "{faulted:?}"
@@ -7413,8 +7051,8 @@ fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let faulted = run_entry(&program, &store, checked_entry!(&program, "test::grow"));
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let faulted = run_entry(&store, checked_entry!(&program, "test::grow"));
     assert!(
         matches!(faulted, Err(ref error) if error.code == RUN_TRAVERSAL),
         "{faulted:?}"
@@ -7427,17 +7065,13 @@ fn collecting_saved_keys_as_a_local_snapshot_is_rejected() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\nfn remaining(): int\n    return count(^books)\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let error = run_entry(&program, &store, checked_entry!(&program, "test::clear")).unwrap_err();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let error = run_entry(&store, checked_entry!(&program, "test::clear")).unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::remaining")
-        )
-        .expect("count")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::remaining"))
+            .expect("count")
+            .value,
         Some(Value::Int(2))
     );
 }
@@ -7450,10 +7084,10 @@ fn mutating_a_different_record_layer_while_traversing_is_allowed() {
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn copy()\n    for tag in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\nfn tags2(): int\n    return count(^books(2).tags)\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    run_entry(&program, &store, checked_entry!(&program, "test::copy")).expect("copy");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::copy")).expect("copy");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::tags2"))
+        run_entry(&store, checked_entry!(&program, "test::tags2"))
             .expect("count")
             .value,
         Some(Value::Int(1))
@@ -7543,7 +7177,6 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7559,46 +7192,26 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     add(3, "Reaper");
 
     // `reversed(keys(^books))` yields ids in descending key order.
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::idsDescending"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::idsDescending")).expect("run");
     assert_eq!(outcome.output, "3\n2\n1\n");
 
     // Materializing the same durable reversed key collection as a value is rejected.
-    let error = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::keysReversedValue"),
-    )
-    .unwrap_err();
+    let error = run_entry(&store, checked_entry!(&program, "test::keysReversedValue")).unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 
     // Bare reversed root iteration yields records in descending key order.
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::titlesDescending"),
-    )
-    .expect("run");
+    let outcome =
+        run_entry(&store, checked_entry!(&program, "test::titlesDescending")).expect("run");
     assert_eq!(outcome.output, "Reaper\nSourcery\nMort\n");
 
     // Deleting the middle record leaves a hole; reverse iteration skips it,
     // visiting only stored entries.
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::delId", Value::Int(2)),
     )
     .expect("del");
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::idsDescending"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::idsDescending")).expect("run");
     assert_eq!(outcome.output, "3\n1\n");
 }
 
@@ -7608,7 +7221,6 @@ fn next_and_prev_skip_a_deleted_hole() {
     let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7624,7 +7236,6 @@ fn next_and_prev_skip_a_deleted_hole() {
     add(5);
     // Delete the middle stored key, leaving a gap between 1 and 5.
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::delId", Value::Int(2)),
     )
@@ -7633,7 +7244,6 @@ fn next_and_prev_skip_a_deleted_hole() {
     // `next(^books(1))` is the nearest *stored* successor, skipping the gap at 2.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7649,7 +7259,6 @@ fn next_and_prev_skip_a_deleted_hole() {
     // `prev(^books(5))` mirrors it: the nearest stored predecessor is 1.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7670,7 +7279,6 @@ fn next_of_bare_layer_is_first_and_prev_is_last() {
     let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7689,7 +7297,6 @@ fn next_of_bare_layer_is_first_and_prev_is_last() {
     // last — in key order, regardless of insertion order.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::firstIdKey", Value::Str("missing".into()))
         )
@@ -7699,7 +7306,6 @@ fn next_of_bare_layer_is_first_and_prev_is_last() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::lastIdKey", Value::Str("missing".into()))
         )
@@ -7715,7 +7321,6 @@ fn prev_of_first_is_absent_and_composes_with_coalesce() {
     let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7731,7 +7336,6 @@ fn prev_of_first_is_absent_and_composes_with_coalesce() {
 
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7749,7 +7353,6 @@ fn prev_of_first_is_absent_and_composes_with_coalesce() {
     // the edge fault composes with `??`.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7769,7 +7372,6 @@ fn next_neighbor_identity_reads_a_field() {
     let program = checked_program(NAV_BOOKS);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -7780,7 +7382,6 @@ fn next_neighbor_identity_reads_a_field() {
     )
     .expect("add");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -7795,7 +7396,6 @@ fn next_neighbor_identity_reads_a_field() {
     // returned identity.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::nextTitleKey", Value::Int(1))
         )
@@ -7811,7 +7411,6 @@ fn reversed_iteration_supports_early_break() {
     let store = TreeStore::memory();
     for id in 1..=3 {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7824,13 +7423,9 @@ fn reversed_iteration_supports_early_break() {
     }
     // A `break` on the first reversed element stops the loop after one iteration.
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::breakAfterFirst")
-        )
-        .expect("break")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::breakAfterFirst"))
+            .expect("break")
+            .value,
         Some(Value::Int(1))
     );
 }
@@ -7842,12 +7437,11 @@ fn next_on_a_keyed_child_layer_position() {
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\nfn nextPos(p: int): int\n    return next(^books(1).tags(p)) ?? 0\n\nfn firstPos(): int\n    return next(^books(1).tags) ?? 0\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     // Positions are 1, 2, 3; the successor of 1 is 2.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::nextPos", Value::Int(1))
         )
@@ -7857,7 +7451,7 @@ fn next_on_a_keyed_child_layer_position() {
     );
     // `next(^books(1).tags)` (a bare layer) is the first stored position.
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::firstPos"))
+        run_entry(&store, checked_entry!(&program, "test::firstPos"))
             .expect("firstPos")
             .value,
         Some(Value::Int(1))
@@ -7872,7 +7466,7 @@ fn reversed_over_an_in_memory_sequence_reverses_directly() {
         "fn rev()\n    for word in reversed(std::text::split(\"a,b,c\", \",\"))\n        print(word)\n",
     );
     let store = TreeStore::memory();
-    let outcome = run_entry(&program, &store, checked_entry!(&program, "test::rev")).expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::rev")).expect("run");
     assert_eq!(outcome.output, "c\nb\na\n");
 }
 
@@ -7892,7 +7486,6 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7912,12 +7505,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     let program = checked_program(&format!(
         "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
     ));
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::revStatuses"),
-    )
-    .expect("run");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::revStatuses")).expect("run");
     assert_eq!(outcome.output, "active\ndropped\nactive\n");
 }
 
@@ -7947,7 +7535,6 @@ fn reversed_over_an_index_branch_descends() {
     let store = TreeStore::memory();
     let add = |id: i64, s: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -7966,7 +7553,6 @@ fn reversed_over_an_index_branch_descends() {
 
     // Only shelf-"x" ids (1, 2, 4) match, enumerated in descending key order.
     let outcome = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::onShelfReversed", Value::Str("x".into())),
     )
@@ -8025,7 +7611,6 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
     for store in stores {
         let add = |id: i64, s: &str| {
             run_entry(
-                &program,
                 store,
                 checked_entry!(
                     &program,
@@ -8047,7 +7632,6 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
         // abort with `run.unsupported` by landing on the `byShelf` index name.
         assert_eq!(
             run_entry(
-                &program,
                 store,
                 checked_entry!(
                     &program,
@@ -8063,7 +7647,6 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
         // The same edge with a different default proves `??` is reached, not bypassed.
         assert_eq!(
             run_entry(
-                &program,
                 store,
                 checked_entry!(&program, "test::nextOrSelfKey", Value::Int(4))
             )
@@ -8074,7 +7657,6 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
         // `prev(^books)` is the last *record* (4), not the trailing index name.
         assert_eq!(
             run_entry(
-                &program,
                 store,
                 checked_entry!(&program, "test::lastIdKey", Value::Str("missing".into()))
             )
@@ -8115,10 +7697,10 @@ fn countMissingTags(): int
 fn count_reports_scalar_presence_and_child_counts() {
     let program = checked_program(BOOK_COUNT);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let count = |entry: &str| {
-        run_entry(&program, &store, checked_entry!(&program, entry))
+        run_entry(&store, checked_entry!(&program, entry))
             .expect("count")
             .value
     };
@@ -8161,7 +7743,7 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
         );
     }
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::n"))
+        run_entry(&store, checked_entry!(&program, "test::n"))
             .expect("run")
             .value,
         Some(Value::Int(2)),
@@ -8214,7 +7796,6 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8230,7 +7811,7 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
     add(2, "Sourcery", "fiction");
     add(3, "Guards", "history");
 
-    let call = |entry: CheckedEntryCall| run_entry(&program, &store, entry).expect("count").value;
+    let call = |entry: CheckedEntryCall| run_entry(&store, entry).expect("count").value;
     // Two tags on book 1, so its keyed/sequence layer has two entries.
     call(checked_entry!(
         &program,
@@ -8330,7 +7911,7 @@ fn count_over_an_indexed_root_ignores_populated_index_branches() {
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\nfn countRoot(): int\n    return count(^books)\n\nfn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
     );
     let store = TreeStore::memory();
-    let call = |entry: CheckedEntryCall| run_entry(&program, &store, entry).expect("run").value;
+    let call = |entry: CheckedEntryCall| run_entry(&store, entry).expect("run").value;
 
     assert_eq!(
         call(checked_entry!(&program, "test::countRoot")),
@@ -8374,16 +7955,12 @@ fn count_over_a_direct_saved_root_matches_written_records() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn countRoot(): int\n    return count(^books)\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::countRoot")
-        )
-        .expect("count")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::countRoot"))
+            .expect("count")
+            .value,
         Some(Value::Int(3))
     );
 }
@@ -8394,10 +7971,10 @@ fn keys_saved_root_loop_returns_ids_in_store_order() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn idOrder()\n    for id in keys(^books)\n        print($\"{id}\")\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::idOrder"))
+        run_entry(&store, checked_entry!(&program, "test::idOrder"))
             .expect("id order")
             .output,
         "1\n2\n3\n"
@@ -8410,16 +7987,12 @@ fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\nfn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if ^books(id).title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if ^books(id).title == \"B\"\n            total = total * 10 + 2\n        else if ^books(id).title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::mutateFutureValue")
-        )
-        .expect("loop")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::mutateFutureValue"))
+            .expect("loop")
+            .value,
         Some(Value::Int(19))
     );
 }
@@ -8432,7 +8005,6 @@ fn direct_saved_root_loop_returns_before_later_records() {
     let store = TreeStore::memory();
     for id in 1..=129 {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::seed", Value::Int(id)),
         )
@@ -8440,13 +8012,9 @@ fn direct_saved_root_loop_returns_before_later_records() {
     }
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::printFirstId")
-        )
-        .expect("first id")
-        .output,
+        run_entry(&store, checked_entry!(&program, "test::printFirstId"))
+            .expect("first id")
+            .output,
         "1\n"
     );
 }
@@ -8457,7 +8025,7 @@ fn direct_values_loop_returns_before_reading_later_records() {
         "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
     write_data_value(
         &program,
         &store,
@@ -8468,13 +8036,9 @@ fn direct_values_loop_returns_before_reading_later_records() {
     );
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::firstTitle")
-        )
-        .expect("first title")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::firstTitle"))
+            .expect("first title")
+            .value,
         Some(Value::Str("Mort".into()))
     );
 }
@@ -8485,7 +8049,7 @@ fn direct_entries_loop_returns_before_reading_later_records() {
         "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
     write_data_value(
         &program,
         &store,
@@ -8496,13 +8060,9 @@ fn direct_entries_loop_returns_before_reading_later_records() {
     );
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::firstTitle")
-        )
-        .expect("first title")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::firstTitle"))
+            .expect("first title")
+            .value,
         Some(Value::Str("1: Mort".into()))
     );
 }
@@ -8513,23 +8073,19 @@ fn keys_saved_layer_loops_return_keys_in_order() {
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(1).tags(1) = \"x\"\n    ^books(1).tags(2) = \"y\"\n    ^books(1).tags(3) = \"z\"\n\nfn tagKeys(): int\n    var total = 0\n    for pos in keys(^books(1).tags)\n        total = total * 10 + pos\n    return total\n\nfn tagKeysRev(): int\n    var total = 0\n    for pos in reversed(keys(^books(1).tags))\n        total = total * 10 + pos\n    return total\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::tagKeys"))
+        run_entry(&store, checked_entry!(&program, "test::tagKeys"))
             .expect("tag keys")
             .value,
         Some(Value::Int(123))
     );
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::tagKeysRev")
-        )
-        .expect("tag keys")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::tagKeysRev"))
+            .expect("tag keys")
+            .value,
         Some(Value::Int(321))
     );
 }
@@ -8542,7 +8098,6 @@ fn count_over_a_composite_root_matches_direct_iteration() {
     let store = TreeStore::memory();
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8555,7 +8110,7 @@ fn count_over_a_composite_root_matches_direct_iteration() {
         .expect("put");
     }
     let call = |entry: &str| {
-        run_entry(&program, &store, checked_entry!(&program, entry))
+        run_entry(&store, checked_entry!(&program, entry))
             .expect(entry)
             .value
     };
@@ -8615,9 +8170,9 @@ fn assertVersionAbsent(id: int, ver: int)
 fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     let program = checked_program(BOOK_KEYED_PRESENCE);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let call = |entry: CheckedEntryCall| run_entry(&program, &store, entry).expect("run").value;
+    let call = |entry: CheckedEntryCall| run_entry(&store, entry).expect("run").value;
 
     // A present keyed-leaf entry `^books(1).tags(1)` exists, and the layer counts
     // its one entry.
@@ -8660,7 +8215,6 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     // silent pass: the entry is present.
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8675,7 +8229,6 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8711,7 +8264,6 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8726,7 +8278,6 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8800,7 +8351,6 @@ fn nested_keyed_leaf_entries_write_append_and_read_back() {
     let store = TreeStore::memory();
 
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -8814,7 +8364,6 @@ fn nested_keyed_leaf_entries_write_append_and_read_back() {
     .expect("nested keyed-leaf write");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8831,7 +8380,6 @@ fn nested_keyed_leaf_entries_write_append_and_read_back() {
 
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8847,7 +8395,6 @@ fn nested_keyed_leaf_entries_write_append_and_read_back() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(
                 &program,
@@ -8867,41 +8414,24 @@ fn nested_keyed_leaf_entries_write_append_and_read_back() {
 fn nested_keyed_group_layers_iterate_and_materialize_entries() {
     let program = checked_program(NESTED_KEYED_LAYERS);
     let store = TreeStore::memory();
-    run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::seedCells"),
-    )
-    .expect("seed cells");
+    run_entry(&store, checked_entry!(&program, "test::seedCells")).expect("seed cells");
 
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::countCells")
-        )
-        .expect("count nested cells")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::countCells"))
+            .expect("count nested cells")
+            .value,
         Some(Value::Int(2))
     );
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::iterateCells")
-        )
-        .expect("iterate nested cells")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::iterateCells"))
+            .expect("iterate nested cells")
+            .value,
         Some(Value::Int(2))
     );
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::cellEntries")
-        )
-        .expect("entries over nested cells")
-        .output,
+        run_entry(&store, checked_entry!(&program, "test::cellEntries"))
+            .expect("entries over nested cells")
+            .output,
         "1=a\n2=b\n"
     );
 }
@@ -8987,7 +8517,6 @@ fn values_and_entries_materialize_whole_records_over_a_primary_root() {
     let store = TreeStore::memory();
     let add = |id: i64, t: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::add", Value::Int(id), Value::Str(t.into())),
         )
@@ -8997,17 +8526,11 @@ fn values_and_entries_materialize_whole_records_over_a_primary_root() {
     add(1, "Mort");
 
     // `values(^books)` yields each whole record, in key order, with field access.
-    let titles =
-        run_entry(&program, &store, checked_entry!(&program, "test::titles")).expect("run");
+    let titles = run_entry(&store, checked_entry!(&program, "test::titles")).expect("run");
     assert_eq!(titles.output, "Mort\nSourcery\n");
 
     // `entries(^books)` binds the identity and the materialized record together.
-    let pairs = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::idsAndTitles"),
-    )
-    .expect("run");
+    let pairs = run_entry(&store, checked_entry!(&program, "test::idsAndTitles")).expect("run");
     assert_eq!(pairs.output, "1: Mort\n2: Sourcery\n");
 }
 
@@ -9016,7 +8539,6 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     let program = checked_program(BOOK_VALUES);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -9027,7 +8549,6 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     )
     .expect("add");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -9038,7 +8559,6 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     )
     .expect("tag");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -9051,7 +8571,6 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
 
     // `values(^books(1).tags)` yields each leaf value in key order.
     let values = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagValues", Value::Int(1)),
     )
@@ -9060,7 +8579,6 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
 
     // `entries(...)` binds each 1-based position to its leaf value.
     let entries = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagEntries", Value::Int(1)),
     )
@@ -9073,7 +8591,6 @@ fn saved_values_and_entries_as_values_are_rejected() {
     let program = checked_program(BOOK_VALUES);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -9084,7 +8601,6 @@ fn saved_values_and_entries_as_values_are_rejected() {
     )
     .expect("add");
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -9095,29 +8611,17 @@ fn saved_values_and_entries_as_values_are_rejected() {
     )
     .expect("tag");
 
-    let error = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::titlesValue"),
-    )
-    .unwrap_err();
+    let error = run_entry(&store, checked_entry!(&program, "test::titlesValue")).unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+    let error = run_entry(&store, checked_entry!(&program, "test::titleEntriesValue")).unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
     let error = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::titleEntriesValue"),
-    )
-    .unwrap_err();
-    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
-    let error = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagValuesValue", Value::Int(1)),
     )
     .unwrap_err();
     assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
     let error = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagEntriesValue", Value::Int(1)),
     )
@@ -9134,7 +8638,6 @@ fn reversed_values_and_entries_bind_values_and_pairs_descending() {
     let store = TreeStore::memory();
     let add = |id: i64, t: &str| {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::add", Value::Int(id), Value::Str(t.into())),
         )
@@ -9144,17 +8647,11 @@ fn reversed_values_and_entries_bind_values_and_pairs_descending() {
     add(2, "Sourcery");
 
     // `reversed(values(^books))` yields whole records in descending key order.
-    let titles = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::titlesReversed"),
-    )
-    .expect("run");
+    let titles = run_entry(&store, checked_entry!(&program, "test::titlesReversed")).expect("run");
     assert_eq!(titles.output, "Sourcery\nMort\n");
 
     // `reversed(entries(^books))` binds (identity, record) pairs descending.
     let pairs = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::idsAndTitlesReversed"),
     )
@@ -9169,7 +8666,6 @@ fn reversed_values_and_entries_over_a_keyed_layer_descend() {
     let program = checked_program(BOOK_VALUES);
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(
             &program,
@@ -9181,7 +8677,6 @@ fn reversed_values_and_entries_over_a_keyed_layer_descend() {
     .expect("add");
     for tag in ["fiction", "funny", "fantasy"] {
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::tag", Value::Int(1), Value::Str(tag.into())),
         )
@@ -9190,7 +8685,6 @@ fn reversed_values_and_entries_over_a_keyed_layer_descend() {
 
     // `reversed(values(^books(1).tags))` yields each leaf value in descending order.
     let values = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagValuesReversed", Value::Int(1)),
     )
@@ -9199,7 +8693,6 @@ fn reversed_values_and_entries_over_a_keyed_layer_descend() {
 
     // `reversed(entries(...))` binds each position to its value, descending.
     let entries = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::tagEntriesReversed", Value::Int(1)),
     )
@@ -9231,7 +8724,7 @@ fn a_recoverable_write_fault_is_catchable_across_a_call_boundary() {
          \x20       return e.code\n"
     ));
     let store = TreeStore::memory();
-    let value = run_entry(&program, &store, checked_entry!(&program, "test::run"))
+    let value = run_entry(&store, checked_entry!(&program, "test::run"))
         .expect("run")
         .value;
     assert_eq!(value, Some(Value::Str("write.unique_conflict".into())));
@@ -9248,7 +8741,7 @@ fn an_uncaught_cross_boundary_write_fault_keeps_its_dotted_code() {
          \x20   save(2, \"x\")\n"
     ));
     let store = TreeStore::memory();
-    let error = run_entry(&program, &store, checked_entry!(&program, "test::run")).unwrap_err();
+    let error = run_entry(&store, checked_entry!(&program, "test::run")).unwrap_err();
     assert_eq!(error.code, "write.unique_conflict", "{error:?}");
 }
 
@@ -9297,7 +8790,7 @@ fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
          \x20   delete ^patients(\"p1\").name.last\n"
     ));
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::drop"))
+    run_entry(&store, checked_entry!(&program, "test::drop"))
         .expect("sparse group-field delete is a no-op");
 }
 
@@ -9309,7 +8802,7 @@ fn deleting_a_required_field_inside_an_unkeyed_group_is_rejected() {
          \x20   delete ^patients(\"p1\").name.first\n"
     ));
     let store = TreeStore::memory();
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::drop"));
+    let result = run_entry(&store, checked_entry!(&program, "test::drop"));
     assert!(
         matches!(result, Err(ref error) if error.code == "write.required_field"),
         "{result:?}"
@@ -9324,7 +8817,7 @@ fn deleting_an_unkeyed_group_with_required_descendants_is_rejected() {
          \x20   delete ^patients(\"p1\").name\n"
     ));
     let store = TreeStore::memory();
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::drop"));
+    let result = run_entry(&store, checked_entry!(&program, "test::drop"));
     assert!(
         matches!(result, Err(ref error) if error.code == "write.required_field"),
         "{result:?}"
@@ -9335,8 +8828,8 @@ fn deleting_an_unkeyed_group_with_required_descendants_is_rejected() {
 fn deleting_a_nested_unkeyed_group_with_required_descendants_is_rejected() {
     let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::drop"));
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let result = run_entry(&store, checked_entry!(&program, "test::drop"));
     assert!(
         matches!(result, Err(ref error) if error.code == "write.required_field"),
         "{result:?}"
@@ -9347,15 +8840,9 @@ fn deleting_a_nested_unkeyed_group_with_required_descendants_is_rejected() {
 fn maintenance_can_delete_a_nested_unkeyed_group_with_required_descendants() {
     let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
     let host = Host::new().with_maintenance();
-    run_entry_with_host(
-        &program,
-        &store,
-        &host,
-        checked_entry!(&program, "test::drop"),
-    )
-    .expect("drop");
+    run_entry_with_host(&store, &host, checked_entry!(&program, "test::drop")).expect("drop");
     for field in ["first", "last"] {
         assert_eq!(
             read_data_bytes(
@@ -9380,13 +8867,8 @@ fn maintenance_can_delete_a_nested_unkeyed_group_with_required_descendants() {
 fn keyed_group_entry_read_materializes_unkeyed_group_descendants() {
     let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let outcome = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::visit_first"),
-    )
-    .expect("read");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::visit_first")).expect("read");
     assert_eq!(outcome.value, Some(Value::Str("Sam".into())));
 }
 
@@ -9403,25 +8885,17 @@ fn deleting_a_whole_root_without_maintenance_is_rejected() {
     // capability the run is rejected with `write.requires_maintenance`.
     let program = checked_program(MAINTENANCE_BOOKS);
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    let result = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::drop_root"),
-    );
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let result = run_entry(&store, checked_entry!(&program, "test::drop_root"));
     assert!(
         matches!(result, Err(ref error) if error.code == "write.requires_maintenance"),
         "{result:?}"
     );
     // The records still exist: the rejected delete did not touch the store.
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::record_count")
-        )
-        .expect("count")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::record_count"))
+            .expect("count")
+            .value,
         Some(Value::Int(2))
     );
 }
@@ -9433,23 +8907,11 @@ fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
     let program = checked_program(MAINTENANCE_BOOKS);
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
-    run_entry_with_host(
-        &program,
-        &store,
-        &host,
-        checked_entry!(&program, "test::seed"),
-    )
-    .expect("seed");
-    run_entry_with_host(
-        &program,
-        &store,
-        &host,
-        checked_entry!(&program, "test::drop_root"),
-    )
-    .expect("drop root");
+    run_entry_with_host(&store, &host, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry_with_host(&store, &host, checked_entry!(&program, "test::drop_root"))
+        .expect("drop root");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::record_count")
@@ -9461,7 +8923,6 @@ fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_count", Value::Str("fiction".into()))
@@ -9478,15 +8939,8 @@ fn maintenance_root_delete_while_iterating_an_index_is_a_traversal_fault() {
     let program = checked_program(MAINTENANCE_BOOKS);
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
-    run_entry_with_host(
-        &program,
-        &store,
-        &host,
-        checked_entry!(&program, "test::seed"),
-    )
-    .expect("seed");
+    run_entry_with_host(&store, &host, checked_entry!(&program, "test::seed")).expect("seed");
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::drop_root_while_iterating_index"),
@@ -9505,17 +8959,13 @@ fn whole_identity_delete_stays_ungated_under_no_maintenance() {
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\nfn drop_one()\n    delete ^books(1)\n\nfn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    run_entry(&program, &store, checked_entry!(&program, "test::drop_one"))
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::drop_one"))
         .expect("ordinary identity delete");
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::record_count")
-        )
-        .expect("count")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::record_count"))
+            .expect("count")
+            .value,
         Some(Value::Int(1)),
         "the sibling record survives an ordinary identity delete"
     );
@@ -9531,14 +8981,12 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::drop_title", Value::Int(1)),
@@ -9546,7 +8994,6 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
     .expect("maintenance lifts the required-field guard");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_title", Value::Int(1))
@@ -9566,14 +9013,12 @@ fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::repair", Value::Int(1)),
@@ -9581,7 +9026,6 @@ fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
     .expect("maintenance transaction");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_title", Value::Int(1))
@@ -9593,7 +9037,6 @@ fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_of", Value::Int(1))
@@ -9613,7 +9056,6 @@ fn maintenance_transaction_still_rejects_new_partial_required_record() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::create", Value::Int(1)),
@@ -9624,7 +9066,6 @@ fn maintenance_transaction_still_rejects_new_partial_required_record() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_item", Value::Int(1))
@@ -9644,7 +9085,6 @@ fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record()
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::create", Value::Int(1)),
@@ -9655,7 +9095,6 @@ fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record()
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_item", Value::Int(1))
@@ -9675,7 +9114,6 @@ fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::create", Value::Int(1)),
@@ -9686,7 +9124,6 @@ fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_item", Value::Int(1))
@@ -9706,7 +9143,6 @@ fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partia
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::create", Value::Int(1)),
@@ -9717,7 +9153,6 @@ fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partia
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_item", Value::Int(1))
@@ -9737,14 +9172,12 @@ fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_e
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::create_version", Value::Int(1)),
@@ -9755,7 +9188,6 @@ fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_e
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_version", Value::Int(1))
@@ -9775,7 +9207,6 @@ fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::create", Value::Int(1)),
@@ -9786,7 +9217,6 @@ fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_item", Value::Int(1))
@@ -9806,14 +9236,12 @@ fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writ
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::repair", Value::Int(1)),
@@ -9821,7 +9249,6 @@ fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writ
     .expect("parent maintenance delete should not block child validation");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_title", Value::Int(1))
@@ -9832,7 +9259,6 @@ fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writ
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::note_text", Value::Int(1))
@@ -9851,14 +9277,12 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::inner_delete", Value::Int(1)),
@@ -9866,7 +9290,6 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     .expect("inner maintenance delete should satisfy outer validation");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_title", Value::Int(1))
@@ -9877,7 +9300,6 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_of", Value::Int(1))
@@ -9888,14 +9310,12 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     );
 
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(2)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::outer_delete", Value::Int(2)),
@@ -9903,7 +9323,6 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     .expect("outer maintenance delete should satisfy inner validation");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::has_title", Value::Int(2))
@@ -9914,7 +9333,6 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_of", Value::Int(2))
@@ -9932,13 +9350,11 @@ fn quoted_undeclared_saved_field_write_is_unknown_field_without_maintenance() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     let result = run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::quoted_write", Value::Int(1)),
     );
@@ -9964,7 +9380,6 @@ fn quoted_undeclared_saved_field_write_does_not_get_raw_type_rules() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::quoted_write", Value::Int(1), Value::Int(5)),
@@ -9983,7 +9398,6 @@ fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::typo", Value::Int(1)),
@@ -10002,14 +9416,12 @@ fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::quoted_update", Value::Int(1)),
@@ -10017,7 +9429,6 @@ fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
     .expect("quoted declared field write uses the managed path");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_at", Value::Str("fiction".into()))
@@ -10029,7 +9440,6 @@ fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_at", Value::Str("history".into()))
@@ -10057,14 +9467,12 @@ fn managed_write_to_a_declared_field_is_unaffected() {
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(&program, "test::seed", Value::Int(1)),
     )
     .expect("seed");
     run_entry_with_host(
-        &program,
         &store,
         &host,
         checked_entry!(
@@ -10077,7 +9485,6 @@ fn managed_write_to_a_declared_field_is_unaffected() {
     .expect("managed write to a declared field");
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_at", Value::Str("history".into()))
@@ -10089,7 +9496,6 @@ fn managed_write_to_a_declared_field_is_unaffected() {
     );
     assert_eq!(
         run_entry_with_host(
-            &program,
             &store,
             &host,
             checked_entry!(&program, "test::shelf_at", Value::Str("fiction".into()))
@@ -10108,14 +9514,12 @@ fn quoted_declared_saved_field_write_uses_managed_path_without_maintenance() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::quoted_update", Value::Int(1)),
     )
     .expect("quoted declared field write uses the managed path");
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::shelf", Value::Int(1))
         )
@@ -10141,9 +9545,9 @@ fn an_identity_argument_splices_in_as_the_record_key() {
          fn read(): string\n    return ^books(1).title\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
+    run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::read"))
+        run_entry(&store, checked_entry!(&program, "test::read"))
             .expect("read")
             .value,
         Some(Value::Str("a".into()))
@@ -10182,8 +9586,8 @@ fn a_single_key_store_identity_splice_still_writes() {
          fn save()\n    for id in ^books\n        ^books(id).title = \"a\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    run_entry(&program, &store, checked_entry!(&program, "test::save"))
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    run_entry(&store, checked_entry!(&program, "test::save"))
         .expect("store identity splice writes");
     assert_eq!(
         read_data_value(
@@ -10231,9 +9635,9 @@ fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
          fn read(): string\n    return ^patients(1)?.name?.first ?? \"\"\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
+    run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::read"))
+        run_entry(&store, checked_entry!(&program, "test::read"))
             .expect("read")
             .value,
         Some(Value::Str("Sam".into()))
@@ -10307,7 +9711,6 @@ fn hook_observes_each_statement_with_its_locals_and_depth() {
     let store = TreeStore::memory();
     let mut hook = Recorder::default();
     let outcome = run_entry_with_debugger(
-        &program,
         &store,
         &Host::new(),
         &mut hook,
@@ -10347,7 +9750,6 @@ fn hook_depth_tracks_nested_activations() {
     let store = TreeStore::memory();
     let mut hook = Recorder::default();
     run_entry_with_debugger(
-        &program,
         &store,
         &Host::new(),
         &mut hook,
@@ -10409,7 +9811,6 @@ fn hook_store_handle_sees_prior_writes() {
         balance_seen_at_return: None,
     };
     run_entry_with_debugger(
-        &program,
         &store,
         &Host::new(),
         &mut hook,
@@ -10435,7 +9836,6 @@ fn hook_error_aborts_the_run() {
         abort_at_line: Some(5),
     };
     let error = run_entry_with_debugger(
-        &program,
         &store,
         &Host::new(),
         &mut hook,
@@ -10497,7 +9897,6 @@ fn hook_observes_each_managed_write_in_commit_order() {
     let store = TreeStore::memory();
     let mut hook = WriteRecorder::default();
     run_entry_with_debugger(
-        &program,
         &store,
         &Host::new(),
         &mut hook,
@@ -10559,16 +9958,10 @@ fn hook_observes_each_managed_delete_shape() {
          \x20\x20\x20\x20delete ^books(4).versions(1)\n",
     );
     let store = TreeStore::memory();
-    run_entry_with_host(
-        &program,
-        &store,
-        &Host::new(),
-        checked_entry!(&program, "test::seed"),
-    )
-    .expect("seed runs");
+    run_entry_with_host(&store, &Host::new(), checked_entry!(&program, "test::seed"))
+        .expect("seed runs");
     let mut hook = WriteRecorder::default();
     run_entry_with_debugger(
-        &program,
         &store,
         &Host::new(),
         &mut hook,
@@ -10650,16 +10043,10 @@ fn hook_observes_maintenance_whole_root_deletes() {
          \x20\x20\x20\x20delete ^books\n",
     );
     let store = TreeStore::memory();
-    run_entry_with_host(
-        &program,
-        &store,
-        &Host::new(),
-        checked_entry!(&program, "test::seed"),
-    )
-    .expect("seed runs");
+    run_entry_with_host(&store, &Host::new(), checked_entry!(&program, "test::seed"))
+        .expect("seed runs");
     let mut hook = WriteRecorder::default();
     run_entry_with_debugger(
-        &program,
         &store,
         &Host::new().with_maintenance(),
         &mut hook,
@@ -10710,13 +10097,8 @@ fn no_hook_run_pays_no_write_observation() {
          \x20\x20\x20\x20return 0\n",
     );
     let store = TreeStore::memory();
-    run_entry_with_host(
-        &program,
-        &store,
-        &Host::new(),
-        checked_entry!(&program, "test::seed"),
-    )
-    .expect("run completes");
+    run_entry_with_host(&store, &Host::new(), checked_entry!(&program, "test::seed"))
+        .expect("run completes");
     let title = match read_data_value(
         &program,
         &store,
@@ -10772,7 +10154,6 @@ fn an_ordinary_run_with_host_is_unchanged_by_the_hook_machinery() {
     );
     let store = TreeStore::memory();
     let outcome = run_entry_with_host(
-        &program,
         &store,
         &Host::new(),
         checked_entry!(&program, "test::compute", Value::Int(4)),
@@ -10814,7 +10195,7 @@ fn bare_call_resolves_in_own_module_not_a_foreign_one() {
         ),
     ]);
     assert_eq!(
-        run(&program, checked_entry!(&program, "zzz::run")),
+        run(checked_entry!(&program, "zzz::run")),
         Ok(Some(Value::Int(2))),
         "a bare call must run the calling module's own function"
     );
@@ -10855,7 +10236,6 @@ fn an_enum_field_round_trips_through_saved_data() {
     );
     let store = TreeStore::memory();
     run_entry(
-        &program,
         &store,
         checked_entry!(&program, "test::seed", Value::Int(7)),
     )
@@ -10880,7 +10260,6 @@ fn an_enum_field_round_trips_through_saved_data() {
     );
     assert_eq!(
         run_entry(
-            &program,
             &store,
             checked_entry!(&program, "test::matches_archived", Value::Int(7))
         )
@@ -10900,19 +10279,14 @@ fn an_entry_enum_argument_uses_checked_catalog_identity() {
          fn read(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
     );
     let store = TreeStore::memory();
-    let state = run_entry(&program, &store, checked_entry!(&program, "test::give"))
+    let state = run_entry(&store, checked_entry!(&program, "test::give"))
         .expect("give")
         .value
         .expect("enum value");
 
-    run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::save", state),
-    )
-    .expect("save enum argument");
+    run_entry(&store, checked_entry!(&program, "test::save", state)).expect("save enum argument");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::read"))
+        run_entry(&store, checked_entry!(&program, "test::read"))
             .expect("read")
             .value,
         Some(Value::Bool(true))
@@ -10929,26 +10303,17 @@ fn an_enum_index_uses_catalog_member_keys() {
          fn countActive(): int\n    var count = 0\n    for id in ^orders.byState(Status::active)\n        count = count + 1\n    return count\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed"))
-        .expect("seed enum-index fixture");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed enum-index fixture");
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::countArchived")
-        )
-        .expect("count archived")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::countArchived"))
+            .expect("count archived")
+            .value,
         Some(Value::Int(2))
     );
     assert_eq!(
-        run_entry(
-            &program,
-            &store,
-            checked_entry!(&program, "test::countActive")
-        )
-        .expect("count active")
-        .value,
+        run_entry(&store, checked_entry!(&program, "test::countActive"))
+            .expect("count active")
+            .value,
         Some(Value::Int(1))
     );
 }
@@ -10965,7 +10330,7 @@ fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
     );
     let store = TreeStore::memory();
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::readBack"))
+        run_entry(&store, checked_entry!(&program, "test::readBack"))
             .expect("keyed enum leaf match runs")
             .value,
         Some(Value::Int(1))
@@ -10982,11 +10347,11 @@ fn enum_equality_is_true_for_the_same_member_and_false_otherwise() {
          fn different(): bool\n    return Color::green == Color::blue\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::same")).unwrap(),
+        run(checked_entry!(&program, "test::same")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::different")).unwrap(),
+        run(checked_entry!(&program, "test::different")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11005,15 +10370,15 @@ fn match_dispatches_to_the_arm_for_the_scrutinees_member() {
          fn labelBanned(): int\n    return label(Status::banned)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelActive")).unwrap(),
+        run(checked_entry!(&program, "test::labelActive")).unwrap(),
         Some(Value::Int(10))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelArchived")).unwrap(),
+        run(checked_entry!(&program, "test::labelArchived")).unwrap(),
         Some(Value::Int(20))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelBanned")).unwrap(),
+        run(checked_entry!(&program, "test::labelBanned")).unwrap(),
         Some(Value::Int(30))
     );
 }
@@ -11033,11 +10398,11 @@ fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
          fn labelY(): int\n    return label(B::y)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelX")).unwrap(),
+        run(checked_entry!(&program, "test::labelX")).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelY")).unwrap(),
+        run(checked_entry!(&program, "test::labelY")).unwrap(),
         Some(Value::Int(2))
     );
 }
@@ -11051,11 +10416,11 @@ fn a_nested_member_path_resolves_to_the_right_member() {
          fn bengalIsHousecat(): bool\n    return Cat::bengal == Cat::housecat\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bengalMatches")).unwrap(),
+        run(checked_entry!(&program, "test::bengalMatches")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bengalIsHousecat")).unwrap(),
+        run(checked_entry!(&program, "test::bengalIsHousecat")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11070,11 +10435,11 @@ fn is_tests_subtree_membership() {
          fn housecatIsTiger(): bool\n    return Cat::housecat is Cat::tiger\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bengalIsTiger")).unwrap(),
+        run(checked_entry!(&program, "test::bengalIsTiger")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::housecatIsTiger")).unwrap(),
+        run(checked_entry!(&program, "test::housecatIsTiger")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11089,11 +10454,11 @@ fn is_against_a_leaf_is_exact() {
          fn siberianIsBengal(): bool\n    return Cat::siberian is Cat::bengal\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::bengalIsBengal")).unwrap(),
+        run(checked_entry!(&program, "test::bengalIsBengal")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::siberianIsBengal")).unwrap(),
+        run(checked_entry!(&program, "test::siberianIsBengal")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11112,15 +10477,15 @@ fn match_runs_the_category_arm_for_any_descendant() {
          fn labelHousecat(): int\n    return label(Cat::housecat)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelBengal")).unwrap(),
+        run(checked_entry!(&program, "test::labelBengal")).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelSiberian")).unwrap(),
+        run(checked_entry!(&program, "test::labelSiberian")).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelHousecat")).unwrap(),
+        run(checked_entry!(&program, "test::labelHousecat")).unwrap(),
         Some(Value::Int(2))
     );
 }
@@ -11136,11 +10501,11 @@ fn a_duplicated_member_resolves_by_its_full_path_to_a_distinct_member() {
          fn differentPaws(): bool\n    return Cat::tiger::paw == Cat::lion::paw\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::sameTigerPaw")).unwrap(),
+        run(checked_entry!(&program, "test::sameTigerPaw")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::differentPaws")).unwrap(),
+        run(checked_entry!(&program, "test::differentPaws")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11165,20 +10530,20 @@ fn match_with_qualified_arms_dispatches_each_duplicated_paw_to_its_own_arm() {
          fn labelLionMane(): int\n    return label(Cat::lion::mane)\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelTigerPaw")).unwrap(),
+        run(checked_entry!(&program, "test::labelTigerPaw")).unwrap(),
         Some(Value::Int(2))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelLionPaw")).unwrap(),
+        run(checked_entry!(&program, "test::labelLionPaw")).unwrap(),
         Some(Value::Int(3))
     );
     // The other leaves still dispatch to their arms.
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelTigerBengal")).unwrap(),
+        run(checked_entry!(&program, "test::labelTigerBengal")).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::labelLionMane")).unwrap(),
+        run(checked_entry!(&program, "test::labelLionMane")).unwrap(),
         Some(Value::Int(4))
     );
 }
@@ -11197,27 +10562,19 @@ fn is_with_a_full_path_to_a_duplicated_leaf_is_exact() {
          fn lionPawIsTiger(): bool\n    return Cat::lion::paw is Cat::tiger\n",
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::tigerPawIsTigerPaw")
-        )
-        .unwrap(),
+        run(checked_entry!(&program, "test::tigerPawIsTigerPaw")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(
-            &program,
-            checked_entry!(&program, "test::lionPawIsTigerPaw")
-        )
-        .unwrap(),
+        run(checked_entry!(&program, "test::lionPawIsTigerPaw")).unwrap(),
         Some(Value::Bool(false))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::tigerPawIsTiger")).unwrap(),
+        run(checked_entry!(&program, "test::tigerPawIsTiger")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::lionPawIsTiger")).unwrap(),
+        run(checked_entry!(&program, "test::lionPawIsTiger")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11230,7 +10587,7 @@ fn uncaught_fault_in_entry_module_carries_its_file_id() {
         "a",
         "pub fn boom(): int\n    const boom = 1 / 0\n    return 0\n",
     )]);
-    let error = run(&program, checked_entry!(&program, "a::boom")).unwrap_err();
+    let error = run(checked_entry!(&program, "a::boom")).unwrap_err();
     assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(0)));
     assert!(
@@ -11252,7 +10609,7 @@ fn uncaught_fault_in_cross_module_callee_carries_the_callee_file_id() {
             "pub fn boom(): int\n    const boom = 1 / 0\n    return 0\n",
         ),
     ]);
-    let error = run(&program, checked_entry!(&program, "a::run")).unwrap_err();
+    let error = run(checked_entry!(&program, "a::run")).unwrap_err();
     assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(1)));
     assert!(
@@ -11275,7 +10632,7 @@ fn uncaught_throw_from_cross_module_callee_carries_the_raising_frame_file_id() {
             "pub fn boom(): int\n    throw Error(code: \"x.y\", message: \"bad\")\n",
         ),
     ]);
-    let error = run(&program, checked_entry!(&program, "a::run")).unwrap_err();
+    let error = run(checked_entry!(&program, "a::run")).unwrap_err();
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
     assert_eq!(error.origin, Some(FileId(1)));
 }
@@ -11308,7 +10665,7 @@ fn outer_frame_does_not_overwrite_inner_origin() {
             "pub fn boom(): int\n    const boom = 1 / 0\n    return 0\n",
         ),
     ]);
-    let error = run(&program, checked_entry!(&program, "a::outer")).unwrap_err();
+    let error = run(checked_entry!(&program, "a::outer")).unwrap_err();
     assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(1)));
 }
@@ -11342,9 +10699,9 @@ fn an_identity_field_round_trips_through_saved_data() {
     // the same identity value produced by the author store.
     let program = typed_ref_program();
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::read"))
+        run_entry(&store, checked_entry!(&program, "test::read"))
             .unwrap()
             .value,
         Some(Value::Bool(true))
@@ -11368,7 +10725,7 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
          \x20   ^books(1).authorId = author\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     // The stored leaf is the canonical identity encoding — the same
     // order-preserving key bytes a unique index entry stores — not a scalar
     // `encode_value`.
@@ -11409,9 +10766,9 @@ fn an_identity_field_assigned_via_next_id_round_trips() {
          \x20   return false\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::read"))
+        run_entry(&store, checked_entry!(&program, "test::read"))
             .unwrap()
             .value,
         Some(Value::Bool(true))
@@ -11439,7 +10796,7 @@ fn a_self_referencing_identity_field_round_trips() {
     );
     let store = TreeStore::memory();
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::seed"))
+        run_entry(&store, checked_entry!(&program, "test::seed"))
             .unwrap()
             .value,
         Some(Value::Bool(true))
@@ -11467,11 +10824,11 @@ fn equality_on_two_identities_of_the_same_store_evaluates() {
          \x20   return ada == grace\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::same")).unwrap(),
+        run(checked_entry!(&program, "test::same")).unwrap(),
         Some(Value::Bool(true))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::different")).unwrap(),
+        run(checked_entry!(&program, "test::different")).unwrap(),
         Some(Value::Bool(false))
     );
 }
@@ -11497,11 +10854,11 @@ fn single_key_store_identity_behaves_like_other_identity_origins() {
          \x20   return false\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::idValue")).unwrap(),
+        run(checked_entry!(&program, "test::idValue")).unwrap(),
         Some(Value::Int(1))
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::mixedEq")).unwrap(),
+        run(checked_entry!(&program, "test::mixedEq")).unwrap(),
         Some(Value::Bool(true))
     );
 }
@@ -11524,7 +10881,7 @@ fn unique_index_identity_compares_with_the_allocated_identity() {
          \x20   return id == found\n",
     );
     assert_eq!(
-        run(&program, checked_entry!(&program, "test::seed")).unwrap(),
+        run(checked_entry!(&program, "test::seed")).unwrap(),
         Some(Value::Bool(true))
     );
 }
@@ -11557,9 +10914,9 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
          \x20   return false\n",
     );
     let store = TreeStore::memory();
-    run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
-        run_entry(&program, &store, checked_entry!(&program, "test::read"))
+        run_entry(&store, checked_entry!(&program, "test::read"))
             .unwrap()
             .value,
         Some(Value::Bool(true))

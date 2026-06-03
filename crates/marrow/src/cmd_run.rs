@@ -203,7 +203,7 @@ fn execute(
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             return ExitCode::FAILURE;
         }
-        let result = marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, &call);
+        let result = marrow_run::run_entry_with_debugger(store, &host, &mut hook, &call);
         // Discard everything the run staged, whatever its outcome.
         if let Err(error) = store.rollback() {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
@@ -213,11 +213,10 @@ fn execute(
         result.map(|outcome| (outcome, Report::Dry { planned, trace }))
     } else if observe.trace {
         let mut hook = TraceHook::new(observe.format, "", program);
-        let result = marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, &call);
+        let result = marrow_run::run_entry_with_debugger(store, &host, &mut hook, &call);
         result.map(|outcome| (outcome, Report::Trace(hook)))
     } else {
-        marrow_run::run_entry_with_host(program, store, &host, &call)
-            .map(|outcome| (outcome, Report::None))
+        marrow_run::run_entry_with_host(store, &host, &call).map(|outcome| (outcome, Report::None))
     };
 
     // Log output is collected even on a failing run; it goes to stderr, off the
