@@ -1752,7 +1752,7 @@ fn distinct_modules_are_not_flagged_as_duplicates() {
 fn a_script_file_is_not_bound_to_its_path() {
     let root = temp_project("script", |root| {
         // No module declaration: a script, even at a nested path.
-        write(root, "src/tools/migrate.mw", "fn run()\n    return\n");
+        write(root, "src/tools/script.mw", "fn run()\n    return\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     fs::remove_dir_all(&root).ok();

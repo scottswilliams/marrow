@@ -696,15 +696,15 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// same `fnv1a64:<hex>` form the catalog digest uses.
 ///
 /// The digest is gap-free by construction: rather than enumerate durable facts field
-/// by field, it renders every durable and evolution declaration — each `resource`,
-/// `store`, `enum`, and `evolve` block — through the canonical formatter and hashes
-/// the normalized text. Reformatting binds every member type, required flag, identity
-/// key, index uniqueness and columns, keyed-layer key name and type at any nesting
-/// depth, enum member, evolve default value, and transform body, so any change to the
-/// shape a stored snapshot must satisfy drifts the digest while a pure whitespace
-/// reformat of the same declarations leaves it unchanged. The evolution witness
-/// records it so apply can abort if the source it activates no longer matches what was
-/// discharged.
+/// by field, it renders every durable and evolution-visible declaration — each
+/// `resource`, `store`, `enum`, module `const`, and `evolve` block — through the
+/// canonical formatter and hashes the normalized text. Reformatting binds every member
+/// type, required flag, identity key, index uniqueness and columns, keyed-layer key
+/// name and type at any nesting depth, enum member, module constant, evolve default
+/// value, and transform body, so any change to the shape or transform input a stored
+/// snapshot must satisfy drifts the digest while a pure whitespace reformat of the
+/// same declarations leaves it unchanged. The evolution witness records it so apply
+/// can abort if the source it activates no longer matches what was discharged.
 ///
 /// The rendering reads each module's source file because the formatter operates on the
 /// syntax tree, which the checked program drops. A source file that no longer reads or
@@ -753,7 +753,7 @@ pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
     format!("fnv1a64:{:016x}", fnv1a64(payload.as_bytes()))
 }
 
-/// One durable declaration's normalized rendering, with the keys that order it
+/// One digest-bound declaration's normalized rendering, with the keys that order it
 /// deterministically: its module, declaration kind, and declaration name.
 struct DurableRendering {
     module: String,
@@ -762,27 +762,29 @@ struct DurableRendering {
     text: String,
 }
 
-/// The declaration kinds whose shape a stored snapshot must satisfy. The discriminant
-/// orders renderings deterministically within a module; an evolve block carries no
-/// name, so its kind alone keeps it last.
+/// The declaration kinds whose shape or transform-visible value a stored snapshot
+/// must satisfy. The discriminant orders renderings deterministically within a module;
+/// an evolve block carries no name, so its kind alone keeps it last.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DurableKind {
     Resource = 0,
     Store = 1,
     Enum = 2,
-    Evolve = 3,
-    Unreadable = 4,
+    Const = 3,
+    Evolve = 4,
+    Unreadable = 5,
 }
 
-/// The durable kind of a declaration, or `None` for a const or function, which carry
-/// no durable shape the snapshot must satisfy.
+/// The digest kind of a declaration, or `None` for a function. Transform bodies cannot
+/// call user functions, but they can read module constants.
 fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind> {
     match declaration {
         marrow_syntax::Declaration::Resource(_) => Some(DurableKind::Resource),
         marrow_syntax::Declaration::Store(_) => Some(DurableKind::Store),
         marrow_syntax::Declaration::Enum(_) => Some(DurableKind::Enum),
+        marrow_syntax::Declaration::Const(_) => Some(DurableKind::Const),
         marrow_syntax::Declaration::Evolve(_) => Some(DurableKind::Evolve),
-        marrow_syntax::Declaration::Const(_) | marrow_syntax::Declaration::Function(_) => None,
+        marrow_syntax::Declaration::Function(_) => None,
     }
 }
 
@@ -794,8 +796,9 @@ fn declaration_name(declaration: &marrow_syntax::Declaration) -> String {
         marrow_syntax::Declaration::Resource(decl) => decl.name.clone(),
         marrow_syntax::Declaration::Store(decl) => decl.root.root.clone(),
         marrow_syntax::Declaration::Enum(decl) => decl.name.clone(),
-        marrow_syntax::Declaration::Evolve(_)
-        | marrow_syntax::Declaration::Const(_)
-        | marrow_syntax::Declaration::Function(_) => String::new(),
+        marrow_syntax::Declaration::Const(decl) => decl.name.clone(),
+        marrow_syntax::Declaration::Evolve(_) | marrow_syntax::Declaration::Function(_) => {
+            String::new()
+        }
     }
 }

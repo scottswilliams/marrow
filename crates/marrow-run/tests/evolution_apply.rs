@@ -16,10 +16,12 @@ use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, ProjectConfig,
     check_project, checked_saved_root_place,
 };
-use marrow_run::evolution::{ApplyError, Approval, apply};
+use marrow_run::evolution::{
+    ApplyError, Approval, FenceError, apply, current_engine_profile, fence,
+};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment, EngineProfile, TreeStore};
 use marrow_store::value::{Scalar, decode_value, encode_value};
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -346,10 +348,19 @@ fn new_index_rebuild_writes_entries_and_stamps() {
     seed.member(2, "isbn", Scalar::Str("222".into()));
 
     let witness = witness(&program, &store);
+    let index_id = CatalogId::new(index_catalog_id(&place, "byIsbn")).unwrap();
+    store
+        .write_index_entry(
+            &index_id,
+            &[SavedKey::Str("stale".into())],
+            &[SavedKey::Int(99)],
+            Vec::new(),
+        )
+        .expect("seed stale index entry");
+
     let outcome = apply(&witness, &program, &store, false, None).expect("apply");
     assert_eq!(outcome.indexes_rebuilt, 1);
 
-    let index_id = CatalogId::new(index_catalog_id(&place, "byIsbn")).unwrap();
     let one = store
         .scan_index_tuple(&index_id, &[SavedKey::Str("111".into())], 2)
         .expect("scan");
@@ -359,6 +370,13 @@ fn new_index_rebuild_writes_entries_and_stamps() {
         .scan_index_tuple(&index_id, &[SavedKey::Str("222".into())], 2)
         .expect("scan");
     assert_eq!(two.entries.len(), 1, "the rebuilt index holds 222");
+    let stale = store
+        .scan_index_tuple(&index_id, &[SavedKey::Str("stale".into())], 2)
+        .expect("scan stale");
+    assert!(
+        stale.entries.is_empty(),
+        "a rebuild must delete stale index entries"
+    );
     fs::remove_dir_all(&root).ok();
 }
 
@@ -517,6 +535,82 @@ fn destructive_retire_count_drift_aborts() {
             .expect("exists"),
         "a count-drifted approval must not drop data"
     );
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A multi-retire approval must approve the total destructive witness, not one
+/// per-id count repeated across every retired catalog id. Under-scoping the count
+/// would let a caller approve two populated retires with a count of one.
+#[test]
+fn destructive_multi_retire_approval_count_is_total() {
+    let root = temp_project("apply-retire-multi-count", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   notes: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = accept_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let notes_id = member_catalog_id(&accepted_place, "notes");
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("sub".into()));
+    seed.member_by_id(1, &notes_id, Scalar::Str("note".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         evolve\n\
+         \x20   retire Book.subtitle\n\
+         \x20   retire Book.notes\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let witness = witness(&program, &store);
+    let approval = Approval {
+        catalog_ids: vec![
+            CatalogId::new(subtitle_id.clone()).unwrap(),
+            CatalogId::new(notes_id.clone()).unwrap(),
+        ],
+        populated: 1,
+    };
+    let result = apply(&witness, &program, &store, true, Some(&approval));
+    assert!(
+        matches!(result, Err(ApplyError::ApprovalMismatch)),
+        "expected ApprovalMismatch, got {result:#?}"
+    );
+
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    for member_id in [subtitle_id, notes_id] {
+        assert!(
+            store
+                .data_subtree_exists(
+                    &store_id,
+                    &[SavedKey::Int(1)],
+                    &[DataPathSegment::Member(CatalogId::new(member_id).unwrap())]
+                )
+                .expect("exists"),
+            "an under-counted approval must not drop data"
+        );
+    }
     fs::remove_dir_all(&root).ok();
 }
 
@@ -922,6 +1016,70 @@ fn source_digest_drift_aborts() {
     fs::remove_dir_all(&root).ok();
 }
 
+/// A transform body can read module constants. Changing one after preview must drift
+/// the witness before apply evaluates the new constant and writes unauthorized data.
+#[test]
+fn transform_constant_drift_aborts_before_apply() {
+    let root = temp_project("apply-transform-const-drift", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             const Scale = 100\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * Scale\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(5));
+    seed.member(1, "priceCents", Scalar::Int(0));
+    let witness = witness(&program, &store);
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         const Scale = 200\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * Scale\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let changed_program = checked(&root);
+    let result = apply(&witness, &changed_program, &store, false, None);
+
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let int = marrow_store::value::ScalarType::Int;
+    assert!(
+        matches!(result, Err(ApplyError::Drift)),
+        "expected Drift, got {result:#?}"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(0)),
+        "the target is unchanged when const drift is rejected"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
 /// Count drift: the witness backfill count no longer matches the live store, so apply
 /// aborts before staging a write. Witness equality catches the count change because a
 /// re-preview produces a different count.
@@ -999,11 +1157,8 @@ fn store_commit_drift_aborts() {
     witness.store_commit_id = Some(42);
     let result = apply(&witness, &program, &store, false, None);
     assert!(
-        matches!(
-            result,
-            Err(ApplyError::Drift | ApplyError::StoreCommitDrift { .. })
-        ),
-        "expected drift, got {result:#?}"
+        matches!(result, Err(ApplyError::StoreCommitDrift { .. })),
+        "expected StoreCommitDrift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
     fs::remove_dir_all(&root).ok();
@@ -1323,4 +1478,345 @@ fn destructive_retire_fixture(
     let (_report, program) = check_project(&root, &config()).expect("check retiring source");
     let place = root_place(&program, "books");
     (root, program, place, store, subtitle_id)
+}
+
+/// A store this binary applies is stamped at the binary's own engine profile, so the
+/// same binary that applied it passes the open fence, while a binary pinned one epoch
+/// behind is locked out. This is the activation lockout the fence enforces without a
+/// generation server: stamp and fence agree by construction.
+#[test]
+fn applied_store_passes_same_binary_fence_and_locks_out_older() {
+    let root = temp_project("fence-lockout", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   required pages: int\n\
+             evolve\n\
+             \x20   default Book.pages = 0\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+
+    let w = witness(&program, &store);
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    let stamped_epoch = outcome.catalog_epoch;
+    let accepted = program.catalog.accepted_epoch.expect("accepted epoch");
+    assert_eq!(stamped_epoch, accepted);
+
+    // The same binary reopening the store it just stamped is not fenced.
+    fence(
+        Some(accepted),
+        &program.source_digest(),
+        &current_engine_profile(),
+        &store,
+    )
+    .expect("same binary proceeds");
+
+    // A binary one accepted epoch behind is fenced: the store was evolved past it.
+    let older = fence(
+        Some(accepted - 1),
+        &program.source_digest(),
+        &current_engine_profile(),
+        &store,
+    )
+    .expect_err("older binary fenced");
+    assert_eq!(
+        older,
+        FenceError::StoreEvolved {
+            stored: stamped_epoch,
+            accepted: accepted - 1,
+        }
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A stale binary must not apply over a store a newer binary already evolved past its
+/// accepted epoch. Apply fences before staging any write, so the store is left
+/// unchanged: no data, no stamp advance.
+#[test]
+fn apply_is_fenced_when_store_evolved_past_the_binary() {
+    let root = temp_project("fence-apply-stale", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   required pages: int\n\
+             evolve\n\
+             \x20   default Book.pages = 0\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let accepted = program.catalog.accepted_epoch.expect("accepted epoch");
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+
+    // Stamp the store as a newer binary would: a catalog epoch past this program's
+    // accepted epoch, with this binary's engine profile so only the epoch fences.
+    store
+        .write_catalog_epoch(accepted + 1)
+        .expect("stamp newer epoch");
+    store
+        .write_engine_profile(&current_engine_profile())
+        .expect("stamp profile");
+
+    let w = witness(&program, &store);
+    let error = apply(&w, &program, &store, false, None).expect_err("stale apply fenced");
+    assert_eq!(
+        error,
+        ApplyError::Fenced(FenceError::StoreEvolved {
+            stored: accepted + 1,
+            accepted,
+        })
+    );
+    // The store was not advanced and no data was written.
+    assert_eq!(
+        store.read_catalog_epoch().expect("epoch"),
+        Some(accepted + 1)
+    );
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let pages_id = member_catalog_id(&place, "pages");
+    let int = marrow_store::value::ScalarType::Int;
+    assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, int), None);
+
+    fs::remove_dir_all(&root).ok();
+}
+
+/// An engine-profile drift fences a run-capable open even when the catalog epoch
+/// matches: the physical layout the store recorded is not the one this binary writes.
+#[test]
+fn engine_profile_drift_fences_a_matching_epoch_store() {
+    let store = TreeStore::memory();
+    store.write_catalog_epoch(2).expect("epoch");
+    store
+        .write_engine_profile(&EngineProfile::new(
+            current_engine_profile().layout_epoch() + 1,
+        ))
+        .expect("drifted profile");
+    let error = fence(
+        Some(2),
+        "fnv1a64:0000000000000002",
+        &current_engine_profile(),
+        &store,
+    )
+    .expect_err("drift fenced");
+    assert_eq!(error, FenceError::EngineProfileDrift);
+}
+
+#[test]
+fn legacy_layout_epoch_drift_without_profile_digest_is_fenced() {
+    let store = TreeStore::memory();
+    store.write_catalog_epoch(2).expect("epoch");
+    store
+        .write_layout_epoch(current_engine_profile().layout_epoch() + 1)
+        .expect("legacy layout epoch");
+
+    let error = fence(
+        Some(2),
+        "fnv1a64:0000000000000002",
+        &current_engine_profile(),
+        &store,
+    )
+    .expect_err("fenced");
+    assert_eq!(error, FenceError::EngineProfileDrift);
+}
+
+/// Apply over a program that accepted no catalog has no baseline epoch to advance from.
+/// It must refuse with a typed error and leave the store untouched rather than stamp a
+/// phantom proposal epoch and churn the commit id on every retry.
+#[test]
+fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
+    let root = temp_project("apply-no-accepted", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    // No accept flow: the program proposes a catalog but never accepts one. Without an
+    // accepted catalog the bound store catalog ids are unresolved, so there is nothing
+    // to seed; apply must refuse before reaching any data work.
+    let program = checked(&root);
+    assert!(program.catalog.accepted_epoch.is_none());
+    let store = TreeStore::memory();
+
+    let w = witness(&program, &store);
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NoAcceptedCatalog);
+    assert_eq!(
+        store.read_catalog_epoch().expect("epoch"),
+        None,
+        "no phantom epoch was stamped"
+    );
+    assert_eq!(
+        store.read_commit_metadata().expect("commit"),
+        None,
+        "no commit id churned"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A no-op evolution — the store already sits at the program's accepted epoch with no
+/// data work to do — must not restamp metadata or advance the commit id on a repeat
+/// apply. Re-applying is genuinely idempotent: the commit id is unchanged.
+#[test]
+fn no_op_apply_does_not_churn_the_commit_id() {
+    let root = temp_project("apply-noop", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   required pages: int\n\
+             evolve\n\
+             \x20   default Book.pages = 0\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+
+    // First apply backfills and stamps.
+    let first = apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
+    let stamped_commit = store
+        .read_commit_metadata()
+        .expect("commit")
+        .expect("a stamp")
+        .commit_id;
+    assert_eq!(first.committed_commit_id, stamped_commit);
+
+    // Second apply over the now-applied store has nothing to do and the epoch already
+    // matches: it reports the existing commit id and writes no new stamp.
+    let second =
+        apply(&witness(&program, &store), &program, &store, false, None).expect("re-apply");
+    assert_eq!(second.records_backfilled, 0);
+    assert_eq!(second.committed_commit_id, stamped_commit);
+    assert_eq!(
+        store
+            .read_commit_metadata()
+            .expect("commit")
+            .expect("a stamp")
+            .commit_id,
+        stamped_commit,
+        "a no-op re-apply does not churn the commit id"
+    );
+
+    // A third apply is still a stable no-op.
+    let third =
+        apply(&witness(&program, &store), &program, &store, false, None).expect("third apply");
+    assert_eq!(third.committed_commit_id, stamped_commit);
+
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A store stamped under schema A is fenced when opened by a binary compiled against a
+/// structurally different schema B at the same catalog epoch. The catalog epoch alone
+/// cannot tell the two schemas apart; the schema-bearing source digest does. Without the
+/// digest fence, schema B would proceed past activation against bytes shaped for A.
+#[test]
+fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
+    let root_a = temp_project("fence-schema-a", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program_a = accept_then_check(&root_a);
+    let place_a = root_place(&program_a, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place_a,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    apply(
+        &witness(&program_a, &store),
+        &program_a,
+        &store,
+        false,
+        None,
+    )
+    .expect("apply schema A");
+    let accepted = program_a.catalog.accepted_epoch.expect("accepted epoch");
+
+    // Schema B accepts at the same first epoch but binds `title` to a different type, so
+    // its source digest differs from the one the store recorded under schema A.
+    let root_b = temp_project("fence-schema-b", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: int\n\
+             pub fn add(title: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program_b = accept_then_check(&root_b);
+    assert_eq!(
+        program_b.catalog.accepted_epoch.expect("accepted epoch"),
+        accepted,
+        "both schemas accept at the same epoch"
+    );
+    assert_ne!(
+        program_a.source_digest(),
+        program_b.source_digest(),
+        "the two schemas carry distinct source digests"
+    );
+
+    let error = fence(
+        Some(accepted),
+        &program_b.source_digest(),
+        &current_engine_profile(),
+        &store,
+    )
+    .expect_err("schema B fenced against schema A's store");
+    assert_eq!(error, FenceError::SchemaDrift);
+    assert_eq!(error.code(), "run.schema_drift");
+
+    fs::remove_dir_all(&root_a).ok();
+    fs::remove_dir_all(&root_b).ok();
 }

@@ -123,7 +123,7 @@ pub struct Host {
     /// dropping a whole managed root and deleting a required field on its own.
     /// Default `false`; a tool opts in explicitly with [`Host::with_maintenance`].
     /// Maintenance is not a language feature — it is a host capability tools
-    /// select for migration, repair, and restore. An ordinary `marrow run` of the
+    /// select for repair, restore, and root-wide administration. An ordinary `marrow run` of the
     /// default entry never sets it, so the protected operations stay unreachable
     /// there.
     pub(crate) maintenance: bool,
@@ -182,8 +182,8 @@ impl Host {
 
     /// A host that may perform maintenance-only managed operations: dropping a
     /// whole managed root and deleting a required field on its own. Selected only
-    /// by explicit tooling (migration, repair, restore) — never by an ordinary
-    /// run, so the default path can never reach maintenance behavior.
+    /// by explicit repair, restore, or root-wide administration tooling — never
+    /// by an ordinary run, so the default path can never reach maintenance behavior.
     pub fn with_maintenance(mut self) -> Self {
         self.maintenance = true;
         self

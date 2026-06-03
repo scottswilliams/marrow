@@ -79,36 +79,24 @@ pub(crate) mod test_support {
         write(&root, "src/app.mw", SOURCE);
         let config = marrow_project::parse_config(CONFIG).expect("parse fixture config");
         let (report, program) = marrow_check::check_project(&root, &config).expect("check fixture");
-        let program = accept_catalog_proposal(&root, &config, program);
-        fs::remove_dir_all(&root).ok();
         assert!(
             !report.has_errors(),
             "serve fixture project must check cleanly: {report:#?}"
         );
-        program
-    }
-
-    fn accept_catalog_proposal(
-        root: &Path,
-        config: &marrow_check::ProjectConfig,
-        program: CheckedProgram,
-    ) -> CheckedProgram {
-        let Some(proposal) = program.catalog.proposal else {
-            return program;
-        };
-        let path = root.join(&config.accepted_catalog);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create accepted catalog dir");
+        let accepted = marrow_check::accept_catalog_proposal(&root, &config, &program)
+            .expect("accept fixture catalog");
+        fs::remove_dir_all(&root).ok();
+        match accepted {
+            Some((report, program)) => {
+                assert!(
+                    !report.has_errors(),
+                    "accepted serve fixture catalog must check cleanly: {:#?}",
+                    report.diagnostics
+                );
+                program
+            }
+            None => program,
         }
-        fs::write(&path, proposal.to_json_pretty()).expect("write accepted catalog");
-        let (report, program) =
-            marrow_check::check_project(root, config).expect("recheck accepted fixture");
-        assert!(
-            !report.has_errors(),
-            "accepted serve fixture catalog must check cleanly: {:#?}",
-            report.diagnostics
-        );
-        program
     }
 
     fn temp_dir(name: &str) -> PathBuf {

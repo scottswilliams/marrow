@@ -1,6 +1,7 @@
 //! The evaluation environment: scopes, bindings, and control flow.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use marrow_check::{CheckedRuntimeModule, CheckedRuntimeProgram, CheckedSavedPlace};
@@ -241,7 +242,7 @@ impl<'p> Env<'p> {
         plan: Result<WritePlan, WriteError>,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        let plan = plan.map_err(|error| write_fault(error, span))?;
+        let mut plan = plan.map_err(|error| write_fault(error, span))?;
         self.guard_plan_traversal(&plan, span)?;
         self.guard_generated_index_mutations(&plan, span)?;
         // Offer each staged operation to an installed write observer before it
@@ -252,6 +253,13 @@ impl<'p> Env<'p> {
                 hook.before_write(op, &target, value, self.depth);
             }
         }
+        stamp_managed_write(
+            &mut plan,
+            self.program.accepted_catalog_epoch(),
+            self.program.source_digest(),
+            self.store,
+        )
+        .map_err(|error| error.located(span))?;
         plan.commit(self.store, self.transaction_depth() > 0)
             .map_err(|error| error.located(span))
     }
@@ -660,6 +668,64 @@ impl<'p> Env<'p> {
         }
         Err(AssignError::Unbound)
     }
+}
+
+fn stamp_managed_write(
+    plan: &mut WritePlan,
+    accepted_epoch: Option<u64>,
+    source_digest: &str,
+    store: &TreeStore,
+) -> Result<(), marrow_store::StoreError> {
+    let Some(catalog_epoch) = accepted_epoch else {
+        return Ok(());
+    };
+    if plan
+        .steps
+        .iter()
+        .any(|step| matches!(step, PlanStep::StampMetadata { .. }))
+    {
+        return Ok(());
+    }
+    let (changed_root_catalog_ids, changed_index_catalog_ids) = changed_catalog_ids(&plan.steps);
+    if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
+        return Ok(());
+    }
+
+    let commit_id = store
+        .read_commit_metadata()?
+        .map(|commit| commit.commit_id + 1)
+        .unwrap_or(1);
+    plan.steps.push(crate::evolution::metadata_stamp(
+        crate::evolution::StampFacts {
+            catalog_epoch,
+            commit_id,
+            source_digest: source_digest.to_string(),
+            changed_root_catalog_ids,
+            changed_index_catalog_ids,
+        },
+    ));
+    Ok(())
+}
+
+fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
+    let mut roots = BTreeSet::new();
+    let mut indexes = BTreeSet::new();
+    for step in steps {
+        match step {
+            PlanStep::WriteData { address, .. }
+            | PlanStep::DeleteData { address }
+            | PlanStep::DeleteRecordSubtree { address } => {
+                roots.insert(address.store.clone());
+            }
+            PlanStep::WriteIndex { address, .. }
+            | PlanStep::DeleteIndex { address, .. }
+            | PlanStep::DeleteIndexSubtree { address } => {
+                indexes.insert(address.index.clone());
+            }
+            PlanStep::StampMetadata { .. } => {}
+        }
+    }
+    (roots.into_iter().collect(), indexes.into_iter().collect())
 }
 
 fn data_child_under<'a>(

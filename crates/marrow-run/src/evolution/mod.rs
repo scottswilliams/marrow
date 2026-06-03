@@ -8,9 +8,14 @@
 //! that plan atomically with the catalog-epoch and engine-profile stamp. Drift, a
 //! blocking obligation, or a store error leaves the store unchanged.
 
+mod admission;
 mod apply;
 mod backfill;
 mod scan;
 mod transform;
+mod validate;
+mod window;
 
 pub use apply::{ApplyError, ApplyOutcome, Approval, apply};
+pub use window::{FenceError, current_engine_profile, fence};
+pub(crate) use window::{StampFacts, metadata_stamp};

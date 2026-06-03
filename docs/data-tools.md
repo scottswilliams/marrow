@@ -207,8 +207,9 @@ These findings have no source line, so the location is a `path` field rather
 than a span. The `data.*` codes carry kind `tooling`. See
 [error-codes.md](error-codes.md) for the full code list.
 
-When integrity reports problems, correct the schema or rebuild the store through
-a maintenance/evolution workflow. There is no in-place fix.
+When integrity reports problems, correct the schema, run source-native
+`evolve preview`/`evolve apply`, or repair modeled data through explicit
+maintenance code. There is no in-place fix.
 
 ## Deferred: `diff` and `load`
 

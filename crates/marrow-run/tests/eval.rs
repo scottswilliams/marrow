@@ -124,7 +124,7 @@ fn checked_program_files(files: &[(PathBuf, String)]) -> CheckedRuntimeProgram {
         "runtime tests require a clean checked program: {:#?}",
         report.diagnostics
     );
-    let program = accept_catalog_proposal(root.path(), &config, program);
+    let program = accept_catalog(root.path(), &config, program);
     program.runtime()
 }
 
@@ -150,26 +150,20 @@ fn test_project_config() -> ProjectConfig {
     }
 }
 
-fn accept_catalog_proposal(
-    root: &Path,
-    config: &ProjectConfig,
-    program: CheckedProgram,
-) -> CheckedProgram {
-    let Some(proposal) = program.catalog.proposal else {
-        return program;
-    };
-    let path = root.join(&config.accepted_catalog);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create accepted catalog dir");
+fn accept_catalog(root: &Path, config: &ProjectConfig, program: CheckedProgram) -> CheckedProgram {
+    match marrow_check::accept_catalog_proposal(root, config, &program)
+        .expect("accept runtime test catalog")
+    {
+        Some((report, program)) => {
+            assert!(
+                !report.has_errors(),
+                "accepted runtime test catalog must check cleanly: {:#?}",
+                report.diagnostics
+            );
+            program
+        }
+        None => program,
     }
-    fs::write(&path, proposal.to_json_pretty()).expect("write accepted catalog");
-    let (report, program) = check_project(root, config).expect("recheck accepted catalog project");
-    assert!(
-        !report.has_errors(),
-        "accepted runtime test catalog must check cleanly: {:#?}",
-        report.diagnostics
-    );
-    program
 }
 
 #[test]

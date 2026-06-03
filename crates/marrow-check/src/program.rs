@@ -114,6 +114,16 @@ impl CheckedProgram {
         CheckedRuntimeProgram::from_checked(self)
     }
 
+    /// The schema-bearing digest of this program's durable and evolution surface, in
+    /// the `fnv1a64:<hex>` form the evolution witness and the store commit metadata
+    /// record. It binds member types, identity key types, index shape, enum members,
+    /// and evolve decisions, so a structurally different schema produces a different
+    /// digest even at the same catalog epoch. The activation fence compares it against
+    /// the digest the store recorded.
+    pub fn source_digest(&self) -> String {
+        crate::catalog::analyzed_source_digest(self)
+    }
+
     pub(crate) fn lower_runtime_bodies<'a, I>(&mut self, sources: I)
     where
         I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
@@ -340,6 +350,8 @@ pub struct CheckedRuntimeProgram {
     entry_functions: HashMap<String, CheckedEntryFunction>,
     private_entry_functions: HashSet<String>,
     facts: CheckedFacts,
+    accepted_catalog_epoch: Option<u64>,
+    source_digest: String,
 }
 
 impl CheckedRuntimeProgram {
@@ -358,6 +370,8 @@ impl CheckedRuntimeProgram {
             entry_functions,
             private_entry_functions,
             facts: program.facts.clone(),
+            accepted_catalog_epoch: program.catalog.accepted_epoch,
+            source_digest: program.source_digest(),
         }
     }
 
@@ -379,6 +393,14 @@ impl CheckedRuntimeProgram {
 
     pub fn facts(&self) -> &CheckedFacts {
         &self.facts
+    }
+
+    pub fn accepted_catalog_epoch(&self) -> Option<u64> {
+        self.accepted_catalog_epoch
+    }
+
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
     }
 
     pub fn file_path(&self, id: FileId) -> Option<&Path> {

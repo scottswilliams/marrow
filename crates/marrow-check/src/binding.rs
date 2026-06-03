@@ -86,14 +86,13 @@ pub struct SymbolRef {
 /// aliases, and resources with no saved root) exist only in source, so a rename
 /// that updates every reference is complete. `SavedDataBacked` symbols name
 /// something encoded on disk — a saved field/group/layer/index, or a resource
-/// attached to a saved root — whose stored path uses the source name. Renaming
-/// such a symbol changes the on-disk path and orphans stored data unless explicit
-/// maintenance work moves it.
+/// attached to a saved root. Renaming such a symbol requires catalog-backed
+/// evolution intent rather than a source-only edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameSafety {
     /// Safe to rename in source alone.
     SourceOnly,
-    /// Names data encoded on disk; renaming orphans stored data unless migrated.
+    /// Names data encoded on disk; source-only rename is not enough.
     SavedDataBacked,
 }
 

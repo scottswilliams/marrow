@@ -152,13 +152,71 @@ fn run_project_dir(
             execute(&runtime_program, &store, entry, maintenance, observe)
         }
         Ok(Some(path)) => match marrow_store::tree::TreeStore::open(&path) {
-            Ok(store) => execute(&runtime_program, &store, entry, maintenance, observe),
+            Ok(store) => {
+                // Fence the binary against the store's durable activation context before
+                // running: a store a newer binary evolved past this program's accepted
+                // catalog, one that predates it, or one whose storage layout drifted is
+                // refused rather than written with a stale shape. A memory store has no
+                // durable context and is never fenced.
+                if let Err(error) = marrow_run::evolution::fence(
+                    program.catalog.accepted_epoch,
+                    &program.source_digest(),
+                    &marrow_run::evolution::current_engine_profile(),
+                    &store,
+                ) {
+                    report_simple_error(error.code(), &error.message(), CheckFormat::Text);
+                    return ExitCode::FAILURE;
+                }
+                match populated_unstamped_store(&program, &store) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        report_simple_error(
+                            "run.store_unstamped",
+                            "store has saved records but no catalog activation stamp; run `marrow check --data` and `marrow evolve apply` before running this accepted catalog",
+                            CheckFormat::Text,
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                    Err(error) => {
+                        report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+                        return ExitCode::FAILURE;
+                    }
+                }
+                execute(&runtime_program, &store, entry, maintenance, observe)
+            }
             Err(error) => {
                 report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
                 ExitCode::FAILURE
             }
         },
     }
+}
+
+fn populated_unstamped_store(
+    program: &marrow_check::CheckedProgram,
+    store: &marrow_store::tree::TreeStore,
+) -> Result<bool, marrow_store::StoreError> {
+    if program.catalog.accepted_epoch.is_none() || store.read_catalog_epoch()?.is_some() {
+        return Ok(false);
+    }
+    for module in &program.modules {
+        for saved in &module.stores {
+            let Some(place) = marrow_check::checked_saved_root_place(
+                program,
+                &saved.root,
+                marrow_syntax::SourceSpan::default(),
+            ) else {
+                continue;
+            };
+            let Ok(store_id) = marrow_store::cell::CatalogId::new(place.store_catalog_id) else {
+                continue;
+            };
+            if store.record_child_count(&store_id, &[])? > 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Run `entry` from a checked `program` over `store`, printing its output. The run

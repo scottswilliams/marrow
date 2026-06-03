@@ -4,8 +4,10 @@ use std::process::ExitCode;
 use marrow_syntax::Diagnose;
 use serde_json::json;
 
+mod cmd_catalog;
 mod cmd_check;
 mod cmd_data;
+mod cmd_evolve;
 mod cmd_explain;
 mod cmd_fmt;
 mod cmd_run;
@@ -20,6 +22,8 @@ Marrow
 
 Usage:
   marrow check [--format text|json|jsonl] <file.mw>
+  marrow catalog <preview|accept> <projectdir>
+  marrow evolve <preview|apply> <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run <projectdir>
   marrow test <projectdir>
@@ -39,7 +43,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     match command.as_str() {
+        "catalog" => cmd_catalog::catalog(rest),
         "check" => cmd_check::check(rest),
+        "evolve" => cmd_evolve::evolve(rest),
         "fmt" => cmd_fmt::fmt(rest),
         "run" => cmd_run::run(rest),
         "test" => cmd_test::test(rest),
@@ -240,17 +246,20 @@ pub(crate) fn open_store_for_inspection(
 /// invalid. `load_checked_project` builds on this for commands that need checked
 /// source facts.
 pub(crate) fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, ExitCode> {
+    load_config_with_format(dir, CheckFormat::Text)
+}
+
+pub(crate) fn load_config_with_format(
+    dir: &str,
+    format: CheckFormat,
+) -> Result<marrow_project::ProjectConfig, ExitCode> {
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = std::fs::read_to_string(&config_path).map_err(|error| {
-        report_io_error(
-            &config_path.display().to_string(),
-            &error,
-            CheckFormat::Text,
-        );
+        report_io_error(&config_path.display().to_string(), &error, format);
         ExitCode::FAILURE
     })?;
     marrow_project::parse_config(&config_text).map_err(|error| {
-        report_simple_error(error.code, &error.message, CheckFormat::Text);
+        report_simple_error(error.code, &error.message, format);
         ExitCode::FAILURE
     })
 }
@@ -262,18 +271,25 @@ pub(crate) fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, Ex
 pub(crate) fn load_checked_project(
     dir: &str,
 ) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
-    let config = load_config(dir)?;
+    load_checked_project_with_format(dir, CheckFormat::Text)
+}
+
+pub(crate) fn load_checked_project_with_format(
+    dir: &str,
+    format: CheckFormat,
+) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
+    let config = load_config_with_format(dir, format)?;
     let (report, program) =
         marrow_check::check_project(Path::new(dir), &config).map_err(|error| {
             report_simple_error(
                 error.code,
                 &format!("{}: {}", error.path.display(), error.message),
-                CheckFormat::Text,
+                format,
             );
             ExitCode::FAILURE
         })?;
     if report.has_errors() {
-        report_project(dir, &report, CheckFormat::Text);
+        report_project(dir, &report, format);
         return Err(ExitCode::FAILURE);
     }
     Ok((config, program))

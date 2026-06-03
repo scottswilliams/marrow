@@ -22,7 +22,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::index_maintenance::stage_index_rebuild_entry;
-use crate::store::DataAddress;
+use crate::store::{DataAddress, IndexAddress};
 use crate::write_plan::PlanStep;
 
 use super::apply::{
@@ -81,6 +81,16 @@ pub(super) fn stage_index_rebuild(
             continue;
         };
         let index = index.clone();
+        let index_id =
+            CatalogId::new(index.catalog_id.clone()).map_err(|_| StoreError::Corruption {
+                message: "evolution apply saw an invalid index catalog id".to_string(),
+            })?;
+        steps.push(PlanStep::DeleteIndexSubtree {
+            address: IndexAddress {
+                index: index_id,
+                keys: Vec::new(),
+            },
+        });
         for_each_place_record(store, place, &mut |identity| {
             stage_index_rebuild_entry(steps, &index, place, identity, store, Default::default())
                 .map(|_| ())

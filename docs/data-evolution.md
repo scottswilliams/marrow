@@ -1,10 +1,9 @@
 # Data Evolution And Maintenance
 
-Marrow schemas evolve through source changes plus explicit data-evolution code.
-Marrow does not currently run an automatic data compiler over saved stores: when
-a change moves modeled data, populates a new required field, repairs schema
-violations, or rebuilds an index, that work is ordinary `.mw` code or a Marrow
-tool workflow that an operator can inspect.
+Marrow schemas evolve through source changes plus source-native evolution
+intent. Catalog preview/accept records durable identity, data-attached preview
+proves what saved data needs, and evolution apply commits the exact preview
+witness or fails closed.
 
 The saved-data model these changes operate on is defined in
 [`language/resources-and-storage.md`](language/resources-and-storage.md), and
@@ -20,11 +19,11 @@ schema does not fully describe until explicit data-evolution work runs.
 | Change | What it needs today |
 |---|---|
 | Add a sparse field | Source change only. Existing records stay valid; the field reads as absent until written. |
-| Add a `required` field | Code or tooling that populates existing records before code depends on the field. |
-| Rename a field | Source rename, plus explicit data movement if saved data must move. |
-| Add an index | Backfill/rebuild: rewrite indexed records so the generated index tree is populated. |
-| Remove a field | The data under it stays until code or maintenance work removes it. |
-| Delete a whole root or drop a required field | Maintenance work. Run with `--maintenance`. |
+| Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
+| Rename a field | `evolve rename` plus `catalog accept`; stable identity moves, and stored cells addressed by that identity remain attached. |
+| Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
+| Remove a field | A sparse drop is deprecated when nothing reads it; populated destructive removal needs `evolve retire` plus approval. |
+| Delete a whole root or drop a required field | Explicit maintenance/repair code under `--maintenance`, checked before and after. |
 
 ## Sparse And Required Fields
 
@@ -62,43 +61,36 @@ What Marrow does with an under-populated record:
   site; an unresolved read is a compile error.
 - `marrow data integrity` verifies stored value encodings and orphaned paths.
 
-Backfill with ordinary code:
+Backfill with source-native intent:
 
 ```mw
-pub fn backfillPages()
-    for id in keys(^books)
-        ^books(id).pages = 0
+evolve
+    default Book.pages = 0
 ```
 
-Run it, then deploy code that depends on the field:
+Preview and apply the exact witness:
 
 ```sh
-marrow run --entry app::backfillPages ./project
+marrow evolve preview ./project
+marrow evolve apply ./project
 ```
 
 ## Renames
 
-A field's source name is how code spells it. Its durable identity is owned by
-the accepted catalog metadata file, not by source annotations or source order. A
-rename changes the spelling; saved data keyed by the old name does not move on
-its own.
-
-For v0.1, rename work has two parts:
-
-- the accepted catalog records the new canonical path, the old path as an alias,
-  and the same stable ID;
-- explicit maintenance code or a tool workflow moves any saved data that must
-  move physically.
+A field's source name is how code spells it. Its durable identity is owned by the
+accepted catalog metadata file, not by source annotations, source order, or a
+best-effort source diff. A rename is an explicit catalog decision:
 
 ```mw
-pub fn renameTitle()
-    for id in keys(^books)
-        ^books(id).displayTitle = ^books(id).title
-        delete ^books(id).title
+evolve
+    rename Book.title -> Book.displayTitle
 ```
 
-Source stable-id annotations are not a production rename contract or v0.1
-syntax. A source rename without accepted catalog intent is a check error.
+The accepted catalog records the new canonical path, the old path as an alias,
+and the same stable ID. Stored cells addressed by that stable member ID remain
+attached to the renamed field; no best-effort name matching or migration script
+preserves identity. A source rename without accepted catalog intent is a check
+error.
 
 ## Accepted Catalog Metadata
 
@@ -121,10 +113,48 @@ and enum members. Runtime value encoding remains a separate storage concern; the
 catalog is the durable schema identity exposed to tools, evolution, and checked
 facts.
 
+Use `marrow catalog preview` to inspect a proposed file and `marrow catalog
+accept` to write exactly the current proposal. `accept` re-checks the project
+after the write.
+
+## Activation Fencing
+
+A store records the catalog epoch, engine profile, and analyzed-source digest
+each commit stamped. A compiled program is pinned to exactly the catalog epoch it
+accepted and the schema shape that digest covers. Before a write-capable open — a
+`marrow run` over a persistent store, or an evolution apply — the binary fences
+itself against the store's stamp, so a binary cannot write a stale shape over a
+store another binary has moved past, and data shaped for one schema cannot be run
+against a different one.
+
+| Store state | Outcome |
+|---|---|
+| Empty (no saved records, no stamp) | Adopted: the run or apply proceeds and the first commit stamps the program's epoch, profile, and digest. |
+| Populated but unstamped (saved records, no activation stamp) | `run.store_unstamped`: run `marrow check --data` and `marrow evolve apply` to activate the accepted catalog first. |
+| Stamped epoch equals the program's, and the source digest matches | Proceeds. An apply advances the store to the proposal epoch; a run executes normally. |
+| Stamped epoch equals the program's, but the source digest differs | `run.schema_drift`: the store was stamped under a structurally different schema at this epoch. |
+| Stamped epoch newer than the program | `run.store_evolved`: a newer binary evolved the store. Recompile or upgrade against the current accepted catalog. |
+| Stamped epoch older than the program | `run.store_behind`: the store predates this catalog. Activate it to the program's epoch with an evolution apply first. |
+| Engine profile differs from the binary's layout | `run.engine_profile`: the physical storage layout has drifted. |
+
+The catalog epoch is a coarse version number; two structurally different schemas
+can share an epoch, so the source digest is the schema-bearing fence that tells
+them apart. A store stamped before digest fencing carries no recorded digest and
+is adopted by the epoch match alone.
+
+A program with no accepted catalog has no durable activation context: a run's
+durable code is gated by the catalog-acceptance check rather than fenced here, and
+an evolution apply refuses outright because it has no baseline epoch to advance
+from. An in-memory store carries no durable context and is never fenced.
+
+This is the v0.1 compatibility window: a binary supports exactly its own accepted
+epoch and schema. Old and new binaries outside that exact window fail closed
+before writing.
+
 ## Index Rebuilds
 
-Adding an `index` to a store that already holds data leaves the index tree empty
-until indexed values are written through managed writes.
+Adding an `index` to a store that already holds data creates a rebuild
+obligation.
 
 ```mw
 resource Book
@@ -135,23 +165,13 @@ store ^books(id: int): Book
     index byShelf(shelf, id)
 ```
 
-To populate it, rewrite the indexed field on each record. The managed write
-validates the value, writes the field, and updates the generated index entry as
-one coherent step:
-
-```mw
-pub fn rebuildByShelf()
-    for id in keys(^books)
-        if exists(^books(id).shelf)
-            ^books(id).shelf = ^books(id).shelf
-```
-
 ```sh
-marrow run --entry app::rebuildByShelf ./project
+marrow evolve preview ./project
+marrow evolve apply ./project
 ```
 
-This does not need maintenance mode because each write goes through the managed
-resource path.
+Apply rebuilds the index entries from the checked store facts and stamps the same
+transaction. A failed rebuild publishes no partial index data.
 
 ## Maintenance Mode
 
@@ -174,16 +194,16 @@ writes.
 
 ## Repair
 
-Repair handles checked data that no longer matches the schema. Runtime
-maintenance code can rewrite or delete schema-modeled data through managed
-writes. Typed data tools report decode and key-type findings until typed repair
-surfaces land. It uses the same inspection tools:
+Repair handles checked data that no longer matches the schema and cannot be
+discharged by rename/default/transform/rebuild/retire. A repair-required witness
+blocks `check --data`, `evolve preview`, and `evolve apply`.
 
 - typed data integrity reports `data.decode` and `data.key_type` problems. It is
   read-only.
 - typed data inspection renders durable places from checked/catalog facts.
 - A repair function run with `--maintenance` rewrites or deletes modeled data
-  through managed paths.
+  through managed paths, then `check --data` or `evolve preview` must prove the
+  repaired snapshot before activation.
 
 There is no dedicated `marrow repair` command. Repair is a maintenance run of
 your own code, verified before and after with `marrow data integrity`.
@@ -199,7 +219,6 @@ copying raw engine bytes.
 
 These do not exist yet:
 
-- automatic source/catalog/data activation against attached data;
 - multi-record transforms (split, merge, or a target computed from more than one
   record). The narrow per-record `evolve transform` — a pure body computing one
   saved member from a record's other, still-decodable members — is implemented; a

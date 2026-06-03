@@ -317,6 +317,47 @@ pub fn check_project_with_sources(
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
+/// Writing the accepted catalog file failed, or the project could not be re-discovered
+/// after the write. The CLI surfaces the path and the underlying cause.
+#[derive(Debug)]
+pub enum AcceptError {
+    Io {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    Discover(DiscoverError),
+}
+
+/// Accept `program`'s current catalog proposal: write it to the project's accepted
+/// catalog file and re-check the project against it. Returns `Ok(None)` when the program
+/// proposes no change (the accepted catalog is already current). On success the
+/// re-checked report and program reflect the now-accepted catalog. This is the one
+/// catalog-accept path; the CLI `catalog accept` command and project fixtures share it
+/// rather than each re-implementing the write-and-recheck step.
+pub fn accept_catalog_proposal(
+    project_root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+) -> Result<Option<(CheckReport, CheckedProgram)>, AcceptError> {
+    let Some(proposal) = &program.catalog.proposal else {
+        return Ok(None);
+    };
+    let path = project_root.join(&config.accepted_catalog);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| AcceptError::Io {
+            path: parent.to_path_buf(),
+            error,
+        })?;
+    }
+    std::fs::write(&path, proposal.to_json_pretty()).map_err(|error| AcceptError::Io {
+        path: path.clone(),
+        error,
+    })?;
+    check_project(project_root, config)
+        .map(Some)
+        .map_err(AcceptError::Discover)
+}
+
 /// The schema of the resource stored at saved root `^root`, if any. Saved roots
 /// are project-wide (a `^books` write addresses the one `books` store from any
 /// module), so this resolves through the store table and returns only the
@@ -438,7 +479,7 @@ pub(crate) fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<St
 
 /// Resolve a call's `segments` to a function, also yielding the [`CheckedModule`]
 /// that owns it so the binding index can locate the definition's source file. A
-/// thin shim over the unified [`resolve`]: a bare name resolves in `from_module`,
+/// small wrapper over the unified [`resolve`]: a bare name resolves in `from_module`,
 /// a qualified name in the named module — so a bare cross-module call no longer
 /// first-matches a foreign function. Used by the LSP binding index, which carries
 /// the referencing module.

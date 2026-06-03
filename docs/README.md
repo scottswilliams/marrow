@@ -19,8 +19,8 @@ point at the [language reference](language/) for the exact rules.
   sparse and required fields, relationships, history, indexes, and lookup
   patterns.
 - [Data Evolution And Maintenance](data-evolution.md) — evolving saved data with
-  explicit backfills, catalog-directed identity, maintenance mode, repair,
-  backup, and restore.
+  catalog preview/accept, exact witnesses, source-native apply, maintenance
+  repair, backup, and restore.
 
 ## Language Reference
 

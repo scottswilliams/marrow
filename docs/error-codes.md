@@ -78,8 +78,10 @@ or encoded payloads). A request that reaches the store carries the store's own
 it surfaces while verifying saved data against the project schema:
 `data.decode` for a stored value that is not a canonical form of its declared
 type, and `data.key_type` for a stored key with a scalar type the schema does
-not declare. A command run against a project whose `marrow.json` is unreadable
-reports `io.read`; an invalid `marrow.json` reports `config.invalid`.
+not declare. `marrow evolve` reports `evolve.*` codes when a preview witness
+cannot be applied exactly. A command run against a project whose `marrow.json`
+is unreadable reports `io.read`; an invalid `marrow.json` reports
+`config.invalid`.
 
 ## How `kind` Is Assigned
 
@@ -94,7 +96,7 @@ code is stable and predictable:
 | `store` | `storage` |
 | `io` | `io` |
 | `protocol` | `protocol` |
-| everything else (`config`, `project`, `data`, `write`, `test`) | `tooling` |
+| everything else (`config`, `project`, `data`, `evolve`, `write`, `test`) | `tooling` |
 
 A `run.capability` error is the runtime form of a missing host capability; it
 carries `kind` `runtime` (the `capability` kind named in the envelope section is
@@ -224,6 +226,11 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
+| `run.store_evolved` | The store was stamped at a catalog epoch newer than this program accepted, so a newer binary evolved it. Recompile or upgrade against the current accepted catalog. Fenced before any execution; the store is unchanged. |
+| `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Activate the store with an evolution apply first. Fenced before any execution; the store is unchanged. |
+| `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Fenced before any execution; the store is unchanged. |
+| `run.engine_profile` | The store's engine profile does not match this binary's storage layout. Fenced before any execution; the store is unchanged. |
+| `run.store_unstamped` | The store holds saved records but carries no catalog activation stamp. Run `marrow check --data` and `marrow evolve apply` to activate the accepted catalog before running. Fenced before any execution; the store is unchanged. |
 
 ### `value.*` — kind `runtime`
 
@@ -317,6 +324,22 @@ project schema. Read-only; it never modifies the store.
 |---|---|
 | `data.decode` | A stored value is not a canonical form of its declared type. |
 | `data.key_type` | A stored record key, keyed-layer key, or identity payload key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
+
+### `evolve.*` — kind `tooling`
+
+Source-native data-evolution preview/apply faults.
+
+| Code | Meaning |
+|---|---|
+| `evolve.no_accepted_catalog` | Apply was run on a project with no accepted catalog. Accept the catalog with `marrow catalog accept` before applying an evolution. |
+| `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then preview again. |
+| `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Preview again. |
+| `evolve.store_commit_drift` | The store commit changed after preview. Preview again against the current store. |
+| `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
+| `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
+| `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |
+| `evolve.plan_mismatch` | Apply could not stage the exact number of writes or deletes the witness counted. |
+| `evolve.transform_faulted` | A checked transform body faulted while running against real data, so apply rolled back. |
 
 ### `test.*` — kind `tooling`
 

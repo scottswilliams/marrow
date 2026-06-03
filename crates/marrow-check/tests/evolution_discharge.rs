@@ -439,6 +439,55 @@ fn required_without_default_fails_naming_records() {
     );
 }
 
+/// A present required member is not proven unless its bytes decode under the
+/// current leaf type. Presence alone would let an old scalar type's bytes activate
+/// as the new type and fault later at read time.
+#[test]
+fn required_present_member_with_incompatible_bytes_repairs() {
+    let root = temp_project("discharge-required-invalid-bytes", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: int\n\
+             pub fn add(title: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("not an int".into()));
+
+    let (witness, diagnostics) = preview(&program, &store).expect("preview");
+    fs::remove_dir_all(&root).ok();
+
+    let title_id = member_catalog_id(&place, "title");
+    assert!(!witness.is_activatable(), "{witness:#?}");
+    assert!(
+        matches!(
+            verdict_for(&witness, &title_id),
+            Verdict::RepairRequired {
+                reason: RepairReason::MissingRequiredMember
+            }
+        ),
+        "{:#?}",
+        witness.verdicts
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("title") && message.contains("decode")),
+        "{diagnostics:#?}"
+    );
+}
+
 /// A rename declared with an `evolve rename` intent moves catalog identity only. No
 /// record data moves and the verdict is catalog-only.
 #[test]
@@ -1610,6 +1659,31 @@ fn source_digest_binds_the_evolve_decision_surface() {
         base_digest,
         source_digest("digest-transform", changed_transform),
         "a changed transform body must drift the digest"
+    );
+    let const_transform = "module books\n\
+         const Scale = 1\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         evolve\n\
+         \x20   transform Book.pages\n\
+         \x20       return Scale\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    let changed_const = "module books\n\
+         const Scale = 2\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         evolve\n\
+         \x20   transform Book.pages\n\
+         \x20       return Scale\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    assert_ne!(
+        source_digest("digest-const-base", const_transform),
+        source_digest("digest-const", changed_const),
+        "a changed module const used by a transform must drift the digest"
     );
     assert_ne!(
         base_digest,

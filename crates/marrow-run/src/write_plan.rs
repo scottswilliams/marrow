@@ -201,6 +201,7 @@ mod tests {
             commit_id: 7,
             catalog_epoch: 5,
             layout_epoch: 3,
+            source_digest: "fnv1a64:0000000000000005".to_string(),
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),

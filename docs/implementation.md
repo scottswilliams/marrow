@@ -361,9 +361,10 @@ Marrow does not guess data movement. If a change moves data, populates a new
 required field, rebuilds an index, or changes identity, that work is explicit,
 inspectable, and recoverable.
 
-Data-evolution work is ordinary Marrow code. A tool runs a named `fn` in
-explicit maintenance mode when it needs maintenance capabilities. There is no
-separate migration DSL and no hidden migration ledger in the database kernel.
+Data-evolution work is source-native preview/apply over checked catalog and
+store facts. Explicit repair code may run in maintenance mode when it needs
+maintenance capabilities. There is no separate migration DSL and no hidden
+history ledger in the database kernel.
 
 Maintenance mode is selected by tools, not ordinary application code. A
 maintenance run names the roots it may change. It can rebuild indexes, delete

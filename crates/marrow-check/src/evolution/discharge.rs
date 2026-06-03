@@ -305,8 +305,10 @@ fn discharge_root(
         &mut |identity| {
             scanned += 1;
             for (leaf, state) in leaves.iter().zip(leaf_state.iter_mut()) {
-                if !store.data_subtree_exists(&store_id, identity, &leaf.path)? {
-                    state.record_missing(identity);
+                match store.read_data_value(&store_id, identity, &leaf.path)? {
+                    Some(bytes) if leaf_decodes(&leaf.leaf, &bytes) => {}
+                    Some(_) => state.record_invalid(identity),
+                    None => state.record_missing(identity),
                 }
             }
             for (probe, state) in unique_indexes.iter().zip(index_state.iter_mut()) {
@@ -566,14 +568,21 @@ fn scan_keyed_entries(
                 )?;
             }
             CheckedSavedMemberKind::Field { .. } => {
-                let is_obligation = obligations
+                let obligation = obligations
                     .iter()
-                    .any(|obligation| obligation.catalog_id == member_id);
-                if is_obligation && !store.data_subtree_exists(store_id, identity, &member_path)? {
-                    state
-                        .entry(member_id.clone())
-                        .or_default()
-                        .record_missing(identity);
+                    .find(|obligation| obligation.catalog_id == member_id);
+                if let Some(obligation) = obligation {
+                    match store.read_data_value(store_id, identity, &member_path)? {
+                        Some(bytes) if leaf_decodes(&obligation.leaf, &bytes) => {}
+                        Some(_) => state
+                            .entry(member_id.clone())
+                            .or_default()
+                            .record_invalid(identity),
+                        None => state
+                            .entry(member_id.clone())
+                            .or_default()
+                            .record_missing(identity),
+                    }
                 }
             }
         }
@@ -631,12 +640,20 @@ fn collect_keyed_leaves(
 #[derive(Default)]
 struct LeafScan {
     missing_count: usize,
+    invalid_count: usize,
     sample: Vec<Vec<SavedKey>>,
 }
 
 impl LeafScan {
     fn record_missing(&mut self, identity: &[SavedKey]) {
         self.missing_count += 1;
+        if self.sample.len() < MAX_NAMED_RECORDS {
+            self.sample.push(identity.to_vec());
+        }
+    }
+
+    fn record_invalid(&mut self, identity: &[SavedKey]) {
+        self.invalid_count += 1;
         if self.sample.len() < MAX_NAMED_RECORDS {
             self.sample.push(identity.to_vec());
         }
@@ -649,11 +666,25 @@ impl LeafScan {
 /// evaluate is itself a repair, with a diagnostic steering the developer to a
 /// transform.
 fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
-    if state.missing_count == 0 {
+    if state.missing_count == 0 && state.invalid_count == 0 {
         acc.push(leaf.catalog_id, leaf.label, Verdict::DataProof);
         return;
     }
-    acc.counts.records_lacking_member += state.missing_count;
+    acc.counts.records_lacking_member += state.missing_count + state.invalid_count;
+    if state.invalid_count > 0 {
+        acc.diagnostics.push(format!(
+            "required member `{}` has {} record(s) whose stored bytes do not decode under the current type; repair before activating",
+            leaf.label, state.invalid_count
+        ));
+        acc.push(
+            leaf.catalog_id,
+            leaf.label,
+            Verdict::RepairRequired {
+                reason: RepairReason::MissingRequiredMember,
+            },
+        );
+        return;
+    }
     let verdict = match acc.default_value_for(&leaf.raw_catalog_id, &leaf.leaf) {
         Some(Ok(value)) => {
             acc.counts.records_to_backfill += state.missing_count;

@@ -11,8 +11,14 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-09-evolution-activation`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-09-evolution-activation`
 
-Status: read-only witness matrix design may start now; tracked edits wait for
-catalog, presence ledger, tree-cell store, and runtime facts.
+Status: lane complete as of 2026-06-03. The `evolve` block (rename / default /
+transform / retire), one proof-discharge pipeline (`check`, `check --data`,
+`catalog preview`/`accept`, `evolve preview`/`apply`, and repair as a witness
+verdict) over an exact evolution witness, narrow per-record checked transforms,
+and stale-writer fencing on catalog epoch + engine profile + schema digest are
+implemented and reviewed. Soundness, idiom/spec, and cleanup review passed;
+formatter, full workspace tests, strict clippy, no `unsafe`, and `git diff
+--check` are clean on the lane branch.
 
 ## Completion Claim Discipline
 

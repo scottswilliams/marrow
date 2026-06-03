@@ -9,10 +9,12 @@ use crate::{CheckFormat, report_check, report_io_error, report_project, report_s
 pub(crate) fn check(args: &[String]) -> ExitCode {
     let mut format = CheckFormat::Text;
     let mut saw_format = false;
+    let mut data = false;
     let mut file = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--data" => data = true,
             "--format" => {
                 if saw_format {
                     eprintln!("duplicate --format");
@@ -34,10 +36,11 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow check [--format text|json|jsonl] <file.mw | projectdir>
+  marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
 
 Parse a Marrow source file, or check a whole project directory (one that
-contains marrow.json), and report diagnostics.
+contains marrow.json), and report diagnostics. With --data, attach the
+project store read-only and prove data-evolution obligations.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -61,7 +64,11 @@ contains marrow.json), and report diagnostics.
         return ExitCode::from(2);
     };
     if Path::new(&file).is_dir() {
-        return check_project_dir(&file, format);
+        return check_project_dir(&file, format, data);
+    }
+    if data {
+        eprintln!("marrow check --data accepts a project directory");
+        return ExitCode::from(2);
     }
     let source = match std::fs::read_to_string(&file) {
         Ok(source) => source,
@@ -218,7 +225,10 @@ impl Drop for ScratchDir {
 
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
 /// checker over its source roots and configured test files.
-fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
+fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
+    if data {
+        return crate::cmd_evolve::check_data(dir, format);
+    }
     let config_path = Path::new(dir).join("marrow.json");
     let config_text = match std::fs::read_to_string(&config_path) {
         Ok(text) => text,

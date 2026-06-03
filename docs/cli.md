@@ -5,6 +5,8 @@ database.
 
 ```
 marrow check [--format text|json|jsonl] <file.mw | projectdir>
+marrow catalog <preview|accept> [--format text|json|jsonl] <projectdir>
+marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
@@ -53,7 +55,7 @@ and typed `data` subcommands.
 ## `marrow check`
 
 ```
-marrow check [--format text|json|jsonl] <file.mw | projectdir>
+marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
 ```
 
 Parse a single `.mw` file, or check a whole project directory, and report
@@ -64,6 +66,9 @@ diagnostics.
 - Given a project directory, it loads `marrow.json` and runs the project checker
   over every source root plus configured test files: parse, type, effect, and
   durable-place checks.
+- `--data` is project-only. It opens the configured store read-only and runs the
+  same data-attached evolution preview that `marrow evolve preview` uses. A
+  repair-required or approval-required witness exits `1`.
 
 Exits `0` when there are no errors, `1` when there are (or when the file or
 `marrow.json` cannot be read).
@@ -87,6 +92,40 @@ src/broken.mw:1:1: error: parse.syntax: expected function parameter list
 $ echo $?
 1
 ```
+
+---
+
+## `marrow catalog`
+
+```
+marrow catalog preview [--format text|json|jsonl] <projectdir>
+marrow catalog accept [--format text|json|jsonl] <projectdir>
+```
+
+`catalog preview` checks the project and reports the accepted catalog proposal
+without writing it. `catalog accept` writes exactly the current proposal to the
+project's `acceptedCatalog` file and re-checks the project before returning
+success.
+
+---
+
+## `marrow evolve`
+
+```
+marrow evolve preview [--format text|json|jsonl] <projectdir>
+marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
+  [--format text|json|jsonl] <projectdir>
+```
+
+`evolve preview` opens the configured store read-only, discharges source,
+accepted catalog metadata, store snapshot, and engine metadata into an exact
+witness, then reports the counts and blocking diagnostics.
+
+`evolve apply` recomputes that preview witness over the live project and store,
+requires an exact match, checks the activation window, and commits the data work
+plus metadata stamp in one transaction. Destructive retire needs
+`--maintenance` and an approval whose catalog ID and populated count match the
+preview.
 
 ---
 
@@ -170,9 +209,9 @@ entries carry the op, human path, and base64 value bytes.
 
 `--trace` composes with `--dry-run`: the run is traced and its writes are then
 discarded. Under `--format json`, stdout receives the trace object followed by
-the dry-run envelope as separate top-level JSON objects. This previews explicit
-maintenance or data-evolution work:
-`marrow run --dry-run --maintenance --entry evolve::main ./proj`.
+the dry-run envelope as separate top-level JSON objects. For source-native data
+evolution use `marrow evolve preview`; `run --maintenance --dry-run` is for
+explicit repair/admin code.
 
 Exits `0` on success, `1` if the project does not check, the store cannot be
 opened, there is no entry, or the run raises an error. An uncaught runtime fault

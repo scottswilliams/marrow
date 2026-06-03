@@ -61,6 +61,12 @@ pub struct CommitMetadata {
     pub commit_id: u64,
     pub catalog_epoch: u64,
     pub layout_epoch: u64,
+    /// The analyzed-source digest the commit activated, in the `fnv1a64:<hex>` form the
+    /// evolution witness records. It binds the schema shape (member types, identity key
+    /// types, index uniqueness and columns) the store was last written against, so the
+    /// activation fence can reject a structurally different schema even at the same
+    /// catalog epoch.
+    pub source_digest: String,
     pub engine_profile_digest: EngineProfileDigest,
     pub changed_root_catalog_ids: Vec<CatalogId>,
     pub changed_index_catalog_ids: Vec<CatalogId>,
@@ -1411,6 +1417,7 @@ fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreErr
     bytes.extend_from_slice(&metadata.commit_id.to_be_bytes());
     bytes.extend_from_slice(&metadata.catalog_epoch.to_be_bytes());
     bytes.extend_from_slice(&metadata.layout_epoch.to_be_bytes());
+    put_bytes(metadata.source_digest.as_bytes(), &mut bytes)?;
     put_bytes(&metadata.engine_profile_digest, &mut bytes)?;
     put_catalog_ids(&metadata.changed_root_catalog_ids, &mut bytes)?;
     put_catalog_ids(&metadata.changed_index_catalog_ids, &mut bytes)?;
@@ -1422,6 +1429,7 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
     let commit_id = cursor.take_u64()?;
     let catalog_epoch = cursor.take_u64()?;
     let layout_epoch = cursor.take_u64()?;
+    let source_digest = cursor.take_string()?;
     let engine_profile_digest = cursor.take_digest()?;
     let changed_root_catalog_ids = cursor.take_catalog_ids()?;
     let changed_index_catalog_ids = cursor.take_catalog_ids()?;
@@ -1432,6 +1440,7 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         commit_id,
         catalog_epoch,
         layout_epoch,
+        source_digest,
         engine_profile_digest,
         changed_root_catalog_ids,
         changed_index_catalog_ids,
@@ -1539,6 +1548,13 @@ impl<'a> Cursor<'a> {
         decode_digest(self.take_bytes()?)
     }
 
+    fn take_string(&mut self) -> Result<String, StoreError> {
+        let raw = self.take_bytes()?;
+        std::str::from_utf8(raw)
+            .map(str::to_string)
+            .map_err(|_| corrupt_cell(raw))
+    }
+
     fn take_catalog_id(&mut self) -> Result<CatalogId, StoreError> {
         let raw = self.take_bytes()?;
         let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
@@ -1601,7 +1617,7 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
 mod tests {
     use std::cell::Cell;
 
-    use super::{CellKey, DataPathSegment, NODE_MARKER, TreeStore};
+    use super::{CellKey, CommitMetadata, DataPathSegment, NODE_MARKER, TreeStore};
     use crate::StoreError;
     use crate::backend::{Backend, ScanPage};
     use crate::cell::CatalogId;
@@ -1762,6 +1778,39 @@ mod tests {
         let store = TreeStore::from_backend(Box::new(backend));
 
         assert_corruption(store.data_first_child(&store_id, &identity, &path));
+    }
+
+    /// Commit metadata round-trips through its encoding, including the schema-bearing
+    /// source digest the activation fence binds. A different source digest produces a
+    /// distinct round-trip, so the fence can detect a structurally different schema at
+    /// the same catalog epoch.
+    #[test]
+    fn commit_metadata_round_trips_with_source_digest() {
+        let metadata = CommitMetadata {
+            commit_id: 7,
+            catalog_epoch: 3,
+            layout_epoch: 0,
+            source_digest: "fnv1a64:00000000deadbeef".to_string(),
+            engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
+            changed_root_catalog_ids: vec![catalog("cat_0000000000000001")],
+            changed_index_catalog_ids: vec![catalog("cat_0000000000000002")],
+        };
+
+        let store = TreeStore::memory();
+        store
+            .write_commit_metadata(&metadata)
+            .expect("write metadata");
+        let read = store
+            .read_commit_metadata()
+            .expect("read metadata")
+            .expect("metadata present");
+        assert_eq!(read, metadata);
+
+        let other = CommitMetadata {
+            source_digest: "fnv1a64:00000000cafef00d".to_string(),
+            ..metadata.clone()
+        };
+        assert_ne!(other, metadata, "a distinct source digest is not equal");
     }
 
     fn catalog(raw: &str) -> CatalogId {
