@@ -40,7 +40,8 @@ pub fn preview(
             engine_profile_digest: store.read_engine_profile_digest()?,
             layout_epoch: store.read_layout_epoch()?,
             store_commit_id: commit.map(|commit| commit.commit_id),
-            affected_catalog_ids: discharge.affected_catalog_ids,
+            changed_root_catalog_ids: discharge.changed_root_catalog_ids,
+            changed_index_catalog_ids: discharge.changed_index_catalog_ids,
             verdicts: discharge.verdicts,
             counts: discharge.counts,
         };

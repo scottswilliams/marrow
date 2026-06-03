@@ -14,6 +14,22 @@ pub(crate) struct DataAddress {
 }
 
 impl DataAddress {
+    /// A data address from already-resolved parts: a store catalog id, a record
+    /// identity, and a data path of catalog-id member segments and keys. Evolution
+    /// apply derives these directly from the checked facts and the live store, so it
+    /// addresses cells without re-resolving a member name path.
+    pub(crate) fn raw(
+        store: CatalogId,
+        identity: Vec<SavedKey>,
+        path: Vec<DataPathSegment>,
+    ) -> Self {
+        Self {
+            store,
+            identity,
+            path,
+        }
+    }
+
     pub(crate) fn record(
         place: &CheckedSavedPlace,
         identity: &[SavedKey],

@@ -251,6 +251,7 @@ pub(crate) fn render_write_target(target: &WriteTarget, names: &WriteTargetNames
                 render_keys(identity)
             ),
         },
+        WriteTarget::Meta { catalog_epoch } => format!("meta:catalog-epoch={catalog_epoch}"),
     }
 }
 
@@ -282,6 +283,10 @@ pub(crate) fn write_target_json(
                 .unwrap_or_else(|| index.clone()),
             "keys": keys.iter().map(render_key).collect::<Vec<_>>(),
             "identity": identity.iter().map(render_key).collect::<Vec<_>>(),
+        }),
+        WriteTarget::Meta { catalog_epoch } => json!({
+            "kind": "meta",
+            "catalogEpoch": catalog_epoch,
         }),
     }
 }

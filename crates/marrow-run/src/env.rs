@@ -458,7 +458,8 @@ impl<'p> Env<'p> {
                 }
                 PlanStep::WriteIndex { .. }
                 | PlanStep::DeleteIndex { .. }
-                | PlanStep::DeleteIndexSubtree { .. } => {}
+                | PlanStep::DeleteIndexSubtree { .. }
+                | PlanStep::StampMetadata { .. } => {}
             }
         }
         Ok(())
@@ -479,7 +480,8 @@ impl<'p> Env<'p> {
                 }
                 PlanStep::WriteData { .. }
                 | PlanStep::DeleteData { .. }
-                | PlanStep::DeleteRecordSubtree { .. } => {}
+                | PlanStep::DeleteRecordSubtree { .. }
+                | PlanStep::StampMetadata { .. } => {}
             }
         }
         Ok(())

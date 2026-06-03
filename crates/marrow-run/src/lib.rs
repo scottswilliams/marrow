@@ -28,6 +28,7 @@ mod durable_read;
 mod entry;
 mod env;
 mod error;
+pub mod evolution;
 mod exec;
 mod expr;
 mod group_write;

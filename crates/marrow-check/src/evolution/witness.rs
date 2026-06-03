@@ -93,6 +93,13 @@ pub enum RepairReason {
     /// identity, not its developer-facing name; the name lives in the fail-closed
     /// diagnostic the discharge emits.
     RetireRequired { index: CatalogId },
+    /// A retire targets a member nested under an unkeyed group or a keyed layer. A
+    /// top-level retire drops a cell directly under the record node, but a nested
+    /// retire must descend the owning group or page each keyed entry to find the
+    /// cells to drop, which the apply path does not yet do. Until it does, a nested
+    /// retire fails closed rather than counting zero populated cells and silently
+    /// dropping nothing.
+    NestedRetireUnsupported,
 }
 
 impl Verdict {
@@ -139,8 +146,14 @@ pub struct EvolutionWitness {
     pub layout_epoch: Option<u64>,
     /// The latest store commit id, or `None` if the store has never committed.
     pub store_commit_id: Option<u64>,
-    /// The catalog ids the change touches, sorted and deduplicated.
-    pub affected_catalog_ids: Vec<CatalogId>,
+    /// The data-root catalog ids the change touches: resources, stores, members,
+    /// enums. Sorted and deduplicated. Apply stamps these as the changed roots so a
+    /// dropped index id is never mistaken for a root.
+    pub changed_root_catalog_ids: Vec<CatalogId>,
+    /// The store-index catalog ids the change touches, sorted and deduplicated. The
+    /// discharge tags each id at classify time by its catalog entry kind, so apply
+    /// never re-derives the index set from current source.
+    pub changed_index_catalog_ids: Vec<CatalogId>,
     /// The per-obligation discharge verdicts.
     pub verdicts: Vec<ObligationVerdict>,
     /// The counts the discharge scan accumulated.

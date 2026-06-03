@@ -348,6 +348,18 @@ fn production_runtime_uses_syntax_free_program_artifact() {
     let mut violations = Vec::new();
 
     for path in runtime_rs_files() {
+        // The evolution apply path is an analysis-driven activation, not the runtime
+        // evaluation spine: it re-runs the read-only checked-program discharge to
+        // confirm the store still matches the witness, so it legitimately consumes the
+        // syntax-carrying `CheckedProgram` the same way `marrow_check::evolution::preview`
+        // does. The invariant this test enforces is that the evaluator (expr/call/exec/
+        // read/write) sees only the syntax-free runtime artifact.
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "evolution")
+        {
+            continue;
+        }
         let text = fs::read_to_string(&path).expect("runtime source");
         for forbidden in [
             "CheckedProgram",

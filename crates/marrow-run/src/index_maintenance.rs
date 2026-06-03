@@ -56,6 +56,31 @@ pub(crate) fn stage_resource_index_rewrites(
     Ok(())
 }
 
+/// Stage the index entry one record contributes to `index`, derived from the record's
+/// stored member values, for an evolution rebuild over a pre-existing store. Returns
+/// whether an entry was staged: a record whose key columns are absent contributes no
+/// entry. The key derivation and the entry-value encoding are the same canonical owners
+/// the managed-write path uses, so a rebuilt index is byte-identical to one the runtime
+/// would have maintained.
+pub(crate) fn stage_index_rebuild_entry(
+    steps: &mut Vec<PlanStep>,
+    index: &CheckedSavedIndex,
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<bool, WriteError> {
+    let Some(keys) = stored_index_keys(&index.keys, place, identity, store, span)? else {
+        return Ok(false);
+    };
+    steps.push(PlanStep::WriteIndex {
+        address: index_address(index, keys, span)?,
+        identity: identity.to_vec(),
+        value: index_entry_value(index.unique, identity),
+    });
+    Ok(true)
+}
+
 pub(crate) fn stage_resource_index_deletes(
     steps: &mut Vec<PlanStep>,
     place: &CheckedSavedPlace,

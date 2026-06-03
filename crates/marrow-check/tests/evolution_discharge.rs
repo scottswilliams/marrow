@@ -767,7 +767,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
         .clone();
     assert!(
         witness
-            .affected_catalog_ids
+            .changed_root_catalog_ids
             .iter()
             .any(|id| id.as_str() == subtitle_id),
         "{witness:#?}"
@@ -1123,11 +1123,11 @@ fn required_nested_group_leaf_missing_fails_closed() {
     );
     assert!(
         result
-            .affected_catalog_ids
+            .changed_root_catalog_ids
             .iter()
             .any(|id| id.as_str() == last_id),
         "{:#?}",
-        result.affected_catalog_ids
+        result.changed_root_catalog_ids
     );
 }
 
@@ -1185,11 +1185,11 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
     );
     assert!(
         result
-            .affected_catalog_ids
+            .changed_root_catalog_ids
             .iter()
             .any(|id| id.as_str() == body_id),
         "{:#?}",
-        result.affected_catalog_ids
+        result.changed_root_catalog_ids
     );
 }
 

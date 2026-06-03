@@ -52,14 +52,15 @@ pub(crate) struct DischargeLabel {
 
 /// The result of discharging every obligation against a snapshot: the per-obligation
 /// verdicts that cross into apply, the human labels for preview, the accumulated
-/// counts, the catalog ids the change touches, and the fail-closed diagnostics
-/// naming what blocks activation.
+/// counts, the catalog ids the change touches partitioned into data roots and indexes,
+/// and the fail-closed diagnostics naming what blocks activation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Discharge {
     pub(crate) verdicts: Vec<ObligationVerdict>,
     pub(crate) labels: Vec<DischargeLabel>,
     pub(crate) counts: super::witness::DischargeCounts,
-    pub(crate) affected_catalog_ids: Vec<CatalogId>,
+    pub(crate) changed_root_catalog_ids: Vec<CatalogId>,
+    pub(crate) changed_index_catalog_ids: Vec<CatalogId>,
     pub(crate) diagnostics: Vec<String>,
 }
 
@@ -78,8 +79,8 @@ pub(crate) fn discharge(
             .map(|transform| transform.catalog_id.clone())
             .collect(),
     );
-    for id in proposal_changed_catalog_ids(program) {
-        acc.insert_affected(&id)?;
+    for (id, kind) in proposal_changed_catalog_ids(program) {
+        acc.insert_affected(&id, kind)?;
     }
     for root in source_store_roots(program) {
         let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
@@ -98,9 +99,11 @@ pub(crate) fn discharge(
 }
 
 /// The stable ids of catalog entries the proposal changes relative to the accepted
-/// snapshot: an entry that is new, retired, or whose identity moved. These are the
-/// catalog ids the change touches, so a future apply re-verifies exactly them.
-fn proposal_changed_catalog_ids(program: &CheckedProgram) -> Vec<String> {
+/// snapshot, each tagged with its catalog entry kind: an entry that is new, retired, or
+/// whose identity moved. These are the catalog ids the change touches, so a future
+/// apply re-verifies exactly them; the kind lets the accumulator partition a store
+/// index from a data root without re-classifying it.
+fn proposal_changed_catalog_ids(program: &CheckedProgram) -> Vec<(String, CatalogEntryKind)> {
     let Some(proposal) = &program.catalog.proposal else {
         return Vec::new();
     };
@@ -121,7 +124,7 @@ fn proposal_changed_catalog_ids(program: &CheckedProgram) -> Vec<String> {
                 None => true,
             },
         )
-        .map(|entry| entry.stable_id.clone())
+        .map(|entry| (entry.stable_id.clone(), entry.kind))
         .collect()
 }
 
@@ -179,9 +182,12 @@ fn discharge_root(
     for (leaf, state) in leaves.into_iter().zip(leaf_state) {
         classify_leaf(leaf, state, acc);
     }
-    for (probe, state) in unique_indexes.into_iter().zip(index_state) {
-        classify_index(probe, state, acc);
-    }
+    let collisions: HashMap<CatalogId, IndexScan> = unique_indexes
+        .into_iter()
+        .map(|probe| probe.catalog_id)
+        .zip(index_state)
+        .collect();
+    classify_indexes(place, &collisions, acc)?;
     discharge_keyed_layers(store, place, acc)?;
     Ok(())
 }
@@ -529,11 +535,11 @@ fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
     acc.push(leaf.catalog_id, leaf.label, verdict);
 }
 
-/// One unique-index obligation to probe during the record scan: the index catalog
-/// id, its name, and how to read each key column's value from a record.
+/// One unique-index obligation to probe during the record scan: the index catalog id
+/// and how to read each key column's value from a record. The collision state the scan
+/// builds is keyed by `catalog_id`, which the per-index classification then looks up.
 struct UniqueIndexProbe {
     catalog_id: CatalogId,
-    name: String,
     columns: Vec<IndexKeyColumn>,
 }
 
@@ -564,7 +570,6 @@ fn unique_index_probes(place: &CheckedSavedPlace) -> Result<Vec<UniqueIndexProbe
         };
         probes.push(UniqueIndexProbe {
             catalog_id: catalog_id(&index.catalog_id)?,
-            name: index.name.clone(),
             columns,
         });
     }
@@ -666,24 +671,42 @@ impl IndexScan {
     }
 }
 
-/// Classify one unique index from its scan state: a derived rebuild when every full
-/// key tuple is distinct, a fail-closed repair naming the collision count otherwise.
-/// A non-unique index never reaches this path.
-fn classify_index(probe: UniqueIndexProbe, state: IndexScan, acc: &mut Accumulator) {
-    let collisions = state.collisions.len();
-    let verdict = if collisions > 0 {
-        acc.counts.index_collisions += collisions;
-        acc.diagnostics.push(format!(
-            "unique index `{}` has {collisions} colliding key tuple(s); resolve duplicates before activating",
-            probe.name
-        ));
-        Verdict::RepairRequired {
-            reason: RepairReason::UniqueIndexCollision,
-        }
-    } else {
-        Verdict::DerivedRebuild
-    };
-    acc.push(probe.catalog_id, format!("index {}", probe.name), verdict);
+/// Classify every index the place declares. Each index carries a derived-rebuild
+/// obligation regardless of uniqueness, so apply rebuilds its entries from the records
+/// it covers; a silently empty non-unique index is the symptom of skipping this. A
+/// unique index whose prospective key tuples collide is upgraded to a fail-closed
+/// repair instead, using the collision state the scan accumulated for it. Every v0.1
+/// unique index is probed -- its keys are single-segment top-level fields or identity
+/// keys (see `index_key_columns`) -- so a clean unique index rebuilds and a colliding
+/// one repairs. A future index over a nested or keyed-layer column would not resolve to
+/// a probe; that path must gain a fail-closed branch here before it can rebuild an
+/// unchecked unique index.
+fn classify_indexes(
+    place: &CheckedSavedPlace,
+    collisions: &HashMap<CatalogId, IndexScan>,
+    acc: &mut Accumulator,
+) -> Result<(), StoreError> {
+    for index in &place.indexes {
+        let index_id = catalog_id(&index.catalog_id)?;
+        let colliding = collisions
+            .get(&index_id)
+            .map(|state| state.collisions.len())
+            .unwrap_or(0);
+        let verdict = if index.unique && colliding > 0 {
+            acc.counts.index_collisions += colliding;
+            acc.diagnostics.push(format!(
+                "unique index `{}` has {colliding} colliding key tuple(s); resolve duplicates before activating",
+                index.name
+            ));
+            Verdict::RepairRequired {
+                reason: RepairReason::UniqueIndexCollision,
+            }
+        } else {
+            Verdict::DerivedRebuild
+        };
+        acc.push_index(index_id, format!("index {}", index.name), verdict);
+    }
+    Ok(())
 }
 
 /// Classify the accepted catalog entries current source no longer declares. A retire
@@ -709,14 +732,31 @@ fn classify_absent_source_entries(
             continue;
         }
         let entry_id = catalog_id(&entry.stable_id)?;
+        let is_index = entry.kind == CatalogEntryKind::StoreIndex;
         match entry.lifecycle {
             CatalogLifecycle::Removed => {
-                let populated = populated_member_records(program, store, entry)?;
-                acc.push(
-                    entry_id,
-                    format!("retire {}", entry.path),
-                    Verdict::DestructiveDecisionRequired { populated },
-                );
+                if retired_member_is_nested(program, entry) {
+                    acc.diagnostics.push(format!(
+                        "retiring `{}` drops a member nested under a group or keyed layer, which apply does not yet support; retire a top-level member instead",
+                        entry.path
+                    ));
+                    acc.record(
+                        entry_id,
+                        format!("retire {}", entry.path),
+                        Verdict::RepairRequired {
+                            reason: RepairReason::NestedRetireUnsupported,
+                        },
+                        is_index,
+                    );
+                } else {
+                    let populated = populated_member_records(program, store, entry)?;
+                    acc.record(
+                        entry_id,
+                        format!("retire {}", entry.path),
+                        Verdict::DestructiveDecisionRequired { populated },
+                        is_index,
+                    );
+                }
             }
             CatalogLifecycle::Active | CatalogLifecycle::Deprecated => {
                 if let Some((index_name, index_id)) = index_depends_on(program, entry)? {
@@ -724,18 +764,20 @@ fn classify_absent_source_entries(
                         "dropped `{}` is still used by index `{index_name}`; retire it with an evolve intent",
                         entry.path
                     ));
-                    acc.push(
+                    acc.record(
                         entry_id,
                         format!("drop {}", entry.path),
                         Verdict::RepairRequired {
                             reason: RepairReason::RetireRequired { index: index_id },
                         },
+                        is_index,
                     );
                 } else {
-                    acc.push(
+                    acc.record(
                         entry_id,
                         format!("deprecate {}", entry.path),
                         Verdict::Deprecated,
+                        is_index,
                     );
                 }
             }
@@ -813,6 +855,28 @@ fn owning_root(program: &CheckedProgram, entry: &CatalogEntry) -> Option<String>
         module.stores.iter().find_map(|store| {
             let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
             (resource_path == resource_prefix).then(|| store.root.clone())
+        })
+    })
+}
+
+/// Whether a retired resource-member entry names a member nested under an unkeyed group
+/// or a keyed layer rather than a top-level member of the record. The member chain is
+/// everything after the owning resource path; a top-level member is a single segment,
+/// while a nested member carries the group or layer segments before its own. A retired
+/// member is gone from current source, so its nesting is read from its catalog path
+/// against the owning source resource, not from the live member tree.
+fn retired_member_is_nested(program: &CheckedProgram, entry: &CatalogEntry) -> bool {
+    if entry.kind != CatalogEntryKind::ResourceMember {
+        return false;
+    }
+    program.modules.iter().any(|module| {
+        module.stores.iter().any(|store| {
+            let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
+            entry
+                .path
+                .strip_prefix(&resource_path)
+                .and_then(|tail| tail.strip_prefix("::"))
+                .is_some_and(|member_chain| member_chain.contains("::"))
         })
     })
 }
@@ -957,12 +1021,14 @@ fn format_key(key: &SavedKey) -> String {
 
 /// Accumulates verdicts, labels, counts, affected ids, and diagnostics across the
 /// families, and resolves `evolve default` fills. Affected ids are typed
-/// [`CatalogId`]s validated once on insertion.
+/// [`CatalogId`]s validated once on insertion and partitioned at classify time into
+/// data roots and store indexes, so apply never re-classifies them from current source.
 struct Accumulator {
     verdicts: Vec<ObligationVerdict>,
     labels: Vec<DischargeLabel>,
     counts: super::witness::DischargeCounts,
-    affected: BTreeSet<CatalogId>,
+    changed_roots: BTreeSet<CatalogId>,
+    changed_indexes: BTreeSet<CatalogId>,
     diagnostics: Vec<String>,
     defaults: HashMap<String, marrow_syntax::Expression>,
     transforms: BTreeSet<String>,
@@ -974,7 +1040,8 @@ impl Accumulator {
             verdicts: Vec::new(),
             labels: Vec::new(),
             counts: super::witness::DischargeCounts::default(),
-            affected: BTreeSet::new(),
+            changed_roots: BTreeSet::new(),
+            changed_indexes: BTreeSet::new(),
             diagnostics: Vec::new(),
             defaults: defaults
                 .into_iter()
@@ -1006,13 +1073,31 @@ impl Accumulator {
         Some(eval_const_default(value, *scalar).map_err(|error| error.message()))
     }
 
-    fn insert_affected(&mut self, raw_catalog_id: &str) -> Result<(), StoreError> {
-        self.affected.insert(catalog_id(raw_catalog_id)?);
+    fn insert_affected(
+        &mut self,
+        raw_catalog_id: &str,
+        kind: CatalogEntryKind,
+    ) -> Result<(), StoreError> {
+        let id = catalog_id(raw_catalog_id)?;
+        self.changed_set(kind == CatalogEntryKind::StoreIndex)
+            .insert(id);
         Ok(())
     }
 
+    /// Record a verdict for a data-root obligation (a member, store, resource, or
+    /// enum). Its catalog id joins the changed-root partition.
     fn push(&mut self, id: CatalogId, place: String, verdict: Verdict) {
-        self.affected.insert(id.clone());
+        self.record(id, place, verdict, false);
+    }
+
+    /// Record a verdict for a store-index obligation. Its catalog id joins the
+    /// changed-index partition, so apply stamps it as an index rather than a root.
+    fn push_index(&mut self, id: CatalogId, place: String, verdict: Verdict) {
+        self.record(id, place, verdict, true);
+    }
+
+    fn record(&mut self, id: CatalogId, place: String, verdict: Verdict, is_index: bool) {
+        self.changed_set(is_index).insert(id.clone());
         self.labels.push(DischargeLabel {
             catalog_id: id.clone(),
             place,
@@ -1023,12 +1108,21 @@ impl Accumulator {
         });
     }
 
+    fn changed_set(&mut self, is_index: bool) -> &mut BTreeSet<CatalogId> {
+        if is_index {
+            &mut self.changed_indexes
+        } else {
+            &mut self.changed_roots
+        }
+    }
+
     fn into_discharge(self) -> Discharge {
         Discharge {
             verdicts: self.verdicts,
             labels: self.labels,
             counts: self.counts,
-            affected_catalog_ids: self.affected.into_iter().collect(),
+            changed_root_catalog_ids: self.changed_roots.into_iter().collect(),
+            changed_index_catalog_ids: self.changed_indexes.into_iter().collect(),
             diagnostics: self.diagnostics,
         }
     }

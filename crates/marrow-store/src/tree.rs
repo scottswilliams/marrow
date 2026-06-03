@@ -1599,12 +1599,127 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::{CellKey, DataPathSegment, NODE_MARKER, TreeStore};
     use crate::StoreError;
-    use crate::backend::Backend;
+    use crate::backend::{Backend, ScanPage};
     use crate::cell::CatalogId;
     use crate::key::SavedKey;
     use crate::mem::MemStore;
+
+    /// A backend that delegates to an in-memory store but fails the Nth write, after
+    /// the earlier writes have already mutated the transaction buffer. It models a
+    /// storage fault that strikes part-way through a staged plan, so a test can prove
+    /// the transaction bracket rolls the whole plan back rather than leaving a partial
+    /// write behind.
+    struct FailOnNthWrite {
+        inner: MemStore,
+        writes_until_fault: Cell<usize>,
+    }
+
+    impl FailOnNthWrite {
+        fn new(writes_before_fault: usize) -> Self {
+            Self {
+                inner: MemStore::default(),
+                writes_until_fault: Cell::new(writes_before_fault),
+            }
+        }
+    }
+
+    impl Backend for FailOnNthWrite {
+        fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            self.inner.read(key)
+        }
+
+        fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+            let remaining = self.writes_until_fault.get();
+            if remaining == 0 {
+                return Err(StoreError::Corruption {
+                    message: "injected write fault".into(),
+                });
+            }
+            self.writes_until_fault.set(remaining - 1);
+            self.inner.write(key, value)
+        }
+
+        fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
+            self.inner.delete(prefix)
+        }
+
+        fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+            self.inner.scan(prefix, limit)
+        }
+
+        fn scan_after(
+            &self,
+            prefix: &[u8],
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.inner.scan_after(prefix, cursor, limit)
+        }
+
+        fn begin(&mut self) -> Result<(), StoreError> {
+            self.inner.begin()
+        }
+
+        fn commit(&mut self) -> Result<(), StoreError> {
+            self.inner.commit()
+        }
+
+        fn rollback(&mut self) -> Result<(), StoreError> {
+            self.inner.rollback()
+        }
+    }
+
+    /// A storage fault part-way through a staged transaction rolls the whole bracket
+    /// back: a write that succeeded before the fault must not survive, and no metadata
+    /// stamp may land. This is the atomic guarantee evolution apply relies on when it
+    /// commits backfills and the catalog-epoch stamp together; a read-only store fails
+    /// at `begin`, so only a mid-plan fault proves the rollback covers committed writes.
+    #[test]
+    fn a_mid_transaction_write_fault_rolls_the_whole_bracket_back() {
+        let store_id = catalog("cat_0000000000000001");
+        let member = catalog("cat_0000000000000002");
+        let path = [DataPathSegment::Member(member)];
+        // The fault strikes on the second write, so the first data write lands in the
+        // buffer before the bracket aborts.
+        let store = TreeStore::from_backend(Box::new(FailOnNthWrite::new(1)));
+
+        let before = store.read_catalog_epoch().expect("read epoch");
+        assert_eq!(before, None, "the store starts unstamped");
+
+        store.begin().expect("begin");
+        store
+            .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"first".to_vec())
+            .expect("first write lands in the buffer");
+        let second =
+            store.write_data_value(&store_id, &[SavedKey::Int(2)], &path, b"second".to_vec());
+        assert!(matches!(second, Err(StoreError::Corruption { .. })));
+        // A real bracket rolls back on the staged error rather than committing.
+        store.rollback().expect("rollback");
+
+        assert_eq!(
+            store
+                .read_data_value(&store_id, &[SavedKey::Int(1)], &path)
+                .expect("read"),
+            None,
+            "the pre-fault write must not survive the rollback"
+        );
+        assert_eq!(
+            store
+                .read_data_value(&store_id, &[SavedKey::Int(2)], &path)
+                .expect("read"),
+            None,
+            "the faulted write left nothing behind"
+        );
+        assert_eq!(
+            store.read_catalog_epoch().expect("read epoch"),
+            None,
+            "no metadata stamp may land when the plan aborts"
+        );
+    }
 
     #[test]
     fn node_exists_reports_a_malformed_node_marker_as_corruption() {
