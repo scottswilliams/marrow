@@ -1,98 +1,59 @@
 //! Saved-data reads and layer/index enumeration.
 
-use marrow_check::CheckedProgram;
-use marrow_schema::{IndexSchema, Node, NodeKind, StoreSchema};
-use marrow_store::backend::Backend;
-use marrow_store::path::{ChildSegment, PathSegment, SavedKey, encode_path};
-use marrow_syntax::{Argument, Expression, SourceSpan};
-
-use crate::collection::{Direction, ReadPosition, absent_read};
-use crate::env::Env;
-use crate::error::{
-    Located, RUN_ABSENT, RUN_STORE, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, raise_fault,
-    type_error, unsupported,
+use marrow_check::{
+    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedPlace,
+    CheckedSavedTerminal,
 };
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::TreeStore;
+use marrow_syntax::SourceSpan;
+
+use crate::collection::Direction;
+use crate::env::{Env, TraversedLayer};
+use crate::error::{Located, RUN_ABSENT, RuntimeError, raise_fault, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::path::{lower, lower_keys, saved_segments};
-use crate::schema_query::{
-    find_resource, find_store_resource, is_saved_path, layer_key_params, leaf_kind,
-    resource_layer_leaf_chain, root_identity_arity, root_identity_keys,
-};
-use crate::stdlib::{is_index_branch, is_iterable_index_branch};
-use crate::value::{Value, decode_leaf, identity_value, saved_key_to_value, value_to_key};
-use crate::write::decode_identity;
+use crate::path::{direct_root_place, lower};
+use crate::store::{DataAddress, IndexAddress, LayerAddress};
+use crate::value::{Value, saved_key_to_value, value_to_key};
 
-/// The encoded path prefix of the saved layer a `for` iterable traverses, or
-/// `None` for a range or a local value (which traverse no saved layer). A saved
-/// layer is traversed only when the iterable is a saved path directly or wrapped
-/// in `keys`/`values`/`entries`; iterating a local — the "collect keys first"
-/// pattern — has no saved layer to guard. The prefix is the path whose child keys
-/// the loop walks: `[Root]` for a primary root, `[Root, Index, IndexKey…]` for an
-/// index branch, `[Root, RecordKey…, ChildLayer]` for a keyed/sequence layer. It
-/// matches the prefix [`enumerate_layer`] reads children under, so a mutation that
-/// changes that layer is caught by [`Env::guard_traversed_layer`].
-pub(crate) fn traversed_layer_prefix(
-    iterable: &Expression,
+const INDEX_SCAN_PAGE_LIMIT: usize = 128;
+
+pub(crate) fn traversed_layer(
+    iterable: &ExecExpr,
     env: &mut Env<'_>,
-) -> Result<Option<Vec<PathSegment>>, RuntimeError> {
+) -> Result<Option<TraversedLayer>, RuntimeError> {
     // `reversed(...)` traverses the same layer (just backward), so unwrap it the
     // same way `keys`/`values`/`entries` are — the guarded prefix is unchanged by
     // direction. A `reversed(keys(L))` peels both wrappers.
     let unwrapped = reversed_argument(iterable).unwrap_or(iterable);
     let path = traversal_argument(unwrapped).unwrap_or(unwrapped);
-    if !is_saved_path(path) {
+    if path.saved_place().is_none() {
         return Ok(None);
     }
+    if let Some(place) = direct_root_place(path) {
+        return TraversedLayer::record(place, path.span()).map(Some);
+    }
+    if let Some(place) = path.saved_place()
+        && let Some(layer) = index_traversal_layer(place, path.span(), env)?
+    {
+        return Ok(Some(layer));
+    }
     match path {
-        Expression::SavedRoot { name, .. } => Ok(Some(vec![PathSegment::Root(name.clone())])),
-        // A bare index `^root.index` traverses the first stored index-key level.
-        Expression::Field { base, name, .. }
-            if matches!(base.as_ref(), Expression::SavedRoot { .. })
-                && is_index_branch(path, env) =>
-        {
-            let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
-                return Ok(None);
-            };
-            Ok(Some(vec![
-                PathSegment::Root(root.clone()),
-                PathSegment::Index(name.clone()),
-            ]))
-        }
-        // An index branch `^root.index(args…)`: the prefix is the root, index name,
-        // and the supplied index-key args (the levels below are reconstructed
-        // identities, so the traversed layer is the branch the args reach).
-        Expression::Call {
-            callee, args, span, ..
-        } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) =>
-        {
-            let Expression::Field {
-                base, name: index, ..
-            } = callee.as_ref()
-            else {
-                return Ok(None);
-            };
-            let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
-                return Ok(None);
-            };
-            let mut prefix = vec![
-                PathSegment::Root(root.clone()),
-                PathSegment::Index(index.clone()),
-            ];
-            for arg in args {
-                prefix.push(PathSegment::IndexKey(
-                    value_to_key(eval_expr(&arg.value, env)?)
-                        .ok_or_else(|| unsupported("an index key of this type", *span))?,
-                ));
-            }
-            Ok(Some(prefix))
-        }
         // A keyed/sequence child layer `^root(id…).layer`.
-        Expression::Field {
-            base, name: layer, ..
-        } => {
-            let (root, identity, mut layers) = lower(base, env)?.into_layers(base.span())?;
-            layers.push((layer.clone(), Vec::new()));
-            Ok(Some(saved_segments(&root, &identity, &layers, None)))
+        ExecExpr::Field { base, .. } => {
+            let base_path = lower(base, env)?;
+            let Some(place) = path.saved_place() else {
+                return Err(unsupported("iterating this saved path", path.span()));
+            };
+            let Some(layer_facts) = place.layers.last() else {
+                return Err(unsupported("iterating this saved path", path.span()));
+            };
+            let mut layers = base_path.layer_addresses;
+            layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
+            let address =
+                DataAddress::layer_prefix(place, &base_path.identity, &layers, path.span())?;
+            Ok(Some(TraversedLayer::data(address)))
         }
         _ => Ok(None),
     }
@@ -100,16 +61,17 @@ pub(crate) fn traversed_layer_prefix(
 
 /// The sole argument of a `keys`/`values`/`entries` call, or `None` for any other
 /// expression. These wrap a saved layer without changing which layer is traversed.
-pub(crate) fn traversal_argument(expr: &Expression) -> Option<&Expression> {
-    let Expression::Call { callee, args, .. } = expr else {
+pub(crate) fn traversal_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
+    let ExecExpr::Call { target, args, .. } = expr else {
         return None;
     };
-    let Expression::Name { segments, .. } = callee.as_ref() else {
-        return None;
-    };
-    if segments.len() != 1 || !matches!(segments[0].as_str(), "keys" | "values" | "entries") {
-        return None;
-    }
+    matches!(
+        target,
+        CheckedCallTarget::Builtin(
+            CheckedBuiltinCall::Keys | CheckedBuiltinCall::Values | CheckedBuiltinCall::Entries
+        )
+    )
+    .then_some(())?;
     match args.as_slice() {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
@@ -120,16 +82,15 @@ pub(crate) fn traversal_argument(expr: &Expression) -> Option<&Expression> {
 /// expression. Lets the loop materializer and write-guard see through the
 /// `reversed` wrapper to the layer it traverses (its inner `keys`/`values`/
 /// `entries` or bare saved path), exactly as [`traversal_argument`] does.
-pub(crate) fn reversed_argument(expr: &Expression) -> Option<&Expression> {
-    let Expression::Call { callee, args, .. } = expr else {
+pub(crate) fn reversed_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
+    let ExecExpr::Call { target, args, .. } = expr else {
         return None;
     };
-    let Expression::Name { segments, .. } = callee.as_ref() else {
-        return None;
-    };
-    if segments.len() != 1 || segments[0] != "reversed" {
-        return None;
-    }
+    matches!(
+        target,
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Reversed)
+    )
+    .then_some(())?;
     match args.as_slice() {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
@@ -138,16 +99,11 @@ pub(crate) fn reversed_argument(expr: &Expression) -> Option<&Expression> {
 
 /// The single argument of a `keys(<path>)` call, or `None` for any other
 /// expression. Shared by the loop materializer and the standalone `keys` builtin.
-pub(crate) fn keys_argument(expr: &Expression) -> Option<&Expression> {
-    let Expression::Call { callee, args, .. } = expr else {
+pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
+    let ExecExpr::Call { target, args, .. } = expr else {
         return None;
     };
-    let Expression::Name { segments, .. } = callee.as_ref() else {
-        return None;
-    };
-    if segments.len() != 1 || segments[0] != "keys" {
-        return None;
-    }
+    matches!(target, CheckedCallTarget::Builtin(CheckedBuiltinCall::Keys)).then_some(())?;
     match args.as_slice() {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
@@ -165,7 +121,7 @@ pub(crate) fn keys_argument(expr: &Expression) -> Option<&Expression> {
 /// - `^root.index(args…)` yields the identities in that index branch.
 /// - `^root(id…).layer` yields the keyed/sequence layer's child keys.
 pub(crate) fn enumerate_layer(
-    path: &Expression,
+    path: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
     enumerate_layer_dir(path, Direction::Ascending, env)
@@ -176,43 +132,108 @@ pub(crate) fn enumerate_layer(
 /// `Descending` is `reversed(...)`. The whole descent carries one direction, so a
 /// composite identity reverses at every level.
 pub(crate) fn enumerate_layer_dir(
-    path: &Expression,
+    path: &ExecExpr,
     dir: Direction,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
+    if let Some(place) = direct_root_place(path) {
+        let arity = place.identity_keys.len();
+        if arity == 0 {
+            return Err(type_error(
+                &format!(
+                    "`^{}` is a singleton with no identities to iterate",
+                    place.root
+                ),
+                path.span(),
+            ));
+        }
+        return collect_record_identities(place, arity, &[], dir, path.span(), env);
+    }
+    if let Some(place) = path.saved_place()
+        && let Some(branch) = iterable_index_branch(place, path.span(), env)?
+    {
+        return enumerate_index_branch(&branch, dir, path.span(), env);
+    }
     match path {
-        // A primary keyed root: its immediate children are the record-key segments
-        // of the (possibly composite) identity. A keyless singleton has none.
-        Expression::SavedRoot { name, span } => {
-            let arity = match root_identity_arity(env.program, name) {
-                Some(0) => {
-                    return Err(type_error(
-                        &format!("`^{name}` is a singleton with no identities to iterate"),
-                        *span,
-                    ));
-                }
-                Some(arity) => arity,
-                None => return Err(unsupported("iterating this saved path", *span)),
-            };
-            let prefix = vec![PathSegment::Root(name.clone())];
-            collect_child_identities(&prefix, arity, &[], PathSegment::RecordKey, dir, *span, env)
-        }
-        // An index branch `^root.index(args…)` (a `Call` whose callee is a `.index`
-        // off a saved root) or a keyed/sequence child layer `^root(id…).layer`.
-        Expression::Call {
-            callee, args, span, ..
-        } if matches!(callee.as_ref(), Expression::Field { base, .. } if matches!(base.as_ref(), Expression::SavedRoot { .. })) => {
-            enumerate_index_branch(callee, args, dir, *span, env)
-        }
-        Expression::Field { base, .. }
-            if matches!(base.as_ref(), Expression::SavedRoot { .. })
-                && is_iterable_index_branch(path, env) =>
-        {
-            enumerate_index_branch(path, &[], dir, path.span(), env)
-        }
-        Expression::Field { .. } => enumerate_child_layer(path, dir, env),
+        ExecExpr::Field { .. } => enumerate_child_layer(path, dir, env),
         other => Err(unsupported("iterating this saved path", other.span())),
     }
+}
+
+pub(crate) struct IndexBranchAddress {
+    pub(crate) index: IndexAddress,
+    pub(crate) arg_keys: Vec<SavedKey>,
+    pub(crate) identity_start: usize,
+    pub(crate) depth: usize,
+}
+
+pub(crate) fn index_traversal_layer(
+    place: &CheckedSavedPlace,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<TraversedLayer>, RuntimeError> {
+    let CheckedSavedTerminal::Index { name, args, .. } = &place.terminal else {
+        return Ok(None);
+    };
+    let mut keys = Vec::new();
+    for arg in args {
+        if arg.mode.is_some() || arg.name.is_some() {
+            return Err(unsupported(
+                "an index lookup with named or out arguments",
+                span,
+            ));
+        }
+        keys.push(
+            value_to_key(eval_expr(&arg.value, env)?)
+                .ok_or_else(|| unsupported("an index key of this type", span))?,
+        );
+    }
+    let address = IndexAddress::from_place(place, name, keys, span)?;
+    Ok(Some(TraversedLayer::index(address)))
+}
+
+pub(crate) fn iterable_index_branch(
+    place: &CheckedSavedPlace,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<IndexBranchAddress>, RuntimeError> {
+    let CheckedSavedTerminal::Index {
+        name,
+        args,
+        unique: false,
+        arg_count,
+        ..
+    } = &place.terminal
+    else {
+        return Ok(None);
+    };
+    if args.len() > *arg_count {
+        return Err(unsupported("iterating this saved path", span));
+    }
+    let mut arg_keys = Vec::new();
+    for arg in args {
+        if arg.mode.is_some() || arg.name.is_some() {
+            return Err(unsupported(
+                "an index lookup with named or out arguments",
+                span,
+            ));
+        }
+        let key = value_to_key(eval_expr(&arg.value, env)?)
+            .ok_or_else(|| unsupported("an index key of this type", span))?;
+        arg_keys.push(key);
+    }
+    let identity_start = arg_count.saturating_sub(place.identity_keys.len());
+    let depth = if args.len() < identity_start {
+        1
+    } else {
+        arg_count.saturating_sub(args.len())
+    };
+    Ok(Some(IndexBranchAddress {
+        index: IndexAddress::from_place(place, name, arg_keys.clone(), span)?,
+        arg_keys,
+        identity_start,
+        depth,
+    }))
 }
 
 /// Enumerate the identities in a declared index branch `^root.index(args…)`. A
@@ -220,66 +241,23 @@ pub(crate) fn enumerate_layer_dir(
 /// query args are the entry's remaining identity-key segments; descend them per
 /// entry to reconstruct the full identity rather than only its first key component.
 pub(crate) fn enumerate_index_branch(
-    callee: &Expression,
-    args: &[Argument],
+    branch: &IndexBranchAddress,
     dir: Direction,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    let Expression::Field {
-        base, name: index, ..
-    } = callee
-    else {
-        return Err(unsupported("iterating this saved path", span));
-    };
-    let Expression::SavedRoot { name: root, .. } = base.as_ref() else {
-        return Err(unsupported("iterating this saved path", span));
-    };
-    if args
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported(
-            "an index lookup with named or out arguments",
-            span,
-        ));
+    if branch.depth == 0 {
+        return collect_exact_index_tuple(branch, dir, span, env);
     }
-    let mut prefix = vec![
-        PathSegment::Root(root.clone()),
-        PathSegment::Index(index.clone()),
-    ];
-    let mut arg_keys = Vec::new();
-    for arg in args {
-        let key = value_to_key(eval_expr(&arg.value, env)?)
-            .ok_or_else(|| unsupported("an index key of this type", span))?;
-        prefix.push(PathSegment::IndexKey(key.clone()));
-        arg_keys.push(key);
-    }
-    let (store_schema, _) = find_store_resource(env.program, root)
-        .ok_or_else(|| unsupported("iterating this saved path", span))?;
-    let schema = store_schema
-        .indexes
-        .iter()
-        .find(|i| &i.name == index && !i.unique)
-        .ok_or_else(|| unsupported("iterating this saved path", span))?;
-    if args.len() > schema.args.len() {
-        return Err(unsupported("iterating this saved path", span));
-    }
-    let identity_arity = store_schema.identity_keys.len();
-    let identity_start = schema.args.len().saturating_sub(identity_arity);
-    let depth = if args.len() < identity_start {
-        1
-    } else {
-        schema.args.len().saturating_sub(args.len())
-    };
-    let key_prefix = arg_keys
-        .get(identity_start..)
+    let key_prefix = branch
+        .arg_keys
+        .get(branch.identity_start..)
         .map_or_else(Vec::new, |keys| keys.to_vec());
-    collect_child_identities(
-        &prefix,
-        depth,
+    collect_index_identities(
+        branch,
+        branch.depth,
+        &branch.arg_keys,
         &key_prefix,
-        PathSegment::IndexKey,
         dir,
         span,
         env,
@@ -290,105 +268,252 @@ pub(crate) fn enumerate_index_branch(
 /// The layer's keys are single-key (`pos: int` for a sequence, `playerId: string`
 /// for a keyed tree), so each child key is a bare value.
 pub(crate) fn enumerate_child_layer(
-    path: &Expression,
+    path: &ExecExpr,
     dir: Direction,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    let Expression::Field {
-        base, name: layer, ..
-    } = path
-    else {
+    let ExecExpr::Field { base, .. } = path else {
         return Err(unsupported("iterating this saved path", path.span()));
     };
     let span = path.span();
-    let (root, identity, mut layers) = lower(base, env)?.into_layers(base.span())?;
-    layers.push((layer.clone(), Vec::new()));
-    let prefix = saved_segments(&root, &identity, &layers, None);
-    collect_child_identities(&prefix, 1, &[], PathSegment::IndexKey, dir, span, env)
+    let base_path = lower(base, env)?;
+    let Some(place) = path.saved_place() else {
+        return Err(unsupported("iterating this saved path", path.span()));
+    };
+    let Some(layer_facts) = place.layers.last() else {
+        return Err(unsupported("iterating this saved path", path.span()));
+    };
+    let mut layers = base_path.layer_addresses;
+    layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
+    let address = DataAddress::layer_prefix(place, &base_path.identity, &layers, span)?;
+    collect_data_child_values(&address, dir, span, env)
 }
 
-/// Collect the identities reachable below `prefix`, descending `depth` remaining
-/// key levels. `make_segment` builds the [`PathSegment`] for each descent step —
-/// `RecordKey` below a primary root, `IndexKey` below an index branch or child
-/// layer. `keys` accumulates the key segments gathered so far. At the final level
-/// each entry yields one identity: a single key value (renderable, addresses
-/// `^root(key)`) for a single-key identity, or a [`Value::Identity`] for a
-/// composite one.
-pub(crate) fn collect_child_identities(
-    prefix: &[PathSegment],
+pub(crate) fn collect_record_identities(
+    place: &CheckedSavedPlace,
     depth: usize,
     keys: &[SavedKey],
-    make_segment: fn(SavedKey) -> PathSegment,
     dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    if depth == 0 {
-        return Ok(read_terminal_identity(prefix, keys, span, env)?
-            .into_iter()
-            .collect());
-    }
-    let children = {
-        let store = env.store.borrow();
-        let encoded = encode_path(prefix);
-        // `reversed(...)` walks the store's double-ended range backward, so a
-        // composite identity descends in reverse at every level — a true reverse,
-        // not the outermost component flipped over an ascending tail.
-        match dir {
-            Direction::Ascending => store.child_keys(&encoded),
-            Direction::Descending => store.child_keys_rev(&encoded),
-        }
-        .map_err(|_| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_STORE,
-            message: "could not read the keys at this path".into(),
-            span,
-        })?
-    };
+    let store = crate::store::catalog_id(&place.store_catalog_id, "store", span)?;
     let mut values = Vec::new();
-    for child in children {
-        let ChildSegment::Key(key) = child else {
-            continue;
-        };
+    let mut child = first_record_child(env.store, &store, keys, dir, span)?;
+    while let Some(key) = child {
+        let anchor = key.clone();
         let mut keys = keys.to_vec();
         keys.push(key.clone());
         if depth <= 1 {
             values.push(collected_identity_value(&keys, span)?);
         } else {
-            let mut prefix = prefix.to_vec();
-            prefix.push(make_segment(key));
-            values.extend(collect_child_identities(
-                &prefix,
+            values.extend(collect_record_identities(
+                place,
                 depth - 1,
                 &keys,
-                make_segment,
                 dir,
                 span,
                 env,
             )?);
         }
+        child = next_record_child(
+            env.store,
+            &store,
+            &keys[..keys.len() - 1],
+            &anchor,
+            dir,
+            span,
+        )?;
     }
     Ok(values)
 }
 
-pub(crate) fn read_terminal_identity(
-    prefix: &[PathSegment],
+fn collect_index_identities(
+    branch: &IndexBranchAddress,
+    depth: usize,
+    query_keys: &[SavedKey],
     keys: &[SavedKey],
+    dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Option<Value>, RuntimeError> {
-    let present = env
-        .store
-        .borrow()
-        .read(&encode_path(prefix))
-        .map_err(|error| error.located(span))?
-        .is_some();
-    if present {
-        collected_identity_value(keys, span).map(Some)
-    } else {
-        Ok(None)
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut values = Vec::new();
+    let mut child = first_index_child(env.store, &branch.index.index, query_keys, dir, span)?;
+    while let Some(key) = child {
+        let anchor = key.clone();
+        let mut query_keys = query_keys.to_vec();
+        query_keys.push(key.clone());
+        let mut identity_keys = keys.to_vec();
+        identity_keys.push(key);
+        if depth <= 1 {
+            values.push(collected_identity_value(&identity_keys, span)?);
+        } else {
+            values.extend(collect_index_identities(
+                branch,
+                depth - 1,
+                &query_keys,
+                &identity_keys,
+                dir,
+                span,
+                env,
+            )?);
+        }
+        child = next_index_child(
+            env.store,
+            &branch.index.index,
+            &query_keys[..query_keys.len() - 1],
+            &anchor,
+            dir,
+            span,
+        )?;
     }
+    Ok(values)
+}
+
+fn collect_exact_index_tuple(
+    branch: &IndexBranchAddress,
+    dir: Direction,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut values = Vec::new();
+    let mut page = env
+        .store
+        .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
+        .map_err(|error| error.located(span))?;
+    loop {
+        for entry in page.entries {
+            values.push(collected_identity_value(&entry.identity, span)?);
+        }
+        let Some(cursor) = page.cursor else {
+            break;
+        };
+        page = env
+            .store
+            .scan_index_tuple_after(
+                &branch.index.index,
+                &branch.arg_keys,
+                &cursor,
+                INDEX_SCAN_PAGE_LIMIT,
+            )
+            .map_err(|error| error.located(span))?;
+    }
+    if matches!(dir, Direction::Descending) {
+        values.reverse();
+    }
+    Ok(values)
+}
+
+fn collect_data_child_values(
+    address: &DataAddress,
+    dir: Direction,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut values = Vec::new();
+    let mut child = first_data_child(env.store, address, dir, span)?;
+    while let Some(key) = child {
+        let anchor = key.clone();
+        values.push(
+            saved_key_to_value(key)
+                .ok_or_else(|| unsupported("iterating keys of this type", span))?,
+        );
+        child = next_data_child(env.store, address, &anchor, dir, span)?;
+    }
+    Ok(values)
+}
+
+fn first_record_child(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    prefix: &[SavedKey],
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    match dir {
+        Direction::Ascending => store.record_first_child(store_id, prefix),
+        Direction::Descending => store.record_last_child(store_id, prefix),
+    }
+    .map_err(|error| error.located(span))
+}
+
+fn next_record_child(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    prefix: &[SavedKey],
+    anchor: &SavedKey,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    match dir {
+        Direction::Ascending => store.record_next_child(store_id, prefix, anchor),
+        Direction::Descending => store.record_prev_child(store_id, prefix, anchor),
+    }
+    .map_err(|error| error.located(span))
+}
+
+fn first_index_child(
+    store: &TreeStore,
+    index: &CatalogId,
+    prefix: &[SavedKey],
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    match dir {
+        Direction::Ascending => store.index_first_child(index, prefix),
+        Direction::Descending => store.index_last_child(index, prefix),
+    }
+    .map_err(|error| error.located(span))
+}
+
+fn next_index_child(
+    store: &TreeStore,
+    index: &CatalogId,
+    prefix: &[SavedKey],
+    anchor: &SavedKey,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    match dir {
+        Direction::Ascending => store.index_next_child(index, prefix, anchor),
+        Direction::Descending => store.index_prev_child(index, prefix, anchor),
+    }
+    .map_err(|error| error.located(span))
+}
+
+fn first_data_child(
+    store: &TreeStore,
+    address: &DataAddress,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    match dir {
+        Direction::Ascending => {
+            store.data_first_child(&address.store, &address.identity, &address.path)
+        }
+        Direction::Descending => {
+            store.data_last_child(&address.store, &address.identity, &address.path)
+        }
+    }
+    .map_err(|error| error.located(span))
+}
+
+fn next_data_child(
+    store: &TreeStore,
+    address: &DataAddress,
+    anchor: &SavedKey,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    match dir {
+        Direction::Ascending => {
+            store.data_next_child(&address.store, &address.identity, &address.path, anchor)
+        }
+        Direction::Descending => {
+            store.data_prev_child(&address.store, &address.identity, &address.path, anchor)
+        }
+    }
+    .map_err(|error| error.located(span))
 }
 
 pub(crate) fn collected_identity_value(
@@ -402,389 +527,10 @@ pub(crate) fn collected_identity_value(
     Ok(Value::Identity(keys.to_vec()))
 }
 
-/// Read a scalar field off a saved record, e.g. `^books(id).title`. Lowers the
-/// path, re-terminates it at the field, and reads the store, decoding the bytes
-/// with the field's declared type from the resource schema. Top-level and
-/// group-entry fields (`^root(key…).layer(key…).field`) take the same lowered
-/// path; the layer chain it carries decides which read it is. An unpopulated
-/// element is an absent-element error.
-pub(crate) fn eval_saved_field(
-    expr: &Expression,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let Expression::Field {
-        base, name, quoted, ..
-    } = expr
-    else {
-        return Err(unsupported("this read", expr.span()));
-    };
-    read_saved_field(base, name, *quoted, expr.span(), env)
-}
-
-/// Read a saved field given its parts. Shared by the plain `.field` read and the
-/// optional `?.field` read, which lower and read identically; only their
-/// short-circuiting on an absent intermediate differs, and that is handled by the
-/// callers raising/propagating `run.absent_element`.
-pub(crate) fn read_saved_field(
-    base: &Expression,
-    name: &str,
-    _quoted: bool,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    // A plain `^root(id…).field` base is a top-level field; a base reached through
-    // one or more group layers (`^root(id…).layer(key…)….field` or the unkeyed
-    // group hop `^root(id…).name.field`) is a field inside that group. Lowering the
-    // base and re-terminating at the field carries the layer chain either way, and
-    // `SavedPath::read` reads top-level or nested by whether that chain is empty.
-    lower(base, env)?
-        .into_field(name.to_string(), base.span())?
-        .read(ReadPosition::Value, span, env)
-}
-
-/// Read an optional field `base?.name`. The read is the same as a plain field
-/// read — saved off a `^root` chain, or local off a resource value — so the leaf
-/// type is unchanged. An absent base or field surfaces as `run.absent_element`,
-/// which short-circuits an enclosing `?.` chain and is caught by a `??` default;
-/// outermost and unguarded, it surfaces like any absent read.
-pub(crate) fn eval_optional_field(
-    expr: &Expression,
-    base: &Expression,
-    name: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let Expression::OptionalField { quoted, .. } = expr else {
-        return Err(unsupported("this read", span));
-    };
-    if is_saved_path(base) {
-        read_saved_field(base, name, *quoted, span, env)
-    } else {
-        eval_local_field_get(base, name, span, env)
-    }
-}
-
-/// Read a store identity from a declared index lookup `^root.index(args…)`.
-/// A unique index stores the owning identity at the lookup path, so reading it
-/// decodes back to the store's runtime identity value. A non-unique index has
-/// no single identity to yield in value position; iterate it with `keys(...)`
-/// instead.
-pub(crate) fn eval_index_lookup(
-    store_schema: &StoreSchema,
-    index: &IndexSchema,
-    args: &[Argument],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    if !index.unique {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_UNSUPPORTED,
-            message: format!(
-                "non-unique index `{}` has no single identity in value position; \
-                 iterate it with `keys(...)`",
-                index.name
-            ),
-            span,
-        });
-    }
-    if args.len() != index.args.len() {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!(
-                "unique index `{}` expects {} key argument(s), but {} were given",
-                index.name,
-                index.args.len(),
-                args.len()
-            ),
-            span,
-        });
-    }
-    let mut segments = vec![
-        PathSegment::Root(store_schema.root.clone()),
-        PathSegment::Index(index.name.clone()),
-    ];
-    for arg in args {
-        if arg.mode.is_some() || arg.name.is_some() {
-            return Err(unsupported(
-                "an index lookup with named or out arguments",
-                span,
-            ));
-        }
-        segments.push(PathSegment::IndexKey(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("an index key of this type", span))?,
-        ));
-    }
-    let bytes = env
-        .store
-        .borrow()
-        .read(&encode_path(&segments))
-        .map_err(|error| error.located(span))?;
-    let Some(bytes) = bytes else {
-        return Err(absent_read(
-            ReadPosition::Value,
-            format!("`{}` has no entry for that key", index.name),
-            span,
-        ));
-    };
-    decode_identity(&bytes, store_schema)
-        .map(identity_value)
-        .ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!(
-                "the `{}` index entry did not decode to an identity",
-                index.name
-            ),
-            span,
-        })
-}
-
-/// Read a keyed-layer entry off a saved record. A leaf layer
-/// (`^books(id).tags(pos)`) reads its single value; a group layer
-/// (`^books(id).versions(v)`) materializes the whole entry. The `callee` is the
-/// layer field `^books(id).<layer>` and `keys` are the layer key arguments.
-pub(crate) fn eval_saved_layer_read(
-    callee: &Expression,
-    keys: &[Argument],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let Expression::Field {
-        base, name: layer, ..
-    } = callee
-    else {
-        return Err(unsupported("this read", span));
-    };
-    let (root, identity, parents) = lower(base, env)?.into_layers(base.span())?;
-    let layer_names: Vec<&str> = parents
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .chain(std::iter::once(layer.as_str()))
-        .collect();
-    let expected = layer_key_params(env.program, &root, &layer_names);
-    let layer_keys = lower_keys(keys, span, false, &expected, env)?;
-    if parents.is_empty() {
-        read_layer_entry(
-            &root,
-            &identity,
-            layer,
-            &layer_keys,
-            ReadPosition::Value,
-            span,
-            env,
-        )
-    } else {
-        read_layer_entry_at(
-            LayerEntryAddress {
-                root: &root,
-                identity: &identity,
-                parent_layers: &parents,
-                layer,
-                layer_keys: &layer_keys,
-            },
-            ReadPosition::Value,
-            span,
-            env,
-        )
-    }
-}
-
-/// Read one keyed-layer entry from a lowered record identity and layer keys. A
-/// leaf layer reads its single decoded value; a group layer materializes its
-/// entry as a [`Value::Resource`]. Shared by [`eval_saved_layer_read`] and the
-/// `values`/`entries` materializer.
-pub(crate) fn read_layer_entry(
-    root: &str,
-    identity: &[SavedKey],
-    layer: &str,
-    layer_keys: &[SavedKey],
-    position: ReadPosition,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    read_layer_entry_at(
-        LayerEntryAddress {
-            root,
-            identity,
-            parent_layers: &[],
-            layer,
-            layer_keys,
-        },
-        position,
-        span,
-        env,
-    )
-}
-
-pub(crate) struct LayerEntryAddress<'a> {
-    pub(crate) root: &'a str,
-    pub(crate) identity: &'a [SavedKey],
-    pub(crate) parent_layers: &'a [(String, Vec<SavedKey>)],
-    pub(crate) layer: &'a str,
-    pub(crate) layer_keys: &'a [SavedKey],
-}
-
-pub(crate) fn read_layer_entry_at(
-    address: LayerEntryAddress<'_>,
-    position: ReadPosition,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let mut chain = address.parent_layers.to_vec();
-    chain.push((address.layer.to_string(), address.layer_keys.to_vec()));
-    let entry = saved_segments(address.root, address.identity, &chain, None);
-    let layer_names: Vec<&str> = chain.iter().map(|(name, _)| name.as_str()).collect();
-
-    // A leaf layer reads one value; a group layer materializes its entry.
-    let Some(leaf) = resource_layer_leaf_chain(env.program, address.root, &layer_names) else {
-        return read_group_entry_chain(address.root, &layer_names, &entry, span, env);
-    };
-    let bytes = env
-        .store
-        .borrow()
-        .read(&encode_path(&entry))
-        .map_err(|error| error.located(span))?;
-    let Some(bytes) = bytes else {
-        return Err(absent_read(
-            position,
-            format!("`{}` entry is absent", address.layer),
-            span,
-        ));
-    };
-    decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_TYPE,
-        message: format!(
-            "stored value in `{}` did not decode to a runtime value",
-            address.layer
-        ),
-        span,
-    })
-}
-
-/// Materialize a keyed GROUP entry `^root(key…).layer(key…)` (its path already
-/// lowered into `entry`) as a [`Value::Resource`]: each present member field, in
-/// declaration order, decoded by its type; sparse members are omitted. Mirrors a
-/// whole-resource read scoped to one group entry.
-pub(crate) fn read_group_entry_chain(
-    root: &str,
-    layers: &[&str],
-    entry: &[PathSegment],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let resource = find_resource(env.program, root)
-        .ok_or_else(|| unsupported("reading this saved root", span))?;
-    let declared = resource
-        .descend_layers(layers)
-        .filter(|node| matches!(node.kind, NodeKind::Group))
-        .ok_or_else(|| unsupported("reading this layer", span))?;
-    let store = env.store.borrow();
-    let fields =
-        materialize_resource_members(env.program, &declared.members, entry, &*store, span)?;
-    Ok(Value::Resource(fields))
-}
-
-/// Read a whole resource `^root(key…)` into a materialized [`Value::Resource`]:
-/// each present plain field in schema order, with unkeyed groups represented as
-/// nested resources. Absent sparse fields and empty groups are omitted.
-pub(crate) fn eval_resource_read(
-    callee: &Expression,
-    args: &[Argument],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let Expression::SavedRoot { name: root, .. } = callee else {
-        return Err(unsupported("this read", span));
-    };
-    let expected = root_identity_keys(env.program, root);
-    let identity = lower_keys(args, span, true, expected, env)?;
-    read_resource(root, &identity, span, env)
-}
-
-/// Read a whole resource from a pre-lowered identity into a materialized
-/// [`Value::Resource`]: direct plain fields and unkeyed-group descendants in
-/// schema order, with sparse fields and empty groups omitted.
-pub(crate) fn read_resource(
-    root: &str,
-    identity: &[SavedKey],
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let resource = find_resource(env.program, root)
-        .ok_or_else(|| unsupported("reading this saved root", span))?;
-    let arity = root_identity_arity(env.program, root).unwrap_or(0);
-    if identity.len() != arity {
-        // A whole-resource read needs the root's full identity: a keyed root such
-        // as `^books` is a collection of records, not a readable value on its own.
-        return Err(type_error(
-            &format!(
-                "`^{root}` expects {arity} identity key(s), got {}",
-                identity.len()
-            ),
-            span,
-        ));
-    }
-    let prefix = saved_segments(root, identity, &[], None);
-
-    let store = env.store.borrow();
-    let fields =
-        materialize_resource_members(env.program, &resource.members, &prefix, &*store, span)?;
-    Ok(Value::Resource(fields))
-}
-
-fn materialize_resource_members(
-    program: &CheckedProgram,
-    members: &[Node],
-    prefix: &[PathSegment],
-    store: &dyn Backend,
-    span: SourceSpan,
-) -> Result<Vec<(String, Value)>, RuntimeError> {
-    let mut fields = Vec::new();
-    for node in members {
-        if let Some(ty) = node.plain_field_type() {
-            let mut segments = prefix.to_vec();
-            segments.push(PathSegment::Field(node.name.clone()));
-            let Some(bytes) = store
-                .read(&encode_path(&segments))
-                .map_err(|error| error.located(span))?
-            else {
-                continue;
-            };
-            let leaf = leaf_kind(program, ty)
-                .ok_or_else(|| unsupported("reading this field type", span))?;
-            let value = decode_leaf(&bytes, &leaf).ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!("stored value for `{}` did not decode", node.name),
-                span,
-            })?;
-            fields.push((node.name.clone(), value));
-        } else if node.key_params.is_empty() && matches!(node.kind, NodeKind::Group) {
-            let mut group_prefix = prefix.to_vec();
-            group_prefix.push(PathSegment::ChildLayer(node.name.clone()));
-            let nested =
-                materialize_resource_members(program, &node.members, &group_prefix, store, span)?;
-            if !nested.is_empty() {
-                fields.push((node.name.clone(), Value::Resource(nested)));
-            }
-        }
-    }
-    Ok(fields)
-}
-
 /// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated
 /// field is an absent-element error.
 pub(crate) fn eval_local_field_get(
-    base: &Expression,
+    base: &ExecExpr,
     field: &str,
     span: SourceSpan,
     env: &mut Env<'_>,

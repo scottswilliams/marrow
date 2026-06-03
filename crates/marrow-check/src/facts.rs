@@ -5,11 +5,12 @@ use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
 use marrow_schema::{NodeKind, ScalarType, Type};
-use marrow_syntax::{ParamMode, ParsedSource, ResourceMember, SourceSpan, TypeRef};
+use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
 
 use crate::catalog::{
     CatalogKey, enum_path, resource_member_path, resource_path, store_index_path, store_path,
 };
+use crate::executable::CheckedParamMode;
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias};
 
@@ -147,6 +148,59 @@ impl CheckedFacts {
 
     pub fn enum_members(&self) -> &[EnumMemberFact] {
         &self.enum_members
+    }
+
+    pub fn enum_(&self, id: EnumId) -> Option<&EnumFact> {
+        self.enums.get(id.0 as usize)
+    }
+
+    pub fn enum_member(&self, id: EnumMemberId) -> Option<&EnumMemberFact> {
+        self.enum_members.get(id.0 as usize)
+    }
+
+    pub fn enum_member_by_ordinal(&self, enum_id: EnumId, ordinal: u32) -> Option<&EnumMemberFact> {
+        self.enum_members
+            .iter()
+            .filter(|member| member.enum_id == enum_id)
+            .nth(ordinal as usize)
+    }
+
+    pub fn enum_member_ordinal(&self, member_id: EnumMemberId) -> Option<u32> {
+        let member = self.enum_member(member_id)?;
+        self.enum_members
+            .iter()
+            .filter(|candidate| candidate.enum_id == member.enum_id)
+            .position(|candidate| candidate.id == member_id)
+            .and_then(|ordinal| u32::try_from(ordinal).ok())
+    }
+
+    pub fn enum_member_is_selectable(&self, id: EnumMemberId) -> bool {
+        self.enum_member(id)
+            .is_some_and(|member| !member.category && !self.enum_member_has_children(id))
+    }
+
+    pub fn enum_member_is_descendant(
+        &self,
+        member_id: EnumMemberId,
+        ancestor_id: EnumMemberId,
+    ) -> bool {
+        let Some(member) = self.enum_member(member_id) else {
+            return false;
+        };
+        let Some(ancestor) = self.enum_member(ancestor_id) else {
+            return false;
+        };
+        if member.enum_id != ancestor.enum_id {
+            return false;
+        }
+        let mut current = Some(member_id);
+        while let Some(id) = current {
+            if id == ancestor_id {
+                return true;
+            }
+            current = self.enum_member(id).and_then(|member| member.parent);
+        }
+        false
     }
 
     pub fn presence_proofs(&self) -> &[PresenceProofFact] {
@@ -293,6 +347,30 @@ impl CheckedFacts {
         }
     }
 
+    pub(crate) fn refresh_direct_effects(&mut self, modules: &[CheckedModule]) {
+        let effects: Vec<DirectEffectFacts> = self
+            .functions
+            .iter()
+            .map(|fact| {
+                modules
+                    .get(fact.module.0 as usize)
+                    .and_then(|module| {
+                        module
+                            .functions
+                            .iter()
+                            .find(|function| function.name == fact.name)
+                    })
+                    .and_then(|function| function.runtime_body())
+                    .map_or_else(DirectEffectFacts::default, |body| {
+                        crate::presence::direct_effects_for_block(self, body)
+                    })
+            })
+            .collect();
+        for (function, effects) in self.functions.iter_mut().zip(effects) {
+            function.direct_effects = effects;
+        }
+    }
+
     pub(crate) fn overwrite_prefix_from(&mut self, prefix: &Self) {
         overwrite_prefix(&mut self.modules, &prefix.modules);
         overwrite_prefix(&mut self.functions, &prefix.functions);
@@ -416,11 +494,7 @@ impl CheckedFacts {
             public: function.public,
             params,
             return_type,
-            direct_effects: crate::presence::direct_effects_for_block(
-                self,
-                &aliases,
-                &function.body,
-            ),
+            direct_effects: DirectEffectFacts::default(),
             span: function.span,
         })
     }
@@ -491,11 +565,22 @@ impl CheckedFacts {
                 continue;
             };
             let store_id = StoreId(self.stores.len() as u32);
+            let aliases = build_alias_map(&module.imports);
+            let identity_keys = store
+                .identity_keys
+                .iter()
+                .map(|key| StoreIdentityKeyFact {
+                    name: key.name.clone(),
+                    value_meaning: self.stored_value_meaning(module_id, &key.ty, &aliases),
+                })
+                .collect();
             self.stores.push(StoreFact {
                 id: store_id,
                 module: module_id,
                 root: store.root.clone(),
                 resource,
+                identity_keys,
+                next_id_shape: store.next_id_shape(),
                 catalog_id: String::new(),
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
@@ -515,7 +600,6 @@ impl CheckedFacts {
                     .iter()
                     .find(|resource| resource.name == store.resource)
                     .map(|resource_schema| {
-                        let aliases = build_alias_map(&module.imports);
                         self.store_index_keys(
                             module_id,
                             resource,
@@ -530,6 +614,7 @@ impl CheckedFacts {
                     id,
                     store: store_id,
                     name: index.name.clone(),
+                    unique: index.unique,
                     keys,
                     catalog_id: String::new(),
                     span,
@@ -899,8 +984,16 @@ pub struct StoreFact {
     pub module: ModuleId,
     pub root: String,
     pub resource: ResourceId,
+    pub identity_keys: Vec<StoreIdentityKeyFact>,
+    pub next_id_shape: String,
     pub catalog_id: String,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreIdentityKeyFact {
+    pub name: String,
+    pub value_meaning: Option<StoredValueMeaning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -908,6 +1001,7 @@ pub struct StoreIndexFact {
     pub id: StoreIndexId,
     pub store: StoreId,
     pub name: String,
+    pub unique: bool,
     pub keys: Vec<StoreIndexKeyFact>,
     pub catalog_id: String,
     pub span: SourceSpan,
@@ -981,7 +1075,7 @@ pub struct LocalFact {
     pub id: LocalId,
     pub function: FunctionId,
     pub name: String,
-    pub mode: Option<ParamMode>,
+    pub mode: Option<CheckedParamMode>,
     pub ty: CheckedType,
 }
 
@@ -1019,9 +1113,21 @@ pub enum StoredValueMeaning {
 pub struct DirectEffectFacts {
     pub saved_reads: Vec<SavedPlaceEffect>,
     pub saved_writes: Vec<SavedPlaceEffect>,
+    pub future_ephemeral_roots: FutureEphemeralRootEffects,
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
     pub throws: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FutureEphemeralRootEffects {
+    pub reads: Vec<FutureEphemeralRootEffect>,
+    pub writes: Vec<FutureEphemeralRootEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FutureEphemeralRootEffect {
+    pub root: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

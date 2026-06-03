@@ -220,7 +220,6 @@ statement       =
       const_stmt
     | var_stmt
     | assignment_stmt
-    | edit_stmt
     | delete_stmt
     | assert_stmt
     | if_stmt
@@ -242,7 +241,6 @@ var_stmt        =
     "var" identifier key_params? type_annotation? ("=" expression)? NEWLINE ;
 
 assignment_stmt = assignable "=" expression NEWLINE ;
-edit_stmt       = "edit" assignable NEWLINE block ;
 delete_stmt     = "delete" path_expr NEWLINE ;
 assert_stmt     = "assert" expression NEWLINE ;
 return_stmt     = "return" expression? NEWLINE ;
@@ -253,10 +251,10 @@ throw_stmt      = "throw" expression NEWLINE ;
 expression_stmt = expression NEWLINE ;
 ```
 
-An `edit place` block groups field and path assignments under one root,
-preserving omitted fields and children. `assert exists(place)` and
-`assert not exists(place)` state existence preconditions. `if exists(place)`
-narrows a maybe-present read inside the guarded block.
+Field and path assignments preserve omitted fields and children at the written
+entry. `assert exists(place)` and `assert not exists(place)` state existence
+preconditions. `if exists(place)` narrows a maybe-present read inside the guarded
+block.
 
 ## Conditionals And Loops
 

@@ -7,9 +7,8 @@ use std::process::ExitCode;
 use marrow_check::resolve::resolve_store_by_root;
 use marrow_check::{
     CheckedProgram, Def, DefItem, IndexSchema, Resolution, ResolvableKind, ResourceSchema,
-    StoreSchema, resolve,
+    StorePathClass, StoreSchema, classify_store_path, resolve,
 };
-use marrow_run::{SavedPathClass, classify_saved_path};
 use marrow_store::path::{PathSegment, display_path, encode_path, parse_path};
 use serde_json::json;
 
@@ -95,7 +94,7 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
             return ExitCode::from(2);
         }
     };
-    let class = classify_saved_path(program, &segments);
+    let class = classify_store_path(program, &segments);
     // The root is the first segment; a field path's terminal name is its last
     // named member. Together they pick the resource and the indexes that name
     // covers.
@@ -113,7 +112,7 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
         CheckFormat::Text => {
             print!("{}", display_path(&encoded));
             match &class {
-                SavedPathClass::Scalar(ty) => {
+                StorePathClass::Scalar(ty) => {
                     print!(" resolves to");
                     if let Some(resource) = resource {
                         print!(" {} of resource {}", member_phrase(field), resource.name);
@@ -125,7 +124,7 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
                         println!("index plan: {}", index_phrase(&indexes));
                     }
                 }
-                SavedPathClass::Identity {
+                StorePathClass::Identity {
                     store_root: referenced,
                     ..
                 } => {
@@ -135,17 +134,17 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
                     }
                     println!(", type Id(^{referenced})");
                 }
-                SavedPathClass::IndexMarker => {
+                StorePathClass::IndexMarker => {
                     println!(" is a generated index entry");
                 }
-                SavedPathClass::KeyTypeMismatch { expected, found } => {
+                StorePathClass::KeyTypeMismatch { expected, found } => {
                     println!(
                         " has a {} key where the schema declares {}",
                         found.name(),
                         expected.name()
                     );
                 }
-                SavedPathClass::Orphan => {
+                StorePathClass::Orphan => {
                     println!(" is an orphan: under no declared root, or an undeclared member");
                 }
             }
@@ -210,20 +209,20 @@ fn index_phrase(indexes: &[&IndexSchema]) -> String {
 /// names, the resolved type when scalar, and the indexes it participates in.
 fn saved_path_record(
     encoded: &[u8],
-    class: &SavedPathClass,
+    class: &StorePathClass,
     root: Option<&str>,
     resource: Option<&ResourceSchema>,
     field: Option<&str>,
     indexes: &[&IndexSchema],
 ) -> serde_json::Value {
     let (class_name, ty) = match class {
-        SavedPathClass::Scalar(ty) => ("scalar", Some(ty.name().to_string())),
-        SavedPathClass::Identity { store_root, .. } => {
+        StorePathClass::Scalar(ty) => ("scalar", Some(ty.name().to_string())),
+        StorePathClass::Identity { store_root, .. } => {
             ("identity", Some(format!("Id(^{store_root})")))
         }
-        SavedPathClass::IndexMarker => ("index_marker", None),
-        SavedPathClass::KeyTypeMismatch { .. } => ("key_type_mismatch", None),
-        SavedPathClass::Orphan => ("orphan", None),
+        StorePathClass::IndexMarker => ("index_marker", None),
+        StorePathClass::KeyTypeMismatch { .. } => ("key_type_mismatch", None),
+        StorePathClass::Orphan => ("orphan", None),
     };
     let index_records: Vec<serde_json::Value> = indexes
         .iter()

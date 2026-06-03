@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -10,6 +12,7 @@ fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
+    support::accept_catalog_if_clean(&root);
     root
 }
 
@@ -121,6 +124,155 @@ fn dry_run_plan_matches_a_real_run() {
         planned_paths.iter().any(|p| p.contains("title"))
             && planned_paths.iter().any(|p| p.contains("pages")),
         "the plan must cover both field writes: {planned_paths:?}"
+    );
+}
+
+#[test]
+fn dry_run_reports_maintenance_whole_root_deletes() {
+    let project = temp_project("dryrun-root-delete", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20title: string\n\
+             \x20\x20\x20\x20shelf: string\n\n\
+             \x20\x20\x20\x20index byShelf(shelf, id)\n\n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20^books(1).shelf = \"fiction\"\n\n\
+             pub fn dropRoot()\n\
+             \x20\x20\x20\x20delete ^books\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let seed = marrow(&["run", "--entry", "app::seed", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let dry = marrow(&[
+        "run",
+        "--dry-run",
+        "--maintenance",
+        "--format",
+        "json",
+        "--entry",
+        "app::dropRoot",
+        &dir,
+    ]);
+    assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
+    let dry_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(dry.stdout).expect("utf8")).expect("json");
+
+    assert_eq!(dry_json["committed"], false);
+    assert_eq!(dry_json["writes"], 0);
+    assert_eq!(dry_json["deletes"], 2);
+    let planned = dry_json["planned"].as_array().expect("planned array");
+    assert!(
+        planned.iter().any(|step| {
+            step["op"] == "delete"
+                && step["target"]["kind"] == "data"
+                && step["target"]["store"] == "books"
+                && step["target"]["identity"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+                && step["target"]["path"].as_array().is_some_and(Vec::is_empty)
+        }),
+        "dry-run report must include the data root delete: {dry_json}"
+    );
+    assert!(
+        planned.iter().any(|step| {
+            step["op"] == "delete"
+                && step["target"]["kind"] == "index"
+                && step["target"]["index"] == "^books.byShelf"
+                && step["target"]["keys"].as_array().is_some_and(Vec::is_empty)
+                && step["target"]["identity"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        }),
+        "dry-run report must include the index root delete: {dry_json}"
+    );
+
+    let dump = marrow(&["data", "dump", &dir]);
+    fs::remove_dir_all(&project).ok();
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dump_out = String::from_utf8(dump.stdout).expect("utf8");
+    assert!(
+        dump_out.contains("^books(1).title"),
+        "dry run must leave the seeded record in place: {dump_out}"
+    );
+}
+
+#[test]
+fn dry_run_reports_non_root_deletes() {
+    let project = temp_project("dryrun-nonroot-delete", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20details\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20^books(1).details.note = \"kept\"\n\n\
+             pub fn dropDetails()\n\
+             \x20\x20\x20\x20delete ^books(1).details\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let seed = marrow(&["run", "--entry", "app::seed", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let dry = marrow(&[
+        "run",
+        "--dry-run",
+        "--format",
+        "json",
+        "--entry",
+        "app::dropDetails",
+        &dir,
+    ]);
+    assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
+    let dry_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(dry.stdout).expect("utf8")).expect("json");
+
+    assert_eq!(dry_json["committed"], false);
+    assert_eq!(dry_json["writes"], 0);
+    assert_eq!(dry_json["deletes"], 1);
+    let planned = dry_json["planned"].as_array().expect("planned array");
+    assert!(
+        planned.iter().any(|step| {
+            step["op"] == "delete"
+                && step["target"]["kind"] == "data"
+                && step["target"]["store"] == "books"
+                && step["target"]["identity"]
+                    .as_array()
+                    .is_some_and(|keys| keys.len() == 1 && keys[0] == "1")
+                && step["target"]["path"]
+                    .as_array()
+                    .is_some_and(|path| path.len() == 1 && path[0]["member"] == "details")
+        }),
+        "dry-run report must include the group delete: {dry_json}"
+    );
+
+    let dump = marrow(&["data", "dump", &dir]);
+    fs::remove_dir_all(&project).ok();
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dump_out = String::from_utf8(dump.stdout).expect("utf8");
+    assert!(
+        dump_out.contains("^books(1).details.note"),
+        "dry run must leave the seeded group data in place: {dump_out}"
     );
 }
 

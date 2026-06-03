@@ -2,6 +2,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use marrow_check::{
+    CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
+};
+use marrow_store::cell::CatalogId;
+use marrow_store::key::{SavedKey, encode_key_value};
+use marrow_store::tree::{DataPathSegment, TreeStore};
+
+mod support;
+
 fn temp_dir(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -19,6 +28,12 @@ fn write(root: &Path, relative: &str, contents: &str) {
 }
 
 fn marrow(args: &[&str]) -> std::process::Output {
+    for arg in args {
+        let path = Path::new(arg);
+        if path.is_dir() {
+            support::accept_catalog_if_clean(path);
+        }
+    }
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .args(args)
         .output()
@@ -135,18 +150,78 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
     assert!(!created, "dump must not create the store");
 }
 
-/// Plant exact raw saved-path records in the native store fixture.
-fn write_native_store_with(project: &Path, records: &[(Vec<u8>, Vec<u8>)]) {
-    use marrow_store::backend::Backend;
+fn checked_program(project: &Path) -> CheckedProgram {
+    support::accept_catalog_if_clean(project);
+    let config_text = fs::read_to_string(project.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let (report, program) = marrow_check::check_project(project, &config).expect("check project");
+    assert!(
+        !report.has_errors(),
+        "tree-cell fixture project must check cleanly: {report:#?}"
+    );
+    program
+}
+
+fn checked_place(project: &Path, root: &str) -> CheckedSavedPlace {
+    checked_saved_root_place(
+        &checked_program(project),
+        root,
+        marrow_syntax::SourceSpan::default(),
+    )
+    .expect("checked saved root")
+}
+
+fn catalog_id(raw: &str) -> CatalogId {
+    CatalogId::new(raw.to_string()).expect("catalog id")
+}
+
+fn member_catalog_id(members: &[CheckedSavedMember], name: &str) -> CatalogId {
+    let member = members
+        .iter()
+        .find(|member| member.name == name)
+        .expect("checked member");
+    catalog_id(&member.catalog_id)
+}
+
+fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathSegment> {
+    vec![DataPathSegment::Member(member_catalog_id(
+        &place.root_members,
+        name,
+    ))]
+}
+
+fn keyed_field_path(place: &CheckedSavedPlace, name: &str, key: SavedKey) -> Vec<DataPathSegment> {
+    vec![
+        DataPathSegment::Member(member_catalog_id(&place.root_members, name)),
+        DataPathSegment::Key(key),
+    ]
+}
+
+fn write_tree_value(
+    project: &Path,
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+    value: Vec<u8>,
+) {
     use marrow_store::redb::RedbStore;
+
+    let place = checked_place(project, root);
     let store_dir = project.join(".data");
     fs::create_dir_all(&store_dir).expect("create store dir");
-    let mut store = RedbStore::open(&store_dir.join("marrow.redb")).expect("open native store");
-    for (key, value) in records {
-        store
-            .write(key, value.clone())
-            .expect("write native record");
+    let store = RedbStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = TreeStore::new(store);
+    store
+        .write_data_value(&catalog_id(&place.store_catalog_id), identity, path, value)
+        .expect("write tree-cell value");
+}
+
+fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for key in keys {
+        bytes.extend_from_slice(&encode_key_value(key));
     }
+    bytes
 }
 
 #[test]
@@ -199,19 +274,16 @@ fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
 
 #[test]
 fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_path};
-
-    // An empty project with a hand-built bad value at the declared int field
-    // `^counter(1).value`. Integrity must find the mismatch.
     let project = native_project("data-integrity-decode");
     let dir = project.to_str().unwrap().to_string();
-    let bad_path = encode_path(&[
-        PathSegment::Root("counter".into()),
-        PathSegment::RecordKey(SavedKey::Int(1)),
-        PathSegment::Field("value".into()),
-    ]);
-    // `+1` is not a canonical int form, so `decode_value` rejects it.
-    write_native_store_with(&project, &[(bad_path, b"+1".to_vec())]);
+    let place = checked_place(&project, "counter");
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "value"),
+        b"+1".to_vec(),
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -224,12 +296,6 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
 
 #[test]
 fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_key_value, encode_path};
-
-    // A `Book.authorId` typed reference to `^authors` stores the referenced identity's
-    // canonical single-key encoding. Planting a value with a valid key followed by
-    // trailing garbage cannot decode back to one clean key, so integrity flags it as
-    // a `data.decode` on the identity leaf.
     let project = temp_dir("data-integrity-identity");
     write(
         &project,
@@ -247,16 +313,16 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
          \x20\x20\x20\x20authorId: Id(^authors)\n",
     );
     let dir = project.to_str().unwrap().to_string();
-    let leaf_path = encode_path(&[
-        PathSegment::Root("books".into()),
-        PathSegment::RecordKey(SavedKey::Int(1)),
-        PathSegment::Field("authorId".into()),
-    ]);
-    // A valid `Id(^authors)` key with an extra trailing byte decodes one key but
-    // leaves bytes over, which `decode_identity_arity` rejects.
-    let mut corrupt = encode_key_value(&SavedKey::Int(7));
+    let place = checked_place(&project, "books");
+    let mut corrupt = encode_identity_keys(&[SavedKey::Int(7)]);
     corrupt.push(0xFF);
-    write_native_store_with(&project, &[(leaf_path, corrupt)]);
+    write_tree_value(
+        &project,
+        "books",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "authorId"),
+        corrupt,
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -269,14 +335,6 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
 
 #[test]
 fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_key_value, encode_path};
-
-    // A `Book.authorId` typed reference to `^authors` (an `int`-keyed store) stores
-    // the referenced identity's canonical key encoding. A planted leaf that holds a
-    // single *string* key decodes back as one clean key by arity alone, so the
-    // arity-only check passes it — but `^authors` has an `int` key, so
-    // the stored reference points at a record that cannot exist. Integrity must flag
-    // the inner key as a `data.key_type` mismatch, not silently accept it.
     let project = temp_dir("data-integrity-identity-key-type");
     write(
         &project,
@@ -294,15 +352,15 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
          \x20\x20\x20\x20authorId: Id(^authors)\n",
     );
     let dir = project.to_str().unwrap().to_string();
-    let leaf_path = encode_path(&[
-        PathSegment::Root("books".into()),
-        PathSegment::RecordKey(SavedKey::Int(1)),
-        PathSegment::Field("authorId".into()),
-    ]);
-    // One clean string key where `^authors` declares `int`: decodes
-    // by arity but is the wrong scalar for the referenced keyspace.
-    let wrong_typed = encode_key_value(&SavedKey::Str("not-an-int".into()));
-    write_native_store_with(&project, &[(leaf_path, wrong_typed)]);
+    let place = checked_place(&project, "books");
+    let wrong_typed = encode_identity_keys(&[SavedKey::Str("not-an-int".into())]);
+    write_tree_value(
+        &project,
+        "books",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "authorId"),
+        wrong_typed,
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -314,43 +372,54 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
 }
 
 #[test]
-fn data_integrity_reports_orphan_data_under_an_unknown_root() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_path};
-
-    let project = native_project("data-integrity-orphan");
+fn data_integrity_reports_a_wrong_typed_keyed_member_key_as_data_key_type() {
+    let project = temp_dir("data-integrity-layer-key-type");
+    write(
+        &project,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Hits at ^hits\n\
+         \x20\x20\x20\x20when(moment: instant): int\n",
+    );
     let dir = project.to_str().unwrap().to_string();
-    // `^ghosts(1).value` is under a root the schema does not declare.
-    let orphan_path = encode_path(&[
-        PathSegment::Root("ghosts".into()),
-        PathSegment::RecordKey(SavedKey::Int(1)),
-        PathSegment::Field("value".into()),
-    ]);
-    write_native_store_with(&project, &[(orphan_path, b"7".to_vec())]);
+    let place = checked_place(&project, "hits");
+    write_tree_value(
+        &project,
+        "hits",
+        &[],
+        &keyed_field_path(&place, "when", SavedKey::Str("not-an-instant".into())),
+        b"7".to_vec(),
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.orphan"), "{stderr}");
-    assert!(stderr.contains("^ghosts(1).value"), "{stderr}");
+    assert!(stderr.contains("data.key_type"), "{stderr}");
+    assert!(
+        stderr.contains("^hits.when(\"not-an-instant\")"),
+        "{stderr}"
+    );
 }
 
 #[test]
 fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_path};
-
-    // `^counter` declares an `int` identity, but this hand-built key is a string.
-    // The member chain still resolves, so this is a key-type mismatch — not an
-    // orphan — and integrity must flag it as data the schema cannot trust.
     let project = native_project("data-integrity-key-type");
     let dir = project.to_str().unwrap().to_string();
-    let bad_path = encode_path(&[
-        PathSegment::Root("counter".into()),
-        PathSegment::RecordKey(SavedKey::Str("oops".into())),
-        PathSegment::Field("value".into()),
-    ]);
-    write_native_store_with(&project, &[(bad_path, b"7".to_vec())]);
+    let place = checked_place(&project, "counter");
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Str("oops".into())],
+        &field_path(&place, "value"),
+        b"7".to_vec(),
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -450,25 +519,21 @@ fn data_stats_format_json_emits_counts() {
 
 #[test]
 fn data_commands_page_through_large_native_store() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_path};
-
     const RECORDS: usize = 150;
 
     let project = native_project("data-paged");
     let dir = project.to_str().unwrap().to_string();
-    let records = (1..=RECORDS)
-        .map(|id| {
-            (
-                encode_path(&[
-                    PathSegment::Root("counter".into()),
-                    PathSegment::RecordKey(SavedKey::Int(id as i64)),
-                    PathSegment::Field("value".into()),
-                ]),
-                b"7".to_vec(),
-            )
-        })
-        .collect::<Vec<_>>();
-    write_native_store_with(&project, &records);
+    let place = checked_place(&project, "counter");
+    let value_path = field_path(&place, "value");
+    for id in 1..=RECORDS {
+        write_tree_value(
+            &project,
+            "counter",
+            &[SavedKey::Int(id as i64)],
+            &value_path,
+            b"7".to_vec(),
+        );
+    }
 
     let stats = marrow(&["data", "stats", "--format", "json", &dir]);
     let dump = marrow(&["data", "dump", "--format", "jsonl", &dir]);
@@ -514,16 +579,16 @@ fn data_dump_format_jsonl_emits_a_record_then_a_summary() {
 
 #[test]
 fn data_integrity_format_json_problems_carry_a_tooling_kind() {
-    use marrow_store::path::{PathSegment, SavedKey, encode_path};
-
     let project = native_project("data-integrity-json");
     let dir = project.to_str().unwrap().to_string();
-    let orphan_path = encode_path(&[
-        PathSegment::Root("ghosts".into()),
-        PathSegment::RecordKey(SavedKey::Int(1)),
-        PathSegment::Field("value".into()),
-    ]);
-    write_native_store_with(&project, &[(orphan_path, b"7".to_vec())]);
+    let place = checked_place(&project, "counter");
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "value"),
+        b"+1".to_vec(),
+    );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -532,7 +597,7 @@ fn data_integrity_format_json_problems_carry_a_tooling_kind() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
     let problem = &value["problems"][0];
-    assert_eq!(problem["code"], serde_json::json!("data.orphan"));
+    assert_eq!(problem["code"], serde_json::json!("data.decode"));
     // `data.*` has no dedicated kind, so `kind_for_code`'s default arm classifies
     // it as tooling.
     assert_eq!(problem["kind"], serde_json::json!("tooling"));

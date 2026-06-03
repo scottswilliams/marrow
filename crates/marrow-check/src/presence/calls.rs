@@ -1,13 +1,14 @@
-use marrow_syntax::{Argument, Expression};
+use marrow_schema::stdlib::{self, ParamType};
 
+use crate::CheckedExpr;
 use crate::facts::PresenceProofRead;
 
-pub(super) fn is_exists_call(callee: &Expression) -> bool {
-    matches!(callee, Expression::Name { segments, .. } if segments.as_slice() == ["exists"])
+pub(super) fn is_exists_call(callee: &CheckedExpr) -> bool {
+    matches!(callee, CheckedExpr::Name { segments, .. } if segments.as_slice() == ["exists"])
 }
 
-pub(super) fn is_attached_data_call(callee: &Expression) -> bool {
-    let Expression::Name { segments, .. } = callee else {
+pub(super) fn is_attached_data_call(callee: &CheckedExpr) -> bool {
+    let CheckedExpr::Name { segments, .. } = callee else {
         return false;
     };
     matches!(
@@ -20,19 +21,31 @@ pub(super) fn is_attached_data_call(callee: &Expression) -> bool {
     )
 }
 
-pub(super) fn is_append_call(callee: &Expression) -> bool {
-    matches!(callee, Expression::Name { segments, .. } if segments.as_slice() == ["append"])
+pub(super) fn is_append_call(callee: &CheckedExpr) -> bool {
+    matches!(callee, CheckedExpr::Name { segments, .. } if segments.as_slice() == ["append"])
 }
 
-pub(super) fn append_call_args<'a>(
-    callee: &Expression,
-    args: &'a [Argument],
-) -> Option<(&'a Argument, &'a [Argument])> {
-    is_append_call(callee).then(|| args.split_first()).flatten()
+pub(super) fn std_path_arg_mask(callee: &CheckedExpr) -> Option<Vec<bool>> {
+    let CheckedExpr::Name { segments, .. } = callee else {
+        return None;
+    };
+    let [std, module, op] = segments.as_slice() else {
+        return None;
+    };
+    if std != "std" {
+        return None;
+    }
+    Some(
+        stdlib::lookup(module, op)?
+            .params
+            .iter()
+            .map(|param| matches!(param, ParamType::Path))
+            .collect(),
+    )
 }
 
-pub(super) fn neighbor_read(callee: &Expression) -> Option<PresenceProofRead> {
-    let Expression::Name { segments, .. } = callee else {
+pub(super) fn neighbor_read(callee: &CheckedExpr) -> Option<PresenceProofRead> {
+    let CheckedExpr::Name { segments, .. } = callee else {
         return None;
     };
     match segments.as_slice() {
@@ -42,15 +55,15 @@ pub(super) fn neighbor_read(callee: &Expression) -> Option<PresenceProofRead> {
     }
 }
 
-pub(super) fn is_neighbor_read(callee: &Expression) -> bool {
+pub(super) fn is_neighbor_read(callee: &CheckedExpr) -> bool {
     neighbor_read(callee).is_some()
 }
 
-pub(super) fn wrapper_arg<'a>(expr: &'a Expression, wrapper: &str) -> Option<&'a Expression> {
-    let Expression::Call { callee, args, .. } = expr else {
+pub(super) fn wrapper_arg<'a>(expr: &'a CheckedExpr, wrapper: &str) -> Option<&'a CheckedExpr> {
+    let CheckedExpr::Call { callee, args, .. } = expr else {
         return None;
     };
-    let Expression::Name { segments, .. } = callee.as_ref() else {
+    let CheckedExpr::Name { segments, .. } = callee.as_ref() else {
         return None;
     };
     if segments.as_slice() != [wrapper] {
@@ -60,11 +73,4 @@ pub(super) fn wrapper_arg<'a>(expr: &'a Expression, wrapper: &str) -> Option<&'a
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
-}
-
-pub(super) fn callee_name(callee: &Expression) -> Option<&str> {
-    let Expression::Name { segments, .. } = callee else {
-        return None;
-    };
-    segments.last().map(String::as_str)
 }

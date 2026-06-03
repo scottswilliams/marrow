@@ -1,74 +1,64 @@
-use std::collections::HashMap;
-
 use marrow_schema::stdlib::Capability;
-use marrow_syntax::{Block, Expression, InterpolationPart, Statement};
 
-use super::calls::append_call_args;
-use super::keys::saved_path_parts;
-use super::scope::NameScope;
 use super::target::saved_place;
-use crate::expand_alias;
 use crate::facts::{CheckedFacts, DirectEffectFacts, HostEffect};
+use crate::{
+    CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart,
+    CheckedSavedPlace, CheckedSavedTerminal, CheckedStmt,
+};
 
 pub(crate) fn direct_effects_for_block(
     facts: &CheckedFacts,
-    aliases: &HashMap<String, Vec<String>>,
-    block: &Block,
+    body: &CheckedBody,
 ) -> DirectEffectFacts {
     let mut effects = DirectEffectFacts::default();
-    collect_block_effects(facts, aliases, block, &mut effects);
+    collect_block_effects(facts, body, &mut effects);
     effects
 }
 
 fn collect_block_effects(
     facts: &CheckedFacts,
-    aliases: &HashMap<String, Vec<String>>,
-    block: &Block,
+    body: &CheckedBody,
     effects: &mut DirectEffectFacts,
 ) {
-    for statement in &block.statements {
-        collect_statement_effects(facts, aliases, statement, effects);
+    for statement in body.statements() {
+        collect_statement_effects(facts, statement, effects);
     }
 }
 
 fn collect_statement_effects(
     facts: &CheckedFacts,
-    aliases: &HashMap<String, Vec<String>>,
-    statement: &Statement,
+    statement: &CheckedStmt,
     effects: &mut DirectEffectFacts,
 ) {
     match statement {
-        Statement::Const { value, .. } | Statement::Throw { value, .. } => {
-            if matches!(statement, Statement::Throw { .. }) {
+        CheckedStmt::Const { value, .. } | CheckedStmt::Throw { value, .. } => {
+            if matches!(statement, CheckedStmt::Throw { .. }) {
                 effects.throws = true;
             }
-            collect_expr_reads(facts, aliases, value, effects);
+            collect_expr_reads(facts, value, effects);
         }
-        Statement::Var { value, .. } => {
+        CheckedStmt::Var { value, .. } => {
             if let Some(value) = value {
-                collect_expr_reads(facts, aliases, value, effects);
+                collect_expr_reads(facts, value, effects);
             }
         }
-        Statement::Assign { target, value, .. } => {
+        CheckedStmt::Assign { target, value, .. } => {
             collect_saved_write(facts, target, effects);
-            collect_saved_path_key_reads(facts, aliases, target, effects);
-            collect_expr_reads(facts, aliases, value, effects);
+            collect_saved_path_key_reads(facts, target, effects);
+            collect_expr_reads(facts, value, effects);
         }
-        Statement::Delete { path, .. } => {
+        CheckedStmt::Delete { path, .. } => {
             collect_saved_write(facts, path, effects);
-            collect_saved_path_key_reads(facts, aliases, path, effects);
+            collect_saved_path_key_reads(facts, path, effects);
         }
-        Statement::Merge { target, value, .. } => {
-            collect_expr_reads(facts, aliases, target, effects);
-            collect_expr_reads(facts, aliases, value, effects);
-        }
-        Statement::Return { value, .. } => {
+        CheckedStmt::Return { value, .. } => {
             if let Some(value) = value {
-                collect_expr_reads(facts, aliases, value, effects);
+                collect_expr_reads(facts, value, effects);
             }
         }
-        Statement::Expr { value, .. } => collect_expr_reads(facts, aliases, value, effects),
-        Statement::If {
+        CheckedStmt::Expr { value, .. } => collect_expr_reads(facts, value, effects),
+        CheckedStmt::If {
             condition,
             then_block,
             else_ifs,
@@ -76,178 +66,204 @@ fn collect_statement_effects(
             ..
         } => {
             if let Some(condition) = condition {
-                collect_expr_reads(facts, aliases, condition, effects);
+                collect_expr_reads(facts, condition, effects);
             }
-            collect_block_effects(facts, aliases, then_block, effects);
+            collect_block_effects(facts, then_block, effects);
             for else_if in else_ifs {
                 if let Some(condition) = &else_if.condition {
-                    collect_expr_reads(facts, aliases, condition, effects);
+                    collect_expr_reads(facts, condition, effects);
                 }
-                collect_block_effects(facts, aliases, &else_if.block, effects);
+                collect_block_effects(facts, &else_if.block, effects);
             }
             if let Some(block) = else_block {
-                collect_block_effects(facts, aliases, block, effects);
+                collect_block_effects(facts, block, effects);
             }
         }
-        Statement::While {
+        CheckedStmt::While {
             condition, body, ..
         } => {
             if let Some(condition) = condition {
-                collect_expr_reads(facts, aliases, condition, effects);
+                collect_expr_reads(facts, condition, effects);
             }
-            collect_block_effects(facts, aliases, body, effects);
+            collect_block_effects(facts, body, effects);
         }
-        Statement::For {
+        CheckedStmt::For {
             iterable,
             step,
             body,
             ..
         } => {
-            collect_expr_reads(facts, aliases, iterable, effects);
+            collect_expr_reads(facts, iterable, effects);
             if let Some(step) = step {
-                collect_expr_reads(facts, aliases, step, effects);
+                collect_expr_reads(facts, step, effects);
             }
-            collect_block_effects(facts, aliases, body, effects);
+            collect_block_effects(facts, body, effects);
         }
-        Statement::Transaction { body, .. } => {
+        CheckedStmt::Transaction { body, .. } => {
             effects.transactions = true;
-            collect_block_effects(facts, aliases, body, effects);
+            collect_block_effects(facts, body, effects);
         }
-        Statement::Lock { path, body, .. } => {
-            if let Some(path) = path {
-                collect_expr_reads(facts, aliases, path, effects);
-            }
-            collect_block_effects(facts, aliases, body, effects);
-        }
-        Statement::Try {
+        CheckedStmt::Try {
             body,
             catch,
             finally,
             ..
         } => {
-            collect_block_effects(facts, aliases, body, effects);
+            collect_block_effects(facts, body, effects);
             if let Some(catch) = catch {
-                collect_block_effects(facts, aliases, &catch.block, effects);
+                collect_block_effects(facts, &catch.block, effects);
             }
             if let Some(finally) = finally {
-                collect_block_effects(facts, aliases, finally, effects);
+                collect_block_effects(facts, finally, effects);
             }
         }
-        Statement::Match {
+        CheckedStmt::Match {
             scrutinee, arms, ..
         } => {
             if let Some(scrutinee) = scrutinee {
-                collect_expr_reads(facts, aliases, scrutinee, effects);
+                collect_expr_reads(facts, scrutinee, effects);
             }
             for arm in arms {
-                collect_block_effects(facts, aliases, &arm.block, effects);
+                collect_block_effects(facts, &arm.block, effects);
             }
         }
-        Statement::Break { .. } | Statement::Continue { .. } => {}
+        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => {}
     }
 }
 
-fn collect_expr_reads(
-    facts: &CheckedFacts,
-    aliases: &HashMap<String, Vec<String>>,
-    expr: &Expression,
-    effects: &mut DirectEffectFacts,
-) {
-    let scope = NameScope::default();
-    if let Some(path) = saved_path_parts(expr, &scope) {
-        if let Some(effect) = saved_place(facts, &path.root, &path.members) {
-            push_unique(&mut effects.saved_reads, effect);
-        }
-        collect_saved_path_key_reads(facts, aliases, expr, effects);
+fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
+    if let Some(place) = expr.saved_place() {
+        push_saved_read(facts, place, effects);
+        collect_saved_path_key_reads(facts, expr, effects);
         return;
     }
-    if let Some(effect) = host_effect(expr, aliases) {
+    if let Some(effect) = host_effect(expr) {
         push_unique(&mut effects.host_calls, effect);
     }
     match expr {
-        Expression::Call { callee, args, .. } => {
-            if let Some((target, rest)) = append_call_args(callee, args) {
-                collect_saved_write(facts, &target.value, effects);
-                collect_saved_path_key_reads(facts, aliases, &target.value, effects);
-                for arg in rest {
-                    collect_expr_reads(facts, aliases, &arg.value, effects);
+        CheckedExpr::Call {
+            callee,
+            args,
+            target,
+            ..
+        } => {
+            if matches!(
+                target,
+                CheckedCallTarget::Builtin(CheckedBuiltinCall::Append)
+            ) {
+                if let Some((target, rest)) = args.split_first() {
+                    collect_saved_write(facts, &target.value, effects);
+                    collect_saved_path_key_reads(facts, &target.value, effects);
+                    for arg in rest {
+                        collect_expr_reads(facts, &arg.value, effects);
+                    }
                 }
                 return;
             }
-            collect_expr_reads(facts, aliases, callee, effects);
+            collect_expr_reads(facts, callee, effects);
             for arg in args {
-                collect_expr_reads(facts, aliases, &arg.value, effects);
+                collect_expr_reads(facts, &arg.value, effects);
             }
         }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            collect_expr_reads(facts, aliases, base, effects);
+        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
+            collect_expr_reads(facts, base, effects);
         }
-        Expression::Unary { operand, .. } => collect_expr_reads(facts, aliases, operand, effects),
-        Expression::Binary { left, right, .. } => {
-            collect_expr_reads(facts, aliases, left, effects);
-            collect_expr_reads(facts, aliases, right, effects);
+        CheckedExpr::Unary { operand, .. } => collect_expr_reads(facts, operand, effects),
+        CheckedExpr::Binary { left, right, .. } => {
+            collect_expr_reads(facts, left, effects);
+            collect_expr_reads(facts, right, effects);
         }
-        Expression::Interpolation { parts, .. } => {
+        CheckedExpr::Interpolation { parts, .. } => {
             for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    collect_expr_reads(facts, aliases, expr, effects);
+                if let CheckedInterpolationPart::Expr(expr) = part {
+                    collect_expr_reads(facts, expr, effects);
                 }
             }
         }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {}
     }
 }
 
 fn collect_saved_path_key_reads(
     facts: &CheckedFacts,
-    aliases: &HashMap<String, Vec<String>>,
-    expr: &Expression,
+    expr: &CheckedExpr,
     effects: &mut DirectEffectFacts,
 ) {
     match expr {
-        Expression::Call { callee, args, .. } => {
-            collect_saved_path_key_reads(facts, aliases, callee, effects);
+        CheckedExpr::Call { callee, args, .. } => {
+            collect_saved_path_key_reads(facts, callee, effects);
             for arg in args {
-                collect_expr_reads(facts, aliases, &arg.value, effects);
+                collect_expr_reads(facts, &arg.value, effects);
             }
         }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            collect_saved_path_key_reads(facts, aliases, base, effects);
+        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
+            collect_saved_path_key_reads(facts, base, effects);
         }
-        Expression::SavedRoot { .. }
-        | Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::Unary { .. }
-        | Expression::Binary { .. }
-        | Expression::Interpolation { .. } => {}
+        CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::Unary { .. }
+        | CheckedExpr::Binary { .. }
+        | CheckedExpr::Interpolation { .. } => {}
     }
 }
 
-fn collect_saved_write(facts: &CheckedFacts, expr: &Expression, effects: &mut DirectEffectFacts) {
-    let scope = NameScope::default();
-    if let Some(path) = saved_path_parts(expr, &scope)
-        && let Some(effect) = saved_place(facts, &path.root, &path.members)
-    {
+fn collect_saved_write(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
+    if let Some(place) = expr.saved_place() {
+        push_saved_write(facts, place, effects);
+    }
+}
+
+fn push_saved_read(
+    facts: &CheckedFacts,
+    place: &CheckedSavedPlace,
+    effects: &mut DirectEffectFacts,
+) {
+    if let Some(effect) = saved_effect(facts, place) {
+        push_unique(&mut effects.saved_reads, effect);
+    }
+}
+
+fn push_saved_write(
+    facts: &CheckedFacts,
+    place: &CheckedSavedPlace,
+    effects: &mut DirectEffectFacts,
+) {
+    if let Some(effect) = saved_effect(facts, place) {
         push_unique(&mut effects.saved_writes, effect);
     }
 }
 
-fn host_effect(expr: &Expression, aliases: &HashMap<String, Vec<String>>) -> Option<HostEffect> {
-    match expr {
-        Expression::Call { callee, .. } => match callee.as_ref() {
-            Expression::Name { segments, .. } => {
-                let expanded = expand_alias(segments, aliases);
-                match expanded.as_slice() {
-                    [name] if name == "print" || name == "write" => Some(HostEffect::Output),
-                    [std, module, op] if std == "std" => marrow_schema::stdlib::lookup(module, op)
-                        .and_then(|entry| match entry.capability {
-                            Capability::Pure => None,
-                            capability => Some(HostEffect::Capability(capability)),
-                        }),
-                    _ => None,
-                }
-            }
-            _ => None,
+fn saved_effect(
+    facts: &CheckedFacts,
+    place: &CheckedSavedPlace,
+) -> Option<crate::SavedPlaceEffect> {
+    saved_place(facts, &place.root, &effect_members(place))
+}
+
+fn effect_members(place: &CheckedSavedPlace) -> Vec<String> {
+    let mut members: Vec<String> = place
+        .layers
+        .iter()
+        .map(|layer| layer.name.clone())
+        .collect();
+    if let CheckedSavedTerminal::Field { name, .. } = &place.terminal {
+        members.push(name.clone());
+    }
+    members
+}
+
+fn host_effect(expr: &CheckedExpr) -> Option<HostEffect> {
+    let CheckedExpr::Call { target, .. } = expr else {
+        return None;
+    };
+    match target {
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Print | CheckedBuiltinCall::Write) => {
+            Some(HostEffect::Output)
+        }
+        CheckedCallTarget::Std(target) => match target.capability {
+            Capability::Pure => None,
+            capability => Some(HostEffect::Capability(capability)),
         },
         _ => None,
     }

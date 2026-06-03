@@ -264,7 +264,7 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
 /// entry that never reached a project file) falls back to the bare
 /// `code: message`, so nothing gains a spurious `:0:0:` location.
 pub(crate) fn report_runtime_fault(
-    program: &marrow_check::CheckedProgram,
+    program: &marrow_check::CheckedRuntimeProgram,
     error: &marrow_run::RuntimeError,
 ) {
     match error.origin.and_then(|id| program.file_path(id)) {

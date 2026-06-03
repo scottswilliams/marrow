@@ -1,21 +1,22 @@
 //! The evaluation environment: scopes, bindings, and control flow.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use marrow_check::{CheckedModule, CheckedProgram};
-use marrow_store::backend::{Backend, Presence};
-use marrow_store::path::{PathSegment, SavedKey, decode_path, encode_path};
+use marrow_check::{CheckedRuntimeModule, CheckedRuntimeProgram, CheckedSavedPlace};
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::error::{
-    Located, RUN_STORE, RUN_TRAVERSAL, RuntimeError, raise_fault, unsupported, write_fault,
+    Located, RUN_CAPABILITY, RUN_TRAVERSAL, RuntimeError, raise_fault, write_fault,
 };
 use crate::host::{Host, StepHook};
-use crate::schema_query::find_store_resource;
+use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
 use crate::value::Value;
-use crate::write::{WriteError, WriteOp, WritePlan, validate_required_fields_for_entry};
+use crate::write::{WriteError, validate_required_fields_for_entry};
+use crate::write_plan::{PlanStep, WritePlan};
 
 /// Where control flow stands after a statement or block.
 pub(crate) enum Flow {
@@ -65,24 +66,20 @@ pub(crate) struct TransactionState {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RequiredEntryCheck {
     pub(crate) depth: usize,
-    pub(crate) root: String,
+    pub(crate) place: CheckedSavedPlace,
     pub(crate) identity: Vec<SavedKey>,
-    pub(crate) layers: Vec<(String, Vec<SavedKey>)>,
+    pub(crate) layers: Vec<LayerAddress>,
 }
 
 impl RequiredEntryCheck {
     fn same_entry(&self, other: &Self) -> bool {
-        self.root == other.root
+        self.place.store_catalog_id == other.place.store_catalog_id
             && self.identity == other.identity
             && self.entry_layers() == other.entry_layers()
     }
 
-    fn entry_layers(&self) -> Vec<(String, Vec<SavedKey>)> {
-        self.layers
-            .iter()
-            .filter(|(_, keys)| !keys.is_empty())
-            .cloned()
-            .collect()
+    fn entry_layers(&self) -> Vec<LayerAddress> {
+        self.layers.to_vec()
     }
 }
 
@@ -90,7 +87,49 @@ impl RequiredEntryCheck {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RequiredPath {
     pub(crate) depth: usize,
-    pub(crate) path: Vec<PathSegment>,
+    pub(crate) path: DataAddress,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum TraversedLayer {
+    Record {
+        store: CatalogId,
+    },
+    Data {
+        store: CatalogId,
+        identity: Vec<SavedKey>,
+        path: Vec<DataPathSegment>,
+    },
+    Index {
+        index: CatalogId,
+        keys: Vec<SavedKey>,
+    },
+}
+
+impl TraversedLayer {
+    pub(crate) fn record(
+        place: &CheckedSavedPlace,
+        span: SourceSpan,
+    ) -> Result<Self, RuntimeError> {
+        Ok(Self::Record {
+            store: catalog_id(&place.store_catalog_id, "store", span)?,
+        })
+    }
+
+    pub(crate) fn data(address: DataAddress) -> Self {
+        Self::Data {
+            store: address.store,
+            identity: address.identity,
+            path: address.path,
+        }
+    }
+
+    pub(crate) fn index(address: IndexAddress) -> Self {
+        Self::Index {
+            index: address.index,
+            keys: address.keys,
+        }
+    }
 }
 
 /// The ambient state every activation in a run shares: the checked program (to
@@ -98,8 +137,8 @@ pub(crate) struct RequiredPath {
 /// transaction bookkeeping.
 #[derive(Clone)]
 pub(crate) struct Context<'p> {
-    pub(crate) program: &'p CheckedProgram,
-    pub(crate) store: &'p RefCell<dyn Backend>,
+    pub(crate) program: &'p CheckedRuntimeProgram,
+    pub(crate) store: &'p TreeStore,
     pub(crate) host: &'p Host,
     pub(crate) transaction: Rc<RefCell<TransactionState>>,
 }
@@ -110,30 +149,17 @@ pub(crate) struct Context<'p> {
 /// so lookups are linear and innermost-first.
 pub(crate) struct Env<'p> {
     pub(crate) scopes: Vec<Vec<(String, Binding)>>,
-    pub(crate) program: &'p CheckedProgram,
-    pub(crate) store: &'p RefCell<dyn Backend>,
+    pub(crate) program: &'p CheckedRuntimeProgram,
+    pub(crate) store: &'p TreeStore,
     pub(crate) host: &'p Host,
     pub(crate) output: Rc<RefCell<String>>,
-    /// Encoded path prefixes of the saved layers loops are actively traversing,
-    /// innermost last. A write/delete/append whose affected layer is in this
-    /// set mutates a layer being iterated, which is a [`RUN_TRAVERSAL`] fault.
-    pub(crate) traversed_layers: Vec<Vec<u8>>,
-    /// Encoded prefixes for active generated-index traversals. Managed field and
-    /// resource writes may mutate these through generated index maintenance even
-    /// when the user-visible target is an ordinary field.
-    pub(crate) traversed_index_layers: Vec<Vec<u8>>,
-    /// The name of the module this activation runs in, so a call inside it
-    /// resolves from the right module (a bare name in its own module, a qualified
-    /// name elsewhere) through the unified resolver, and a bare `Enum::member`
-    /// resolves to that module's enum first — the same same-module identity the
-    /// checker recorded. Empty only for internal activations with no module
-    /// context, where no project module hosts the body.
+    /// Saved record, data, and index layers loops are actively traversing,
+    /// innermost last.
+    pub(crate) traversed_layers: Vec<TraversedLayer>,
+    /// The name of the module this activation runs in. Empty only for internal
+    /// activations with no module context, where no project module hosts the
+    /// body.
     pub(crate) module: &'p str,
-    /// The active function's module short→full import alias map, so a short-form
-    /// call (`clock::now()`) expands to its full path (`std::clock::now`) before
-    /// dispatch, exactly as the checker resolved it. Empty for modules with no
-    /// imports, making expansion a strict no-op there.
-    pub(crate) aliases: HashMap<String, Vec<String>>,
     /// Transaction state is shared across helper calls so writes in callees obey
     /// the surrounding transaction's commit-time validation and savepoint rules.
     pub(crate) transaction: Rc<RefCell<TransactionState>>,
@@ -141,9 +167,9 @@ pub(crate) struct Env<'p> {
     /// [`run_entry_with_debugger`]; `None` for every ordinary run, where the
     /// per-statement check is a single `Option::is_none`. The hook is moved
     /// (`Option::take`) out before each call so it cannot alias the `&Env` that
-    /// the [`Frame`] borrows, then moved back — threading the borrow with no
-    /// `unsafe`. It rides each nested activation by being moved into the callee's
-    /// [`invoke`] and returned to the caller afterward.
+    /// the [`Frame`] borrows, then moved back. It rides each nested activation by
+    /// being moved into the callee's [`invoke`] and returned to the caller
+    /// afterward.
     pub(crate) hook: Option<&'p mut dyn StepHook>,
     /// This activation's call depth: 1 for the entry function, one more per
     /// nested call. Exposed via [`Frame::depth`] so a debugger can express
@@ -161,15 +187,10 @@ impl<'p> Env<'p> {
     pub(crate) fn new(
         ctx: Context<'p>,
         output: Rc<RefCell<String>>,
-        module: Option<&'p CheckedModule>,
+        module: Option<&'p CheckedRuntimeModule>,
         hook: Option<&'p mut dyn StepHook>,
         depth: usize,
     ) -> Self {
-        // The activation's module supplies both its name (for resolving the calls
-        // inside it and a bare `Enum::member`) and its short→full import aliases.
-        let aliases = module
-            .map(|module| marrow_check::build_alias_map(&module.imports))
-            .unwrap_or_default();
         Self {
             scopes: Vec::new(),
             output,
@@ -177,34 +198,20 @@ impl<'p> Env<'p> {
             store: ctx.store,
             host: ctx.host,
             traversed_layers: Vec::new(),
-            traversed_index_layers: Vec::new(),
             module: module.map_or("", |module| module.name.as_str()),
-            aliases,
             transaction: Rc::clone(&ctx.transaction),
             hook,
             depth,
         }
     }
 
-    /// Fault if `affected` (an encoded saved-layer prefix) is a layer a loop is
-    /// actively traversing. Called before a write/delete/append commits, so
-    /// a self-mutating traversal stops before it changes the iterated key set.
     pub(crate) fn guard_traversed_layer(
         &self,
-        affected: &[PathSegment],
+        affected: &TraversedLayer,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        let affected = encode_path(affected);
-        if self.traversed_layers.iter().any(|layer| layer == &affected) {
-            return Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TRAVERSAL,
-                message: "this write changes the saved layer a loop is traversing; \
-                          collect the keys into a local sequence first"
-                    .into(),
-                span,
-            });
+        if self.traversed_layers.iter().any(|layer| layer == affected) {
+            return Err(traversal_fault(span));
         }
         Ok(())
     }
@@ -244,16 +251,33 @@ impl<'p> Env<'p> {
         // lands, in commit order. An ordinary run has no hook, so this is a single
         // `is_some` check; only an opt-in debugger pays the per-step iteration.
         if let Some(hook) = self.hook.as_deref_mut() {
-            for (op, path, value) in plan.steps() {
-                hook.before_write(op, path, value, self.depth);
+            for (op, target, value) in plan.steps() {
+                hook.before_write(op, &target, value, self.depth);
             }
         }
-        plan.commit(&mut *self.store.borrow_mut(), self.transaction_depth() > 0)
+        plan.commit(self.store, self.transaction_depth() > 0)
             .map_err(|error| error.located(span))
     }
 
     pub(crate) fn transaction_depth(&self) -> usize {
         self.transaction.borrow().depth
+    }
+
+    pub(crate) fn guard_rollback_sensitive_host_effect(
+        &self,
+        effect: &str,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        if self.transaction_depth() == 0 {
+            return Ok(());
+        }
+        Err(RuntimeError::fault(
+            RUN_CAPABILITY,
+            format!(
+                "`{effect}` cannot run inside a transaction because host effects cannot be rolled back"
+            ),
+            span,
+        ))
     }
 
     pub(crate) fn enter_transaction(&self) -> usize {
@@ -270,9 +294,9 @@ impl<'p> Env<'p> {
 
     pub(crate) fn defer_required_entry_check(
         &mut self,
-        root: &str,
+        place: &CheckedSavedPlace,
         identity: &[SavedKey],
-        layers: &[(&str, &[SavedKey])],
+        layers: &[LayerAddress],
     ) {
         let depth = self.transaction_depth();
         if depth == 0 {
@@ -283,20 +307,17 @@ impl<'p> Env<'p> {
             .required_entry_checks
             .push(RequiredEntryCheck {
                 depth,
-                root: root.to_string(),
+                place: place.clone(),
                 identity: identity.to_vec(),
-                layers: layers
-                    .iter()
-                    .map(|(name, keys)| ((*name).to_string(), keys.to_vec()))
-                    .collect(),
+                layers: layers.to_vec(),
             });
     }
 
     pub(crate) fn note_maintenance_required_delete(
         &mut self,
-        root: &str,
+        place: &CheckedSavedPlace,
         identity: &[SavedKey],
-        layers: &[(&str, &[SavedKey])],
+        layers: &[LayerAddress],
     ) {
         let depth = self.transaction_depth();
         if depth == 0 || !self.host.maintenance {
@@ -307,16 +328,13 @@ impl<'p> Env<'p> {
             .maintenance_required_deletes
             .push(RequiredEntryCheck {
                 depth,
-                root: root.to_string(),
+                place: place.clone(),
                 identity: identity.to_vec(),
-                layers: layers
-                    .iter()
-                    .map(|(name, keys)| ((*name).to_string(), keys.to_vec()))
-                    .collect(),
+                layers: layers.to_vec(),
             });
     }
 
-    pub(crate) fn note_created_required_path(&mut self, path: Vec<PathSegment>) {
+    pub(crate) fn note_created_required_path(&mut self, path: DataAddress) {
         let depth = self.transaction_depth();
         if depth == 0 {
             return;
@@ -327,13 +345,13 @@ impl<'p> Env<'p> {
             .push(RequiredPath { depth, path });
     }
 
-    pub(crate) fn required_path_created_in_transaction(&self, path: &[PathSegment]) -> bool {
+    pub(crate) fn required_path_created_in_transaction(&self, path: &DataAddress) -> bool {
         let depth = self.transaction_depth();
         self.transaction
             .borrow()
             .created_required_paths
             .iter()
-            .any(|created| created.depth <= depth && created.path == path)
+            .any(|created| created.depth <= depth && created.path == *path)
     }
 
     pub(crate) fn validate_required_entry_checks(
@@ -355,7 +373,6 @@ impl<'p> Env<'p> {
             .cloned()
             .collect();
         drop(transaction);
-        let store = self.store.borrow();
         for check in checks {
             if maintenance_deletes
                 .iter()
@@ -363,27 +380,21 @@ impl<'p> Env<'p> {
             {
                 continue;
             }
-            let exempt_layers: Vec<Vec<(String, Vec<SavedKey>)>> = maintenance_deletes
+            let exempt_layers: Vec<Vec<LayerAddress>> = maintenance_deletes
                 .iter()
-                .filter(|deleted| deleted.root == check.root && deleted.identity == check.identity)
+                .filter(|deleted| {
+                    deleted.place.store_catalog_id == check.place.store_catalog_id
+                        && deleted.identity == check.identity
+                })
                 .map(RequiredEntryCheck::entry_layers)
                 .collect();
-            let (store_schema, resource) = find_store_resource(self.program, &check.root)
-                .ok_or_else(|| {
-                    unsupported("validating required fields for this saved root", span)
-                })?;
-            let layer_refs: Vec<(&str, &[SavedKey])> = check
-                .layers
-                .iter()
-                .map(|(name, keys)| (name.as_str(), keys.as_slice()))
-                .collect();
             validate_required_fields_for_entry(
-                store_schema,
-                resource,
+                &check.place,
                 &check.identity,
-                &layer_refs,
+                &check.layers,
                 &exempt_layers,
-                &*store,
+                self.store,
+                span,
             )
             .map_err(|error| write_fault(error, span))?;
         }
@@ -441,36 +452,16 @@ impl<'p> Env<'p> {
     }
 
     fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {
-        if self.traversed_layers.is_empty() {
-            return Ok(());
-        }
-        for (op, path, _) in plan.steps() {
-            let path = decode_path(path).ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_STORE,
-                message: "planned write path is malformed".into(),
-                span,
-            })?;
-            for layer in &self.traversed_layers {
-                let layer = decode_path(layer).ok_or_else(|| RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_STORE,
-                    message: "active traversal path is malformed".into(),
-                    span,
-                })?;
-                if plan_step_changes_layer_keys(op, &path, &layer, self, span)? {
-                    return Err(RuntimeError {
-                        throw: None,
-                        origin: None,
-                        code: RUN_TRAVERSAL,
-                        message: "this write changes the saved layer a loop is traversing; \
-                                  collect the keys into a local sequence first"
-                            .into(),
-                        span,
-                    });
+        for step in &plan.steps {
+            match step {
+                PlanStep::WriteData { address, .. } => self.guard_data_write(address, span)?,
+                PlanStep::DeleteData { address } => self.guard_data_delete(address, span)?,
+                PlanStep::DeleteRecordSubtree { address } => {
+                    self.guard_record_subtree_delete(address, span)?
                 }
+                PlanStep::WriteIndex { .. }
+                | PlanStep::DeleteIndex { .. }
+                | PlanStep::DeleteIndexSubtree { .. } => {}
             }
         }
         Ok(())
@@ -481,27 +472,155 @@ impl<'p> Env<'p> {
         plan: &WritePlan,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        if self.traversed_index_layers.is_empty() {
-            return Ok(());
-        }
-        for (_, path, _) in plan.steps() {
-            if self
-                .traversed_index_layers
-                .iter()
-                .any(|prefix| path.starts_with(prefix.as_slice()))
-            {
-                return Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TRAVERSAL,
-                    message: "this write changes the saved layer a loop is traversing; \
-                              collect the keys into a local sequence first"
-                        .into(),
-                    span,
-                });
+        for step in &plan.steps {
+            match step {
+                PlanStep::WriteIndex { address, .. } | PlanStep::DeleteIndex { address, .. } => {
+                    self.guard_index_mutation(address, span)?;
+                }
+                PlanStep::DeleteIndexSubtree { address } => {
+                    self.guard_index_subtree_delete(address, span)?
+                }
+                PlanStep::WriteData { .. }
+                | PlanStep::DeleteData { .. }
+                | PlanStep::DeleteRecordSubtree { .. } => {}
             }
         }
         Ok(())
+    }
+
+    fn guard_data_write(
+        &self,
+        address: &DataAddress,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        for layer in &self.traversed_layers {
+            match layer {
+                TraversedLayer::Record { store }
+                    if store == &address.store && !address.identity.is_empty() =>
+                {
+                    if address.path.is_empty() || !self.record_exists(address, span)? {
+                        return Err(traversal_fault(span));
+                    }
+                }
+                TraversedLayer::Data {
+                    store,
+                    identity,
+                    path,
+                } if store == &address.store
+                    && identity == &address.identity
+                    && data_child_under(path, &address.path).is_some() =>
+                {
+                    if !self.data_child_exists(address, path, span)? {
+                        return Err(traversal_fault(span));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn guard_data_delete(
+        &self,
+        address: &DataAddress,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        for layer in &self.traversed_layers {
+            match layer {
+                TraversedLayer::Record { store }
+                    if store == &address.store && !address.identity.is_empty() =>
+                {
+                    return Err(traversal_fault(span));
+                }
+                TraversedLayer::Data {
+                    store,
+                    identity,
+                    path,
+                } if store == &address.store
+                    && identity == &address.identity
+                    && data_child_under(path, &address.path).is_some() =>
+                {
+                    return Err(traversal_fault(span));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn guard_record_subtree_delete(
+        &self,
+        address: &DataAddress,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        for layer in &self.traversed_layers {
+            match layer {
+                TraversedLayer::Record { store } if store == &address.store => {
+                    return Err(traversal_fault(span));
+                }
+                TraversedLayer::Data {
+                    store, identity, ..
+                } if store == &address.store && identity.starts_with(&address.identity) => {
+                    return Err(traversal_fault(span));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn guard_index_mutation(
+        &self,
+        address: &IndexAddress,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        for layer in &self.traversed_layers {
+            if let TraversedLayer::Index { index, keys } = layer
+                && index == &address.index
+                && address.keys.starts_with(keys)
+            {
+                return Err(traversal_fault(span));
+            }
+        }
+        Ok(())
+    }
+
+    fn guard_index_subtree_delete(
+        &self,
+        address: &IndexAddress,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        for layer in &self.traversed_layers {
+            if let TraversedLayer::Index { index, keys } = layer
+                && index == &address.index
+                && keys.starts_with(&address.keys)
+            {
+                return Err(traversal_fault(span));
+            }
+        }
+        Ok(())
+    }
+
+    fn record_exists(&self, address: &DataAddress, span: SourceSpan) -> Result<bool, RuntimeError> {
+        self.store
+            .data_subtree_exists(&address.store, &address.identity, &[])
+            .map_err(|error| error.located(span))
+    }
+
+    fn data_child_exists(
+        &self,
+        address: &DataAddress,
+        active_path: &[DataPathSegment],
+        span: SourceSpan,
+    ) -> Result<bool, RuntimeError> {
+        let Some(child) = data_child_under(active_path, &address.path) else {
+            return Ok(true);
+        };
+        let mut child_path = active_path.to_vec();
+        child_path.push(child.clone());
+        self.store
+            .data_subtree_exists(&address.store, &address.identity, &child_path)
+            .map_err(|error| error.located(span))
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -545,31 +664,26 @@ impl<'p> Env<'p> {
     }
 }
 
-fn plan_step_changes_layer_keys(
-    op: WriteOp,
-    path: &[PathSegment],
-    layer: &[PathSegment],
-    env: &Env<'_>,
-    span: SourceSpan,
-) -> Result<bool, RuntimeError> {
-    let Some(child) = path.get(layer.len()) else {
-        return Ok(false);
-    };
-    if path[..layer.len()] != *layer
-        || !matches!(child, PathSegment::RecordKey(_) | PathSegment::IndexKey(_))
-    {
-        return Ok(false);
+fn data_child_under<'a>(
+    active_path: &[DataPathSegment],
+    affected_path: &'a [DataPathSegment],
+) -> Option<&'a DataPathSegment> {
+    if affected_path.len() <= active_path.len() || !affected_path.starts_with(active_path) {
+        return None;
     }
-    let child_path = encode_path(&path[..=layer.len()]);
-    match op {
-        WriteOp::Write => {
-            let presence = env
-                .store
-                .borrow()
-                .presence(&child_path)
-                .map_err(|error| error.located(span))?;
-            Ok(matches!(presence, Presence::Absent))
-        }
-        WriteOp::Delete => Ok(path.len() == layer.len() + 1),
+    match &affected_path[active_path.len()] {
+        segment @ DataPathSegment::Key(_) => Some(segment),
+        DataPathSegment::Member(_) => None,
+    }
+}
+
+fn traversal_fault(span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_TRAVERSAL,
+        message: "this write changes the saved layer a loop is traversing; collect the keys into a local sequence first"
+            .into(),
+        span,
     }
 }

@@ -79,7 +79,7 @@ pub fn main()
         shelf: "fiction",
         changedAt: now,
     )
-    addTag(id, "favorite")
+    append(^books(id).tags, "favorite")
     printShelf("fiction")
 ```
 

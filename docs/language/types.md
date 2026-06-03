@@ -204,7 +204,7 @@ Constructors must populate required fields. Omitted sparse fields remain
 absent.
 
 For saved resources, constructors build the resource body. Identity keys live
-in the saved path and are supplied by `nextId(...)` or an explicit generated
+in the saved address and are supplied by `nextId(...)` or an explicit generated
 identity value.
 
 Nested fields and keyed layers are part of the type:
@@ -476,7 +476,7 @@ fn parseTitle(raw: unknown): string
     return string(raw)
 ```
 
-Use `unknown` for host IO, raw inspection, and untyped boundaries.
+Use `unknown` for host IO, inspection tooling, and untyped boundaries.
 Managed saved resources use concrete field and key types. If dynamic payload
 must be persisted, store it as `bytes`, `string`, or an explicitly modeled
 resource shape.

@@ -1,8 +1,12 @@
 //! Typed tree-cell store facade over the ordered-byte backend.
 
+use std::cell::RefCell;
+
 use crate::backend::{Backend, StoreError};
 use crate::cell::{CatalogId, CellKey, MetaCell, SequencePosition};
 use crate::key::{SavedKey, decode_key_value};
+
+pub use crate::cell::DataPathSegment;
 
 const NODE_MARKER: &[u8] = b"node";
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
@@ -10,6 +14,7 @@ const TREE_VALUE_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
 const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_0000000000000000".len();
 const MIN_LENGTH_PREFIX_BYTES: usize = 4;
+const CHILD_SCAN_PAGE_LIMIT: usize = 128;
 
 pub type EngineProfileDigest = [u8; ENGINE_PROFILE_DIGEST_BYTES];
 
@@ -128,6 +133,337 @@ impl TreeEnumMember {
 /// A typed tree-cell facade that constructs physical keys from [`CellKey`].
 pub struct TreeCellStore<'a, B: Backend + ?Sized> {
     backend: &'a mut B,
+}
+
+/// An owning tree-cell store handle for runtime and tooling callers.
+pub struct TreeStore {
+    backend: RefCell<Box<dyn Backend>>,
+}
+
+impl TreeStore {
+    pub fn new<B>(backend: B) -> Self
+    where
+        B: Backend + 'static,
+    {
+        Self::from_backend(Box::new(backend))
+    }
+
+    pub fn from_backend(backend: Box<dyn Backend>) -> Self {
+        Self {
+            backend: RefCell::new(backend),
+        }
+    }
+
+    pub fn begin(&self) -> Result<(), StoreError> {
+        self.backend.borrow_mut().begin()
+    }
+
+    pub fn commit(&self) -> Result<(), StoreError> {
+        self.backend.borrow_mut().commit()
+    }
+
+    pub fn rollback(&self) -> Result<(), StoreError> {
+        self.backend.borrow_mut().rollback()
+    }
+
+    pub fn write_data_value(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_data_value(store, identity, path, value))
+    }
+
+    pub fn read_data_value(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.with_cell(|cell| cell.read_data_value(store, identity, path))
+    }
+
+    pub fn delete_data_subtree(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.delete_data_subtree(store, identity, path))
+    }
+
+    pub fn data_subtree_exists(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<bool, StoreError> {
+        self.with_cell(|cell| cell.data_subtree_exists(store, identity, path))
+    }
+
+    pub fn data_child_keys(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.data_child_keys(store, identity, path))
+    }
+
+    pub fn data_child_keys_rev(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.data_child_keys_rev(store, identity, path))
+    }
+
+    pub fn data_next_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.data_next_child(store, identity, path, after))
+    }
+
+    pub fn data_first_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.data_first_child(store, identity, path))
+    }
+
+    pub fn data_last_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.data_last_child(store, identity, path))
+    }
+
+    pub fn data_prev_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.data_prev_child(store, identity, path, before))
+    }
+
+    pub fn data_child_count(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<usize, StoreError> {
+        self.with_cell(|cell| cell.data_child_count(store, identity, path))
+    }
+
+    pub fn max_int_data_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<i64>, StoreError> {
+        self.with_cell(|cell| cell.max_int_data_child(store, identity, path))
+    }
+
+    pub fn record_child_keys(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.record_child_keys(store, identity_prefix))
+    }
+
+    pub fn record_child_count(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<usize, StoreError> {
+        self.with_cell(|cell| cell.record_child_count(store, identity_prefix))
+    }
+
+    pub fn delete_record_subtree(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.delete_record_subtree(store, identity_prefix))
+    }
+
+    pub fn record_child_keys_rev(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.record_child_keys_rev(store, identity_prefix))
+    }
+
+    pub fn record_next_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.record_next_child(store, identity_prefix, after))
+    }
+
+    pub fn record_first_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.record_first_child(store, identity_prefix))
+    }
+
+    pub fn record_last_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.record_last_child(store, identity_prefix))
+    }
+
+    pub fn record_prev_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.record_prev_child(store, identity_prefix, before))
+    }
+
+    pub fn max_int_record_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<i64>, StoreError> {
+        self.with_cell(|cell| cell.max_int_record_child(store, identity_prefix))
+    }
+
+    pub fn write_index_entry(
+        &self,
+        index: &CatalogId,
+        index_keys: &[SavedKey],
+        identity: &[SavedKey],
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_index_entry(index, index_keys, identity, value))
+    }
+
+    pub fn read_index_entry(
+        &self,
+        index: &CatalogId,
+        index_keys: &[SavedKey],
+        identity: &[SavedKey],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.with_cell(|cell| cell.read_index_entry(index, index_keys, identity))
+    }
+
+    pub fn delete_index_entry(
+        &self,
+        index: &CatalogId,
+        index_keys: &[SavedKey],
+        identity: &[SavedKey],
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.delete_index_entry(index, index_keys, identity))
+    }
+
+    pub fn index_child_keys(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.index_child_keys(index, key_prefix))
+    }
+
+    pub fn delete_index_subtree(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.delete_index_subtree(index, key_prefix))
+    }
+
+    pub fn index_child_keys_rev(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.index_child_keys_rev(index, key_prefix))
+    }
+
+    pub fn index_next_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.index_next_child(index, key_prefix, after))
+    }
+
+    pub fn index_first_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.index_first_child(index, key_prefix))
+    }
+
+    pub fn index_last_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.index_last_child(index, key_prefix))
+    }
+
+    pub fn index_prev_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.with_cell(|cell| cell.index_prev_child(index, key_prefix, before))
+    }
+
+    pub fn scan_index_tuple(
+        &self,
+        index: &CatalogId,
+        index_keys: &[SavedKey],
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        self.with_cell(|cell| cell.scan_index_tuple(index, index_keys, limit))
+    }
+
+    pub fn scan_index_tuple_after(
+        &self,
+        index: &CatalogId,
+        index_keys: &[SavedKey],
+        cursor: &IndexCursor,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        self.with_cell(|cell| cell.scan_index_tuple_after(index, index_keys, cursor, limit))
+    }
+
+    fn with_cell<R>(
+        &self,
+        f: impl for<'b> FnOnce(&mut TreeCellStore<'b, dyn Backend>) -> Result<R, StoreError>,
+    ) -> Result<R, StoreError> {
+        let mut backend = self.backend.borrow_mut();
+        let mut cell = TreeCellStore::new(&mut **backend);
+        f(&mut cell)
+    }
 }
 
 impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
@@ -280,6 +616,209 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::sequence(store, identity, member, position).as_bytes())
     }
 
+    pub fn write_data_value(
+        &mut self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.backend.write(
+            CellKey::data_path_value(store, identity, path).as_bytes(),
+            value,
+        )
+    }
+
+    pub fn read_data_value(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.backend
+            .read(CellKey::data_path_value(store, identity, path).as_bytes())
+    }
+
+    pub fn delete_data_subtree(
+        &mut self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<(), StoreError> {
+        self.backend
+            .delete(CellKey::data_path_prefix(store, identity, path).as_bytes())
+    }
+
+    pub fn data_subtree_exists(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<bool, StoreError> {
+        if self.read_data_value(store, identity, path)?.is_some() {
+            return Ok(true);
+        }
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        Ok(!self.backend.scan(prefix.as_bytes(), 1)?.entries.is_empty())
+    }
+
+    pub fn data_child_keys(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.child_keys(prefix.as_bytes(), decode_data_child)
+    }
+
+    pub fn data_child_keys_rev(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let mut keys = self.data_child_keys(store, identity, path)?;
+        keys.reverse();
+        Ok(keys)
+    }
+
+    pub fn data_next_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.next_child_after(prefix.as_bytes(), after, decode_data_child)
+    }
+
+    pub fn data_prev_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.prev_child_before(prefix.as_bytes(), before, decode_data_child)
+    }
+
+    pub fn data_first_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.first_child(prefix.as_bytes(), decode_data_child)
+    }
+
+    pub fn data_last_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.last_child(prefix.as_bytes(), decode_data_child)
+    }
+
+    pub fn data_child_count(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<usize, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.child_count(prefix.as_bytes(), decode_data_child)
+    }
+
+    pub fn record_child_keys(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.child_keys(prefix.as_bytes(), decode_record_child)
+    }
+
+    pub fn record_child_count(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<usize, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.child_count(prefix.as_bytes(), decode_record_child)
+    }
+
+    pub fn delete_record_subtree(
+        &mut self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<(), StoreError> {
+        self.backend
+            .delete(CellKey::record_prefix(store, identity_prefix).as_bytes())
+    }
+
+    pub fn record_child_keys_rev(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let mut keys = self.record_child_keys(store, identity_prefix)?;
+        keys.reverse();
+        Ok(keys)
+    }
+
+    pub fn record_next_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.next_child_after(prefix.as_bytes(), after, decode_record_child)
+    }
+
+    pub fn record_prev_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.prev_child_before(prefix.as_bytes(), before, decode_record_child)
+    }
+
+    pub fn record_first_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.first_child(prefix.as_bytes(), decode_record_child)
+    }
+
+    pub fn record_last_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.last_child(prefix.as_bytes(), decode_record_child)
+    }
+
+    pub fn max_int_record_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<i64>, StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.max_int_child(prefix.as_bytes(), decode_record_child)
+    }
+
     pub fn write_index_entry(
         &mut self,
         index: &CatalogId,
@@ -311,6 +850,82 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     ) -> Result<(), StoreError> {
         self.backend
             .delete(CellKey::index(index, index_keys, identity).as_bytes())
+    }
+
+    pub fn index_child_keys(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.child_keys(prefix.as_bytes(), decode_index_child)
+    }
+
+    pub fn delete_index_subtree(
+        &mut self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<(), StoreError> {
+        self.backend
+            .delete(CellKey::index_key_prefix(index, key_prefix).as_bytes())
+    }
+
+    pub fn index_child_keys_rev(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let mut keys = self.index_child_keys(index, key_prefix)?;
+        keys.reverse();
+        Ok(keys)
+    }
+
+    pub fn index_next_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.next_child_after(prefix.as_bytes(), after, decode_index_child)
+    }
+
+    pub fn index_prev_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.prev_child_before(prefix.as_bytes(), before, decode_index_child)
+    }
+
+    pub fn index_first_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.first_child(prefix.as_bytes(), decode_index_child)
+    }
+
+    pub fn index_last_child(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.last_child(prefix.as_bytes(), decode_index_child)
+    }
+
+    pub fn max_int_data_child(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<Option<i64>, StoreError> {
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.max_int_child(prefix.as_bytes(), decode_data_child)
     }
 
     pub fn scan_index_tuple(
@@ -396,6 +1011,195 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .map(|bytes| decode_u64(&bytes))
             .transpose()
     }
+
+    fn child_keys(
+        &self,
+        prefix: &[u8],
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Vec<SavedKey>, StoreError> {
+        let mut keys = Vec::new();
+        self.scan_children(prefix, |child| keys.push(child), decode)?;
+        Ok(keys)
+    }
+
+    fn child_count(
+        &self,
+        prefix: &[u8],
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<usize, StoreError> {
+        let mut count = 0;
+        self.scan_children(
+            prefix,
+            |child| {
+                let _ = child;
+                count += 1;
+            },
+            decode,
+        )?;
+        Ok(count)
+    }
+
+    fn scan_children(
+        &self,
+        prefix: &[u8],
+        mut visit: impl FnMut(SavedKey),
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<(), StoreError> {
+        self.scan_children_until(
+            prefix,
+            |child| {
+                visit(child);
+                std::ops::ControlFlow::Continue(())
+            },
+            decode,
+        )
+    }
+
+    fn scan_children_until(
+        &self,
+        prefix: &[u8],
+        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<(), StoreError> {
+        let mut cursor: Option<Vec<u8>> = None;
+        let mut last_child: Option<SavedKey> = None;
+        loop {
+            let page = match cursor.as_ref() {
+                Some(cursor) => self
+                    .backend
+                    .scan_after(prefix, cursor, CHILD_SCAN_PAGE_LIMIT)?,
+                None => self.backend.scan(prefix, CHILD_SCAN_PAGE_LIMIT)?,
+            };
+            cursor = page.entries.last().map(|(key, _)| key.clone());
+            for (key, _) in page.entries {
+                let rest = key.get(prefix.len()..).unwrap_or_default();
+                if let Some(child) = decode(rest) {
+                    if last_child.as_ref() == Some(&child) {
+                        continue;
+                    }
+                    last_child = Some(child.clone());
+                    if visit(child).is_break() {
+                        return Ok(());
+                    }
+                }
+            }
+            if !page.truncated {
+                break;
+            }
+            if cursor.is_none() {
+                return Err(StoreError::InvalidCursor {
+                    message: "child scan page was truncated without a cursor".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn next_child_after(
+        &self,
+        prefix: &[u8],
+        after: &SavedKey,
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut seen_anchor = false;
+        let mut result = None;
+        self.scan_children_until(
+            prefix,
+            |child| {
+                if seen_anchor {
+                    result = Some(child);
+                    return std::ops::ControlFlow::Break(());
+                }
+                seen_anchor = &child == after;
+                std::ops::ControlFlow::Continue(())
+            },
+            decode,
+        )?;
+        Ok(result)
+    }
+
+    fn prev_child_before(
+        &self,
+        prefix: &[u8],
+        before: &SavedKey,
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut previous = None;
+        let mut result = None;
+        self.scan_children_until(
+            prefix,
+            |child| {
+                if &child == before {
+                    result = previous.take();
+                    return std::ops::ControlFlow::Break(());
+                }
+                previous = Some(child);
+                std::ops::ControlFlow::Continue(())
+            },
+            decode,
+        )?;
+        Ok(result)
+    }
+
+    fn first_child(
+        &self,
+        prefix: &[u8],
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut result = None;
+        self.scan_children_until(
+            prefix,
+            |child| {
+                result = Some(child);
+                std::ops::ControlFlow::Break(())
+            },
+            decode,
+        )?;
+        Ok(result)
+    }
+
+    fn last_child(
+        &self,
+        prefix: &[u8],
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut result = None;
+        self.scan_children(prefix, |child| result = Some(child), decode)?;
+        Ok(result)
+    }
+
+    fn max_int_child(
+        &self,
+        prefix: &[u8],
+        decode: fn(&[u8]) -> Option<SavedKey>,
+    ) -> Result<Option<i64>, StoreError> {
+        let mut result = None;
+        self.scan_children(
+            prefix,
+            |child| {
+                if let SavedKey::Int(value) = child {
+                    result = Some(result.map_or(value, |max: i64| max.max(value)));
+                }
+            },
+            decode,
+        )?;
+        Ok(result)
+    }
+}
+
+fn decode_record_child(bytes: &[u8]) -> Option<SavedKey> {
+    decode_key_value(bytes).map(|(key, _)| key)
+}
+
+fn decode_data_child(bytes: &[u8]) -> Option<SavedKey> {
+    crate::cell::decode_data_child_key(bytes)
+}
+
+fn decode_index_child(bytes: &[u8]) -> Option<SavedKey> {
+    if bytes.first().copied() == Some(0) {
+        return decode_key_value(bytes.get(1..)?).map(|(key, _)| key);
+    }
+    decode_key_value(bytes).map(|(key, _)| key)
 }
 
 pub fn encode_tree_reference(value: &TreeReference) -> Result<Vec<u8>, StoreError> {

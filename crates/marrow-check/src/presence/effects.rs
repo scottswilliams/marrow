@@ -1,16 +1,17 @@
-use marrow_syntax::{Argument, Expression, ForBinding, InterpolationPart};
-
 use super::calls::wrapper_arg;
 use super::keys::{assigned_bindings, binding_key};
 use super::scope::NameScope;
 use super::target::{ReadPlace, ReadTarget, read_target_with_scope};
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
-use crate::CheckedProgram;
+use crate::{
+    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedExpr, CheckedForBinding,
+    CheckedInterpolationPart, CheckedProgram,
+};
 
 pub(super) fn condition_narrowings(
     program: &CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     scope: &NameScope,
 ) -> Vec<ReadTarget> {
     let mutations = mutating_bindings_in_expr(expr, scope);
@@ -24,12 +25,12 @@ struct ConditionEffects {
 
 fn condition_effects_after_mutations(
     program: &CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     scope: &NameScope,
     mutations: &[u32],
 ) -> ConditionEffects {
     match expr {
-        Expression::Call { callee, args, .. } if super::calls::is_exists_call(callee) => {
+        CheckedExpr::Call { callee, args, .. } if super::calls::is_exists_call(callee) => {
             ConditionEffects {
                 narrowings: args
                     .first()
@@ -45,8 +46,8 @@ fn condition_effects_after_mutations(
                 writes_saved: expr_calls_saved_writer(program, expr, &mut Vec::new()),
             }
         }
-        Expression::Binary {
-            op: marrow_syntax::BinaryOp::And,
+        CheckedExpr::Binary {
+            op: CheckedBinaryOp::And,
             left,
             right,
             ..
@@ -72,8 +73,8 @@ fn condition_effects_after_mutations(
 
 pub(super) fn traversal_narrowing(
     program: &CheckedProgram,
-    iterable: &Expression,
-    binding: &ForBinding,
+    iterable: &CheckedExpr,
+    binding: &CheckedForBinding,
     scope: &NameScope,
 ) -> Option<ReadTarget> {
     let two_name_loop = binding.second.is_some();
@@ -91,7 +92,7 @@ pub(super) fn traversal_narrowing(
     Some(target)
 }
 
-fn traversal_key_path(expr: &Expression, two_name_loop: bool) -> Option<&Expression> {
+fn traversal_key_path(expr: &CheckedExpr, two_name_loop: bool) -> Option<&CheckedExpr> {
     if let Some(arg) = wrapper_arg(expr, "reversed") {
         return traversal_key_path(arg, two_name_loop);
     }
@@ -194,22 +195,19 @@ fn related_prefix<T: PartialEq>(left: &[T], right: &[T]) -> bool {
     slice_prefix(left, right) || slice_prefix(right, left)
 }
 
-pub(super) fn mutating_arg_bindings(args: &[Argument], scope: &NameScope) -> Vec<u32> {
+pub(super) fn mutating_arg_bindings(args: &[CheckedArg], scope: &NameScope) -> Vec<u32> {
     let mut bindings = Vec::new();
     for arg in args {
-        if matches!(
-            arg.mode,
-            Some(marrow_syntax::ArgMode::Out | marrow_syntax::ArgMode::InOut)
-        ) {
+        if matches!(arg.mode, Some(CheckedArgMode::Out | CheckedArgMode::InOut)) {
             extend_unique(&mut bindings, assigned_bindings(&arg.value, scope));
         }
     }
     bindings
 }
 
-fn mutating_bindings_in_expr(expr: &Expression, scope: &NameScope) -> Vec<u32> {
+fn mutating_bindings_in_expr(expr: &CheckedExpr, scope: &NameScope) -> Vec<u32> {
     match expr {
-        Expression::Call { callee, args, .. } => {
+        CheckedExpr::Call { callee, args, .. } => {
             let mut bindings = mutating_arg_bindings(args, scope);
             extend_unique(&mut bindings, mutating_bindings_in_expr(callee, scope));
             for arg in args {
@@ -217,25 +215,25 @@ fn mutating_bindings_in_expr(expr: &Expression, scope: &NameScope) -> Vec<u32> {
             }
             bindings
         }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
             mutating_bindings_in_expr(base, scope)
         }
-        Expression::Unary { operand, .. } => mutating_bindings_in_expr(operand, scope),
-        Expression::Binary { left, right, .. } => {
+        CheckedExpr::Unary { operand, .. } => mutating_bindings_in_expr(operand, scope),
+        CheckedExpr::Binary { left, right, .. } => {
             let mut bindings = mutating_bindings_in_expr(left, scope);
             extend_unique(&mut bindings, mutating_bindings_in_expr(right, scope));
             bindings
         }
-        Expression::Interpolation { parts, .. } => {
+        CheckedExpr::Interpolation { parts, .. } => {
             let mut bindings = Vec::new();
             for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
+                if let CheckedInterpolationPart::Expr(expr) = part {
                     extend_unique(&mut bindings, mutating_bindings_in_expr(expr, scope));
                 }
             }
             bindings
         }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {
+        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
             Vec::new()
         }
     }

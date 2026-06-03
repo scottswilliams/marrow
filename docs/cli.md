@@ -6,7 +6,7 @@ database.
 ```
 marrow check [--format text|json|jsonl] <file.mw | projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
-marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
+marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <roots|stats|dump|integrity> <projectdir>
@@ -128,7 +128,7 @@ unknown flag, or a `-` stdin argument.
 ## `marrow run`
 
 ```
-marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
+marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 ```
 
@@ -138,8 +138,11 @@ an in-memory store when none is configured (see
 [project-config.md](project-config.md)). A project must check cleanly before it
 runs.
 
-The entry is `--entry` if given, otherwise the project's `run.defaultEntry`. If
-neither is present, `run` fails with `run.no_entry` (exit `1`).
+The entry is `--entry` if given, otherwise the project's `run.defaultEntry`.
+Qualified entries (`module::function`) resolve exactly. A bare entry name is
+accepted only when it names one public function in the checked program; ambiguous
+bare names fail with `run.ambiguous_function`. If neither entry source is
+present, `run` fails with `run.no_entry` (exit `1`).
 
 Output written with `print`/`write` goes to stdout. `std::log` output goes to
 stderr. The run reads the real system clock, environment, and filesystem.

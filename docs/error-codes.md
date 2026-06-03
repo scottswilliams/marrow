@@ -215,7 +215,8 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.divide_by_zero` | Integer division or remainder by zero. |
 | `run.no_enclosing_loop` | A `break`/`continue` reached the top of a function with no loop to target. Fatal runtime control-flow backstop. |
 | `run.unknown_function` | A call named a function the program does not declare. Fatal runtime backstop for unchecked programs. |
-| `run.private_function` | A qualified call reached a function that exists but is not `pub` to the calling module. The runtime backstop for `check.private_function`. |
+| `run.ambiguous_function` | A bare run entry name matched more than one public function. Qualify the entry as `module::function`. |
+| `run.private_function` | A qualified call or run entry reached a function that exists but is not `pub` to the caller. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
 | `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. |
 | `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. Fatal storage/backend failure while evaluating a read. |

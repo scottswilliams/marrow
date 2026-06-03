@@ -1,7 +1,7 @@
 //! Runtime faults: `RuntimeError`, the `run.*` codes, and the fault constructors.
 
-use marrow_check::{CheckedModule, CheckedProgram, FileId};
-use marrow_store::backend::StoreError;
+use marrow_check::{CheckedRuntimeModule, CheckedRuntimeProgram, FileId};
+use marrow_store::StoreError;
 use marrow_store::value::{ScalarType, ValueError};
 use marrow_syntax::SourceSpan;
 
@@ -32,7 +32,7 @@ pub struct RuntimeError {
     /// `Err` the runtime threads through its `Result`s.
     pub throw: Option<Box<Value>>,
     /// The file the fault was raised in, as a [`FileId`] into the running
-    /// [`CheckedProgram`]. The `span`'s byte offsets are per-file, so this
+    /// [`CheckedRuntimeProgram`]. The `span`'s byte offsets are per-file, so this
     /// supplies the file identity they lack. It is `None` until the fault leaves
     /// the activation that raised it (where [`invoke`] stamps it) and stays
     /// `None` for activations without module context.
@@ -57,8 +57,8 @@ impl RuntimeError {
     /// unrecognized one, the origin is left as it was.
     pub(crate) fn with_origin_from(
         mut self,
-        program: &CheckedProgram,
-        module: Option<&CheckedModule>,
+        program: &CheckedRuntimeProgram,
+        module: Option<&CheckedRuntimeModule>,
     ) -> Self {
         if self.origin.is_none() {
             self.origin = module.and_then(|module| program.file_id_of(module));
@@ -97,6 +97,9 @@ pub const RUN_NO_ENCLOSING_LOOP: &str = "run.no_enclosing_loop";
 
 /// A call named a function the program does not declare.
 pub const RUN_UNKNOWN_FUNCTION: &str = "run.unknown_function";
+
+/// An entry name matched more than one public function and must be qualified.
+pub const RUN_AMBIGUOUS_FUNCTION: &str = "run.ambiguous_function";
 
 /// A qualified call named a function that exists but is not `pub`, so it is not
 /// callable from the calling module. The checker (`check.private_function`)
@@ -161,6 +164,28 @@ pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
         origin: None,
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{name}`"),
+        span,
+    }
+}
+
+/// A `run.ambiguous_function` fault for a bare entry name that needs a module.
+pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_AMBIGUOUS_FUNCTION,
+        message: format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
+        span,
+    }
+}
+
+/// A `run.private_function` fault for an entry that names a private function.
+pub(crate) fn private_function(name: &str, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_PRIVATE_FUNCTION,
+        message: format!("function `{name}` is private to its module"),
         span,
     }
 }

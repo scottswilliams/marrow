@@ -2,31 +2,32 @@
 
 use std::cmp::Ordering;
 
-use marrow_schema::{EnumSchema, MemberPathResolution};
-use marrow_store::Decimal;
-use marrow_syntax::{
-    BinaryOp, Expression, InterpolationPart, LiteralKind, SourceSpan, UnaryOp,
-    duration_unit_seconds,
+use marrow_check::{
+    CheckedBinaryOp as BinaryOp, CheckedEnumMemberRef, CheckedExpr as ExecExpr,
+    CheckedInterpolationPart as InterpolationPart, CheckedLiteralKind as LiteralKind,
+    CheckedUnaryOp as UnaryOp,
 };
+use marrow_store::Decimal;
+use marrow_syntax::{SourceSpan, duration_unit_seconds};
 
 use crate::call::eval_call;
-use crate::collection::eval_local_collection_read;
+use crate::durable_read::{eval_optional_field, eval_saved_field, read_resource};
 use crate::env::Env;
 use crate::error::{
     RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_UNBOUND_NAME, RuntimeError,
     decimal_overflow, divide_by_zero, overflow, raise_fault, type_error, unsupported,
 };
-use crate::read::{eval_local_field_get, eval_optional_field, eval_saved_field, read_resource};
-use crate::schema_query::{enum_in, is_saved_path, resolve_enum};
+use crate::path::direct_root_place;
+use crate::read::eval_local_field_get;
 use crate::stdlib::int_remainder;
-use crate::value::{Value, render};
+use crate::value::{Value, enum_id_from_ref, enum_value_from_member, render};
 
 /// Evaluate `path ?? default`: the value at the left path read, or `default` when
 /// it is absent. Schema/type errors are not hidden — only an absent element
 /// (`run.absent_element`) falls back to the default.
 pub(crate) fn eval_coalesce(
-    path: &Expression,
-    default: &Expression,
+    path: &ExecExpr,
+    default: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match eval_expr(path, env) {
@@ -39,129 +40,115 @@ pub(crate) fn eval_coalesce(
     }
 }
 
-/// Resolve a member-path literal (`Enum::member`, `Cat::tiger::bengal`, or a
-/// qualified `mod::Enum::member`) to its enum schema and the member's pre-order
-/// ordinal, or `None` when the path is not a member reference (too few segments, or
-/// no such enum). The enum is the longest visible-enum prefix and the rest is the
-/// member path, walked down the schema's member tree by the same shared walk the
-/// checker uses, so a value and its check cannot disagree. A path that does not
-/// walk to a single member only arises in an unchecked program and is a fault.
-/// Shared by the `Name` value eval and the `is` operator.
-fn resolve_enum_member<'p>(
-    segments: &[String],
-    span: SourceSpan,
-    env: &Env<'p>,
-) -> Result<Option<(&'p EnumSchema, usize)>, RuntimeError> {
-    if segments.len() < 2 {
-        return Ok(None);
+pub(crate) fn eval_expr(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
+    if let Some(place) = direct_root_place(expr) {
+        return read_resource(place, &[], expr.span(), env);
     }
-    // A bare `Enum::path` takes `segments[0]` as a same-module enum; the rest is the
-    // member path. Otherwise the enum is a qualified `module::Enum`, found by the
-    // longest module prefix that names a known enum (leaving ≥1 member segment).
-    let (schema, path) = if let Some(schema) = resolve_enum(env.program, env.module, &segments[0]) {
-        (schema, &segments[1..])
-    } else {
-        let mut found = None;
-        for enum_index in (1..segments.len() - 1).rev() {
-            let module =
-                marrow_check::expand_module_alias(&segments[..enum_index].join("::"), &env.aliases);
-            if let Some(schema) = enum_in(env.program, &module, &segments[enum_index]) {
-                found = Some((schema, &segments[enum_index + 1..]));
-                break;
-            }
-        }
-        let Some(found) = found else {
-            return Ok(None);
-        };
-        found
-    };
-    let walk_path: Vec<&str> = path.iter().map(String::as_str).collect();
-    match schema.walk_member_path(&walk_path) {
-        MemberPathResolution::Found(ordinal) => Ok(Some((schema, ordinal))),
-        // The checker proved a value/`is` operand walks to exactly one member, so
-        // a miss here is a fault, not a reachable path.
-        _ => Err(unsupported("a qualified name", span)),
-    }
-}
-
-pub(crate) fn eval_expr(expr: &Expression, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
     match expr {
-        Expression::Literal { kind, text, span } => eval_literal(*kind, text, *span),
-        Expression::Name { segments, span } => {
-            // An `Enum::member` (bare) or `mod::Enum::member` (qualified) evaluates
-            // to the member's declaration-order ordinal as an int — the enum's
-            // stored form. The checker has already validated the reference, so an
-            // unknown enum/member here only arises in an unchecked program and is a
-            // fatal fault.
-            // The last segment is the member, the one before it the enum name; any
-            // remaining prefix is the owning module, joined by `::` so a nested
-            // module stays whole (`a::b::Status::active` → module `a::b`, enum
-            // `Status`, member `active`). A bare `Enum::member` (no prefix) resolves
-            // relative to the running module, mirroring the checker.
-            if let Some((_, ordinal)) = resolve_enum_member(segments, *span, env)? {
-                return Ok(Value::Int(ordinal as i64));
-            }
-            if segments.len() != 1 {
-                return Err(unsupported("a qualified name", *span));
-            }
-            env.lookup(&segments[0])
-                .cloned()
-                .ok_or_else(|| RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_UNBOUND_NAME,
-                    message: format!("`{}` is not bound", segments[0]),
-                    span: *span,
-                })
-        }
-        Expression::Unary { op, operand, span } => eval_unary(*op, operand, *span, env),
-        Expression::Binary {
+        ExecExpr::Literal { kind, text, span } => eval_literal(*kind, text, *span),
+        ExecExpr::Name {
+            segments,
+            enum_member,
+            span,
+        } => eval_name(segments, *enum_member, *span, env),
+        ExecExpr::Unary { op, operand, span } => eval_unary(*op, operand, *span, env),
+        ExecExpr::Binary {
             op,
             left,
             right,
             span,
         } => eval_binary(*op, left, right, *span, env),
-        Expression::Call {
-            callee, args, span, ..
-        } => {
-            if let Expression::Name { segments, .. } = callee.as_ref()
-                && let [name] = segments.as_slice()
-                && let Some(value) = eval_local_collection_read(name, args, *span, env)?
-            {
-                return Ok(value);
-            }
-            match eval_call(callee, args, *span, env)? {
-                Some(value) => Ok(value),
-                None => Err(RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_NO_VALUE,
-                    message: "a call to a function that returns no value cannot be used as a value"
-                        .into(),
-                    span: *span,
-                }),
-            }
-        }
-        Expression::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
-        // A dotted field read: off a saved root (`^books(id).title`) it is a
-        // saved read; off a local it reads the resource value's field.
-        Expression::Field {
+        ExecExpr::Call {
+            callee,
+            args,
+            target,
+            span,
+            ..
+        } => eval_call_expr(expr, callee, args, target, *span, env),
+        ExecExpr::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
+        ExecExpr::Field {
             base, name, span, ..
-        } => {
-            if is_saved_path(base) {
-                eval_saved_field(expr, env)
-            } else {
-                eval_local_field_get(base, name, *span, env)
-            }
-        }
-        // An optional field read `base?.name`: the same read as `Field`, but an
-        // absent base or field short-circuits the chain to absent.
-        Expression::OptionalField {
+        } => eval_field(expr, base, name, *span, env),
+        ExecExpr::OptionalField {
             base, name, span, ..
         } => eval_optional_field(expr, base, name, *span, env),
-        // A bare saved root read (`^settings`) is a whole-resource read of a
-        // keyless singleton; a keyed root needs a `^root(key…)` call.
-        Expression::SavedRoot { name, span, .. } => read_resource(name, &[], *span, env),
+        _ => Err(unsupported("this expression", expr.span())),
+    }
+}
+
+fn eval_name(
+    segments: &[String],
+    enum_member: Option<marrow_check::CheckedEnumMemberRef>,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if let Some(member) = enum_member {
+        return enum_member_value(member, span, env);
+    }
+    if segments.len() != 1 {
+        return Err(unsupported("a qualified name", span));
+    }
+    env.lookup(&segments[0])
+        .cloned()
+        .ok_or_else(|| RuntimeError {
+            throw: None,
+            origin: None,
+            code: RUN_UNBOUND_NAME,
+            message: format!("`{}` is not bound", segments[0]),
+            span,
+        })
+}
+
+fn enum_member_value(
+    member: CheckedEnumMemberRef,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let enum_id = enum_id_from_ref(member.enum_ref);
+    let member_fact = env
+        .program
+        .facts()
+        .enum_member(member.member_id)
+        .ok_or_else(|| unsupported("this enum member", span))?;
+    if member_fact.enum_id != enum_id {
+        return Err(unsupported("this enum member", span));
+    }
+    enum_value_from_member(env.program.facts(), member.member_id)
+        .map(Value::Enum)
+        .ok_or_else(|| unsupported("this enum member", span))
+}
+
+fn eval_call_expr(
+    call: &ExecExpr,
+    callee: &ExecExpr,
+    args: &[marrow_check::CheckedArg],
+    target: &marrow_check::CheckedCallTarget,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    match eval_call(call, callee, args, target, span, env)? {
+        Some(value) => Ok(value),
+        None => Err(RuntimeError {
+            throw: None,
+            origin: None,
+            code: RUN_NO_VALUE,
+            message: "a call to a function that returns no value cannot be used as a value".into(),
+            span,
+        }),
+    }
+}
+
+fn eval_field(
+    expr: &ExecExpr,
+    base: &ExecExpr,
+    name: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if base.saved_place().is_some() {
+        eval_saved_field(expr, env)
+    } else {
+        eval_local_field_get(base, name, span, env)
     }
 }
 
@@ -336,7 +323,7 @@ fn hex_digit(ch: char) -> Option<u8> {
 
 pub(crate) fn eval_unary(
     op: UnaryOp,
-    operand: &Expression,
+    operand: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -356,8 +343,8 @@ pub(crate) fn eval_unary(
 
 pub(crate) fn eval_binary(
     op: BinaryOp,
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -410,36 +397,45 @@ pub(crate) fn eval_binary(
 }
 
 /// Evaluate `left is right`: whether the left enum value sits at or under the
-/// right member in its enum's hierarchy. The left evaluates to its stored ordinal;
-/// the right is a member-path literal resolved to its ordinal, and the test is the
-/// schema's inclusive `is_descendant` — exact for a concrete-leaf right, a subtree
-/// test for a category. The checker proved both sides name the same enum, so an
-/// unresolved right is a fault, not a reachable program path.
+/// checked right-member fact in its enum's hierarchy.
 pub(crate) fn eval_is(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let Value::Int(ordinal) = eval_expr(left, env)? else {
+    let Value::Enum(value) = eval_expr(left, env)? else {
         return Err(type_error("operator `is` requires an enum value", span));
     };
-    let Expression::Name { segments, .. } = right else {
+    let ExecExpr::Name {
+        enum_member: Some(member),
+        ..
+    } = right
+    else {
         return Err(unsupported("the right operand of `is`", span));
     };
-    let (schema, ancestor) = resolve_enum_member(segments, span, env)?
+    let enum_id = enum_id_from_ref(member.enum_ref);
+    let right_member_id = member.member_id;
+    let member = env
+        .program
+        .facts()
+        .enum_member(right_member_id)
         .ok_or_else(|| unsupported("the right operand of `is`", span))?;
-    Ok(Value::Bool(
-        schema.is_descendant(ordinal as usize, ancestor),
-    ))
+    if member.enum_id != enum_id {
+        return Err(unsupported("the right operand of `is`", span));
+    }
+    Ok(Value::Bool(env.program.facts().enum_member_is_descendant(
+        value.member_id,
+        right_member_id,
+    )))
 }
 
 /// Apply a checked numeric operation to two operands of the same numeric type —
 /// both integers or both decimals — mapping overflow to a typed runtime fault. The
 /// checker rejects mixed int/decimal operands, so a mismatch here is a type error.
 pub(crate) fn numeric_op(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     env: &mut Env<'_>,
     span: SourceSpan,
     int_op: fn(i64, i64) -> Option<i64>,
@@ -463,8 +459,8 @@ pub(crate) fn numeric_op(
 /// divisor is `run.divide_by_zero`; a result outside the decimal envelope is
 /// `run.decimal_overflow`.
 pub(crate) fn decimal_div(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
@@ -495,8 +491,8 @@ pub(crate) fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, Runt
 /// division-family operator; it shares the one integer-remainder path (and its
 /// "integer remainder by zero" message) with `std::math::remainder`.
 pub(crate) fn int_remainder_op(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
@@ -508,8 +504,8 @@ pub(crate) fn int_remainder_op(
 /// Compare two values of the same orderable type — integers or strings — and
 /// test the resulting ordering. Booleans and mismatched types are not orderable.
 pub(crate) fn compare_values(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     env: &mut Env<'_>,
     span: SourceSpan,
     want: fn(Ordering) -> bool,
@@ -535,8 +531,8 @@ pub(crate) fn compare_values(
 
 /// Concatenate two strings with `++`.
 pub(crate) fn concat(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
@@ -549,8 +545,8 @@ pub(crate) fn concat(
 /// Whether two values are equal. They must share a scalar type; comparing across
 /// types is a runtime type error (the checker rejects it statically).
 pub(crate) fn values_equal(
-    left: &Expression,
-    right: &Expression,
+    left: &ExecExpr,
+    right: &ExecExpr,
     env: &mut Env<'_>,
     span: SourceSpan,
 ) -> Result<bool, RuntimeError> {
@@ -563,6 +559,9 @@ pub(crate) fn values_equal(
         (Value::Instant(a), Value::Instant(b)) => Ok(a == b),
         (Value::Date(a), Value::Date(b)) => Ok(a == b),
         (Value::Duration(a), Value::Duration(b)) => Ok(a == b),
+        (Value::Enum(a), Value::Enum(b)) => {
+            Ok(a.enum_id == b.enum_id && a.member_id == b.member_id)
+        }
         // Two identities compare by their key segments. The checker's nominal rule
         // already requires both to name the same resource, so a value comparison of
         // the keys is the whole verdict; identities of different resources never
@@ -572,7 +571,7 @@ pub(crate) fn values_equal(
     }
 }
 
-pub(crate) fn eval_int(expr: &Expression, env: &mut Env<'_>) -> Result<i64, RuntimeError> {
+pub(crate) fn eval_int(expr: &ExecExpr, env: &mut Env<'_>) -> Result<i64, RuntimeError> {
     match eval_expr(expr, env)? {
         Value::Int(n) => Ok(n),
         _ => Err(type_error("expected an integer", expr.span())),
@@ -583,7 +582,7 @@ pub(crate) fn eval_int(expr: &Expression, env: &mut Env<'_>) -> Result<i64, Runt
 /// it did not parse, which the checker rejects before a program reaches the runtime;
 /// guard against it anyway so a malformed condition faults rather than panics.
 pub(crate) fn eval_condition(
-    condition: Option<&Expression>,
+    condition: Option<&ExecExpr>,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<bool, RuntimeError> {
@@ -593,7 +592,7 @@ pub(crate) fn eval_condition(
     }
 }
 
-pub(crate) fn eval_bool(expr: &Expression, env: &mut Env<'_>) -> Result<bool, RuntimeError> {
+pub(crate) fn eval_bool(expr: &ExecExpr, env: &mut Env<'_>) -> Result<bool, RuntimeError> {
     match eval_expr(expr, env)? {
         Value::Bool(b) => Ok(b),
         _ => Err(type_error("expected a boolean", expr.span())),

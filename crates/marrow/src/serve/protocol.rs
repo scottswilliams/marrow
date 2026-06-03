@@ -2,8 +2,8 @@
 //!
 //! Each request and reply is one JSON object on its own line (newline-delimited).
 //! This module is the transport-free core: [`handle_request`] turns one request
-//! value into one reply value against a [`Backend`], so it is unit-tested without
-//! sockets. A reply is `{"id": …, "ok": …}` on success or
+//! value into one reply value against checked tree-cell data, so it is
+//! unit-tested without sockets. A reply is `{"id": …, "ok": …}` on success or
 //! `{"id": …, "error": {"code": …, "message": …}}` on failure, echoing the
 //! request's `id`.
 //!
@@ -11,13 +11,19 @@
 //! `saved_roots` and the path-addressed reads `saved_get`, `saved_children`, and
 //! `saved_walk`.
 
-use marrow_run::base64;
-use marrow_store::backend::Backend;
-use marrow_store::backend::Presence;
-use marrow_store::path::{
-    ChildSegment, PathSegment, SavedKey, decode_path as decode_store_path, encode_path,
+use marrow_check::{
+    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place,
 };
+use marrow_run::base64;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::{DataPathSegment, TreeStore};
 use serde_json::{Value, json};
+
+use crate::cmd_data::get::{
+    DataQuery, DataQuerySegment, presence_name, read_query, render_query_segments,
+    resolve_data_query,
+};
+use crate::cmd_data::inspect::{checked_catalog_id, data_roots_in_store, visit_data_records};
 
 /// A request was malformed — not an object, or missing a string `op`.
 pub const PROTOCOL_MALFORMED: &str = "protocol.malformed";
@@ -37,9 +43,9 @@ struct ProtocolError {
 
 /// Handle one request, returning its reply. Never fails: every error — protocol
 /// or storage — becomes an `error` reply that echoes the request's `id`.
-pub fn handle_request(store: &dyn Backend, request: &Value) -> Value {
+pub fn handle_request(program: &CheckedProgram, store: &TreeStore, request: &Value) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
-    match dispatch(store, request) {
+    match dispatch(program, store, request) {
         Ok(result) => json!({ "id": id, "ok": result }),
         Err(error) => json!({
             "id": id,
@@ -49,7 +55,11 @@ pub fn handle_request(store: &dyn Backend, request: &Value) -> Value {
 }
 
 /// Route a request to its operation handler by the `op` field.
-fn dispatch(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
+fn dispatch(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    request: &Value,
+) -> Result<Value, ProtocolError> {
     let op = request
         .get("op")
         .and_then(Value::as_str)
@@ -58,10 +68,10 @@ fn dispatch(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError
             message: "request is missing a string `op`".to_string(),
         })?;
     match op {
-        "saved_roots" => op_saved_roots(store),
-        "saved_get" => op_saved_get(store, request),
-        "saved_children" => op_saved_children(store, request),
-        "saved_walk" => op_saved_walk(store, request),
+        "saved_roots" => op_saved_roots(program, store),
+        "saved_get" => op_saved_get(program, store, request),
+        "saved_children" => op_saved_children(program, store, request),
+        "saved_walk" => op_saved_walk(program, store, request),
         other => Err(ProtocolError {
             code: PROTOCOL_UNKNOWN_OP,
             message: format!("unknown operation `{other}`"),
@@ -70,18 +80,21 @@ fn dispatch(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError
 }
 
 /// `saved_roots` → the project's saved root names, in store order.
-fn op_saved_roots(store: &dyn Backend) -> Result<Value, ProtocolError> {
-    let roots = store.roots().map_err(store_error)?;
+fn op_saved_roots(program: &CheckedProgram, store: &TreeStore) -> Result<Value, ProtocolError> {
+    let roots = data_roots_in_store(program, store).map_err(store_error)?;
     Ok(json!({ "roots": roots }))
 }
 
 /// `saved_get` → the four-state presence at a saved path plus its stored value as
 /// base64 (`null` when no value is stored there). The bytes are the store's raw
 /// canonical encoding; the client decodes them with the field's schema type.
-fn op_saved_get(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
-    let path = encode_path(&request_path(request)?);
-    let presence = store.presence(&path).map_err(store_error)?;
-    let value = store.read(&path).map_err(store_error)?;
+fn op_saved_get(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    request: &Value,
+) -> Result<Value, ProtocolError> {
+    let query = request_query(program, request)?;
+    let (value, presence) = read_query(store, &query).map_err(store_error)?;
     Ok(json!({
         "presence": presence_name(presence),
         "value": value.map(|bytes| base64::encode(&bytes)),
@@ -91,20 +104,21 @@ fn op_saved_get(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolE
 /// `saved_children` → the distinct immediate children directly below a saved path,
 /// in Marrow order: each is a `{"key": …}` (a record/index key) or `{"name": …}`
 /// (a field, layer, or index name).
-fn op_saved_children(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
+fn op_saved_children(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    request: &Value,
+) -> Result<Value, ProtocolError> {
     let segments = request_path(request)?;
     if segments.is_empty() {
-        let children: Vec<Value> = store
-            .roots()
+        let children: Vec<Value> = data_roots_in_store(program, store)
             .map_err(store_error)?
             .into_iter()
             .map(|root| json!({ "name": root }))
             .collect();
         return Ok(json!({ "children": children }));
     }
-    let path = encode_path(&segments);
-    let children = store.child_keys(&path).map_err(store_error)?;
-    let children: Vec<Value> = children.iter().map(encode_child).collect();
+    let children = checked_children(program, store, &segments)?;
     Ok(json!({ "children": children }))
 }
 
@@ -114,36 +128,27 @@ const MAX_WALK: usize = 10_000;
 
 /// `saved_walk` → up to `limit` `(path, value)` entries in the subtree at a saved
 /// path, in Marrow order, plus whether the page was truncated. Each entry's path
-/// and value are base64 (the path bytes are opaque to the client in v1). A
-/// truncated page returns `nextCursor`, which can be sent as `cursor` to resume
-/// after the last returned entry. The `limit` is required and clamped to
-/// [`MAX_WALK`].
-fn op_saved_walk(store: &dyn Backend, request: &Value) -> Result<Value, ProtocolError> {
-    let path = encode_path(&request_path(request)?);
+/// is the checked logical address; each value is base64. A truncated page returns
+/// an opaque `nextCursor`, which can be sent as `cursor` to resume after the last
+/// returned entry. The `limit` is required and clamped to [`MAX_WALK`].
+fn op_saved_walk(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    request: &Value,
+) -> Result<Value, ProtocolError> {
+    let segments = request_path(request)?;
+    let prefix = render_query_segments(&segments);
     let limit = request_walk_limit(request)?;
     let cursor = request
         .get("cursor")
-        .map(|value| decode_cursor(value, &path))
+        .map(|value| decode_cursor(value, &prefix))
         .transpose()?;
-    let page = if let Some(cursor) = &cursor {
-        store
-            .scan_after(&path, cursor, limit)
-            .map_err(store_error)?
-    } else {
-        store.scan(&path, limit).map_err(store_error)?
-    };
-    let next_cursor = page
-        .truncated
-        .then(|| page.entries.last().map(|(path, _)| base64::encode(path)))
-        .flatten();
-    let entries: Vec<Value> = page
-        .entries
-        .iter()
-        .map(
-            |(path, value)| json!({ "path": base64::encode(path), "value": base64::encode(value) }),
-        )
-        .collect();
-    Ok(json!({ "entries": entries, "truncated": page.truncated, "nextCursor": next_cursor }))
+    let page = checked_walk(program, store, &prefix, cursor.as_deref(), limit)?;
+    Ok(json!({
+        "entries": page.entries,
+        "truncated": page.truncated,
+        "nextCursor": page.next_cursor,
+    }))
 }
 
 fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
@@ -180,25 +185,15 @@ fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
 }
 
 /// The decoded `path` of a request, or a `protocol.bad_request` error.
-fn request_path(request: &Value) -> Result<Vec<PathSegment>, ProtocolError> {
+fn request_path(request: &Value) -> Result<Vec<DataQuerySegment>, ProtocolError> {
     let path = request
         .get("path")
         .ok_or_else(|| bad_request("request is missing `path`"))?;
-    decode_path(path)
-}
-
-/// The protocol name for a [`Presence`] state.
-fn presence_name(presence: Presence) -> &'static str {
-    match presence {
-        Presence::Absent => "absent",
-        Presence::ValueOnly => "value_only",
-        Presence::ChildrenOnly => "children_only",
-        Presence::ValueAndChildren => "value_and_children",
-    }
+    decode_query_path(path)
 }
 
 /// Decode a `path` value — a JSON array of segment objects — into path segments.
-fn decode_path(value: &Value) -> Result<Vec<PathSegment>, ProtocolError> {
+fn decode_query_path(value: &Value) -> Result<Vec<DataQuerySegment>, ProtocolError> {
     value
         .as_array()
         .ok_or_else(|| bad_request("`path` must be an array of segments"))?
@@ -209,15 +204,12 @@ fn decode_path(value: &Value) -> Result<Vec<PathSegment>, ProtocolError> {
 
 /// Decode one path segment: a one-field object tagged by its kind, e.g.
 /// `{"root":"books"}`, `{"key":{"int":1}}`, `{"layer":"versions"}`.
-fn decode_segment(value: &Value) -> Result<PathSegment, ProtocolError> {
+fn decode_segment(value: &Value) -> Result<DataQuerySegment, ProtocolError> {
     let (kind, inner) = one_field(value, "a path segment")?;
     let segment = match kind.as_str() {
-        "root" => PathSegment::Root(segment_name(inner, "root")?),
-        "key" => PathSegment::RecordKey(decode_key(inner)?),
-        "field" => PathSegment::Field(segment_name(inner, "field")?),
-        "layer" => PathSegment::ChildLayer(segment_name(inner, "layer")?),
-        "index" => PathSegment::Index(segment_name(inner, "index")?),
-        "index_key" => PathSegment::IndexKey(decode_key(inner)?),
+        "root" => DataQuerySegment::Root(segment_name(inner, "root")?),
+        "key" | "index_key" => DataQuerySegment::Key(decode_key(inner)?),
+        "field" | "layer" | "index" => DataQuerySegment::Member(segment_name(inner, kind)?),
         other => return Err(bad_request(&format!("unknown path segment `{other}`"))),
     };
     Ok(segment)
@@ -288,14 +280,6 @@ fn encode_key(key: &SavedKey) -> Value {
     json!({ tag: payload })
 }
 
-/// Encode a child of a saved path: a key value or a member name.
-fn encode_child(child: &ChildSegment) -> Value {
-    match child {
-        ChildSegment::Key(key) => json!({ "key": encode_key(key) }),
-        ChildSegment::Name(name) => json!({ "name": name }),
-    }
-}
-
 /// The single `(tag, value)` of a one-field object, or a `protocol.bad_request`.
 fn one_field<'a>(value: &'a Value, what: &str) -> Result<(&'a String, &'a Value), ProtocolError> {
     let object = value
@@ -324,12 +308,143 @@ fn decode_base64_field(value: &Value, kind: &str) -> Result<Vec<u8>, ProtocolErr
     base64::decode(text).ok_or_else(|| bad_request(&format!("`{kind}` is not valid base64")))
 }
 
-fn decode_cursor(value: &Value, path: &[u8]) -> Result<Vec<u8>, ProtocolError> {
-    let cursor = decode_base64_field(value, "cursor")?;
-    if decode_store_path(&cursor).is_none() {
-        return Err(bad_request("`cursor` is not a valid saved path"));
+fn request_query(program: &CheckedProgram, request: &Value) -> Result<DataQuery, ProtocolError> {
+    let segments = request_path(request)?;
+    resolve_data_query(program, &segments).map_err(|message| bad_request(&message))
+}
+
+fn checked_children(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    segments: &[DataQuerySegment],
+) -> Result<Vec<Value>, ProtocolError> {
+    let query = resolve_data_query(program, segments).map_err(|message| bad_request(&message))?;
+    if query.identity.len() < query.identity_arity {
+        return record_children(store, &query);
     }
-    if !cursor.starts_with(path) {
+    let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
+        return Err(bad_request("path must start with a saved root"));
+    };
+    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
+        .ok_or_else(|| bad_request(&format!("unknown saved root `^{root}`")))?;
+    if query.data_path.is_empty() {
+        return member_children(store, &query, &place.root_members);
+    }
+    data_key_children(store, &query)
+}
+
+fn record_children(store: &TreeStore, query: &DataQuery) -> Result<Vec<Value>, ProtocolError> {
+    let mut children = Vec::new();
+    let mut child = store
+        .record_first_child(&query.store, &query.identity)
+        .map_err(store_error)?;
+    while let Some(key) = child {
+        let anchor = key.clone();
+        children.push(json!({ "key": encode_key(&key) }));
+        child = store
+            .record_next_child(&query.store, &query.identity, &anchor)
+            .map_err(store_error)?;
+    }
+    Ok(children)
+}
+
+fn member_children(
+    store: &TreeStore,
+    query: &DataQuery,
+    members: &[CheckedSavedMember],
+) -> Result<Vec<Value>, ProtocolError> {
+    let mut children = Vec::new();
+    for member in members {
+        let catalog =
+            checked_catalog_id(&member.catalog_id, "resource member").map_err(store_error)?;
+        let path = vec![DataPathSegment::Member(catalog)];
+        let present = match &member.kind {
+            CheckedSavedMemberKind::Field { .. } => store
+                .read_data_value(&query.store, &query.identity, &path)
+                .map_err(store_error)?
+                .is_some(),
+            CheckedSavedMemberKind::Group => store
+                .data_subtree_exists(&query.store, &query.identity, &path)
+                .map_err(store_error)?,
+        };
+        if present {
+            children.push(json!({ "name": member.name }));
+        }
+    }
+    Ok(children)
+}
+
+fn data_key_children(store: &TreeStore, query: &DataQuery) -> Result<Vec<Value>, ProtocolError> {
+    let mut children = Vec::new();
+    let mut child = store
+        .data_first_child(&query.store, &query.identity, &query.data_path)
+        .map_err(store_error)?;
+    while let Some(key) = child {
+        let anchor = key.clone();
+        children.push(json!({ "key": encode_key(&key) }));
+        child = store
+            .data_next_child(&query.store, &query.identity, &query.data_path, &anchor)
+            .map_err(store_error)?;
+    }
+    Ok(children)
+}
+
+struct WalkPage {
+    entries: Vec<Value>,
+    truncated: bool,
+    next_cursor: Option<String>,
+}
+
+fn checked_walk(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    prefix: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<WalkPage, ProtocolError> {
+    let mut entries = Vec::new();
+    let mut after_cursor = cursor.is_none();
+    let mut last_returned = None;
+    let mut saw_extra = false;
+    visit_data_records(program, store, |record| {
+        if !record.path.starts_with(prefix) {
+            return Ok(());
+        }
+        if !after_cursor {
+            after_cursor = Some(record.path.as_str()) == cursor;
+            return Ok(());
+        }
+        if entries.len() == limit {
+            saw_extra = true;
+            return Ok(());
+        }
+        last_returned = Some(record.path.clone());
+        entries.push(json!({
+            "path": record.path,
+            "value": base64::encode(&record.value),
+        }));
+        Ok(())
+    })
+    .map_err(store_error)?;
+    let next_cursor = saw_extra
+        .then(|| {
+            last_returned
+                .as_deref()
+                .map(|path| base64::encode(path.as_bytes()))
+        })
+        .flatten();
+    Ok(WalkPage {
+        entries,
+        truncated: saw_extra,
+        next_cursor,
+    })
+}
+
+fn decode_cursor(value: &Value, prefix: &str) -> Result<String, ProtocolError> {
+    let cursor = decode_base64_field(value, "cursor")?;
+    let cursor =
+        String::from_utf8(cursor).map_err(|_| bad_request("`cursor` is not a checked path"))?;
+    if !cursor.starts_with(prefix) {
         return Err(bad_request("`cursor` is outside the requested path"));
     }
     Ok(cursor)
@@ -352,328 +467,4 @@ fn store_error(error: marrow_store::StoreError) -> ProtocolError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use marrow_store::mem::MemStore;
-
-    /// A store holding one record under `^books`, for root listing.
-    fn store_with_a_book() -> MemStore {
-        let mut store = MemStore::new();
-        let path = encode_path(&[
-            PathSegment::Root("books".into()),
-            PathSegment::RecordKey(SavedKey::Int(1)),
-            PathSegment::Field("title".into()),
-        ]);
-        store.write(&path, b"Mort".to_vec());
-        store
-    }
-
-    #[test]
-    fn saved_roots_lists_the_roots_and_echoes_the_id() {
-        let store = store_with_a_book();
-        let reply = handle_request(&store, &json!({ "id": 7, "op": "saved_roots" }));
-        assert_eq!(reply["id"], json!(7));
-        assert_eq!(reply["ok"]["roots"], json!(["books"]));
-    }
-
-    #[test]
-    fn an_empty_store_lists_no_roots() {
-        let store = MemStore::new();
-        let reply = handle_request(&store, &json!({ "id": 1, "op": "saved_roots" }));
-        assert_eq!(reply["ok"]["roots"], json!([]));
-    }
-
-    #[test]
-    fn an_unknown_op_is_a_protocol_error() {
-        let store = MemStore::new();
-        let reply = handle_request(&store, &json!({ "id": 1, "op": "frobnicate" }));
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_UNKNOWN_OP));
-    }
-
-    #[test]
-    fn a_request_without_an_op_is_malformed_and_echoes_a_null_id() {
-        let store = MemStore::new();
-        let reply = handle_request(&store, &json!({ "what": true }));
-        assert_eq!(reply["id"], Value::Null);
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_MALFORMED));
-    }
-
-    #[test]
-    fn saved_get_returns_presence_and_the_base64_value() {
-        let store = store_with_a_book();
-        let reply = handle_request(
-            &store,
-            &json!({
-                "id": 1, "op": "saved_get",
-                "path": [{"root": "books"}, {"key": {"int": 1}}, {"field": "title"}],
-            }),
-        );
-        // A leaf field holds a value and no children, and "Mort" base64-encodes to
-        // "TW9ydA==".
-        assert_eq!(reply["ok"]["presence"], json!("value_only"));
-        assert_eq!(reply["ok"]["value"], json!("TW9ydA=="));
-    }
-
-    #[test]
-    fn saved_get_of_an_absent_path_has_no_value() {
-        let store = store_with_a_book();
-        let reply = handle_request(
-            &store,
-            &json!({
-                "op": "saved_get",
-                "path": [{"root": "books"}, {"key": {"int": 2}}, {"field": "title"}],
-            }),
-        );
-        assert_eq!(reply["ok"]["presence"], json!("absent"));
-        assert_eq!(reply["ok"]["value"], Value::Null);
-    }
-
-    #[test]
-    fn saved_children_lists_record_keys_then_field_names() {
-        let store = store_with_a_book();
-        let under_root = handle_request(
-            &store,
-            &json!({ "op": "saved_children", "path": [{"root": "books"}] }),
-        );
-        assert_eq!(under_root["ok"]["children"], json!([{"key": {"int": 1}}]));
-        let under_record = handle_request(
-            &store,
-            &json!({ "op": "saved_children", "path": [{"root": "books"}, {"key": {"int": 1}}] }),
-        );
-        assert_eq!(under_record["ok"]["children"], json!([{"name": "title"}]));
-    }
-
-    #[test]
-    fn saved_children_of_the_empty_path_lists_roots() {
-        let store = store_with_a_book();
-        let reply = handle_request(&store, &json!({ "op": "saved_children", "path": [] }));
-        assert_eq!(reply["ok"]["children"], json!([{"name": "books"}]));
-    }
-
-    #[test]
-    fn a_bad_path_segment_is_a_bad_request() {
-        let store = MemStore::new();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_get", "path": [{"frob": "x"}] }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn a_saved_get_without_a_path_is_a_bad_request() {
-        let store = MemStore::new();
-        let reply = handle_request(&store, &json!({ "op": "saved_get" }));
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn keys_of_every_type_round_trip_through_the_codec() {
-        // Wide integers (duration/instant) carry as strings; bytes as base64.
-        for key in [
-            SavedKey::Int(7),
-            SavedKey::Bool(true),
-            SavedKey::Str("x".into()),
-            SavedKey::Date(19_000),
-            SavedKey::Duration(123_000_000_000),
-            SavedKey::Instant(-5),
-            SavedKey::Bytes(vec![0, 1, 2, 255]),
-        ] {
-            assert_eq!(decode_key(&encode_key(&key)).expect("decode"), key);
-        }
-    }
-
-    #[test]
-    fn base64_round_trips_arbitrary_bytes() {
-        for bytes in [
-            Vec::new(),
-            vec![0u8],
-            vec![1, 2],
-            vec![1, 2, 3],
-            b"Mort".to_vec(),
-            vec![0, 255, 128, 64, 32],
-        ] {
-            assert_eq!(base64::decode(&base64::encode(&bytes)), Some(bytes));
-        }
-    }
-
-    /// The serve protocol decodes base64 through the one canonical codec, so it
-    /// rejects exactly the unpadded and over-padded inputs the runtime rejects —
-    /// no second, laxer dialect on the serve surface.
-    #[test]
-    fn serve_base64_decode_rejects_non_canonical_padding() {
-        // These were accepted by the old padding-trimming serve decoder but
-        // rejected by the runtime; now both agree they are invalid.
-        for text in ["Zm8", "Zg", "Zm9vYg", "Zg===="] {
-            assert!(
-                decode_base64_field(&json!(text), "key").is_err(),
-                "non-canonical base64 {text:?} must be rejected"
-            );
-            // The shared codec backs the rejection.
-            assert_eq!(base64::decode(text), None, "{text:?}");
-        }
-        // The canonical, fully-padded forms decode.
-        assert_eq!(
-            decode_base64_field(&json!("Zm8="), "key").expect("padded"),
-            b"fo".to_vec()
-        );
-        assert_eq!(
-            decode_base64_field(&json!("Zm9vYg=="), "key").expect("padded"),
-            b"foob".to_vec()
-        );
-    }
-
-    /// A store holding two book titles, for paging.
-    fn store_with_two_books() -> MemStore {
-        let mut store = MemStore::new();
-        for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
-            let path = encode_path(&[
-                PathSegment::Root("books".into()),
-                PathSegment::RecordKey(SavedKey::Int(id)),
-                PathSegment::Field("title".into()),
-            ]);
-            store.write(&path, title.as_bytes().to_vec());
-        }
-        store
-    }
-
-    #[test]
-    fn saved_walk_truncates_at_the_limit() {
-        let store = store_with_two_books();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1 }),
-        );
-        assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 1);
-        assert_eq!(reply["ok"]["truncated"], json!(true));
-    }
-
-    #[test]
-    fn saved_walk_cursor_resumes_after_the_previous_page() {
-        let store = store_with_two_books();
-        let first = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1 }),
-        );
-        let cursor = first["ok"]["nextCursor"]
-            .as_str()
-            .expect("a truncated page returns a cursor");
-
-        let second = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
-        );
-
-        let first_entry = &first["ok"]["entries"][0];
-        let second_entry = &second["ok"]["entries"][0];
-        assert_ne!(
-            first_entry["path"], second_entry["path"],
-            "the cursor should advance past the prior page"
-        );
-        assert_eq!(second["ok"]["truncated"], json!(false), "{second}");
-        assert_eq!(second["ok"]["nextCursor"], Value::Null, "{second}");
-    }
-
-    #[test]
-    fn saved_walk_returns_the_whole_subtree_under_a_generous_limit() {
-        let store = store_with_two_books();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 100 }),
-        );
-        assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 2);
-        assert_eq!(reply["ok"]["truncated"], json!(false));
-    }
-
-    #[test]
-    fn saved_walk_without_a_limit_is_a_bad_request() {
-        let store = MemStore::new();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}] }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn saved_walk_rejects_a_zero_limit() {
-        let store = store_with_a_book();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 0 }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn saved_walk_rejects_a_negative_limit_with_a_positive_integer_message() {
-        let store = store_with_a_book();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": -1 }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-        assert_eq!(
-            reply["error"]["message"],
-            json!("`saved_walk` requires a positive integer `limit`")
-        );
-    }
-
-    #[test]
-    fn saved_walk_caps_an_over_u64_integer_limit() {
-        let store = store_with_two_books();
-        let request: Value = serde_json::from_str(
-            r#"{"op":"saved_walk","path":[{"root":"books"}],"limit":18446744073709551616}"#,
-        )
-        .expect("json integer beyond u64");
-        let reply = handle_request(&store, &request);
-        assert_eq!(reply["error"], Value::Null, "{reply}");
-        assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 2);
-        assert_eq!(reply["ok"]["truncated"], json!(false));
-    }
-
-    #[test]
-    fn saved_walk_rejects_a_malformed_cursor_inside_the_path_prefix() {
-        let store = store_with_a_book();
-        let mut cursor = encode_path(&[PathSegment::Root("books".into())]);
-        cursor.push(0xff);
-        let cursor = base64::encode(&cursor);
-
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
-        );
-
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn an_unknown_key_type_is_a_bad_request() {
-        let store = MemStore::new();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"frob": 1}}] }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn a_bytes_key_with_invalid_base64_is_a_bad_request() {
-        let store = MemStore::new();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"bytes": "!!!"}}] }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-
-    #[test]
-    fn a_wide_integer_key_that_is_not_an_integer_is_a_bad_request() {
-        let store = MemStore::new();
-        let reply = handle_request(
-            &store,
-            &json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"duration": "notanint"}}] }),
-        );
-        assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
-    }
-}
+mod tests;

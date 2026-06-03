@@ -1,6 +1,6 @@
-use marrow_syntax::{Argument, Block, Expression, InterpolationPart, Statement};
-
-use super::calls::{is_append_call, is_attached_data_call, is_exists_call, is_neighbor_read};
+use super::calls::{
+    is_append_call, is_attached_data_call, is_exists_call, is_neighbor_read, std_path_arg_mask,
+};
 use super::effects::{
     condition_narrowings, invalidate_key_bindings, invalidate_removed_narrowings,
     invalidate_saved_narrowings, invalidate_written_target, mutating_arg_bindings,
@@ -11,29 +11,35 @@ use super::proofs::{ReadContext, read_proof, record_read};
 use super::scope::NameScope;
 use super::target::{ReadTarget, read_target_with_scope};
 use super::writes::call_writes_saved_data;
-use crate::{CheckDiagnostic, CheckedProgram};
+use crate::executable::CheckedExecutableContext;
+use crate::{
+    CheckDiagnostic, CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedCallTarget,
+    CheckedCatchClause, CheckedElseIf, CheckedExpr, CheckedForBinding, CheckedInterpolationPart,
+    CheckedMatchArm, CheckedProgram, CheckedStmt,
+};
 
 pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec<CheckDiagnostic>) {
     let modules = program.modules.clone();
-    for module in &modules {
+    for (module_index, module) in modules.iter().enumerate() {
         for function in &module.functions {
             let mut scope = NameScope::for_function(function);
             let mut narrowed = Vec::new();
-            collect_block(
-                program,
-                &function.body,
-                &mut narrowed,
-                &mut scope,
-                diagnostics,
-            );
+            if let Some(body) = function.runtime_body() {
+                collect_block(program, body, &mut narrowed, &mut scope, diagnostics);
+            }
         }
         for constant in &module.constants {
             if let Some(value) = &constant.value {
+                let context = CheckedExecutableContext::new(program, module_index);
+                let mut lower_scope = Vec::new();
+                let Some(value) = CheckedExpr::lower(value, &context, &mut lower_scope) else {
+                    continue;
+                };
                 let mut scope = NameScope::default();
                 let mut narrowed = Vec::new();
                 collect_expr(
                     program,
-                    value,
+                    &value,
                     ReadContext::Bare,
                     &mut narrowed,
                     &mut scope,
@@ -46,13 +52,13 @@ pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec
 
 fn collect_block(
     program: &mut CheckedProgram,
-    block: &Block,
+    block: &CheckedBody,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     scope.push_frame();
-    for statement in &block.statements {
+    for statement in block.statements() {
         collect_statement(program, statement, narrowed, scope, diagnostics);
     }
     scope.pop_frame();
@@ -60,33 +66,33 @@ fn collect_block(
 
 fn collect_statement(
     program: &mut CheckedProgram,
-    statement: &Statement,
+    statement: &CheckedStmt,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     match statement {
-        Statement::Const { name, value, .. } => {
+        CheckedStmt::Const { name, value, .. } => {
             collect_bare_expr(program, value, narrowed, scope, diagnostics);
             scope.bind(name);
         }
-        Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
+        CheckedStmt::Throw { value, .. } | CheckedStmt::Expr { value, .. } => {
             collect_bare_expr(program, value, narrowed, scope, diagnostics);
         }
-        Statement::Var { name, value, .. } => {
+        CheckedStmt::Var { name, value, .. } => {
             collect_optional_bare_expr(program, value.as_ref(), narrowed, scope, diagnostics);
             scope.bind(name);
         }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+        CheckedStmt::Assign { target, value, .. } => {
             collect_assignment_statement(program, target, value, narrowed, scope, diagnostics);
         }
-        Statement::Delete { path, .. } => {
+        CheckedStmt::Delete { path, .. } => {
             collect_delete_statement(program, path, narrowed, scope, diagnostics);
         }
-        Statement::Return { value, .. } => {
+        CheckedStmt::Return { value, .. } => {
             collect_optional_bare_expr(program, value.as_ref(), narrowed, scope, diagnostics);
         }
-        Statement::If {
+        CheckedStmt::If {
             condition,
             then_block,
             else_ifs,
@@ -104,13 +110,13 @@ fn collect_statement(
             scope,
             diagnostics,
         ),
-        Statement::While {
+        CheckedStmt::While {
             condition, body, ..
         } => {
             collect_optional_bare_expr(program, condition.as_ref(), narrowed, scope, diagnostics);
             collect_block(program, body, narrowed, scope, diagnostics);
         }
-        Statement::For {
+        CheckedStmt::For {
             binding,
             iterable,
             step,
@@ -128,10 +134,10 @@ fn collect_statement(
             scope,
             diagnostics,
         ),
-        Statement::Transaction { body, .. } | Statement::Lock { body, .. } => {
+        CheckedStmt::Transaction { body, .. } => {
             collect_block(program, body, narrowed, scope, diagnostics);
         }
-        Statement::Try {
+        CheckedStmt::Try {
             body,
             catch,
             finally,
@@ -145,7 +151,7 @@ fn collect_statement(
             scope,
             diagnostics,
         ),
-        Statement::Match {
+        CheckedStmt::Match {
             scrutinee, arms, ..
         } => {
             collect_match_statement(
@@ -157,13 +163,13 @@ fn collect_statement(
                 diagnostics,
             );
         }
-        Statement::Break { .. } | Statement::Continue { .. } => {}
+        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => {}
     }
 }
 
 fn collect_bare_expr(
     program: &mut CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -180,7 +186,7 @@ fn collect_bare_expr(
 
 fn collect_optional_bare_expr(
     program: &mut CheckedProgram,
-    expr: Option<&Expression>,
+    expr: Option<&CheckedExpr>,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -192,8 +198,8 @@ fn collect_optional_bare_expr(
 
 fn collect_assignment_statement(
     program: &mut CheckedProgram,
-    target: &Expression,
-    value: &Expression,
+    target: &CheckedExpr,
+    value: &CheckedExpr,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -210,7 +216,7 @@ fn collect_assignment_statement(
 
 fn collect_delete_statement(
     program: &mut CheckedProgram,
-    path: &Expression,
+    path: &CheckedExpr,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -223,10 +229,10 @@ fn collect_delete_statement(
 }
 
 struct IfStatementParts<'a> {
-    condition: Option<&'a Expression>,
-    then_block: &'a Block,
-    else_ifs: &'a [marrow_syntax::ElseIf],
-    else_block: Option<&'a Block>,
+    condition: Option<&'a CheckedExpr>,
+    then_block: &'a CheckedBody,
+    else_ifs: &'a [CheckedElseIf],
+    else_block: Option<&'a CheckedBody>,
 }
 
 fn collect_if_statement(
@@ -269,8 +275,8 @@ fn collect_if_statement(
 
 fn collect_guarded_block(
     program: &mut CheckedProgram,
-    condition: Option<&Expression>,
-    block: &Block,
+    condition: Option<&CheckedExpr>,
+    block: &CheckedBody,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -288,10 +294,10 @@ fn collect_guarded_block(
 }
 
 struct ForStatementParts<'a> {
-    binding: &'a marrow_syntax::ForBinding,
-    iterable: &'a Expression,
-    step: Option<&'a Expression>,
-    body: &'a Block,
+    binding: &'a CheckedForBinding,
+    iterable: &'a CheckedExpr,
+    step: Option<&'a CheckedExpr>,
+    body: &'a CheckedBody,
 }
 
 fn collect_for_statement(
@@ -320,7 +326,7 @@ fn collect_for_statement(
         super::util::extend_unique(&mut body_narrowed, vec![target]);
     }
     let body_start = body_narrowed.clone();
-    for statement in &parts.body.statements {
+    for statement in parts.body.statements() {
         collect_statement(program, statement, &mut body_narrowed, scope, diagnostics);
     }
     invalidate_removed_narrowings(narrowed, &body_start, &body_narrowed);
@@ -329,9 +335,9 @@ fn collect_for_statement(
 
 fn collect_try_statement(
     program: &mut CheckedProgram,
-    body: &Block,
-    catch: Option<&marrow_syntax::CatchClause>,
-    finally: Option<&Block>,
+    body: &CheckedBody,
+    catch: Option<&CheckedCatchClause>,
+    finally: Option<&CheckedBody>,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -340,7 +346,7 @@ fn collect_try_statement(
     if let Some(catch) = catch {
         scope.push_frame();
         scope.bind(&catch.name);
-        for statement in &catch.block.statements {
+        for statement in catch.block.statements() {
             collect_statement(program, statement, narrowed, scope, diagnostics);
         }
         scope.pop_frame();
@@ -352,8 +358,8 @@ fn collect_try_statement(
 
 fn collect_match_statement(
     program: &mut CheckedProgram,
-    scrutinee: Option<&Expression>,
-    arms: &[marrow_syntax::MatchArm],
+    scrutinee: Option<&CheckedExpr>,
+    arms: &[CheckedMatchArm],
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -369,7 +375,7 @@ fn collect_match_statement(
 
 fn collect_write_target(
     program: &mut CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -379,7 +385,7 @@ fn collect_write_target(
 
 fn collect_expr(
     program: &mut CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     context: ReadContext,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
@@ -396,13 +402,18 @@ fn collect_expr(
     }
 
     match expr {
-        Expression::Call { callee, args, .. } => {
-            collect_call_expr(program, callee, args, narrowed, scope, diagnostics);
+        CheckedExpr::Call {
+            callee,
+            args,
+            target,
+            ..
+        } => {
+            collect_call_expr(program, callee, args, target, narrowed, scope, diagnostics);
         }
-        Expression::Field { base, .. } => {
+        CheckedExpr::Field { base, .. } => {
             collect_bare_expr(program, base, narrowed, scope, diagnostics);
         }
-        Expression::OptionalField { base, .. } => collect_expr(
+        CheckedExpr::OptionalField { base, .. } => collect_expr(
             program,
             base,
             ReadContext::Resolved,
@@ -410,25 +421,26 @@ fn collect_expr(
             scope,
             diagnostics,
         ),
-        Expression::Unary { operand, .. } => {
+        CheckedExpr::Unary { operand, .. } => {
             collect_bare_expr(program, operand, narrowed, scope, diagnostics);
         }
-        Expression::Binary {
+        CheckedExpr::Binary {
             op, left, right, ..
         } => {
             collect_binary_expr(program, *op, left, right, narrowed, scope, diagnostics);
         }
-        Expression::Interpolation { parts, .. } => {
+        CheckedExpr::Interpolation { parts, .. } => {
             collect_interpolation_expr(program, parts, narrowed, scope, diagnostics);
         }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {}
     }
 }
 
 fn collect_call_expr(
     program: &mut CheckedProgram,
-    callee: &Expression,
-    args: &[Argument],
+    callee: &CheckedExpr,
+    args: &[CheckedArg],
+    target: &CheckedCallTarget,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -447,13 +459,13 @@ fn collect_call_expr(
     } else if is_append_call(callee) {
         collect_append_args(program, args, narrowed, scope, diagnostics);
     } else {
-        collect_plain_call(program, callee, args, narrowed, scope, diagnostics);
+        collect_plain_call(program, callee, args, target, narrowed, scope, diagnostics);
     }
 }
 
 fn collect_exists_args(
     program: &mut CheckedProgram,
-    args: &[Argument],
+    args: &[CheckedArg],
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -480,7 +492,7 @@ fn collect_exists_args(
 
 fn collect_append_args(
     program: &mut CheckedProgram,
-    args: &[Argument],
+    args: &[CheckedArg],
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -500,30 +512,51 @@ fn collect_append_args(
 
 fn collect_plain_call(
     program: &mut CheckedProgram,
-    callee: &Expression,
-    args: &[Argument],
+    callee: &CheckedExpr,
+    args: &[CheckedArg],
+    target: &CheckedCallTarget,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let writes_saved = call_writes_saved_data(program, callee);
+    let writes_saved = call_writes_saved_data(program, target);
     collect_bare_expr(program, callee, narrowed, scope, diagnostics);
-    collect_args(
-        program,
-        args,
-        ReadContext::Bare,
-        narrowed,
-        scope,
-        diagnostics,
-    );
+    if let Some(path_args) = std_path_arg_mask(callee) {
+        collect_std_args(program, args, &path_args, narrowed, scope, diagnostics);
+    } else {
+        collect_call_args(program, args, narrowed, scope, diagnostics);
+    }
     if writes_saved {
         invalidate_saved_narrowings(narrowed);
     }
 }
 
+fn collect_call_args(
+    program: &mut CheckedProgram,
+    args: &[CheckedArg],
+    narrowed: &mut Vec<ReadTarget>,
+    scope: &mut NameScope,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let mutated = mutating_arg_bindings(args, scope);
+    for arg in args {
+        match arg.mode {
+            Some(CheckedArgMode::Out) => {
+                collect_write_target(program, &arg.value, narrowed, scope, diagnostics);
+            }
+            Some(CheckedArgMode::InOut) => {
+                collect_bare_expr(program, &arg.value, narrowed, scope, diagnostics);
+                collect_write_target(program, &arg.value, narrowed, scope, diagnostics);
+            }
+            None => collect_bare_expr(program, &arg.value, narrowed, scope, diagnostics),
+        }
+    }
+    invalidate_key_bindings(narrowed, mutated);
+}
+
 fn collect_args(
     program: &mut CheckedProgram,
-    args: &[Argument],
+    args: &[CheckedArg],
     context: ReadContext,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
@@ -538,14 +571,14 @@ fn collect_args(
 
 fn collect_binary_expr(
     program: &mut CheckedProgram,
-    op: marrow_syntax::BinaryOp,
-    left: &Expression,
-    right: &Expression,
+    op: CheckedBinaryOp,
+    left: &CheckedExpr,
+    right: &CheckedExpr,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let left_context = if op == marrow_syntax::BinaryOp::Coalesce {
+    let left_context = if op == CheckedBinaryOp::Coalesce {
         ReadContext::Resolved
     } else {
         ReadContext::Bare
@@ -556,13 +589,13 @@ fn collect_binary_expr(
 
 fn collect_interpolation_expr(
     program: &mut CheckedProgram,
-    parts: &[InterpolationPart],
+    parts: &[CheckedInterpolationPart],
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for part in parts {
-        if let InterpolationPart::Expr(expr) = part {
+        if let CheckedInterpolationPart::Expr(expr) = part {
             collect_bare_expr(program, expr, narrowed, scope, diagnostics);
         }
     }
@@ -570,13 +603,16 @@ fn collect_interpolation_expr(
 
 fn collect_path_key_exprs(
     program: &mut CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     match expr {
-        Expression::Call { callee, args, .. } if is_neighbor_read(callee) => {
+        CheckedExpr::Call { callee, args, .. } if is_neighbor_read(callee) => {
+            if let Some(read) = read_proof(program, expr, ReadContext::Resolved, narrowed, scope) {
+                record_read(program, expr, read, ReadContext::Resolved, diagnostics);
+            }
             if let Some(arg) = args.first() {
                 collect_path_key_exprs(program, &arg.value, narrowed, scope, diagnostics);
             }
@@ -589,25 +625,47 @@ fn collect_path_key_exprs(
                 diagnostics,
             );
         }
-        Expression::Call { callee, args, .. } => {
+        CheckedExpr::Call { callee, args, .. } => {
             collect_path_key_exprs(program, callee, narrowed, scope, diagnostics);
-            collect_args(
-                program,
-                args,
-                ReadContext::Bare,
-                narrowed,
-                scope,
-                diagnostics,
-            );
+            if let Some(path_args) = std_path_arg_mask(callee) {
+                collect_std_args(program, args, &path_args, narrowed, scope, diagnostics);
+            } else {
+                collect_args(
+                    program,
+                    args,
+                    ReadContext::Bare,
+                    narrowed,
+                    scope,
+                    diagnostics,
+                );
+            }
         }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
             collect_path_key_exprs(program, base, narrowed, scope, diagnostics);
         }
-        Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::SavedRoot { .. }
-        | Expression::Unary { .. }
-        | Expression::Binary { .. }
-        | Expression::Interpolation { .. } => {}
+        CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Unary { .. }
+        | CheckedExpr::Binary { .. }
+        | CheckedExpr::Interpolation { .. } => {}
+    }
+}
+
+fn collect_std_args(
+    program: &mut CheckedProgram,
+    args: &[CheckedArg],
+    path_args: &[bool],
+    narrowed: &mut Vec<ReadTarget>,
+    scope: &mut NameScope,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for (index, arg) in args.iter().enumerate() {
+        let context = if path_args.get(index).copied().unwrap_or(false) {
+            ReadContext::AttachedData
+        } else {
+            ReadContext::Bare
+        };
+        collect_expr(program, &arg.value, context, narrowed, scope, diagnostics);
     }
 }

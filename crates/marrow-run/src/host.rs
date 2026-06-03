@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_store::backend::Backend;
+use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::RuntimeError;
 use crate::value::Value;
-use crate::write::WriteOp;
+use crate::write_plan::{WriteOp, WriteTarget};
 
 /// An opt-in debugger hook: the runtime calls [`StepHook::before_statement`]
 /// once for each statement it is about to evaluate, in program order, so an
@@ -32,20 +32,26 @@ pub trait StepHook {
 
     /// Called just before each managed write or delete lands, once per staged
     /// operation in commit order, at the activation `depth` of the statement that
-    /// produced it. `value` is `Some` for a write, `None` for a delete; `path` is
-    /// the encoded saved path. The default is a no-op, so a statement-only hook is
+    /// produced it. `value` is `Some` for a write, `None` for a delete; `target`
+    /// is the typed checked store/index address. The default is a no-op, so a statement-only hook is
     /// unaffected and an ordinary run that installs no hook pays nothing. Unlike
     /// [`StepHook::before_statement`], it is purely observational and cannot abort
     /// the run — the write proceeds regardless.
-    fn before_write(&mut self, op: WriteOp, path: &[u8], value: Option<&[u8]>, depth: usize) {
-        let _ = (op, path, value, depth);
+    fn before_write(
+        &mut self,
+        op: WriteOp,
+        target: &WriteTarget,
+        value: Option<&[u8]>,
+        depth: usize,
+    ) {
+        let _ = (op, target, value, depth);
     }
 }
 
 /// A read-only view of the current activation handed to a [`StepHook`]. It
 /// borrows the live environment, so locals reflect the bindings in scope and the
 /// store handle reads the run's own writes (read-your-writes). It exposes only
-/// already-public types ([`Value`], [`Backend`]); the environment itself stays
+/// already-public types ([`Value`], [`TreeStore`]); the environment itself stays
 /// private. The two lifetimes are the borrow (`'e`) and the run's borrowed state
 /// (`'p`); they differ because `'p` is invariant (the env holds a `&'p mut`
 /// hook), so a single shared lifetime would not unify.
@@ -68,7 +74,7 @@ impl<'e, 'p> Frame<'e, 'p> {
 
     /// The live saved-data store handle — the same one the run reads and writes,
     /// so a hook sees the activation's own pending writes.
-    pub fn store(&self) -> &RefCell<dyn Backend> {
+    pub fn store(&self) -> &TreeStore {
         self.env.store
     }
 
@@ -86,7 +92,7 @@ impl<'e, 'p> Frame<'e, 'p> {
     pub fn file(&self) -> Option<&std::path::Path> {
         self.env
             .program
-            .modules
+            .modules()
             .iter()
             .find(|module| module.name == self.env.module)
             .map(|module| module.source_file.as_path())

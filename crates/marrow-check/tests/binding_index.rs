@@ -6,10 +6,9 @@ use std::path::{Path, PathBuf};
 
 use marrow_check::binding::{RenameSafety, SymbolKind};
 use marrow_check::{
-    AnalysisSnapshot, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, ProjectSources, analyze_project,
-    build_binding_index,
+    AnalysisSnapshot, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CheckedStmt, ProjectSources,
+    analyze_project, build_binding_index,
 };
-use marrow_syntax::Statement;
 
 fn temp_root(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -754,29 +753,45 @@ fn a_saved_enum_layer_loop_match_records_its_scrutinee_enum() {
         .iter()
         .find(|function| function.name == "classify")
         .expect("classify function");
-    let loop_body = function
-        .body
-        .statements
+    let runtime_body = function.runtime_body().expect("runtime body");
+    let loop_body = runtime_body
+        .statements()
         .iter()
         .find_map(|statement| match statement {
-            Statement::For { body, .. } => Some(body),
+            CheckedStmt::For { body, .. } => Some(body),
             _ => None,
         })
         .expect("saved layer loop");
-    let (enum_module, enum_name) = loop_body
-        .statements
+    let enum_ref = loop_body
+        .statements()
         .iter()
         .find_map(|statement| match statement {
-            Statement::Match {
-                enum_module,
-                enum_name,
+            CheckedStmt::Match {
+                enum_ref: Some(enum_ref),
                 ..
-            } => Some((enum_module.as_deref(), enum_name.as_deref())),
+            } => Some(*enum_ref),
             _ => None,
         })
         .expect("match in loop body");
+    let enum_fact = snapshot
+        .program
+        .facts
+        .enums()
+        .iter()
+        .find(|fact| fact.id == enum_ref.enum_id)
+        .expect("match enum is recorded in checked facts");
+    let module = snapshot
+        .program
+        .facts
+        .modules()
+        .iter()
+        .find(|fact| fact.id == enum_fact.module)
+        .expect("enum module is recorded in checked facts");
 
-    assert_eq!((enum_module, enum_name), (Some("m"), Some("Status")));
+    assert_eq!(
+        (module.name.as_str(), enum_fact.name.as_str()),
+        ("m", "Status")
+    );
 }
 
 #[test]

@@ -70,18 +70,18 @@ on disk is an error (`project.source_root`) when a command walks it.
 
 ### `run.defaultEntry`
 
-The qualified name of the `pub fn` that `marrow run` calls when no `--entry` is
-given:
+The entry name that `marrow run` calls when no `--entry` is given:
 
 ```json
 { "run": { "defaultEntry": "shelf::sample::main" } }
 ```
 
-The entry must be a function in a declared module — a `module::function` name
-such as `shelf::sample::main`. Functions in a module-less single-file script are
-not part of the runnable program, so a bare script function cannot be a run
-entry. A qualified name resolves to that exact module; a bare name (passed via
-`--entry`) matches the first function of that name in any module.
+An entry must name a public function. A qualified name such as
+`shelf::sample::main` resolves to that exact module. A bare name is accepted only
+when it names one public function in the checked program; if two modules export
+the same function name, qualify the entry. A module-less single-file script uses
+bare entry names because its functions live in the script file rather than a
+declared module.
 
 If neither `--entry` nor `run.defaultEntry` is set, `run` reports
 `run.no_entry` and exits non-zero.

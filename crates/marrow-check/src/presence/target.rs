@@ -1,9 +1,9 @@
 use marrow_schema::NodeKind;
-use marrow_syntax::Expression;
 
 use super::calls::neighbor_read;
 use super::keys::{SavedPathParts, expression_key, saved_path_parts};
 use super::scope::NameScope;
+use crate::CheckedExpr;
 use crate::CheckedProgram;
 use crate::facts::{
     CheckedFacts, PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect,
@@ -25,16 +25,16 @@ pub(super) enum ReadPlace {
     StoreIndex { root: String, index: String },
 }
 
-pub(crate) fn read_target(program: &CheckedProgram, expr: &Expression) -> Option<ReadTarget> {
+pub(crate) fn read_target(program: &CheckedProgram, expr: &CheckedExpr) -> Option<ReadTarget> {
     read_target_with_scope(program, expr, &NameScope::default())
 }
 
 pub(super) fn read_target_with_scope(
     program: &CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     scope: &NameScope,
 ) -> Option<ReadTarget> {
-    if let Expression::Call { callee, args, .. } = expr
+    if let CheckedExpr::Call { callee, args, .. } = expr
         && let Some(read) = neighbor_read(callee)
     {
         let mut target = args
@@ -129,7 +129,7 @@ fn member_path_ids(
 
 fn saved_path_target(
     program: &CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     scope: &NameScope,
 ) -> Option<ReadTarget> {
     let path = saved_path_parts(expr, scope)?;

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -10,6 +12,7 @@ fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
+    support::accept_catalog_if_clean(&root);
     root
 }
 
@@ -72,7 +75,7 @@ fn entry_flag_overrides_the_default_entry() {
 }
 
 #[test]
-fn bare_entry_flag_resolves_the_first_matching_function() {
+fn bare_entry_flag_resolves_a_unique_public_function() {
     let root = temp_project("run-bare-entry", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
         write(
@@ -87,6 +90,47 @@ fn bare_entry_flag_resolves_the_first_matching_function() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "helper ran\n");
+}
+
+#[test]
+fn bare_entry_flag_rejects_ambiguous_public_functions() {
+    let root = temp_project("run-ambiguous-entry", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"app\")\n",
+        );
+        write(
+            root,
+            "src/admin.mw",
+            "module admin\n\npub fn main()\n    print(\"admin\")\n",
+        );
+    });
+    let output = run_run(&["--entry", "main", root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("run.ambiguous_function"), "{stderr}");
+}
+
+#[test]
+fn entry_flag_rejects_private_functions() {
+    let root = temp_project("run-private-entry", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\nfn main()\n    print(\"private\")\n",
+        );
+    });
+    let output = run_run(&["--entry", "app::main", root.to_str().unwrap()]);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("run.private_function"), "{stderr}");
 }
 
 #[test]

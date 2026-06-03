@@ -1,13 +1,18 @@
 //! Runtime values and their conversions to and from saved values.
 
 use marrow_store::Decimal;
-use marrow_store::path::SavedKey;
-use marrow_store::value::{SavedValue, decode_value};
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
+use marrow_store::value::{SavedValue, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 
-use crate::error::{RuntimeError, type_error, unsupported};
-use crate::schema_query::LeafKind;
-use crate::write::decode_identity_arity;
+use marrow_check::{
+    CheckedEnumRef, CheckedFacts, CheckedRuntimeProgram, EnumId, EnumMemberId, StoreLeafKind,
+};
+
+use crate::error::{Located, RuntimeError, type_error, unsupported};
+use crate::index_maintenance::decode_identity_arity;
 
 /// A runtime value: the scalars a pure function manipulates plus the in-memory
 /// and saved-tree shapes the data features produce (sequences, resource trees,
@@ -31,6 +36,7 @@ pub enum Value {
     /// Arbitrary bytes. Saves and loads as the `bytes` type; has no direct text
     /// form (use `std::bytes::base64Encode`).
     Bytes(Vec<u8>),
+    Enum(EnumValue),
     /// An ordered, in-memory `sequence[T]` value, e.g. from `std::text::split`.
     /// Iterated by a `for` loop; not itself a scalar saved value.
     Sequence(Vec<Value>),
@@ -39,17 +45,54 @@ pub enum Value {
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write.
     Resource(Vec<(String, Value)>),
-    /// A composite store identity (`Id(^enrollments)`): its lowered key segments
-    /// in declared identity-key order. Single-key identities use their
-    /// key's scalar value, matching `nextId` and root traversal. Composite
-    /// identities use this wrapper so a keyed lookup can splice all segments.
-    ///
-    /// The owning store is not carried here: two identities with the same key
-    /// scalars are byte-identical at the value level. Nominal identity is enforced
-    /// statically by the checker and at lowering against declared key types; a
-    /// same-shape value that has lost its static type cannot be distinguished
-    /// until runtime values carry the store root.
+    /// A composite store identity: its lowered key segments in declared order.
+    /// The checked call graph owns the nominal store type; host entry calls reject
+    /// raw identity values so untyped callers cannot supply same-shape keys.
     Identity(Vec<SavedKey>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumValue {
+    pub(crate) enum_id: EnumId,
+    pub(crate) member_id: EnumMemberId,
+    pub(crate) enum_catalog_id: String,
+    pub(crate) member_catalog_id: String,
+}
+
+impl EnumValue {
+    pub fn enum_id(&self) -> EnumId {
+        self.enum_id
+    }
+
+    pub fn member_id(&self) -> EnumMemberId {
+        self.member_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LeafValue {
+    Scalar(SavedValue),
+    Enum { bytes: Vec<u8>, index_key: SavedKey },
+}
+
+impl LeafValue {
+    pub(crate) fn bytes(&self) -> Result<Vec<u8>, marrow_store::value::ValueError> {
+        match self {
+            Self::Scalar(value) => encode_value(value),
+            Self::Enum { bytes, .. } => Ok(bytes.clone()),
+        }
+    }
+
+    pub(crate) fn as_key(&self) -> Option<SavedKey> {
+        match self {
+            Self::Scalar(value) => value.as_key(),
+            Self::Enum { index_key, .. } => Some(index_key.clone()),
+        }
+    }
+
+    pub(crate) fn is_enum(&self) -> bool {
+        matches!(self, Self::Enum { .. })
+    }
 }
 
 impl Value {
@@ -69,6 +112,7 @@ impl Value {
             Value::Date(d) => format!("date({d})"),
             Value::Duration(n) => format!("duration({n})"),
             Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+            Value::Enum(value) => format!("enum({}.{})", value.enum_id.0, value.member_id.0),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
             Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
             // Preview the present field names, in schema order, without recursing
@@ -135,9 +179,8 @@ pub(crate) fn identity_value(keys: Vec<SavedKey>) -> Value {
     }
 }
 
-/// Convert a runtime value to the saved value a managed write stores. Total over
-/// the scalar values; trees and identities have no scalar saved form. The write
-/// planner checks the value against the field's declared type.
+/// Convert a runtime value to the saved scalar a managed write stores. Enum
+/// members need checked leaf context and are lowered by [`value_to_leaf`].
 pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
     Some(match value {
         Value::Int(n) => SavedValue::Int(n),
@@ -148,11 +191,11 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Duration(n) => SavedValue::Duration(n),
         Value::Decimal(d) => SavedValue::Decimal(d),
         Value::Bytes(b) => SavedValue::Bytes(b),
-        // A whole local tree, sequence, or resource is not a scalar saved value;
-        // an identity is opaque and is not stored as a field value.
-        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => {
-            return None;
-        }
+        Value::Sequence(_)
+        | Value::LocalTree(_)
+        | Value::Resource(_)
+        | Value::Identity(_)
+        | Value::Enum(_) => return None,
     })
 }
 
@@ -192,11 +235,15 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
         Value::Date(d) => Some(SavedKey::Date(d)),
         Value::Duration(n) => Some(SavedKey::Duration(n)),
         Value::Bytes(b) => Some(SavedKey::Bytes(b)),
+        Value::Enum(value) => Some(SavedKey::Str(value.member_catalog_id)),
         // Decimal keys are deferred; sequences and resources are not scalar keys.
         // An identity is not a single key — lowering splices its segments in
         // before reaching here.
-        Value::Decimal(_) | Value::Sequence(_) | Value::Resource(_) | Value::Identity(_) => None,
-        Value::LocalTree(_) => None,
+        Value::Decimal(_)
+        | Value::Sequence(_)
+        | Value::Resource(_)
+        | Value::Identity(_)
+        | Value::LocalTree(_) => None,
     }
 }
 
@@ -210,13 +257,93 @@ pub struct LocalTreeEntry {
 /// leaf through the canonical scalar codec, a typed-reference leaf through
 /// `decode_identity` against the referenced identity arity. `None` when the bytes
 /// are not a canonical form for the leaf.
-pub(crate) fn decode_leaf(bytes: &[u8], leaf: &LeafKind) -> Option<Value> {
+pub(crate) fn value_to_leaf(
+    value: Value,
+    leaf: &StoreLeafKind,
+    span: SourceSpan,
+) -> Result<LeafValue, RuntimeError> {
     match leaf {
-        LeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
-        LeafKind::Identity { arity, .. } => {
+        StoreLeafKind::Scalar(_) => value_to_saved(value)
+            .map(LeafValue::Scalar)
+            .ok_or_else(|| unsupported("writing this value to a scalar field", span)),
+        StoreLeafKind::Enum { enum_id } => enum_value_to_leaf(value, *enum_id, span),
+        StoreLeafKind::Identity { .. } => Err(unsupported("writing this identity field", span)),
+    }
+}
+
+fn enum_value_to_leaf(
+    value: Value,
+    expected: EnumId,
+    span: SourceSpan,
+) -> Result<LeafValue, RuntimeError> {
+    match value {
+        Value::Enum(value) if value.enum_id == expected => {
+            let enum_catalog = catalog_id(&value.enum_catalog_id, span)?;
+            let member_catalog = catalog_id(&value.member_catalog_id, span)?;
+            let bytes = encode_tree_enum_member(&TreeEnumMember::new(enum_catalog, member_catalog))
+                .map_err(|error| error.located(span))?;
+            Ok(LeafValue::Enum {
+                index_key: SavedKey::Str(value.member_catalog_id),
+                bytes,
+            })
+        }
+        Value::Enum(_) => Err(type_error("this field takes a different enum", span)),
+        _ => Err(type_error("this field takes an enum value", span)),
+    }
+}
+
+fn catalog_id(raw: &str, span: SourceSpan) -> Result<CatalogId, RuntimeError> {
+    CatalogId::new(raw.to_string()).map_err(|_| unsupported("this enum catalog id", span))
+}
+
+pub(crate) fn decode_leaf(
+    program: &CheckedRuntimeProgram,
+    bytes: &[u8],
+    leaf: &StoreLeafKind,
+) -> Option<Value> {
+    match leaf {
+        StoreLeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
+        StoreLeafKind::Enum { enum_id } => decode_enum(program, bytes, *enum_id).map(Value::Enum),
+        StoreLeafKind::Identity { arity, .. } => {
             decode_identity_arity(bytes, *arity).map(identity_value)
         }
     }
+}
+
+fn decode_enum(
+    program: &CheckedRuntimeProgram,
+    bytes: &[u8],
+    enum_id: EnumId,
+) -> Option<EnumValue> {
+    let stored = decode_tree_enum_member(bytes).ok()?;
+    let enum_fact = program.facts().enum_(enum_id)?;
+    if stored.enum_id().as_str() != enum_fact.catalog_id {
+        return None;
+    }
+    let member = program.facts().enum_members().iter().find(|member| {
+        member.enum_id == enum_id && member.catalog_id == stored.member_id().as_str()
+    })?;
+    enum_value_from_member(program.facts(), member.id)
+}
+
+pub(crate) fn enum_value_from_member(
+    facts: &CheckedFacts,
+    member_id: EnumMemberId,
+) -> Option<EnumValue> {
+    let member = facts.enum_member(member_id)?;
+    let enum_fact = facts.enum_(member.enum_id)?;
+    facts
+        .enum_member_is_selectable(member_id)
+        .then(|| EnumValue {
+            enum_id: member.enum_id,
+            member_id,
+            enum_catalog_id: enum_fact.catalog_id.clone(),
+            member_catalog_id: member.catalog_id.clone(),
+        })
+}
+
+pub(crate) fn enum_id_from_ref(enum_ref: CheckedEnumRef) -> EnumId {
+    enum_ref.enum_id
 }
 
 /// Convert a decoded saved value to its runtime value. Total: every scalar has a
@@ -251,5 +378,6 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Duration(_) => return Err(unsupported("rendering a duration value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
         Value::Identity(_) => return Err(unsupported("rendering an identity value", span)),
+        Value::Enum(_) => return Err(unsupported("rendering an enum value", span)),
     })
 }

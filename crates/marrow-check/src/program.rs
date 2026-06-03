@@ -9,11 +9,16 @@
 //! same parse the checker already produced.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
-use marrow_syntax::{Block, Expression, ParamMode, ParsedSource, SourceSpan, TypeRef};
+use marrow_syntax::{Expression, ParsedSource, SourceSpan, TypeRef};
 
+use crate::executable::{
+    CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef, CheckedParamMode,
+    CheckedRuntimeValueType, checked_runtime_value_type,
+};
 use crate::facts::CheckedFacts;
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
@@ -87,6 +92,57 @@ impl CheckedProgram {
             .position(|candidate| std::ptr::eq(candidate, module))
             .map(|index| FileId(index as u32))
     }
+
+    pub fn runtime(&self) -> CheckedRuntimeProgram {
+        CheckedRuntimeProgram::from_checked(self)
+    }
+
+    pub(crate) fn lower_runtime_bodies<'a, I>(&mut self, sources: I)
+    where
+        I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+    {
+        let sources: HashMap<PathBuf, &ParsedSource> = sources
+            .into_iter()
+            .map(|(path, parsed)| (path.to_path_buf(), parsed))
+            .collect();
+        let snapshot = self.clone();
+        for (module_index, module) in self.modules.iter_mut().enumerate() {
+            let aliases = crate::build_alias_map(&module.imports);
+            let constants: HashMap<String, MarrowType> = module
+                .constants
+                .iter()
+                .map(|constant| {
+                    (
+                        constant.name.clone(),
+                        constant.ty.clone().unwrap_or(MarrowType::Unknown),
+                    )
+                })
+                .collect();
+            let source_file = module.source_file.clone();
+            let parsed = sources.get(&source_file).copied();
+            let module_name = module.name.clone();
+            let context = CheckedExecutableContext::new(&snapshot, module_index);
+            for function in &mut module.functions {
+                let Some(declaration) =
+                    parsed.and_then(|parsed| parsed.file.function(&function.name))
+                else {
+                    continue;
+                };
+                let mut scope = vec![constants.clone()];
+                scope.push(
+                    function
+                        .params
+                        .iter()
+                        .map(|param| (param.name.clone(), param.ty.clone()))
+                        .collect(),
+                );
+                debug_assert_eq!(aliases, crate::build_alias_map(&module.imports));
+                debug_assert_eq!(context.module_name(), module_name);
+                function.runtime_body = CheckedBody::lower(&declaration.body, &context, scope);
+            }
+        }
+        self.facts.refresh_direct_effects(&self.modules);
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -124,8 +180,8 @@ pub struct CheckedConst {
     pub span: SourceSpan,
 }
 
-/// A checked function: its resolved signature, effect summary, and executable
-/// syntax body.
+/// A checked function: its resolved signature, effect summary, and checked
+/// executable body for runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedFunction {
     pub name: String,
@@ -135,15 +191,258 @@ pub struct CheckedFunction {
     pub span: SourceSpan,
     /// True when the body reads or writes any saved root (`^...`).
     pub touches_saved_data: bool,
-    pub body: Block,
+    pub(crate) runtime_body: Option<CheckedBody>,
+}
+
+impl CheckedFunction {
+    pub fn runtime_body(&self) -> Option<&CheckedBody> {
+        self.runtime_body.as_ref()
+    }
 }
 
 /// One resolved function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedParam {
     pub name: String,
-    pub mode: Option<ParamMode>,
+    pub mode: Option<CheckedParamMode>,
     pub ty: MarrowType,
+}
+
+/// Syntax-free program artifact for production execution.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckedRuntimeProgram {
+    modules: Vec<CheckedRuntimeModule>,
+    entry_functions: HashMap<String, CheckedEntryFunction>,
+    private_entry_functions: HashSet<String>,
+    facts: CheckedFacts,
+}
+
+impl CheckedRuntimeProgram {
+    pub fn from_checked(program: &CheckedProgram) -> Self {
+        let modules: Vec<CheckedRuntimeModule> = program
+            .modules
+            .iter()
+            .enumerate()
+            .map(|(module_index, module)| {
+                CheckedRuntimeModule::from_checked(program, module_index, module)
+            })
+            .collect();
+        let (entry_functions, private_entry_functions) = runtime_entry_functions(&modules);
+        Self {
+            modules,
+            entry_functions,
+            private_entry_functions,
+            facts: program.facts.clone(),
+        }
+    }
+
+    pub fn entry_function_ref(&self, entry: &str) -> CheckedEntryFunction {
+        self.entry_functions
+            .get(entry)
+            .copied()
+            .or_else(|| {
+                self.private_entry_functions
+                    .contains(entry)
+                    .then_some(CheckedEntryFunction::Private)
+            })
+            .unwrap_or(CheckedEntryFunction::Missing)
+    }
+
+    pub fn modules(&self) -> &[CheckedRuntimeModule] {
+        &self.modules
+    }
+
+    pub fn facts(&self) -> &CheckedFacts {
+        &self.facts
+    }
+
+    pub fn file_path(&self, id: FileId) -> Option<&Path> {
+        self.modules
+            .get(id.0 as usize)
+            .map(|module| module.source_file.as_path())
+    }
+
+    pub fn file_id_of(&self, module: &CheckedRuntimeModule) -> Option<FileId> {
+        self.modules
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, module))
+            .map(|index| FileId(index as u32))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckedEntryFunction {
+    Found(CheckedFunctionRef),
+    Ambiguous,
+    Private,
+    Missing,
+}
+
+fn runtime_entry_functions(
+    modules: &[CheckedRuntimeModule],
+) -> (HashMap<String, CheckedEntryFunction>, HashSet<String>) {
+    let mut entries = HashMap::new();
+    let mut private_entries = HashSet::new();
+    for (module_index, module) in modules.iter().enumerate() {
+        for (function_index, function) in module.functions.iter().enumerate() {
+            let function_ref = CheckedFunctionRef {
+                module: module_index as u32,
+                function: function_index as u32,
+            };
+            let qualified = runtime_entry_name(&module.name, &function.name);
+            if !function.public {
+                private_entries.insert(qualified);
+                continue;
+            }
+            entries.insert(qualified.clone(), CheckedEntryFunction::Found(function_ref));
+            if qualified != function.name {
+                insert_bare_entry(&mut entries, &function.name, function_ref);
+            }
+        }
+    }
+    (entries, private_entries)
+}
+
+fn insert_bare_entry(
+    entries: &mut HashMap<String, CheckedEntryFunction>,
+    name: &str,
+    function_ref: CheckedFunctionRef,
+) {
+    match entries.entry(name.to_string()) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(CheckedEntryFunction::Found(function_ref));
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if entry.get() != &CheckedEntryFunction::Found(function_ref) {
+                entry.insert(CheckedEntryFunction::Ambiguous);
+            }
+        }
+    }
+}
+
+fn runtime_entry_name(module: &str, function: &str) -> String {
+    if module.is_empty() {
+        return function.to_string();
+    }
+    format!("{module}::{function}")
+}
+
+impl From<&CheckedProgram> for CheckedRuntimeProgram {
+    fn from(program: &CheckedProgram) -> Self {
+        Self::from_checked(program)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedRuntimeModule {
+    pub name: String,
+    pub source_file: PathBuf,
+    pub span: SourceSpan,
+    pub constants: Vec<CheckedRuntimeConst>,
+    functions: Vec<CheckedRuntimeFunction>,
+}
+
+impl CheckedRuntimeModule {
+    fn from_checked(program: &CheckedProgram, module_index: usize, module: &CheckedModule) -> Self {
+        let context = CheckedExecutableContext::new(program, module_index);
+        Self {
+            name: module.name.clone(),
+            source_file: module.source_file.clone(),
+            span: module.span,
+            constants: module
+                .constants
+                .iter()
+                .map(|constant| CheckedRuntimeConst::from_checked(constant, &context))
+                .collect(),
+            functions: module
+                .functions
+                .iter()
+                .map(|function| CheckedRuntimeFunction::from_checked(program, function))
+                .collect(),
+        }
+    }
+
+    pub fn functions(&self) -> &[CheckedRuntimeFunction] {
+        &self.functions
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedRuntimeConst {
+    pub name: String,
+    pub ty: Option<MarrowType>,
+    pub value: Option<CheckedExpr>,
+    pub span: SourceSpan,
+}
+
+impl CheckedRuntimeConst {
+    fn from_checked(constant: &CheckedConst, context: &CheckedExecutableContext<'_>) -> Self {
+        Self {
+            name: constant.name.clone(),
+            ty: constant.ty.clone(),
+            value: constant.value.as_ref().and_then(|value| {
+                let mut scope = Vec::new();
+                CheckedExpr::lower(value, context, &mut scope)
+            }),
+            span: constant.span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedRuntimeFunction {
+    pub name: String,
+    pub public: bool,
+    pub params: Vec<CheckedParam>,
+    entry_params: Vec<CheckedRuntimeParam>,
+    pub return_type: Option<MarrowType>,
+    pub span: SourceSpan,
+    pub touches_saved_data: bool,
+    body: Option<CheckedBody>,
+}
+
+impl CheckedRuntimeFunction {
+    fn from_checked(program: &CheckedProgram, function: &CheckedFunction) -> Self {
+        Self {
+            name: function.name.clone(),
+            public: function.public,
+            params: function.params.clone(),
+            entry_params: function
+                .params
+                .iter()
+                .map(|param| CheckedRuntimeParam::from_checked(program, param))
+                .collect(),
+            return_type: function.return_type.clone(),
+            span: function.span,
+            touches_saved_data: function.touches_saved_data,
+            body: function.runtime_body.clone(),
+        }
+    }
+
+    pub fn body(&self) -> Option<&CheckedBody> {
+        self.body.as_ref()
+    }
+
+    pub fn entry_params(&self) -> &[CheckedRuntimeParam] {
+        &self.entry_params
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedRuntimeParam {
+    pub name: String,
+    pub mode: Option<CheckedParamMode>,
+    pub ty: CheckedRuntimeValueType,
+}
+
+impl CheckedRuntimeParam {
+    fn from_checked(program: &CheckedProgram, param: &CheckedParam) -> Self {
+        Self {
+            name: param.name.clone(),
+            mode: param.mode,
+            ty: checked_runtime_value_type(program, param.ty.clone()),
+        }
+    }
 }
 
 /// A resolved Marrow type, best-effort. Anything the checker cannot resolve

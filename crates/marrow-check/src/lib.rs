@@ -7,16 +7,18 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use marrow_project::{DiscoverError, ProjectConfig, discover_test_modules};
+use marrow_project::{DiscoverError, discover_test_modules};
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
-use marrow_store::value::ScalarType;
+pub use marrow_store::value::ScalarType;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 
 pub mod analysis;
 pub mod binding;
 mod catalog;
 mod checks;
+pub mod durable_path;
 mod enums;
+pub mod executable;
 pub mod facts;
 mod infer;
 mod presence;
@@ -28,21 +30,36 @@ mod typerules;
 
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
-pub use enums::resolve_match_enums;
+pub use durable_path::{
+    StoreLeafKind, StorePathClass, classify_store_path, identity_leaf_key_mismatch,
+};
+pub use executable::{
+    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
+    CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedEnumMemberRef, CheckedEnumRef,
+    CheckedExpr, CheckedForBinding, CheckedFunctionRef, CheckedInterpolationPart,
+    CheckedLiteralKind, CheckedMatchArm, CheckedParamMode, CheckedResourceConstructor,
+    CheckedResourceConstructorField, CheckedResourceRef, CheckedRuntimeValueType,
+    CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
+    CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
+    CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_saved_root_place,
+};
 pub use facts::PresenceProofRead;
 pub use facts::{
     CheckedFacts, CheckedType, DirectEffectFacts, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
-    FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
-    ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
-    StoreFact, StoreId, StoreIndexFact, StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource,
+    FunctionFact, FunctionId, FutureEphemeralRootEffect, FutureEphemeralRootEffects, HostEffect,
+    LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact, ResourceId, ResourceMemberFact,
+    ResourceMemberId, ResourceMemberKind, SavedPlaceEffect, StoreFact, StoreId,
+    StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource,
     StoredValueMeaning,
 };
 pub use facts::{PresenceProofFact, PresenceProofPlace, PresenceProofSource};
-pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};
+pub use marrow_project::ProjectConfig;
+pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 use program::TypeNames;
 pub use program::{
-    CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, FileId, MarrowType,
-    ProgramCatalog,
+    CheckedConst, CheckedEntryFunction, CheckedFunction, CheckedModule, CheckedParam,
+    CheckedProgram, CheckedRuntimeConst, CheckedRuntimeFunction, CheckedRuntimeModule,
+    CheckedRuntimeProgram, FileId, MarrowType, ProgramCatalog,
 };
 pub(crate) use prototype::check_prototype_only;
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
@@ -309,7 +326,7 @@ pub(crate) fn resource_type_name(module: &str, resource: &str) -> String {
 
 /// Resolve resource references inside a schema type through the checked,
 /// module-aware resolver and return the canonical checker type.
-pub fn resolve_resource_schema_type(
+pub(crate) fn resolve_resource_schema_type(
     program: &CheckedProgram,
     from_module: &str,
     ty: &marrow_schema::Type,
@@ -391,10 +408,8 @@ fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> Option<&'p st
 /// aliases, so an enum spelling qualified by a short alias (`c` under
 /// `use a::b::c`) names the imported module (`a::b::c`). Reuses [`expand_alias`]
 /// by appending a sentinel leaf, so a single-segment alias expands the same way a
-/// call's leading segment does; a non-alias leading segment is left untouched.
-/// Public so the runtime resolves an aliased enum literal to the same module the
-/// checker did.
-pub fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<String>>) -> String {
+/// call's leading segment does.
+pub(crate) fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<String>>) -> String {
     let mut segments: Vec<String> = module.split("::").map(str::to_string).collect();
     // `expand_alias` only expands a leading alias when a trailing segment follows
     // (short-form requires the qualifier); append a sentinel so a bare alias
@@ -867,21 +882,13 @@ pub(crate) fn check_tests_with_sources_analysis(
         .diagnostics
         .retain(|diagnostic| !resolution_suppression.should_suppress(diagnostic));
 
-    // Resolve `match` scrutinee enums on the test bodies, inferring against the whole
-    // combined program so a test's `match` over a project enum dispatches correctly.
-    // The bodies belong to the already-normalized test modules — the tail of the
-    // combined program past the project's own modules.
-    let mut resolved_tests =
-        CheckedProgram::from_modules(combined.modules[project_count..].to_vec());
-    resolve_match_enums(&mut resolved_tests, &combined);
-    for (target, source) in combined.modules[project_count..]
-        .iter_mut()
-        .zip(resolved_tests.modules)
-    {
-        *target = source;
-    }
     combined.rebuild_facts_with_sources_preserving_prefix(
         project,
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
+    combined.lower_runtime_bodies(
         parsed_files
             .iter()
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
@@ -1147,8 +1154,7 @@ fn push_schema_error(
 }
 
 /// Resolve a function declaration for the checked-program artifact: its
-/// signature (parameter and return types resolve against the module's own named
-/// types) plus its body, which the runtime evaluates.
+/// signature plus the checked executable body runtime evaluates.
 fn checked_function(
     function: &marrow_syntax::FunctionDecl,
     names: TypeNames<'_>,
@@ -1161,7 +1167,7 @@ fn checked_function(
             .iter()
             .map(|param| CheckedParam {
                 name: param.name.clone(),
-                mode: param.mode,
+                mode: param.mode.map(CheckedParamMode::lower),
                 ty: MarrowType::resolve(&param.ty, names),
             })
             .collect(),
@@ -1171,7 +1177,7 @@ fn checked_function(
             .map(|ty| MarrowType::resolve(ty, names)),
         span: function.span,
         touches_saved_data: block_touches_saved_data(&function.body),
-        body: function.body.clone(),
+        runtime_body: None,
     }
 }
 
@@ -1274,9 +1280,10 @@ fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
 /// (`"clock"`, `"books"`), value = the full path split into segments
 /// (`["std","clock"]`). Same short-name derivation as
 /// [`check_duplicate_declarations`], so the two stay consistent. Drives short-form
-/// call resolution; the runtime builds the identical map from
-/// `CheckedModule::imports`.
-pub fn build_alias_map(import_paths: &[String]) -> std::collections::HashMap<String, Vec<String>> {
+/// call resolution during checking and executable lowering.
+pub(crate) fn build_alias_map(
+    import_paths: &[String],
+) -> std::collections::HashMap<String, Vec<String>> {
     import_paths
         .iter()
         .map(|path| {
@@ -1292,9 +1299,8 @@ pub fn build_alias_map(import_paths: &[String]) -> std::collections::HashMap<Str
 /// `{clock → [std,clock]}` becomes `[std,clock,now]`. A single-segment name is
 /// never expanded (short-form requires the module qualifier), and a leading
 /// segment that is not an alias is left untouched (so `std::clock::now` and a
-/// project `mod::fn` pass through unchanged). This is the shared semantics both the
-/// checker and the runtime apply, so short-form resolves symmetrically.
-pub fn expand_alias(
+/// project `mod::fn` pass through unchanged).
+pub(crate) fn expand_alias(
     segments: &[String],
     aliases: &std::collections::HashMap<String, Vec<String>>,
 ) -> Vec<String> {

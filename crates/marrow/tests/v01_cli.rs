@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 const LIBRARY_SOURCE: &str = include_str!("../../../fixtures/v01/library.mw");
 
 struct TempProject {
@@ -28,6 +30,7 @@ fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
+    support::accept_catalog_if_clean(&root);
     TempProject { root }
 }
 

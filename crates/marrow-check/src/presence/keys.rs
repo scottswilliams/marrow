@@ -1,7 +1,6 @@
-use marrow_syntax::{Argument, Expression, InterpolationPart};
-
 use super::scope::NameScope;
 use super::util::extend_unique;
+use crate::{CheckedArg, CheckedArgMode, CheckedExpr, CheckedInterpolationPart};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SavedPathParts {
@@ -17,15 +16,15 @@ pub(super) struct ExprKey {
     pub(super) bindings: Vec<u32>,
 }
 
-pub(super) fn saved_path_parts(expr: &Expression, scope: &NameScope) -> Option<SavedPathParts> {
+pub(super) fn saved_path_parts(expr: &CheckedExpr, scope: &NameScope) -> Option<SavedPathParts> {
     match expr {
-        Expression::SavedRoot { name, .. } => Some(SavedPathParts {
+        CheckedExpr::SavedRoot { name, .. } => Some(SavedPathParts {
             root: name.clone(),
             members: Vec::new(),
             keys: Vec::new(),
             key_bindings: Vec::new(),
         }),
-        Expression::Call { callee, args, .. } => {
+        CheckedExpr::Call { callee, args, .. } => {
             let mut path = saved_path_parts(callee, scope)?;
             for arg in args {
                 let key = argument_key(arg, scope);
@@ -34,16 +33,16 @@ pub(super) fn saved_path_parts(expr: &Expression, scope: &NameScope) -> Option<S
             }
             Some(path)
         }
-        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+        CheckedExpr::Field { base, name, .. } | CheckedExpr::OptionalField { base, name, .. } => {
             let mut path = saved_path_parts(base, scope)?;
             path.members.push(name.clone());
             Some(path)
         }
-        Expression::Literal { .. }
-        | Expression::Name { .. }
-        | Expression::Unary { .. }
-        | Expression::Binary { .. }
-        | Expression::Interpolation { .. } => None,
+        CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::Unary { .. }
+        | CheckedExpr::Binary { .. }
+        | CheckedExpr::Interpolation { .. } => None,
     }
 }
 
@@ -55,16 +54,16 @@ pub(super) fn binding_key(name: &str, scope: &NameScope) -> Option<ExprKey> {
     })
 }
 
-pub(super) fn assigned_bindings(expr: &Expression, scope: &NameScope) -> Vec<u32> {
+pub(super) fn assigned_bindings(expr: &CheckedExpr, scope: &NameScope) -> Vec<u32> {
     expression_key(expr, scope).bindings
 }
 
-pub(super) fn argument_key(arg: &Argument, scope: &NameScope) -> ExprKey {
+pub(super) fn argument_key(arg: &CheckedArg, scope: &NameScope) -> ExprKey {
     let mut text = String::new();
     if let Some(mode) = arg.mode {
         text.push_str(match mode {
-            marrow_syntax::ArgMode::Out => "out:",
-            marrow_syntax::ArgMode::InOut => "inout:",
+            CheckedArgMode::Out => "out:",
+            CheckedArgMode::InOut => "inout:",
         });
     }
     if let Some(name) = &arg.name {
@@ -79,13 +78,13 @@ pub(super) fn argument_key(arg: &Argument, scope: &NameScope) -> ExprKey {
     }
 }
 
-pub(super) fn expression_key(expr: &Expression, scope: &NameScope) -> ExprKey {
+pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
     match expr {
-        Expression::Literal { kind, text, .. } => ExprKey {
+        CheckedExpr::Literal { kind, text, .. } => ExprKey {
             text: format!("lit:{kind:?}:{text}"),
             bindings: Vec::new(),
         },
-        Expression::Name { segments, .. } if segments.len() == 1 => {
+        CheckedExpr::Name { segments, .. } if segments.len() == 1 => {
             let name = &segments[0];
             match scope.lookup(name) {
                 Some(binding) => ExprKey {
@@ -98,15 +97,15 @@ pub(super) fn expression_key(expr: &Expression, scope: &NameScope) -> ExprKey {
                 },
             }
         }
-        Expression::Name { segments, .. } => ExprKey {
+        CheckedExpr::Name { segments, .. } => ExprKey {
             text: format!("name:{}", segments.join("::")),
             bindings: Vec::new(),
         },
-        Expression::SavedRoot { name, .. } => ExprKey {
+        CheckedExpr::SavedRoot { name, .. } => ExprKey {
             text: format!("root:{name}"),
             bindings: Vec::new(),
         },
-        Expression::Call { callee, args, .. } => {
+        CheckedExpr::Call { callee, args, .. } => {
             let callee = expression_key(callee, scope);
             let mut bindings = callee.bindings;
             let mut args_text = Vec::new();
@@ -120,7 +119,7 @@ pub(super) fn expression_key(expr: &Expression, scope: &NameScope) -> ExprKey {
                 bindings,
             }
         }
-        Expression::Field {
+        CheckedExpr::Field {
             base, name, quoted, ..
         } => {
             let base = expression_key(base, scope);
@@ -129,7 +128,7 @@ pub(super) fn expression_key(expr: &Expression, scope: &NameScope) -> ExprKey {
                 bindings: base.bindings,
             }
         }
-        Expression::OptionalField {
+        CheckedExpr::OptionalField {
             base, name, quoted, ..
         } => {
             let base = expression_key(base, scope);
@@ -138,14 +137,14 @@ pub(super) fn expression_key(expr: &Expression, scope: &NameScope) -> ExprKey {
                 bindings: base.bindings,
             }
         }
-        Expression::Unary { op, operand, .. } => {
+        CheckedExpr::Unary { op, operand, .. } => {
             let operand = expression_key(operand, scope);
             ExprKey {
                 text: format!("unary:{op:?}:{}", operand.text),
                 bindings: operand.bindings,
             }
         }
-        Expression::Binary {
+        CheckedExpr::Binary {
             op, left, right, ..
         } => {
             let left = expression_key(left, scope);
@@ -157,13 +156,13 @@ pub(super) fn expression_key(expr: &Expression, scope: &NameScope) -> ExprKey {
                 bindings,
             }
         }
-        Expression::Interpolation { parts, .. } => {
+        CheckedExpr::Interpolation { parts, .. } => {
             let mut bindings = Vec::new();
             let text = parts
                 .iter()
                 .map(|part| match part {
-                    InterpolationPart::Text { text, .. } => format!("text:{text}"),
-                    InterpolationPart::Expr(expr) => {
+                    CheckedInterpolationPart::Text { text, .. } => format!("text:{text}"),
+                    CheckedInterpolationPart::Expr(expr) => {
                         let expr = expression_key(expr, scope);
                         extend_unique(&mut bindings, expr.bindings);
                         expr.text

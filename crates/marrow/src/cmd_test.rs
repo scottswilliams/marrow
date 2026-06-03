@@ -126,6 +126,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    let runtime_program = program.runtime();
 
     // Tests get the same host capabilities as a run; their `std::log` output goes
     // to a discard sink so it stays out of the pass/fail report.
@@ -138,18 +139,25 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let mut failed = 0usize;
     let mut errored = 0usize;
     for (name, source_file) in &tests {
-        let store = RefCell::new(marrow_store::mem::MemStore::new());
+        let store = marrow_store::tree::TreeStore::new(marrow_store::mem::MemStore::new());
         // A traced test runs under the debugger entry with a hook labelled by the
         // test name, so its statements and writes are attributed to it; an untraced
         // test runs through the plain entry and pays nothing.
-        let result = if trace {
-            let mut hook = TraceHook::new(format, name.clone());
-            let result =
-                marrow_run::run_entry_with_debugger(&program, &store, &host, &mut hook, name, &[]);
-            hook.flush();
-            result
-        } else {
-            marrow_run::run_entry_with_host(&program, &store, &host, name, &[])
+        let result = match marrow_run::CheckedEntryCall::new(&runtime_program, name, Vec::new()) {
+            Err(error) => Err(error),
+            Ok(call) if trace => {
+                let mut hook = TraceHook::new(format, name.clone(), &runtime_program);
+                let result = marrow_run::run_entry_with_debugger(
+                    &runtime_program,
+                    &store,
+                    &host,
+                    &mut hook,
+                    &call,
+                );
+                hook.flush();
+                result
+            }
+            Ok(call) => marrow_run::run_entry_with_host(&runtime_program, &store, &host, &call),
         };
         match result {
             Ok(_) => {
@@ -162,7 +170,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                 // The entry file is the fallback when a fault carries no origin.
                 let file = error
                     .origin
-                    .and_then(|id| program.file_path(id))
+                    .and_then(|id| runtime_program.file_path(id))
                     .unwrap_or(source_file.as_path());
                 // An assertion is a test FAIL; any other fault is an ERROR. The
                 // labels are column-aligned with the `ok` line.

@@ -82,7 +82,7 @@ positions, map keys, or other addresses. Direct durable `for` loops already use
 that address-oriented shape, so `keys(...)` is mostly useful when an address list
 is passed around as a value. `values(...)` and `entries(...)` explicitly read
 stored values. Key-only collections such as sets and non-unique index branches
-do not have separate values; their generated marker values are a raw inspection
+do not have separate values; their generated marker values are an inspection
 detail. Deep saved-data walks belong to inspection, export, repair, and data
 evolution tools.
 
@@ -223,7 +223,7 @@ delete ^books(id).subtitle
 ```
 
 `merge` is a reserved word, not a v0.1 statement. For a partial update that keeps
-existing data, use field writes or an `edit` block rather than a whole-record `=`.
+existing data, write specific fields rather than a whole-record `=`.
 
 ## Conversions
 

@@ -6,12 +6,13 @@ same shape can be used for local values, local keyed trees, or saved data.
 This page uses "saved data" for data marked with `^`. Saved data persists in
 the project database. Local data has no `^` and exists only while code runs.
 
-Ordinary application code declares stores for saved roots. Raw saved-tree access
-is for import, export, data evolution, repair, and tools.
+Ordinary application code declares stores for saved roots. Inspection, import,
+export, data evolution, repair, and restore tools operate through checked
+tree-cell facts rather than treating backend keys as source semantics.
 
-Saved path syntax is logical. Marrow decides how roots, keyed layers, fields,
-and indexes are encoded for the selected backend. Code depends on the resource
-shape, not on a backend key layout.
+Saved address syntax is logical. Marrow decides how roots, keyed layers, fields,
+and indexes are stored for the selected backend. Code depends on the resource
+shape, not on physical storage details.
 
 Encoded record keys are distinct from structural names. A record key such as
 `"byShelf"` does not collide with an index named `byShelf`.
@@ -132,7 +133,7 @@ store ^enrollments(studentId: string, courseId: string): Enrollment
 
 The enrollment is identified by both `studentId` and `courseId`.
 
-Identity keys live in the saved path. They are not ordinary stored fields.
+Identity keys live in the store address. They are not ordinary stored fields.
 If the resource also stores the same business values as fields, those fields
 use separate field names.
 Key names are part of the managed layer namespace. A store keyed by `id`
@@ -167,8 +168,8 @@ store ^books(id: int): Book
 ```
 
 Documentation comments feed generated docs, editor hover, inspect output, and
-LSP help. They do not change the saved path, the field name, the runtime value,
-or the type of the field. In the example above, code still reads and writes
+LSP help. They do not change the saved address, the field name, the runtime
+value, or the type of the field. In the example above, code still reads and writes
 `title`:
 
 ```mw
@@ -217,7 +218,7 @@ marker values at identity lookup paths. Unique indexes store the store identity
 at the lookup path.
 Typed code reads non-unique index identities through direct iteration or
 `keys(...)`. It reads a unique index identity from the lookup path. Generated
-marker values are visible only through raw inspection.
+marker values are visible only through checked inspection tooling.
 
 Index arguments may name store keys or top-level fields only. Fields nested
 through unkeyed groups are rejected, whether written as a dotted path or as a
@@ -334,16 +335,6 @@ That managed write is internally coherent or it reports a typed capability or
 storage error before success is visible. Ordinary app code does not call a
 special `set(...)` function for indexed fields. Untyped writes that bypass a
 managed store root are rejected; maintenance code still uses managed writes.
-
-Group several field writes under one root with an `edit` block. Like a field
-write it preserves omitted fields and children; unlike a whole-record `=` it does
-not clear them:
-
-```mw
-edit ^books(id)
-    shelf = "fiction"
-    subtitle = "A novel"
-```
 
 Field writes update existing resources. To create a resource or keyed entry
 with required fields, assign a whole tree value or use a transaction that
@@ -468,20 +459,20 @@ book.shelf = "favorites"
 A whole-resource read materializes the resource's fields — its top-level scalars
 and any unkeyed nested groups — into a local value. It does not pull in keyed
 child layers such as history, sequences, or keyed trees; those are read, written,
-and traversed through their saved paths (for example `^books(id).versions(v)`).
+and traversed through their saved addresses (for example `^books(id).versions(v)`).
 A whole read is useful for small records and construction; read or traverse the
 child layers you need directly.
 
 Whole-resource assignment is exact. It replaces the saved resource for that
 identity, clearing every field, unkeyed group, and keyed child layer omitted from
-the assigned value. To preserve children while updating current state, use a field
-write or an edit block instead of `=`.
+the assigned value. To preserve children while updating current state, write the
+specific fields instead of using `=`.
 
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
 
 If saved bytes do not match the resource schema, typed reads raise a typed
-error. Raw inspection can still show the stored bytes for repair.
+error. Checked inspection can still show the stored bytes for repair.
 
 ## Sparse And Required Fields
 
@@ -532,7 +523,7 @@ Deleting a required field is rejected unless the surrounding keyed entry or
 resource is being deleted, or code is running in explicit maintenance mode.
 
 `merge` is a reserved word, not a v0.1 statement. For partial updates that keep
-existing data, use field writes or an edit block rather than a whole-record `=`.
+existing data, write specific fields rather than a whole-record `=`.
 
 Deleting one store identity is ordinary application work. Deleting a whole
 managed root is maintenance work. Code must opt into maintenance mode. The
@@ -578,8 +569,11 @@ If a transaction block exits without an escaping error, it commits its saved
 writes before leaving. That includes exit by `return`, `break`, or `continue`.
 If an error escapes the block, saved writes from that transaction roll back,
 including generated index writes. Local variable mutation is ordinary program
-state and is not rewound by a transaction rollback. Output and host effects
-already performed are not rewound by a saved-data rollback.
+state and is not rewound by a transaction rollback. Rollback-sensitive host
+effects are rejected inside a transaction before they run: program output,
+logging, and filesystem writes must happen outside the transaction. Host
+capability reads, such as clock, environment, and filesystem reads, do not change
+saved state and may run inside transactions.
 
 An error caught inside the transaction is ordinary control flow; rollback
 happens only if an error still escapes the transaction block.

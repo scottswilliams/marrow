@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -10,6 +12,7 @@ fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
+    support::accept_catalog_if_clean(&root);
     root
 }
 
@@ -72,6 +75,42 @@ fn run_trace_interleaves_steps_and_writes() {
     assert!(
         writing_step < write_at && write_at < print_step,
         "step, then its write, then the next step: {stderr}"
+    );
+}
+
+#[test]
+fn run_trace_reports_non_root_deletes() {
+    let project = temp_project("trace-delete", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20details\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20^books(1).details.note = \"gone\"\n\n\
+             pub fn dropDetails()\n\
+             \x20\x20\x20\x20delete ^books(1).details\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let seed = marrow(&["run", "--entry", "app::seed", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let output = marrow(&["run", "--trace", "--entry", "app::dropDetails", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("delete ^books(1).details"),
+        "trace must report the group delete: {stderr}"
     );
 }
 

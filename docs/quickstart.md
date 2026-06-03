@@ -27,8 +27,9 @@ Write `marrow.json`:
 ```
 
 - `sourceRoots` lists the directories searched for `.mw` library modules.
-- `run.defaultEntry` is the qualified function `marrow run` calls when you do
-  not pass `--entry`.
+- `run.defaultEntry` is the public function `marrow run` calls when you do not
+  pass `--entry`; qualify it as `module::function` unless the bare name is
+  unique.
 - `store` selects where saved data lives. `native` is the persistent on-disk
   store and requires a `dataDir`. Omit `store` entirely to run against a fresh
   in-memory store each time.
@@ -117,8 +118,9 @@ marrow run .
 
 `marrow run` checks the project first, then runs the entry against the store
 `marrow.json` selects. Output from `print` goes to stdout. Use
-`--entry <module::function>` to call a different no-argument function instead of
-the default.
+`--entry <entry>` to call a different no-argument public function instead of the
+default; qualify it as `module::function` unless the bare function name is
+unique.
 
 This project selects the `native` store, so the data persists. Run it again and
 the new books appear alongside the first two:

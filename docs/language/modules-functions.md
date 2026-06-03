@@ -132,15 +132,18 @@ intentionally ignores the result.
 
 ## Entrypoints
 
-Tools call public functions by qualified name:
+Tools call public functions by entry name. A qualified entry names one module
+exactly:
 
 ```text
 marrow run --entry shelf::books::main
 ```
 
+A bare entry name is accepted only when it names one public function in the
+checked program. If two modules export the same function name, qualify the entry.
 A module entrypoint is an ordinary `pub fn` declaration. Argument decoding and
-result rendering happen at the tool or host boundary, then Marrow code runs
-with typed parameters and typed returns.
+result rendering happen at the tool or host boundary, then Marrow code runs with
+typed parameters and typed returns.
 
 ## Parameters
 

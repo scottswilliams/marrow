@@ -1,0 +1,528 @@
+use marrow_check::{
+    CheckedArg as ExecArg, CheckedArgMode as ArgMode, CheckedExpr as ExecExpr, CheckedParam,
+    CheckedParamMode as ParamMode, CheckedResourceConstructor, CheckedRuntimeValueType, MarrowType,
+};
+use marrow_schema::{KeyDef, Type};
+use marrow_store::Decimal;
+use marrow_store::key::SavedKey;
+use marrow_store::value::ScalarType;
+use marrow_syntax::SourceSpan;
+
+use crate::env::Env;
+use crate::error::{RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported};
+use crate::expr::eval_expr;
+use crate::path::{SavedPath, Terminal, lower};
+use crate::read::read_local_field;
+use crate::value::{Value, value_to_key};
+use crate::write_dispatch::write_local_field;
+
+pub(crate) fn bind_arguments(
+    params: &[CheckedParam],
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut slots: Vec<Option<Value>> = vec![None; params.len()];
+    let mut next_positional = 0;
+    let mut seen_named = false;
+    for arg in args {
+        let index = arg_param_index(arg, params, &mut next_positional, &mut seen_named, span)?;
+        let value = eval_expr(&arg.value, env)?;
+        place_argument(&mut slots, index, value, params, span)?;
+    }
+    collect_arguments(slots, params, span)
+}
+
+pub(crate) fn bind_arguments_with_modes(
+    params: &[CheckedParam],
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(Vec<Value>, Vec<Option<Place>>), RuntimeError> {
+    let mut slots: Vec<Option<(Value, Option<Place>)>> = (0..params.len()).map(|_| None).collect();
+    let mut next_positional = 0;
+    let mut seen_named = false;
+    for arg in args {
+        let index = arg_param_index(arg, params, &mut next_positional, &mut seen_named, span)?;
+        let param = params
+            .get(index)
+            .ok_or_else(|| type_error("call has more arguments than parameters", span))?;
+        if !modes_match(arg.mode, param.mode) {
+            return Err(type_error(
+                &format!("argument mode does not match parameter `{}`", param.name),
+                span,
+            ));
+        }
+        let entry = match arg.mode {
+            None => (eval_expr(&arg.value, env)?, None),
+            Some(ArgMode::InOut) => {
+                let place = resolve_read_write_place(&arg.value, span)?;
+                let current = place.read(span, env)?;
+                (current, Some(place.into_write_place()))
+            }
+            Some(ArgMode::Out) => {
+                let place = resolve_write_place(&arg.value, span, env)?;
+                (out_seed(&param.ty), Some(place))
+            }
+        };
+        place_argument(&mut slots, index, entry, params, span)?;
+    }
+    let entries = collect_arguments(slots, params, span)?;
+    Ok(entries.into_iter().unzip())
+}
+
+fn arg_param_index(
+    arg: &ExecArg,
+    params: &[CheckedParam],
+    next_positional: &mut usize,
+    seen_named: &mut bool,
+    span: SourceSpan,
+) -> Result<usize, RuntimeError> {
+    match &arg.name {
+        None => {
+            if *seen_named {
+                return Err(type_error(
+                    "a positional argument cannot follow a named argument",
+                    span,
+                ));
+            }
+            let index = *next_positional;
+            *next_positional += 1;
+            Ok(index)
+        }
+        Some(name) => {
+            *seen_named = true;
+            params
+                .iter()
+                .position(|param| &param.name == name)
+                .ok_or_else(|| type_error(&format!("call has no parameter `{name}`"), span))
+        }
+    }
+}
+
+fn place_argument<T>(
+    slots: &mut [Option<T>],
+    index: usize,
+    value: T,
+    params: &[CheckedParam],
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    let slot = slots
+        .get_mut(index)
+        .ok_or_else(|| type_error("call has more arguments than parameters", span))?;
+    if slot.is_some() {
+        return Err(type_error(
+            &format!(
+                "parameter `{}` is supplied more than once",
+                params[index].name
+            ),
+            span,
+        ));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+fn collect_arguments<T>(
+    slots: Vec<Option<T>>,
+    params: &[CheckedParam],
+    span: SourceSpan,
+) -> Result<Vec<T>, RuntimeError> {
+    slots
+        .into_iter()
+        .zip(params)
+        .map(|(slot, param)| {
+            slot.ok_or_else(|| type_error(&format!("missing argument for `{}`", param.name), span))
+        })
+        .collect()
+}
+
+pub(crate) fn eval_resource_constructor(
+    constructor: &CheckedResourceConstructor,
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let mut slots: Vec<Option<Value>> = vec![None; constructor.fields.len()];
+
+    for arg in args {
+        if arg.mode.is_some() {
+            return Err(type_error(
+                &format!("`{}(...)` fields cannot be out arguments", constructor.name),
+                span,
+            ));
+        }
+        let Some(name) = &arg.name else {
+            return Err(type_error(
+                &format!("`{}(...)` takes named fields", constructor.name),
+                span,
+            ));
+        };
+        let index = constructor
+            .fields
+            .iter()
+            .position(|field| &field.name == name)
+            .ok_or_else(|| {
+                type_error(
+                    &format!("`{}` has no field `{name}`", constructor.name),
+                    span,
+                )
+            })?;
+        if slots[index].is_some() {
+            return Err(type_error(
+                &format!("field `{name}` is supplied more than once"),
+                span,
+            ));
+        }
+        let value = eval_expr(&arg.value, env)?;
+        if !checked_value_accepts(&constructor.fields[index].ty, &value) {
+            return Err(type_error(
+                &format!("field `{name}` has the wrong type"),
+                span,
+            ));
+        }
+        slots[index] = Some(value);
+    }
+
+    for (field, slot) in constructor.fields.iter().zip(&slots) {
+        if slot.is_none() && field.required {
+            return Err(type_error(
+                &format!("`{}` requires `{}`", constructor.name, field.name),
+                span,
+            ));
+        }
+    }
+
+    Ok(Value::Resource(
+        constructor
+            .fields
+            .iter()
+            .zip(slots)
+            .filter_map(|(field, value)| value.map(|value| (field.name.clone(), value)))
+            .collect(),
+    ))
+}
+
+pub(crate) fn checked_value_accepts(expected: &CheckedRuntimeValueType, value: &Value) -> bool {
+    match expected {
+        CheckedRuntimeValueType::Primitive(scalar) => value_scalar_type(value) == Some(*scalar),
+        CheckedRuntimeValueType::Identity { keys, .. } => {
+            let Some(identity_keys) = keys.as_deref() else {
+                return false;
+            };
+            match value {
+                Value::Identity(keys) => identity_keys_match(identity_keys, keys),
+                other if identity_keys.len() == 1 => value_to_key(other.clone())
+                    .is_some_and(|key| identity_keys_match(identity_keys, &[key])),
+                _ => false,
+            }
+        }
+        CheckedRuntimeValueType::Resource | CheckedRuntimeValueType::GroupEntry => {
+            matches!(value, Value::Resource(_))
+        }
+        CheckedRuntimeValueType::Enum {
+            enum_id,
+            allowed_members,
+            ..
+        } => {
+            let Some(enum_id) = enum_id else {
+                return false;
+            };
+            let Value::Enum(value) = value else {
+                return false;
+            };
+            value.enum_id == *enum_id && allowed_members.contains(&value.member_id)
+        }
+        CheckedRuntimeValueType::Sequence(element) => match value {
+            Value::Sequence(items) => items
+                .iter()
+                .all(|item| checked_value_accepts(element, item)),
+            _ => false,
+        },
+        CheckedRuntimeValueType::LocalTree { value: element, .. } => match value {
+            Value::LocalTree(entries) => entries
+                .iter()
+                .all(|entry| checked_value_accepts(element, &entry.value)),
+            _ => false,
+        },
+        CheckedRuntimeValueType::Error => matches!(value, Value::Resource(_)),
+        CheckedRuntimeValueType::Invalid | CheckedRuntimeValueType::Unknown => false,
+    }
+}
+
+fn value_scalar_type(value: &Value) -> Option<ScalarType> {
+    match value {
+        Value::Int(_) => Some(ScalarType::Int),
+        Value::Bool(_) => Some(ScalarType::Bool),
+        Value::Str(_) => Some(ScalarType::Str),
+        Value::Instant(_) => Some(ScalarType::Instant),
+        Value::Date(_) => Some(ScalarType::Date),
+        Value::Duration(_) => Some(ScalarType::Duration),
+        Value::Decimal(_) => Some(ScalarType::Decimal),
+        Value::Bytes(_) => Some(ScalarType::Bytes),
+        Value::Sequence(_)
+        | Value::LocalTree(_)
+        | Value::Resource(_)
+        | Value::Identity(_)
+        | Value::Enum(_) => None,
+    }
+}
+
+fn identity_keys_match(declared: &[KeyDef], keys: &[SavedKey]) -> bool {
+    declared.len() == keys.len()
+        && declared
+            .iter()
+            .zip(keys)
+            .all(|(declared, key)| match declared.ty.scalar() {
+                Some(expected) => expected == key.scalar_type(),
+                None => true,
+            })
+}
+
+fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
+    matches!(
+        (arg, param),
+        (None, None)
+            | (Some(ArgMode::Out), Some(ParamMode::Out))
+            | (Some(ArgMode::InOut), Some(ParamMode::InOut))
+    )
+}
+
+pub(crate) enum Place {
+    Local(String),
+    LocalField { base: String, field: String },
+    Saved(Box<SavedPath>),
+}
+
+enum ReadWritePlace {
+    Local(String),
+    LocalField { base: String, field: String },
+}
+
+fn resolve_read_write_place(
+    expr: &ExecExpr,
+    span: SourceSpan,
+) -> Result<ReadWritePlace, RuntimeError> {
+    match expr {
+        ExecExpr::Name { segments, .. } if segments.len() == 1 => {
+            Ok(ReadWritePlace::Local(segments[0].clone()))
+        }
+        ExecExpr::Field { base, name, .. } if matches!(base.as_ref(), ExecExpr::Name { segments, .. } if segments.len() == 1) =>
+        {
+            let ExecExpr::Name { segments, .. } = base.as_ref() else {
+                unreachable!("guarded by the match arm")
+            };
+            Ok(ReadWritePlace::LocalField {
+                base: segments[0].clone(),
+                field: name.clone(),
+            })
+        }
+        _ => Err(unsupported(
+            "an inout argument that is not a local assignable place",
+            span,
+        )),
+    }
+}
+
+fn resolve_write_place(
+    expr: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Place, RuntimeError> {
+    match expr {
+        ExecExpr::Name { segments, .. } if segments.len() == 1 => {
+            Ok(Place::Local(segments[0].clone()))
+        }
+        ExecExpr::Field { base, .. } if base.saved_place().is_some() => {
+            let path = lower(expr, env)?;
+            if !matches!(path.terminal, Terminal::Field { .. }) {
+                return Err(unsupported("this saved path", expr.span()));
+            }
+            Ok(Place::Saved(Box::new(path)))
+        }
+        ExecExpr::Field { base, name, .. } if matches!(base.as_ref(), ExecExpr::Name { segments, .. } if segments.len() == 1) =>
+        {
+            let ExecExpr::Name { segments, .. } = base.as_ref() else {
+                unreachable!("guarded by the match arm")
+            };
+            Ok(Place::LocalField {
+                base: segments[0].clone(),
+                field: name.clone(),
+            })
+        }
+        ExecExpr::Call { .. } if expr.saved_place().is_some() => {
+            let path = lower(expr, env)?;
+            if !path.layers.is_empty() || !matches!(path.terminal, Terminal::Record) {
+                return Err(unsupported("this saved path", expr.span()));
+            }
+            Ok(Place::Saved(Box::new(path)))
+        }
+        _ => Err(unsupported(
+            "an out/inout argument that is not an assignable place",
+            span,
+        )),
+    }
+}
+
+impl ReadWritePlace {
+    fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
+        match self {
+            ReadWritePlace::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_UNBOUND_NAME,
+                message: format!("`{name}` is not bound"),
+                span,
+            }),
+            ReadWritePlace::LocalField { base, field } => read_local_field(base, field, span, env),
+        }
+    }
+
+    fn into_write_place(self) -> Place {
+        match self {
+            ReadWritePlace::Local(name) => Place::Local(name),
+            ReadWritePlace::LocalField { base, field } => Place::LocalField { base, field },
+        }
+    }
+}
+
+impl Place {
+    pub(crate) fn write(
+        self,
+        value: Value,
+        span: SourceSpan,
+        env: &mut Env<'_>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Place::Local(name) => env
+                .assign(&name, value)
+                .map_err(|error| assign_error(&name, error, span)),
+            Place::LocalField { base, field } => write_local_field(&base, &field, value, span, env),
+            Place::Saved(path) => (*path).write(value, span, env),
+        }
+    }
+}
+
+pub(crate) fn default_value(ty: &Type) -> Option<Value> {
+    Some(match ty {
+        Type::Sequence(_) => Value::Sequence(Vec::new()),
+        Type::Scalar(ScalarType::Int) => Value::Int(0),
+        Type::Scalar(ScalarType::Bool) => Value::Bool(false),
+        Type::Scalar(ScalarType::Str) => Value::Str(String::new()),
+        Type::Scalar(ScalarType::Bytes) => Value::Bytes(Vec::new()),
+        Type::Scalar(ScalarType::Date) => Value::Date(0),
+        Type::Scalar(ScalarType::Instant) => Value::Instant(0),
+        Type::Scalar(ScalarType::Duration) => Value::Duration(0),
+        Type::Scalar(ScalarType::Decimal) => Value::Decimal(Decimal::parse("0")?),
+        Type::Identity(_) | Type::Named(_) | Type::Unknown => return None,
+    })
+}
+
+fn out_seed(ty: &MarrowType) -> Value {
+    let zero = match ty {
+        MarrowType::Primitive(
+            scalar @ (ScalarType::Int | ScalarType::Bool | ScalarType::Str | ScalarType::Bytes),
+        ) => default_value(&Type::Scalar(*scalar)),
+        _ => None,
+    };
+    zero.unwrap_or_else(|| Value::Resource(Vec::new()))
+}
+
+#[cfg(test)]
+mod default_value_tests {
+    use marrow_check::MarrowType;
+    use marrow_schema::Type;
+    use marrow_store::Decimal;
+    use marrow_store::value::ScalarType;
+
+    use crate::call_args::{default_value, out_seed};
+    use crate::value::Value;
+
+    #[test]
+    fn var_default_matches_the_runtime_contract() {
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Int)),
+            Some(Value::Int(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Bool)),
+            Some(Value::Bool(false))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Str)),
+            Some(Value::Str(String::new()))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Bytes)),
+            Some(Value::Bytes(Vec::new()))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Date)),
+            Some(Value::Date(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Instant)),
+            Some(Value::Instant(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Duration)),
+            Some(Value::Duration(0))
+        );
+        assert_eq!(
+            default_value(&Type::Scalar(ScalarType::Decimal)),
+            Some(Value::Decimal(Decimal::parse("0").unwrap()))
+        );
+        assert_eq!(
+            default_value(&Type::Sequence(Box::new(Type::Scalar(ScalarType::Int)))),
+            Some(Value::Sequence(Vec::new()))
+        );
+        assert_eq!(default_value(&Type::Identity("books".into())), None);
+        assert_eq!(default_value(&Type::Named("Book".into())), None);
+        assert_eq!(default_value(&Type::Unknown), None);
+    }
+
+    #[test]
+    fn out_seed_matches_the_runtime_contract() {
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Int)),
+            Value::Int(0)
+        );
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Bool)),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Str)),
+            Value::Str(String::new())
+        );
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Bytes)),
+            Value::Bytes(Vec::new())
+        );
+        let empty = Value::Resource(Vec::new());
+        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Date)), empty);
+        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Instant)), empty);
+        assert_eq!(
+            out_seed(&MarrowType::Primitive(ScalarType::Duration)),
+            empty
+        );
+        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Decimal)), empty);
+        assert_eq!(
+            out_seed(&MarrowType::Sequence(Box::new(MarrowType::Primitive(
+                ScalarType::Int
+            )))),
+            empty
+        );
+        assert_eq!(out_seed(&MarrowType::Resource("Book".into())), empty);
+        assert_eq!(
+            out_seed(&MarrowType::GroupEntry {
+                resource: "Book".into(),
+                layers: vec!["versions".into()],
+            }),
+            empty
+        );
+        assert_eq!(out_seed(&MarrowType::Identity("books".into())), empty);
+        assert_eq!(out_seed(&MarrowType::Error), empty);
+        assert_eq!(out_seed(&MarrowType::Unknown), empty);
+    }
+}

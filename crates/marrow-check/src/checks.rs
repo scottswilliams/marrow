@@ -2455,7 +2455,29 @@ pub(crate) fn check_coalesce(
     if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
-    if crate::presence::read_target(program, left).is_none() {
+    let Some(module_index) = program
+        .modules
+        .iter()
+        .position(|module| module.source_file == file)
+    else {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            "operator `??` applies only to a path read or `?.` chain".to_string(),
+        ));
+        return MarrowType::Unknown;
+    };
+    let context = crate::executable::CheckedExecutableContext::new(program, module_index);
+    let mut lower_scope = Vec::new();
+    let Some(left) = crate::CheckedExpr::lower(left, &context, &mut lower_scope) else {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            "operator `??` applies only to a path read or `?.` chain".to_string(),
+        ));
+        return MarrowType::Unknown;
+    };
+    if crate::presence::read_target(program, &left).is_none() {
         diagnostics.push(operator_diagnostic(
             file,
             span,
@@ -3011,7 +3033,7 @@ fn check_plain_call_modes(
 fn check_call_mode(
     label: &str,
     arg: &marrow_syntax::Argument,
-    param_mode: Option<marrow_syntax::ParamMode>,
+    param_mode: Option<crate::CheckedParamMode>,
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -3046,26 +3068,26 @@ fn arg_mode_name(mode: marrow_syntax::ArgMode) -> &'static str {
 
 fn call_modes_match(
     arg: Option<marrow_syntax::ArgMode>,
-    param: Option<marrow_syntax::ParamMode>,
+    param: Option<crate::CheckedParamMode>,
 ) -> bool {
     matches!(
         (arg, param),
         (None, None)
             | (
                 Some(marrow_syntax::ArgMode::Out),
-                Some(marrow_syntax::ParamMode::Out)
+                Some(crate::CheckedParamMode::Out)
             )
             | (
                 Some(marrow_syntax::ArgMode::InOut),
-                Some(marrow_syntax::ParamMode::InOut)
+                Some(crate::CheckedParamMode::InOut)
             )
     )
 }
 
-fn call_mode_expectation(mode: Option<marrow_syntax::ParamMode>) -> &'static str {
+fn call_mode_expectation(mode: Option<crate::CheckedParamMode>) -> &'static str {
     match mode {
-        Some(marrow_syntax::ParamMode::Out) => "`out`",
-        Some(marrow_syntax::ParamMode::InOut) => "`inout`",
+        Some(crate::CheckedParamMode::Out) => "`out`",
+        Some(crate::CheckedParamMode::InOut) => "`inout`",
         None => "a plain argument",
     }
 }

@@ -66,8 +66,38 @@ fn builds_a_module_for_a_clean_library_file() {
     assert!(add.return_type.is_some(), "{add:#?}");
     // `add`'s body touches the `^books` saved root (allocating an id with `nextId`).
     assert!(add.touches_saved_data, "{add:#?}");
-    // The body is carried into the artifact for the runtime to evaluate.
-    assert!(!add.body.statements.is_empty(), "{add:#?}");
+    assert!(
+        add.runtime_body()
+            .is_some_and(|body| !body.statements().is_empty()),
+        "{add:#?}"
+    );
+}
+
+#[test]
+fn checked_functions_do_not_carry_source_bodies() {
+    let root = temp_project("program-runtime-rebuilds-executables", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             pub fn main(): int\n\
+             \x20   return 1\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let runtime = program.runtime();
+    let body = runtime.modules()[0].functions()[0]
+        .body()
+        .expect("runtime body");
+
+    assert_eq!(
+        body.statements().len(),
+        1,
+        "runtime() must consume the checked executable body"
+    );
 }
 
 #[test]
@@ -246,6 +276,16 @@ fn checked_facts_record_function_effects_with_typed_places() {
 
     let fail = facts.function_id(module, "fail").expect("fail");
     assert!(facts.function(fail).direct_effects.throws);
+
+    for name in ["readTitle", "rename", "addTag", "logTitle", "stamp", "fail"] {
+        let function = facts.function_id(module, name).expect("effect function");
+        let ephemeral = &facts
+            .function(function)
+            .direct_effects
+            .future_ephemeral_roots;
+        assert!(ephemeral.reads.is_empty(), "{name} has ephemeral reads");
+        assert!(ephemeral.writes.is_empty(), "{name} has ephemeral writes");
+    }
 }
 
 #[test]

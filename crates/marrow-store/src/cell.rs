@@ -4,7 +4,7 @@
 //! Marrow key profile above those engines: stable catalog IDs, typed key values,
 //! and cell-family ranges.
 
-use crate::key::{SavedKey, encode_escaped_bytes, encode_key_value};
+use crate::key::{SavedKey, decode_key_value, encode_escaped_bytes, encode_key_value};
 
 /// The reserved v0 default placement prefix.
 pub const EMPTY_PLACEMENT_PREFIX: u8 = 0x00;
@@ -21,6 +21,9 @@ const FAMILY_BLOB: u8 = 0x40;
 const NODE_END: u8 = 0x00;
 const LEAF_CELL: u8 = 0x10;
 const SEQUENCE_CELL: u8 = 0x20;
+const DATA_MEMBER_SEGMENT: u8 = 0x30;
+const DATA_KEY_SEGMENT: u8 = 0x40;
+const DATA_VALUE_END: u8 = 0x00;
 const INDEX_IDENTITY: u8 = 0x00;
 const INDEX_ENTRY_END: u8 = 0x00;
 
@@ -102,6 +105,13 @@ impl SequencePosition {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellKey(Vec<u8>);
 
+/// A stable member/key segment below a record node in the tree-cell data family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataPathSegment {
+    Member(CatalogId),
+    Key(SavedKey),
+}
+
 impl CellKey {
     pub fn meta(cell: MetaCell) -> Self {
         let mut bytes = family(FAMILY_META);
@@ -143,6 +153,33 @@ impl CellKey {
         Self(bytes)
     }
 
+    pub fn record_prefix(store: &CatalogId, identity_prefix: &[SavedKey]) -> Self {
+        Self(data_node_stem(store, identity_prefix))
+    }
+
+    pub fn data_path_prefix(
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Self {
+        let mut bytes = Self::node(store, identity).into_bytes();
+        encode_data_path(path, &mut bytes);
+        Self(bytes)
+    }
+
+    pub fn data_path_value(
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Self {
+        if path.is_empty() {
+            return Self::node(store, identity);
+        }
+        let mut bytes = Self::data_path_prefix(store, identity, path).into_bytes();
+        bytes.push(DATA_VALUE_END);
+        Self(bytes)
+    }
+
     pub fn index(index: &CatalogId, index_keys: &[SavedKey], identity: &[SavedKey]) -> Self {
         let mut bytes = family(FAMILY_INDEX);
         encode_id(index.as_str(), &mut bytes);
@@ -150,6 +187,13 @@ impl CellKey {
         bytes.push(INDEX_IDENTITY);
         encode_keys(identity, &mut bytes);
         bytes.push(INDEX_ENTRY_END);
+        Self(bytes)
+    }
+
+    pub fn index_key_prefix(index: &CatalogId, index_keys: &[SavedKey]) -> Self {
+        let mut bytes = family(FAMILY_INDEX);
+        encode_id(index.as_str(), &mut bytes);
+        encode_keys(index_keys, &mut bytes);
         Self(bytes)
     }
 
@@ -178,6 +222,28 @@ impl CellKey {
 
     pub fn range(&self) -> CellRange {
         CellRange::for_prefix(self.as_bytes())
+    }
+}
+
+pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Option<SavedKey> {
+    if bytes.first().copied() != Some(DATA_KEY_SEGMENT) {
+        return None;
+    }
+    decode_key_value(bytes.get(1..)?).map(|(key, _)| key)
+}
+
+fn encode_data_path(path: &[DataPathSegment], out: &mut Vec<u8>) {
+    for segment in path {
+        match segment {
+            DataPathSegment::Member(member) => {
+                out.push(DATA_MEMBER_SEGMENT);
+                encode_id(member.as_str(), out);
+            }
+            DataPathSegment::Key(key) => {
+                out.push(DATA_KEY_SEGMENT);
+                out.extend_from_slice(&encode_key_value(key));
+            }
+        }
     }
 }
 

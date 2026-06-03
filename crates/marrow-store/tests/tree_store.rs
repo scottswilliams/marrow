@@ -3,8 +3,9 @@ use marrow_store::cell::{CatalogId, CellKey, MetaCell, SequencePosition};
 use marrow_store::key::SavedKey;
 use marrow_store::mem::MemStore;
 use marrow_store::tree::{
-    CommitMetadata, EngineProfile, IndexPage, TreeCellStore, TreeEnumMember, TreeReference,
-    decode_tree_enum_member, decode_tree_reference, encode_tree_enum_member, encode_tree_reference,
+    CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TreeCellStore, TreeEnumMember,
+    TreeReference, decode_tree_enum_member, decode_tree_reference, encode_tree_enum_member,
+    encode_tree_reference,
 };
 
 fn catalog_id(hex: &str) -> CatalogId {
@@ -28,6 +29,10 @@ fn index_rows(page: IndexPage) -> Vec<(Vec<SavedKey>, Vec<u8>)> {
         .into_iter()
         .map(|entry| (entry.identity, entry.value))
         .collect()
+}
+
+fn data_key(key: SavedKey) -> DataPathSegment {
+    DataPathSegment::Key(key)
 }
 
 #[test]
@@ -409,6 +414,139 @@ fn exact_index_tuple_zero_limit_returns_empty_page() {
     assert!(empty_page.entries.is_empty());
     assert!(empty_page.cursor.is_none());
     assert!(!empty_page.truncated);
+}
+
+#[test]
+fn nested_data_paths_use_member_catalog_ids_and_typed_keys() {
+    let books = catalog_id("1111111111111111");
+    let versions = catalog_id("2222222222222222");
+    let comments = catalog_id("3333333333333333");
+    let text = catalog_id("4444444444444444");
+    let identity = [SavedKey::Int(7)];
+    let path = [
+        DataPathSegment::Member(versions.clone()),
+        data_key(SavedKey::Int(2)),
+        DataPathSegment::Member(comments.clone()),
+        data_key(SavedKey::Str("a".into())),
+        DataPathSegment::Member(text.clone()),
+    ];
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
+
+    store
+        .write_data_value(&books, &identity, &path, b"hello".to_vec())
+        .expect("write nested value");
+
+    assert_eq!(
+        store
+            .read_data_value(&books, &identity, &path)
+            .expect("read nested value"),
+        Some(b"hello".to_vec())
+    );
+    let keys = raw_keys(&backend);
+    for spelling in ["books", "versions", "comments", "text"] {
+        assert!(
+            keys.iter()
+                .all(|key| !contains_subslice(key, spelling.as_bytes())),
+            "physical nested key contains source spelling {spelling:?}: {keys:?}"
+        );
+    }
+    for id in [&versions, &comments, &text] {
+        assert!(
+            keys.iter()
+                .any(|key| contains_subslice(key, id.as_str().as_bytes())),
+            "physical nested key omitted catalog id {}",
+            id.as_str()
+        );
+    }
+}
+
+#[test]
+fn data_child_navigation_walks_typed_layer_keys() {
+    let books = catalog_id("1111111111111111");
+    let tags = catalog_id("2222222222222222");
+    let identity = [SavedKey::Int(7)];
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
+
+    for key in [SavedKey::Int(1), SavedKey::Int(3), SavedKey::Int(2)] {
+        store
+            .write_data_value(
+                &books,
+                &identity,
+                &[DataPathSegment::Member(tags.clone()), data_key(key)],
+                b"tag".to_vec(),
+            )
+            .expect("write keyed layer value");
+    }
+
+    assert_eq!(
+        store
+            .data_child_keys(&books, &identity, &[DataPathSegment::Member(tags.clone())],)
+            .expect("ascending children"),
+        vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
+    );
+    assert_eq!(
+        store
+            .data_child_keys_rev(&books, &identity, &[DataPathSegment::Member(tags.clone())])
+            .expect("descending children"),
+        vec![SavedKey::Int(3), SavedKey::Int(2), SavedKey::Int(1)]
+    );
+    assert_eq!(
+        store
+            .data_next_child(
+                &books,
+                &identity,
+                &[DataPathSegment::Member(tags.clone())],
+                &SavedKey::Int(1),
+            )
+            .expect("next child"),
+        Some(SavedKey::Int(2))
+    );
+    assert_eq!(
+        store
+            .data_prev_child(
+                &books,
+                &identity,
+                &[DataPathSegment::Member(tags)],
+                &SavedKey::Int(3),
+            )
+            .expect("previous child"),
+        Some(SavedKey::Int(2))
+    );
+}
+
+#[test]
+fn record_and_index_child_navigation_use_catalog_roots() {
+    let books = catalog_id("1111111111111111");
+    let by_shelf = catalog_id("2222222222222222");
+    let mut backend = MemStore::new();
+    let mut store = TreeCellStore::new(&mut backend);
+
+    for id in [2, 1, 3] {
+        store
+            .write_node(&books, &[SavedKey::Int(id)])
+            .expect("write record node");
+        store
+            .write_index_entry(
+                &by_shelf,
+                &[SavedKey::Str("fiction".into())],
+                &[SavedKey::Int(id)],
+                b"present".to_vec(),
+            )
+            .expect("write index entry");
+    }
+
+    assert_eq!(
+        store.record_child_keys(&books, &[]).expect("record keys"),
+        vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
+    );
+    assert_eq!(
+        store
+            .index_child_keys(&by_shelf, &[SavedKey::Str("fiction".into())])
+            .expect("index identity keys"),
+        vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
+    );
 }
 
 #[test]

@@ -71,12 +71,13 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow run [--entry <module::function>] [--maintenance] [--trace] [--dry-run] \
+  marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
 [--format text|json|jsonl] <projectdir>
 
 Check a Marrow project, then run an entry function over the store its
 `marrow.json` selects (an in-memory store when none is configured). The entry
-is `--entry` if given, else the project's `run.defaultEntry`. Output written
+is `--entry` if given, else the project's `run.defaultEntry`; qualify it as
+module::function unless the bare public function name is unique. Output written
 with `print`/`write` goes to stdout.
 
   --maintenance  Run with the maintenance capability, for data evolution and
@@ -142,16 +143,19 @@ fn run_project_dir(
         );
         return ExitCode::FAILURE;
     };
-    let entry = resolve_entry(&program, entry);
+    let runtime_program = program.runtime();
 
     match resolve_store_path(dir, &config) {
         Err(code) => code,
         Ok(None) => {
-            let store = RefCell::new(marrow_store::mem::MemStore::new());
-            execute(&program, &store, &entry, maintenance, observe)
+            let store = marrow_store::tree::TreeStore::new(marrow_store::mem::MemStore::new());
+            execute(&runtime_program, &store, entry, maintenance, observe)
         }
         Ok(Some(path)) => match marrow_store::redb::RedbStore::open(&path) {
-            Ok(store) => execute(&program, &RefCell::new(store), &entry, maintenance, observe),
+            Ok(store) => {
+                let store = marrow_store::tree::TreeStore::new(store);
+                execute(&runtime_program, &store, entry, maintenance, observe)
+            }
             Err(error) => {
                 report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
                 ExitCode::FAILURE
@@ -160,37 +164,14 @@ fn run_project_dir(
     }
 }
 
-/// CLI entries accept a bare function name as a convenience. The runtime expects
-/// a module-qualified entry, so the command resolves the documented first match
-/// before it enters the store-specific execution path.
-fn resolve_entry(program: &marrow_check::CheckedProgram, entry: &str) -> String {
-    if entry.contains("::") {
-        return entry.to_string();
-    }
-    for module in &program.modules {
-        if module
-            .functions
-            .iter()
-            .any(|function| function.name == entry)
-        {
-            return if module.name.is_empty() {
-                entry.to_string()
-            } else {
-                format!("{}::{entry}", module.name)
-            };
-        }
-    }
-    entry.to_string()
-}
-
 /// Run `entry` from a checked `program` over `store`, printing its output. The run
 /// gets the real system clock, environment, and filesystem, and sends `std::log`
 /// output to standard error. `maintenance` grants the maintenance capability only
 /// when the operator passed `--maintenance`. `observe` selects a plain run, a
 /// traced run, a dry run (run-then-rollback), or both composed.
 fn execute(
-    program: &marrow_check::CheckedProgram,
-    store: &RefCell<dyn marrow_store::backend::Backend>,
+    program: &marrow_check::CheckedRuntimeProgram,
+    store: &marrow_store::tree::TreeStore,
     entry: &str,
     maintenance: bool,
     observe: Observe,
@@ -204,34 +185,41 @@ fn execute(
     if maintenance {
         host = host.with_maintenance();
     }
+    let call = match marrow_run::CheckedEntryCall::new(program, entry, Vec::new()) {
+        Ok(call) => call,
+        Err(error) => {
+            report_runtime_fault(program, &error);
+            return ExitCode::FAILURE;
+        }
+    };
 
     // A dry run brackets the whole run in one outer savepoint it always rolls back,
     // so saved data is left byte-for-byte unchanged; it observes every managed
     // write through the same hook the trace uses. A `--trace` (with or without
     // `--dry-run`) installs the trace hook; a plain run installs none.
     let result = if observe.dry_run {
-        let trace = observe.trace.then(|| TraceHook::new(observe.format, ""));
+        let trace = observe
+            .trace
+            .then(|| TraceHook::new(observe.format, "", program));
         let mut hook = DryRunHook::new(trace);
-        if let Err(error) = store.borrow_mut().begin() {
+        if let Err(error) = store.begin() {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             return ExitCode::FAILURE;
         }
-        let result =
-            marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, entry, &[]);
+        let result = marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, &call);
         // Discard everything the run staged, whatever its outcome.
-        if let Err(error) = store.borrow_mut().rollback() {
+        if let Err(error) = store.rollback() {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             return ExitCode::FAILURE;
         }
         let (planned, trace) = hook.into_report();
         result.map(|outcome| (outcome, Report::Dry { planned, trace }))
     } else if observe.trace {
-        let mut hook = TraceHook::new(observe.format, "");
-        let result =
-            marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, entry, &[]);
+        let mut hook = TraceHook::new(observe.format, "", program);
+        let result = marrow_run::run_entry_with_debugger(program, store, &host, &mut hook, &call);
         result.map(|outcome| (outcome, Report::Trace(hook)))
     } else {
-        marrow_run::run_entry_with_host(program, store, &host, entry, &[])
+        marrow_run::run_entry_with_host(program, store, &host, &call)
             .map(|outcome| (outcome, Report::None))
     };
 
@@ -241,7 +229,7 @@ fn execute(
     match result {
         Ok((outcome, report)) => {
             print!("{}", outcome.output);
-            report.emit(observe.format);
+            report.emit(observe.format, program);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -263,7 +251,7 @@ enum Report {
 }
 
 impl Report {
-    fn emit(self, format: CheckFormat) {
+    fn emit(self, format: CheckFormat, program: &marrow_check::CheckedRuntimeProgram) {
         match self {
             Report::None => {}
             Report::Trace(mut hook) => hook.flush(),
@@ -271,7 +259,7 @@ impl Report {
                 if let Some(mut trace) = trace {
                     trace.flush();
                 }
-                dry_run::report(&planned, format);
+                dry_run::report(&planned, format, program);
             }
         }
     }

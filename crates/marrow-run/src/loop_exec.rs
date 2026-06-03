@@ -1,0 +1,577 @@
+//! Checked loop, range, and collection iteration.
+
+use std::cmp::Ordering;
+
+use marrow_check::{
+    CheckedBinaryOp as BinaryOp, CheckedBody as ExecBody, CheckedExpr as ExecExpr,
+    CheckedForBinding as ForBinding,
+};
+use marrow_store::Decimal;
+use marrow_syntax::SourceSpan;
+
+use crate::collection::{Direction, materialize_layer, materialize_layer_dir, values_or_entries};
+use crate::env::{Env, Flow, TraversedLayer};
+use crate::error::{RuntimeError, overflow, type_error, unsupported};
+use crate::exec::eval_block;
+use crate::expr::{eval_condition, eval_expr};
+use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
+use crate::read::{
+    enumerate_layer, enumerate_layer_dir, keys_argument, reversed_argument, traversed_layer,
+};
+use crate::stdlib::{check_key_collection, unique_index_lookup_values};
+use crate::value::Value;
+
+pub(crate) enum LoopStep {
+    Iterate,
+    Stop,
+    Propagate(Flow),
+}
+
+pub(crate) fn classify(flow: Flow, label: &Option<String>) -> LoopStep {
+    match flow {
+        Flow::Normal => LoopStep::Iterate,
+        Flow::Continue(ref target) if targets_this_loop(target, label) => LoopStep::Iterate,
+        Flow::Break(ref target) if targets_this_loop(target, label) => LoopStep::Stop,
+        other => LoopStep::Propagate(other),
+    }
+}
+
+pub(crate) fn targets_this_loop(jump_label: &Option<String>, loop_label: &Option<String>) -> bool {
+    match jump_label {
+        None => true,
+        Some(name) => loop_label.as_deref() == Some(name.as_str()),
+    }
+}
+
+pub(crate) fn eval_while(
+    label: &Option<String>,
+    condition: Option<&ExecExpr>,
+    body: &ExecBody,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    while eval_condition(condition, span, env)? {
+        match classify(eval_block(body, env)?, label) {
+            LoopStep::Iterate => {}
+            LoopStep::Stop => break,
+            LoopStep::Propagate(flow) => return Ok(flow),
+        }
+    }
+    Ok(Flow::Normal)
+}
+
+pub(crate) fn iterate_saved_layer(
+    layer: Option<TraversedLayer>,
+    env: &mut Env<'_>,
+    loop_body: impl FnOnce(&mut Env<'_>) -> Result<Flow, RuntimeError>,
+) -> Result<Flow, RuntimeError> {
+    let pushed = layer.is_some();
+    if let Some(layer) = layer {
+        env.traversed_layers.push(layer);
+    }
+    let result = loop_body(env);
+    if pushed {
+        env.traversed_layers.pop();
+    }
+    result
+}
+
+pub(crate) fn eval_for(
+    label: &Option<String>,
+    binding: &ForBinding,
+    iterable: &ExecExpr,
+    step: Option<&ExecExpr>,
+    body: &ExecBody,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    if binding.second.is_some() {
+        return eval_two_name_for(label, binding, iterable, body, span, env);
+    }
+
+    if is_range_expr(iterable) {
+        return eval_range_for(label, binding, iterable, step, body, span, env);
+    }
+
+    eval_single_name_collection_for(label, binding, iterable, body, span, env)
+}
+
+fn eval_two_name_for(
+    label: &Option<String>,
+    binding: &ForBinding,
+    iterable: &ExecExpr,
+    body: &ExecBody,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    let second = binding
+        .second
+        .as_ref()
+        .expect("two-name loop helper only receives two-name bindings");
+    if is_range_expr(iterable) {
+        return Err(unsupported("a two-name binding over a range", span));
+    }
+    let entries = eval_collection_entries(iterable, env)?;
+    let layer = traversed_layer(iterable, env)?;
+    iterate_saved_layer(layer, env, |env| {
+        for entry in entries {
+            let (key, value) = pair_entry(entry, span)?;
+            match run_two_name_body(label, &binding.first, second, key, value, body, env)? {
+                LoopStep::Iterate => {}
+                LoopStep::Stop => break,
+                LoopStep::Propagate(flow) => return Ok(flow),
+            }
+        }
+        Ok(Flow::Normal)
+    })
+}
+
+fn eval_single_name_collection_for(
+    label: &Option<String>,
+    binding: &ForBinding,
+    iterable: &ExecExpr,
+    body: &ExecBody,
+    _span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    let values = eval_collection(iterable, env)?;
+    let layer = traversed_layer(iterable, env)?;
+    iterate_saved_layer(layer, env, |env| {
+        for value in values {
+            match run_single_name_body(label, &binding.first, value, body, env)? {
+                LoopStep::Iterate => {}
+                LoopStep::Stop => break,
+                LoopStep::Propagate(flow) => return Ok(flow),
+            }
+        }
+        Ok(Flow::Normal)
+    })
+}
+
+fn eval_range_for(
+    label: &Option<String>,
+    binding: &ForBinding,
+    iterable: &ExecExpr,
+    step: Option<&ExecExpr>,
+    body: &ExecBody,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    let mut range = range_iter(iterable, step, span, env)?;
+    while let Some(value) = range.next_value(span)? {
+        match run_single_name_body(label, &binding.first, value, body, env)? {
+            LoopStep::Iterate => {}
+            LoopStep::Stop => break,
+            LoopStep::Propagate(flow) => return Ok(flow),
+        }
+    }
+    Ok(Flow::Normal)
+}
+
+fn is_range_expr(iterable: &ExecExpr) -> bool {
+    matches!(
+        iterable,
+        ExecExpr::Binary {
+            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+            ..
+        }
+    )
+}
+
+fn pair_entry(entry: Value, span: SourceSpan) -> Result<(Value, Value), RuntimeError> {
+    let Value::Sequence(pair) = entry else {
+        return Err(unsupported(
+            "a two-name binding over a non-pair iterable (use entries(...))",
+            span,
+        ));
+    };
+    let [key, value] = <[Value; 2]>::try_from(pair).map_err(|_| {
+        unsupported(
+            "a two-name binding over a non-pair iterable (use entries(...))",
+            span,
+        )
+    })?;
+    Ok((key, value))
+}
+
+fn run_single_name_body(
+    label: &Option<String>,
+    first: &str,
+    value: Value,
+    body: &ExecBody,
+    env: &mut Env<'_>,
+) -> Result<LoopStep, RuntimeError> {
+    env.push_scope();
+    env.bind(first.to_string(), value, false);
+    let flow = eval_block(body, env);
+    env.pop_scope();
+    Ok(classify(flow?, label))
+}
+
+fn run_two_name_body(
+    label: &Option<String>,
+    first: &str,
+    second: &str,
+    key: Value,
+    value: Value,
+    body: &ExecBody,
+    env: &mut Env<'_>,
+) -> Result<LoopStep, RuntimeError> {
+    env.push_scope();
+    env.bind(first.to_string(), key, false);
+    env.bind(second.to_string(), value, false);
+    let flow = eval_block(body, env);
+    env.pop_scope();
+    Ok(classify(flow?, label))
+}
+
+const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;
+
+enum RangeIter {
+    Integer {
+        current: i64,
+        end: i64,
+        inclusive: bool,
+        step: i64,
+        make: fn(i64) -> Value,
+    },
+    Decimal {
+        current: Decimal,
+        end: Decimal,
+        inclusive: bool,
+        step: Decimal,
+    },
+    Instant {
+        current: i128,
+        end: i128,
+        inclusive: bool,
+        step: i128,
+    },
+}
+
+impl RangeIter {
+    fn next_value(&mut self, span: SourceSpan) -> Result<Option<Value>, RuntimeError> {
+        match self {
+            RangeIter::Integer {
+                current,
+                end,
+                inclusive,
+                step,
+                make,
+            } => {
+                if !int_in_range(*current, *end, *inclusive, *step) {
+                    return Ok(None);
+                }
+                let value = make(*current);
+                match current.checked_add(*step) {
+                    Some(next) => *current = next,
+                    None => *step = 0,
+                }
+                Ok(Some(value))
+            }
+            RangeIter::Decimal {
+                current,
+                end,
+                inclusive,
+                step,
+            } => {
+                if !decimal_in_range(*current, *end, *inclusive, *step) {
+                    return Ok(None);
+                }
+                let value = Value::Decimal(*current);
+                *current = current.checked_add(*step).ok_or_else(|| overflow(span))?;
+                Ok(Some(value))
+            }
+            RangeIter::Instant {
+                current,
+                end,
+                inclusive,
+                step,
+            } => {
+                if !instant_in_range(*current, *end, *inclusive, *step) {
+                    return Ok(None);
+                }
+                let value = Value::Instant(*current);
+                *current = current.checked_add(*step).ok_or_else(|| overflow(span))?;
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
+fn int_in_range(current: i64, end: i64, inclusive: bool, step: i64) -> bool {
+    match step.cmp(&0) {
+        Ordering::Greater if inclusive => current <= end,
+        Ordering::Greater => current < end,
+        Ordering::Less if inclusive => current >= end,
+        Ordering::Less => current > end,
+        Ordering::Equal => false,
+    }
+}
+
+fn decimal_in_range(current: Decimal, end: Decimal, inclusive: bool, step: Decimal) -> bool {
+    let sign = step.coefficient().cmp(&0);
+    match sign {
+        Ordering::Greater if inclusive => current <= end,
+        Ordering::Greater => current < end,
+        Ordering::Less if inclusive => current >= end,
+        Ordering::Less => current > end,
+        Ordering::Equal => false,
+    }
+}
+
+fn instant_in_range(current: i128, end: i128, inclusive: bool, step: i128) -> bool {
+    match step.cmp(&0) {
+        Ordering::Greater if inclusive => current <= end,
+        Ordering::Greater => current < end,
+        Ordering::Less if inclusive => current >= end,
+        Ordering::Less => current > end,
+        Ordering::Equal => false,
+    }
+}
+
+fn range_iter(
+    iterable: &ExecExpr,
+    step: Option<&ExecExpr>,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<RangeIter, RuntimeError> {
+    let (left, right, inclusive) = range_bounds(iterable)?;
+    let start = eval_expr(left, env)?;
+    let end = eval_expr(right, env)?;
+    let step = step.map(|expr| eval_expr(expr, env)).transpose()?;
+    match (start, end) {
+        (Value::Int(start), Value::Int(end)) => int_range_iter(start, end, step, inclusive, span),
+        (Value::Decimal(start), Value::Decimal(end)) => {
+            decimal_range_iter(start, end, step, inclusive, span)
+        }
+        (Value::Date(start), Value::Date(end)) => {
+            date_range_iter(start, end, step, inclusive, span)
+        }
+        (Value::Instant(start), Value::Instant(end)) => {
+            instant_range_iter(start, end, step, inclusive, span)
+        }
+        _ => Err(type_error(
+            "a range needs two endpoints of the same type",
+            span,
+        )),
+    }
+}
+
+fn range_bounds(iterable: &ExecExpr) -> Result<(&ExecExpr, &ExecExpr, bool), RuntimeError> {
+    Ok(match iterable {
+        ExecExpr::Binary {
+            op: BinaryOp::RangeExclusive,
+            left,
+            right,
+            ..
+        } => (left, right, false),
+        ExecExpr::Binary {
+            op: BinaryOp::RangeInclusive,
+            left,
+            right,
+            ..
+        } => (left, right, true),
+        other => return Err(unsupported("iterating this value", other.span())),
+    })
+}
+
+fn int_range_iter(
+    start: i64,
+    end: i64,
+    step: Option<Value>,
+    inclusive: bool,
+    span: SourceSpan,
+) -> Result<RangeIter, RuntimeError> {
+    let step = match step {
+        Some(Value::Int(n)) => n,
+        Some(_) => return Err(type_error("an int range steps by an int", span)),
+        None => 1,
+    };
+    nonzero_range_step(step, span)?;
+    Ok(RangeIter::Integer {
+        current: start,
+        end,
+        inclusive,
+        step,
+        make: Value::Int,
+    })
+}
+
+fn decimal_range_iter(
+    start: Decimal,
+    end: Decimal,
+    step: Option<Value>,
+    inclusive: bool,
+    span: SourceSpan,
+) -> Result<RangeIter, RuntimeError> {
+    let step = match step {
+        Some(Value::Decimal(d)) => d,
+        Some(_) => return Err(type_error("a decimal range steps by a decimal", span)),
+        None => {
+            return Err(type_error(
+                "a decimal range needs an explicit `by` step",
+                span,
+            ));
+        }
+    };
+    if step.is_zero() {
+        return Err(type_error("a range step cannot be zero", span));
+    }
+    Ok(RangeIter::Decimal {
+        current: start,
+        end,
+        inclusive,
+        step,
+    })
+}
+
+fn date_range_iter(
+    start: i32,
+    end: i32,
+    step: Option<Value>,
+    inclusive: bool,
+    span: SourceSpan,
+) -> Result<RangeIter, RuntimeError> {
+    let step = match step {
+        Some(Value::Duration(nanos)) => duration_whole_days(nanos, span)?,
+        Some(_) => return Err(type_error("a date range steps by a duration", span)),
+        None => 1,
+    };
+    nonzero_range_step(step, span)?;
+    Ok(RangeIter::Integer {
+        current: i64::from(start),
+        end: i64::from(end),
+        inclusive,
+        step,
+        make: |days| Value::Date(days as i32),
+    })
+}
+
+fn instant_range_iter(
+    start: i128,
+    end: i128,
+    step: Option<Value>,
+    inclusive: bool,
+    span: SourceSpan,
+) -> Result<RangeIter, RuntimeError> {
+    let step = match step {
+        Some(Value::Duration(nanos)) => nanos,
+        Some(_) => return Err(type_error("an instant range steps by a duration", span)),
+        None => {
+            return Err(type_error(
+                "an instant range needs an explicit `by` step",
+                span,
+            ));
+        }
+    };
+    if step == 0 {
+        return Err(type_error("a range step cannot be zero", span));
+    }
+    Ok(RangeIter::Instant {
+        current: start,
+        end,
+        inclusive,
+        step,
+    })
+}
+
+fn nonzero_range_step(step: i64, span: SourceSpan) -> Result<(), RuntimeError> {
+    if step == 0 {
+        return Err(type_error("a range step cannot be zero", span));
+    }
+    Ok(())
+}
+
+fn duration_whole_days(nanos: i128, span: SourceSpan) -> Result<i64, RuntimeError> {
+    if nanos % NANOS_PER_DAY != 0 {
+        return Err(type_error(
+            "a date range step must be a whole number of days",
+            span,
+        ));
+    }
+    i64::try_from(nanos / NANOS_PER_DAY).map_err(|_| overflow(span))
+}
+
+pub(crate) fn eval_collection(
+    iterable: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    if let Some(inner) = reversed_argument(iterable) {
+        if let Some(layer) = keys_argument(inner) {
+            if layer.saved_place().is_none() {
+                return enumerate_local_collection_dir(
+                    eval_expr(layer, env)?,
+                    Direction::Descending,
+                    iterable.span(),
+                );
+            }
+            check_key_collection(layer, iterable.span(), env)?;
+            return enumerate_layer_dir(layer, Direction::Descending, env);
+        }
+        if inner.saved_place().is_some() {
+            if let Some(values) =
+                unique_index_lookup_values(inner, iterable.span(), Direction::Descending, env)?
+            {
+                return Ok(values);
+            }
+            return enumerate_layer_dir(inner, Direction::Descending, env);
+        }
+    }
+    if let Some(path) = keys_argument(iterable) {
+        if path.saved_place().is_none() {
+            return enumerate_local_collection_dir(
+                eval_expr(path, env)?,
+                Direction::Ascending,
+                iterable.span(),
+            );
+        }
+        check_key_collection(path, iterable.span(), env)?;
+        return enumerate_layer(path, env);
+    }
+    if iterable.saved_place().is_some() {
+        if let Some(values) =
+            unique_index_lookup_values(iterable, iterable.span(), Direction::Ascending, env)?
+        {
+            return Ok(values);
+        }
+        return enumerate_layer(iterable, env);
+    }
+    match eval_expr(iterable, env)? {
+        Value::Sequence(items) => Ok(items),
+        Value::LocalTree(entries) => Ok(entries.into_iter().map(|entry| entry.value).collect()),
+        _ => Err(unsupported("iterating this value", iterable.span())),
+    }
+}
+
+fn eval_collection_entries(
+    iterable: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Vec<Value>, RuntimeError> {
+    if let Some(inner) = reversed_argument(iterable)
+        && inner.saved_place().is_some()
+        && keys_argument(inner).is_none()
+    {
+        return materialize_entry_pairs(materialize_layer_dir(inner, Direction::Descending, env)?);
+    }
+    if let Some(inner) = values_or_entries(iterable)
+        && inner.layer.saved_place().is_none()
+    {
+        return materialize_entry_pairs(materialize_local_collection_dir(
+            eval_expr(inner.layer, env)?,
+            Direction::Ascending,
+            iterable.span(),
+        )?);
+    }
+    if iterable.saved_place().is_some() {
+        return materialize_entry_pairs(materialize_layer(iterable, env)?);
+    }
+    eval_collection(iterable, env)
+}
+
+fn materialize_entry_pairs(rows: Vec<(Value, Value)>) -> Result<Vec<Value>, RuntimeError> {
+    Ok(rows
+        .into_iter()
+        .map(|(key, value)| Value::Sequence(vec![key, value]))
+        .collect())
+}

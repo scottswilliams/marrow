@@ -18,9 +18,145 @@ use std::net::TcpListener;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use marrow_store::backend::Backend;
+use marrow_check::CheckedProgram;
+use marrow_store::tree::TreeStore;
 
-use crate::{load_config, open_store_for_inspection};
+use crate::{load_checked_project, open_store_for_inspection};
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use marrow_check::{
+        CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
+    };
+    use marrow_store::cell::CatalogId;
+    use marrow_store::key::SavedKey;
+    use marrow_store::mem::MemStore;
+    use marrow_store::tree::{DataPathSegment, TreeStore};
+
+    pub(crate) struct ServeState {
+        pub(crate) program: CheckedProgram,
+        pub(crate) store: TreeStore,
+    }
+
+    const CONFIG: &str = r#"{ "sourceRoots": ["src"] }"#;
+    const SOURCE: &str = "module app\n\n\
+                         resource Book at ^books(id: int)\n\
+                         \x20\x20\x20\x20title: string\n";
+
+    pub(crate) fn empty_state() -> ServeState {
+        ServeState {
+            program: checked_program(),
+            store: TreeStore::new(MemStore::new()),
+        }
+    }
+
+    pub(crate) fn state_with_books(books: &[(i64, &str)]) -> ServeState {
+        let state = empty_state();
+        let place = books_place(&state.program);
+        let store_id = catalog_id(&place.store_catalog_id);
+        let title_path = field_path(&place, "title");
+        for (id, title) in books {
+            state
+                .store
+                .write_data_value(
+                    &store_id,
+                    &[SavedKey::Int(*id)],
+                    &title_path,
+                    title.as_bytes().to_vec(),
+                )
+                .expect("write checked tree-cell fixture data");
+        }
+        state
+    }
+
+    fn checked_program() -> CheckedProgram {
+        let root = temp_dir("serve-checked-fixture");
+        write(&root, "marrow.json", CONFIG);
+        write(&root, "src/app.mw", SOURCE);
+        let config = marrow_project::parse_config(CONFIG).expect("parse fixture config");
+        let (report, program) = marrow_check::check_project(&root, &config).expect("check fixture");
+        let program = accept_catalog_proposal(&root, &config, program);
+        fs::remove_dir_all(&root).ok();
+        assert!(
+            !report.has_errors(),
+            "serve fixture project must check cleanly: {report:#?}"
+        );
+        program
+    }
+
+    fn accept_catalog_proposal(
+        root: &Path,
+        config: &marrow_check::ProjectConfig,
+        program: CheckedProgram,
+    ) -> CheckedProgram {
+        let Some(proposal) = program.catalog.proposal else {
+            return program;
+        };
+        let path = root.join(&config.accepted_catalog);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create accepted catalog dir");
+        }
+        fs::write(&path, proposal.to_json_pretty()).expect("write accepted catalog");
+        let (report, program) =
+            marrow_check::check_project(root, config).expect("recheck accepted fixture");
+        assert!(
+            !report.has_errors(),
+            "accepted serve fixture catalog must check cleanly: {:#?}",
+            report.diagnostics
+        );
+        program
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+        let suffix = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "marrow-{name}-{}-{nanos}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create fixture dir");
+        root
+    }
+
+    fn write(root: &Path, relative: &str, contents: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture dirs");
+        fs::write(path, contents).expect("write fixture file");
+    }
+
+    fn books_place(program: &CheckedProgram) -> CheckedSavedPlace {
+        checked_saved_root_place(program, "books", marrow_syntax::SourceSpan::default())
+            .expect("checked books root")
+    }
+
+    fn catalog_id(raw: &str) -> CatalogId {
+        CatalogId::new(raw.to_string()).expect("catalog id")
+    }
+
+    fn member_catalog_id(members: &[CheckedSavedMember], name: &str) -> CatalogId {
+        let member = members
+            .iter()
+            .find(|member| member.name == name)
+            .expect("checked member");
+        catalog_id(&member.catalog_id)
+    }
+
+    fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathSegment> {
+        vec![DataPathSegment::Member(member_catalog_id(
+            &place.root_members,
+            name,
+        ))]
+    }
+}
 
 const HELP: &str = "\
 Usage:
@@ -84,15 +220,15 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let config = match load_config(&dir) {
-        Ok(config) => config,
+    let (config, program) = match load_checked_project(&dir) {
+        Ok(checked) => checked,
         Err(code) => return code,
     };
     // A project with no saved data yet serves an empty store; inspection never
     // creates the backing file.
-    let store: Box<dyn Backend> = match open_store_for_inspection(&dir, &config) {
-        Ok(Some(store)) => store,
-        Ok(None) => Box::new(marrow_store::mem::MemStore::new()),
+    let store = match open_store_for_inspection(&dir, &config) {
+        Ok(Some(store)) => TreeStore::from_backend(store),
+        Ok(None) => TreeStore::new(marrow_store::mem::MemStore::new()),
         Err(code) => return code,
     };
 
@@ -116,7 +252,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
 
-    match serve(&listener, store.as_ref()) {
+    match serve(&listener, &program, &store) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("serve error: {error}");
@@ -128,7 +264,7 @@ pub fn run(args: &[String]) -> ExitCode {
 /// Accept connections one at a time and serve each to completion. A single
 /// connection's I/O error ends that connection, not the server. Each connection
 /// carries a [`READ_TIMEOUT`] so a stalled client cannot wedge the accept loop.
-fn serve(listener: &TcpListener, store: &dyn Backend) -> io::Result<()> {
+fn serve(listener: &TcpListener, program: &CheckedProgram, store: &TreeStore) -> io::Result<()> {
     for stream in listener.incoming() {
         let stream = stream?;
         if let Err(error) = stream.set_read_timeout(Some(READ_TIMEOUT)) {
@@ -137,7 +273,7 @@ fn serve(listener: &TcpListener, store: &dyn Backend) -> io::Result<()> {
         }
         let mut reader = BufReader::new(&stream);
         let mut writer = BufWriter::new(&stream);
-        if let Err(error) = serve_connection(&mut reader, &mut writer, store) {
+        if let Err(error) = serve_connection(&mut reader, &mut writer, program, store) {
             eprintln!("connection error: {error}");
         }
     }
@@ -162,7 +298,8 @@ enum Line {
 fn serve_connection(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
-    store: &dyn Backend,
+    program: &CheckedProgram,
+    store: &TreeStore,
 ) -> io::Result<()> {
     loop {
         let line = match read_line_bounded(reader)? {
@@ -179,7 +316,7 @@ fn serve_connection(
             continue;
         }
         let reply = match serde_json::from_str(&line) {
-            Ok(request) => protocol::handle_request(store, &request),
+            Ok(request) => protocol::handle_request(program, store, &request),
             Err(error) => malformed_reply(&error.to_string()),
         };
         write_reply(writer, &reply)?;
@@ -240,26 +377,16 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    use marrow_store::mem::MemStore;
-    use marrow_store::path::{PathSegment, SavedKey, encode_path};
+    use crate::serve::test_support::{empty_state, state_with_books};
 
     #[test]
     fn serves_newline_delimited_requests_over_a_stream() {
-        let mut store = MemStore::new();
-        store.write(
-            &encode_path(&[
-                PathSegment::Root("books".into()),
-                PathSegment::RecordKey(SavedKey::Int(1)),
-                PathSegment::Field("title".into()),
-            ]),
-            b"Mort".to_vec(),
-        );
+        let state = state_with_books(&[(1, "Mort")]);
 
-        // Two requests on two lines; the blank line is ignored.
         let input = "{\"id\":1,\"op\":\"saved_roots\"}\n\n{\"id\":2,\"op\":\"nope\"}\n";
         let mut reader = Cursor::new(input.as_bytes());
         let mut output: Vec<u8> = Vec::new();
-        serve_connection(&mut reader, &mut output, &store).expect("serve");
+        serve_connection(&mut reader, &mut output, &state.program, &state.store).expect("serve");
 
         let replies: Vec<serde_json::Value> = String::from_utf8(output)
             .expect("utf8")
@@ -302,22 +429,28 @@ mod tests {
             read_line_bounded(&mut TimingOutReader).expect("a timeout is not an error"),
             Line::Eof
         ));
-        let store = MemStore::new();
+        let state = empty_state();
         let mut output: Vec<u8> = Vec::new();
-        serve_connection(&mut TimingOutReader, &mut output, &store).expect("serve returns cleanly");
+        serve_connection(
+            &mut TimingOutReader,
+            &mut output,
+            &state.program,
+            &state.store,
+        )
+        .expect("serve returns cleanly");
         assert!(output.is_empty(), "a timed-out connection sends no reply");
     }
 
     #[test]
     fn a_non_utf8_line_gets_a_malformed_reply_and_the_connection_stays_open() {
-        let store = MemStore::new();
+        let state = empty_state();
         // A non-UTF-8 byte sequence on the first line (0xff is never valid UTF-8),
         // then a well-formed request on the second.
         let mut input: Vec<u8> = b"\xff\xfe\n".to_vec();
         input.extend_from_slice(b"{\"id\":2,\"op\":\"saved_roots\"}\n");
         let mut reader = Cursor::new(input);
         let mut output: Vec<u8> = Vec::new();
-        serve_connection(&mut reader, &mut output, &store).expect("serve");
+        serve_connection(&mut reader, &mut output, &state.program, &state.store).expect("serve");
 
         let replies: Vec<serde_json::Value> = String::from_utf8(output)
             .expect("utf8")

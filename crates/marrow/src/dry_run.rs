@@ -10,20 +10,20 @@
 //! write, a `std::log` line — are not rolled back, so the report covers managed
 //! writes alone.
 
-use marrow_run::{Frame, RuntimeError, StepHook, WriteOp};
-use marrow_store::path::display_path;
+use marrow_check::CheckedRuntimeProgram;
+use marrow_run::{Frame, RuntimeError, StepHook, WriteOp, WriteTarget};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
 
 use crate::CheckFormat;
 use crate::cmd_data::render_value_bytes;
-use crate::trace::TraceHook;
+use crate::trace::{TraceHook, WriteTargetNames, render_write_target, write_target_json};
 
 /// One planned managed operation the run would have committed: its kind, the human
 /// path, and the value bytes for a write (a delete has none).
 pub(crate) struct PlannedWrite {
     op: WriteOp,
-    path: Vec<u8>,
+    target: WriteTarget,
     value: Option<Vec<u8>>,
 }
 
@@ -63,13 +63,19 @@ impl StepHook for DryRunHook {
         }
     }
 
-    fn before_write(&mut self, op: WriteOp, path: &[u8], value: Option<&[u8]>, depth: usize) {
+    fn before_write(
+        &mut self,
+        op: WriteOp,
+        target: &WriteTarget,
+        value: Option<&[u8]>,
+        depth: usize,
+    ) {
         if let Some(trace) = &mut self.trace {
-            trace.before_write(op, path, value, depth);
+            trace.before_write(op, target, value, depth);
         }
         self.planned.push(PlannedWrite {
             op,
-            path: path.to_vec(),
+            target: target.clone(),
             value: value.map(<[u8]>::to_vec),
         });
     }
@@ -79,7 +85,12 @@ impl StepHook for DryRunHook {
 /// output is handled by the caller; this renders only the dry-run report, on
 /// standard error under text format (off the program's stdout stream) or as a JSON
 /// object under `json`/`jsonl`.
-pub(crate) fn report(planned: &[PlannedWrite], format: CheckFormat) {
+pub(crate) fn report(
+    planned: &[PlannedWrite],
+    format: CheckFormat,
+    program: &CheckedRuntimeProgram,
+) {
+    let names = WriteTargetNames::from_program(program);
     let writes = planned
         .iter()
         .filter(|step| matches!(step.op, WriteOp::Write))
@@ -91,21 +102,24 @@ pub(crate) fn report(planned: &[PlannedWrite], format: CheckFormat) {
                 match (step.op, &step.value) {
                     (WriteOp::Write, Some(value)) => eprintln!(
                         "would write {}\t{}",
-                        display_path(&step.path),
+                        render_write_target(&step.target, &names),
                         render_value_bytes(value)
                     ),
                     (WriteOp::Write, None) => {
-                        eprintln!("would write {}", display_path(&step.path))
+                        eprintln!("would write {}", render_write_target(&step.target, &names))
                     }
                     (WriteOp::Delete, _) => {
-                        eprintln!("would delete {}", display_path(&step.path))
+                        eprintln!("would delete {}", render_write_target(&step.target, &names))
                     }
                 }
             }
             eprintln!("dry run: {writes} write(s), {deletes} delete(s) (rolled back)");
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
-            let records: Vec<serde_json::Value> = planned.iter().map(planned_record).collect();
+            let records: Vec<serde_json::Value> = planned
+                .iter()
+                .map(|step| planned_record(step, &names))
+                .collect();
             crate::write_json(json!({
                 "committed": false,
                 "writes": writes,
@@ -118,14 +132,15 @@ pub(crate) fn report(planned: &[PlannedWrite], format: CheckFormat) {
 
 /// One planned write as a JSON record: its op, the human path, and base64 of the
 /// value bytes for a write (a delete has none).
-fn planned_record(step: &PlannedWrite) -> serde_json::Value {
+fn planned_record(step: &PlannedWrite, names: &WriteTargetNames) -> serde_json::Value {
     let op = match step.op {
         WriteOp::Write => "write",
         WriteOp::Delete => "delete",
     };
     json!({
         "op": op,
-        "path": display_path(&step.path),
+        "target": write_target_json(&step.target, names),
+        "path": render_write_target(&step.target, names),
         "value_b64": step.value.as_ref().map(|bytes| marrow_run::base64::encode(bytes)),
     })
 }

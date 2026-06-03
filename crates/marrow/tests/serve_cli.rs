@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+mod support;
+
 fn temp_dir(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -40,6 +42,7 @@ fn native_project(name: &str) -> PathBuf {
     let root = temp_dir(name);
     write(&root, "marrow.json", CONFIG);
     write(&root, "src/app.mw", SRC);
+    support::accept_catalog_if_clean(&root);
     root
 }
 

@@ -102,8 +102,10 @@ or entrypoint, not an importable library module.
 Within a source root, `shelf::books` is found at `shelf/books.mw`, and the
 declaration in that file must match the path.
 
-Public entrypoints are ordinary `pub fn` declarations selected by qualified name.
-The CLI or host decodes boundary arguments before Marrow code runs.
+Public entrypoints are ordinary `pub fn` declarations. Qualified entry names
+select one module exactly; bare entry names are accepted only when one public
+function has that name. The CLI or host decodes boundary arguments before Marrow
+code runs.
 
 Test files are the project's `tests` patterns. They live outside the source
 roots and are scripts, so each is named from its project-relative path

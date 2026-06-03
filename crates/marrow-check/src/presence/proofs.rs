@@ -1,11 +1,11 @@
-use marrow_syntax::{Expression, Severity};
+use marrow_syntax::Severity;
 
 use super::scope::NameScope;
 use super::target::{
     ReadTarget, declaration_proves_presence, proof_place, read_file, read_target_with_scope,
 };
 use crate::facts::{PresenceProofFact, PresenceProofPlace, PresenceProofRead, PresenceProofSource};
-use crate::{CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedProgram};
+use crate::{CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedExpr, CheckedProgram};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReadContext {
@@ -16,7 +16,7 @@ pub(super) enum ReadContext {
 
 pub(super) fn read_proof(
     program: &CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     context: ReadContext,
     narrowed: &[ReadTarget],
     scope: &NameScope,
@@ -42,7 +42,7 @@ pub(super) fn read_proof(
 
 pub(super) fn record_read(
     program: &mut CheckedProgram,
-    expr: &Expression,
+    expr: &CheckedExpr,
     proof: ReadProof,
     context: ReadContext,
     diagnostics: &mut Vec<CheckDiagnostic>,

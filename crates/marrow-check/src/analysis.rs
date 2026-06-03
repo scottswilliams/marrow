@@ -16,7 +16,7 @@ use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
     CheckedModule, CheckedProgram, IO_READ, MarrowType, ProjectSources,
     SCHEMA_DUPLICATE_ROOT_OWNER, TestResolutionSuppression, check_file_source, enum_visibility,
-    module_path_error, read_source, resolve_match_enums,
+    module_path_error, read_source,
 };
 
 /// An IDE-grade view of a checked project: the diagnostics and best-effort
@@ -331,16 +331,18 @@ pub(crate) fn analyze_source_project(
         &mut report,
     );
 
-    // Record each `match`'s resolved scrutinee enum on the artifact's bodies, so the
-    // runtime dispatches by ordinals rather than guessing the enum from the arms.
-    let snapshot = program.clone();
-    resolve_match_enums(&mut program, &snapshot);
     program.rebuild_facts_with_sources(
         parsed_files
             .iter()
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
+
     crate::catalog::bind_catalog(project_root, config, &mut program, &mut report.diagnostics);
+    program.lower_runtime_bodies(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
 
     // Move every parse — error files included — into the snapshot now that the
