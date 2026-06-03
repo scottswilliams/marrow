@@ -104,6 +104,29 @@ versions(version: int)
     body: string
 ```
 
+## Evolution
+
+An `evolve` block declares durable intent about catalog-addressable entities,
+which a plain source edit never implies:
+
+```mw
+evolve
+    rename Book.title -> Book.subtitle
+    default Book.author = "unknown"
+    retire ^books.byTitle
+    transform Book.shelf
+        return ^books(1).shelf
+```
+
+Each step targets an entity by the same surface form used to reference it: a
+resource member (`Book.title`), a saved root (`^books`), a store index
+(`^books.byTitle`), or an enum or enum member (`Status::archived`). `rename`
+states that the entity now spelled on the right is the one formerly spelled on
+the left; `default` gives the value to backfill where a newly populated member is
+absent; `retire` states destructive intent to remove an entity; `transform`
+computes the new shape of an entity from the old. See
+[Resources And Saved Data](resources-and-storage.md).
+
 ## Statements
 
 Marrow statements are explicit:
@@ -340,7 +363,7 @@ Marrow reserves:
 ```text
 module use pub fn resource at index unique
 required
-enum match is
+enum evolve match is
 const var if else while for in break continue return delete edit assert merge
 transaction lock try catch finally throw out inout true false
 not and or
@@ -354,6 +377,10 @@ fields, functions, and module segments must not be spelled as a reserved word;
 doing so is a parse error.
 
 `merge` and `lock` are reserved even though they are not v0.1 statements.
+
+The `evolve` step words `rename`, `default`, `retire`, and `transform` are
+contextual: they lead a step only inside an `evolve` block, so they remain valid
+identifiers elsewhere.
 
 A bare type spelling in value position is also a parse error. A type keyword such
 as `int` is valid in a type annotation or as a conversion call `int(raw)`, but

@@ -8,8 +8,9 @@
 
 use crate::{
     ArgMode, Argument, BinaryOp, Block, Comment, CommentMarker, CommentPlacement, ConstDecl,
-    Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, InterpolationPart, KeyParam,
-    ParamDecl, ParamMode, ResourceDecl, ResourceMember, Statement, StoreDecl, TypeRef, UnaryOp,
+    Declaration, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FunctionDecl,
+    InterpolationPart, KeyParam, ParamDecl, ParamMode, ResourceDecl, ResourceMember, Statement,
+    StoreDecl, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -133,6 +134,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
         Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
+        Declaration::Evolve(decl) => decl.span,
     }
 }
 
@@ -146,7 +148,50 @@ fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Store(decl) => format_store(decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(decl),
+        Declaration::Evolve(decl) => format_evolve(source, decl),
     }
+}
+
+/// Format an `evolve` block: the bare header, then one step per line at one indent
+/// level, matching the resource and store body shape. A `transform` step prints
+/// its statement body one level deeper.
+fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
+    let mut out = String::from("evolve");
+    let step_pad = INDENT;
+    for step in &decl.steps {
+        out.push('\n');
+        match step {
+            EvolveStep::Rename { from, to, .. } => {
+                out.push_str(&format!(
+                    "{step_pad}rename {} -> {}",
+                    format_expression(from),
+                    format_expression(to)
+                ));
+            }
+            EvolveStep::Default { target, value, .. } => {
+                out.push_str(&format!(
+                    "{step_pad}default {} = {}",
+                    format_expression(target),
+                    format_expression(value)
+                ));
+            }
+            EvolveStep::Retire { target, .. } => {
+                out.push_str(&format!("{step_pad}retire {}", format_expression(target)));
+            }
+            EvolveStep::Transform { target, body, .. } => {
+                out.push_str(&format!(
+                    "{step_pad}transform {}",
+                    format_expression(target)
+                ));
+                let body = format_block(source, body, 2);
+                if !body.is_empty() {
+                    out.push('\n');
+                    out.push_str(&body);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn format_const(decl: &ConstDecl) -> String {

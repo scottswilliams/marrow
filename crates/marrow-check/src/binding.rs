@@ -362,6 +362,9 @@ impl<'p> IndexBuilder<'p> {
                         &enum_decl.members,
                     );
                 }
+                // An evolve block declares catalog intent, not source symbols, so
+                // it contributes no binding definitions.
+                Declaration::Evolve(_) => {}
             }
         }
     }
@@ -568,7 +571,7 @@ impl<'p> IndexBuilder<'p> {
                     self.collect_type_ref(file, source, aliases, module, ty);
                 }
             }
-            Declaration::Enum(_) => {}
+            Declaration::Enum(_) | Declaration::Evolve(_) => {}
         }
     }
 

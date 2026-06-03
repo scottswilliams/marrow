@@ -84,6 +84,64 @@ pub enum Declaration {
     Store(StoreDecl),
     Function(FunctionDecl),
     Enum(EnumDecl),
+    Evolve(EvolveDecl),
+}
+
+/// An `evolve` block: durable intent the source declares about catalog-addressable
+/// entities (a resource member, a saved root, a store index, an enum or enum
+/// member). A bare source diff implies no such intent, so identity-preserving and
+/// destructive changes are stated here rather than inferred from edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvolveDecl {
+    pub steps: Vec<EvolveStep>,
+    pub span: SourceSpan,
+}
+
+/// One evolution intent. Each step's target is a path expression naming a
+/// catalog-addressable entity, written in the same surface forms the language
+/// already uses for such references (`Book.title`, `^books`, `^books.byTitle`,
+/// `Status::archived`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvolveStep {
+    /// `rename <from> -> <to>`: declares that the entity now spelled `to` is the
+    /// same durable entity formerly spelled `from`, so its stable identity and
+    /// stored data carry over.
+    Rename {
+        from: Expression,
+        to: Expression,
+        span: SourceSpan,
+    },
+    /// `default <target> = <value>`: the value to backfill into existing records
+    /// that lack `target` when it becomes populated for every record.
+    Default {
+        target: Expression,
+        value: Expression,
+        span: SourceSpan,
+    },
+    /// `retire <target>`: declares destructive intent to remove the entity and its
+    /// stored data.
+    Retire {
+        target: Expression,
+        span: SourceSpan,
+    },
+    /// `transform <target> NEWLINE INDENT statement+ DEDENT`: a checked transform
+    /// computing the new shape of `target` from the old.
+    Transform {
+        target: Expression,
+        body: Block,
+        span: SourceSpan,
+    },
+}
+
+impl EvolveStep {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Rename { span, .. }
+            | Self::Default { span, .. }
+            | Self::Retire { span, .. }
+            | Self::Transform { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

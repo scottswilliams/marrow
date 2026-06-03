@@ -604,6 +604,33 @@ accidental corruption while still allowing deliberate maintenance functions
 through managed writes. Otherwise the project treats the writer as an explicit
 data-integrity risk.
 
+## Evolution
+
+Durable schema changes state their intent in an `evolve` block. A bare source
+diff implies nothing about stored data: renaming a member in the resource alone
+changes the on-disk path and orphans the data behind it. The `evolve` block names
+what the change means for durable identity:
+
+```mw
+evolve
+    rename Book.title -> Book.subtitle
+    default Book.author = "unknown"
+    retire ^books.byTitle
+```
+
+`rename old -> new` declares that the entity now spelled `new` is the durable
+entity formerly spelled `old`, so its stable identity and stored data carry
+forward and the old path is kept as an alias. A saved-data-backed rename is
+rejected unless an `evolve rename` states this intent, or the accepted catalog
+already records the alias; either way authorizes it, so identity is never silently
+reassigned. `default` gives the value to backfill where a newly populated member
+is absent. `retire` is destructive: it states intent to remove an entity and its
+stored data. `transform` computes the new shape of an entity from the old through
+a checked body.
+
+The intent is checked against the source and the accepted catalog; it does not
+itself rewrite stored data. Applying the change is an explicit maintenance action.
+
 ## Passing Resource Places
 
 Functions can accept resource values as normal inputs. Mutating the caller's

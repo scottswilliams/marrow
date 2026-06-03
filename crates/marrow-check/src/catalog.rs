@@ -4,7 +4,8 @@ use std::path::Path;
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_syntax::{Severity, SourceSpan};
 
-use crate::{CHECK_CATALOG_INTENT, CheckDiagnostic, CheckedProgram};
+use crate::evolution::{EvolveIntents, RenameIntent, RetireIntent};
+use crate::{CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CheckDiagnostic, CheckedProgram};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CatalogKey {
@@ -32,10 +33,11 @@ pub(crate) fn bind_catalog(
     project_root: &Path,
     config: &marrow_project::ProjectConfig,
     program: &mut CheckedProgram,
+    evolve: &EvolveIntents,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let accepted = read_accepted_catalog(project_root, config, diagnostics);
-    let binding = catalog_binding(program, accepted.as_ref(), diagnostics);
+    let binding = catalog_binding(program, accepted.as_ref(), evolve, diagnostics);
     program
         .facts
         .bind_catalog_ids(&program.modules, &binding.ids);
@@ -86,6 +88,7 @@ fn catalog_diagnostic(file: std::path::PathBuf, message: String) -> CheckDiagnos
 fn catalog_binding(
     program: &CheckedProgram,
     accepted: Option<&CatalogMetadata>,
+    evolve: &EvolveIntents,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> CatalogBinding {
     let source_entries = source_catalog_entries(program);
@@ -93,28 +96,73 @@ fn catalog_binding(
     let proposal = match accepted {
         Some(catalog) => {
             let accepted_index = AcceptedCatalog::new(catalog);
+            // Each current source catalog path mapped to the kind the source declares
+            // there, computed once and shared by rename resolution and retire
+            // admission so both read the same source view.
+            let source_kinds = source_kinds(&source_entries);
+            // A rename declares that the entity now at `to_path` is the accepted
+            // entry formerly at `from_path`. Resolution is keyed by the new path so
+            // the source loop can find the matching intent, and is an injective
+            // partial map: a duplicate source or target, a source still declared, or
+            // a target with no accepted identity to carry is a closed-by-default
+            // error rather than a silent relocation.
+            let mut renames =
+                resolve_renames(&accepted_index, &source_kinds, &evolve.renames, diagnostics);
             let mut proposal_entries = catalog.entries.clone();
+            // An accepted Active entry whose source declaration has disappeared but
+            // is neither renamed nor retired stays Active here with no source
+            // backing. Dropping a sparse field is a legal no-op (its data simply
+            // lingers), so this is not a check-time error; classifying such an entry
+            // (deprecate it, or require a retire intent when an index, invariant, or
+            // alias still depends on it) is a discharge obligation, not catalog
+            // binding's concern.
             let mut used_stable_ids = stable_ids(&proposal_entries);
             let mut changed = false;
             for source in &source_entries {
-                match accepted_index.active_entry(source.kind, &source.path) {
-                    Some(binding) => {
-                        ids.insert(
-                            CatalogKey::new(source.kind, source.path.clone()),
-                            binding.entry.stable_id.clone(),
-                        );
+                let rename = renames.remove(&source.path);
+                if let Some(binding) = accepted_index.active_entry(source.kind, &source.path) {
+                    // A rename onto a path that already names a live accepted entity
+                    // cannot move identity there; the declared intent is a no-op the
+                    // author must resolve, so report it instead of dropping it.
+                    if rename.is_some() {
+                        push_rename_target_live(source, diagnostics);
                     }
-                    None => {
-                        push_missing_intent(source, diagnostics);
-                        prepare_proposal_path(&mut proposal_entries, source.kind, &source.path);
-                        proposal_entries.push(proposed_catalog_entry(source, &mut used_stable_ids));
-                        changed = true;
-                    }
+                    ids.insert(
+                        CatalogKey::new(source.kind, source.path.clone()),
+                        binding.entry.stable_id.clone(),
+                    );
+                } else if let Some(rename) = rename {
+                    apply_rename(&mut proposal_entries, source, &rename.from_path, &mut ids);
+                    changed = true;
+                } else {
+                    push_missing_intent(source, diagnostics);
+                    prepare_proposal_path(&mut proposal_entries, source.kind, &source.path);
+                    proposal_entries.push(proposed_catalog_entry(source, &mut used_stable_ids));
+                    changed = true;
                 }
+            }
+            // A rename whose target the source never declares relocates nothing; the
+            // declared intent must not vanish silently.
+            for rename in renames.values() {
+                report_unresolved_intent(&rename.file, rename.span, diagnostics);
+            }
+            if apply_retires(
+                &mut proposal_entries,
+                &evolve.retires,
+                &source_kinds,
+                diagnostics,
+            ) {
+                changed = true;
             }
             changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
         }
         None => {
+            for rename in &evolve.renames {
+                report_unresolved_intent(&rename.file, rename.span, diagnostics);
+            }
+            for retire in &evolve.retires {
+                report_unresolved_intent(&retire.file, retire.span, diagnostics);
+            }
             let mut used_stable_ids = HashSet::new();
             Some(CatalogMetadata::new(
                 1,
@@ -126,12 +174,183 @@ fn catalog_binding(
         }
     };
 
+    // The proposal is the catalog a future accept commits, so it must satisfy the
+    // same identity invariants. Validating it here makes an identity collision the
+    // binding logic produced fail closed at check time rather than at apply.
+    if let Some(proposal) = &proposal
+        && let Err(error) = proposal.validate()
+    {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_CATALOG_INTENT,
+            severity: Severity::Error,
+            file: first_source_file(&source_entries),
+            message: format!("proposed catalog metadata is not valid: {}", error.message),
+            span: SourceSpan::default(),
+        });
+    }
+
     CatalogBinding {
         accepted_epoch: accepted.map(|catalog| catalog.epoch),
         accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
         ids,
         proposal,
     }
+}
+
+/// The first source file a catalog entry came from, used to attach a
+/// proposal-level diagnostic that is not tied to a single declaration span.
+fn first_source_file(source_entries: &[SourceCatalogEntry]) -> std::path::PathBuf {
+    source_entries
+        .first()
+        .map(|entry| entry.file.clone())
+        .unwrap_or_default()
+}
+
+/// One rename the binding will carry forward, keyed in the resolution map by its
+/// new path. The kind is the one the source fixes for that new path, so the
+/// accepted entry behind `from_path` is matched without relying on paths being
+/// unique across kinds.
+struct ResolvedRename {
+    from_path: String,
+    file: std::path::PathBuf,
+    span: SourceSpan,
+}
+
+/// Resolve the rename intents into an injective partial map `to_path -> rename`.
+/// A rename is dropped with a diagnostic when it cannot move identity soundly:
+///
+/// - its target or source collides with another rename (the map must be injective
+///   on both ends, or one accepted entry would be orphaned);
+/// - its source path is still a live source declaration (a rename removes the old
+///   spelling, so a source that still declares it would alias one stable id onto
+///   two members);
+/// - no active accepted entry carries the source path's identity forward.
+fn resolve_renames(
+    accepted: &AcceptedCatalog<'_>,
+    source_kinds: &HashMap<&str, CatalogEntryKind>,
+    renames: &[RenameIntent],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> HashMap<String, ResolvedRename> {
+    let mut resolved: HashMap<String, ResolvedRename> = HashMap::new();
+    let mut from_paths: HashSet<String> = HashSet::new();
+    for rename in renames {
+        let Some(&kind) = source_kinds.get(rename.to_path.as_str()) else {
+            // The new spelling names no current source entity, so there is nothing
+            // to carry identity onto; report it rather than relocate blindly.
+            report_unresolved_intent(&rename.file, rename.span, diagnostics);
+            continue;
+        };
+        let duplicate_target = resolved.contains_key(&rename.to_path);
+        let duplicate_source = !from_paths.insert(rename.from_path.clone());
+        if duplicate_target || duplicate_source {
+            push_rename_conflict(rename, diagnostics);
+            continue;
+        }
+        if source_kinds.get(rename.from_path.as_str()) == Some(&kind) {
+            push_rename_source_declared(rename, diagnostics);
+            continue;
+        }
+        if accepted.active_entry(kind, &rename.from_path).is_none() {
+            report_unresolved_intent(&rename.file, rename.span, diagnostics);
+            continue;
+        }
+        resolved.insert(
+            rename.to_path.clone(),
+            ResolvedRename {
+                from_path: rename.from_path.clone(),
+                file: rename.file.clone(),
+                span: rename.span,
+            },
+        );
+    }
+    resolved
+}
+
+/// Map each current source catalog path to the kind the source declares there.
+fn source_kinds(source_entries: &[SourceCatalogEntry]) -> HashMap<&str, CatalogEntryKind> {
+    source_entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry.kind))
+        .collect()
+}
+
+/// Carry the accepted entry at `from_path` forward to its new path: relocate it,
+/// record the old path as an alias, and bind the source fact to its preserved
+/// stable id. The entry stays active — a rename is identity-preserving, not
+/// destructive. The accepted entry is matched on the source-fixed kind, so a
+/// like-spelled entry of another kind is never relocated.
+fn apply_rename(
+    entries: &mut [CatalogEntry],
+    source: &SourceCatalogEntry,
+    from_path: &str,
+    ids: &mut HashMap<CatalogKey, String>,
+) {
+    let Some(entry) = entries.iter_mut().find(|entry| {
+        entry.lifecycle == CatalogLifecycle::Active
+            && entry.kind == source.kind
+            && entry.path == from_path
+    }) else {
+        return;
+    };
+    if !entry.aliases.iter().any(|alias| alias == from_path) {
+        entry.aliases.push(from_path.to_string());
+    }
+    entry.path = source.path.clone();
+    ids.insert(
+        CatalogKey::new(source.kind, source.path.clone()),
+        entry.stable_id.clone(),
+    );
+}
+
+/// Mark each retired entity removed in the proposal. A retire names a destructive
+/// intent over an accepted entry whose source declaration is gone; a path that
+/// matches no active accepted entry is a target diagnostic. A retire of an entry
+/// the source still declares is rejected: marking it removed would silently drop
+/// data the running program still reads and writes, so the destructive intent only
+/// applies once the source declaration is actually gone. Returns whether any entry
+/// changed.
+fn apply_retires(
+    entries: &mut [CatalogEntry],
+    retires: &[RetireIntent],
+    source_kinds: &HashMap<&str, CatalogEntryKind>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    let mut changed = false;
+    for retire in retires {
+        // A retire carries no kind; its path names destructive intent over an
+        // accepted entry whose source declaration is gone. Fail closed whenever the
+        // path is still declared by source under any kind, rather than comparing
+        // against whichever same-path entry was found first: marking a still-declared
+        // entry removed would drop data the running program still reads and writes.
+        // Once no source entry declares the path, the lone active accepted entry
+        // there is genuinely orphaned and safe to remove.
+        if source_kinds.contains_key(retire.path.as_str()) {
+            push_retire_source_declared(retire, diagnostics);
+            continue;
+        }
+        match entries
+            .iter_mut()
+            .find(|entry| entry.lifecycle == CatalogLifecycle::Active && entry.path == retire.path)
+        {
+            Some(entry) => {
+                entry.lifecycle = CatalogLifecycle::Removed;
+                changed = true;
+            }
+            None => report_unresolved_intent(&retire.file, retire.span, diagnostics),
+        }
+    }
+    changed
+}
+
+fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_EVOLVE_TARGET,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: "evolve target does not name an accepted catalog entry to carry forward"
+            .to_string(),
+        span,
+    });
 }
 
 struct AcceptedCatalog<'a> {
@@ -244,6 +463,58 @@ fn push_missing_intent(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckD
         file: source.file.clone(),
         message: format!(
             "accepted catalog metadata has no active entry for `{}`; accept a catalog proposal before renaming durable identity",
+            source.path
+        ),
+        span: source.span,
+    });
+}
+
+fn push_rename_source_declared(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_CATALOG_INTENT,
+        severity: Severity::Error,
+        file: rename.file.clone(),
+        message: format!(
+            "rename source `{}` is still declared; a rename must remove the old spelling",
+            rename.from_path
+        ),
+        span: rename.span,
+    });
+}
+
+fn push_retire_source_declared(retire: &RetireIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_CATALOG_INTENT,
+        severity: Severity::Error,
+        file: retire.file.clone(),
+        message: format!(
+            "retire target `{}` is still declared by source; remove the declaration before retiring it",
+            retire.path
+        ),
+        span: retire.span,
+    });
+}
+
+fn push_rename_conflict(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_CATALOG_INTENT,
+        severity: Severity::Error,
+        file: rename.file.clone(),
+        message: format!(
+            "rename `{}` -> `{}` conflicts with another rename of the same source or target",
+            rename.from_path, rename.to_path
+        ),
+        span: rename.span,
+    });
+}
+
+fn push_rename_target_live(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_CATALOG_INTENT,
+        severity: Severity::Error,
+        file: source.file.clone(),
+        message: format!(
+            "rename target `{}` already names a live entity; identity cannot be moved onto it",
             source.path
         ),
         span: source.span,

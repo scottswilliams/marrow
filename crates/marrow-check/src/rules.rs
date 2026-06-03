@@ -60,6 +60,16 @@ pub(crate) fn check_function_body(
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
 }
 
+/// Apply the structural body rules to an `evolve transform` block. The transform
+/// has no function parameters, so it is checked as a body with no read-only
+/// bindings: catch/assign-target shape, loop control flow, and loop-layer mutation
+/// rules. The transform's typed old/new views are supplied by discharge, not here.
+pub(crate) fn check_transform_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
+    walk_block(file, body, &HashSet::new(), &HashSet::new(), out);
+    walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
+    walk_loop_layer_mutations(file, body, &mut Vec::new(), out);
+}
+
 /// A `const` value must be a compile-time constant expression: literals and
 /// other constants combined with operators, never a host call or saved-data
 /// read.

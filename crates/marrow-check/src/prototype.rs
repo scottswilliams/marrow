@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use marrow_syntax::{
-    ArgMode, Block, Declaration, Expression, InterpolationPart, Severity, SourceSpan, Statement,
+    ArgMode, Block, Declaration, EvolveStep, Expression, InterpolationPart, Severity, SourceSpan,
+    Statement,
 };
 
 use crate::infer::{is_saved_path_expression, saved_layer_chain};
@@ -26,6 +27,13 @@ pub(crate) fn check_prototype_only(
                 }
             }
             Declaration::Enum(_) => {}
+            Declaration::Evolve(evolve) => {
+                for step in &evolve.steps {
+                    if let EvolveStep::Transform { body, .. } = step {
+                        check_block(program, file, body, diagnostics);
+                    }
+                }
+            }
         }
     }
 }

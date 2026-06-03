@@ -18,6 +18,7 @@ mod catalog;
 mod checks;
 pub mod durable_path;
 mod enums;
+mod evolution;
 pub mod executable;
 pub mod facts;
 mod infer;
@@ -148,6 +149,14 @@ pub const CHECK_PROTOTYPE_ONLY: &str = "check.prototype_only";
 /// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
 /// identity binding for a source declaration.
 pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
+/// An `evolve` step names a target that does not resolve to a catalog-addressable
+/// entity: a resource member, saved root, store index, enum, or enum member that
+/// the current source declares (or, for a rename's source side, an entry the
+/// accepted catalog records).
+pub const CHECK_EVOLVE_TARGET: &str = "check.evolve_target";
+/// An `evolve default` value does not match its target member's type, or an
+/// `evolve transform` body does not type-check.
+pub const CHECK_EVOLVE_TYPE: &str = "check.evolve_type";
 /// A maybe-present saved read appears in value position without a read-site
 /// resolution form such as `??`, `exists(...)`, or optional chaining.
 pub const CHECK_BARE_MAYBE_PRESENT_READ: &str = "check.bare_maybe_present_read";
@@ -1087,6 +1096,9 @@ fn check_file_source(
                     span: constant.span,
                 });
             }
+            // An evolve block compiles to no resource, store, enum, function, or
+            // constant; its catalog intent is resolved against the bound program.
+            marrow_syntax::Declaration::Evolve(_) => {}
         }
     }
 
@@ -1377,7 +1389,7 @@ fn check_duplicate_declarations(
         let (name, span) = match declaration {
             Declaration::Const(decl) => (decl.name.as_str(), decl.span),
             Declaration::Resource(decl) => (decl.name.as_str(), decl.span),
-            Declaration::Store(_) => continue,
+            Declaration::Store(_) | Declaration::Evolve(_) => continue,
             Declaration::Function(decl) => (decl.name.as_str(), decl.span),
             Declaration::Enum(decl) => (decl.name.as_str(), decl.span),
         };

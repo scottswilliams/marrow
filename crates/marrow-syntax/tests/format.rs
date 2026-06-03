@@ -632,3 +632,33 @@ fn preserves_multiline_trailing_comma_calls() {
 
     assert_eq!(format_source(source), expected);
 }
+
+#[test]
+fn formats_evolve_block_consistently_with_resource_and_store() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   rename Book.title    ->   Book.subtitle\n\
+         \x20   default Book.author = \"unknown\"\n\
+         \x20   retire ^books.byTitle\n\
+         \x20   transform Book.shelf\n\
+         \x20       return ^books(1).shelf\n";
+    let expected = "module app\n\
+         \n\
+         evolve\n\
+         \x20   rename Book.title -> Book.subtitle\n\
+         \x20   default Book.author = \"unknown\"\n\
+         \x20   retire ^books.byTitle\n\
+         \x20   transform Book.shelf\n\
+         \x20       return ^books(1).shelf\n";
+
+    assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn evolve_block_format_is_idempotent() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   rename ^books -> ^archive\n";
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}

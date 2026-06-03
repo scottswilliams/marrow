@@ -336,8 +336,11 @@ pub(crate) fn check_file_types(
                     );
                 }
             }
-            // Store and enum member types are validated by schema compilation.
-            marrow_syntax::Declaration::Store(_) | marrow_syntax::Declaration::Enum(_) => {}
+            // Store and enum member types are validated by schema compilation;
+            // evolve steps carry no type annotations and are checked separately.
+            marrow_syntax::Declaration::Store(_)
+            | marrow_syntax::Declaration::Enum(_)
+            | marrow_syntax::Declaration::Evolve(_) => {}
         }
     }
 }

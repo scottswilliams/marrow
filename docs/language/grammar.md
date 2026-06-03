@@ -62,6 +62,7 @@ top_level_decl  =
     | doc_comment* store_decl
     | doc_comment* enum_decl
     | doc_comment* function_decl
+    | evolve_decl
     ;
 
 use_decl        = "use" qualified_name NEWLINE ;
@@ -171,6 +172,32 @@ return_type     = ":" type ;
 
 block           = INDENT statement+ DEDENT ;
 ```
+
+## Evolution
+
+```ebnf
+evolve_decl     =
+    "evolve" NEWLINE
+    INDENT evolve_step+ DEDENT ;
+
+evolve_step     =
+      "rename" evolve_target "->" evolve_target NEWLINE
+    | "default" evolve_target "=" expression NEWLINE
+    | "retire" evolve_target NEWLINE
+    | "transform" evolve_target NEWLINE block
+    ;
+
+evolve_target   = saved_path | qualified_name | local_path ;
+```
+
+An `evolve` block declares durable intent about catalog-addressable entities: a
+resource member, a saved root, a store index, an enum, or an enum member. Each
+target is written in the same surface form the language already uses to reference
+that entity (`Book.title`, `^books`, `^books.byTitle`, `Status::archived`).
+
+`rename`, `default`, `retire`, and `transform` are contextual: they are step lead
+words recognized only inside an `evolve` block, so they remain valid identifiers
+elsewhere. `evolve` itself is reserved.
 
 ## Types
 

@@ -104,7 +104,12 @@ impl CatalogMetadata {
         serde_json::to_string_pretty(self).expect("catalog metadata serializes")
     }
 
-    fn validate(&self) -> Result<(), CatalogError> {
+    /// Check the identity invariants a committed catalog must hold: non-empty
+    /// paths and stable IDs, a unique stable ID per entry, and a unique
+    /// `(kind, path)` across both canonical paths and aliases. A proposal built by
+    /// the checker is validated through this so an identity collision fails closed
+    /// at check time rather than at apply.
+    pub fn validate(&self) -> Result<(), CatalogError> {
         let mut paths: HashMap<(CatalogEntryKind, &str), usize> = HashMap::new();
         let mut stable_ids: HashMap<&str, usize> = HashMap::new();
         for (index, entry) in self.entries.iter().enumerate() {

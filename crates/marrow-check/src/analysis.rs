@@ -337,7 +337,26 @@ pub(crate) fn analyze_source_project(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
 
-    crate::catalog::bind_catalog(project_root, config, &mut program, &mut report.diagnostics);
+    let evolve_intents = crate::evolution::collect_evolve_intents(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+        &mut report.diagnostics,
+    );
+    crate::catalog::bind_catalog(
+        project_root,
+        config,
+        &mut program,
+        &evolve_intents,
+        &mut report.diagnostics,
+    );
+    crate::evolution::check_evolve_types(
+        &program,
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+        &mut report.diagnostics,
+    );
     program.lower_runtime_bodies(
         parsed_files
             .iter()
