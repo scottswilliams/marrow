@@ -1,12 +1,8 @@
-//! The native persistent backend, over [redb](https://docs.rs/redb).
+//! Private native persistent ordered-byte engine, over [redb](https://docs.rs/redb).
 //!
-//! One redb table (`marrow`) maps encoded saved paths to encoded values. redb's
-//! `&[u8]` keys order byte-lexicographically — the same order as
-//! [`encode_path`](crate::path::encode_path) and the in-memory `BTreeMap` — so
-//! traversal yields identical results with no custom comparator. The post-range
-//! logic (prefix bounds, child dedup, presence, roots) mirrors
-//! [`MemStore`](crate::mem::MemStore); the shared [`conformance`](crate::conformance)
-//! suite holds both stores to one contract.
+//! One redb table (`marrow`) maps encoded tree-cell or implementation-substrate
+//! keys to values. redb's `&[u8]` keys order byte-lexicographically, the same
+//! order as the in-memory `BTreeMap`, so range scans need no custom comparator.
 //!
 //! Transactions hold one redb write transaction for their whole life: every read
 //! and write inside the transaction goes through it, so reads see their own
@@ -25,11 +21,10 @@ use redb::{
     WriteTransaction,
 };
 
-use crate::backend::{Backend, Presence, ScanPage, StoreError};
-use crate::path::{ChildSegment, int_index_key_band, int_record_key_band, root_name, subtree_band};
+use crate::backend::{Backend, ScanPage, StoreError};
 use crate::traversal;
 
-/// The single table holding every encoded (path, value) pair.
+/// The single table holding every encoded key/value pair.
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
 
 /// A small table holding store metadata, currently just the format version.
@@ -41,12 +36,11 @@ const FORMAT_VERSION: u32 = 1;
 
 const DELETE_BATCH_LIMIT: usize = 256;
 
-/// One undone change: a path and the value it held before the change (`None` if
-/// it was absent). Replaying it restores that prior state.
+/// One undone change: a key and the value it held before the change.
 type Undo = (Vec<u8>, Option<Vec<u8>>);
 
-/// A redb-backed saved-tree store implementing the [`Backend`] contract.
-pub struct RedbStore {
+/// A redb-backed ordered-byte engine implementing the private [`Backend`] contract.
+pub(crate) struct RedbStore {
     db: DatabaseHandle,
     /// The live write transaction while one is open (`Some` iff `journals` is
     /// non-empty).
@@ -92,106 +86,15 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
     }
 }
 
-fn streamed_neighbor_child<T>(
-    table: &T,
-    parent: &[u8],
-    bound: &[u8],
-    dir: SeekDir,
-    op: &'static str,
-) -> Result<Option<ChildSegment>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut start = parent.to_vec();
-    start.extend_from_slice(bound);
-    let seek = traversal::NeighborSeek::new(parent, bound);
-    match dir {
-        SeekDir::Forward => {
-            for entry in table.range::<&[u8]>(start.as_slice()..).map_err(io(op))? {
-                let (key, _) = entry.map_err(io(op))?;
-                match seek.step(key.value())? {
-                    traversal::NeighborStep::Done => break,
-                    traversal::NeighborStep::Skip => {}
-                    traversal::NeighborStep::Child(child) => return Ok(Some(child)),
-                }
-            }
-        }
-        SeekDir::Reverse => {
-            for entry in table
-                .range::<&[u8]>(parent..=start.as_slice())
-                .map_err(io(op))?
-                .rev()
-            {
-                let (key, _) = entry.map_err(io(op))?;
-                match seek.step(key.value())? {
-                    traversal::NeighborStep::Done => break,
-                    traversal::NeighborStep::Skip => {}
-                    traversal::NeighborStep::Child(child) => return Ok(Some(child)),
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn streamed_edge_child<T>(
-    table: &T,
-    parent: &[u8],
-    dir: SeekDir,
-    op: &'static str,
-) -> Result<Option<ChildSegment>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let seek = traversal::NeighborSeek::new(parent, b"");
-    match dir {
-        SeekDir::Forward => {
-            for entry in table.range::<&[u8]>(parent..).map_err(io(op))? {
-                let (key, _) = entry.map_err(io(op))?;
-                match seek.step(key.value())? {
-                    traversal::NeighborStep::Done => break,
-                    traversal::NeighborStep::Skip => {}
-                    traversal::NeighborStep::Child(child) => return Ok(Some(child)),
-                }
-            }
-        }
-        SeekDir::Reverse => {
-            let (lo, hi) = subtree_band(parent);
-            let range = match &hi {
-                Some(hi) => table.range::<&[u8]>(lo.as_slice()..hi.as_slice()),
-                None => table.range::<&[u8]>(lo.as_slice()..),
-            }
-            .map_err(io(op))?;
-            for entry in range.rev() {
-                let (key, _) = entry.map_err(io(op))?;
-                match seek.step(key.value())? {
-                    traversal::NeighborStep::Done => break,
-                    traversal::NeighborStep::Skip => {}
-                    traversal::NeighborStep::Child(child) => return Ok(Some(child)),
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// Which way a sibling seek walks: forward for the next sibling, reversed for the
-/// previous. A private two-state direction.
-#[derive(Clone, Copy)]
-enum SeekDir {
-    Forward,
-    Reverse,
-}
-
-fn delete_key_batch<T>(table: &T, path: &[u8]) -> Result<Vec<Vec<u8>>, StoreError>
+fn delete_key_batch<T>(table: &T, prefix: &[u8]) -> Result<Vec<Vec<u8>>, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let mut keys = Vec::new();
-    for entry in table.range::<&[u8]>(path..).map_err(io("delete"))? {
+    for entry in table.range::<&[u8]>(prefix..).map_err(io("delete"))? {
         let (key, _) = entry.map_err(io("delete"))?;
         let key = key.value();
-        if !key.starts_with(path) {
+        if !key.starts_with(prefix) {
             break;
         }
         keys.push(key.to_vec());
@@ -202,106 +105,12 @@ where
     Ok(keys)
 }
 
-fn streamed_roots<T>(table: &T) -> Result<Vec<String>, StoreError>
+fn streamed_scan<T>(table: &T, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    let mut roots = Vec::new();
-    for entry in table.range::<&[u8]>(..).map_err(io("roots"))? {
-        let (key, _) = entry.map_err(io("roots"))?;
-        let key = key.value();
-        let name = root_name(key).ok_or_else(|| StoreError::CorruptPath { path: key.to_vec() })?;
-        if roots.last() != Some(&name) {
-            roots.push(name);
-        }
-    }
-    Ok(roots)
-}
-
-fn streamed_child_keys<T>(table: &T, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut children = Vec::new();
-    let mut collapse = traversal::ChildCollapse::new(path);
-    for entry in table.range::<&[u8]>(path..).map_err(io("child_keys"))? {
-        let (key, _) = entry.map_err(io("child_keys"))?;
-        match collapse.step(key.value())? {
-            traversal::ChildStep::Done => break,
-            traversal::ChildStep::Skip => {}
-            traversal::ChildStep::Child(child) => children.push(child),
-        }
-    }
-    Ok(children)
-}
-
-fn streamed_child_keys_rev<T>(table: &T, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let (lo, hi) = subtree_band(path);
-    let range = match &hi {
-        Some(hi) => table.range::<&[u8]>(lo.as_slice()..hi.as_slice()),
-        None => table.range::<&[u8]>(lo.as_slice()..),
-    }
-    .map_err(io("child_keys_rev"))?;
-    let mut children = Vec::new();
-    let mut collapse = traversal::ChildCollapse::new(path);
-    for entry in range.rev() {
-        let (key, _) = entry.map_err(io("child_keys_rev"))?;
-        match collapse.step(key.value())? {
-            traversal::ChildStep::Done => break,
-            traversal::ChildStep::Skip => {}
-            traversal::ChildStep::Child(child) => children.push(child),
-        }
-    }
-    Ok(children)
-}
-
-fn streamed_child_count<T>(table: &T, path: &[u8]) -> Result<usize, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut count = 0;
-    let mut collapse = traversal::ChildCollapse::new(path);
-    for entry in table.range::<&[u8]>(path..).map_err(io("child_count"))? {
-        let (key, _) = entry.map_err(io("child_count"))?;
-        match collapse.step(key.value())? {
-            traversal::ChildStep::Done => break,
-            traversal::ChildStep::Skip => {}
-            traversal::ChildStep::Child(_) => count += 1,
-        }
-    }
-    Ok(count)
-}
-
-fn streamed_presence<T>(table: &T, path: &[u8]) -> Result<Presence, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let has_value = table.get(path).map_err(io("presence"))?.is_some();
-    let probe = traversal::DescendantProbe::new(path);
-    let mut has_descendants = false;
-    for entry in table.range::<&[u8]>(path..).map_err(io("presence"))? {
-        let (key, _) = entry.map_err(io("presence"))?;
-        match probe.step(key.value()) {
-            traversal::DescendantStep::Done => break,
-            traversal::DescendantStep::Skip => {}
-            traversal::DescendantStep::Found => {
-                has_descendants = true;
-                break;
-            }
-        }
-    }
-    Ok(traversal::presence_from_parts(has_value, has_descendants))
-}
-
-fn streamed_scan<T>(table: &T, path: &[u8], limit: usize) -> Result<ScanPage, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut scan = traversal::ScanAccumulator::new(path, limit);
-    for entry in table.range::<&[u8]>(path..).map_err(io("scan"))? {
+    let mut scan = traversal::ScanAccumulator::new(prefix, limit);
+    for entry in table.range::<&[u8]>(prefix..).map_err(io("scan"))? {
         let (key, value) = entry.map_err(io("scan"))?;
         match scan.step(key.value(), value.value()) {
             traversal::ScanStep::Done => break,
@@ -313,14 +122,14 @@ where
 
 fn streamed_scan_after<T>(
     table: &T,
-    path: &[u8],
+    prefix: &[u8],
     cursor: &[u8],
     limit: usize,
 ) -> Result<ScanPage, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    let mut scan = traversal::ScanAccumulator::new(path, limit);
+    let mut scan = traversal::ScanAccumulator::new(prefix, limit);
     let range = table
         .range::<&[u8]>((Bound::Excluded(cursor), Bound::Unbounded))
         .map_err(io("scan_after"))?;
@@ -359,7 +168,7 @@ impl RedbStore {
     /// second writer for the same file is rejected as [`StoreError::Locked`]
     /// (redb holds an OS lock), and a file recording a different
     /// [`FORMAT_VERSION`] is rejected as [`StoreError::FormatVersion`].
-    pub fn open(path: &Path) -> Result<Self, StoreError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = Database::create(path).map_err(|error| match error {
             redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
                 data_dir: path.to_path_buf(),
@@ -419,7 +228,7 @@ impl RedbStore {
     /// verifies the recorded [`FORMAT_VERSION`] rather than stamping it. The
     /// returned store uses redb's read-only handle, and Marrow's write-capability
     /// operations fail before starting any write transaction.
-    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+    pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         let db = ReadOnlyDatabase::open(path).map_err(|error| match error {
             redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
                 data_dir: path.to_path_buf(),
@@ -476,44 +285,23 @@ impl RedbStore {
             .expect("a journal while a transaction is open")
             .push(entry);
     }
-
-    /// The highest integer key in the half-open byte `band` of integer-keyed
-    /// children of `prefix`. The band is one contiguous numeric-ordered run, so
-    /// its last entry (redb ranges are double-ended) is the highest; the shared
-    /// decode reads the key just past the kind tag. `None` when the band is empty.
-    fn max_int_in_band(
-        &self,
-        prefix: &[u8],
-        (lo, hi): (Vec<u8>, Vec<u8>),
-    ) -> Result<Option<i64>, StoreError> {
-        read_view!(self, "max_int_key", |table| {
-            let last = table
-                .range::<&[u8]>(lo.as_slice()..hi.as_slice())
-                .map_err(io("max_int_key"))?
-                .next_back();
-            // Keep the last row's guard alive so the borrow into it survives the
-            // shared decode below.
-            let last = last.transpose().map_err(io("max_int_key"))?;
-            traversal::max_int_key(last.as_ref().map(|(key, _)| Ok(key.value())), prefix)
-        })
-    }
 }
 
 impl Backend for RedbStore {
-    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         read_view!(self, "read", |table| Ok(table
-            .get(path)
+            .get(key)
             .map_err(io("read"))?
             .map(|guard| guard.value().to_vec())))
     }
 
-    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+    fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.db.require_write_access("write")?;
         if self.txn.is_none() {
             let write = self.db.begin_write("write")?;
             {
                 let mut table = write.open_table(TABLE).map_err(io("write"))?;
-                table.insert(path, value.as_slice()).map_err(io("write"))?;
+                table.insert(key, value.as_slice()).map_err(io("write"))?;
             }
             return write.commit().map_err(io("write"));
         }
@@ -523,22 +311,22 @@ impl Backend for RedbStore {
             let write = self.txn.as_ref().expect("an open transaction");
             let mut table = write.open_table(TABLE).map_err(io("write"))?;
             table
-                .insert(path, value.as_slice())
+                .insert(key, value.as_slice())
                 .map_err(io("write"))?
                 .map(|guard| guard.value().to_vec())
         };
-        self.record((path.to_vec(), old));
+        self.record((key.to_vec(), old));
         Ok(())
     }
 
-    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
+    fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
         self.db.require_write_access("delete")?;
         if self.txn.is_none() {
             let write = self.db.begin_write("delete")?;
             {
                 let mut table = write.open_table(TABLE).map_err(io("delete"))?;
                 loop {
-                    let keys = delete_key_batch(&table, path)?;
+                    let keys = delete_key_batch(&table, prefix)?;
                     if keys.is_empty() {
                         break;
                     }
@@ -555,7 +343,7 @@ impl Backend for RedbStore {
             let undo = {
                 let write = self.txn.as_ref().expect("an open transaction");
                 let mut table = write.open_table(TABLE).map_err(io("delete"))?;
-                let keys = delete_key_batch(&table, path)?;
+                let keys = delete_key_batch(&table, prefix)?;
                 if keys.is_empty() {
                     break;
                 }
@@ -576,80 +364,19 @@ impl Backend for RedbStore {
         Ok(())
     }
 
-    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        read_view!(self, "presence", |table| streamed_presence(&table, path))
+    fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit))
     }
 
-    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        read_view!(self, "child_keys", |table| {
-            streamed_child_keys(&table, path)
-        })
-    }
-
-    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        read_view!(self, "child_keys_rev", |table| {
-            streamed_child_keys_rev(&table, path)
-        })
-    }
-
-    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
-        read_view!(self, "child_count", |table| {
-            streamed_child_count(&table, path)
-        })
-    }
-
-    fn next_sibling(
+    fn scan_after(
         &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        read_view!(self, "next_sibling", |table| {
-            streamed_neighbor_child(&table, parent, after, SeekDir::Forward, "next_sibling")
-        })
-    }
-
-    fn prev_sibling(
-        &self,
-        parent: &[u8],
-        before: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        read_view!(self, "prev_sibling", |table| {
-            streamed_neighbor_child(&table, parent, before, SeekDir::Reverse, "prev_sibling")
-        })
-    }
-
-    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        read_view!(self, "first_child", |table| {
-            streamed_edge_child(&table, parent, SeekDir::Forward, "first_child")
-        })
-    }
-
-    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        read_view!(self, "last_child", |table| {
-            streamed_edge_child(&table, parent, SeekDir::Reverse, "last_child")
-        })
-    }
-
-    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan", |table| streamed_scan(&table, path, limit))
-    }
-
-    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
         read_view!(self, "scan_after", |table| {
-            streamed_scan_after(&table, path, cursor, limit)
+            streamed_scan_after(&table, prefix, cursor, limit)
         })
-    }
-
-    fn roots(&self) -> Result<Vec<String>, StoreError> {
-        read_view!(self, "roots", |table| streamed_roots(&table))
-    }
-
-    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        self.max_int_in_band(prefix, int_record_key_band(prefix))
-    }
-
-    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        self.max_int_in_band(prefix, int_index_key_band(prefix))
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {
@@ -696,15 +423,15 @@ impl Backend for RedbStore {
         // transaction, leaving the outer levels in place.
         let write = self.txn.as_ref().expect("a transaction while rolling back");
         let mut table = write.open_table(TABLE).map_err(io("rollback"))?;
-        for (path, old) in journal.into_iter().rev() {
+        for (key, old) in journal.into_iter().rev() {
             match old {
                 Some(value) => {
                     table
-                        .insert(path.as_slice(), value.as_slice())
+                        .insert(key.as_slice(), value.as_slice())
                         .map_err(io("rollback"))?;
                 }
                 None => {
-                    table.remove(path.as_slice()).map_err(io("rollback"))?;
+                    table.remove(key.as_slice()).map_err(io("rollback"))?;
                 }
             }
         }
@@ -714,7 +441,10 @@ impl Backend for RedbStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use redb::{Database, ReadableDatabase, TableDefinition};
+
+    use super::{DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, RedbStore, TABLE};
+    use crate::backend::{Backend, StoreError};
     use crate::conformance;
 
     /// The native store satisfies the same backend conformance suite as the

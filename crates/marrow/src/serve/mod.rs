@@ -34,7 +34,6 @@ pub(crate) mod test_support {
     };
     use marrow_store::cell::CatalogId;
     use marrow_store::key::SavedKey;
-    use marrow_store::mem::MemStore;
     use marrow_store::tree::{DataPathSegment, TreeStore};
 
     pub(crate) struct ServeState {
@@ -51,7 +50,7 @@ pub(crate) mod test_support {
     pub(crate) fn empty_state() -> ServeState {
         ServeState {
             program: checked_program(),
-            store: TreeStore::new(MemStore::new()),
+            store: TreeStore::memory(),
         }
     }
 
@@ -228,8 +227,8 @@ pub fn run(args: &[String]) -> ExitCode {
     // A project with no saved data yet serves an empty store; inspection never
     // creates the backing file.
     let store = match open_store_for_inspection(&dir, &config) {
-        Ok(Some(store)) => TreeStore::from_backend(store),
-        Ok(None) => TreeStore::new(marrow_store::mem::MemStore::new()),
+        Ok(Some(store)) => store,
+        Ok(None) => TreeStore::memory(),
         Err(code) => return code,
     };
 
@@ -384,7 +383,7 @@ mod tests {
     fn serves_newline_delimited_requests_over_a_stream() {
         let state = state_with_books(&[(1, "Mort")]);
 
-        let input = "{\"id\":1,\"op\":\"saved_roots\"}\n\n{\"id\":2,\"op\":\"nope\"}\n";
+        let input = "{\"id\":1,\"op\":\"data_roots\"}\n\n{\"id\":2,\"op\":\"nope\"}\n";
         let mut reader = Cursor::new(input.as_bytes());
         let mut output: Vec<u8> = Vec::new();
         serve_connection(&mut reader, &mut output, &state.program, &state.store).expect("serve");
@@ -448,7 +447,7 @@ mod tests {
         // A non-UTF-8 byte sequence on the first line (0xff is never valid UTF-8),
         // then a well-formed request on the second.
         let mut input: Vec<u8> = b"\xff\xfe\n".to_vec();
-        input.extend_from_slice(b"{\"id\":2,\"op\":\"saved_roots\"}\n");
+        input.extend_from_slice(b"{\"id\":2,\"op\":\"data_roots\"}\n");
         let mut reader = Cursor::new(input);
         let mut output: Vec<u8> = Vec::new();
         serve_connection(&mut reader, &mut output, &state.program, &state.store).expect("serve");

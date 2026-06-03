@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use marrow_check::{StorePathClass, check_project, classify_store_path};
+use marrow_check::{PathSegment, StorePathClass, check_project, classify_store_path};
 use marrow_project::parse_config;
-use marrow_store::path::{PathSegment, SavedKey};
+use marrow_store::key::SavedKey;
 use marrow_store::value::ScalarType;
 
 static NEXT_TEMP_PROJECT: AtomicU64 = AtomicU64::new(0);

@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use marrow_check::{CheckedArg as ExecArg, CheckedRuntimeProgram};
 use marrow_schema::stdlib::Capability;
-use marrow_store::mem::MemStore;
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
@@ -18,7 +17,7 @@ use crate::stdlib::eval_assert;
 #[test]
 fn every_table_row_reaches_a_live_handler() {
     let program = CheckedRuntimeProgram::default();
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new()
         .with_clock(0)
         .with_environment(HashMap::new())

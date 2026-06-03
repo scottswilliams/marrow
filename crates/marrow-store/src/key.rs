@@ -1,6 +1,6 @@
-//! Typed saved-key values and their order-preserving byte codec.
+//! Typed saved-key values used by the tree-cell store.
 
-use crate::value::ScalarType;
+use std::cmp::Ordering;
 
 /// A scalar key value in a record-key or index-key position.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,21 +19,10 @@ pub enum SavedKey {
 }
 
 impl SavedKey {
-    /// The stable wire tag for this key in the serve JSON codec.
-    pub fn wire_tag(&self) -> &'static str {
-        match self {
-            SavedKey::Str(_) => "str",
-            SavedKey::Bool(_) => ScalarType::Bool.name(),
-            SavedKey::Int(_) => ScalarType::Int.name(),
-            SavedKey::Bytes(_) => ScalarType::Bytes.name(),
-            SavedKey::Date(_) => ScalarType::Date.name(),
-            SavedKey::Duration(_) => ScalarType::Duration.name(),
-            SavedKey::Instant(_) => ScalarType::Instant.name(),
-        }
-    }
-
     /// The scalar kind this key projects.
-    pub fn scalar_type(&self) -> ScalarType {
+    pub fn scalar_type(&self) -> crate::value::ScalarType {
+        use crate::value::ScalarType;
+
         match self {
             SavedKey::Bool(_) => ScalarType::Bool,
             SavedKey::Int(_) => ScalarType::Int,
@@ -42,6 +31,43 @@ impl SavedKey {
             SavedKey::Date(_) => ScalarType::Date,
             SavedKey::Duration(_) => ScalarType::Duration,
             SavedKey::Instant(_) => ScalarType::Instant,
+        }
+    }
+
+    fn order_tag(&self) -> u8 {
+        match self {
+            SavedKey::Bool(_) => KEY_BOOL,
+            SavedKey::Int(_) => KEY_INT,
+            SavedKey::Date(_) => KEY_DATE,
+            SavedKey::Instant(_) => KEY_INSTANT,
+            SavedKey::Duration(_) => KEY_DURATION,
+            SavedKey::Str(_) => KEY_STR,
+            SavedKey::Bytes(_) => KEY_BYTES,
+        }
+    }
+}
+
+impl PartialOrd for SavedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SavedKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.order_tag().cmp(&other.order_tag()) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+        match (self, other) {
+            (SavedKey::Bool(left), SavedKey::Bool(right)) => left.cmp(right),
+            (SavedKey::Int(left), SavedKey::Int(right)) => left.cmp(right),
+            (SavedKey::Date(left), SavedKey::Date(right)) => left.cmp(right),
+            (SavedKey::Instant(left), SavedKey::Instant(right)) => left.cmp(right),
+            (SavedKey::Duration(left), SavedKey::Duration(right)) => left.cmp(right),
+            (SavedKey::Str(left), SavedKey::Str(right)) => left.cmp(right),
+            (SavedKey::Bytes(left), SavedKey::Bytes(right)) => left.cmp(right),
+            _ => Ordering::Equal,
         }
     }
 }
@@ -59,16 +85,37 @@ pub(crate) const KEY_BYTES: u8 = 0x08;
 // The bounded int-key band uses `KEY_INT + 1` as its exclusive upper bound.
 const _: () = assert!(KEY_DATE == KEY_INT + 1);
 
-/// Encode a single scalar key to its order-preserving bytes.
-pub fn encode_key_value(key: &SavedKey) -> Vec<u8> {
+/// Encode a single scalar key to its private order-preserving bytes.
+pub(crate) fn encode_key_value(key: &SavedKey) -> Vec<u8> {
     let mut bytes = Vec::new();
     encode_key_into(key, &mut bytes);
     bytes
 }
 
-/// Decode one scalar key from the front of `bytes`.
-pub fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
+/// Decode one scalar key from the front of private key bytes.
+pub(crate) fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
     Some((decode_key(bytes)?, key_len(bytes)?))
+}
+
+/// Encode identity keys into the canonical tree-cell payload form.
+pub fn encode_identity_payload(identity: &[SavedKey]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for key in identity {
+        bytes.extend_from_slice(&encode_key_value(key));
+    }
+    bytes
+}
+
+/// Decode a canonical identity payload with the expected arity.
+pub fn decode_identity_payload_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
+    let mut keys = Vec::with_capacity(arity);
+    let mut rest = bytes;
+    for _ in 0..arity {
+        let (key, used) = decode_key_value(rest)?;
+        keys.push(key);
+        rest = rest.get(used..)?;
+    }
+    rest.is_empty().then_some(keys)
 }
 
 pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {

@@ -220,15 +220,15 @@ pub(crate) fn resolve_store_path(
 pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
-) -> Result<Option<Box<dyn marrow_store::backend::Backend>>, ExitCode> {
+) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
     let Some(path) = native_store_path(dir, config)? else {
         return Ok(None);
     };
     if !path.exists() {
         return Ok(None);
     }
-    match marrow_store::redb::RedbStore::open_read_only(&path) {
-        Ok(store) => Ok(Some(Box::new(store))),
+    match marrow_store::tree::TreeStore::open_read_only(&path) {
+        Ok(store) => Ok(Some(store)),
         Err(error) => {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             Err(ExitCode::FAILURE)

@@ -148,14 +148,11 @@ fn run_project_dir(
     match resolve_store_path(dir, &config) {
         Err(code) => code,
         Ok(None) => {
-            let store = marrow_store::tree::TreeStore::new(marrow_store::mem::MemStore::new());
+            let store = marrow_store::tree::TreeStore::memory();
             execute(&runtime_program, &store, entry, maintenance, observe)
         }
-        Ok(Some(path)) => match marrow_store::redb::RedbStore::open(&path) {
-            Ok(store) => {
-                let store = marrow_store::tree::TreeStore::new(store);
-                execute(&runtime_program, &store, entry, maintenance, observe)
-            }
+        Ok(Some(path)) => match marrow_store::tree::TreeStore::open(&path) {
+            Ok(store) => execute(&runtime_program, &store, entry, maintenance, observe),
             Err(error) => {
                 report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
                 ExitCode::FAILURE

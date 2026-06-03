@@ -9,8 +9,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
-marrow data <roots|stats|dump|integrity> <projectdir>
-marrow data get <projectdir> <path>
+marrow data <typed inspection subcommand> <projectdir>
 marrow explain [--format text|json|jsonl] <projectdir> <target>
 marrow lsp
 marrow serve [--port <port>] <projectdir>
@@ -47,8 +46,7 @@ Plain `run` output is the program's own `print`/`write` stream, which carries no
 envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
 for their tooling reports; when reports compose, more than one top-level JSON
 object may appear on stdout. `--format` is also accepted by `check`, `explain`,
-and every `data` subcommand; for `data roots`, `data stats`, and `data get`,
-`jsonl` emits the same single object as `json` (there is nothing to stream).
+and typed `data` subcommands.
 
 ---
 
@@ -65,7 +63,7 @@ diagnostics.
   rules that need a project are not applied.
 - Given a project directory, it loads `marrow.json` and runs the project checker
   over every source root plus configured test files: parse, type, effect, and
-  saved-path checks.
+  durable-place checks.
 
 Exits `0` when there are no errors, `1` when there are (or when the file or
 `marrow.json` cannot be read).
@@ -265,23 +263,19 @@ $ marrow explain --format json ./proj shelf::add
 ```
 
 Exits `0` when it can explain the target, `1` if the project does not check, and
-`2` on command-line usage errors or a malformed saved-path target.
+`2` on command-line usage errors or a malformed target.
 
 ## `marrow data`
 
-```
-marrow data roots     [--format text|json|jsonl] <projectdir>
-marrow data stats     [--format text|json|jsonl] <projectdir>
-marrow data dump      [--format text|json|jsonl] <projectdir>
-marrow data integrity [--format text|json|jsonl] <projectdir>
-marrow data get       [--format text|json|jsonl] <projectdir> <path>
-```
+`marrow data` is the typed inspection and repair-tooling boundary. It must read
+through checked source, accepted catalog metadata, and typed tree-cell store
+APIs. It does not expose raw backend keys, raw saved-path encoders, or archive
+streams as production CLI behavior.
 
 Read-only diagnostic/admin inspection of a project's saved data. It never
 creates or modifies the store; a project with no saved data on disk reports as
 empty. See [data-tools.md](data-tools.md) for full output shapes and the path
-syntax. These commands are not the production backup/restore or typed preview
-contract; Lane 10 owns that protocol.
+syntax. These commands are not a production backup/restore format.
 
 `data diff` and `data load` are deferred — see
 [future/data-tools.md](future/data-tools.md).
@@ -316,9 +310,9 @@ $ marrow data stats --format json ./proj
 ### `data dump`
 
 Print every stored `(path, value)` in encoded order for inspection. Values
-render raw — as UTF-8 text when valid, else `0x<hex>` — not schema-typed.
-JSON/JSONL carry the path plus base64 of the exact path and value bytes. This is
-not a production backup format.
+render as canonical payload bytes — UTF-8 text when valid, else `0x<hex>`.
+JSON/JSONL carry the checked path plus base64 of the value bytes. This is not a
+production backup format.
 
 ```console
 $ marrow data dump ./proj
@@ -326,17 +320,17 @@ $ marrow data dump ./proj
 ^books(1).title	Small Gods
 
 $ marrow data dump --format jsonl ./proj
-{"path":"^books(1).author","path_b64":"…","value_b64":"…"}
-{"path":"^books(1).title","path_b64":"…","value_b64":"…"}
+{"path":"^books(1).author","value_b64":"…"}
+{"path":"^books(1).title","value_b64":"…"}
 {"kind":"summary","records":2}
 ```
 
 ### `data integrity`
 
-Verify every stored value decodes against its declared schema type. It needs the
-checked project, so it loads and checks the source first. It reports decode
-mismatches (`data.decode`), orphan data under an unknown root or undeclared member
-(`data.orphan`), and corrupt keys (`store.corrupt_path`). Exits `0` on a clean
+Verify each checked, reachable stored value decodes against its declared schema
+type. It needs the checked project, so it loads and checks the source first. It
+reports decode mismatches (`data.decode`), key type mismatches (`data.key_type`),
+and corrupt typed tree-cell keys (`store.corruption`). Exits `0` on a clean
 store, `1` when any problem is found.
 
 ```console
@@ -346,7 +340,8 @@ ok: ./proj integrity verified (2 records)
 
 ### `data get`
 
-Read one path's value for inspection. The value renders raw, like `dump`.
+Read one path's value for inspection. The value renders as canonical payload
+bytes, like `dump`.
 Absence is a valid result (exit `0`): a path with no value but children prints
 `(no value; has children)`, a truly absent path prints `(absent)`. An
 unparseable path is a usage error (exit `2`).
@@ -402,18 +397,9 @@ marrow serve listening on 127.0.0.1:52224
 ```
 
 `--port` chooses the TCP port; `--port 0` (the default) lets the OS pick a free
-port, printed on the line above. The server runs until interrupted. Each request
-is one JSON object per line; each reply is `{"id": …, "ok": …}` or `{"id": …,
-"error": {"code": …, "message": …}}`.
-
-```console
-$ printf '{"id":1,"op":"saved_roots"}\n' | nc 127.0.0.1 52224
-{"id":1,"ok":{"roots":["books"]}}
-```
-
-For the full request/reply protocol — the supported operations, the path-segment
-encoding, and the `protocol.*` error codes — see
-[serve-protocol.md](serve-protocol.md).
+port, printed on the line above. The server runs until interrupted. Its v0.1
+protocol is typed and read-only; it exposes `data_roots`, `data_get`,
+`data_children`, and `data_walk`. See [serve-protocol.md](serve-protocol.md).
 
 Exits `2` on a usage error, `1` if the project config cannot be loaded, the store
 cannot be opened, or the address cannot be bound.

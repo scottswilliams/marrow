@@ -3,12 +3,12 @@
 //! Saved values are stored in their canonical Marrow byte form: the bytes do
 //! not depend on the backend, so backup,
 //! diff, traversal, equality, and restore are stable. Unlike keys, values are
-//! not order-preserving — the store orders by path, not by value — so the
+//! not order-preserving — the store orders by tree-cell key, not by value — so the
 //! encoding optimizes for a clear canonical round-trip. A value's type comes
 //! from the schema at read time, so the bytes carry no type tag.
 
 use crate::Decimal;
-use crate::path::SavedKey;
+use crate::key::SavedKey;
 
 /// A scalar value in decoded form: the one type the store, the runtime, and the
 /// serve protocol all share for a stored leaf. The eight arms are exactly the
@@ -118,14 +118,10 @@ pub enum ScalarType {
     Decimal,
 }
 
-/// The canonical scalar spelling: the source keyword, the store decode tag, and
-/// every downstream name probe read this one table, so a new scalar is one row
-/// here, not a hand-spelled copy in each crate. The source keyword is `string`
-/// while the variant is spelled `Str`; that bridge lives only here.
+/// The canonical scalar spellings shared by schema, checker, runtime, and tools.
 ///
-/// `ErrorCode` is a language-level spelling whose storage form is a plain string,
-/// so it maps to `Str`; it sits after the `string` row so the reverse `name()`
-/// lookup keeps yielding `string` for a `Str`.
+/// `ErrorCode` is a language-level spelling whose storage envelope is a string.
+/// The reverse mapping keeps `Str` canonical as `string`.
 const SCALAR_NAMES: [(&str, ScalarType); 9] = [
     ("bool", ScalarType::Bool),
     ("int", ScalarType::Int),
@@ -139,9 +135,7 @@ const SCALAR_NAMES: [(&str, ScalarType); 9] = [
 ];
 
 impl ScalarType {
-    /// The [`ScalarType`] a scalar type name denotes, or `None` for identity and
-    /// other non-scalar types. This is the single source of truth for the
-    /// scalar-name mapping shared by the runtime and the write planner.
+    /// The scalar type a language spelling denotes.
     pub fn from_scalar_name(name: &str) -> Option<ScalarType> {
         SCALAR_NAMES
             .iter()
@@ -149,14 +143,13 @@ impl ScalarType {
             .map(|(_, ty)| *ty)
     }
 
-    /// The canonical source spelling of this scalar (`bool`, `int`, `string`,
-    /// …), the reverse of [`from_scalar_name`](Self::from_scalar_name).
+    /// The canonical language spelling of this scalar type.
     pub fn name(self) -> &'static str {
         SCALAR_NAMES
             .iter()
             .find(|(_, ty)| *ty == self)
             .map(|(spelling, _)| *spelling)
-            .expect("every scalar has a name-table row")
+            .expect("every scalar has a spelling")
     }
 }
 

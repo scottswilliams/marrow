@@ -1,137 +1,140 @@
-//! Native (redb) store behavior beyond the shared backend contract: durable
-//! persistence, single-writer locking, and read-only opens. The contract itself
-//! is exercised by the per-backend conformance tests inside the crate.
 #![cfg(feature = "native")]
 
-use marrow_store::backend::{Backend, StoreError};
-use marrow_store::redb::RedbStore;
+use marrow_store::StoreError;
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::TreeStore;
 
-#[test]
-fn redb_persists_and_reopens() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
-    let path = dir.path().join("store.redb");
-    {
-        let mut store = RedbStore::open(&path).expect("open");
-        store.write(b"k", b"v".to_vec()).expect("write");
-    } // the store drops here, closing the file
-    // Reopening checks the recorded format version and sees the persisted data.
-    let store = RedbStore::open(&path).expect("reopen");
-    assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
+fn catalog_id(hex: &str) -> CatalogId {
+    CatalogId::new(format!("cat_{hex}")).unwrap()
 }
 
 #[test]
-fn redb_rejects_a_second_writer() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
+fn native_tree_cells_survive_reopen() {
+    let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("store.redb");
-    let _first = RedbStore::open(&path).expect("open the first writer");
-    // A second writer for the same open file is refused with a typed lock error.
-    match RedbStore::open(&path) {
-        Ok(_) => panic!("a second writer must be refused"),
-        Err(error) => assert_eq!(error.code(), "store.locked"),
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
+    {
+        let store = TreeStore::open(&path).expect("open");
+        store
+            .write_leaf(&books, &[SavedKey::Int(1)], &title, b"Dune".to_vec())
+            .expect("write");
+    }
+
+    let store = TreeStore::open(&path).expect("reopen");
+    assert_eq!(
+        store
+            .read_leaf(&books, &[SavedKey::Int(1)], &title)
+            .expect("read"),
+        Some(b"Dune".to_vec())
+    );
+}
+
+#[test]
+fn native_tree_store_rejects_a_second_writer() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("store.redb");
+    let _first = TreeStore::open(&path).expect("open the first writer");
+
+    match TreeStore::open(&path) {
+        Err(StoreError::Locked { data_dir }) => assert_eq!(data_dir, path),
+        Ok(_) => panic!("expected store.locked, got Ok"),
+        Err(error) => panic!("expected store.locked, got {error:?}"),
     }
 }
 
 #[test]
-fn open_read_only_reads_an_existing_store_without_creating_one() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
-    let path = dir.path().join("store.redb");
+fn native_read_only_open_requires_an_existing_store() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("missing.redb");
 
-    // Read-only opening a path that does not exist is an error and creates nothing.
-    assert!(RedbStore::open_read_only(&path).is_err());
-    assert!(!path.exists(), "read-only open must not create the store");
-
-    // Create and populate the store, then reopen it read-only and read it back.
-    {
-        let mut store = RedbStore::open(&path).expect("create");
-        store.write(b"k", b"v".to_vec()).expect("write");
-    }
-    let store = RedbStore::open_read_only(&path).expect("open read-only");
-    assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
-    // A read-only open neither corrupts the store nor keeps it locked: it reopens
-    // read-write afterward.
-    drop(store);
-    RedbStore::open(&path).expect("reopen read-write after a read-only open");
+    assert!(TreeStore::open_read_only(&path).is_err());
 }
 
 #[test]
-fn open_read_only_allows_simultaneous_readers() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
+fn native_read_only_can_read_existing_cells() {
+    let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("store.redb");
-
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
     {
-        let mut store = RedbStore::open(&path).expect("create");
-        store.write(b"k", b"v".to_vec()).expect("write");
+        let store = TreeStore::open(&path).expect("create");
+        store
+            .write_leaf(&books, &[SavedKey::Int(1)], &title, b"Dune".to_vec())
+            .expect("write");
     }
 
-    let first = RedbStore::open_read_only(&path).expect("open first read-only");
-    let second = RedbStore::open_read_only(&path).expect("open second read-only");
-
-    assert_eq!(first.read(b"k").expect("read first"), Some(b"v".to_vec()));
-    assert_eq!(second.read(b"k").expect("read second"), Some(b"v".to_vec()));
+    let store = TreeStore::open_read_only(&path).expect("open read-only");
+    assert_eq!(
+        store
+            .read_leaf(&books, &[SavedKey::Int(1)], &title)
+            .expect("read"),
+        Some(b"Dune".to_vec())
+    );
 }
 
 #[test]
-fn read_only_handle_blocks_read_write_open_before_drop() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
+fn multiple_native_read_only_handles_can_coexist() {
+    let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("store.redb");
-
     {
-        let mut store = RedbStore::open(&path).expect("create");
-        store.write(b"k", b"v".to_vec()).expect("write");
+        TreeStore::open(&path).expect("create");
     }
 
-    let reader = RedbStore::open_read_only(&path).expect("open read-only");
-    match RedbStore::open(&path) {
-        Ok(_) => panic!("a writer must be refused while a read-only handle is alive"),
-        Err(error) => assert_eq!(error.code(), "store.locked"),
+    let _first = TreeStore::open_read_only(&path).expect("open first read-only");
+    let _second = TreeStore::open_read_only(&path).expect("open second read-only");
+}
+
+#[test]
+fn native_writer_is_locked_out_while_read_only_handle_lives() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("store.redb");
+    {
+        TreeStore::open(&path).expect("create");
     }
 
+    let reader = TreeStore::open_read_only(&path).expect("open read-only");
+    match TreeStore::open(&path) {
+        Err(StoreError::Locked { data_dir }) => assert_eq!(data_dir, path),
+        Ok(_) => panic!("expected store.locked while read-only handle is open, got Ok"),
+        Err(error) => panic!("expected store.locked while read-only handle is open, got {error:?}"),
+    }
     drop(reader);
-    let store = RedbStore::open(&path).expect("reopen read-write after dropping reader");
-    assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
+
+    TreeStore::open(&path).expect("reopen read-write after dropping reader");
 }
 
 #[test]
-fn open_read_only_refuses_write_capability_operations() {
-    let dir = tempfile::tempdir().expect("create a temp dir");
+fn native_read_only_rejects_write_capability_operations() {
+    let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("store.redb");
-
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
     {
-        let mut store = RedbStore::open(&path).expect("create");
+        let store = TreeStore::open(&path).expect("create");
         store
-            .write(b"keep", b"original".to_vec())
-            .expect("seed keep");
+            .write_leaf(&books, &[SavedKey::Int(1)], &title, b"Dune".to_vec())
+            .expect("write");
+    }
+
+    let store = TreeStore::open_read_only(&path).expect("open read-only");
+    assert!(matches!(
+        store.write_leaf(&books, &[SavedKey::Int(2)], &title, b"Other".to_vec()),
+        Err(StoreError::ReadOnly { op: "write" })
+    ));
+    assert!(matches!(
+        store.delete_leaf(&books, &[SavedKey::Int(1)], &title),
+        Err(StoreError::ReadOnly { op: "delete" })
+    ));
+    assert!(matches!(
+        store.begin(),
+        Err(StoreError::ReadOnly { op: "begin" })
+    ));
+    assert_eq!(
         store
-            .write(b"delete-target", b"still here".to_vec())
-            .expect("seed delete target");
-    }
-
-    let assert_read_only = |result: Result<(), StoreError>, op| match result {
-        Err(error) => assert_eq!(error.code(), "store.read_only", "{op} error"),
-        Ok(()) => panic!("{op} must be refused on a read-only store"),
-    };
-
-    {
-        let mut store = RedbStore::open_read_only(&path).expect("open read-only for write");
-        assert_read_only(store.write(b"keep", b"changed".to_vec()), "write");
-    }
-    {
-        let mut store = RedbStore::open_read_only(&path).expect("open read-only for delete");
-        assert_read_only(store.delete(b"delete-target"), "delete");
-    }
-    {
-        let mut store = RedbStore::open_read_only(&path).expect("open read-only for begin");
-        assert_read_only(store.begin(), "begin");
-    }
-
-    let store = RedbStore::open(&path).expect("reopen read-write");
-    assert_eq!(
-        store.read(b"keep").expect("read keep"),
-        Some(b"original".to_vec())
+            .read_leaf(&books, &[SavedKey::Int(1)], &title)
+            .expect("read existing value"),
+        Some(b"Dune".to_vec())
     );
-    assert_eq!(
-        store.read(b"delete-target").expect("read delete target"),
-        Some(b"still here".to_vec())
-    );
-    assert_eq!(store.read(b"new").expect("read absent new"), None);
 }

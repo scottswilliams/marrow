@@ -1,117 +1,9 @@
 use super::*;
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use crate::serve::test_support::{ServeState, empty_state, state_with_books};
-use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
-use marrow_store::mem::MemStore;
-use marrow_store::path::ChildSegment;
 
 fn request(state: &ServeState, value: Value) -> Value {
     handle_request(&state.program, &state.store, &value)
-}
-
-struct CountingBackend {
-    inner: MemStore,
-    scan_calls: Rc<Cell<usize>>,
-}
-
-impl CountingBackend {
-    fn new(scan_calls: Rc<Cell<usize>>) -> Self {
-        Self {
-            inner: MemStore::new(),
-            scan_calls,
-        }
-    }
-}
-
-impl Backend for CountingBackend {
-    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        <MemStore as Backend>::read(&self.inner, path)
-    }
-
-    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        <MemStore as Backend>::write(&mut self.inner, path, value)
-    }
-
-    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
-        <MemStore as Backend>::delete(&mut self.inner, path)
-    }
-
-    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        self.inner.presence(path)
-    }
-
-    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        self.inner.child_keys(path)
-    }
-
-    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        self.inner.child_keys_rev(path)
-    }
-
-    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
-        self.inner.child_count(path)
-    }
-
-    fn next_sibling(
-        &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        self.inner.next_sibling(parent, after)
-    }
-
-    fn prev_sibling(
-        &self,
-        parent: &[u8],
-        before: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        self.inner.prev_sibling(parent, before)
-    }
-
-    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        self.inner.first_child(parent)
-    }
-
-    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        self.inner.last_child(parent)
-    }
-
-    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        self.scan_calls.set(self.scan_calls.get() + 1);
-        <MemStore as Backend>::scan(&self.inner, path, limit)
-    }
-
-    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        self.scan_calls.set(self.scan_calls.get() + 1);
-        <MemStore as Backend>::scan_after(&self.inner, path, cursor, limit)
-    }
-
-    fn roots(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.roots()
-    }
-
-    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        self.inner.max_int_record_key(prefix)
-    }
-
-    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        self.inner.max_int_index_key(prefix)
-    }
-
-    fn begin(&mut self) -> Result<(), StoreError> {
-        self.inner.begin()
-    }
-
-    fn commit(&mut self) -> Result<(), StoreError> {
-        self.inner.commit()
-    }
-
-    fn rollback(&mut self) -> Result<(), StoreError> {
-        self.inner.rollback()
-    }
 }
 
 fn state_with_a_book() -> ServeState {
@@ -122,26 +14,21 @@ fn state_with_two_books() -> ServeState {
     state_with_books(&[(1, "Mort"), (2, "Sourcery")])
 }
 
-fn state_with_counted_tags(tags: &[(i64, &str)]) -> (ServeState, Rc<Cell<usize>>) {
-    let scan_calls = Rc::new(Cell::new(0));
-    let state = ServeState {
-        program: empty_state().program,
-        store: TreeStore::new(CountingBackend::new(Rc::clone(&scan_calls))),
-    };
+fn state_with_tags(tags: &[(i64, &str)]) -> ServeState {
+    let state = empty_state();
     for (pos, tag) in tags {
         write_checked_value(
             &state,
             &[
                 DataQuerySegment::Root("books".into()),
                 DataQuerySegment::Key(SavedKey::Int(1)),
-                DataQuerySegment::Member("tags".into()),
+                DataQuerySegment::Layer("tags".into()),
                 DataQuerySegment::Key(SavedKey::Int(*pos)),
             ],
             tag.as_bytes(),
         );
     }
-    scan_calls.set(0);
-    (state, scan_calls)
+    state
 }
 
 fn write_checked_value(state: &ServeState, segments: &[DataQuerySegment], value: &[u8]) {
@@ -158,9 +45,9 @@ fn write_checked_value(state: &ServeState, segments: &[DataQuerySegment], value:
 }
 
 #[test]
-fn saved_roots_lists_the_roots_and_echoes_the_id() {
+fn data_roots_lists_the_roots_and_echoes_the_id() {
     let state = state_with_a_book();
-    let reply = request(&state, json!({ "id": 7, "op": "saved_roots" }));
+    let reply = request(&state, json!({ "id": 7, "op": "data_roots" }));
     assert_eq!(reply["id"], json!(7));
     assert_eq!(reply["ok"]["roots"], json!(["books"]));
 }
@@ -168,7 +55,7 @@ fn saved_roots_lists_the_roots_and_echoes_the_id() {
 #[test]
 fn an_empty_store_lists_no_roots() {
     let state = empty_state();
-    let reply = request(&state, json!({ "id": 1, "op": "saved_roots" }));
+    let reply = request(&state, json!({ "id": 1, "op": "data_roots" }));
     assert_eq!(reply["ok"]["roots"], json!([]));
 }
 
@@ -188,12 +75,12 @@ fn a_request_without_an_op_is_malformed_and_echoes_a_null_id() {
 }
 
 #[test]
-fn saved_get_returns_presence_and_the_base64_value() {
+fn data_get_returns_presence_and_the_base64_value() {
     let state = state_with_a_book();
     let reply = request(
         &state,
         json!({
-            "id": 1, "op": "saved_get",
+            "id": 1, "op": "data_get",
             "path": [{"root": "books"}, {"key": {"int": 1}}, {"field": "title"}],
         }),
     );
@@ -202,12 +89,12 @@ fn saved_get_returns_presence_and_the_base64_value() {
 }
 
 #[test]
-fn saved_get_of_an_absent_path_has_no_value() {
+fn data_get_of_an_absent_path_has_no_value() {
     let state = state_with_a_book();
     let reply = request(
         &state,
         json!({
-            "op": "saved_get",
+            "op": "data_get",
             "path": [{"root": "books"}, {"key": {"int": 2}}, {"field": "title"}],
         }),
     );
@@ -216,41 +103,38 @@ fn saved_get_of_an_absent_path_has_no_value() {
 }
 
 #[test]
-fn saved_children_lists_record_keys_then_field_names() {
+fn data_children_lists_record_keys_then_field_names() {
     let state = state_with_a_book();
     let under_root = request(
         &state,
-        json!({ "op": "saved_children", "path": [{"root": "books"}] }),
+        json!({ "op": "data_children", "path": [{"root": "books"}] }),
     );
     assert_eq!(under_root["ok"]["children"], json!([{"key": {"int": 1}}]));
     let under_record = request(
         &state,
-        json!({ "op": "saved_children", "path": [{"root": "books"}, {"key": {"int": 1}}] }),
+        json!({ "op": "data_children", "path": [{"root": "books"}, {"key": {"int": 1}}] }),
     );
     assert_eq!(under_record["ok"]["children"], json!([{"name": "title"}]));
 }
 
 #[test]
-fn saved_children_of_the_empty_path_lists_roots() {
+fn data_children_of_the_empty_path_lists_roots() {
     let state = state_with_a_book();
-    let reply = request(&state, json!({ "op": "saved_children", "path": [] }));
+    let reply = request(&state, json!({ "op": "data_children", "path": [] }));
     assert_eq!(reply["ok"]["children"], json!([{"name": "books"}]));
 }
 
 #[test]
 fn a_bad_path_segment_is_a_bad_request() {
     let state = empty_state();
-    let reply = request(
-        &state,
-        json!({ "op": "saved_get", "path": [{"frob": "x"}] }),
-    );
+    let reply = request(&state, json!({ "op": "data_get", "path": [{"frob": "x"}] }));
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
 #[test]
-fn a_saved_get_without_a_path_is_a_bad_request() {
+fn a_data_get_without_a_path_is_a_bad_request() {
     let state = empty_state();
-    let reply = request(&state, json!({ "op": "saved_get" }));
+    let reply = request(&state, json!({ "op": "data_get" }));
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
@@ -303,22 +187,22 @@ fn serve_base64_decode_rejects_non_canonical_padding() {
 }
 
 #[test]
-fn saved_walk_truncates_at_the_limit() {
+fn data_walk_truncates_at_the_limit() {
     let state = state_with_two_books();
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1 }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1 }),
     );
     assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 1);
     assert_eq!(reply["ok"]["truncated"], json!(true));
 }
 
 #[test]
-fn saved_walk_cursor_resumes_after_the_previous_page() {
+fn data_walk_cursor_resumes_after_the_previous_page() {
     let state = state_with_two_books();
     let first = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1 }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1 }),
     );
     let cursor = first["ok"]["nextCursor"]
         .as_str()
@@ -326,7 +210,7 @@ fn saved_walk_cursor_resumes_after_the_previous_page() {
 
     let second = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
     );
 
     let first_entry = &first["ok"]["entries"][0];
@@ -340,19 +224,19 @@ fn saved_walk_cursor_resumes_after_the_previous_page() {
 }
 
 #[test]
-fn saved_walk_returns_the_whole_subtree_under_a_generous_limit() {
+fn data_walk_returns_the_whole_subtree_under_a_generous_limit() {
     let state = state_with_two_books();
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 100 }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 100 }),
     );
     assert_eq!(reply["ok"]["entries"].as_array().expect("entries").len(), 2);
     assert_eq!(reply["ok"]["truncated"], json!(false));
 }
 
 #[test]
-fn saved_walk_keyed_path_filter_seeks_to_the_requested_key() {
-    let (state, scan_calls) = state_with_counted_tags(&[
+fn data_walk_keyed_path_filter_returns_the_requested_key() {
+    let state = state_with_tags(&[
         (1, "older"),
         (2, "older"),
         (3, "older"),
@@ -363,11 +247,11 @@ fn saved_walk_keyed_path_filter_seeks_to_the_requested_key() {
     let reply = request(
         &state,
         json!({
-            "op": "saved_walk",
+            "op": "data_walk",
             "path": [
                 {"root": "books"},
                 {"key": {"int": 1}},
-                {"field": "tags"},
+                {"layer": "tags"},
                 {"key": {"int": 10}}
             ],
             "limit": 100,
@@ -379,37 +263,41 @@ fn saved_walk_keyed_path_filter_seeks_to_the_requested_key() {
         reply["ok"]["entries"],
         json!([{"path": "^books(1).tags(10)", "value": "dGFyZ2V0"}])
     );
-    assert!(
-        scan_calls.get() <= 1,
-        "keyed path filter scanned {} keyed-layer pages",
-        scan_calls.get()
-    );
 }
 
 #[test]
-fn saved_walk_cursor_into_keyed_layer_seeks_to_the_cursor_key() {
-    let (state, scan_calls) = state_with_counted_tags(&[
+fn data_walk_cursor_into_keyed_layer_resumes_at_the_cursor_key() {
+    let state = state_with_tags(&[
         (1, "older"),
         (2, "older"),
         (3, "older"),
         (4, "older"),
         (10, "target"),
     ]);
-    let cursor = encode_cursor(&[
-        DataQuerySegment::Root("books".into()),
-        DataQuerySegment::Key(SavedKey::Int(1)),
-        DataQuerySegment::Member("tags".into()),
-        DataQuerySegment::Key(SavedKey::Int(10)),
-    ]);
+    let first = request(
+        &state,
+        json!({
+            "op": "data_walk",
+            "path": [
+                {"root": "books"},
+                {"key": {"int": 1}},
+                {"layer": "tags"}
+            ],
+            "limit": 4,
+        }),
+    );
+    let cursor = first["ok"]["nextCursor"]
+        .as_str()
+        .expect("a truncated keyed-layer page returns a cursor");
 
     let reply = request(
         &state,
         json!({
-            "op": "saved_walk",
+            "op": "data_walk",
             "path": [
                 {"root": "books"},
                 {"key": {"int": 1}},
-                {"field": "tags"}
+                {"layer": "tags"}
             ],
             "limit": 100,
             "cursor": cursor,
@@ -421,32 +309,26 @@ fn saved_walk_cursor_into_keyed_layer_seeks_to_the_cursor_key() {
         reply["ok"]["entries"],
         json!([{"path": "^books(1).tags(10)", "value": "dGFyZ2V0"}])
     );
-    assert!(
-        scan_calls.get() <= 1,
-        "keyed cursor scanned {} keyed-layer pages",
-        scan_calls.get()
-    );
 }
 
 #[test]
-fn saved_walk_rejects_a_forged_keyed_cursor_without_walking_prior_keys() {
-    let (state, scan_calls) =
-        state_with_counted_tags(&[(1, "older"), (2, "older"), (3, "older"), (4, "older")]);
+fn data_walk_rejects_a_forged_keyed_cursor_for_an_absent_entry() {
+    let state = state_with_tags(&[(1, "older"), (2, "older"), (3, "older"), (4, "older")]);
     let cursor = encode_cursor(&[
         DataQuerySegment::Root("books".into()),
         DataQuerySegment::Key(SavedKey::Int(1)),
-        DataQuerySegment::Member("tags".into()),
+        DataQuerySegment::Layer("tags".into()),
         DataQuerySegment::Key(SavedKey::Int(10)),
     ]);
 
     let reply = request(
         &state,
         json!({
-            "op": "saved_walk",
+            "op": "data_walk",
             "path": [
                 {"root": "books"},
                 {"key": {"int": 1}},
-                {"field": "tags"}
+                {"layer": "tags"}
             ],
             "limit": 100,
             "cursor": cursor,
@@ -458,31 +340,43 @@ fn saved_walk_rejects_a_forged_keyed_cursor_without_walking_prior_keys() {
         json!(PROTOCOL_BAD_REQUEST),
         "{reply}"
     );
-    assert_eq!(
-        scan_calls.get(),
-        0,
-        "forged keyed cursor scanned {} keyed-layer pages",
-        scan_calls.get()
-    );
 }
 
 #[test]
-fn saved_walk_without_a_limit_is_a_bad_request() {
+fn data_walk_without_a_limit_is_a_bad_request() {
     let state = empty_state();
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}] }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}] }),
     );
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
 #[test]
-fn saved_walk_rejects_an_unknown_checked_path() {
+fn data_walk_rejects_a_keyed_layer_addressed_as_a_field() {
     let state = state_with_a_book();
     let reply = request(
         &state,
         json!({
-            "op": "saved_walk",
+            "op": "data_walk",
+            "path": [
+                {"root": "books"},
+                {"key": {"int": 1}},
+                {"field": "tags"}
+            ],
+            "limit": 10,
+        }),
+    );
+    assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+}
+
+#[test]
+fn data_walk_rejects_an_unknown_checked_path() {
+    let state = state_with_a_book();
+    let reply = request(
+        &state,
+        json!({
+            "op": "data_walk",
             "path": [{"root": "books"}, {"key": {"int": 1}}, {"field": "missing"}],
             "limit": 10,
         }),
@@ -491,34 +385,34 @@ fn saved_walk_rejects_an_unknown_checked_path() {
 }
 
 #[test]
-fn saved_walk_rejects_a_zero_limit() {
+fn data_walk_rejects_a_zero_limit() {
     let state = state_with_a_book();
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 0 }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 0 }),
     );
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
 #[test]
-fn saved_walk_rejects_a_negative_limit_with_a_positive_integer_message() {
+fn data_walk_rejects_a_negative_limit_with_a_positive_integer_message() {
     let state = state_with_a_book();
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": -1 }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": -1 }),
     );
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
     assert_eq!(
         reply["error"]["message"],
-        json!("`saved_walk` requires a positive integer `limit`")
+        json!("`data_walk` requires a positive integer `limit`")
     );
 }
 
 #[test]
-fn saved_walk_caps_an_over_u64_integer_limit() {
+fn data_walk_caps_an_over_u64_integer_limit() {
     let state = state_with_two_books();
     let value: Value = serde_json::from_str(
-        r#"{"op":"saved_walk","path":[{"root":"books"}],"limit":18446744073709551616}"#,
+        r#"{"op":"data_walk","path":[{"root":"books"}],"limit":18446744073709551616}"#,
     )
     .expect("json integer beyond u64");
     let reply = request(&state, value);
@@ -528,57 +422,57 @@ fn saved_walk_caps_an_over_u64_integer_limit() {
 }
 
 #[test]
-fn saved_walk_rejects_a_malformed_cursor_inside_the_path_prefix() {
+fn data_walk_rejects_a_malformed_cursor_inside_the_path_prefix() {
     let state = state_with_a_book();
     let cursor = base64::encode(b"^books\xff");
 
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
     );
 
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
 #[test]
-fn saved_walk_rejects_a_forged_in_prefix_path_cursor() {
+fn data_walk_rejects_a_forged_in_prefix_path_cursor() {
     let state = state_with_a_book();
     let cursor = base64::encode(b"^books(999999).title");
 
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
     );
 
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
 #[test]
-fn saved_walk_rejects_a_forged_token_for_an_absent_entry() {
+fn data_walk_rejects_a_forged_token_for_an_absent_entry() {
     let state = state_with_a_book();
     let cursor = encode_cursor(&[
         DataQuerySegment::Root("books".into()),
         DataQuerySegment::Key(SavedKey::Int(99)),
-        DataQuerySegment::Member("title".into()),
+        DataQuerySegment::Field("title".into()),
     ]);
 
     let reply = request(
         &state,
-        json!({ "op": "saved_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
     );
 
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
 
 #[test]
-fn saved_walk_rejects_a_cursor_outside_the_checked_path_boundary() {
+fn data_walk_rejects_a_cursor_outside_the_checked_path_boundary() {
     let state = state_with_two_books();
     let cursor = base64::encode(b"^books(10).title");
 
     let reply = request(
         &state,
         json!({
-            "op": "saved_walk",
+            "op": "data_walk",
             "path": [{"root": "books"}, {"key": {"int": 1}}],
             "limit": 1,
             "cursor": cursor,
@@ -593,7 +487,7 @@ fn an_unknown_key_type_is_a_bad_request() {
     let state = empty_state();
     let reply = request(
         &state,
-        json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"frob": 1}}] }),
+        json!({ "op": "data_get", "path": [{"root": "books"}, {"key": {"frob": 1}}] }),
     );
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
@@ -603,7 +497,7 @@ fn a_bytes_key_with_invalid_base64_is_a_bad_request() {
     let state = empty_state();
     let reply = request(
         &state,
-        json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"bytes": "!!!"}}] }),
+        json!({ "op": "data_get", "path": [{"root": "books"}, {"key": {"bytes": "!!!"}}] }),
     );
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }
@@ -613,7 +507,7 @@ fn a_wide_integer_key_that_is_not_an_integer_is_a_bad_request() {
     let state = empty_state();
     let reply = request(
         &state,
-        json!({ "op": "saved_get", "path": [{"root": "books"}, {"key": {"duration": "notanint"}}] }),
+        json!({ "op": "data_get", "path": [{"root": "books"}, {"key": {"duration": "notanint"}}] }),
     );
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
 }

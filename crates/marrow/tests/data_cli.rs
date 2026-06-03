@@ -6,7 +6,7 @@ use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
 };
 use marrow_store::cell::CatalogId;
-use marrow_store::key::{SavedKey, encode_key_value};
+use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
@@ -61,7 +61,7 @@ fn native_project(name: &str) -> PathBuf {
 }
 
 #[test]
-fn data_roots_lists_the_saved_roots() {
+fn data_roots_lists_stored_roots() {
     let project = native_project("data-roots");
     let dir = project.to_str().unwrap().to_string();
     assert_eq!(
@@ -204,24 +204,17 @@ fn write_tree_value(
     path: &[DataPathSegment],
     value: Vec<u8>,
 ) {
-    use marrow_store::redb::RedbStore;
-
     let place = checked_place(project, root);
     let store_dir = project.join(".data");
     fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = RedbStore::open(&store_dir.join("marrow.redb")).expect("open native store");
-    let store = TreeStore::new(store);
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     store
         .write_data_value(&catalog_id(&place.store_catalog_id), identity, path, value)
         .expect("write tree-cell value");
 }
 
 fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for key in keys {
-        bytes.extend_from_slice(&encode_key_value(key));
-    }
-    bytes
+    encode_identity_payload(keys)
 }
 
 #[test]

@@ -1,15 +1,15 @@
 //! Managed writes over checked saved-store facts.
 
 use marrow_check::{CheckedSavedMember, CheckedSavedPlace, StoreLeafKind};
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::ValueError;
 use marrow_syntax::SourceSpan;
 
 use crate::index_maintenance::{
-    FieldIndexRewrite, encode_identity, reject_field_unique_conflicts,
-    reject_resource_unique_conflicts, stage_field_index_deletes, stage_field_index_rewrites,
-    stage_resource_index_deletes, stage_resource_index_rewrites,
+    FieldIndexRewrite, reject_field_unique_conflicts, reject_resource_unique_conflicts,
+    stage_field_index_deletes, stage_field_index_rewrites, stage_resource_index_deletes,
+    stage_resource_index_rewrites,
 };
 use crate::store::{
     DataAddress, IndexAddress, LayerAddress, data_exists, max_int_data_child, max_int_record_child,
@@ -649,7 +649,7 @@ fn staged_identity_value(
             ),
         });
     }
-    Ok(encode_identity(keys))
+    Ok(encode_identity_payload(keys))
 }
 
 fn data_address(

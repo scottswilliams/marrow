@@ -1,4 +1,4 @@
-//! Typed tree-cell store facade over the ordered-byte backend.
+//! Typed tree-cell store facade over the private ordered-byte engine.
 
 use std::cell::RefCell;
 
@@ -130,8 +130,7 @@ impl TreeEnumMember {
     }
 }
 
-/// A typed tree-cell facade that constructs physical keys from [`CellKey`].
-pub struct TreeCellStore<'a, B: Backend + ?Sized> {
+struct TreeCellStore<'a, B: Backend + ?Sized> {
     backend: &'a mut B,
 }
 
@@ -141,14 +140,25 @@ pub struct TreeStore {
 }
 
 impl TreeStore {
-    pub fn new<B>(backend: B) -> Self
-    where
-        B: Backend + 'static,
-    {
-        Self::from_backend(Box::new(backend))
+    pub fn memory() -> Self {
+        Self::from_backend(Box::new(crate::mem::MemStore::default()))
     }
 
-    pub fn from_backend(backend: Box<dyn Backend>) -> Self {
+    #[cfg(feature = "native")]
+    pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
+        Ok(Self::from_backend(Box::new(crate::redb::RedbStore::open(
+            path,
+        )?)))
+    }
+
+    #[cfg(feature = "native")]
+    pub fn open_read_only(path: &std::path::Path) -> Result<Self, StoreError> {
+        Ok(Self::from_backend(Box::new(
+            crate::redb::RedbStore::open_read_only(path)?,
+        )))
+    }
+
+    fn from_backend(backend: Box<dyn Backend>) -> Self {
         Self {
             backend: RefCell::new(backend),
         }
@@ -164,6 +174,111 @@ impl TreeStore {
 
     pub fn rollback(&self) -> Result<(), StoreError> {
         self.backend.borrow_mut().rollback()
+    }
+
+    pub fn write_catalog_epoch(&self, epoch: u64) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_catalog_epoch(epoch))
+    }
+
+    pub fn read_catalog_epoch(&self) -> Result<Option<u64>, StoreError> {
+        self.with_cell(|cell| cell.read_catalog_epoch())
+    }
+
+    pub fn write_layout_epoch(&self, epoch: u64) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_layout_epoch(epoch))
+    }
+
+    pub fn read_layout_epoch(&self) -> Result<Option<u64>, StoreError> {
+        self.with_cell(|cell| cell.read_layout_epoch())
+    }
+
+    pub fn write_engine_profile(&self, profile: &EngineProfile) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_engine_profile(profile))
+    }
+
+    pub fn read_engine_profile_digest(&self) -> Result<Option<EngineProfileDigest>, StoreError> {
+        self.with_cell(|cell| cell.read_engine_profile_digest())
+    }
+
+    pub fn write_commit_metadata(&self, metadata: &CommitMetadata) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_commit_metadata(metadata))
+    }
+
+    pub fn read_commit_metadata(&self) -> Result<Option<CommitMetadata>, StoreError> {
+        self.with_cell(|cell| cell.read_commit_metadata())
+    }
+
+    pub fn write_node(&self, store: &CatalogId, identity: &[SavedKey]) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_node(store, identity))
+    }
+
+    pub fn node_exists(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+    ) -> Result<bool, StoreError> {
+        self.with_cell(|cell| cell.node_exists(store, identity))
+    }
+
+    pub fn write_leaf(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        member: &CatalogId,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.write_leaf(store, identity, member, value))
+    }
+
+    pub fn read_leaf(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        member: &CatalogId,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.with_cell(|cell| cell.read_leaf(store, identity, member))
+    }
+
+    pub fn delete_leaf(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        member: &CatalogId,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.delete_leaf(store, identity, member))
+    }
+
+    pub fn write_sequence_position(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        member: &CatalogId,
+        position: SequencePosition,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| {
+            cell.write_sequence_position(store, identity, member, position, value)
+        })
+    }
+
+    pub fn read_sequence_position(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        member: &CatalogId,
+        position: SequencePosition,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.with_cell(|cell| cell.read_sequence_position(store, identity, member, position))
+    }
+
+    pub fn delete_sequence_position(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        member: &CatalogId,
+        position: SequencePosition,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.delete_sequence_position(store, identity, member, position))
     }
 
     pub fn write_data_value(
@@ -467,39 +582,27 @@ impl TreeStore {
 }
 
 impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
-    pub fn new(backend: &'a mut B) -> Self {
+    fn new(backend: &'a mut B) -> Self {
         Self { backend }
     }
 
-    pub fn begin(&mut self) -> Result<(), StoreError> {
-        self.backend.begin()
-    }
-
-    pub fn commit(&mut self) -> Result<(), StoreError> {
-        self.backend.commit()
-    }
-
-    pub fn rollback(&mut self) -> Result<(), StoreError> {
-        self.backend.rollback()
-    }
-
-    pub fn write_catalog_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
+    fn write_catalog_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
         self.write_u64_meta(MetaCell::CatalogEpoch, epoch)
     }
 
-    pub fn read_catalog_epoch(&self) -> Result<Option<u64>, StoreError> {
+    fn read_catalog_epoch(&self) -> Result<Option<u64>, StoreError> {
         self.read_u64_meta(MetaCell::CatalogEpoch)
     }
 
-    pub fn write_layout_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
+    fn write_layout_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
         self.write_u64_meta(MetaCell::LayoutEpoch, epoch)
     }
 
-    pub fn read_layout_epoch(&self) -> Result<Option<u64>, StoreError> {
+    fn read_layout_epoch(&self) -> Result<Option<u64>, StoreError> {
         self.read_u64_meta(MetaCell::LayoutEpoch)
     }
 
-    pub fn write_engine_profile(&mut self, profile: &EngineProfile) -> Result<(), StoreError> {
+    fn write_engine_profile(&mut self, profile: &EngineProfile) -> Result<(), StoreError> {
         self.write_layout_epoch(profile.layout_epoch())?;
         self.backend.write(
             CellKey::meta(MetaCell::EngineProfile).as_bytes(),
@@ -507,49 +610,46 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    pub fn read_engine_profile_digest(&self) -> Result<Option<EngineProfileDigest>, StoreError> {
+    fn read_engine_profile_digest(&self) -> Result<Option<EngineProfileDigest>, StoreError> {
         self.backend
             .read(CellKey::meta(MetaCell::EngineProfile).as_bytes())?
             .map(|bytes| decode_digest(&bytes))
             .transpose()
     }
 
-    pub fn write_commit_metadata(&mut self, metadata: &CommitMetadata) -> Result<(), StoreError> {
+    fn write_commit_metadata(&mut self, metadata: &CommitMetadata) -> Result<(), StoreError> {
         self.backend.write(
             CellKey::meta(MetaCell::Commit).as_bytes(),
             encode_commit_metadata(metadata)?,
         )
     }
 
-    pub fn read_commit_metadata(&self) -> Result<Option<CommitMetadata>, StoreError> {
+    fn read_commit_metadata(&self) -> Result<Option<CommitMetadata>, StoreError> {
         self.backend
             .read(CellKey::meta(MetaCell::Commit).as_bytes())?
             .map(|bytes| decode_commit_metadata(&bytes))
             .transpose()
     }
 
-    pub fn write_node(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-    ) -> Result<(), StoreError> {
+    fn write_node(&mut self, store: &CatalogId, identity: &[SavedKey]) -> Result<(), StoreError> {
         self.backend.write(
             CellKey::node(store, identity).as_bytes(),
             NODE_MARKER.to_vec(),
         )
     }
 
-    pub fn node_exists(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-    ) -> Result<bool, StoreError> {
-        self.backend
-            .read(CellKey::node(store, identity).as_bytes())
-            .map(|value| value.is_some())
+    fn node_exists(&self, store: &CatalogId, identity: &[SavedKey]) -> Result<bool, StoreError> {
+        match self
+            .backend
+            .read(CellKey::node(store, identity).as_bytes())?
+        {
+            Some(value) if value == NODE_MARKER => Ok(true),
+            Some(value) => Err(corrupt_cell(&value)),
+            None => Ok(false),
+        }
     }
 
-    pub fn write_leaf(
+    fn write_leaf(
         &mut self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -560,7 +660,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .write(CellKey::leaf(store, identity, member).as_bytes(), value)
     }
 
-    pub fn read_leaf(
+    fn read_leaf(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -570,7 +670,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .read(CellKey::leaf(store, identity, member).as_bytes())
     }
 
-    pub fn delete_leaf(
+    fn delete_leaf(
         &mut self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -580,7 +680,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::leaf(store, identity, member).as_bytes())
     }
 
-    pub fn write_sequence_position(
+    fn write_sequence_position(
         &mut self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -594,7 +694,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    pub fn read_sequence_position(
+    fn read_sequence_position(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -605,7 +705,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .read(CellKey::sequence(store, identity, member, position).as_bytes())
     }
 
-    pub fn delete_sequence_position(
+    fn delete_sequence_position(
         &mut self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -616,7 +716,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::sequence(store, identity, member, position).as_bytes())
     }
 
-    pub fn write_data_value(
+    fn write_data_value(
         &mut self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -629,7 +729,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    pub fn read_data_value(
+    fn read_data_value(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -639,7 +739,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .read(CellKey::data_path_value(store, identity, path).as_bytes())
     }
 
-    pub fn delete_data_subtree(
+    fn delete_data_subtree(
         &mut self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -649,7 +749,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::data_path_prefix(store, identity, path).as_bytes())
     }
 
-    pub fn data_subtree_exists(
+    fn data_subtree_exists(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -662,7 +762,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         Ok(!self.backend.scan(prefix.as_bytes(), 1)?.entries.is_empty())
     }
 
-    pub fn data_child_keys(
+    fn data_child_keys(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -672,7 +772,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.child_keys(prefix.as_bytes(), decode_data_child)
     }
 
-    pub fn data_child_keys_rev(
+    fn data_child_keys_rev(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -683,7 +783,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         Ok(keys)
     }
 
-    pub fn data_next_child(
+    fn data_next_child(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -702,7 +802,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    pub fn data_prev_child(
+    fn data_prev_child(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -713,7 +813,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.prev_child_before(prefix.as_bytes(), before, decode_data_child)
     }
 
-    pub fn data_first_child(
+    fn data_first_child(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -723,7 +823,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.first_child(prefix.as_bytes(), decode_data_child)
     }
 
-    pub fn data_last_child(
+    fn data_last_child(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -733,7 +833,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.last_child(prefix.as_bytes(), decode_data_child)
     }
 
-    pub fn data_child_count(
+    fn data_child_count(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -743,7 +843,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.child_count(prefix.as_bytes(), decode_data_child)
     }
 
-    pub fn record_child_keys(
+    fn record_child_keys(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -752,7 +852,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.child_keys(prefix.as_bytes(), decode_record_child)
     }
 
-    pub fn record_child_count(
+    fn record_child_count(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -761,7 +861,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.child_count(prefix.as_bytes(), decode_record_child)
     }
 
-    pub fn delete_record_subtree(
+    fn delete_record_subtree(
         &mut self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -770,7 +870,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::record_prefix(store, identity_prefix).as_bytes())
     }
 
-    pub fn record_child_keys_rev(
+    fn record_child_keys_rev(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -780,7 +880,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         Ok(keys)
     }
 
-    pub fn record_next_child(
+    fn record_next_child(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -790,7 +890,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.next_child_after(prefix.as_bytes(), after, decode_record_child)
     }
 
-    pub fn record_prev_child(
+    fn record_prev_child(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -800,7 +900,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.prev_child_before(prefix.as_bytes(), before, decode_record_child)
     }
 
-    pub fn record_first_child(
+    fn record_first_child(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -809,7 +909,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.first_child(prefix.as_bytes(), decode_record_child)
     }
 
-    pub fn record_last_child(
+    fn record_last_child(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -818,7 +918,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.last_child(prefix.as_bytes(), decode_record_child)
     }
 
-    pub fn max_int_record_child(
+    fn max_int_record_child(
         &self,
         store: &CatalogId,
         identity_prefix: &[SavedKey],
@@ -827,7 +927,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.max_int_child(prefix.as_bytes(), decode_record_child)
     }
 
-    pub fn write_index_entry(
+    fn write_index_entry(
         &mut self,
         index: &CatalogId,
         index_keys: &[SavedKey],
@@ -840,7 +940,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    pub fn read_index_entry(
+    fn read_index_entry(
         &self,
         index: &CatalogId,
         index_keys: &[SavedKey],
@@ -850,7 +950,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .read(CellKey::index(index, index_keys, identity).as_bytes())
     }
 
-    pub fn delete_index_entry(
+    fn delete_index_entry(
         &mut self,
         index: &CatalogId,
         index_keys: &[SavedKey],
@@ -860,7 +960,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::index(index, index_keys, identity).as_bytes())
     }
 
-    pub fn index_child_keys(
+    fn index_child_keys(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -869,7 +969,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.child_keys(prefix.as_bytes(), decode_index_child)
     }
 
-    pub fn delete_index_subtree(
+    fn delete_index_subtree(
         &mut self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -878,7 +978,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::index_key_prefix(index, key_prefix).as_bytes())
     }
 
-    pub fn index_child_keys_rev(
+    fn index_child_keys_rev(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -888,7 +988,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         Ok(keys)
     }
 
-    pub fn index_next_child(
+    fn index_next_child(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -898,7 +998,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.next_child_after(prefix.as_bytes(), after, decode_index_child)
     }
 
-    pub fn index_prev_child(
+    fn index_prev_child(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -908,7 +1008,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.prev_child_before(prefix.as_bytes(), before, decode_index_child)
     }
 
-    pub fn index_first_child(
+    fn index_first_child(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -917,7 +1017,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.first_child(prefix.as_bytes(), decode_index_child)
     }
 
-    pub fn index_last_child(
+    fn index_last_child(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
@@ -926,7 +1026,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.last_child(prefix.as_bytes(), decode_index_child)
     }
 
-    pub fn max_int_data_child(
+    fn max_int_data_child(
         &self,
         store: &CatalogId,
         identity: &[SavedKey],
@@ -936,7 +1036,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.max_int_child(prefix.as_bytes(), decode_data_child)
     }
 
-    pub fn scan_index_tuple(
+    fn scan_index_tuple(
         &self,
         index: &CatalogId,
         index_keys: &[SavedKey],
@@ -945,7 +1045,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.scan_index_tuple_from(index, index_keys, None, limit)
     }
 
-    pub fn scan_index_tuple_after(
+    fn scan_index_tuple_after(
         &self,
         index: &CatalogId,
         index_keys: &[SavedKey],
@@ -1023,7 +1123,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     fn child_keys(
         &self,
         prefix: &[u8],
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Vec<SavedKey>, StoreError> {
         let mut keys = Vec::new();
         self.scan_children(prefix, |child| keys.push(child), decode)?;
@@ -1033,7 +1133,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     fn child_count(
         &self,
         prefix: &[u8],
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<usize, StoreError> {
         let mut count = 0;
         self.scan_children(
@@ -1051,7 +1151,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         &self,
         prefix: &[u8],
         mut visit: impl FnMut(SavedKey),
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<(), StoreError> {
         self.scan_children_until(
             prefix,
@@ -1067,7 +1167,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         &self,
         prefix: &[u8],
         mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<(), StoreError> {
         let mut cursor: Option<Vec<u8>> = None;
         let mut last_child: Option<SavedKey> = None;
@@ -1081,7 +1181,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, _) in page.entries {
                 let rest = key.get(prefix.len()..).unwrap_or_default();
-                if let Some(child) = decode(rest) {
+                if let Some(child) = decode(rest)? {
                     if last_child.as_ref() == Some(&child) {
                         continue;
                     }
@@ -1107,7 +1207,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         &self,
         prefix: &[u8],
         after: &SavedKey,
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut seen_anchor = false;
         let mut result = None;
@@ -1131,7 +1231,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         prefix: &[u8],
         cursor: &[u8],
         after: &SavedKey,
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut cursor = cursor.to_vec();
         loop {
@@ -1141,7 +1241,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             let next_cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, _) in page.entries {
                 let rest = key.get(prefix.len()..).unwrap_or_default();
-                let Some(child) = decode(rest) else {
+                let Some(child) = decode(rest)? else {
                     continue;
                 };
                 if &child == after {
@@ -1163,7 +1263,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         &self,
         prefix: &[u8],
         before: &SavedKey,
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut previous = None;
         let mut result = None;
@@ -1185,7 +1285,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     fn first_child(
         &self,
         prefix: &[u8],
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut result = None;
         self.scan_children_until(
@@ -1202,7 +1302,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     fn last_child(
         &self,
         prefix: &[u8],
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut result = None;
         self.scan_children(prefix, |child| result = Some(child), decode)?;
@@ -1212,7 +1312,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     fn max_int_child(
         &self,
         prefix: &[u8],
-        decode: fn(&[u8]) -> Option<SavedKey>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<i64>, StoreError> {
         let mut result = None;
         self.scan_children(
@@ -1228,19 +1328,37 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     }
 }
 
-fn decode_record_child(bytes: &[u8]) -> Option<SavedKey> {
-    decode_key_value(bytes).map(|(key, _)| key)
-}
-
-fn decode_data_child(bytes: &[u8]) -> Option<SavedKey> {
-    crate::cell::decode_data_child_key(bytes)
-}
-
-fn decode_index_child(bytes: &[u8]) -> Option<SavedKey> {
-    if bytes.first().copied() == Some(0) {
-        return decode_key_value(bytes.get(1..)?).map(|(key, _)| key);
+fn decode_record_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
+    if bytes.is_empty() || bytes.first().copied() == Some(0) {
+        return Ok(None);
     }
-    decode_key_value(bytes).map(|(key, _)| key)
+    decode_key_value(bytes)
+        .map(|(key, _)| Some(key))
+        .ok_or_else(|| corrupt_cell(bytes))
+}
+
+fn decode_data_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
+    crate::cell::decode_data_child_key(bytes).map_err(|_| corrupt_cell(bytes))
+}
+
+fn decode_index_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.first().copied() == Some(0) {
+        let Some(rest) = bytes.get(1..) else {
+            return Ok(None);
+        };
+        if rest.is_empty() {
+            return Ok(None);
+        }
+        return decode_key_value(rest)
+            .map(|(key, _)| Some(key))
+            .ok_or_else(|| corrupt_cell(bytes));
+    }
+    decode_key_value(bytes)
+        .map(|(key, _)| Some(key))
+        .ok_or_else(|| corrupt_cell(bytes))
 }
 
 pub fn encode_tree_reference(value: &TreeReference) -> Result<Vec<u8>, StoreError> {
@@ -1476,5 +1594,66 @@ impl<'a> Cursor<'a> {
 fn corrupt_cell(bytes: &[u8]) -> StoreError {
     StoreError::Corruption {
         message: format!("tree-cell data is malformed ({} bytes)", bytes.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CellKey, DataPathSegment, NODE_MARKER, TreeStore};
+    use crate::StoreError;
+    use crate::backend::Backend;
+    use crate::cell::CatalogId;
+    use crate::key::SavedKey;
+    use crate::mem::MemStore;
+
+    #[test]
+    fn node_exists_reports_a_malformed_node_marker_as_corruption() {
+        let store_id = catalog("cat_0000000000000001");
+        let mut backend = MemStore::default();
+        Backend::write(
+            &mut backend,
+            CellKey::node(&store_id, &[SavedKey::Int(1)]).as_bytes(),
+            b"not-a-node-marker".to_vec(),
+        )
+        .expect("seed malformed marker");
+        let store = TreeStore::from_backend(Box::new(backend));
+
+        assert_corruption(store.node_exists(&store_id, &[SavedKey::Int(1)]));
+    }
+
+    #[test]
+    fn record_child_scans_report_malformed_child_keys_as_corruption() {
+        let store_id = catalog("cat_0000000000000001");
+        let mut backend = MemStore::default();
+        let mut key = CellKey::record_prefix(&store_id, &[]).into_bytes();
+        key.push(0xff);
+        Backend::write(&mut backend, &key, NODE_MARKER.to_vec()).expect("seed malformed child");
+        let store = TreeStore::from_backend(Box::new(backend));
+
+        assert_corruption(store.record_first_child(&store_id, &[]));
+    }
+
+    #[test]
+    fn data_child_scans_report_malformed_key_segments_as_corruption() {
+        let store_id = catalog("cat_0000000000000001");
+        let member = catalog("cat_0000000000000002");
+        let identity = [SavedKey::Int(1)];
+        let path = [DataPathSegment::Member(member)];
+        let mut backend = MemStore::default();
+        let mut key = CellKey::data_path_prefix(&store_id, &identity, &path).into_bytes();
+        key.push(0x40);
+        key.push(0xff);
+        Backend::write(&mut backend, &key, b"value".to_vec()).expect("seed malformed child");
+        let store = TreeStore::from_backend(Box::new(backend));
+
+        assert_corruption(store.data_first_child(&store_id, &identity, &path));
+    }
+
+    fn catalog(raw: &str) -> CatalogId {
+        CatalogId::new(raw.to_string()).expect("valid catalog id")
+    }
+
+    fn assert_corruption<T>(result: Result<T, StoreError>) {
+        assert!(matches!(result, Err(StoreError::Corruption { .. })));
     }
 }

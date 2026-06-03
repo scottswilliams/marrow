@@ -174,15 +174,14 @@ writes.
 
 ## Repair
 
-Repair handles data that no longer matches the schema. Runtime maintenance code
-can rewrite or delete schema-modeled data through managed writes; raw bytes,
-corrupt paths, and orphaned paths are reported by data tools until typed repair
+Repair handles checked data that no longer matches the schema. Runtime
+maintenance code can rewrite or delete schema-modeled data through managed
+writes. Typed data tools report decode and key-type findings until typed repair
 surfaces land. It uses the same inspection tools:
 
-- `marrow data integrity ./project` reports `data.decode`, `data.orphan`, and
-  `store.corrupt_path` problems. It is read-only.
-- `marrow data dump ./project` and `marrow data get ./project <path>` show the
-  raw stored paths and values.
+- typed data integrity reports `data.decode` and `data.key_type` problems. It is
+  read-only.
+- typed data inspection renders durable places from checked/catalog facts.
 - A repair function run with `--maintenance` rewrites or deletes modeled data
   through managed paths.
 
@@ -194,7 +193,7 @@ your own code, verified before and after with `marrow data integrity`.
 Typed backup/restore is deferred until the tree-cell backup manifest lands. The
 backup contract must compile source, accepted catalog metadata, typed values,
 index cells, sequence state, and engine-profile metadata together instead of
-copying a raw saved-path stream.
+copying raw engine bytes.
 
 ## Also Deferred
 

@@ -6,10 +6,10 @@ use std::process::ExitCode;
 
 use marrow_check::resolve::resolve_store_by_root;
 use marrow_check::{
-    CheckedProgram, Def, DefItem, IndexSchema, Resolution, ResolvableKind, ResourceSchema,
-    StorePathClass, StoreSchema, classify_store_path, resolve,
+    CheckedProgram, Def, DefItem, IndexSchema, PathSegment, Resolution, ResolvableKind,
+    ResourceSchema, StorePathClass, StoreSchema, classify_store_path, display_path, parse_path,
+    resolve,
 };
-use marrow_store::path::{PathSegment, display_path, encode_path, parse_path};
 use serde_json::json;
 
 use crate::{CheckFormat, load_checked_project, write_json};
@@ -106,11 +106,11 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
         (Some(store), Some(field)) => indexes_covering(store.store, field),
         _ => Vec::new(),
     };
-    let encoded = encode_path(&segments);
+    let target = display_path(&segments);
 
     match format {
         CheckFormat::Text => {
-            print!("{}", display_path(&encoded));
+            print!("{target}");
             match &class {
                 StorePathClass::Scalar(ty) => {
                     print!(" resolves to");
@@ -151,7 +151,7 @@ fn explain_saved_path(program: &CheckedProgram, target: &str, format: CheckForma
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(saved_path_record(
-                &encoded, &class, root, resource, field, &indexes,
+                &target, &class, root, resource, field, &indexes,
             ));
         }
     }
@@ -208,7 +208,7 @@ fn index_phrase(indexes: &[&IndexSchema]) -> String {
 /// The JSON record for a saved-path explanation: its class, the root/resource it
 /// names, the resolved type when scalar, and the indexes it participates in.
 fn saved_path_record(
-    encoded: &[u8],
+    target: &str,
     class: &StorePathClass,
     root: Option<&str>,
     resource: Option<&ResourceSchema>,
@@ -235,7 +235,7 @@ fn saved_path_record(
         })
         .collect();
     json!({
-        "target": display_path(encoded),
+        "target": target,
         "kind": "saved_path",
         "class": class_name,
         "type": ty,

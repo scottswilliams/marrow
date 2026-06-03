@@ -57,6 +57,5 @@ pub use error::{
     RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{Frame, Host, StepHook};
-pub use index_maintenance::decode_identity_arity;
 pub use value::{RunOutput, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

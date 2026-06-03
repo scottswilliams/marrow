@@ -1,5 +1,5 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
-use marrow_store::key::{SavedKey, encode_key_value};
+use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, ReadPosition, absent_read};
@@ -63,7 +63,7 @@ pub(crate) fn eval_local_collection_write(
                 entry.value = value;
             } else {
                 entries.push(LocalTreeEntry { keys, value });
-                entries.sort_by_key(|entry| local_key_sort_key(&entry.keys));
+                entries.sort_by(|left, right| left.keys.cmp(&right.keys));
             }
             env.assign(name, Value::LocalTree(entries))
                 .map_err(|error| assign_error(name, error, span))?;
@@ -214,12 +214,4 @@ fn eval_local_keys(
                 .ok_or_else(|| unsupported("a key of this type", span))
         })
         .collect()
-}
-
-fn local_key_sort_key(keys: &[SavedKey]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for key in keys {
-        bytes.extend(encode_key_value(key));
-    }
-    bytes
 }

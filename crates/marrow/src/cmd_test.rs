@@ -139,7 +139,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let mut failed = 0usize;
     let mut errored = 0usize;
     for (name, source_file) in &tests {
-        let store = marrow_store::tree::TreeStore::new(marrow_store::mem::MemStore::new());
+        let store = marrow_store::tree::TreeStore::memory();
         // A traced test runs under the debugger entry with a hook labelled by the
         // test name, so its statements and writes are attributed to it; an untraced
         // test runs through the plain entry and pays nothing.

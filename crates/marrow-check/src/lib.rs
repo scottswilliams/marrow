@@ -31,7 +31,8 @@ mod typerules;
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
 pub use durable_path::{
-    StoreLeafKind, StorePathClass, classify_store_path, identity_leaf_key_mismatch,
+    PathParseError, PathSegment, StoreLeafKind, StorePathClass, classify_store_path, display_path,
+    identity_leaf_key_mismatch, parse_path,
 };
 pub use executable::{
     CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,

@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use marrow_check::{CheckedProgram, StoreLeafKind, identity_leaf_key_mismatch};
 use marrow_store::StoreError;
+use marrow_store::key::decode_identity_payload_arity;
 use marrow_store::tree::{TreeStore, decode_tree_enum_member};
 use marrow_store::value::decode_value;
 use marrow_syntax::Diagnose;
@@ -113,7 +114,7 @@ fn check_identity_leaf(
     store_root: &str,
     arity: usize,
 ) -> Option<IntegrityProblem> {
-    let Some(keys) = marrow_run::decode_identity_arity(&record.value, arity) else {
+    let Some(keys) = decode_identity_payload_arity(&record.value, arity) else {
         return Some(IntegrityProblem {
             code: "data.decode",
             path: record.path.clone(),

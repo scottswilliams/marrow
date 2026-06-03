@@ -302,30 +302,3 @@ fn instant_encode_enforces_the_canonical_year_range() {
         );
     }
 }
-
-#[test]
-fn scalar_type_names_map_to_their_value_type() {
-    // The mapping shared by the runtime and the write planner: every documented
-    // scalar maps, and non-scalar names do not.
-    use ScalarType::*;
-    for (name, ty) in [
-        ("bool", Bool),
-        ("int", Int),
-        ("string", Str),
-        ("bytes", Bytes),
-        ("date", Date),
-        ("instant", Instant),
-        ("duration", Duration),
-        ("decimal", Decimal),
-    ] {
-        assert_eq!(ScalarType::from_scalar_name(name), Some(ty), "{name}");
-        assert_eq!(ty.name(), name, "{name} round-trips");
-    }
-    // `ErrorCode` is a recognized spelling whose storage form is a plain string,
-    // so it maps to `Str`; `Str` still spells back as `string`.
-    assert_eq!(ScalarType::from_scalar_name("ErrorCode"), Some(Str));
-    assert_eq!(Str.name(), "string");
-    for name in ["Book", "Book::Title", "unknown", "Int", ""] {
-        assert_eq!(ScalarType::from_scalar_name(name), None, "{name}");
-    }
-}

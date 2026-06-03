@@ -122,7 +122,7 @@ fn open_tree_store(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Result<Option<TreeStore>, ExitCode> {
-    open_store_for_inspection(dir, config).map(|store| store.map(TreeStore::from_backend))
+    open_store_for_inspection(dir, config)
 }
 
 /// Inspect a project's saved data, read-only:

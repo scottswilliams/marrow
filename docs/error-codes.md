@@ -54,14 +54,14 @@ underscores.
 
 Marrow surfaces use dotted Marrow error codes and typed error values.
 
-Storage errors include the failed operation, a safe path or prefix when one is
-available, and the capability or limit involved. Machine-readable facts belong
-in `data`; clients do not parse `message`. The store reports a `store.*` code:
+Storage errors include the failed operation and the capability or limit
+involved. Machine-readable facts belong in `data`; clients do not parse
+`message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.limit`, `store.cursor`, `store.read_only`, and `store.corrupt_path`.
+`store.limit`, `store.cursor`, and `store.read_only`.
 Backends enforce no key or value size limit, so `store.limit` is produced only
-when Marrow framing cannot encode a length, such as an archive chunk length or
-tree-cell metadata length above a `u32` field.
+when Marrow framing cannot encode a tree-cell metadata or value-codec length
+above a `u32` field.
 
 Managed-root protection raises `write.*` codes when code attempts maintenance
 work without the maintenance capability: `write.requires_maintenance` for a
@@ -70,18 +70,16 @@ whole managed-root delete. Deleting a required field on its own raises
 
 The `marrow serve` data server reports a `protocol.*` code when a request is bad:
 `protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`, and
-`protocol.bad_request` (malformed operation arguments — a missing or bad `path`,
-an unknown path segment or key type, or invalid base64). A request that reaches
-the store carries the store's own `store.*` code through unchanged.
+`protocol.bad_request` (malformed operation arguments, durable places, cursors,
+or encoded payloads). A request that reaches the store carries the store's own
+`store.*` code through unchanged.
 
 `marrow data integrity` reports `data.*` codes (kind `tooling`) for the findings
 it surfaces while verifying saved data against the project schema:
 `data.decode` for a stored value that is not a canonical form of its declared
-type, and `data.orphan` for saved data under an unknown root or naming a member
-the schema does not declare. An undecodable stored key it meets is surfaced with
-the store's own `store.corrupt_path`. A command run against a project whose
-`marrow.json` is unreadable reports `io.read`; an invalid `marrow.json` reports
-`config.invalid`.
+type, and `data.key_type` for a stored key with a scalar type the schema does
+not declare. A command run against a project whose `marrow.json` is unreadable
+reports `io.read`; an invalid `marrow.json` reports `config.invalid`.
 
 ## How `kind` Is Assigned
 
@@ -219,7 +217,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.private_function` | A qualified call or run entry reached a function that exists but is not `pub` to the caller. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
 | `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. |
-| `run.store` | The store reported an error (e.g. a corrupt stored path) during a read. Fatal storage/backend failure while evaluating a read. |
+| `run.store` | The store reported an error (e.g. corrupt tree-cell payload) during a read. Fatal storage/backend failure while evaluating a read. |
 | `run.unsupported` | A construct this slice of the runtime does not yet evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
@@ -261,21 +259,19 @@ one is reported under its own `write.*` code.
 
 ### `store.*` — kind `storage`
 
-Backend faults. The in-memory saved-path backend can produce `store.corrupt_path`;
-the tree-cell facade can produce `store.corruption` for malformed tree-cell
-metadata or index cells; and a persistent backend can also produce the I/O,
-locking, format, corruption, limit, and read-only variants. A store fault met
-during a program read or write travels as `run.store` or `write.store`; the
-`serve` server passes the `store.*` code through unchanged.
+Store faults. The tree-cell facade produces `store.corruption` for malformed
+tree-cell metadata, value codecs, or index cells. A persistent backend can also
+produce the I/O, locking, format, corruption, limit, and read-only variants. A
+store fault met during a program read or write travels as `run.store` or
+`write.store`; the `serve` server passes the `store.*` code through unchanged.
 
 | Code | Meaning |
 |---|---|
-| `store.corrupt_path` | A stored key is not a well-formed sequence of path segments. |
 | `store.io` | An I/O operation on a persistent backend failed. |
 | `store.locked` | The store file is already held open by another writer. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
 | `store.corruption` | The store file, tree-cell metadata, or tree-cell index cell is corrupt and could not be opened or decoded. |
-| `store.limit` | A Marrow framing layer could not encode a length, such as an archive chunk length or tree-cell metadata length above a `u32` field. Backends enforce no key/value size limit. |
+| `store.limit` | A Marrow framing layer could not encode a tree-cell metadata or value-codec length above a `u32` field. Backends enforce no key/value size limit. |
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.read_only` | A write-capability operation was requested through a read-only store handle. |
 
@@ -290,7 +286,7 @@ Request faults from the `marrow serve` data server. A serve error reply is
 |---|---|
 | `protocol.malformed` | A request is not a JSON object, or is missing a string `op`. |
 | `protocol.unknown_op` | A request names an operation the server does not support. |
-| `protocol.bad_request` | A known operation's arguments are malformed: a missing or bad `path`, an unknown path segment or key type, or invalid base64. |
+| `protocol.bad_request` | A known operation's arguments are malformed: bad typed resource arguments, durable places, cursors, or encoded payloads. |
 
 ### `io.*` — kind `io`
 
@@ -320,11 +316,7 @@ project schema. Read-only; it never modifies the store.
 | Code | Meaning |
 |---|---|
 | `data.decode` | A stored value is not a canonical form of its declared type. |
-| `data.key_type` | A stored record or index key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
-| `data.orphan` | Saved data lives under an unknown root or names a member the schema does not declare. |
-
-(An undecodable stored *key* met during integrity verification is surfaced with
-the store's `store.corrupt_path`, not a `data.*` code.)
+| `data.key_type` | A stored record key, keyed-layer key, or identity payload key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
 
 ### `test.*` — kind `tooling`
 

@@ -1,37 +1,28 @@
-//! Marrow's saved-tree storage layer.
+//! Marrow's typed tree-cell storage layer.
 //!
-//! This crate defines Marrow's ordered-byte backend contract, the tree-cell
-//! physical key profile above that contract, and an in-memory store. It sits
-//! below language facts: it does not parse `.mw`, resolve schemas, or decide
-//! source-name identity.
+//! This crate defines Marrow's typed tree-cell storage contract and the private
+//! ordered-byte engines that back it. It sits below language facts: it does not
+//! parse `.mw`, resolve schemas, or decide source-name identity.
 //!
 //! Tree-cell keys ([`cell`]) derive from stable catalog IDs and typed key values.
-//! Saved-path encoding ([`path`]) is the raw backend boundary. [`debug_admin`]
-//! exposes raw saved-path archives only for inspection and repair tooling.
-//! [`mem`] and the native backend serve opaque ordered bytes through the
-//! [`Backend`](backend::Backend) contract.
 
-mod archive;
-pub mod backend;
+mod backend;
 pub mod cell;
-pub mod debug_admin;
 pub mod decimal;
 pub mod key;
-pub mod mem;
-pub mod path;
+mod mem;
 #[cfg(feature = "native")]
-pub mod redb;
+mod redb;
 mod traversal;
 pub mod tree;
 pub mod value;
 
-// The reusable backend conformance suite is test-only: it holds every backend to
-// one contract and is not part of the published store surface.
+// Private substrate tests keep memory and native engines aligned without making
+// engine keys part of the production API.
 #[cfg(test)]
 mod conformance;
 
-/// The shared backend error, re-exported at the crate root: it is part of the
-/// [`Backend`](backend::Backend) contract.
+/// The shared store error for typed tree-cell operations.
 pub use backend::StoreError;
 
 /// Exact base-10 decimal arithmetic, re-exported at the crate root.

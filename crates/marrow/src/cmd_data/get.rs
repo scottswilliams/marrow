@@ -1,10 +1,11 @@
 use std::process::ExitCode;
 
-use marrow_check::{CheckedProgram, CheckedSavedMemberKind, checked_saved_root_place};
+use marrow_check::{
+    CheckedProgram, CheckedSavedMemberKind, PathSegment, checked_saved_root_place, parse_path,
+};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::path::{PathSegment, parse_path};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use serde_json::json;
 
@@ -79,7 +80,9 @@ pub(crate) struct DataQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DataQuerySegment {
     Root(String),
-    Member(String),
+    Field(String),
+    Layer(String),
+    SourceMember(String),
     Key(SavedKey),
 }
 
@@ -89,7 +92,7 @@ pub(crate) fn query_segments_from_path(segments: &[PathSegment]) -> Vec<DataQuer
         .map(|segment| match segment {
             PathSegment::Root(name) => DataQuerySegment::Root(name.clone()),
             PathSegment::Field(name) | PathSegment::ChildLayer(name) | PathSegment::Index(name) => {
-                DataQuerySegment::Member(name.clone())
+                DataQuerySegment::SourceMember(name.clone())
             }
             PathSegment::RecordKey(key) | PathSegment::IndexKey(key) => {
                 DataQuerySegment::Key(key.clone())
@@ -145,13 +148,13 @@ pub(crate) fn resolve_data_query(
     let mut data_path = Vec::new();
     let mut members = place.root_members.as_slice();
     while let Some(segment) = rest.get(index) {
-        let DataQuerySegment::Member(name) = segment else {
+        let Some((name, kind)) = query_member(segment) else {
             return Err("a key must follow a saved root or a keyed member".into());
         };
         let member = members
             .iter()
-            .find(|member| member.name == *name)
-            .ok_or_else(|| format!("unknown saved member `{name}`"))?;
+            .find(|member| member.name == *name && kind.matches(member))
+            .ok_or_else(|| kind.unknown_message(name))?;
         data_path.push(DataPathSegment::Member(
             checked_catalog_id(&member.catalog_id, "resource member")
                 .map_err(|error| error.to_string())?,
@@ -202,7 +205,50 @@ pub(crate) fn resolve_data_query(
 fn query_key(segment: &DataQuerySegment) -> Option<&SavedKey> {
     match segment {
         DataQuerySegment::Key(key) => Some(key),
-        DataQuerySegment::Root(_) | DataQuerySegment::Member(_) => None,
+        DataQuerySegment::Root(_)
+        | DataQuerySegment::Field(_)
+        | DataQuerySegment::Layer(_)
+        | DataQuerySegment::SourceMember(_) => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum QueryMemberKind {
+    Field,
+    Layer,
+    SourceText,
+}
+
+impl QueryMemberKind {
+    fn matches(self, member: &marrow_check::CheckedSavedMember) -> bool {
+        match self {
+            Self::Field => {
+                member.key_params.is_empty()
+                    && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
+            }
+            Self::Layer => {
+                !member.key_params.is_empty()
+                    || matches!(member.kind, CheckedSavedMemberKind::Group)
+            }
+            Self::SourceText => true,
+        }
+    }
+
+    fn unknown_message(self, name: &str) -> String {
+        match self {
+            Self::Field => format!("unknown saved field `{name}`"),
+            Self::Layer => format!("unknown saved layer `{name}`"),
+            Self::SourceText => format!("unknown saved member `{name}`"),
+        }
+    }
+}
+
+fn query_member(segment: &DataQuerySegment) -> Option<(&String, QueryMemberKind)> {
+    match segment {
+        DataQuerySegment::Field(name) => Some((name, QueryMemberKind::Field)),
+        DataQuerySegment::Layer(name) => Some((name, QueryMemberKind::Layer)),
+        DataQuerySegment::SourceMember(name) => Some((name, QueryMemberKind::SourceText)),
+        DataQuerySegment::Root(_) | DataQuerySegment::Key(_) => None,
     }
 }
 
@@ -214,7 +260,9 @@ pub(crate) fn render_query_segments(segments: &[DataQuerySegment]) -> String {
                 text.push('^');
                 text.push_str(name);
             }
-            DataQuerySegment::Member(name) => {
+            DataQuerySegment::Field(name)
+            | DataQuerySegment::Layer(name)
+            | DataQuerySegment::SourceMember(name) => {
                 text.push('.');
                 text.push_str(name);
             }

@@ -4,14 +4,13 @@ use marrow_check::{
     CheckedArg, CheckedExpr as ExecExpr, CheckedRuntimeProgram, CheckedSavedLayer,
     CheckedSavedMember, CheckedSavedPlace, CheckedSavedTerminal,
 };
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{ReadPosition, absent_read};
 use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::index_maintenance::decode_identity_arity;
 use crate::path::{lower, lower_keys};
 use crate::read::eval_local_field_get;
 use crate::store::{DataAddress, IndexAddress, LayerAddress, read_data};
@@ -72,7 +71,7 @@ pub(crate) fn eval_index_lookup(
             span,
         ));
     };
-    decode_identity_arity(&entry.value, place.identity_keys.len())
+    decode_identity_payload_arity(&entry.value, place.identity_keys.len())
         .map(identity_value)
         .ok_or_else(|| RuntimeError {
             throw: None,

@@ -1,22 +1,18 @@
-//! Tree-cell physical key construction for Marrow storage.
+//! Tree-cell storage IDs and the private physical key substrate.
 //!
 //! The in-memory and redb engines order opaque bytes. This module owns the v0
-//! Marrow key profile above those engines: stable catalog IDs, typed key values,
-//! and cell-family ranges.
+//! Marrow key profile above those engines while callers use stable catalog IDs,
+//! typed key values, and tree-cell operations.
 
 use crate::key::{SavedKey, decode_key_value, encode_escaped_bytes, encode_key_value};
 
-/// The reserved v0 default placement prefix.
-pub const EMPTY_PLACEMENT_PREFIX: u8 = 0x00;
+const EMPTY_PLACEMENT_PREFIX: u8 = 0x00;
 
-/// The v0 tree-cell key profile byte.
-pub const TREE_CELL_PROFILE_V0: u8 = 0x01;
+const TREE_CELL_PROFILE_V0: u8 = 0x01;
 
 const FAMILY_META: u8 = 0x10;
-const FAMILY_CATALOG: u8 = 0x11;
 const FAMILY_DATA: u8 = 0x20;
 const FAMILY_INDEX: u8 = 0x30;
-const FAMILY_BLOB: u8 = 0x40;
 
 const NODE_END: u8 = 0x00;
 const LEAF_CELL: u8 = 0x10;
@@ -41,20 +37,6 @@ impl CatalogId {
     }
 }
 
-/// An opaque stable blob identity.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BlobId(String);
-
-impl BlobId {
-    pub fn new(id: impl Into<String>) -> Result<Self, CellIdError> {
-        validate_opaque_id(id.into()).map(Self)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// A rejected stable ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellIdError;
@@ -69,7 +51,7 @@ impl std::error::Error for CellIdError {}
 
 /// Store-level metadata cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetaCell {
+pub(crate) enum MetaCell {
     CatalogEpoch,
     LayoutEpoch,
     EngineProfile,
@@ -103,7 +85,7 @@ impl SequencePosition {
 
 /// An encoded physical tree-cell key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CellKey(Vec<u8>);
+pub(crate) struct CellKey(Vec<u8>);
 
 /// A stable member/key segment below a record node in the tree-cell data family.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,25 +95,19 @@ pub enum DataPathSegment {
 }
 
 impl CellKey {
-    pub fn meta(cell: MetaCell) -> Self {
+    pub(crate) fn meta(cell: MetaCell) -> Self {
         let mut bytes = family(FAMILY_META);
         bytes.push(cell.tag());
         Self(bytes)
     }
 
-    pub fn catalog(id: &CatalogId) -> Self {
-        let mut bytes = family(FAMILY_CATALOG);
-        encode_id(id.as_str(), &mut bytes);
-        Self(bytes)
-    }
-
-    pub fn node(store: &CatalogId, identity: &[SavedKey]) -> Self {
+    pub(crate) fn node(store: &CatalogId, identity: &[SavedKey]) -> Self {
         let mut bytes = data_node_stem(store, identity);
         bytes.push(NODE_END);
         Self(bytes)
     }
 
-    pub fn leaf(store: &CatalogId, identity: &[SavedKey], member: &CatalogId) -> Self {
+    pub(crate) fn leaf(store: &CatalogId, identity: &[SavedKey], member: &CatalogId) -> Self {
         let mut bytes = data_node_stem(store, identity);
         bytes.push(NODE_END);
         bytes.push(LEAF_CELL);
@@ -139,7 +115,7 @@ impl CellKey {
         Self(bytes)
     }
 
-    pub fn sequence(
+    pub(crate) fn sequence(
         store: &CatalogId,
         identity: &[SavedKey],
         member: &CatalogId,
@@ -153,11 +129,11 @@ impl CellKey {
         Self(bytes)
     }
 
-    pub fn record_prefix(store: &CatalogId, identity_prefix: &[SavedKey]) -> Self {
+    pub(crate) fn record_prefix(store: &CatalogId, identity_prefix: &[SavedKey]) -> Self {
         Self(data_node_stem(store, identity_prefix))
     }
 
-    pub fn data_path_prefix(
+    pub(crate) fn data_path_prefix(
         store: &CatalogId,
         identity: &[SavedKey],
         path: &[DataPathSegment],
@@ -167,7 +143,7 @@ impl CellKey {
         Self(bytes)
     }
 
-    pub fn data_path_value(
+    pub(crate) fn data_path_value(
         store: &CatalogId,
         identity: &[SavedKey],
         path: &[DataPathSegment],
@@ -180,7 +156,7 @@ impl CellKey {
         Self(bytes)
     }
 
-    pub fn index(index: &CatalogId, index_keys: &[SavedKey], identity: &[SavedKey]) -> Self {
+    pub(crate) fn index(index: &CatalogId, index_keys: &[SavedKey], identity: &[SavedKey]) -> Self {
         let mut bytes = family(FAMILY_INDEX);
         encode_id(index.as_str(), &mut bytes);
         encode_keys(index_keys, &mut bytes);
@@ -190,14 +166,14 @@ impl CellKey {
         Self(bytes)
     }
 
-    pub fn index_key_prefix(index: &CatalogId, index_keys: &[SavedKey]) -> Self {
+    pub(crate) fn index_key_prefix(index: &CatalogId, index_keys: &[SavedKey]) -> Self {
         let mut bytes = family(FAMILY_INDEX);
         encode_id(index.as_str(), &mut bytes);
         encode_keys(index_keys, &mut bytes);
         Self(bytes)
     }
 
-    pub fn index_tuple_prefix(index: &CatalogId, index_keys: &[SavedKey]) -> Self {
+    pub(crate) fn index_tuple_prefix(index: &CatalogId, index_keys: &[SavedKey]) -> Self {
         let mut bytes = family(FAMILY_INDEX);
         encode_id(index.as_str(), &mut bytes);
         encode_keys(index_keys, &mut bytes);
@@ -205,31 +181,26 @@ impl CellKey {
         Self(bytes)
     }
 
-    pub fn blob_chunk(blob: &BlobId, chunk: u64) -> Self {
-        let mut bytes = family(FAMILY_BLOB);
-        encode_id(blob.as_str(), &mut bytes);
-        bytes.extend_from_slice(&chunk.to_be_bytes());
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.0
     }
 
-    pub fn range(&self) -> CellRange {
+    pub(crate) fn range(&self) -> CellRange {
         CellRange::for_prefix(self.as_bytes())
     }
 }
 
-pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Option<SavedKey> {
+pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()> {
     if bytes.first().copied() != Some(DATA_KEY_SEGMENT) {
-        return None;
+        return Ok(None);
     }
-    decode_key_value(bytes.get(1..)?).map(|(key, _)| key)
+    decode_key_value(bytes.get(1..).ok_or(())?)
+        .map(|(key, _)| Some(key))
+        .ok_or(())
 }
 
 fn encode_data_path(path: &[DataPathSegment], out: &mut Vec<u8>) {
@@ -249,7 +220,7 @@ fn encode_data_path(path: &[DataPathSegment], out: &mut Vec<u8>) {
 
 /// A half-open byte range over a cell prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CellRange {
+pub(crate) struct CellRange {
     start: Vec<u8>,
     end: Option<Vec<u8>>,
 }
@@ -262,15 +233,7 @@ impl CellRange {
         }
     }
 
-    pub fn start(&self) -> &[u8] {
-        &self.start
-    }
-
-    pub fn end(&self) -> Option<&[u8]> {
-        self.end.as_deref()
-    }
-
-    pub fn contains(&self, key: &[u8]) -> bool {
+    pub(crate) fn contains(&self, key: &[u8]) -> bool {
         if key < self.start.as_slice() {
             return false;
         }

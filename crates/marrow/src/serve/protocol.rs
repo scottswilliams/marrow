@@ -8,21 +8,19 @@
 //! request's `id`.
 //!
 //! This is a read-only tooling surface: it never writes managed data. It serves
-//! `saved_roots` and the path-addressed reads `saved_get`, `saved_children`, and
-//! `saved_walk`.
+//! typed `data_roots`, `data_get`, `data_children`, and `data_walk` queries.
 
 use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place,
 };
 use marrow_run::base64;
 use marrow_store::key::SavedKey;
-use marrow_store::path::parse_path;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use serde_json::{Value, json};
 
 use crate::cmd_data::get::{
-    DataQuery, DataQuerySegment, presence_name, query_segments_from_path, read_query,
-    render_query_segments, resolve_data_query,
+    DataQuery, DataQuerySegment, presence_name, read_query, render_query_segments,
+    resolve_data_query,
 };
 use crate::cmd_data::inspect::{checked_catalog_id, data_roots_in_store};
 
@@ -69,10 +67,10 @@ fn dispatch(
             message: "request is missing a string `op`".to_string(),
         })?;
     match op {
-        "saved_roots" => op_saved_roots(program, store),
-        "saved_get" => op_saved_get(program, store, request),
-        "saved_children" => op_saved_children(program, store, request),
-        "saved_walk" => op_saved_walk(program, store, request),
+        "data_roots" => op_data_roots(program, store),
+        "data_get" => op_data_get(program, store, request),
+        "data_children" => op_data_children(program, store, request),
+        "data_walk" => op_data_walk(program, store, request),
         other => Err(ProtocolError {
             code: PROTOCOL_UNKNOWN_OP,
             message: format!("unknown operation `{other}`"),
@@ -80,16 +78,15 @@ fn dispatch(
     }
 }
 
-/// `saved_roots` → the project's saved root names, in store order.
-fn op_saved_roots(program: &CheckedProgram, store: &TreeStore) -> Result<Value, ProtocolError> {
+/// `data_roots` returns the project's stored root names in store order.
+fn op_data_roots(program: &CheckedProgram, store: &TreeStore) -> Result<Value, ProtocolError> {
     let roots = data_roots_in_store(program, store).map_err(store_error)?;
     Ok(json!({ "roots": roots }))
 }
 
-/// `saved_get` → the four-state presence at a saved path plus its stored value as
-/// base64 (`null` when no value is stored there). The bytes are the store's raw
-/// canonical encoding; the client decodes them with the field's schema type.
-fn op_saved_get(
+/// `data_get` returns presence at a checked data query plus its canonical
+/// payload as base64 (`null` when no value is stored there).
+fn op_data_get(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,
@@ -102,10 +99,9 @@ fn op_saved_get(
     }))
 }
 
-/// `saved_children` → the distinct immediate children directly below a saved path,
-/// in Marrow order: each is a `{"key": …}` (a record/index key) or `{"name": …}`
-/// (a field, layer, or index name).
-fn op_saved_children(
+/// `data_children` returns distinct immediate children below a checked data
+/// query in Marrow order.
+fn op_data_children(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,
@@ -123,16 +119,15 @@ fn op_saved_children(
     Ok(json!({ "children": children }))
 }
 
-/// The largest `saved_walk` page the server returns, so an unbounded request
+/// The largest `data_walk` page the server returns, so an unbounded request
 /// cannot force a huge scan. A client pages by resubmitting returned cursors.
 const MAX_WALK: usize = 10_000;
 
-/// `saved_walk` → up to `limit` `(path, value)` entries in the subtree at a saved
-/// path, in Marrow order, plus whether the page was truncated. Each entry's path
-/// is the checked logical address; each value is base64. A truncated page returns
-/// an opaque `nextCursor`, which can be sent as `cursor` to resume at the next
-/// page position. The `limit` is required and clamped to [`MAX_WALK`].
-fn op_saved_walk(
+/// `data_walk` returns up to `limit` `(path, value)` entries in the typed data
+/// subtree, in Marrow order, plus whether the page was truncated. A truncated
+/// page returns an opaque `nextCursor`, which can be sent as `cursor` to resume
+/// at the next page position.
+fn op_data_walk(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,
@@ -154,22 +149,22 @@ fn op_saved_walk(
 fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
     let value = request
         .get("limit")
-        .ok_or_else(|| bad_request("`saved_walk` requires an integer `limit`"))?;
+        .ok_or_else(|| bad_request("`data_walk` requires an integer `limit`"))?;
     if let Some(limit) = value.as_u64() {
         if limit == 0 {
             return Err(bad_request(
-                "`saved_walk` requires a positive integer `limit`",
+                "`data_walk` requires a positive integer `limit`",
             ));
         }
         return Ok(limit.min(MAX_WALK as u64) as usize);
     }
     if value.as_i64().is_some() {
         return Err(bad_request(
-            "`saved_walk` requires a positive integer `limit`",
+            "`data_walk` requires a positive integer `limit`",
         ));
     }
     let Some(number) = value.as_number() else {
-        return Err(bad_request("`saved_walk` requires an integer `limit`"));
+        return Err(bad_request("`data_walk` requires an integer `limit`"));
     };
     if number
         .as_f64()
@@ -181,7 +176,7 @@ fn request_walk_limit(request: &Value) -> Result<usize, ProtocolError> {
     if text.bytes().all(|byte| byte.is_ascii_digit()) && text != "0" {
         return Ok(MAX_WALK);
     }
-    Err(bad_request("`saved_walk` requires an integer `limit`"))
+    Err(bad_request("`data_walk` requires an integer `limit`"))
 }
 
 /// The decoded `path` of a request, or a `protocol.bad_request` error.
@@ -208,14 +203,15 @@ fn decode_segment(value: &Value) -> Result<DataQuerySegment, ProtocolError> {
     let (kind, inner) = one_field(value, "a path segment")?;
     let segment = match kind.as_str() {
         "root" => DataQuerySegment::Root(segment_name(inner, "root")?),
-        "key" | "index_key" => DataQuerySegment::Key(decode_key(inner)?),
-        "field" | "layer" | "index" => DataQuerySegment::Member(segment_name(inner, kind)?),
+        "key" => DataQuerySegment::Key(decode_key(inner)?),
+        "field" => DataQuerySegment::Field(segment_name(inner, kind)?),
+        "layer" => DataQuerySegment::Layer(segment_name(inner, kind)?),
         other => return Err(bad_request(&format!("unknown path segment `{other}`"))),
     };
     Ok(segment)
 }
 
-/// A path segment's string name (for `root`/`field`/`layer`/`index`).
+/// A path segment's string name (for `root`/`field`/`layer`).
 fn segment_name(value: &Value, kind: &str) -> Result<String, ProtocolError> {
     value
         .as_str()
@@ -224,50 +220,41 @@ fn segment_name(value: &Value, kind: &str) -> Result<String, ProtocolError> {
 }
 
 /// Decode a key value — a one-field object tagged by its type — into a [`SavedKey`].
-/// The accepted tags are the [`SavedKey::wire_tag`] of each key kind, so they
-/// stay in lockstep with [`encode_key`] and the shared scalar-name table. Wide
-/// integer keys (`duration`, `instant`) are strings because JSON numbers cannot
-/// hold an `i128`; `int` and `date` are JSON numbers; `bytes` is base64.
+/// Wide integer keys (`duration`, `instant`) are strings because JSON numbers
+/// cannot hold an `i128`; `int` and `date` are JSON numbers; `bytes` is base64.
 fn decode_key(value: &Value) -> Result<SavedKey, ProtocolError> {
     let (tag, inner) = one_field(value, "a key")?;
-    let tag = tag.as_str();
-    let key = if tag == SavedKey::Int(0).wire_tag() {
-        SavedKey::Int(
+    let key = match tag.as_str() {
+        "int" => SavedKey::Int(
             inner
                 .as_i64()
                 .ok_or_else(|| bad_request("`int` key must be an integer"))?,
-        )
-    } else if tag == SavedKey::Bool(false).wire_tag() {
-        SavedKey::Bool(
+        ),
+        "bool" => SavedKey::Bool(
             inner
                 .as_bool()
                 .ok_or_else(|| bad_request("`bool` key must be a boolean"))?,
-        )
-    } else if tag == SavedKey::Str(String::new()).wire_tag() {
-        SavedKey::Str(segment_name(inner, "str")?)
-    } else if tag == SavedKey::Date(0).wire_tag() {
-        let days = inner
-            .as_i64()
-            .ok_or_else(|| bad_request("`date` key must be an integer"))?;
-        SavedKey::Date(i32::try_from(days).map_err(|_| bad_request("`date` key is out of range"))?)
-    } else if tag == SavedKey::Duration(0).wire_tag() {
-        SavedKey::Duration(parse_i128(inner, "duration")?)
-    } else if tag == SavedKey::Instant(0).wire_tag() {
-        SavedKey::Instant(parse_i128(inner, "instant")?)
-    } else if tag == SavedKey::Bytes(Vec::new()).wire_tag() {
-        SavedKey::Bytes(decode_base64_field(inner, "bytes")?)
-    } else {
-        return Err(bad_request(&format!("unknown key type `{tag}`")));
+        ),
+        "str" => SavedKey::Str(segment_name(inner, "str")?),
+        "date" => {
+            let days = inner
+                .as_i64()
+                .ok_or_else(|| bad_request("`date` key must be an integer"))?;
+            SavedKey::Date(
+                i32::try_from(days).map_err(|_| bad_request("`date` key is out of range"))?,
+            )
+        }
+        "duration" => SavedKey::Duration(parse_i128(inner, "duration")?),
+        "instant" => SavedKey::Instant(parse_i128(inner, "instant")?),
+        "bytes" => SavedKey::Bytes(decode_base64_field(inner, "bytes")?),
+        other => return Err(bad_request(&format!("unknown key type `{other}`"))),
     };
     Ok(key)
 }
 
-/// Encode a [`SavedKey`] back to its one-field JSON form (the inverse of
-/// [`decode_key`]), used for `saved_children` output. The tag comes from
-/// [`SavedKey::wire_tag`] (sourced from the shared scalar-name table) in the same
-/// match as the payload, so tag and value cannot disagree.
+/// Encode a [`SavedKey`] back to its one-field JSON form.
 fn encode_key(key: &SavedKey) -> Value {
-    let tag = key.wire_tag();
+    let tag = key_json_tag(key);
     let payload = match key {
         SavedKey::Int(value) => json!(value),
         SavedKey::Bool(value) => json!(value),
@@ -278,6 +265,18 @@ fn encode_key(key: &SavedKey) -> Value {
         SavedKey::Bytes(value) => json!(base64::encode(value)),
     };
     json!({ tag: payload })
+}
+
+fn key_json_tag(key: &SavedKey) -> &'static str {
+    match key {
+        SavedKey::Int(_) => "int",
+        SavedKey::Bool(_) => "bool",
+        SavedKey::Str(_) => "str",
+        SavedKey::Date(_) => "date",
+        SavedKey::Duration(_) => "duration",
+        SavedKey::Instant(_) => "instant",
+        SavedKey::Bytes(_) => "bytes",
+    }
 }
 
 /// The single `(tag, value)` of a one-field object, or a `protocol.bad_request`.
@@ -411,7 +410,7 @@ fn checked_walk(
         return Err(bad_request("`cursor` is outside the requested path"));
     }
     if cursor.is_some() && start.identity.len() != query.identity_arity {
-        return Err(bad_request("`cursor` is not a saved_walk position"));
+        return Err(bad_request("`cursor` is not a data_walk position"));
     }
 
     let mut identity = if cursor.is_some() {
@@ -444,7 +443,7 @@ fn checked_walk(
             &mut path,
         )?;
         if waiting_for_cursor {
-            return Err(bad_request("`cursor` does not name a saved_walk entry"));
+            return Err(bad_request("`cursor` does not name a data_walk entry"));
         }
         if state.next_cursor.is_some() {
             break;
@@ -518,7 +517,7 @@ fn walk_member(
 ) -> Result<(), ProtocolError> {
     let catalog = checked_catalog_id(&member.catalog_id, "resource member").map_err(store_error)?;
     data_path.push(DataPathSegment::Member(catalog));
-    path.push(DataQuerySegment::Member(member.name.clone()));
+    path.push(query_segment_for_member(member));
     if path_can_match(data_path, walk.filter_prefix) {
         if member.key_params.is_empty() {
             walk_member_terminal(walk, member, data_path, path)?;
@@ -529,6 +528,14 @@ fn walk_member(
     path.pop();
     data_path.pop();
     Ok(())
+}
+
+fn query_segment_for_member(member: &CheckedSavedMember) -> DataQuerySegment {
+    if member.key_params.is_empty() && matches!(member.kind, CheckedSavedMemberKind::Field { .. }) {
+        DataQuerySegment::Field(member.name.clone())
+    } else {
+        DataQuerySegment::Layer(member.name.clone())
+    }
 }
 
 fn walk_member_keys(
@@ -746,10 +753,25 @@ fn next_identity_after(
 
 fn encode_cursor(path: &[DataQuerySegment]) -> String {
     base64::encode(
-        json!({ "v": 1, "path": render_query_segments(path) })
+        json!({ "v": 1, "path": encode_query_path(path) })
             .to_string()
             .as_bytes(),
     )
+}
+
+fn encode_query_path(path: &[DataQuerySegment]) -> Value {
+    Value::Array(path.iter().map(encode_query_segment).collect())
+}
+
+fn encode_query_segment(segment: &DataQuerySegment) -> Value {
+    match segment {
+        DataQuerySegment::Root(name) => json!({ "root": name }),
+        DataQuerySegment::Field(name) | DataQuerySegment::SourceMember(name) => {
+            json!({ "field": name })
+        }
+        DataQuerySegment::Layer(name) => json!({ "layer": name }),
+        DataQuerySegment::Key(key) => json!({ "key": encode_key(key) }),
+    }
 }
 
 fn decode_cursor(
@@ -761,19 +783,17 @@ fn decode_cursor(
     let cursor =
         String::from_utf8(cursor).map_err(|_| bad_request("`cursor` is not a checked path"))?;
     let cursor: Value = serde_json::from_str(&cursor)
-        .map_err(|_| bad_request("`cursor` is not a saved_walk cursor"))?;
+        .map_err(|_| bad_request("`cursor` is not a data_walk cursor"))?;
     let object = cursor
         .as_object()
-        .ok_or_else(|| bad_request("`cursor` is not a saved_walk cursor"))?;
+        .ok_or_else(|| bad_request("`cursor` is not a data_walk cursor"))?;
     if object.get("v").and_then(Value::as_u64) != Some(1) {
-        return Err(bad_request("`cursor` is not a saved_walk cursor"));
+        return Err(bad_request("`cursor` is not a data_walk cursor"));
     }
     let path = object
         .get("path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| bad_request("`cursor` is not a saved_walk cursor"))?;
-    let parsed = parse_path(path).map_err(|_| bad_request("`cursor` is not a checked path"))?;
-    let segments = query_segments_from_path(&parsed);
+        .ok_or_else(|| bad_request("`cursor` is not a data_walk cursor"))?;
+    let segments = decode_query_path(path)?;
     let query = resolve_data_query(program, &segments).map_err(|message| bad_request(&message))?;
     if !query_under_prefix(&query, prefix) {
         return Err(bad_request("`cursor` is outside the requested path"));

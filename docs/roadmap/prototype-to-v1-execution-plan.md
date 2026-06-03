@@ -142,7 +142,7 @@ enum values and index maintenance remains a Lane 8 dependency.
 
 The Lane 7 store pass owns the tree-cell store boundary. Raw archive behavior may
 remain only as explicitly debug/admin store access; typed backup manifests,
-raw data tooling, and serve protocol replacement belong to Lane 10 once shared
+backup/restore, and deeper tooling workflows belong to Lane 10 once shared
 runtime and store facts are available.
 
 Every active orchestrator must include these items in the next handoff:

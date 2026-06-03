@@ -1,7 +1,7 @@
 //! Evaluate pure scalar functions: arithmetic, comparison, logical operators,
 //! locals, and conditionals over integer and boolean values.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,16 +13,12 @@ use marrow_check::{
 };
 use marrow_run::{
     CheckedEntryCall, Host, RUN_ABSENT, RUN_ASSERT, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW,
-    RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE, RUN_UNCAUGHT_THROW,
+    RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TRAVERSAL, RUN_TYPE, RUN_UNCAUGHT_THROW,
     RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RunOutput, Value, WriteDataSegment, WriteTarget,
 };
 use marrow_store::Decimal;
-use marrow_store::backend::{Backend, Presence, ScanPage, StoreError};
 use marrow_store::cell::CatalogId;
-use marrow_store::key::{SavedKey, encode_key_value};
-use marrow_store::mem::MemStore;
-use marrow_store::path::ChildSegment;
-use marrow_store::redb::RedbStore;
+use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore, decode_tree_enum_member};
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::parse_source;
@@ -204,7 +200,7 @@ fn module_source_path(name: &str) -> PathBuf {
 }
 
 fn empty_store() -> TreeStore {
-    TreeStore::new(MemStore::new())
+    TreeStore::memory()
 }
 
 macro_rules! checked_entry {
@@ -581,7 +577,7 @@ fn decimal_round_trips_through_saved_data() {
          pub fn balance(): string\n\
          \x20   return $\"{^accts(1).balance ?? 0.0}\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::balance"))
@@ -664,7 +660,7 @@ fn bytes_round_trip_through_saved_data() {
          pub fn matches(): bool\n\
          \x20   return (^blobs(1).data ?? b\"\") == b\"xy\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::matches"))
@@ -970,7 +966,7 @@ fn clock_today_reads_the_host_clock_capability() {
     let program = checked_program(
         "pub fn f(): string\n    return std::clock::formatDate(std::clock::today())\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // 2023-11-14T22:13:20Z.
     let host = Host::new().with_clock(1_700_000_000_000_000_000);
     let outcome = run_entry_with_host(&program, &store, &host, checked_entry!(&program, "test::f"))
@@ -981,7 +977,7 @@ fn clock_today_reads_the_host_clock_capability() {
 #[test]
 fn clock_today_without_a_clock_capability_is_a_capability_error() {
     let program = checked_program("fn t(): date\n    return std::clock::today()\n");
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(&program, &store, checked_entry!(&program, "test::t"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_CAPABILITY),
@@ -995,7 +991,7 @@ fn a_date_round_trips_through_saved_data() {
     let program = checked_program(
         "resource Event at ^events(id: int)\n    on: date\n\nfn record(id: int, text: string)\n    ^events(id).on = std::clock::parseDate(text)\n\nfn dateOf(id: int): string\n    return std::clock::formatDate(^events(id).on ?? std::clock::parseDate(\"1970-01-01\"))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -1626,7 +1622,7 @@ fn a_whole_group_entry_write_creates_the_entry() {
          pub fn version_title(): string\n\
          \x20\x20\x20\x20return ^books(1).versions(2).title ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(
@@ -1661,7 +1657,7 @@ fn a_nested_group_field_round_trips() {
          pub fn comment(): string\n\
          \x20\x20\x20\x20return ^books(1).versions(2).comments(3).text ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::comment"))
@@ -1692,7 +1688,7 @@ fn a_whole_group_entry_can_be_read_and_copied() {
          pub fn copied_title(): string\n\
          \x20\x20\x20\x20return ^books(1).versions(2).title ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(
@@ -1997,7 +1993,7 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
     let program = checked_program(
         "resource Account at ^accts(id: int)\n    balance: int\n\nfn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(&program, &store, checked_entry!(&program, "test::run_it"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNCAUGHT_THROW),
@@ -2228,7 +2224,7 @@ fn loadOrCode(path: string): string
 #[test]
 fn io_round_trips_text_through_a_file() {
     let program = checked_program(IO_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("note.txt").to_string_lossy().into_owned();
@@ -2262,7 +2258,7 @@ fn irreversible_host_effects_inside_a_transaction_are_rejected_before_the_effect
     let program = checked_program(
         "pub fn write_in_txn(path: string)\n    transaction\n        std::io::writeText(path, \"leaked\")\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
     let error = run_entry_with_host(
         &program,
@@ -2287,7 +2283,7 @@ fn irreversible_host_effects_inside_a_transaction_are_rejected_before_the_effect
 fn output_inside_a_transaction_is_rejected_before_the_effect() {
     let program =
         checked_program("pub fn print_in_txn()\n    transaction\n        print(\"leaked\")\n");
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(
         &program,
         &store,
@@ -2303,7 +2299,7 @@ fn log_inside_a_transaction_is_rejected_before_the_effect() {
     let program = checked_program(
         "pub fn log_in_txn()\n    transaction\n        std::log::info(\"leaked\")\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let log = Rc::new(RefCell::new(String::new()));
     let host = Host::new().with_log_sink(Rc::clone(&log));
     let error = run_entry_with_host(
@@ -2321,7 +2317,7 @@ fn log_inside_a_transaction_is_rejected_before_the_effect() {
 #[test]
 fn io_round_trips_bytes_through_a_file() {
     let program = checked_program(IO_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("blob.bin").to_string_lossy().into_owned();
@@ -2352,7 +2348,7 @@ fn io_round_trips_bytes_through_a_file() {
 #[test]
 fn io_without_a_filesystem_capability_is_a_capability_error() {
     let program = checked_program(IO_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Plain `run_entry` provides no host capabilities.
     let result = run_entry(
         &program,
@@ -2370,7 +2366,7 @@ fn an_io_error_raises_a_catchable_error() {
     // Reading a missing file (with the capability present) raises a typed Error
     // the program can `catch`, not a runtime fault.
     let program = checked_program(IO_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
     let dir = tempfile::tempdir().expect("temp dir");
     let missing = dir.path().join("absent.txt").to_string_lossy().into_owned();
@@ -2403,7 +2399,7 @@ pub fn balanceOf(): int
 #[test]
 fn out_creates_a_saved_field() {
     let program = checked_program(SAVED_MODE_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // `out` never reads the place, so the field need not exist beforehand.
     run_entry(&program, &store, checked_entry!(&program, "test::produce")).expect("produce");
     let balance = run_entry(
@@ -2438,7 +2434,7 @@ pub fn producedTitle(): string
 fn out_creates_a_group_entry_field() {
     // `out` never reads the place, so the group-entry field need not exist first.
     let program = checked_program(GROUP_FIELD_MODE_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::produce")).expect("produce");
     let title = run_entry(
         &program,
@@ -2510,7 +2506,7 @@ fn a_throw_caught_inside_a_transaction_commits() {
          pub fn safe(id: int)\n    transaction\n        try\n            throw Error(code: \"x.y\", message: \"b\")\n        catch err: Error\n            ^books(id).title = \"recovered\"\n\n\
          pub fn title(id: int): string\n    return ^books(id).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -2537,7 +2533,7 @@ fn throw_inside_a_transaction_rolls_back() {
          pub fn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        throw Error(code: \"x.y\", message: \"boom\")\n\n\
          pub fn has_book(id: int): bool\n    return exists(^books(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     assert_eq!(
         run_entry(
             &program,
@@ -3337,7 +3333,7 @@ fn reads_a_scalar_field_from_saved_data() {
 #[test]
 fn reading_an_absent_field_is_an_error() {
     let program = checked_program(BOOK_READER);
-    let store = TreeStore::new(MemStore::new()); // empty: the title is absent
+    let store = TreeStore::memory(); // empty: the title is absent
     let result = run_entry(
         &program,
         &store,
@@ -3403,7 +3399,7 @@ fn title_of(id: int): string
 #[test]
 fn a_field_write_updates_saved_data() {
     let program = checked_program(BOOK_WRITER);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -3436,7 +3432,7 @@ fn out_of_transaction_field_write_rejects_partial_required_record() {
          fn has_item(id: int): bool\n\
          \x20   return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(
         &program,
         &store,
@@ -3471,7 +3467,7 @@ fn out_of_transaction_group_field_write_rejects_partial_required_record() {
          fn has_book(id: int): bool\n\
          \x20   return exists(^books(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(
         &program,
         &store,
@@ -3506,7 +3502,7 @@ fn transaction_commit_rejects_partial_required_record() {
          fn has_item(id: int): bool\n\
          \x20   return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(
         &program,
         &store,
@@ -3544,7 +3540,7 @@ fn transaction_required_field_checks_cross_helper_calls() {
          fn name_of(id: int): string\n\
          \x20   return ^items(id).name\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -3577,7 +3573,7 @@ fn nested_transaction_defers_required_check_until_outer_commit() {
          fn name_of(id: int): string\n\
          \x20   return ^items(id).name\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -3895,7 +3891,7 @@ fn delete_removes_a_record() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn set_title(id: int, t: string)\n    ^books(id).title = t\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -3942,7 +3938,7 @@ fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    subtitle: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).subtitle = \"A Discworld Novel\"\n\nfn drop_subtitle(id: int)\n    delete ^books(id).subtitle\n\nfn has_subtitle(id: int): bool\n    return exists(^books(id).subtitle)\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -3996,7 +3992,7 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn drop_shelf(id: int)\n    delete ^books(id).shelf\n\nfn count_on(shelf: string): int\n    var c = 0\n    for id in keys(^books.byShelf(shelf))\n        c = c + 1\n    return c\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4044,7 +4040,7 @@ fn deleting_a_required_field_is_rejected() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn drop_title(id: int)\n    delete ^books(id).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4070,7 +4066,7 @@ fn deleting_a_layer_entry_leaves_other_entries() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\nfn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\nfn version_title(id: int, v: int): string\n    return ^books(id).versions(v).title ?? \"<gone>\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4125,7 +4121,7 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\nfn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\nfn tag_count(id: int): int\n    return count(^books(id).tags)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4177,7 +4173,7 @@ fn a_transaction_commits_on_normal_exit() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int)\n    transaction\n        ^books(id).title = \"kept\"\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4201,7 +4197,7 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        const x = 1 / 0\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(
         &program,
         &store,
@@ -4222,360 +4218,6 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
         .value,
         Some(Value::Bool(false)),
         "the staged write rolled back with the transaction"
-    );
-}
-
-/// A backend that delegates every operation to an inner [`MemStore`] but fails
-/// `rollback()` with a store-integrity error. Models a persistent store whose
-/// undo could not be applied, so the transaction handler must surface the
-/// failure rather than mask it behind the original escape.
-struct FailingRollbackStore {
-    inner: MemStore,
-}
-
-impl FailingRollbackStore {
-    fn new() -> Self {
-        Self {
-            inner: MemStore::new(),
-        }
-    }
-}
-
-impl Backend for FailingRollbackStore {
-    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        Backend::read(&self.inner, path)
-    }
-    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        Backend::write(&mut self.inner, path, value)
-    }
-    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
-        Backend::delete(&mut self.inner, path)
-    }
-    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        Backend::presence(&self.inner, path)
-    }
-    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        Backend::child_keys(&self.inner, path)
-    }
-    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        Backend::child_keys_rev(&self.inner, path)
-    }
-    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
-        Backend::child_count(&self.inner, path)
-    }
-    fn next_sibling(
-        &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::next_sibling(&self.inner, parent, after)
-    }
-    fn prev_sibling(
-        &self,
-        parent: &[u8],
-        before: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::prev_sibling(&self.inner, parent, before)
-    }
-    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::first_child(&self.inner, parent)
-    }
-    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::last_child(&self.inner, parent)
-    }
-    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        Backend::scan(&self.inner, path, limit)
-    }
-    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        Backend::scan_after(&self.inner, path, cursor, limit)
-    }
-    fn roots(&self) -> Result<Vec<String>, StoreError> {
-        Backend::roots(&self.inner)
-    }
-    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        Backend::max_int_record_key(&self.inner, prefix)
-    }
-    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        Backend::max_int_index_key(&self.inner, prefix)
-    }
-    fn begin(&mut self) -> Result<(), StoreError> {
-        Backend::begin(&mut self.inner)
-    }
-    fn commit(&mut self) -> Result<(), StoreError> {
-        Backend::commit(&mut self.inner)
-    }
-    fn rollback(&mut self) -> Result<(), StoreError> {
-        Err(StoreError::Corruption {
-            message: "rollback could not be applied".into(),
-        })
-    }
-}
-
-/// A backend that makes the first transaction commit fail. This models a fatal
-/// commit-path store problem while giving a following `finally` block a chance
-/// to expose leaked transaction bookkeeping.
-struct FailingFirstCommitStore {
-    inner: MemStore,
-    fail_next_commit: bool,
-}
-
-impl FailingFirstCommitStore {
-    fn new() -> Self {
-        Self {
-            inner: MemStore::new(),
-            fail_next_commit: true,
-        }
-    }
-}
-
-impl Backend for FailingFirstCommitStore {
-    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        Backend::read(&self.inner, path)
-    }
-    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        Backend::write(&mut self.inner, path, value)
-    }
-    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
-        Backend::delete(&mut self.inner, path)
-    }
-    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        Backend::presence(&self.inner, path)
-    }
-    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        Backend::child_keys(&self.inner, path)
-    }
-    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        Backend::child_keys_rev(&self.inner, path)
-    }
-    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
-        Backend::child_count(&self.inner, path)
-    }
-    fn next_sibling(
-        &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::next_sibling(&self.inner, parent, after)
-    }
-    fn prev_sibling(
-        &self,
-        parent: &[u8],
-        before: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::prev_sibling(&self.inner, parent, before)
-    }
-    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::first_child(&self.inner, parent)
-    }
-    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        Backend::last_child(&self.inner, parent)
-    }
-    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        Backend::scan(&self.inner, path, limit)
-    }
-    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        Backend::scan_after(&self.inner, path, cursor, limit)
-    }
-    fn roots(&self) -> Result<Vec<String>, StoreError> {
-        Backend::roots(&self.inner)
-    }
-    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        Backend::max_int_record_key(&self.inner, prefix)
-    }
-    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        Backend::max_int_index_key(&self.inner, prefix)
-    }
-    fn begin(&mut self) -> Result<(), StoreError> {
-        Backend::begin(&mut self.inner)
-    }
-    fn commit(&mut self) -> Result<(), StoreError> {
-        if self.fail_next_commit {
-            self.fail_next_commit = false;
-            return Err(StoreError::Corruption {
-                message: "commit could not be applied".into(),
-            });
-        }
-        Backend::commit(&mut self.inner)
-    }
-    fn rollback(&mut self) -> Result<(), StoreError> {
-        Backend::rollback(&mut self.inner)
-    }
-}
-
-#[derive(Default)]
-struct StoreProbe {
-    child_keys: Cell<usize>,
-    child_keys_rev: Cell<usize>,
-    child_count: Cell<usize>,
-    first_child: Cell<usize>,
-    last_child: Cell<usize>,
-    next_sibling: Cell<usize>,
-    prev_sibling: Cell<usize>,
-    scan: Cell<usize>,
-    scan_after: Cell<usize>,
-}
-
-impl StoreProbe {
-    fn reset(&self) {
-        self.child_keys.set(0);
-        self.child_keys_rev.set(0);
-        self.child_count.set(0);
-        self.first_child.set(0);
-        self.last_child.set(0);
-        self.next_sibling.set(0);
-        self.prev_sibling.set(0);
-        self.scan.set(0);
-        self.scan_after.set(0);
-    }
-}
-
-struct ProbedStore {
-    inner: MemStore,
-    probe: Rc<StoreProbe>,
-}
-
-impl ProbedStore {
-    fn new(probe: Rc<StoreProbe>) -> Self {
-        Self {
-            inner: MemStore::new(),
-            probe,
-        }
-    }
-}
-
-impl Backend for ProbedStore {
-    fn read(&self, path: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        Backend::read(&self.inner, path)
-    }
-    fn write(&mut self, path: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        Backend::write(&mut self.inner, path, value)
-    }
-    fn delete(&mut self, path: &[u8]) -> Result<(), StoreError> {
-        Backend::delete(&mut self.inner, path)
-    }
-    fn presence(&self, path: &[u8]) -> Result<Presence, StoreError> {
-        Backend::presence(&self.inner, path)
-    }
-    fn child_keys(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        self.probe.child_keys.set(self.probe.child_keys.get() + 1);
-        Backend::child_keys(&self.inner, path)
-    }
-    fn child_keys_rev(&self, path: &[u8]) -> Result<Vec<ChildSegment>, StoreError> {
-        self.probe
-            .child_keys_rev
-            .set(self.probe.child_keys_rev.get() + 1);
-        Backend::child_keys_rev(&self.inner, path)
-    }
-    fn child_count(&self, path: &[u8]) -> Result<usize, StoreError> {
-        self.probe.child_count.set(self.probe.child_count.get() + 1);
-        Backend::child_count(&self.inner, path)
-    }
-    fn next_sibling(
-        &self,
-        parent: &[u8],
-        after: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        self.probe
-            .next_sibling
-            .set(self.probe.next_sibling.get() + 1);
-        Backend::next_sibling(&self.inner, parent, after)
-    }
-    fn prev_sibling(
-        &self,
-        parent: &[u8],
-        before: &[u8],
-    ) -> Result<Option<ChildSegment>, StoreError> {
-        self.probe
-            .prev_sibling
-            .set(self.probe.prev_sibling.get() + 1);
-        Backend::prev_sibling(&self.inner, parent, before)
-    }
-    fn first_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        self.probe.first_child.set(self.probe.first_child.get() + 1);
-        Backend::first_child(&self.inner, parent)
-    }
-    fn last_child(&self, parent: &[u8]) -> Result<Option<ChildSegment>, StoreError> {
-        self.probe.last_child.set(self.probe.last_child.get() + 1);
-        Backend::last_child(&self.inner, parent)
-    }
-    fn scan(&self, path: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        self.probe.scan.set(self.probe.scan.get() + 1);
-        Backend::scan(&self.inner, path, limit)
-    }
-    fn scan_after(&self, path: &[u8], cursor: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        self.probe.scan_after.set(self.probe.scan_after.get() + 1);
-        Backend::scan_after(&self.inner, path, cursor, limit)
-    }
-    fn roots(&self) -> Result<Vec<String>, StoreError> {
-        Backend::roots(&self.inner)
-    }
-    fn max_int_record_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        Backend::max_int_record_key(&self.inner, prefix)
-    }
-    fn max_int_index_key(&self, prefix: &[u8]) -> Result<Option<i64>, StoreError> {
-        Backend::max_int_index_key(&self.inner, prefix)
-    }
-    fn begin(&mut self) -> Result<(), StoreError> {
-        Backend::begin(&mut self.inner)
-    }
-    fn commit(&mut self) -> Result<(), StoreError> {
-        Backend::commit(&mut self.inner)
-    }
-    fn rollback(&mut self) -> Result<(), StoreError> {
-        Backend::rollback(&mut self.inner)
-    }
-}
-
-#[test]
-fn a_failed_rollback_after_an_error_surfaces_a_store_error() {
-    // The body errors, so the transaction rolls back — but the rollback itself
-    // fails. A failed rollback is a store-integrity failure that supersedes the
-    // original cause, so the run surfaces a typed store error, not the divide.
-    let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        const x = 1 / 0\n",
-    );
-    let store = TreeStore::new(FailingRollbackStore::new());
-    let result = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::risky", Value::Int(1)),
-    );
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_STORE),
-        "a failed rollback must surface as a store error, got {result:?}"
-    );
-}
-
-#[test]
-fn a_failed_rollback_after_a_throw_surfaces_a_store_error() {
-    // A throw escapes the transaction, which rolls back — but the rollback
-    // fails. The integrity failure must not be masked by a catchable throw, so
-    // the run surfaces a typed store error instead of the throw.
-    let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        throw Error(code: \"x.y\", message: \"boom\")\n",
-    );
-    let store = TreeStore::new(FailingRollbackStore::new());
-    let result = run_entry(
-        &program,
-        &store,
-        checked_entry!(&program, "test::risky", Value::Int(1)),
-    );
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_STORE),
-        "a failed rollback after a throw must surface as a store error, got {result:?}"
-    );
-}
-
-#[test]
-fn a_failed_commit_clears_deferred_required_checks_before_finally() {
-    let program = checked_program(
-        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn run_it()\n    try\n        transaction\n            ^items(1).name = \"ok\"\n            ^items(1).shelf = \"staged\"\n    finally\n        transaction\n            ^items(2).name = \"cleanup\"\n",
-    );
-    let store = TreeStore::new(FailingFirstCommitStore::new());
-    let result = run_entry(&program, &store, checked_entry!(&program, "test::run_it"));
-    assert!(
-        matches!(result, Err(ref error) if error.code == RUN_STORE),
-        "the original commit failure should survive cleanup, got {result:?}"
     );
 }
 
@@ -4628,7 +4270,7 @@ fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
     // inside the writing function binds it by its `write.unique_conflict` code
     // and the function continues normally.
     let program = checked_program(UNIQUE_RECOVERY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4674,7 +4316,7 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     // After catching the conflict, code keeps running (writes a fallback) and the
     // rejected write left no effect: book 2 still owns its original isbn.
     let program = checked_program(UNIQUE_RECOVERY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4745,7 +4387,7 @@ fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
     // its own `write.unique_conflict` code (not run.uncaught_error), exactly as
     // before it became catchable.
     let program = checked_program(UNIQUE_RECOVERY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4790,7 +4432,7 @@ fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(id: int, isbn: string, t: string)\n    transaction\n        try\n            ^books(id).isbn = isbn\n        catch err: Error\n            ^books(id).title = t\n\nfn titleOf(id: int): string\n    return ^books(id).title ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4847,7 +4489,7 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(): int\n    try\n        ^books(2).isbn = \"978-0\"\n    catch err: Error\n        write(\"caught\")\n    const boom = 1 / 0\n    return 0\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4893,7 +4535,7 @@ fn reads_inside_a_transaction_see_earlier_writes() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let outcome = run_entry(
         &program,
         &store,
@@ -4908,7 +4550,7 @@ fn append_writes_at_the_next_position() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let appended = |t: &str| {
         run_entry(
             &program,
@@ -4951,7 +4593,7 @@ fn appends_then_reads_back_keyed_leaf_entries() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -4995,7 +4637,7 @@ fn explicit_keyed_leaf_write_then_reads_back() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n    scores(key: string): int\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn set_score(id: int, key: string, n: int)\n    ^books(id).scores(key) = n\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n\nfn score_at(id: int, key: string): int\n    return ^books(id).scores(key) ?? 0\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -5055,7 +4697,7 @@ fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Write position 5 directly, leaving 1..=4 as holes.
     run_entry(
         &program,
@@ -5138,7 +4780,7 @@ fn titles_on(shelf: string)
 #[test]
 fn iterates_index_keys() {
     let program = checked_program(BOOK_SHELF);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
             &program,
@@ -5174,7 +4816,7 @@ fn iterates_index_keys() {
 #[test]
 fn bare_index_iteration_yields_first_level_keys() {
     let program = checked_program(BOOK_SHELF);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
             &program,
@@ -5205,7 +4847,7 @@ fn bare_index_iteration_yields_first_level_keys() {
 #[test]
 fn updating_an_indexed_field_while_iterating_that_index_faults() {
     let program = checked_program(BOOK_SHELF);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
         run_entry(
             &program,
@@ -5241,7 +4883,7 @@ fn updating_an_indexed_field_while_iterating_that_index_faults() {
 #[test]
 fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
     let program = checked_program(BOOK_SHELF);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -5267,7 +4909,7 @@ fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
 #[test]
 fn prints_titles_in_index_key_order() {
     let program = checked_program(BOOK_SHELF);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
             &program,
@@ -5340,7 +4982,7 @@ fn seed_field(
 #[test]
 fn reads_a_whole_resource() {
     let program = checked_program(BOOK_COPY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     seed_field(&program, &store, 1, "title", "Mort");
     seed_field(&program, &store, 1, "shelf", "fiction");
     let outcome = run_entry(
@@ -5368,7 +5010,7 @@ fn constructs_a_resource_value() {
          fn draft(): Book\n\
          \x20\x20\x20\x20return Book(title: \"Mort\", shelf: \"fiction\")\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let outcome =
         run_entry(&program, &store, checked_entry!(&program, "test::draft")).expect("draft");
     assert_eq!(
@@ -5392,7 +5034,7 @@ fn constructs_a_resource_value_with_a_local_resource_field() {
          \x20\x20\x20\x20const person = Person(name: \"Sam\", address: Address(city: \"Paris\"))\n\
          \x20\x20\x20\x20return person.address.city\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let outcome =
         run_entry(&program, &store, checked_entry!(&program, "test::city")).expect("city");
     assert_eq!(outcome.value, Some(Value::Str("Paris".into())));
@@ -5409,7 +5051,7 @@ fn constructs_a_qualified_resource_value() {
          pub fn draft(): unknown\n\
          \x20\x20\x20\x20return library::Book(title: \"Mort\")\n",
     ]);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let outcome =
         run_entry(&program, &store, checked_entry!(&program, "app::draft")).expect("draft");
     assert_eq!(
@@ -5452,7 +5094,7 @@ fn resource_constructor_value_can_be_saved() {
          fn title(): string\n\
          \x20\x20\x20\x20return ^books(1).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let saved = run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
     assert_eq!(saved.value, Some(Value::Int(1)));
     let title =
@@ -5474,7 +5116,7 @@ fn resource_constructor_optional_coalesce_is_checker_rejected() {
 #[test]
 fn copies_a_whole_resource() {
     let program = checked_program(BOOK_COPY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     seed_field(&program, &store, 1, "title", "Mort");
     seed_field(&program, &store, 1, "shelf", "fiction");
     run_entry(
@@ -5522,7 +5164,7 @@ fn first_of(id: int): string
 #[test]
 fn whole_resource_read_materializes_unkeyed_groups() {
     let program = checked_program(PATIENT_WITH_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     seed_patient_field(&program, &store, 1, "mrn", "A1");
     seed_patient_name_field(&program, &store, 1, "first", "Sam");
     let outcome = run_entry(
@@ -5546,7 +5188,7 @@ fn whole_resource_read_materializes_unkeyed_groups() {
 #[test]
 fn whole_resource_write_copies_unkeyed_group_fields() {
     let program = checked_program(PATIENT_WITH_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     seed_patient_field(&program, &store, 1, "mrn", "A1");
     seed_patient_name_field(&program, &store, 1, "first", "Sam");
     run_entry(
@@ -5582,7 +5224,7 @@ fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups()
          fn title_of(id: int): string\n\
          \x20   return ^books(id).title ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -5660,7 +5302,7 @@ fn shelf_of(id: int): string
 #[test]
 fn builds_a_local_resource_and_saves_it() {
     let program = checked_program(BOOK_ADD);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let id = run_entry(
         &program,
         &store,
@@ -5692,7 +5334,7 @@ fn reads_a_local_resource_field() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn echo(t: string): string\n    var book: Book\n    book.title = t\n    return book.title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let value = run_entry(
         &program,
         &store,
@@ -5721,7 +5363,7 @@ fn changed_at_of(id: int): instant
 #[test]
 fn clock_now_reads_the_host_clock_capability() {
     let program = checked_program(CLOCK_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // 1970-01-01T00:00:01Z, one second after the epoch.
     let host = Host::new().with_clock(1_000_000_000);
     run_entry_with_host(
@@ -5744,7 +5386,7 @@ fn clock_now_reads_the_host_clock_capability() {
 #[test]
 fn clock_now_without_a_clock_capability_is_a_capability_error() {
     let program = checked_program("fn t(): instant\n    return std::clock::now()\n");
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Plain `run_entry` supplies no host capabilities.
     let result = run_entry(&program, &store, checked_entry!(&program, "test::t"));
     assert!(
@@ -5777,7 +5419,7 @@ fn env_host() -> Host {
 #[test]
 fn env_reads_variables_from_the_host_capability() {
     let program = checked_program(ENV_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = env_host();
     let call = |entry: CheckedEntryCall| {
         run_entry_with_host(&program, &store, &host, entry)
@@ -5823,7 +5465,7 @@ fn env_reads_variables_from_the_host_capability() {
 #[test]
 fn env_get_falls_back_to_the_default_when_absent() {
     let program = checked_program(ENV_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = env_host();
     let call = |name: &str, fallback: &str| {
         run_entry_with_host(
@@ -5856,7 +5498,7 @@ fn env_get_falls_back_to_the_default_when_absent() {
 #[test]
 fn env_require_missing_variable_is_an_absent_error() {
     let program = checked_program(ENV_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = env_host();
     let result = run_entry_with_host(
         &program,
@@ -5873,7 +5515,7 @@ fn env_require_missing_variable_is_an_absent_error() {
 #[test]
 fn env_without_an_environment_capability_is_a_capability_error() {
     let program = checked_program(ENV_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Plain `run_entry` supplies no host capabilities, so the whole module is
     // unavailable — even presence checks.
     let result = run_entry(
@@ -5902,7 +5544,7 @@ fn boom()
 #[test]
 fn log_writes_each_level_to_the_host_sink() {
     let program = checked_program(LOG_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let sink = Rc::new(RefCell::new(String::new()));
     let host = Host::new().with_log_sink(Rc::clone(&sink));
     run_entry_with_host(
@@ -5935,7 +5577,7 @@ fn log_writes_each_level_to_the_host_sink() {
 #[test]
 fn log_without_a_log_capability_is_a_capability_error() {
     let program = checked_program(LOG_SAMPLE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Plain `run_entry` supplies no host capabilities.
     let result = run_entry(
         &program,
@@ -5961,7 +5603,7 @@ fn a_group_entry_field_write_lands_in_saved_data() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6020,7 +5662,7 @@ fn group_entry_field_writes_compose_in_a_transaction() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n        required shelf: string\n\nfn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6127,7 +5769,7 @@ fn the_reference_sample_runs_end_to_end() {
     // transaction (whole-resource + history group writes),
     // tag it, and print the fiction shelf via index traversal.
     let program = checked_program(&sample_source());
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_clock(1_700_000_000_000_000_000); // 2023-11-14T22:13:20Z
     let outcome = run_entry_with_host(
         &program,
@@ -6147,8 +5789,7 @@ fn the_reference_sample_runs_on_native_storage() {
     // backend, with output identical to the in-memory run.
     let program = checked_program(&sample_source());
     let dir = tempfile::tempdir().expect("create a temp dir");
-    let store =
-        TreeStore::new(RedbStore::open(&dir.path().join("sample.redb")).expect("open redb"));
+    let store = TreeStore::open(&dir.path().join("sample.redb")).expect("open redb");
     let host = Host::new().with_clock(1_700_000_000_000_000_000);
     let outcome = run_entry_with_host(
         &program,
@@ -6181,7 +5822,7 @@ fn version_title(id: int, v: int): string
 #[test]
 fn reads_a_field_from_a_group_entry() {
     let program = checked_program(BOOK_VERSIONS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6223,7 +5864,7 @@ fn reads_a_field_from_a_group_entry() {
 #[test]
 fn reading_an_absent_group_field_is_an_error() {
     let program = checked_program(BOOK_VERSIONS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(
         &program,
         &store,
@@ -6262,7 +5903,7 @@ fn the_sample_update_functions_run() {
         sample_source()
     );
     let program = checked_program(&source);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let when = Value::Instant(1_700_000_000_000_000_000);
     assert_eq!(
         run_entry(
@@ -6312,7 +5953,7 @@ fn multiple_stores_over_one_resource_keep_runtime_roots_separate() {
          fn archived(): string\n\
          \x20   return ^archivedBooks(1).title ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let live = run_entry(&program, &store, checked_entry!(&program, "test::live"))
@@ -6346,7 +5987,7 @@ fn title(): string
 #[test]
 fn allocates_and_uses_a_single_key_store_identity() {
     let program = checked_program(BOOK_IDENTITY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6377,7 +6018,7 @@ fn a_plain_int_identity_still_works() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn save()\n    ^books(1).title = \"a\"\n\nfn read(): string\n    return ^books(1).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
     let value = run_entry(&program, &store, checked_entry!(&program, "test::read"))
         .expect("read")
@@ -6401,7 +6042,7 @@ fn statusOf(s: string, c: string): string
 #[test]
 fn constructs_and_uses_a_composite_identity_round_trips() {
     let program = checked_program(ENROLLMENT_IDENTITY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6449,7 +6090,7 @@ fn composite_root_keys_write_in_declaration_order() {
     let program = checked_program(
         "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::enroll")).expect("enroll");
     assert_eq!(
         read_data_value(
@@ -6471,7 +6112,7 @@ fn whole_resource_read_through_an_identity() {
     let program = checked_program(
         "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     write_data_value(
         &program,
         &store,
@@ -6529,7 +6170,7 @@ fn restoreFixture(theme: string, maxLoans: int)
 #[test]
 fn singleton_field_read_and_write() {
     let program = checked_program(SETTINGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6574,7 +6215,7 @@ fn singleton_field_read_and_write() {
 #[test]
 fn singleton_whole_read_and_write_round_trip() {
     let program = checked_program(SETTINGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Seed the singleton's fields directly.
     write_data_value(
         &program,
@@ -6671,7 +6312,7 @@ fn lastOf(id: int): string
 #[test]
 fn unkeyed_group_field_write_then_read_round_trips() {
     let program = checked_program(PATIENT_UNKEYED_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6712,7 +6353,7 @@ fn unkeyed_group_field_write_then_read_round_trips() {
 #[test]
 fn an_absent_unkeyed_group_field_read_uses_the_default() {
     let program = checked_program(PATIENT_UNKEYED_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let value = run_entry(
         &program,
         &store,
@@ -6765,7 +6406,7 @@ fn changeIsbnThroughHelper(isbn: string)
 #[test]
 fn reads_an_identity_from_a_unique_index() {
     let program = checked_program(BOOK_ISBN);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6809,7 +6450,7 @@ fn a_unique_index_value_read_rejects_the_wrong_arity_at_runtime() {
 #[test]
 fn an_absent_unique_index_lookup_uses_the_fallback_identity() {
     let program = checked_program(BOOK_ISBN);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6840,7 +6481,7 @@ fn an_absent_unique_index_lookup_uses_the_fallback_identity() {
 #[test]
 fn unique_index_presence_and_count_follow_the_lookup_value() {
     let program = checked_program(BOOK_ISBN);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6872,7 +6513,7 @@ fn unique_index_presence_and_count_follow_the_lookup_value() {
 #[test]
 fn unique_index_lookup_iteration_yields_the_stored_identity() {
     let program = checked_program(BOOK_ISBN);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6914,7 +6555,7 @@ fn unique_index_lookup_iteration_yields_the_stored_identity() {
 #[test]
 fn helper_call_mutating_a_traversed_unique_index_faults() {
     let program = checked_program(BOOK_ISBN);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -6946,7 +6587,7 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn register(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn countKeysByIsbn(isbn: string): int\n    var c = 0\n    for id in keys(^books.byIsbn(isbn))\n        c = c + 1\n    return c\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -7060,7 +6701,7 @@ fn activeCourseExactCount(student: string, course: string): int
 #[test]
 fn traverses_a_composite_identity_index() {
     let program = checked_program(ENROLLMENT_STATUS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
             &program,
@@ -7174,7 +6815,7 @@ fn helper_mutating_a_traversed_composite_index_faults_at_runtime() {
     let program = checked_program(
         "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    required status: string\n    required student: string\n    required course: string\n\n    index byStatus(status, studentId, courseId)\n\nfn enroll(s: string, c: string, st: string)\n    var enrollment: Enrollment\n    enrollment.status = st\n    enrollment.student = s\n    enrollment.course = c\n    ^enrollments(s, c) = enrollment\n\nfn markInactive(id: Id(^enrollments))\n    ^enrollments(id).status = \"inactive\"\n\nfn deactivateExact(student: string, course: string)\n    for id in ^enrollments.byStatus(\"active\", student, course)\n        markInactive(id)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -7204,7 +6845,7 @@ fn helper_mutating_a_traversed_composite_index_faults_at_runtime() {
 #[test]
 fn direct_composite_identity_index_loop_yields_identities() {
     let program = checked_program(ENROLLMENT_STATUS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
             &program,
@@ -7273,7 +6914,7 @@ fn ids()
 #[test]
 fn iterates_a_primary_keyed_root() {
     let program = checked_program(BOOK_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
             &program,
@@ -7299,7 +6940,7 @@ fn iterates_a_primary_keyed_root() {
 #[test]
 fn primary_root_loop_yields_identities() {
     let program = checked_program(BOOK_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
             &program,
@@ -7328,7 +6969,7 @@ fn primary_root_loop_yields_identities() {
 #[test]
 fn two_name_primary_root_loop_yields_id_and_resource() {
     let program = checked_program(BOOK_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
             &program,
@@ -7357,7 +6998,7 @@ fn two_name_primary_root_loop_yields_id_and_resource() {
 #[test]
 fn reversed_two_name_primary_root_loop_yields_resources() {
     let program = checked_program(BOOK_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
             &program,
@@ -7386,7 +7027,7 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
 #[test]
 fn reversed_primary_root_expression_yields_identities() {
     let program = checked_program(BOOK_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
             &program,
@@ -7415,7 +7056,7 @@ fn reversed_primary_root_expression_yields_identities() {
 #[test]
 fn keys_of_a_primary_root_materializes_a_sequence() {
     let program = checked_program(BOOK_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -7451,7 +7092,7 @@ fn iterating_a_singleton_root_is_a_type_error() {
     let program = checked_program(
         "resource Settings at ^settings\n    theme: string\n\nfn each()\n    for s in ^settings\n        print(\"x\")\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let error = run_entry(&program, &store, checked_entry!(&program, "test::each")).unwrap_err();
     assert_eq!(error.code, RUN_TYPE, "{error:?}");
 }
@@ -7472,7 +7113,7 @@ fn statuses()
 #[test]
 fn iterates_a_composite_primary_root() {
     let program = checked_program(ENROLLMENT_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
             &program,
@@ -7537,7 +7178,7 @@ fn keysOf()
 #[test]
 fn iterates_a_sequence_child_layer() {
     let program = checked_program(BOOK_TAGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     // Direct layer iteration yields 1-based positions in key order.
@@ -7558,7 +7199,7 @@ fn iterates_a_sequence_child_layer() {
 #[test]
 fn sequence_child_layer_two_name_loop_yields_element_values() {
     let program = checked_program(BOOK_TAGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
@@ -7573,7 +7214,7 @@ fn sequence_child_layer_two_name_loop_yields_element_values() {
 #[test]
 fn two_name_sequence_child_layer_loop_yields_key_and_value() {
     let program = checked_program(BOOK_TAGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
@@ -7588,7 +7229,7 @@ fn two_name_sequence_child_layer_loop_yields_key_and_value() {
 #[test]
 fn reversed_sequence_child_layer_loop_yields_values_descending() {
     let program = checked_program(BOOK_TAGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
@@ -7603,7 +7244,7 @@ fn reversed_sequence_child_layer_loop_yields_values_descending() {
 #[test]
 fn reversed_sequence_child_layer_expression_yields_positions_descending() {
     let program = checked_program(BOOK_TAGS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
@@ -7633,7 +7274,7 @@ fn scores()
 #[test]
 fn iterates_a_keyed_child_tree() {
     let program = checked_program(PLAYER_SCORES);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let score = |player: &str, n: i64| {
         write_data_value(
             &program,
@@ -7689,7 +7330,7 @@ fn versionEntries()
 #[test]
 fn keyed_group_layer_loop_yields_materialized_entries() {
     let program = checked_program(BOOK_VERSION_LOOPS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
@@ -7704,7 +7345,7 @@ fn keyed_group_layer_loop_yields_materialized_entries() {
 #[test]
 fn two_name_keyed_group_layer_loop_yields_key_and_entry() {
     let program = checked_program(BOOK_VERSION_LOOPS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let outcome = run_entry(
@@ -7737,7 +7378,7 @@ fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let faulted = run_entry(&program, &store, checked_entry!(&program, "test::grow"));
     assert!(
@@ -7751,7 +7392,7 @@ fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    append(^books(1).tags, \"x\")\n\nfn grow()\n    append(^books(1).tags, \"y\")\n\nfn walk()\n    for tag in ^books(1).tags\n        grow()\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let faulted = run_entry(&program, &store, checked_entry!(&program, "test::walk"));
     assert!(
@@ -7773,7 +7414,7 @@ fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let faulted = run_entry(&program, &store, checked_entry!(&program, "test::grow"));
     assert!(
@@ -7789,7 +7430,7 @@ fn collecting_keys_first_then_deleting_is_allowed() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\nfn remaining(): int\n    return count(^books)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     run_entry(&program, &store, checked_entry!(&program, "test::clear")).expect("clear");
     // Every record was removed.
@@ -7812,7 +7453,7 @@ fn mutating_a_different_record_layer_while_traversing_is_allowed() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn copy()\n    for tag in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\nfn tags2(): int\n    return count(^books(2).tags)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     run_entry(&program, &store, checked_entry!(&program, "test::copy")).expect("copy");
     assert_eq!(
@@ -7903,7 +7544,7 @@ fn breakAfterFirst(): int
 #[test]
 fn reversed_layer_iterates_descending_and_skips_a_hole() {
     let program = checked_program(NAV_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
             &program,
@@ -7969,7 +7610,7 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
 #[test]
 fn next_and_prev_skip_a_deleted_hole() {
     let program = checked_program(NAV_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
             &program,
@@ -8031,7 +7672,7 @@ fn next_and_prev_skip_a_deleted_hole() {
 #[test]
 fn next_of_bare_layer_is_first_and_prev_is_last() {
     let program = checked_program(NAV_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
             &program,
@@ -8076,7 +7717,7 @@ fn next_of_bare_layer_is_first_and_prev_is_last() {
 #[test]
 fn prev_of_first_is_absent_and_composes_with_coalesce() {
     let program = checked_program(NAV_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
             &program,
@@ -8131,7 +7772,7 @@ fn prev_of_first_is_absent_and_composes_with_coalesce() {
 #[test]
 fn next_neighbor_identity_reads_a_field() {
     let program = checked_program(NAV_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -8172,7 +7813,7 @@ fn next_neighbor_identity_reads_a_field() {
 #[test]
 fn reversed_iteration_supports_early_break() {
     let program = checked_program(NAV_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     for id in 1..=3 {
         run_entry(
             &program,
@@ -8205,7 +7846,7 @@ fn next_on_a_keyed_child_layer_position() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\nfn nextPos(p: int): int\n    return next(^books(1).tags(p)) ?? 0\n\nfn firstPos(): int\n    return next(^books(1).tags) ?? 0\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     // Positions are 1, 2, 3; the successor of 1 is 2.
@@ -8235,7 +7876,7 @@ fn reversed_over_an_in_memory_sequence_reverses_directly() {
     let program = checked_program(
         "fn rev()\n    for word in reversed(std::text::split(\"a,b,c\", \",\"))\n        print(word)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let outcome = run_entry(&program, &store, checked_entry!(&program, "test::rev")).expect("run");
     assert_eq!(outcome.output, "c\nb\na\n");
 }
@@ -8253,7 +7894,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     // A composite identity reverses at every level, so the whole identity stream is
     // the exact reverse of the ascending one — not just the outermost component.
     let program = checked_program(ENROLLMENT_PRIMARY);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
             &program,
@@ -8308,7 +7949,7 @@ fn reversed_over_an_index_branch_descends() {
     // `reversed(^books.byShelf(\"x\"))` walks a declared index branch backward,
     // yielding the matching identities in descending id order.
     let program = checked_program(BOOK_SHELF_NAV);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, s: &str| {
         run_entry(
             &program,
@@ -8379,11 +8020,11 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
     // The declared `index byShelf` is a named child of `^books`, stored after the
     // record-key children. The edge seek must skip it: `next` past the last record
     // is a catchable absent-element (so `??` recovers), and `prev(^books)` lands on
-    // the last record, not the index name. Both must hold on MemStore and redb.
+    // the last record, not the index name. Both must hold in memory and redb.
     let program = checked_program(BOOK_SHELF_NEIGHBOR);
     let dir = tempfile::tempdir().expect("temp dir");
-    let mem = TreeStore::new(MemStore::new());
-    let redb = TreeStore::new(RedbStore::open(&dir.path().join("nav.redb")).expect("open redb"));
+    let mem = TreeStore::memory();
+    let redb = TreeStore::open(&dir.path().join("nav.redb")).expect("open redb");
     let stores: [&TreeStore; 2] = [&mem, &redb];
 
     for store in stores {
@@ -8478,7 +8119,7 @@ fn countMissingTags(): int
 #[test]
 fn count_reports_scalar_presence_and_child_counts() {
     let program = checked_program(BOOK_COUNT);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let count = |entry: &str| {
@@ -8499,7 +8140,7 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\nfn n(): int\n    return count(^books(1).tags)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     // Seed a value at `^books(1).tags` itself and two children below it.
     write_data_value(
         &program,
@@ -8575,7 +8216,7 @@ fn countRecord(id: int): int
 #[test]
 fn count_over_an_index_branch_matches_branch_entry_count() {
     let program = checked_program(BOOK_COUNT_INDEX);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
             &program,
@@ -8693,7 +8334,7 @@ fn count_over_an_indexed_root_ignores_populated_index_branches() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\nfn countRoot(): int\n    return count(^books)\n\nfn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let call = |entry: CheckedEntryCall| run_entry(&program, &store, entry).expect("run").value;
 
     assert_eq!(
@@ -8733,15 +8374,13 @@ fn count_over_an_indexed_root_ignores_populated_index_branches() {
 }
 
 #[test]
-fn count_over_a_direct_saved_root_uses_typed_scan_without_backend_child_lists() {
+fn count_over_a_direct_saved_root_matches_written_records() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn countRoot(): int\n    return count(^books)\n",
     );
-    let probe = Rc::new(StoreProbe::default());
-    let store = TreeStore::new(ProbedStore::new(Rc::clone(&probe)));
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    probe.reset();
     assert_eq!(
         run_entry(
             &program,
@@ -8752,33 +8391,22 @@ fn count_over_a_direct_saved_root_uses_typed_scan_without_backend_child_lists() 
         .value,
         Some(Value::Int(3))
     );
-    assert_eq!(probe.child_count.get(), 0);
-    assert_eq!(probe.child_keys.get(), 0);
-    assert_eq!(probe.child_keys_rev.get(), 0);
-    assert!(probe.scan.get() > 0);
 }
 
 #[test]
-fn keys_saved_root_loop_uses_typed_tree_scan_boundary() {
+fn keys_saved_root_loop_returns_ids_in_store_order() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn idOrder()\n    for id in keys(^books)\n        print($\"{id}\")\n",
     );
-    let probe = Rc::new(StoreProbe::default());
-    let store = TreeStore::new(ProbedStore::new(Rc::clone(&probe)));
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    probe.reset();
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::idOrder"))
             .expect("id order")
             .output,
         "1\n2\n3\n"
     );
-    assert_eq!(probe.child_keys.get(), 0);
-    assert_eq!(probe.child_keys_rev.get(), 0);
-    assert_eq!(probe.first_child.get(), 0);
-    assert_eq!(probe.next_sibling.get(), 0);
-    assert!(probe.scan.get() > 0);
 }
 
 #[test]
@@ -8786,7 +8414,7 @@ fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\nfn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if ^books(id).title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if ^books(id).title == \"B\"\n            total = total * 10 + 2\n        else if ^books(id).title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     assert_eq!(
@@ -8802,12 +8430,11 @@ fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
 }
 
 #[test]
-fn direct_saved_root_loop_returns_before_scanning_later_pages() {
+fn direct_saved_root_loop_returns_before_later_records() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = $\"Book {id}\"\n\nfn printFirstId()\n    for id in keys(^books)\n        print($\"{id}\")\n        return\n",
     );
-    let probe = Rc::new(StoreProbe::default());
-    let store = TreeStore::new(ProbedStore::new(Rc::clone(&probe)));
+    let store = TreeStore::memory();
     for id in 1..=129 {
         run_entry(
             &program,
@@ -8817,7 +8444,6 @@ fn direct_saved_root_loop_returns_before_scanning_later_pages() {
         .expect("seed");
     }
 
-    probe.reset();
     assert_eq!(
         run_entry(
             &program,
@@ -8828,15 +8454,14 @@ fn direct_saved_root_loop_returns_before_scanning_later_pages() {
         .output,
         "1\n"
     );
-    assert_eq!(probe.scan_after.get(), 0);
 }
 
 #[test]
-fn saved_values_loop_returns_before_reading_later_records() {
+fn direct_values_loop_returns_before_reading_later_records() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     write_data_value(
         &program,
@@ -8844,7 +8469,7 @@ fn saved_values_loop_returns_before_reading_later_records() {
         "books",
         &[SavedKey::Int(2)],
         &data_path(&program, "books", &["note"]),
-        SavedValue::Str("legacy incomplete row".into()),
+        SavedValue::Str("incomplete row".into()),
     );
 
     assert_eq!(
@@ -8860,11 +8485,11 @@ fn saved_values_loop_returns_before_reading_later_records() {
 }
 
 #[test]
-fn saved_entries_loop_returns_before_reading_later_records() {
+fn direct_entries_loop_returns_before_reading_later_records() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     write_data_value(
         &program,
@@ -8872,7 +8497,7 @@ fn saved_entries_loop_returns_before_reading_later_records() {
         "books",
         &[SavedKey::Int(2)],
         &data_path(&program, "books", &["note"]),
-        SavedValue::Str("legacy incomplete row".into()),
+        SavedValue::Str("incomplete row".into()),
     );
 
     assert_eq!(
@@ -8888,28 +8513,20 @@ fn saved_entries_loop_returns_before_reading_later_records() {
 }
 
 #[test]
-fn keys_saved_layer_loops_use_typed_tree_scan_boundary() {
+fn keys_saved_layer_loops_return_keys_in_order() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(1).tags(1) = \"x\"\n    ^books(1).tags(2) = \"y\"\n    ^books(1).tags(3) = \"z\"\n\nfn tagKeys(): int\n    var total = 0\n    for pos in keys(^books(1).tags)\n        total = total * 10 + pos\n    return total\n\nfn tagKeysRev(): int\n    var total = 0\n    for pos in reversed(keys(^books(1).tags))\n        total = total * 10 + pos\n    return total\n",
     );
-    let probe = Rc::new(StoreProbe::default());
-    let store = TreeStore::new(ProbedStore::new(Rc::clone(&probe)));
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    probe.reset();
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::tagKeys"))
             .expect("tag keys")
             .value,
         Some(Value::Int(123))
     );
-    assert_eq!(probe.child_keys.get(), 0);
-    assert_eq!(probe.child_keys_rev.get(), 0);
-    assert_eq!(probe.first_child.get(), 0);
-    assert_eq!(probe.next_sibling.get(), 0);
-    assert!(probe.scan.get() > 0);
 
-    probe.reset();
     assert_eq!(
         run_entry(
             &program,
@@ -8920,11 +8537,6 @@ fn keys_saved_layer_loops_use_typed_tree_scan_boundary() {
         .value,
         Some(Value::Int(321))
     );
-    assert_eq!(probe.child_keys.get(), 0);
-    assert_eq!(probe.child_keys_rev.get(), 0);
-    assert_eq!(probe.last_child.get(), 0);
-    assert_eq!(probe.prev_sibling.get(), 0);
-    assert!(probe.scan.get() > 0);
 }
 
 #[test]
@@ -8932,7 +8544,7 @@ fn count_over_a_composite_root_matches_direct_iteration() {
     let program = checked_program(
         "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\nfn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\nfn countRoot(): int\n    return count(^cells)\n\nfn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
         run_entry(
             &program,
@@ -9007,7 +8619,7 @@ fn assertVersionAbsent(id: int, ver: int)
 #[test]
 fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     let program = checked_program(BOOK_KEYED_PRESENCE);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
 
     let call = |entry: CheckedEntryCall| run_entry(&program, &store, entry).expect("run").value;
@@ -9190,7 +8802,7 @@ fn cellEntries()
 #[test]
 fn nested_keyed_leaf_entries_write_append_and_read_back() {
     let program = checked_program(NESTED_KEYED_LAYERS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
 
     run_entry(
         &program,
@@ -9259,7 +8871,7 @@ fn nested_keyed_leaf_entries_write_append_and_read_back() {
 #[test]
 fn nested_keyed_group_layers_iterate_and_materialize_entries() {
     let program = checked_program(NESTED_KEYED_LAYERS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -9357,7 +8969,7 @@ fn tagEntriesReversed(id: int)
 #[test]
 fn values_and_entries_materialize_whole_records_over_a_primary_root() {
     let program = checked_program(BOOK_VALUES);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, t: &str| {
         run_entry(
             &program,
@@ -9387,7 +8999,7 @@ fn values_and_entries_materialize_whole_records_over_a_primary_root() {
 #[test]
 fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     let program = checked_program(BOOK_VALUES);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -9447,7 +9059,7 @@ fn reversed_values_and_entries_bind_values_and_pairs_descending() {
     // bare child keys. Likewise `for k, v in reversed(entries(L))` binds (key,
     // value) pairs descending, not key-only segments (which would runtime-error).
     let program = checked_program(BOOK_VALUES);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let add = |id: i64, t: &str| {
         run_entry(
             &program,
@@ -9483,7 +9095,7 @@ fn reversed_values_and_entries_over_a_keyed_layer_descend() {
     // The same shaping over a keyed/sequence child layer: values and (pos, value)
     // pairs descend by key, rather than collapsing to bare position keys.
     let program = checked_program(BOOK_VALUES);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -9546,7 +9158,7 @@ fn a_recoverable_write_fault_is_catchable_across_a_call_boundary() {
          \x20   catch e: Error\n\
          \x20       return e.code\n"
     ));
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let value = run_entry(&program, &store, checked_entry!(&program, "test::run"))
         .expect("run")
         .value;
@@ -9563,7 +9175,7 @@ fn an_uncaught_cross_boundary_write_fault_keeps_its_dotted_code() {
          \x20   save(1, \"x\")\n\
          \x20   save(2, \"x\")\n"
     ));
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let error = run_entry(&program, &store, checked_entry!(&program, "test::run")).unwrap_err();
     assert_eq!(error.code, "write.unique_conflict", "{error:?}");
 }
@@ -9612,7 +9224,7 @@ fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
          pub fn drop()\n\
          \x20   delete ^patients(\"p1\").name.last\n"
     ));
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::drop"))
         .expect("sparse group-field delete is a no-op");
 }
@@ -9624,7 +9236,7 @@ fn deleting_a_required_field_inside_an_unkeyed_group_is_rejected() {
          pub fn drop()\n\
          \x20   delete ^patients(\"p1\").name.first\n"
     ));
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(&program, &store, checked_entry!(&program, "test::drop"));
     assert!(
         matches!(result, Err(ref error) if error.code == "write.required_field"),
@@ -9639,7 +9251,7 @@ fn deleting_an_unkeyed_group_with_required_descendants_is_rejected() {
          pub fn drop()\n\
          \x20   delete ^patients(\"p1\").name\n"
     ));
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let result = run_entry(&program, &store, checked_entry!(&program, "test::drop"));
     assert!(
         matches!(result, Err(ref error) if error.code == "write.required_field"),
@@ -9650,7 +9262,7 @@ fn deleting_an_unkeyed_group_with_required_descendants_is_rejected() {
 #[test]
 fn deleting_a_nested_unkeyed_group_with_required_descendants_is_rejected() {
     let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let result = run_entry(&program, &store, checked_entry!(&program, "test::drop"));
     assert!(
@@ -9662,7 +9274,7 @@ fn deleting_a_nested_unkeyed_group_with_required_descendants_is_rejected() {
 #[test]
 fn maintenance_can_delete_a_nested_unkeyed_group_with_required_descendants() {
     let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let host = Host::new().with_maintenance();
     run_entry_with_host(
@@ -9695,7 +9307,7 @@ fn maintenance_can_delete_a_nested_unkeyed_group_with_required_descendants() {
 #[test]
 fn keyed_group_entry_read_materializes_unkeyed_group_descendants() {
     let program = checked_program(PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let outcome = run_entry(
         &program,
@@ -9718,7 +9330,7 @@ fn deleting_a_whole_root_without_maintenance_is_rejected() {
     // `delete ^books` on a keyed root is maintenance work; with no maintenance
     // capability the run is rejected with `write.requires_maintenance`.
     let program = checked_program(MAINTENANCE_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     let result = run_entry(
         &program,
@@ -9747,7 +9359,7 @@ fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
     // With the maintenance capability, `delete ^books` drops the entire managed
     // root subtree: no records and no index entries remain.
     let program = checked_program(MAINTENANCE_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -9792,7 +9404,7 @@ fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
 #[test]
 fn maintenance_root_delete_while_iterating_an_index_is_a_traversal_fault() {
     let program = checked_program(MAINTENANCE_BOOKS);
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -9820,7 +9432,7 @@ fn whole_identity_delete_stays_ungated_under_no_maintenance() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\nfn drop_one()\n    delete ^books(1)\n\nfn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     run_entry(&program, &store, checked_entry!(&program, "test::drop_one"))
         .expect("ordinary identity delete");
@@ -9844,7 +9456,7 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn drop_title(id: int)\n    delete ^books(id).title\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -9879,7 +9491,7 @@ fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn repair(id: int)\n    transaction\n        ^books(id).shelf = \"legacy\"\n        delete ^books(id).title\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -9926,7 +9538,7 @@ fn maintenance_transaction_still_rejects_new_partial_required_record() {
     let program = checked_program(
         "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -9957,7 +9569,7 @@ fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record()
     let program = checked_program(
         "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -9988,7 +9600,7 @@ fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record
     let program = checked_program(
         "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).name = \"temporary\"\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -10019,7 +9631,7 @@ fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partia
     let program = checked_program(
         "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    var item: Item\n    item.name = \"temporary\"\n    item.shelf = \"legacy\"\n    transaction\n        ^items(id) = item\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -10050,7 +9662,7 @@ fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_e
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    versions(version: int)\n        required title: string\n        note: string\n\nfn seed(id: int)\n    ^books(id).title = \"root\"\n\nfn create_version(id: int)\n    var version: Book\n    version.title = \"temporary\"\n    version.note = \"legacy\"\n    transaction\n        ^books(id).versions(1) = version\n        delete ^books(id).versions(1).title\n\nfn has_version(id: int): bool\n    return exists(^books(id).versions(1))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -10088,7 +9700,7 @@ fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
     let program = checked_program(
         "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        transaction\n            ^items(id).name = \"temporary\"\n            ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -10119,7 +9731,7 @@ fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writ
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    notes(note: string)\n        required text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn repair(id: int)\n    transaction\n        delete ^books(id).title\n        ^books(id).notes(\"n1\").text = \"indexed\"\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn note_text(id: int): string\n    return ^books(id).notes(\"n1\").text ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -10164,7 +9776,7 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn inner_delete(id: int)\n    transaction\n        ^books(id).shelf = \"outer\"\n        transaction\n            delete ^books(id).title\n\nfn outer_delete(id: int)\n    transaction\n        delete ^books(id).title\n        transaction\n            ^books(id).shelf = \"inner\"\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -10246,7 +9858,7 @@ fn quoted_undeclared_saved_field_write_is_unknown_field_without_maintenance() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -10277,7 +9889,7 @@ fn quoted_undeclared_saved_field_write_does_not_get_raw_type_rules() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn quoted_write(id: int, n: int)\n    ^books(id).\"count\" = n\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -10296,7 +9908,7 @@ fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn typo(id: int)\n    ^books(id).nope = \"x\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
         &program,
@@ -10315,7 +9927,7 @@ fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn quoted_update(id: int)\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -10370,7 +9982,7 @@ fn managed_write_to_a_declared_field_is_unaffected() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn move_shelf(id: int, s: string)\n    ^books(id).shelf = s\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(
         &program,
@@ -10422,7 +10034,7 @@ fn quoted_declared_saved_field_write_uses_managed_path_without_maintenance() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn quoted_update(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -10456,7 +10068,7 @@ fn an_identity_argument_splices_in_as_the_record_key() {
          fn save()\n    const id = nextId(^books)\n    ^books(id).title = \"a\"\n\n\
          fn read(): string\n    return ^books(1).title\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::read"))
@@ -10497,7 +10109,7 @@ fn a_single_key_store_identity_splice_still_writes() {
          fn seed()\n    ^books(7).title = \"seed\"\n\n\
          fn save()\n    for id in ^books\n        ^books(id).title = \"a\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
     run_entry(&program, &store, checked_entry!(&program, "test::save"))
         .expect("store identity splice writes");
@@ -10546,7 +10158,7 @@ fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
          fn save()\n    ^patients(1).name.first = \"Sam\"\n\n\
          fn read(): string\n    return ^patients(1)?.name?.first ?? \"\"\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::save")).expect("save");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::read"))
@@ -10620,7 +10232,7 @@ fn hook_observes_each_statement_with_its_locals_and_depth() {
          \x20\x20\x20\x20var c = b * 2\n\
          \x20\x20\x20\x20return c\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let mut hook = Recorder::default();
     let outcome = run_entry_with_debugger(
         &program,
@@ -10660,7 +10272,7 @@ fn hook_depth_tracks_nested_activations() {
          \x20\x20\x20\x20const x = inner()\n\
          \x20\x20\x20\x20return x\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let mut hook = Recorder::default();
     run_entry_with_debugger(
         &program,
@@ -10689,7 +10301,7 @@ fn hook_store_handle_sees_prior_writes() {
          \x20\x20\x20\x20^accts(1).balance = 7\n\
          \x20\x20\x20\x20return 0\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
 
     struct StorePeeker<'a> {
         program: &'a CheckedRuntimeProgram,
@@ -10745,7 +10357,7 @@ fn hook_error_aborts_the_run() {
          \x20\x20\x20\x20const b = 2\n\
          \x20\x20\x20\x20return a + b\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let mut hook = Recorder {
         steps: Vec::new(),
         abort_at_line: Some(5),
@@ -10810,7 +10422,7 @@ fn hook_observes_each_managed_write_in_commit_order() {
          \x20\x20\x20\x20delete ^books(1)\n\
          \x20\x20\x20\x20return 0\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let mut hook = WriteRecorder::default();
     run_entry_with_debugger(
         &program,
@@ -10874,7 +10486,7 @@ fn hook_observes_each_managed_delete_shape() {
          \x20\x20\x20\x20delete ^books(3).details.meta.label\n\
          \x20\x20\x20\x20delete ^books(4).versions(1)\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry_with_host(
         &program,
         &store,
@@ -10965,7 +10577,7 @@ fn hook_observes_maintenance_whole_root_deletes() {
          fn dropRoot()\n\
          \x20\x20\x20\x20delete ^books\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry_with_host(
         &program,
         &store,
@@ -11025,7 +10637,7 @@ fn no_hook_run_pays_no_write_observation() {
          \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
          \x20\x20\x20\x20return 0\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry_with_host(
         &program,
         &store,
@@ -11086,7 +10698,7 @@ fn an_ordinary_run_with_host_is_unchanged_by_the_hook_machinery() {
          \x20\x20\x20\x20const b = a + 1\n\
          \x20\x20\x20\x20return b\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let outcome = run_entry_with_host(
         &program,
         &store,
@@ -11169,7 +10781,7 @@ fn an_enum_field_round_trips_through_saved_data() {
          fn seed(id: int)\n    ^orders(id).state = Status::archived\n\n\
          fn matches_archived(id: int): bool\n    return (^orders(id).state ?? Status::active) == Status::archived\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(
         &program,
         &store,
@@ -11215,7 +10827,7 @@ fn an_entry_enum_argument_uses_checked_catalog_identity() {
          fn save(state: Status)\n    ^orders(1).state = state\n\n\
          fn read(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     let state = run_entry(&program, &store, checked_entry!(&program, "test::give"))
         .expect("give")
         .value
@@ -11244,7 +10856,7 @@ fn an_enum_index_uses_catalog_member_keys() {
          fn countArchived(): int\n    var count = 0\n    for id in ^orders.byState(Status::archived)\n        count = count + 1\n    return count\n\n\
          fn countActive(): int\n    var count = 0\n    for id in ^orders.byState(Status::active)\n        count = count + 1\n    return count\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed"))
         .expect("seed enum-index fixture");
     assert_eq!(
@@ -11279,7 +10891,7 @@ fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
          ^session.kinds(1) = Kind::plus\n    \
          match ^session.kinds(1) ?? Kind::number\n        number\n            return 0\n        plus\n            return 1\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::readBack"))
             .expect("keyed enum leaf match runs")
@@ -11657,7 +11269,7 @@ fn an_identity_field_round_trips_through_saved_data() {
     // A `Book.authorId: Id(^authors)` field stores an identity and reads it back as
     // the same identity value produced by the author store.
     let program = typed_ref_program();
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::read"))
@@ -11683,7 +11295,7 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
          \x20   ^authors(author).name = \"Ada\"\n\
          \x20   ^books(1).authorId = author\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     // The stored leaf is the canonical identity encoding — the same
     // order-preserving key bytes a unique index entry stores — not a scalar
@@ -11697,7 +11309,7 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
     );
     assert_eq!(
         stored,
-        Some(encode_key_value(&SavedKey::Int(1))),
+        Some(encode_identity_payload(&[SavedKey::Int(1)])),
         "identity field stored as its canonical key encoding"
     );
 }
@@ -11724,7 +11336,7 @@ fn an_identity_field_assigned_via_next_id_round_trips() {
          \x20       return stored == author\n\
          \x20   return false\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::read"))
@@ -11753,7 +11365,7 @@ fn a_self_referencing_identity_field_round_trips() {
          \x20   const stored: Id(^people) = ^people(1).managerId ?? expected\n\
          \x20   return stored == expected\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::seed"))
             .unwrap()
@@ -11872,7 +11484,7 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
          \x20           return b.authorId == author\n\
          \x20   return false\n",
     );
-    let store = TreeStore::new(MemStore::new());
+    let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
         run_entry(&program, &store, checked_entry!(&program, "test::read"))

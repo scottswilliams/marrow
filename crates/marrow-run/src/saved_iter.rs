@@ -3,7 +3,7 @@
 use std::ops::ControlFlow;
 
 use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedLayer, CheckedSavedPlace};
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, MaterializeKind, ReadPosition, values_or_entries};
@@ -12,7 +12,6 @@ use crate::durable_read::{
 };
 use crate::env::{Env, Flow, TraversedLayer};
 use crate::error::{Located, RUN_TYPE, RuntimeError, unsupported};
-use crate::index_maintenance::decode_identity_arity;
 use crate::path::lower;
 use crate::read::{
     INDEX_SCAN_PAGE_LIMIT, IndexBranchAddress, collected_identity_value, first_data_child,
@@ -359,18 +358,16 @@ impl UniqueIndexScan {
         let Some(entry) = page.entries.first() else {
             return Ok(Flow::Normal);
         };
-        let identity =
-            decode_identity_arity(&entry.value, self.identity_arity).ok_or_else(|| {
-                RuntimeError {
-                    throw: None,
-                    origin: None,
-                    code: RUN_TYPE,
-                    message: format!(
-                        "the `{}` index entry did not decode to an identity",
-                        self.index_name
-                    ),
-                    span: self.span,
-                }
+        let identity = decode_identity_payload_arity(&entry.value, self.identity_arity)
+            .ok_or_else(|| RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_TYPE,
+                message: format!(
+                    "the `{}` index entry did not decode to an identity",
+                    self.index_name
+                ),
+                span: self.span,
             })?;
         match self.visit_identity(identity, env, visit)? {
             ControlFlow::Continue(()) => Ok(Flow::Normal),

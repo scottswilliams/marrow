@@ -4,7 +4,7 @@ use marrow_check::{
     CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedPlace, StoreIndexKeySource,
     StoredValueMeaning,
 };
-use marrow_store::key::{SavedKey, decode_key_value, encode_key_value};
+use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{TreeStore, decode_tree_enum_member};
 use marrow_store::value::decode_value;
 use marrow_syntax::SourceSpan;
@@ -286,29 +286,10 @@ fn index_address(
 
 fn index_entry_value(unique: bool, identity: &[SavedKey]) -> Vec<u8> {
     if unique {
-        encode_identity(identity)
+        encode_identity_payload(identity)
     } else {
         INDEX_MARKER.to_vec()
     }
-}
-
-pub(crate) fn encode_identity(identity: &[SavedKey]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for key in identity {
-        bytes.extend_from_slice(&encode_key_value(key));
-    }
-    bytes
-}
-
-pub fn decode_identity_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
-    let mut keys = Vec::with_capacity(arity);
-    let mut rest = bytes;
-    for _ in 0..arity {
-        let (key, used) = decode_key_value(rest)?;
-        keys.push(key);
-        rest = rest.get(used..)?;
-    }
-    rest.is_empty().then_some(keys)
 }
 
 fn check_unique_conflict(

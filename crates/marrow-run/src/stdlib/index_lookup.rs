@@ -1,6 +1,6 @@
 use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedTerminal};
 use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
@@ -8,7 +8,6 @@ use crate::collection::Direction;
 use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RuntimeError, unsupported};
 use crate::expr::eval_expr;
-use crate::index_maintenance::decode_identity_arity;
 use crate::store::IndexAddress;
 use crate::value::{Value, identity_value, value_to_key};
 
@@ -190,15 +189,17 @@ fn read_unique_index_value(
         return Ok(None);
     };
     let identity =
-        decode_identity_arity(&entry.value, lookup.identity_arity).ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!(
-                "the `{}` index entry did not decode to an identity",
-                lookup.index_name
-            ),
-            span,
+        decode_identity_payload_arity(&entry.value, lookup.identity_arity).ok_or_else(|| {
+            RuntimeError {
+                throw: None,
+                origin: None,
+                code: RUN_TYPE,
+                message: format!(
+                    "the `{}` index entry did not decode to an identity",
+                    lookup.index_name
+                ),
+                span,
+            }
         })?;
     Ok(Some(identity_value(identity)))
 }

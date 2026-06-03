@@ -17,7 +17,7 @@ runtime, tooling, and backend shape that make that language work.
 A resource is a typed tree.
 A saved resource is a typed tree stored under ^root.
 An index is a generated lookup tree.
-A backend stores ordered paths and bytes.
+A store persists typed tree cells over ordered bytes.
 Marrow owns the meaning of durable data.
 ```
 
@@ -39,12 +39,12 @@ Marrow has a small kernel:
 | Source | Parse, format, resolve, and check `.mw`. |
 | Schema | Turn resources into typed tree shapes. |
 | Runtime | Evaluate checked code and plan saved writes. |
-| Store | Persist ordered paths and byte values. |
+| Store | Persist typed tree cells and byte values. |
 | Tools | Inspect source, schemas, saved trees, and errors. |
 
 Anything that needs field names, types, indexes, history, data evolution, or
-repair belongs above the store. Anything that only needs ordered paths and bytes
-belongs in the store.
+repair belongs above the store. The private engine substrate only needs ordered
+tree-cell bytes.
 
 ## Source Pipeline
 
@@ -55,11 +55,11 @@ Marrow source follows one direct path:
 3. match module declarations to source-root-relative paths;
 4. resolve imports and names;
 5. build resource schemas and source metadata;
-6. check types, effects, saved paths, and capabilities;
+6. check types, effects, durable places, and capabilities;
 7. hand a checked program to runtime and tools.
 
 The checked program contains the module graph, function signatures, schemas,
-type facts, effect facts, logical saved paths, capability needs, and source
+type facts, effect facts, durable-place facts, capability needs, and source
 spans.
 
 Marrow has one `fn` form. A function may be effectful, return a value, or
@@ -136,44 +136,45 @@ or function containers.
 One saved root has one managed owner. If a store owns `^books`, another store
 cannot claim `^books` with a different shape.
 
-Identity keys live in the saved path. They are not stored fields. Typed code
-addresses saved data through the store identity type, not raw key tuples.
+Identity keys are part of typed store identity. They are not stored fields.
+Typed code addresses saved data through checked durable places, not raw key
+tuples.
 
 Schemas come from source. Tools may cache compiled metadata, but the cache is
 not the source of truth.
 
 ## Saved Tree
 
-Saved data is an ordered tree of paths and byte values:
+Saved data is a typed tree backed by tree-cell keys and byte values:
 
 ```text
 ^books(id).title = "Small Gods"
 ```
 
-A saved path has a root, keyed layers, fields, and index branches. A path may
-have a value, children, both, or neither.
+A durable place has a store catalog ID, identity keys, member catalog IDs, and
+the cell family it addresses. Source names and public path text are not physical
+storage identity.
 
-Saved resources are not hidden blobs. A resource is stored as declared fields
-and layers below its identity path, so inspection, traversal, backup, and
-repair all see the same tree shape.
+Saved resources are not opaque byte dumps. A resource is stored as typed nodes,
+leaves, sequences, indexes, and metadata cells, so inspection,
+traversal, backup, and repair all see the same tree shape.
 
-Logical `.mw` paths are lowered before they reach a backend:
+Logical `.mw` places are lowered before they reach the store:
 
 ```text
 ^books(id).title
 ^books.byShelf("fiction", id)
 ```
 
-Both paths start at the saved root `books`. Resource fields, keyed layers, and
-index names become encoded path segments below that root. The byte layout is
-not part of `.mw`.
+Both examples are source-level renderings. The store receives catalog-backed
+cell keys derived from checked facts, not source strings.
 
-The encoding belongs to Marrow. It preserves Marrow order, records segment
-kinds, and prevents collisions between record keys, fields, layers, and index
-names.
+The encoding belongs to Marrow. It preserves Marrow order, records cell family
+and typed key identity, and prevents collisions between data, indexes,
+sequences, and metadata cells.
 
-Raw saved-tree access exists for import, export, data evolution, repair, and tools.
-Ordinary `.mw` code uses managed resources.
+Ordinary `.mw` code uses managed resources. Tooling, backup, and repair use
+typed tree-cell APIs and checked/catalog facts.
 
 ## Values And Order
 
@@ -184,21 +185,19 @@ depend on the selected backend.
 Strings are UTF-8. Bytes remain bytes. Booleans, numbers, dates, instants,
 durations, errors, and generated identities have stable encodings.
 
-Absence is not stored as null. An unpopulated field has no value at that path.
+Absence is not stored as null. An unpopulated field has no leaf cell.
 Managed saved fields and keys reject `unknown`.
 
-The backend returns child keys in Marrow order. That one ordering rule supports
-traversal, generated indexes, backup, restore, editor live reads, and portable
-diffs.
+Tree-cell keys preserve Marrow order. That one ordering rule supports traversal,
+generated indexes, backup, restore, editor live reads, and portable diffs.
 
-Within a declared typed layer, keys order by their type. Raw inspection uses
-the stable encoded segment order.
+Within a declared typed layer, keys order by their type.
 
 ## Managed Writes
 
-A managed saved write is planned above the backend:
+A managed saved write is planned above the store engine:
 
-1. resolve the resource schema for the saved path;
+1. resolve the checked durable place and resource schema;
 2. validate keys and values;
 3. read old values needed by indexes or required-field checks;
 4. check unique indexes;
@@ -257,7 +256,7 @@ as clock, file IO, environment, and logging declare the capabilities they
 need. A command or embedding either provides those capabilities or reports a
 typed capability error.
 
-Standard modules do not bypass managed saved paths. They do not own backend
+Standard modules do not bypass managed saved writes. They do not own backend
 connections, parse `.mw`, inspect schemas, maintain indexes, or expose
 backend-specific storage APIs.
 
@@ -266,23 +265,23 @@ file IO, environment, assertions, and logging.
 
 ## Backend Contract
 
-Every backend provides the same ordered-tree operations over encoded saved
-paths:
+Every store provides the same typed tree-cell operations over a private
+ordered-byte engine:
 
-- read the exact value at a path;
-- write the exact value at a path;
-- delete a value or bounded subtree;
-- report whether a path has a value, children, both, or neither;
-- return child keys in Marrow order;
-- scan a bounded subtree in Marrow order;
-- list saved roots;
+- read and write exact typed cells;
+- delete exact leaf, sequence, and index cells;
+- scan exact index tuples with bounded pages;
+- record catalog epoch, layout epoch, engine profile digest, and commit
+  metadata;
+- open native stores read-only without writer capability;
 - report stable typed errors.
 
 A persistent local backend also owns its data directory, format checks, and
 local locking. Those details stay below the contract.
 
-Backends pass conformance tests for values, presence, ordering, scans,
-deletes, roots, replay, limits, and errors.
+The private engine substrate passes conformance tests for exact reads and
+writes, prefix deletes, bounded scans, cursor-resumed scans, transactions,
+rollback, nested savepoints, and errors.
 
 ## Native Store
 
@@ -292,7 +291,7 @@ runtime, or optional `marrow serve`.
 The native store stays small:
 
 - one normal writable owner per data directory;
-- ordered byte keys for roots and encoded path segments;
+- ordered byte keys for private tree-cell storage;
 - persistent commits for completed writes;
 - bounded scans and typed limit errors;
 - a recorded format version.
@@ -339,18 +338,13 @@ separate packages when they are useful enough to maintain.
 
 ## Portability
 
-The raw ordered path/value stream plus small manifest is a debug/admin transfer
-format for ordered-byte saved-path engines. It is useful for inspection and test
-fixtures, but it is not the production portability contract for tree-cell Marrow
-data.
+Portability is typed tree-cell data plus the source and catalog facts needed to
+interpret it. Backup and restore must account for catalog IDs, typed values,
+generated index trees, sequence state, and engine-profile metadata.
+Derived structures are verified or rebuilt from primary resources before a
+restore publishes data.
 
-With source present, tools can render paths as typed resources. Without source,
-tools can inspect the raw ordered path/value stream.
-
-Typed export/import tooling is deferred. When it lands, it must account for
-catalog IDs, typed values, generated index trees, sequence state, and
-engine-profile metadata, and it must verify or rebuild derived structures from
-primary resources when source is available.
+Raw engine byte streams are not the production portability contract.
 
 Import modes are deferred — see [future/cli.md](future/cli.md).
 
@@ -381,31 +375,17 @@ managed writes.
 Tools inspect the same source, schema, and saved tree model that programs use.
 There is no private admin database.
 
-Inspection has two modes:
-
-- typed inspection when project source is available;
-- raw saved-path inspection when only saved data is available.
-
-`marrow data` is the raw saved-tree command group for inspection, dump, diff,
-load, integrity checks, and stats. Today it provides `marrow data roots` (list
-the saved roots), `marrow data stats` (count saved roots and records), `marrow
-data dump` (print every stored path/value in encoded order for diagnostic/admin
-inspection),
-`marrow data integrity` (verify every stored value
-decodes as a canonical form of its declared schema type, reporting decode
-mismatches as `data.decode`, stale or foreign data as `data.orphan`, and a
-corrupt key as `store.corrupt_path`; it exits `1` when it finds a problem), and
-`marrow data get <path>` (read one path's raw value for inspection). Inspection
-is read-only and never creates the store; `dump`/`get` need only `marrow.json`,
-while `integrity` typechecks against the project's checked schema. These raw
-inspection commands are not the typed production preview or backup/restore
-contract. `diff` and `load` are deferred (see
+Inspection uses typed resources and checked/catalog facts. `marrow data`
+provides read-only `roots`, `stats`, `dump`, `integrity`, and `get` commands
+over the typed tree-cell store. It does not expose backend traversal, physical
+keys, or archive replay as production APIs. `diff`, `load`, and typed
+backup/restore are separate tooling contracts (see
 [future/data-tools.md](future/data-tools.md)).
 
 Typed backup/restore is deferred until the tree-cell backup manifest lands. It
 must compile source, accepted catalog metadata, typed values, index cells,
-sequence state, and engine-profile metadata together instead of treating a raw
-saved-path byte stream as the production backup contract.
+sequence state and engine-profile metadata together instead of
+treating raw engine bytes as the backup contract.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and
@@ -420,12 +400,12 @@ persistent backend, live reads, or local-session inspection.
 The server protocol is newline-delimited JSON over a loopback TCP connection
 (`127.0.0.1`); the bound address is printed on startup. It is a small, read-only
 inspection surface. Path-addressed operations validate against checked saved
-facts before reading. The operations are the saved-tree reads:
+facts before reading. The operations are typed data reads:
 
-- list saved roots with `saved_roots`;
-- list child keys with `saved_children`;
-- read an exact saved path with `saved_get`;
-- walk a bounded saved subtree with `saved_walk`.
+- list stored roots with `data_roots`;
+- list child keys with `data_children`;
+- read an exact typed data query with `data_get`;
+- walk a bounded typed data subtree with `data_walk`.
 
 Two read-only extensions are planned for later, not in the first release:
 evaluating one checked, non-mutating query in a session and returning its typed
@@ -451,9 +431,8 @@ Marrow reports parser, checker, usage, runtime, storage, and protocol failures
 as typed errors. CLI and server output preserve stable codes and structured
 data.
 
-Storage errors name the failed operation, the safe saved path or prefix when
-one can be shown, and the capability or limit involved. Backend-specific
-messages remain plain operator text, not the machine contract.
+Storage errors name the failed operation and the capability or limit involved.
+Backend-specific messages remain plain operator text, not the machine contract.
 
 Bounds are part of the design. Tool reads are bounded or paged. Backends may
 advertise key and value limits. A small bounded implementation is better than
@@ -479,7 +458,7 @@ backend contract in a separate package. They do not define the Marrow language
 or the default storage model.
 
 The core project keeps extension boundaries small: typed source in, checked
-program facts in runtime and tools, ordered path/value operations below.
+program facts in runtime and tools, typed tree-cell operations below.
 
 ## Non-Goals
 

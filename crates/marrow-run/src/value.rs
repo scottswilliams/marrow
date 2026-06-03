@@ -2,7 +2,7 @@
 
 use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
 use marrow_store::value::{SavedValue, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
@@ -12,7 +12,6 @@ use marrow_check::{
 };
 
 use crate::error::{Located, RuntimeError, type_error, unsupported};
-use crate::index_maintenance::decode_identity_arity;
 
 /// A runtime value: the scalars a pure function manipulates plus the in-memory
 /// and saved-tree shapes the data features produce (sequences, resource trees,
@@ -305,7 +304,7 @@ pub(crate) fn decode_leaf(
         StoreLeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
         StoreLeafKind::Enum { enum_id } => decode_enum(program, bytes, *enum_id).map(Value::Enum),
         StoreLeafKind::Identity { arity, .. } => {
-            decode_identity_arity(bytes, *arity).map(identity_value)
+            decode_identity_payload_arity(bytes, *arity).map(identity_value)
         }
     }
 }
