@@ -16,14 +16,14 @@ Status: complete for the Marrow v0.1 public resource/store surface.
   `Book::Id` exist only as rejection fixtures, not accepted surface.
 - Index arguments may name store keys or top-level fields only. Dotted nested
   fields and bare leaves nested inside unkeyed groups are schema errors.
-- A resource name resolves through the module-aware checked resolver. `marrow
-  explain Book` from outside `Book`'s module does not perform project-wide
+- A resource name resolves through the module-aware checked resolver. Tooling
+  surfaces that render resource-name resolution must not perform project-wide
   resource-name fallback.
 
 ## Maintained Invariants
 
-- `marrow explain` resolves resource names only through the checked,
-  module-aware resolver; no production helper performs a project-wide
+- Any tool or runtime surface that renders resource-name resolution uses the
+  checked, module-aware resolver; no production helper performs a project-wide
   resource-name search.
 - Checker annotations, checked facts, constructor fields, local member reads,
   saved member reads, schema-query defaults, and runtime constructor backstops
@@ -58,3 +58,15 @@ Status: complete for the Marrow v0.1 public resource/store surface.
   behavior are unchanged.
 - Raw/debug/admin inspection may expose stored index trees, but production
   resource resolution and typed writes remain governed by checked store facts.
+
+## Feature-Surface Audit Note
+
+Lane 5 stays complete unless a later audit finds a concrete resource/store
+surface regression. Do not reopen this lane just because Lane 10 deletes,
+demotes, or rebuilds `marrow explain`; Lane 5 owns the resource/store resolver
+contract, not that command as a product feature.
+
+Reopen Lane 5 only for a narrow fix if a surviving production surface accepts
+resource-name identity such as `Book::Id`, dotted or nested index arguments,
+project-wide resource-name fallback, raw path identity as store identity, or a
+duplicate resource/store classifier outside the production APIs.

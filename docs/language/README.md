@@ -101,6 +101,8 @@ This shows the main shape:
   name resolution.
 - [Control Flow](control-flow-and-effects.md) defines conditionals, loops,
   tree iteration, short-circuiting, labeled loops, and structured errors.
+- [Cost Model](cost-model.md) defines how storage cost is counted, how to read
+  it off the source, and the minimal-plan guarantee.
 - [Builtins](builtins.md) defines always-available helpers such as `exists`,
   the `?.`/`??` presence operators, `keys`, `values`, `entries`, conversions,
   `append`, `nextId`, output, and errors.

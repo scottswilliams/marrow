@@ -14,6 +14,32 @@ Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-09-evolution-ac
 Status: read-only witness matrix design may start now; tracked edits wait for
 catalog, presence ledger, tree-cell store, and runtime facts.
 
+## Completion Claim Discipline
+
+Lane 9 may report **audit complete**, **code ready for review**, **blocked**, or
+**lane complete**. It may not report "done" after only designing the witness
+matrix, listing blockers, or passing one evolve test. If any dependency is not
+landed on `main`, the production-code status is **blocked** and the only valid
+deliverable is a read-only audit packet.
+
+Before a lane-complete claim, Lane 9 must prove the whole evolution family is
+handled:
+
+- `check`, data-attached check, catalog preview/accept, evolve preview/apply,
+  repair admission, and compatibility-window checks consume one proof-discharge
+  pipeline;
+- the exact preview witness is the only apply input, and every drift dimension
+  has a failing fixture before implementation;
+- migration scripts, source-diff identity inference, best-effort rename,
+  transform shims, repair bypasses, and hidden history ledgers are rejected,
+  absent, or explicitly future-only in code, docs, tests, and fixtures;
+- a sibling scan covers catalog, evolve, repair, maintenance, compatibility,
+  transform, CLI docs, and stale tests after each rejected prototype workflow is
+  removed;
+- touched Rust is split by invariant before review: preview, witness
+  validation, apply, compatibility windows, repair admission, and CLI rendering
+  cannot collapse into one broad dispatcher.
+
 ## Parallel Safety
 
 This lane may run read-only design review and fixture planning while earlier
@@ -34,6 +60,31 @@ Own these files during the code pass:
 - `docs/cli.md`
 - `docs/project-config.md`
 
+## Feature-Surface Audit Gate
+
+Lane 9 owns the verdicts for catalog, evolution, activation, repair, and
+data-attached workflow surfaces. Before code review, classify each surface as
+keep production, debug/admin only, rename/rescope, or delete.
+
+Known evolution/activation suspects:
+
+- Migration scripts, migration DSLs, hidden database migration ledgers, and
+  source-diff identity inference: delete as product stories.
+- Best-effort rename, automatic identity preservation, and transform shims:
+  reject unless represented by source-native intent and checked proof facts.
+- Compatibility lenses: keep only the v0.1 limited rename/default cases; no
+  general old-schema adapter runtime.
+- Transform workflows: keep only checked transform-required facts unless this
+  lane implements the checked transform path.
+- Repair and maintenance entrypoints: keep only as explicit proof-ledger or
+  witness-bound workflows; no bypass of activation, catalog, engine, or data
+  checks.
+- Catalog/evolve CLI names and docs: keep only commands that match the accepted
+  source-native preview/apply model.
+
+If a verdict needs runtime, store, checker identity, or tooling protocol changes
+outside this lane's owned files, return a blocker to that owner.
+
 ## Area Cleanup Gate
 
 This lane owns the complete cleanup of source-native evolution and activation
@@ -44,6 +95,8 @@ its area instead of leaving a second evolution model for a later lane.
 
 Before handing the lane to review:
 
+- complete the evolution feature-surface verdicts and turn them into tests,
+  docs deletion, docs rewrite, or owning-lane blockers;
 - split preview, exact witness validation, apply, compatibility-window checks,
   repair admission, and CLI rendering by invariant;
 - migrate or delete tests, fixtures, and callers that depend on migration
@@ -71,6 +124,8 @@ Before handing the lane to review:
   engine, affected-ID, or count drift.
 - V0.1 compatibility lenses are limited to rename/default compatibility and
   defaulting a newly required field.
+- Migration scripts, source-diff identity inference, and hidden schema-history
+  ledgers are not v0.1 product surfaces.
 - Catalog/runtime metadata declares compatibility windows explicitly.
 - Old and new binaries activate only inside those windows; stale writers fail
   closed.
@@ -106,6 +161,8 @@ Write failing production-pipeline checks:
 - failed apply resumes or rolls back;
 - old-binary, new-binary, expired-window, and stale-writer fixtures enforce
   compatibility windows.
+- evolution feature-surface tests prove migration-script, source-diff identity,
+  best-effort rename, and unchecked transform workflows are rejected or absent.
 
 Focused command:
 
@@ -146,15 +203,28 @@ Continue Marrow v0.1 Lane 9 in `/Users/scottwilliams/Dev/marrow-lane-09-evolutio
 Use branch `lane-09-evolution-activation`, use
 `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-09-evolution-activation`
 on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-Do read-only witness-matrix design now if needed, but do not start production
-code until Lane 6 catalog identity and presence ledger, Lane 7 tree-cell store
-contracts, and Lane 8 runtime checked facts are integrated on `main`. Implement
-one proof-discharge pipeline for check/catalog/evolve/repair surfaces, exact
-witness preview/apply, compatibility windows, and rejection of migration-script
-or transform shims. No legacy survival for green tests: migrate/delete tests,
+First inspect current `main`, worktrees, and dependency status. If Lane 6
+catalog/presence facts, Lane 7 tree-cell store contracts, or Lane 8 finalized
+runtime checked facts are not landed, stop production edits and return an
+**audit complete** or **blocked** packet, not a done claim. That packet must
+include the witness matrix, dependency blockers, suspect evolution surfaces,
+and the first failing tests you will write once code is unblocked.
+
+When dependencies are landed, implement one proof-discharge pipeline for
+check/catalog/evolve/repair surfaces, exact witness preview/apply,
+compatibility windows, and rejection of migration-script or transform shims.
+Complete the evolution feature-surface audit before code review: catalog,
+evolve, activation, compatibility lens, checked transform, repair, maintenance,
+and stale CLI/docs workflows must match the source-native preview/apply model or
+be deleted/demoted. No legacy survival for green tests: migrate/delete tests,
 fixtures, and callers that depend on migration scripts, source-diff identity
-inference, best-effort transforms, or stale activation behavior. Before review,
-satisfy the Area Cleanup Gate: split preview, exact witness validation, apply,
-compatibility-window checks, repair admission, and CLI rendering; delete
-migration-script, source-diff identity, best-effort rename, and transform-shim
-helpers. Leave the worktree dirty for soundness and idiom/spec review.
+inference, best-effort transforms, or stale activation behavior.
+
+Do not stop after fixing one rejected workflow. After each fix, scan the sibling
+family: catalog/evolve commands, repair/maintenance paths, compatibility docs,
+transform-required fixtures, and tests. Before review, satisfy the Area Cleanup
+Gate: split preview, exact witness validation, apply, compatibility-window
+checks, repair admission, and CLI rendering; delete migration-script,
+source-diff identity, best-effort rename, and transform-shim helpers. Leave the
+worktree dirty for soundness and idiom/spec review. A final done claim must
+include the completion evidence packet required by the central plan.

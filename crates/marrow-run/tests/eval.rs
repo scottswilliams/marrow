@@ -7025,7 +7025,7 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
 }
 
 #[test]
-fn reversed_primary_root_expression_yields_identities() {
+fn reversed_primary_root_as_a_value_is_rejected() {
     let program = checked_program(BOOK_PRIMARY);
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
@@ -7044,17 +7044,17 @@ fn reversed_primary_root_expression_yields_identities() {
     add(2, "Sourcery");
     add(1, "Mort");
 
-    let outcome = run_entry(
+    let error = run_entry(
         &program,
         &store,
         checked_entry!(&program, "test::reversedIdsAsValue"),
     )
-    .expect("run");
-    assert_eq!(outcome.output, "2\n1\n");
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
 #[test]
-fn keys_of_a_primary_root_materializes_a_sequence() {
+fn keys_of_a_primary_root_as_a_value_is_rejected() {
     let program = checked_program(BOOK_PRIMARY);
     let store = TreeStore::memory();
     run_entry(
@@ -7080,9 +7080,8 @@ fn keys_of_a_primary_root_materializes_a_sequence() {
     )
     .expect("add");
 
-    // `keys(^books)` is a value: a `Value::Sequence` the loop binds in turn.
-    let outcome = run_entry(&program, &store, checked_entry!(&program, "test::ids")).expect("run");
-    assert_eq!(outcome.output, "1\n2\n");
+    let error = run_entry(&program, &store, checked_entry!(&program, "test::ids")).unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
 #[test]
@@ -7165,9 +7164,8 @@ fn tagValuesDescending()
     for pos, tag in reversed(^books(1).tags)
         print(tag)
 
-fn positionsDescendingValue()
-    const positions = reversed(^books(1).tags)
-    for pos in positions
+fn positionsDescending()
+    for pos in reversed(keys(^books(1).tags))
         print($\"{pos}\")
 
 fn keysOf()
@@ -7242,7 +7240,7 @@ fn reversed_sequence_child_layer_loop_yields_values_descending() {
 }
 
 #[test]
-fn reversed_sequence_child_layer_expression_yields_positions_descending() {
+fn reversed_sequence_child_layer_keys_loop_yields_positions_descending() {
     let program = checked_program(BOOK_TAGS);
     let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -7250,7 +7248,7 @@ fn reversed_sequence_child_layer_expression_yields_positions_descending() {
     let outcome = run_entry(
         &program,
         &store,
-        checked_entry!(&program, "test::positionsDescendingValue"),
+        checked_entry!(&program, "test::positionsDescending"),
     )
     .expect("run");
     assert_eq!(outcome.output, "2\n1\n");
@@ -7424,16 +7422,14 @@ fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
 }
 
 #[test]
-fn collecting_keys_first_then_deleting_is_allowed() {
-    // The documented safe pattern: snapshot the keys into a local, then iterate the
-    // local and delete. The loop traverses a local value, so no traversal fault.
+fn collecting_saved_keys_as_a_local_snapshot_is_rejected() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\nfn remaining(): int\n    return count(^books)\n",
     );
     let store = TreeStore::memory();
     run_entry(&program, &store, checked_entry!(&program, "test::seed")).expect("seed");
-    run_entry(&program, &store, checked_entry!(&program, "test::clear")).expect("clear");
-    // Every record was removed.
+    let error = run_entry(&program, &store, checked_entry!(&program, "test::clear")).unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
     assert_eq!(
         run_entry(
             &program,
@@ -7442,7 +7438,7 @@ fn collecting_keys_first_then_deleting_is_allowed() {
         )
         .expect("count")
         .value,
-        Some(Value::Int(0))
+        Some(Value::Int(2))
     );
 }
 
@@ -7486,7 +7482,7 @@ fn idsDescending()
     for id in reversed(keys(^books))
         print($\"{id}\")
 
-fn keysReversed()
+fn keysReversedValue()
     const r = reversed(keys(^books))
     for id in r
         print($\"{id}\")
@@ -7571,15 +7567,14 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     .expect("run");
     assert_eq!(outcome.output, "3\n2\n1\n");
 
-    // `reversed(keys(^books))` yields the same descending order — `reversed` over a
-    // `keys(...)` wrapper enumerates the layer backward, not a copy-then-reverse.
-    let outcome = run_entry(
+    // Materializing the same durable reversed key collection as a value is rejected.
+    let error = run_entry(
         &program,
         &store,
-        checked_entry!(&program, "test::keysReversed"),
+        checked_entry!(&program, "test::keysReversedValue"),
     )
-    .expect("run");
-    assert_eq!(outcome.output, "3\n2\n1\n");
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 
     // Bare reversed root iteration yields records in descending key order.
     let outcome = run_entry(
@@ -8964,6 +8959,26 @@ fn tagValuesReversed(id: int)
 fn tagEntriesReversed(id: int)
     for pos, tag in reversed(entries(^books(id).tags))
         print($\"{pos}={tag}\")
+
+fn titlesValue()
+    const books = values(^books)
+    for book in books
+        print(book.title)
+
+fn titleEntriesValue()
+    const books = entries(^books)
+    for id, book in books
+        print($\"{id}: {book.title}\")
+
+fn tagValuesValue(id: int)
+    const tags = values(^books(id).tags)
+    for tag in tags
+        print(tag)
+
+fn tagEntriesValue(id: int)
+    const tags = entries(^books(id).tags)
+    for pos, tag in tags
+        print($\"{pos}={tag}\")
 ";
 
 #[test]
@@ -9051,6 +9066,63 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
     )
     .expect("run");
     assert_eq!(entries.output, "1=fiction\n2=funny\n");
+}
+
+#[test]
+fn saved_values_and_entries_as_values_are_rejected() {
+    let program = checked_program(BOOK_VALUES);
+    let store = TreeStore::memory();
+    run_entry(
+        &program,
+        &store,
+        checked_entry!(
+            &program,
+            "test::add",
+            Value::Int(1),
+            Value::Str("Mort".into())
+        ),
+    )
+    .expect("add");
+    run_entry(
+        &program,
+        &store,
+        checked_entry!(
+            &program,
+            "test::tag",
+            Value::Int(1),
+            Value::Str("fiction".into())
+        ),
+    )
+    .expect("tag");
+
+    let error = run_entry(
+        &program,
+        &store,
+        checked_entry!(&program, "test::titlesValue"),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+    let error = run_entry(
+        &program,
+        &store,
+        checked_entry!(&program, "test::titleEntriesValue"),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+    let error = run_entry(
+        &program,
+        &store,
+        checked_entry!(&program, "test::tagValuesValue", Value::Int(1)),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
+    let error = run_entry(
+        &program,
+        &store,
+        checked_entry!(&program, "test::tagEntriesValue", Value::Int(1)),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
 }
 
 #[test]

@@ -37,6 +37,33 @@ Own these files during the code pass:
 - `docs/data-evolution.md`
 - `docs/error-codes.md`
 
+## Feature-Surface Audit Gate
+
+Lane 6 owns the verdicts for language-source identity, catalog identity, enum
+member identity, and read-presence proof surfaces. Before review, classify each
+suspect surface as keep production, debug/admin only, rename/rescope, or delete.
+
+Known catalog/presence suspects:
+
+- `@id` source annotations: delete as accepted source identity; allowed only in
+  rejection tests, diagnostics, or historical/debug context.
+- Source spelling, raw saved paths, regenerated IDs, and source-name identity:
+  delete as durable identity. Accepted catalog metadata is the only stable
+  identity owner.
+- Enum declaration order or pre-order ordinal as stored meaning or index-key
+  meaning: delete. Declaration order may survive only as source traversal order.
+- Maybe-present/read-totality helpers: keep only through the checked proof
+  ledger; delete scattered helper predicates that independently decide read
+  admission.
+- Hidden catalog state outside committed project metadata or engine metadata:
+  delete or reject as a production surface.
+- User, role, permission, and principal/request-context identity: future-reserved
+  only; do not let catalog facts imply a v0.1 permissions surface.
+
+If the verdict needs runtime enum value conversion, store physical keys,
+tooling/protocol rendering, or evolution apply behavior, return a blocker to the
+owning lane instead of patching around it.
+
 ## Area Cleanup Gate
 
 This lane owns the complete cleanup of catalog identity and read-presence
@@ -47,6 +74,8 @@ later lane.
 
 Before handing the lane to review:
 
+- complete the catalog/presence feature-surface verdicts and turn them into
+  tests, docs updates, deletions, or owning-lane blockers;
 - migrate enum stored meaning and enum index-key meaning away from
   declaration-order ordinals to catalog member identity, with source reorder
   fixtures proving meaning survives;
@@ -92,6 +121,8 @@ Before handing the lane to review:
   accepted.
 - The checked-effect model leaves space for future principal/request-context
   effect classes, but v0.1 does not implement users, roles, or permissions.
+- Catalog and presence surfaces without an ADR-backed user story are deleted or
+  rejected before other lanes can build on them.
 
 ## Prototype Removal Ledger
 
@@ -133,6 +164,9 @@ Write failing production-pipeline checks first:
   chaining) flow through the same ledger without adding a fourth
   proof source;
 - attached-data obligations remain pending in source-only check output.
+- feature-surface checks prove `@id`, source-spelling identity, regenerated IDs,
+  raw path identity, and source-order enum stored meaning are rejected or absent
+  from production facts.
 
 Focused commands:
 
@@ -182,7 +216,7 @@ the runtime package failure as blocking end-to-end enum identity. Add scans for
 forbidden identity and proof paths:
 
 ```sh
-rg -n '@id|regenerat.*id|read.*total|maybe.*present|presence' \
+rg -n '@id|regenerat.*id|source.*identity|source.*name|raw.*path|read.*total|maybe.*present|presence|ordinal|permission|role|principal' \
     /Users/scottwilliams/Dev/marrow-lane-06-perfect/crates \
     /Users/scottwilliams/Dev/marrow-lane-06-perfect/docs
 ```
@@ -190,3 +224,27 @@ rg -n '@id|regenerat.*id|read.*total|maybe.*present|presence' \
 `@id` matches are allowed only in rejection diagnostics/tests or
 historical/debug docs. Presence and read-totality matches may appear in canonical
 catalog/proof-ledger docs or tests.
+
+## Starter Prompt
+
+Continue Marrow v0.1 Lane 6 in `/Users/scottwilliams/Dev/marrow-lane-06-perfect`.
+Use branch `lane-06-perfect`, use
+`CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-06-perfect` on
+every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
+
+This is a narrow catalog identity and presence-ledger corrective pass, not a
+general checker cleanup. Consume Lane 5's stable resource/store facts. Complete
+the catalog/presence feature-surface audit for `@id`, source-spelling identity,
+raw path identity, regenerated IDs, enum declaration-order stored meaning,
+maybe-present/read-totality helpers, hidden catalog state, and future
+principal/role/permission surfaces. Keep production behavior only when it is
+ADR-backed and represented by accepted catalog metadata or the checked proof
+ledger; otherwise reject/delete it or return an owning-lane blocker.
+
+No legacy survival for green tests: migrate/delete tests, fixtures, and callers
+that depend on source-owned stable identity, source-order enum stored meaning,
+or ad hoc read-presence helpers. Before review, satisfy the Area Cleanup Gate:
+split catalog file handling, identity binding, epoch/digest validation,
+read-presence proof recording, and diagnostics; delete duplicate proof
+classifiers, `@id` metadata, regenerated-ID helpers, maybe-present helpers, and
+comment sediment. Leave the worktree dirty for soundness and idiom/spec review.

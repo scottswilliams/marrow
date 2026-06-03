@@ -11,7 +11,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::env::Env;
-use crate::error::{Located, RUN_ABSENT, RuntimeError, raise_fault, type_error, unsupported};
+use crate::error::{
+    Located, RUN_ABSENT, RuntimeError, overflow, raise_fault, type_error, unsupported,
+};
 use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
@@ -47,51 +49,6 @@ pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
     match args.as_slice() {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
-    }
-}
-
-/// Enumerate the child keys of a saved layer for address-oriented traversal:
-/// `keys(...)`, direct index-branch loops, and the materialization helpers that
-/// pair keys with values. Classifies the path once, then delegates to the
-/// collector for the resolved layer shape:
-///
-/// - `^root` (a keyed primary root) yields its record identities — a bare key
-///   value for a single-key identity, a [`Value::Identity`] for a composite one;
-///   a keyless singleton has no identities to iterate (a type error).
-/// - `^root.index(args…)` yields the identities in that index branch.
-/// - `^root(id…).layer` yields the keyed/sequence layer's child keys.
-pub(crate) fn enumerate_layer(
-    path: &ExecExpr,
-    env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    enumerate_layer_dir(path, Direction::Ascending, env)
-}
-
-/// Enumerate a saved layer's child keys in `dir` order — the direction-threaded
-/// core of [`enumerate_layer`]. `Ascending` is `for`/`keys`/`values`/`entries`;
-/// `Descending` is `reversed(...)`. The whole descent carries one direction, so a
-/// composite identity reverses at every level.
-pub(crate) fn enumerate_layer_dir(
-    path: &ExecExpr,
-    dir: Direction,
-    env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    match iterable_layer(path, env)? {
-        IterableLayer::Root(place) => {
-            let arity = place.identity_keys.len();
-            if arity == 0 {
-                return Err(type_error(
-                    &format!(
-                        "`^{}` is a singleton with no identities to iterate",
-                        place.root
-                    ),
-                    path.span(),
-                ));
-            }
-            collect_record_identities(place, arity, &[], dir, path.span(), env)
-        }
-        IterableLayer::Index(_, branch) => enumerate_index_branch(&branch, dir, path.span(), env),
-        IterableLayer::ChildLayer => enumerate_child_layer(path, dir, env),
     }
 }
 
@@ -170,155 +127,158 @@ pub(crate) fn iterable_index_branch(
     }))
 }
 
-/// Enumerate the identities in a declared index branch `^root.index(args…)`. A
-/// non-unique index ends with all identity keys, so the levels below the supplied
-/// query args are the entry's remaining identity-key segments; descend them per
-/// entry to reconstruct the full identity rather than only its first key component.
-pub(crate) fn enumerate_index_branch(
-    branch: &IndexBranchAddress,
-    dir: Direction,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    if branch.depth == 0 {
-        return collect_exact_index_tuple(branch, dir, span, env);
-    }
-    let key_prefix = branch
-        .arg_keys
-        .get(branch.identity_start..)
-        .map_or_else(Vec::new, |keys| keys.to_vec());
-    collect_index_identities(
-        branch,
-        branch.depth,
-        &branch.arg_keys,
-        &key_prefix,
-        dir,
-        span,
-        env,
-    )
-}
-
-/// Enumerate the child keys of a keyed/sequence child layer `^root(id…).layer`.
-/// The layer's keys are single-key (`pos: int` for a sequence, `playerId: string`
-/// for a keyed tree), so each child key is a bare value.
-pub(crate) fn enumerate_child_layer(
+pub(crate) fn count_iterable_layer(
     path: &ExecExpr,
-    dir: Direction,
     env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let ExecExpr::Field { base, .. } = path else {
-        return Err(unsupported("iterating this saved path", path.span()));
-    };
-    let span = path.span();
-    let base_path = lower(base, env)?;
-    let Some(place) = path.saved_place() else {
-        return Err(unsupported("iterating this saved path", path.span()));
-    };
-    let Some(layer_facts) = place.layers.last() else {
-        return Err(unsupported("iterating this saved path", path.span()));
-    };
-    let mut layers = base_path.layer_addresses;
-    layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
-    let address = DataAddress::layer_prefix(place, &base_path.identity, &layers, span)?;
-    collect_data_child_values(&address, dir, span, env)
+) -> Result<usize, RuntimeError> {
+    match iterable_layer(path, env)? {
+        IterableLayer::Root(place) => {
+            let arity = place.identity_keys.len();
+            if arity == 0 {
+                return Err(type_error(
+                    &format!(
+                        "`^{}` is a singleton with no identities to iterate",
+                        place.root
+                    ),
+                    path.span(),
+                ));
+            }
+            let store = crate::store::catalog_id(&place.store_catalog_id, "store", path.span())?;
+            count_record_identity_children(&store, arity, &[], path.span(), env)
+        }
+        IterableLayer::Index(_, branch) => count_index_branch(&branch, path.span(), env),
+        IterableLayer::ChildLayer => {
+            let address = child_layer_prefix_address(path, env)?;
+            crate::store::data_child_count(env.store, &address, path.span())
+        }
+    }
 }
 
-pub(crate) fn collect_record_identities(
-    place: &CheckedSavedPlace,
+pub(crate) fn count_iterable_index_branch(
+    path: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Option<usize>, RuntimeError> {
+    let Some(place) = path.saved_place() else {
+        return Ok(None);
+    };
+    let Some(branch) = iterable_index_branch(place, path.span(), env)? else {
+        return Ok(None);
+    };
+    count_index_branch(&branch, path.span(), env).map(Some)
+}
+
+pub(crate) fn iterable_index_branch_present(
+    path: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Option<bool>, RuntimeError> {
+    let Some(place) = path.saved_place() else {
+        return Ok(None);
+    };
+    let Some(branch) = iterable_index_branch(place, path.span(), env)? else {
+        return Ok(None);
+    };
+    index_branch_present(&branch, path.span(), env).map(Some)
+}
+
+fn count_record_identity_children(
+    store: &CatalogId,
     depth: usize,
     keys: &[SavedKey],
-    dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let store = crate::store::catalog_id(&place.store_catalog_id, "store", span)?;
-    let mut values = Vec::new();
-    let mut child = first_record_child(env.store, &store, keys, dir, span)?;
+) -> Result<usize, RuntimeError> {
+    if depth <= 1 {
+        return env
+            .store
+            .record_child_count(store, keys)
+            .map_err(|error| error.located(span));
+    }
+    let mut count = 0usize;
+    let mut child = first_record_child(env.store, store, keys, Direction::Ascending, span)?;
     while let Some(key) = child {
         let anchor = key.clone();
         let mut keys = keys.to_vec();
-        keys.push(key.clone());
-        if depth <= 1 {
-            values.push(collected_identity_value(&keys, span)?);
-        } else {
-            values.extend(collect_record_identities(
-                place,
-                depth - 1,
-                &keys,
-                dir,
-                span,
-                env,
-            )?);
-        }
+        keys.push(key);
+        count = checked_count_add(
+            count,
+            count_record_identity_children(store, depth - 1, &keys, span, env)?,
+            span,
+        )?;
         child = next_record_child(
             env.store,
-            &store,
+            store,
             &keys[..keys.len() - 1],
             &anchor,
-            dir,
+            Direction::Ascending,
             span,
         )?;
     }
-    Ok(values)
+    Ok(count)
 }
 
-fn collect_index_identities(
+fn count_index_branch(
+    branch: &IndexBranchAddress,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<usize, RuntimeError> {
+    if branch.depth == 0 {
+        return count_exact_index_tuple(branch, span, env);
+    }
+    count_index_identity_children(branch, branch.depth, &branch.arg_keys, span, env)
+}
+
+fn count_index_identity_children(
     branch: &IndexBranchAddress,
     depth: usize,
     query_keys: &[SavedKey],
-    keys: &[SavedKey],
-    dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let mut values = Vec::new();
-    let mut child = first_index_child(env.store, &branch.index.index, query_keys, dir, span)?;
+) -> Result<usize, RuntimeError> {
+    let mut count = 0usize;
+    let mut child = first_index_child(
+        env.store,
+        &branch.index.index,
+        query_keys,
+        Direction::Ascending,
+        span,
+    )?;
     while let Some(key) = child {
         let anchor = key.clone();
         let mut query_keys = query_keys.to_vec();
-        query_keys.push(key.clone());
-        let mut identity_keys = keys.to_vec();
-        identity_keys.push(key);
-        if depth <= 1 {
-            values.push(collected_identity_value(&identity_keys, span)?);
+        query_keys.push(key);
+        count = if depth <= 1 {
+            checked_count_add(count, 1, span)?
         } else {
-            values.extend(collect_index_identities(
-                branch,
-                depth - 1,
-                &query_keys,
-                &identity_keys,
-                dir,
+            checked_count_add(
+                count,
+                count_index_identity_children(branch, depth - 1, &query_keys, span, env)?,
                 span,
-                env,
-            )?);
-        }
+            )?
+        };
         child = next_index_child(
             env.store,
             &branch.index.index,
             &query_keys[..query_keys.len() - 1],
             &anchor,
-            dir,
+            Direction::Ascending,
             span,
         )?;
     }
-    Ok(values)
+    Ok(count)
 }
 
-fn collect_exact_index_tuple(
+fn count_exact_index_tuple(
     branch: &IndexBranchAddress,
-    dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let mut values = Vec::new();
+) -> Result<usize, RuntimeError> {
+    let mut count = 0usize;
     let mut page = env
         .store
         .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
         .map_err(|error| error.located(span))?;
     loop {
-        for entry in page.entries {
-            values.push(collected_identity_value(&entry.identity, span)?);
-        }
+        count = checked_count_add(count, page.entries.len(), span)?;
         let Some(cursor) = page.cursor else {
             break;
         };
@@ -332,29 +292,53 @@ fn collect_exact_index_tuple(
             )
             .map_err(|error| error.located(span))?;
     }
-    if matches!(dir, Direction::Descending) {
-        values.reverse();
-    }
-    Ok(values)
+    Ok(count)
 }
 
-fn collect_data_child_values(
-    address: &DataAddress,
-    dir: Direction,
+fn index_branch_present(
+    branch: &IndexBranchAddress,
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let mut values = Vec::new();
-    let mut child = first_data_child(env.store, address, dir, span)?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        values.push(
-            saved_key_to_value(key)
-                .ok_or_else(|| unsupported("iterating keys of this type", span))?,
-        );
-        child = next_data_child(env.store, address, &anchor, dir, span)?;
+) -> Result<bool, RuntimeError> {
+    if branch.depth == 0 {
+        return env
+            .store
+            .scan_index_tuple(&branch.index.index, &branch.arg_keys, 1)
+            .map(|page| !page.entries.is_empty())
+            .map_err(|error| error.located(span));
     }
-    Ok(values)
+    first_index_child(
+        env.store,
+        &branch.index.index,
+        &branch.arg_keys,
+        Direction::Ascending,
+        span,
+    )
+    .map(|child| child.is_some())
+}
+
+fn child_layer_prefix_address(
+    path: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<DataAddress, RuntimeError> {
+    let ExecExpr::Field { base, .. } = path else {
+        return Err(unsupported("iterating this saved path", path.span()));
+    };
+    let span = path.span();
+    let base_path = lower(base, env)?;
+    let Some(place) = path.saved_place() else {
+        return Err(unsupported("iterating this saved path", path.span()));
+    };
+    let Some(layer_facts) = place.layers.last() else {
+        return Err(unsupported("iterating this saved path", path.span()));
+    };
+    let mut layers = base_path.layer_addresses;
+    layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
+    DataAddress::layer_prefix(place, &base_path.identity, &layers, span)
+}
+
+fn checked_count_add(left: usize, right: usize, span: SourceSpan) -> Result<usize, RuntimeError> {
+    left.checked_add(right).ok_or_else(|| overflow(span))
 }
 
 pub(crate) fn first_record_child(

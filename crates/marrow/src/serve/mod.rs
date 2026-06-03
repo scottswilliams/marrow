@@ -301,6 +301,7 @@ fn serve_connection(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> io::Result<()> {
+    let session = protocol::ProtocolSession::new();
     loop {
         let line = match read_line_bounded(reader)? {
             Line::Eof => return Ok(()),
@@ -316,7 +317,7 @@ fn serve_connection(
             continue;
         }
         let reply = match serde_json::from_str(&line) {
-            Ok(request) => protocol::handle_request(program, store, &request),
+            Ok(request) => session.handle_request(program, store, &request),
             Err(error) => malformed_reply(&error.to_string()),
         };
         write_reply(writer, &reply)?;

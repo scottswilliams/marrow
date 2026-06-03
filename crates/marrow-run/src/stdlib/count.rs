@@ -1,15 +1,14 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
-use crate::collection::Direction;
 use crate::env::Env;
-use crate::error::{Located, RuntimeError, overflow, type_error, unsupported};
+use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::local_collection_count;
 use crate::path::{Terminal, direct_root_place, lower, saved_path_present};
-use crate::read::enumerate_layer;
-use crate::stdlib::{is_iterable_index_branch, unique_index_lookup_values};
-use crate::store::{DataAddress, catalog_id, data_child_count, data_exists};
+use crate::read::{count_iterable_index_branch, count_iterable_layer};
+use crate::stdlib::exact_unique_index_lookup_value;
+use crate::store::{DataAddress, data_child_count, data_exists};
 use crate::value::Value;
 
 pub(crate) fn eval_exists(
@@ -37,12 +36,11 @@ pub(crate) fn eval_count(
     if let Some(count) = direct_primary_root_count(&arg.value, span, env)? {
         return Ok(Value::Int(count));
     }
-    if let Some(values) = unique_index_lookup_values(&arg.value, span, Direction::Ascending, env)? {
-        return Ok(Value::Int(values.len() as i64));
+    if let Some(value) = exact_unique_index_lookup_value(&arg.value, span, env)? {
+        return Ok(Value::Int(value.count()));
     }
-    if is_iterable_index_branch(&arg.value, env) {
-        let entries = enumerate_layer(&arg.value, env)?.len();
-        return Ok(Value::Int(entries as i64));
+    if let Some(entries) = count_iterable_index_branch(&arg.value, env)? {
+        return Ok(Value::Int(usize_to_i64(entries, span)?));
     }
     let address = count_address(&arg.value, span, env)?;
     let children = data_child_count(env.store, &address, span)?;
@@ -64,19 +62,12 @@ fn direct_primary_root_count(
     };
     match place.identity_keys.len() {
         0 => Ok(None),
-        1 => {
-            let store = catalog_id(&place.store_catalog_id, "store", span)?;
-            let count = env
-                .store
-                .record_child_count(&store, &[])
-                .map_err(|error| error.located(span))?;
-            i64::try_from(count).map(Some).map_err(|_| overflow(span))
-        }
-        _ => {
-            let count = enumerate_layer(expr, env)?.len();
-            i64::try_from(count).map(Some).map_err(|_| overflow(span))
-        }
+        _ => usize_to_i64(count_iterable_layer(expr, env)?, span).map(Some),
     }
+}
+
+fn usize_to_i64(count: usize, span: SourceSpan) -> Result<i64, RuntimeError> {
+    i64::try_from(count).map_err(|_| overflow(span))
 }
 
 fn count_address(

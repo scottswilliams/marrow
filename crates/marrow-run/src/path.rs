@@ -12,8 +12,8 @@ use crate::durable_read::read_resource;
 use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::read::enumerate_layer;
-use crate::stdlib::{is_iterable_index_branch, unique_index_lookup_values};
+use crate::read::iterable_index_branch_present;
+use crate::stdlib::exact_unique_index_lookup_value;
 use crate::store::{DataAddress, LayerAddress, catalog_id, data_exists, read_data};
 use crate::value::{Value, decode_leaf, value_to_key};
 use crate::write_dispatch::{write_nested_field, write_resource, write_saved_field};
@@ -228,13 +228,11 @@ pub(crate) fn saved_path_present(
             .map(|key| key.is_some())
             .map_err(|error| error.located(span));
     }
-    if let Some(values) =
-        unique_index_lookup_values(expr, span, crate::collection::Direction::Ascending, env)?
-    {
-        return Ok(!values.is_empty());
+    if let Some(value) = exact_unique_index_lookup_value(expr, span, env)? {
+        return Ok(value.is_present());
     }
-    if is_iterable_index_branch(expr, env) {
-        return Ok(!enumerate_layer(expr, env)?.is_empty());
+    if let Some(present) = iterable_index_branch_present(expr, env)? {
+        return Ok(present);
     }
     let path = lower(expr, env)?;
     let address = match &path.terminal {

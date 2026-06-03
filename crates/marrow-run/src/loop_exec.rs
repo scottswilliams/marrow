@@ -10,15 +10,14 @@ use marrow_check::{
 use marrow_store::Decimal;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{Direction, materialize_layer, materialize_layer_dir, values_or_entries};
+use crate::collection::{Direction, durable_collection_value, values_or_entries};
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
 use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
-use crate::read::{enumerate_layer, enumerate_layer_dir, keys_argument, reversed_argument};
+use crate::read::{keys_argument, reversed_argument};
 use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};
-use crate::stdlib::{check_key_collection, unique_index_lookup_values};
 use crate::value::Value;
 
 pub(crate) enum LoopStep {
@@ -526,16 +525,10 @@ pub(crate) fn eval_collection(
                     iterable.span(),
                 );
             }
-            check_key_collection(layer, iterable.span(), env)?;
-            return enumerate_layer_dir(layer, Direction::Descending, env);
+            return Err(durable_collection_value(iterable.span()));
         }
         if inner.saved_place().is_some() {
-            if let Some(values) =
-                unique_index_lookup_values(inner, iterable.span(), Direction::Descending, env)?
-            {
-                return Ok(values);
-            }
-            return enumerate_layer_dir(inner, Direction::Descending, env);
+            return Err(durable_collection_value(iterable.span()));
         }
     }
     if let Some(path) = keys_argument(iterable) {
@@ -546,16 +539,10 @@ pub(crate) fn eval_collection(
                 iterable.span(),
             );
         }
-        check_key_collection(path, iterable.span(), env)?;
-        return enumerate_layer(path, env);
+        return Err(durable_collection_value(iterable.span()));
     }
     if iterable.saved_place().is_some() {
-        if let Some(values) =
-            unique_index_lookup_values(iterable, iterable.span(), Direction::Ascending, env)?
-        {
-            return Ok(values);
-        }
-        return enumerate_layer(iterable, env);
+        return Err(durable_collection_value(iterable.span()));
     }
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
@@ -572,7 +559,7 @@ fn eval_collection_entries(
         && inner.saved_place().is_some()
         && keys_argument(inner).is_none()
     {
-        return materialize_entry_pairs(materialize_layer_dir(inner, Direction::Descending, env)?);
+        return Err(durable_collection_value(iterable.span()));
     }
     if let Some(inner) = values_or_entries(iterable)
         && inner.layer.saved_place().is_none()
@@ -584,7 +571,7 @@ fn eval_collection_entries(
         )?);
     }
     if iterable.saved_place().is_some() {
-        return materialize_entry_pairs(materialize_layer(iterable, env)?);
+        return Err(durable_collection_value(iterable.span()));
     }
     eval_collection(iterable, env)
 }

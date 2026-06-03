@@ -1,36 +1,36 @@
 use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedTerminal};
-use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, decode_identity_payload_arity};
-use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::Direction;
 use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::store::IndexAddress;
 use crate::value::{Value, identity_value, value_to_key};
 
-pub(crate) fn is_index_branch(expr: &ExecExpr, _env: &Env<'_>) -> bool {
-    matches!(
-        expr.saved_place().map(|place| &place.terminal),
-        Some(CheckedSavedTerminal::Index { .. })
-    )
+pub(crate) enum ExactUniqueIndexLookupValue {
+    Absent,
+    Present,
 }
 
-pub(crate) fn is_iterable_index_branch(expr: &ExecExpr, _env: &Env<'_>) -> bool {
-    matches!(
-        expr.saved_place().map(|place| &place.terminal),
-        Some(CheckedSavedTerminal::Index { unique: false, .. })
-    )
+impl ExactUniqueIndexLookupValue {
+    pub(crate) fn count(&self) -> i64 {
+        match self {
+            Self::Absent => 0,
+            Self::Present => 1,
+        }
+    }
+
+    pub(crate) fn is_present(&self) -> bool {
+        matches!(self, Self::Present)
+    }
 }
 
-pub(crate) fn check_key_collection(
-    expr: &ExecExpr,
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<(), RuntimeError> {
-    if is_index_branch(expr, env) && !is_iterable_index_branch(expr, env) {
+pub(crate) fn check_key_collection(expr: &ExecExpr, span: SourceSpan) -> Result<(), RuntimeError> {
+    if matches!(
+        expr.saved_place().map(|place| &place.terminal),
+        Some(CheckedSavedTerminal::Index { unique: true, .. })
+    ) {
         return Err(unsupported("keys over a unique index lookup", span));
     }
     Ok(())
@@ -82,97 +82,25 @@ pub(crate) fn unique_index_lookup(
     }))
 }
 
-pub(crate) fn unique_index_lookup_values(
+pub(crate) fn exact_unique_index_lookup_value(
     expr: &ExecExpr,
     span: SourceSpan,
-    dir: Direction,
     env: &mut Env<'_>,
-) -> Result<Option<Vec<Value>>, RuntimeError> {
+) -> Result<Option<ExactUniqueIndexLookupValue>, RuntimeError> {
     let Some(lookup) = unique_index_lookup(expr, env)? else {
         return Ok(None);
     };
     if lookup.remaining_key_depth > 0 {
-        return collect_unique_index_values(
-            &lookup.address.keys,
-            lookup.remaining_key_depth,
-            &lookup,
-            dir,
+        return Err(unsupported(
+            "using an incomplete unique index lookup as a collection",
             span,
-            env,
-        )
-        .map(Some);
+        ));
     }
-    read_unique_index_value(&lookup.address.keys, &lookup, span, env)
-        .map(|value| Some(value.map_or_else(Vec::new, |value| vec![value])))
-}
-
-fn collect_unique_index_values(
-    prefix: &[SavedKey],
-    depth: usize,
-    lookup: &UniqueIndexLookup,
-    dir: Direction,
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let mut values = Vec::new();
-    let mut child = first_index_child(env.store, &lookup.address.index, prefix, dir, span)?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        let mut path = prefix.to_vec();
-        path.push(key);
-        if depth <= 1 {
-            if let Some(value) = read_unique_index_value(&path, lookup, span, env)? {
-                values.push(value);
-            }
-        } else {
-            values.extend(collect_unique_index_values(
-                &path,
-                depth - 1,
-                lookup,
-                dir,
-                span,
-                env,
-            )?);
-        }
-        child = next_index_child(
-            env.store,
-            &lookup.address.index,
-            &path[..path.len() - 1],
-            &anchor,
-            dir,
-            span,
-        )?;
-    }
-    Ok(values)
-}
-
-fn first_index_child(
-    store: &TreeStore,
-    index: &CatalogId,
-    prefix: &[SavedKey],
-    dir: Direction,
-    span: SourceSpan,
-) -> Result<Option<SavedKey>, RuntimeError> {
-    match dir {
-        Direction::Ascending => store.index_first_child(index, prefix),
-        Direction::Descending => store.index_last_child(index, prefix),
-    }
-    .map_err(|error| error.located(span))
-}
-
-fn next_index_child(
-    store: &TreeStore,
-    index: &CatalogId,
-    prefix: &[SavedKey],
-    anchor: &SavedKey,
-    dir: Direction,
-    span: SourceSpan,
-) -> Result<Option<SavedKey>, RuntimeError> {
-    match dir {
-        Direction::Ascending => store.index_next_child(index, prefix, anchor),
-        Direction::Descending => store.index_prev_child(index, prefix, anchor),
-    }
-    .map_err(|error| error.located(span))
+    read_unique_index_value(&lookup.address.keys, &lookup, span, env).map(|value| {
+        Some(value.map_or(ExactUniqueIndexLookupValue::Absent, |_| {
+            ExactUniqueIndexLookupValue::Present
+        }))
+    })
 }
 
 fn read_unique_index_value(

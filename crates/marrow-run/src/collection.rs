@@ -7,7 +7,7 @@ use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
-use crate::read::{enumerate_layer, keys_argument};
+use crate::read::keys_argument;
 use crate::stdlib::check_key_collection;
 use crate::value::Value;
 
@@ -16,8 +16,7 @@ mod materialize;
 
 pub(crate) use append::{eval_append, eval_next_id};
 pub(crate) use materialize::{
-    MaterializeKind, materialize_layer, materialize_layer_dir, reversed_keys,
-    reversed_materialized, reversed_saved, values_or_entries,
+    MaterializeKind, reversed_keys, reversed_materialized, reversed_saved, values_or_entries,
 };
 
 /// Where a saved read sits, which decides how an absent element fails. A
@@ -54,6 +53,13 @@ pub(crate) fn absent_read(
     }
 }
 
+pub(crate) fn durable_collection_value(span: SourceSpan) -> RuntimeError {
+    unsupported(
+        "materializing durable saved data as a value; iterate it directly",
+        span,
+    )
+}
+
 pub(crate) fn eval_keys(
     args: &[ExecArg],
     span: SourceSpan,
@@ -75,8 +81,8 @@ pub(crate) fn eval_keys(
             span,
         )?));
     }
-    check_key_collection(&path.value, span, env)?;
-    Ok(Value::Sequence(enumerate_layer(&path.value, env)?))
+    check_key_collection(&path.value, span)?;
+    Err(durable_collection_value(span))
 }
 
 pub(crate) fn eval_values(
@@ -104,11 +110,7 @@ pub(crate) fn eval_values(
         .collect();
         return Ok(Value::Sequence(values));
     }
-    let values = materialize_layer(&path.value, env)?
-        .into_iter()
-        .map(|(_, value)| value)
-        .collect();
-    Ok(Value::Sequence(values))
+    Err(durable_collection_value(span))
 }
 
 pub(crate) fn eval_entries(
@@ -136,11 +138,7 @@ pub(crate) fn eval_entries(
         .collect();
         return Ok(Value::Sequence(entries));
     }
-    let entries = materialize_layer(&path.value, env)?
-        .into_iter()
-        .map(|(key, value)| Value::Sequence(vec![key, value]))
-        .collect();
-    Ok(Value::Sequence(entries))
+    Err(durable_collection_value(span))
 }
 
 pub(crate) fn eval_reversed(
@@ -164,7 +162,7 @@ pub(crate) fn eval_reversed(
         return reversed_keys(layer, span, env);
     }
     if arg.value.saved_place().is_some() {
-        return reversed_saved(&arg.value, span, env);
+        return reversed_saved(span);
     }
     reversed_in_memory(&arg.value, span, env)
 }

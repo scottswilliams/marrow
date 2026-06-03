@@ -1,9 +1,33 @@
-use super::*;
+use super::codec::{decode_base64_field, decode_key, encode_key, encode_query_path};
+use super::{PROTOCOL_BAD_REQUEST, PROTOCOL_MALFORMED, PROTOCOL_UNKNOWN_OP, ProtocolSession};
 
+use marrow_run::base64;
+use marrow_store::key::SavedKey;
+use serde_json::{Value, json};
+
+use crate::cmd_data::get::{DataQuerySegment, resolve_data_query};
 use crate::serve::test_support::{ServeState, empty_state, state_with_books};
 
 fn request(state: &ServeState, value: Value) -> Value {
-    handle_request(&state.program, &state.store, &value)
+    let session = ProtocolSession::new();
+    request_with_session(&session, state, value)
+}
+
+fn request_with_session(session: &ProtocolSession, state: &ServeState, value: Value) -> Value {
+    session.handle_request(&state.program, &state.store, &value)
+}
+
+fn forged_cursor(path: &[DataQuerySegment]) -> String {
+    base64::encode(
+        json!({
+            "v": 2,
+            "scope": "^books",
+            "path": encode_query_path(path),
+            "sig": "0000000000000000",
+        })
+        .to_string()
+        .as_bytes(),
+    )
 }
 
 fn state_with_a_book() -> ServeState {
@@ -200,7 +224,9 @@ fn data_walk_truncates_at_the_limit() {
 #[test]
 fn data_walk_cursor_resumes_after_the_previous_page() {
     let state = state_with_two_books();
-    let first = request(
+    let session = ProtocolSession::new();
+    let first = request_with_session(
+        &session,
         &state,
         json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1 }),
     );
@@ -208,7 +234,8 @@ fn data_walk_cursor_resumes_after_the_previous_page() {
         .as_str()
         .expect("a truncated page returns a cursor");
 
-    let second = request(
+    let second = request_with_session(
+        &session,
         &state,
         json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
     );
@@ -274,7 +301,9 @@ fn data_walk_cursor_into_keyed_layer_resumes_at_the_cursor_key() {
         (4, "older"),
         (10, "target"),
     ]);
-    let first = request(
+    let session = ProtocolSession::new();
+    let first = request_with_session(
+        &session,
         &state,
         json!({
             "op": "data_walk",
@@ -290,7 +319,8 @@ fn data_walk_cursor_into_keyed_layer_resumes_at_the_cursor_key() {
         .as_str()
         .expect("a truncated keyed-layer page returns a cursor");
 
-    let reply = request(
+    let reply = request_with_session(
+        &session,
         &state,
         json!({
             "op": "data_walk",
@@ -314,7 +344,7 @@ fn data_walk_cursor_into_keyed_layer_resumes_at_the_cursor_key() {
 #[test]
 fn data_walk_rejects_a_forged_keyed_cursor_for_an_absent_entry() {
     let state = state_with_tags(&[(1, "older"), (2, "older"), (3, "older"), (4, "older")]);
-    let cursor = encode_cursor(&[
+    let cursor = forged_cursor(&[
         DataQuerySegment::Root("books".into()),
         DataQuerySegment::Key(SavedKey::Int(1)),
         DataQuerySegment::Layer("tags".into()),
@@ -338,6 +368,85 @@ fn data_walk_rejects_a_forged_keyed_cursor_for_an_absent_entry() {
     assert_eq!(
         reply["error"]["code"],
         json!(PROTOCOL_BAD_REQUEST),
+        "{reply}"
+    );
+}
+
+#[test]
+fn data_walk_rejects_a_cursor_replayed_under_a_different_path() {
+    let state = state_with_tags(&[(1, "older"), (2, "target")]);
+    let session = ProtocolSession::new();
+    let first = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "data_walk",
+            "path": [
+                {"root": "books"},
+                {"key": {"int": 1}},
+                {"layer": "tags"}
+            ],
+            "limit": 1,
+        }),
+    );
+    let cursor = first["ok"]["nextCursor"]
+        .as_str()
+        .expect("a truncated keyed-layer page returns a cursor");
+
+    let replayed = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "data_walk",
+            "path": [{"root": "books"}, {"key": {"int": 1}}],
+            "limit": 100,
+            "cursor": cursor,
+        }),
+    );
+
+    assert_eq!(
+        replayed["error"]["code"],
+        json!(PROTOCOL_BAD_REQUEST),
+        "{replayed}"
+    );
+    assert_eq!(
+        replayed["error"]["message"],
+        json!("`cursor` is outside the requested path"),
+        "{replayed}"
+    );
+}
+
+#[test]
+fn data_walk_rejects_a_prefix_cursor_as_not_a_position() {
+    let state = state_with_tags(&[(1, "older"), (2, "older"), (3, "older"), (4, "older")]);
+    let cursor = forged_cursor(&[
+        DataQuerySegment::Root("books".into()),
+        DataQuerySegment::Key(SavedKey::Int(1)),
+        DataQuerySegment::Layer("tags".into()),
+    ]);
+
+    let reply = request(
+        &state,
+        json!({
+            "op": "data_walk",
+            "path": [
+                {"root": "books"},
+                {"key": {"int": 1}},
+                {"layer": "tags"}
+            ],
+            "limit": 100,
+            "cursor": cursor,
+        }),
+    );
+
+    assert_eq!(
+        reply["error"]["code"],
+        json!(PROTOCOL_BAD_REQUEST),
+        "{reply}"
+    );
+    assert_eq!(
+        reply["error"]["message"],
+        json!("`cursor` is not a data_walk cursor"),
         "{reply}"
     );
 }
@@ -450,7 +559,7 @@ fn data_walk_rejects_a_forged_in_prefix_path_cursor() {
 #[test]
 fn data_walk_rejects_a_forged_token_for_an_absent_entry() {
     let state = state_with_a_book();
-    let cursor = encode_cursor(&[
+    let cursor = forged_cursor(&[
         DataQuerySegment::Root("books".into()),
         DataQuerySegment::Key(SavedKey::Int(99)),
         DataQuerySegment::Field("title".into()),
@@ -462,6 +571,28 @@ fn data_walk_rejects_a_forged_token_for_an_absent_entry() {
     );
 
     assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+}
+
+#[test]
+fn data_walk_rejects_a_forged_token_for_an_existing_entry() {
+    let state = state_with_a_book();
+    let cursor = forged_cursor(&[
+        DataQuerySegment::Root("books".into()),
+        DataQuerySegment::Key(SavedKey::Int(1)),
+        DataQuerySegment::Field("title".into()),
+    ]);
+
+    let reply = request(
+        &state,
+        json!({ "op": "data_walk", "path": [{"root": "books"}], "limit": 1, "cursor": cursor }),
+    );
+
+    assert_eq!(reply["error"]["code"], json!(PROTOCOL_BAD_REQUEST));
+    assert_eq!(
+        reply["error"]["message"],
+        json!("`cursor` is not a data_walk cursor"),
+        "{reply}"
+    );
 }
 
 #[test]

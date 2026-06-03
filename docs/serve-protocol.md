@@ -178,12 +178,13 @@ Paging:
 - `limit` is clamped to a server maximum of 10000; a larger request is silently
   capped, not rejected, so an unbounded request cannot force a huge scan.
 - `truncated` is `true` when more entries remained past the limit.
-- `nextCursor` is an opaque server token for the next unread checked path when
-  the page is truncated, or `null` otherwise. Send it back as `cursor` with the
-  same `path` to resume at that position.
-- `cursor` must be a token previously returned as `nextCursor`. A malformed
-  cursor, a path string, or a cursor outside the requested `path`, is a
-  `protocol.bad_request`.
+- `nextCursor` is an opaque session token for the next unread checked path when
+  the page is truncated, or `null` otherwise. Send it back as `cursor` on the
+  same connection with the same `path` to resume at that position.
+- `cursor` must be a signed token previously returned as `nextCursor` during
+  the same serve connection. A malformed cursor, forged token, path string, or
+  cursor outside the requested `path` is a `protocol.bad_request`. Cursors are
+  not durable across connections or server restarts.
 
 ## Path encoding
 
@@ -242,7 +243,7 @@ of the contract. The protocol-level codes:
 |------------------------|----------------------------------------------------------------------|
 | `protocol.malformed`   | the line is not JSON, the request is not an object, or it has no string `op` |
 | `protocol.unknown_op`  | a known envelope but an `op` the server does not implement           |
-| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive or missing `data_walk` limit, or a malformed/out-of-subtree `data_walk` cursor |
+| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive or missing `data_walk` limit, or a malformed/forged/out-of-subtree `data_walk` cursor |
 
 A request that parses but cannot be answered by the store carries the store's
 own `store.*` code through unchanged (for example `store.corruption` on an
