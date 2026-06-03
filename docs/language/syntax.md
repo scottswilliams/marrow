@@ -114,8 +114,8 @@ evolve
     rename Book.title -> Book.subtitle
     default Book.author = "unknown"
     retire ^books.byTitle
-    transform Book.shelf
-        return ^books(1).shelf
+    transform Book.priceCents
+        return old.price * 100
 ```
 
 Each step targets an entity by the same surface form used to reference it: a
@@ -124,7 +124,8 @@ resource member (`Book.title`), a saved root (`^books`), a store index
 states that the entity now spelled on the right is the one formerly spelled on
 the left; `default` gives the value to backfill where a newly populated member is
 absent; `retire` states destructive intent to remove an entity; `transform`
-computes the new shape of an entity from the old. See
+computes a saved member per record from the record's other members through a pure
+body, where `old` is the record before the evolution. See
 [Resources And Saved Data](resources-and-storage.md).
 
 ## Statements

@@ -61,7 +61,7 @@ use program::TypeNames;
 pub use program::{
     CheckedConst, CheckedEntryFunction, CheckedFunction, CheckedModule, CheckedParam,
     CheckedProgram, CheckedRuntimeConst, CheckedRuntimeFunction, CheckedRuntimeModule,
-    CheckedRuntimeProgram, FileId, MarrowType, ProgramCatalog,
+    CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType, ProgramCatalog,
 };
 pub(crate) use prototype::check_prototype_only;
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
@@ -157,6 +157,12 @@ pub const CHECK_EVOLVE_TARGET: &str = "check.evolve_target";
 /// An `evolve default` value does not match its target member's type, or an
 /// `evolve transform` body does not type-check.
 pub const CHECK_EVOLVE_TYPE: &str = "check.evolve_type";
+/// An `evolve transform` violates the transform contract: a non-top-level target, an
+/// impure body (a saved read or write, host effect, transaction, or user-function
+/// call), or a body that reads its own target or any member another `default` or
+/// `transform` rewrites in the same block. A transform must compute a top-level member
+/// as a pure function of `old`'s other, decodable members.
+pub const CHECK_EVOLVE_TRANSFORM: &str = "check.evolve_transform";
 /// A maybe-present saved read appears in value position without a read-site
 /// resolution form such as `??`, `exists(...)`, or optional chaining.
 pub const CHECK_BARE_MAYBE_PRESENT_READ: &str = "check.bare_maybe_present_read";

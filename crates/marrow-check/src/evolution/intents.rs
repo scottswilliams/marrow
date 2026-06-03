@@ -8,11 +8,12 @@
 //! through a second semantic classifier; the catalog binding resolves each path to
 //! the accepted or source entry that carries its kind and stable identity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_syntax::{
-    Block, Declaration, EvolveStep, Expression, ParsedSource, Severity, SourceSpan,
+    Argument, Block, Declaration, EvolveStep, Expression, InterpolationPart, ParsedSource,
+    Severity, SourceSpan, Statement,
 };
 
 use crate::catalog::{SourceCatalogEntry, source_catalog_entries};
@@ -21,8 +22,8 @@ use crate::infer::infer_type;
 use crate::program::TypeNames;
 use crate::typerules::{marrow_type_name, type_compatible};
 use crate::{
-    CHECK_EVOLVE_TARGET, CHECK_EVOLVE_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram,
-    MarrowType,
+    CHECK_EVOLVE_TARGET, CHECK_EVOLVE_TRANSFORM, CHECK_EVOLVE_TYPE, CheckDiagnostic, CheckedBody,
+    CheckedModule, CheckedProgram, MarrowType,
 };
 
 /// One declared rename: the entity is now spelled `to_path` and was formerly
@@ -57,11 +58,16 @@ pub(crate) struct DefaultIntent {
 }
 
 /// One declared transform: the module-qualified catalog path an `evolve transform`
-/// step reshapes. Discharge classifies the member as a non-applyable typed-transform
-/// obligation.
+/// step reshapes (the target), the catalog paths of the members its body reads via
+/// `old.<member>`, and the body itself. The catalog binding resolves the target and
+/// read paths to stable ids; discharge classifies the member as an applyable transform
+/// once the body passed the checker.
 #[derive(Debug, Clone)]
 pub(crate) struct TransformIntent {
     pub(crate) path: String,
+    pub(crate) read_paths: Vec<String>,
+    pub(crate) file: std::path::PathBuf,
+    pub(crate) body_span: SourceSpan,
 }
 
 /// The rename, retire, default, and transform intents an evolve block declares. The
@@ -132,12 +138,19 @@ where
                             });
                         }
                     }
-                    // A transform reshapes stored meaning and is non-applyable without
-                    // a checked transform; discharge records it as a typed-transform
-                    // obligation. It carries no catalog identity move.
-                    EvolveStep::Transform { target, .. } => {
+                    // A transform recomputes its target from the members its body reads
+                    // via `old.<member>`. The target and read paths flow to the catalog
+                    // binding for stable-id resolution and to discharge; the body flows
+                    // through for apply to execute. It carries no catalog identity move.
+                    EvolveStep::Transform { target, body, .. } => {
                         if let Some(path) = target_path(module, target) {
-                            intents.transforms.push(TransformIntent { path });
+                            let read_paths = transform_read_paths(&path, body);
+                            intents.transforms.push(TransformIntent {
+                                path,
+                                read_paths,
+                                file: file.to_path_buf(),
+                                body_span: body.span,
+                            });
                         }
                     }
                 }
@@ -149,8 +162,12 @@ where
 
 /// Type-check the `default` and `transform` steps of every `evolve` block against
 /// current source: a default value must match its target member's type, and a
-/// transform body must satisfy the structural body rules. Targets that name no
-/// current source entity are reported.
+/// transform body must satisfy the structural body rules, type its result as its
+/// target, and obey the read restrictions. Targets that name no current source entity
+/// are reported. The catalog path of every member a default or transform rewrites is
+/// collected first so a transform can reject a read of a member the same evolve surface
+/// changes. The purity check runs after lowering, in [`check_transform_effects`], where
+/// the body's effects are available.
 pub(crate) fn check_evolve_types<'a, I>(
     program: &CheckedProgram,
     parsed_files: I,
@@ -159,7 +176,9 @@ pub(crate) fn check_evolve_types<'a, I>(
     I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
 {
     let source_entries = source_catalog_entries(program);
-    for (file, parsed) in parsed_files {
+    let parsed_files: Vec<(&Path, &ParsedSource)> = parsed_files.into_iter().collect();
+    let rewritten_targets = rewritten_target_paths(&parsed_files);
+    for (file, parsed) in &parsed_files {
         let module = module_name(parsed);
         if !parsed
             .file
@@ -180,6 +199,7 @@ pub(crate) fn check_evolve_types<'a, I>(
                 module,
                 source_entries: &source_entries,
                 prelude: &prelude,
+                rewritten_targets: &rewritten_targets,
             };
             for step in &evolve.steps {
                 match step {
@@ -198,15 +218,202 @@ pub(crate) fn check_evolve_types<'a, I>(
     }
 }
 
+/// Enforce that every `evolve transform` body is pure and effect-free. This runs after
+/// the bodies are lowered, where the canonical effect classifier sees each body's
+/// direct saved writes, host effects, and transactions, and a call-target walk catches
+/// a call into a user function (whose own effects this narrow model does not propagate
+/// into a transform). A transform must be a pure, total function of `old`, so any of
+/// these is a fail-closed check error.
+pub(crate) fn check_transform_effects(
+    program: &CheckedProgram,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for transform in &program.catalog.evolve_transforms {
+        let Some(body) = &transform.runtime_body else {
+            continue;
+        };
+        let reason = impurity_reason(program, body);
+        if let Some(reason) = reason {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_EVOLVE_TRANSFORM,
+                severity: Severity::Error,
+                file: transform.file.clone(),
+                message: format!("an evolve transform body must be pure: {reason}"),
+                span: transform.body_span,
+            });
+        }
+    }
+}
+
+/// Why a transform body is impure, or `None` when it is pure. A saved read, a saved
+/// write, a host effect, a transaction, and a read or write of a future ephemeral root
+/// are read from the canonical direct-effect facts; a call into a user function is its
+/// own reason, since this model evaluates a transform as a self-contained pure
+/// expression rather than propagating callee effects.
+///
+/// Reading saved data is the soundness-critical case: a transform body is a per-record
+/// function of `old` only, so a direct `^root(key).field` read would let one record's
+/// stored value flow into every record's recomputed cell, bypassing both the `old`
+/// binding and the decodability proof discharge builds for each read member.
+fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<&'static str> {
+    let effects = crate::presence::direct_effects_for_block(&program.facts, body);
+    if !effects.saved_reads.is_empty()
+        || !effects.future_ephemeral_roots.reads.is_empty()
+        || !effects.future_ephemeral_roots.writes.is_empty()
+    {
+        return Some("it reads saved data; a transform body may only read `old`");
+    }
+    if !effects.saved_writes.is_empty() {
+        return Some("it writes saved data");
+    }
+    if !effects.host_calls.is_empty() {
+        return Some("it performs a host effect");
+    }
+    if effects.transactions {
+        return Some("it opens a transaction");
+    }
+    block_calls_function(body).then_some("it calls a function; inline the computation over `old`")
+}
+
+/// Whether a lowered block calls any user-defined function. A pure transform computes
+/// its target from `old` with operators and pure builtins; a call into a user function
+/// is rejected because its effects are not propagated into the transform.
+fn block_calls_function(body: &CheckedBody) -> bool {
+    body.statements().iter().any(statement_calls_function)
+}
+
+fn statement_calls_function(statement: &crate::CheckedStmt) -> bool {
+    use crate::CheckedStmt;
+    match statement {
+        CheckedStmt::Const { value, .. }
+        | CheckedStmt::Throw { value, .. }
+        | CheckedStmt::Expr { value, .. } => expr_calls_function(value),
+        CheckedStmt::Var { value, .. } | CheckedStmt::Return { value, .. } => {
+            value.as_ref().is_some_and(expr_calls_function)
+        }
+        CheckedStmt::Assign { target, value, .. } => {
+            expr_calls_function(target) || expr_calls_function(value)
+        }
+        CheckedStmt::Delete { path, .. } => expr_calls_function(path),
+        CheckedStmt::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            condition.as_ref().is_some_and(expr_calls_function)
+                || block_calls_function(then_block)
+                || else_ifs.iter().any(|else_if| {
+                    else_if.condition.as_ref().is_some_and(expr_calls_function)
+                        || block_calls_function(&else_if.block)
+                })
+                || else_block.as_ref().is_some_and(block_calls_function)
+        }
+        CheckedStmt::While {
+            condition, body, ..
+        } => condition.as_ref().is_some_and(expr_calls_function) || block_calls_function(body),
+        CheckedStmt::For {
+            iterable,
+            step,
+            body,
+            ..
+        } => {
+            expr_calls_function(iterable)
+                || step.as_ref().is_some_and(expr_calls_function)
+                || block_calls_function(body)
+        }
+        CheckedStmt::Transaction { body, .. } => block_calls_function(body),
+        CheckedStmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            block_calls_function(body)
+                || catch
+                    .as_ref()
+                    .is_some_and(|catch| block_calls_function(&catch.block))
+                || finally.as_ref().is_some_and(block_calls_function)
+        }
+        CheckedStmt::Match {
+            scrutinee, arms, ..
+        } => {
+            scrutinee.as_ref().is_some_and(expr_calls_function)
+                || arms.iter().any(|arm| block_calls_function(&arm.block))
+        }
+        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => false,
+    }
+}
+
+fn expr_calls_function(expr: &crate::CheckedExpr) -> bool {
+    use crate::{CheckedCallTarget, CheckedExpr, CheckedInterpolationPart};
+    match expr {
+        CheckedExpr::Call {
+            callee,
+            args,
+            target,
+            ..
+        } => {
+            matches!(target, CheckedCallTarget::Function(_))
+                || expr_calls_function(callee)
+                || args.iter().any(|arg| expr_calls_function(&arg.value))
+        }
+        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
+            expr_calls_function(base)
+        }
+        CheckedExpr::Unary { operand, .. } => expr_calls_function(operand),
+        CheckedExpr::Binary { left, right, .. } => {
+            expr_calls_function(left) || expr_calls_function(right)
+        }
+        CheckedExpr::Interpolation { parts, .. } => parts.iter().any(|part| match part {
+            CheckedInterpolationPart::Expr(expr) => expr_calls_function(expr),
+            CheckedInterpolationPart::Text { .. } => false,
+        }),
+        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
+            false
+        }
+    }
+}
+
+/// The catalog paths every `evolve default` and `evolve transform` step targets, across
+/// all evolve blocks. A transform may not read a member the same evolve surface rewrites
+/// (its `old` value is the pre-evolution one, not the value the default or transform
+/// produces), so the read check needs the whole set, not just the current step.
+fn rewritten_target_paths(parsed_files: &[(&Path, &ParsedSource)]) -> HashSet<String> {
+    let mut targets = HashSet::new();
+    for (_, parsed) in parsed_files {
+        let module = module_name(parsed);
+        for declaration in &parsed.file.declarations {
+            let Declaration::Evolve(evolve) = declaration else {
+                continue;
+            };
+            for step in &evolve.steps {
+                let target = match step {
+                    EvolveStep::Transform { target, .. } | EvolveStep::Default { target, .. } => {
+                        target
+                    }
+                    EvolveStep::Rename { .. } | EvolveStep::Retire { .. } => continue,
+                };
+                if let Some(path) = target_path(module, target) {
+                    targets.insert(path);
+                }
+            }
+        }
+    }
+    targets
+}
+
 /// The per-file context default and transform steps resolve against: the bound
-/// program, the evolve block's file and module, and the catalog entries current
-/// source declares.
+/// program, the evolve block's file and module, the catalog entries current source
+/// declares, and the catalog paths every default or transform rewrites.
 struct TypeContext<'a> {
     program: &'a CheckedProgram,
     file: &'a Path,
     module: &'a str,
     source_entries: &'a [SourceCatalogEntry],
     prelude: &'a FilePrelude,
+    rewritten_targets: &'a HashSet<String>,
 }
 
 impl TypeContext<'_> {
@@ -262,23 +469,128 @@ impl TypeContext<'_> {
             report_target(self.file, target_span(target, span), diagnostics);
             return;
         }
-        // A transform body is a function body in everything but the typed old/new
-        // views the apply-time discharge supplies. Holding it to the same structural
-        // rules and the same name-resolution and type pass catches an undefined
-        // identifier or unknown call at check time rather than letting it survive as
-        // unchecked free text. Only the binding of the old/new mapping is deferred to
-        // when the records are read.
+        // A transform must target a top-level saved resource member: only a member has a
+        // leaf type its result encodes to and old bytes apply reads, and read resolution
+        // and the per-record write address handle only a plain field directly under the
+        // record node. A store root, index, or enum target, or a nested member under a
+        // group or keyed layer, is rejected.
+        if !self.target_is_top_level_member(target) {
+            diagnostics.push(self.transform_error(
+                target_span(target, span),
+                "an evolve transform must target a top-level saved resource member".to_string(),
+            ));
+            return;
+        }
+        let (Some(member_type), Some(resource)) =
+            (self.member_type(target), self.resource_of_target(target))
+        else {
+            diagnostics.push(self.transform_error(
+                target_span(target, span),
+                "an evolve transform must target a top-level saved resource member".to_string(),
+            ));
+            return;
+        };
+        // The body is a pure function from `old` (the record's current-typed values
+        // before this evolution) to the target's new value. Holding it to the same
+        // structural rules and the same name-resolution and type pass catches an
+        // undefined identifier or unknown call at check time; binding `old` as the
+        // resource type makes `old.<member>` reads type against the current schema, and
+        // the target member type as the return type makes the result type-check.
         crate::rules::check_transform_body(self.file, body, diagnostics);
         let mut scope = vec![self.prelude.module_constants.clone()];
+        scope.push(HashMap::from([(
+            "old".to_string(),
+            MarrowType::Resource(resource),
+        )]));
         check_block_types(
             self.program,
             self.file,
-            &MarrowType::Unknown,
+            &member_type,
             body,
             &mut scope,
             &self.prelude.aliases,
             diagnostics,
         );
+        self.check_read_restrictions(target, body, diagnostics);
+    }
+
+    /// Reject reading, through `old.<member>`, the transform's own target or any member
+    /// the same evolve surface rewrites with a default or another transform. `old`
+    /// exposes each member's pre-evolution value, so reading a member this evolution
+    /// changes computes from a value the developer is replacing, not the intended
+    /// post-evolution one. The read member's catalog path is compared against the
+    /// rewritten-target paths.
+    fn check_read_restrictions(
+        &self,
+        target: &Expression,
+        body: &Block,
+        diagnostics: &mut Vec<CheckDiagnostic>,
+    ) {
+        let Some(resource_prefix) = self
+            .target_member_path(target)
+            .and_then(|path| path.rsplit_once("::").map(|(head, _)| head.to_string()))
+        else {
+            return;
+        };
+        let target_path = self.target_member_path(target);
+        for read in old_field_reads(body) {
+            let read_path = format!("{resource_prefix}::{}", read.field);
+            let message = if Some(&read_path) == target_path.as_ref() {
+                Some(format!(
+                    "a transform cannot read its own target `old.{}`; compute it from other members",
+                    read.field
+                ))
+            } else if self.rewritten_targets.contains(&read_path) {
+                Some(format!(
+                    "a transform cannot read `old.{}`, which the same evolve block changes; read a member no default or transform rewrites",
+                    read.field
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                diagnostics.push(self.transform_error(read.span, message));
+            }
+        }
+    }
+
+    fn transform_error(&self, span: SourceSpan, message: String) -> CheckDiagnostic {
+        CheckDiagnostic {
+            code: crate::CHECK_EVOLVE_TRANSFORM,
+            severity: Severity::Error,
+            file: self.file.to_path_buf(),
+            message,
+            span,
+        }
+    }
+
+    /// The module-qualified catalog path the target names, used to compare reads
+    /// against transform targets.
+    fn target_member_path(&self, target: &Expression) -> Option<String> {
+        target_path(self.module, target)
+    }
+
+    /// Whether the target names a top-level member of a resource: a bare resource name
+    /// followed by exactly one member segment (`Book.priceCents`). A deeper chain
+    /// (`Book.name.first`) names a nested member the transform model does not support.
+    fn target_is_top_level_member(&self, target: &Expression) -> bool {
+        member_chain(target).is_some_and(|(_, chain)| chain.len() == 1)
+    }
+
+    /// The qualified resource type name a member target belongs to, when it names a
+    /// member of a resource declared in this block's module and file.
+    fn resource_of_target(&self, target: &Expression) -> Option<String> {
+        let (resource_name, _) = member_chain(target)?;
+        let module = self
+            .program
+            .modules
+            .iter()
+            .find(|module| module.name == self.module && module.source_file == self.file)?;
+        module
+            .resources
+            .iter()
+            .find(|resource| resource.name == resource_name)
+            .map(|resource| crate::resource_type_name(self.module, &resource.name))
     }
 
     fn resolves_in_source(&self, target: &Expression) -> bool {
@@ -347,6 +659,206 @@ fn target_path(module: &str, target: &Expression) -> Option<String> {
     } else {
         format!("{module}::{joined}")
     })
+}
+
+/// The `evolve transform` body in `parsed` whose target resolves to `target_path`, used
+/// by runtime-body lowering to find the syntax for a bound transform. The checked
+/// program carries no syntax body, so lowering reads the body back from the parse the
+/// same way function lowering does.
+pub(crate) fn transform_body_in_source<'a>(
+    parsed: &'a ParsedSource,
+    module: &str,
+    wanted_path: &str,
+) -> Option<&'a Block> {
+    for declaration in &parsed.file.declarations {
+        let Declaration::Evolve(evolve) = declaration else {
+            continue;
+        };
+        for step in &evolve.steps {
+            if let EvolveStep::Transform { target, body, .. } = step
+                && target_path(module, target).as_deref() == Some(wanted_path)
+            {
+                return Some(body);
+            }
+        }
+    }
+    None
+}
+
+/// The catalog paths of the members a transform body reads via `old.<member>`, derived
+/// from the body and the target's own catalog path. The resource prefix is the target
+/// path with its member segment dropped, so each read `old.<field>` maps to
+/// `<resource>::<field>`. The paths are deduplicated in source order; the catalog
+/// binding resolves them to stable ids and discharge proves their decodability.
+fn transform_read_paths(target_path: &str, body: &Block) -> Vec<String> {
+    let Some((resource_prefix, _)) = target_path.rsplit_once("::") else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for read in old_field_reads(body) {
+        let path = format!("{resource_prefix}::{}", read.field);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// One `old.<field>` read inside a transform body: the immediate field name read off
+/// `old` and the span of the read. The transform model reads top-level members, so
+/// only an immediate field of the `old` binding is a read; a deeper access is rejected
+/// by the type pass when it does not name a member.
+struct OldFieldRead {
+    field: String,
+    span: SourceSpan,
+}
+
+/// Collect every `old.<field>` read in a transform body, in source order. This walks
+/// the whole body — every statement, condition, and sub-expression — so a read buried
+/// in a branch or interpolation is still found.
+fn old_field_reads(body: &Block) -> Vec<OldFieldRead> {
+    let mut reads = Vec::new();
+    walk_block_reads(body, &mut reads);
+    reads
+}
+
+fn walk_block_reads(block: &Block, reads: &mut Vec<OldFieldRead>) {
+    for statement in &block.statements {
+        walk_statement_reads(statement, reads);
+    }
+}
+
+fn walk_statement_reads(statement: &Statement, reads: &mut Vec<OldFieldRead>) {
+    match statement {
+        Statement::Const { value, .. }
+        | Statement::Throw { value, .. }
+        | Statement::Expr { value, .. } => walk_expr_reads(value, reads),
+        Statement::Var { value, .. } | Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                walk_expr_reads(value, reads);
+            }
+        }
+        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            walk_expr_reads(target, reads);
+            walk_expr_reads(value, reads);
+        }
+        Statement::Delete { path, .. } => walk_expr_reads(path, reads),
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            if let Some(condition) = condition {
+                walk_expr_reads(condition, reads);
+            }
+            walk_block_reads(then_block, reads);
+            for else_if in else_ifs {
+                if let Some(condition) = &else_if.condition {
+                    walk_expr_reads(condition, reads);
+                }
+                walk_block_reads(&else_if.block, reads);
+            }
+            if let Some(block) = else_block {
+                walk_block_reads(block, reads);
+            }
+        }
+        Statement::While {
+            condition, body, ..
+        } => {
+            if let Some(condition) = condition {
+                walk_expr_reads(condition, reads);
+            }
+            walk_block_reads(body, reads);
+        }
+        Statement::For {
+            iterable,
+            step,
+            body,
+            ..
+        } => {
+            walk_expr_reads(iterable, reads);
+            if let Some(step) = step {
+                walk_expr_reads(step, reads);
+            }
+            walk_block_reads(body, reads);
+        }
+        Statement::Transaction { body, .. } => walk_block_reads(body, reads),
+        Statement::Lock { path, body, .. } => {
+            if let Some(path) = path {
+                walk_expr_reads(path, reads);
+            }
+            walk_block_reads(body, reads);
+        }
+        Statement::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            walk_block_reads(body, reads);
+            if let Some(catch) = catch {
+                walk_block_reads(&catch.block, reads);
+            }
+            if let Some(finally) = finally {
+                walk_block_reads(finally, reads);
+            }
+        }
+        Statement::Match {
+            scrutinee, arms, ..
+        } => {
+            if let Some(scrutinee) = scrutinee {
+                walk_expr_reads(scrutinee, reads);
+            }
+            for arm in arms {
+                walk_block_reads(&arm.block, reads);
+            }
+        }
+        Statement::Break { .. } | Statement::Continue { .. } => {}
+    }
+}
+
+fn walk_expr_reads(expr: &Expression, reads: &mut Vec<OldFieldRead>) {
+    match expr {
+        Expression::Field {
+            base, name, span, ..
+        }
+        | Expression::OptionalField {
+            base, name, span, ..
+        } => {
+            if is_old_name(base) {
+                reads.push(OldFieldRead {
+                    field: name.clone(),
+                    span: *span,
+                });
+            }
+            walk_expr_reads(base, reads);
+        }
+        Expression::Call { callee, args, .. } => {
+            walk_expr_reads(callee, reads);
+            for Argument { value, .. } in args {
+                walk_expr_reads(value, reads);
+            }
+        }
+        Expression::Unary { operand, .. } => walk_expr_reads(operand, reads),
+        Expression::Binary { left, right, .. } => {
+            walk_expr_reads(left, reads);
+            walk_expr_reads(right, reads);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    walk_expr_reads(expr, reads);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn is_old_name(expr: &Expression) -> bool {
+    matches!(expr, Expression::Name { segments, .. } if segments == &["old".to_string()])
 }
 
 /// Decompose an evolve target into its catalog path segments. A saved root carries

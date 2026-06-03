@@ -229,8 +229,12 @@ fn bound_defaults(
         .collect()
 }
 
-/// Resolve each `evolve transform` to the stable id its data cells use, carrying the
-/// body fingerprint forward for the source digest.
+/// Record every `evolve transform` with the owning resource type name and the body
+/// apply executes. The target's stable id and the read members' stable ids bind only
+/// once a catalog is accepted; before that they are empty, so the transform's body is
+/// still lowered and its purity still checked, but discharge skips it (it addresses no
+/// accepted snapshot). A transform whose target names no resource member is dropped: the
+/// type pass already reports it, and it anchors no obligation.
 fn bound_transforms(
     transforms: &[TransformIntent],
     ids: &HashMap<CatalogKey, String>,
@@ -238,7 +242,24 @@ fn bound_transforms(
     transforms
         .iter()
         .filter_map(|transform| {
-            member_target_id(&transform.path, ids).map(|catalog_id| EvolveTransform { catalog_id })
+            let resource = transform
+                .path
+                .rsplit_once("::")
+                .map(|(resource, _)| resource.to_string())?;
+            let reads = transform
+                .read_paths
+                .iter()
+                .filter_map(|path| member_target_id(path, ids))
+                .collect();
+            Some(EvolveTransform {
+                catalog_id: member_target_id(&transform.path, ids).unwrap_or_default(),
+                reads,
+                resource,
+                file: transform.file.clone(),
+                target_path: transform.path.clone(),
+                body_span: transform.body_span,
+                runtime_body: None,
+            })
         })
         .collect()
 }

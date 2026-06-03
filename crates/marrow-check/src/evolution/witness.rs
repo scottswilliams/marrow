@@ -35,6 +35,10 @@ pub struct DischargeCounts {
     pub index_collisions: usize,
     /// Records a defaulting obligation must backfill.
     pub records_to_backfill: usize,
+    /// Records an applyable transform recomputes. A transform rewrites its target cell
+    /// for every record under the place, so the count is the record total of each
+    /// applyable transform's place; apply re-counts and refuses on drift.
+    pub records_to_transform: usize,
 }
 
 /// A constant fill value for a defaulting obligation, already encoded in its
@@ -69,9 +73,13 @@ pub enum Verdict {
     /// A new index whose entries apply rebuilds from the records it covers.
     /// (rebuild)
     DerivedRebuild,
-    /// A change of stored meaning that is not applyable without a checked
-    /// transform, so the obligation blocks activation. (transform)
-    TypedTransformRequired,
+    /// A checked `evolve transform` recomputes this member per record from the read
+    /// members it names. Apply binds each record's read-member values as `old`,
+    /// evaluates the pure transform body, and writes the result. The reads are the
+    /// catalog ids of the members the body reads via `old.<member>`; their old bytes
+    /// must decode under their current type, proven by a sibling decodability
+    /// obligation, so reading them is sound. (transform)
+    Transform { reads: Vec<CatalogId> },
     /// A retire over populated data; apply needs a scoped approval that names this
     /// catalog id and matches the recorded populated count. (retire, hard)
     DestructiveDecisionRequired { populated: usize },
@@ -100,13 +108,20 @@ pub enum RepairReason {
     /// retire fails closed rather than counting zero populated cells and silently
     /// dropping nothing.
     NestedRetireUnsupported,
+    /// A member an `evolve transform` reads via `old.<member>` has stored bytes that
+    /// do not decode under its current type. The transform's soundness rests on every
+    /// read member's old bytes decoding as the current type (unchanged or compatibly
+    /// widened); a record whose bytes were written under an incompatible type cannot
+    /// be read, so the transform fails closed until that data is repaired.
+    UndecodableTransformInput,
 }
 
 impl Verdict {
     /// Whether this outcome leaves the program activatable with no further developer
-    /// decision: nothing to do, identity-only, a proven claim, a recorded default,
-    /// or a derived rebuild. A transform, a destructive approval, or a repair blocks
-    /// activation until a decision or fix lands.
+    /// decision: nothing to do, identity-only, a proven claim, a recorded default, a
+    /// derived rebuild, or a checked transform whose read members all decode. A
+    /// destructive approval or a repair blocks activation until a decision or fix
+    /// lands.
     pub fn is_activatable(&self) -> bool {
         matches!(
             self,
@@ -116,6 +131,7 @@ impl Verdict {
                 | Verdict::DataProof
                 | Verdict::Default { .. }
                 | Verdict::DerivedRebuild
+                | Verdict::Transform { .. }
         )
     }
 }

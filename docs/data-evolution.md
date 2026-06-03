@@ -200,7 +200,10 @@ copying raw engine bytes.
 These do not exist yet:
 
 - automatic source/catalog/data activation against attached data;
-- typed transforms as a dedicated planning surface;
+- multi-record transforms (split, merge, or a target computed from more than one
+  record). The narrow per-record `evolve transform` — a pure body computing one
+  saved member from a record's other, still-decodable members — is implemented; a
+  reshape that crosses records is not;
 - `marrow data diff` and `marrow data load` (see
   [future/data-tools.md](future/data-tools.md));
 - non-empty restore modes.

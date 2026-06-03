@@ -24,8 +24,8 @@
 
 use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
 use marrow_check::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
-    checked_saved_root_place,
+    CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember, CheckedSavedMemberKind,
+    CheckedSavedPlace, checked_saved_root_place,
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
@@ -36,6 +36,7 @@ use crate::write_plan::{PlanStep, WritePlan};
 
 use super::backfill::{stage_default_backfill, stage_index_rebuild, stage_retire_deletes};
 use super::scan::for_each_record;
+use super::transform::stage_transform;
 
 /// The developer decision a destructive retire requires: the exact catalog ids the
 /// retire drops and the populated record count recorded at preview. Apply accepts the
@@ -62,6 +63,7 @@ pub struct ApplyOutcome {
     pub records_backfilled: usize,
     pub indexes_rebuilt: usize,
     pub records_retired: usize,
+    pub records_transformed: usize,
 }
 
 /// Why an apply was refused before or during commit. Every variant leaves the store
@@ -94,6 +96,12 @@ pub enum ApplyError {
     /// Apply could not stage the exact work the witness counted, so it refuses rather
     /// than commit a partial or mismatched plan. The store is unchanged.
     PlanMismatch { expected: usize, staged: usize },
+    /// A transform body raised a genuine runtime fault over a record: an arithmetic
+    /// overflow, a divide-by-zero, an explicit throw, an absent optional read, or a
+    /// value the target leaf cannot encode. The body is pure and well-typed, so this is
+    /// the developer's logic faulting on real data, not store corruption. Apply aborts
+    /// before any write commits, leaving the store byte-identical.
+    TransformBodyFaulted { target: CatalogId, reason: String },
     /// A store operation failed; the transaction rolled back and the store is unchanged.
     Store(StoreError),
 }
@@ -134,6 +142,9 @@ pub fn apply(
     let mut staged = StagedWork::default();
     let mut steps = Vec::new();
     let places = source_places(program);
+    // The transform bodies run through the runtime evaluator against this program, so
+    // build the runtime program once and share it across every transform obligation.
+    let runtime = program.runtime();
     for obligation in &witness.verdicts {
         stage_obligation(
             &obligation.catalog_id,
@@ -142,6 +153,8 @@ pub fn apply(
             store,
             &mut steps,
             &mut staged,
+            program,
+            &runtime,
         )?;
     }
 
@@ -164,6 +177,17 @@ pub fn apply(
         });
     }
 
+    // A transform recomputes its target cell for every record the witness counted. The
+    // re-scan that staged those writes must find that count; a mismatch means the store
+    // gained or lost records under the witness, so refuse rather than transform a
+    // different set of records. This mirrors the backfill and retire guards.
+    if staged.records_transformed != witness.counts.records_to_transform {
+        return Err(ApplyError::PlanMismatch {
+            expected: witness.counts.records_to_transform,
+            staged: staged.records_transformed,
+        });
+    }
+
     let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
     steps.push(metadata_stamp(witness, target_epoch, commit_id));
     WritePlan { steps }.commit(store, false)?;
@@ -174,6 +198,7 @@ pub fn apply(
         records_backfilled: staged.records_backfilled,
         indexes_rebuilt: staged.indexes_rebuilt,
         records_retired: staged.records_retired,
+        records_transformed: staged.records_transformed,
     })
 }
 
@@ -184,6 +209,7 @@ pub(super) struct StagedWork {
     pub(super) records_backfilled: usize,
     pub(super) indexes_rebuilt: usize,
     pub(super) records_retired: usize,
+    pub(super) records_transformed: usize,
 }
 
 /// Assert the store's latest commit id is exactly the one the witness pinned. Witness
@@ -210,7 +236,7 @@ fn gate_obligations(
 ) -> Result<(), ApplyError> {
     for obligation in &witness.verdicts {
         match &obligation.verdict {
-            Verdict::TypedTransformRequired | Verdict::RepairRequired { .. } => {
+            Verdict::RepairRequired { .. } => {
                 return Err(ApplyError::NotActivatable);
             }
             Verdict::DestructiveDecisionRequired { populated } => {
@@ -235,7 +261,9 @@ fn gate_obligations(
 
 /// Stage the durable work for one obligation. A defaulting obligation backfills the
 /// member, a derived rebuild writes the index entries, an approved destructive retire
-/// deletes the member subtree per record; every other verdict touches no data.
+/// deletes the member subtree per record, a transform recomputes its target per record
+/// through the runtime evaluator; every other verdict touches no data.
+#[allow(clippy::too_many_arguments)]
 fn stage_obligation(
     catalog_id: &CatalogId,
     verdict: &Verdict,
@@ -243,6 +271,8 @@ fn stage_obligation(
     store: &TreeStore,
     steps: &mut Vec<PlanStep>,
     staged: &mut StagedWork,
+    program: &CheckedProgram,
+    runtime: &CheckedRuntimeProgram,
 ) -> Result<(), ApplyError> {
     match verdict {
         Verdict::Default { value } => {
@@ -252,11 +282,13 @@ fn stage_obligation(
         Verdict::DestructiveDecisionRequired { .. } => {
             stage_retire_deletes(catalog_id, places, store, steps, staged)
         }
+        Verdict::Transform { .. } => {
+            stage_transform(catalog_id, program, runtime, places, store, steps, staged)
+        }
         Verdict::NoOp
         | Verdict::CatalogOnly
         | Verdict::Deprecated
         | Verdict::DataProof
-        | Verdict::TypedTransformRequired
         | Verdict::RepairRequired { .. } => Ok(()),
     }
 }

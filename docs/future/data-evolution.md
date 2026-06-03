@@ -35,8 +35,9 @@ The future planner can emit outcomes such as:
   base data.
 - `StoreRecompile`: write the same typed data into a different physical layout,
   archive, backend, or store format.
-- `TypedTransformRequired`: user meaning changed and requires checked old-to-new
-  code.
+- `Transform`: a checked `evolve transform` recomputes a top-level member per record
+  from the record's other, still-decodable members through a body that is a pure
+  function of `old` (no saved reads, saved writes, host effects, or transactions).
 - `DestructiveDecisionRequired`: populated data would be deleted, abandoned, or
   hidden.
 - `RepairRequired`: saved data is already invalid under the catalog it claims to

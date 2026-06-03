@@ -643,21 +643,24 @@ fn new_unique_index_over_colliding_data_fails() {
     );
 }
 
-/// A declared transform is non-applyable here. The verdict is a
-/// typed-transform-required obligation and activation is blocked.
+/// A checked transform computing a new member from a sibling discharges to an
+/// applyable transform verdict carrying the read-member catalog ids. The read member
+/// `price` decodes under its current type, so the transform is activatable and the
+/// verdict names the ids apply reads to build the `old` binding.
 #[test]
-fn transform_is_typed_transform_required() {
-    let root = temp_project("discharge-transform", |root| {
+fn transform_from_decodable_sibling_is_applyable() {
+    let root = temp_project("discharge-transform-applyable", |root| {
         write(
             root,
             "src/books.mw",
             "module books\n\
              resource Book at ^books(id: int)\n\
-             \x20   required title: string\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
              evolve\n\
-             \x20   transform Book.title\n\
-             \x20       return \"x\"\n\
-             pub fn add(title: string): Id(^books)\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
     });
@@ -669,19 +672,302 @@ fn transform_is_typed_transform_required() {
         place: &place,
     };
     seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member(1, "price", Scalar::Int(3));
+    seed.member(1, "priceCents", Scalar::Int(300));
 
     let result = witness(&program, &store);
+
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let price_id = member_catalog_id(&place, "price");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(result.is_activatable(), "{result:#?}");
+    match verdict_for(&result, &cents_id) {
+        Verdict::Transform { reads } => assert!(
+            reads.iter().any(|id| id.as_str() == price_id),
+            "transform reads must name `price`: {reads:#?}"
+        ),
+        other => panic!("expected transform, got {other:#?}"),
+    }
+}
+
+/// A transform body whose read member does not decode under its current type fails
+/// closed: the read member's stored bytes were written under an incompatible type, so
+/// reading `old.<member>` is unsound. The transform target discharges to a blocking
+/// repair (it cannot be recomputed) and the witness is not activatable.
+#[test]
+fn transform_undecodable_read_member_fails_closed() {
+    let root = temp_project("discharge-transform-undecodable", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    // `price` was written as a string under its old type; it cannot decode as the
+    // current `int`, so reading `old.price` is unsound and the transform must block.
+    seed.record(1);
+    seed.member(1, "price", Scalar::Str("not-an-int".into()));
+    seed.member(1, "priceCents", Scalar::Int(0));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+    let cents_id = member_catalog_id(&place, "priceCents");
     fs::remove_dir_all(&root).ok();
 
     assert!(!result.is_activatable(), "{result:#?}");
     assert!(
-        result
-            .verdicts
-            .iter()
-            .any(|outcome| matches!(outcome.verdict, Verdict::TypedTransformRequired)),
+        matches!(
+            verdict_for(&result, &cents_id),
+            Verdict::RepairRequired {
+                reason: RepairReason::UndecodableTransformInput
+            }
+        ),
         "{:#?}",
         result.verdicts
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("transform") && message.contains("decode")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A transform body that performs a saved write is impure and rejected at check time.
+#[test]
+fn transform_saved_write_is_check_error() {
+    let root = temp_project("discharge-transform-impure-write", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       ^books(1).price = 9\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected an impure-transform error: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// A transform body whose result type does not match the target member type is a
+/// check error.
+#[test]
+fn transform_return_type_mismatch_is_check_error() {
+    let root = temp_project("discharge-transform-rettype", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return \"a string\"\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report.has_errors(),
+        "expected a return-type error: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// Reading the transform's own target via `old.<target>` is a check error: the target
+/// is the value being replaced, so its old bytes are not a sound input.
+#[test]
+fn transform_reading_own_target_is_check_error() {
+    let root = temp_project("discharge-transform-readself", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.priceCents * 2\n\
+             pub fn add(): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected a read-own-target error: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// Reading another transform's target via `old.<member>` is a check error: that
+/// member's old bytes are about to be rewritten by its own transform, so they are not
+/// a sound input for this one.
+#[test]
+fn transform_reading_other_transform_target_is_check_error() {
+    let root = temp_project("discharge-transform-readother", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required a: int\n\
+             \x20   required b: int\n\
+             evolve\n\
+             \x20   transform Book.a\n\
+             \x20       return 1\n\
+             \x20   transform Book.b\n\
+             \x20       return old.a + 1\n\
+             pub fn add(): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected a read-other-transform-target error: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// A transform body that directly reads a saved root (`^books(1).price`) is impure
+/// and rejected at check time. Such a read escapes the per-record `old` model and the
+/// decodability proof: it would let one record's value be written to every record. A
+/// transform body may only read `old`.
+#[test]
+fn transform_reading_saved_root_is_check_error() {
+    let root = temp_project("discharge-transform-savedread", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return ^books(1).price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected a saved-read impurity error: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// Reading `old.<member>` of a member a `default` in the same evolve block rewrites is
+/// a check error: `old` exposes the pre-evolution value, not the post-default value the
+/// developer intends, so the transform would compute from a value the same evolution is
+/// changing.
+#[test]
+fn transform_reading_same_block_default_target_is_check_error() {
+    let root = temp_project("discharge-transform-readdefault", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required base: int\n\
+             \x20   required total: int\n\
+             evolve\n\
+             \x20   default Book.base = 10\n\
+             \x20   transform Book.total\n\
+             \x20       return old.base + 1\n\
+             pub fn add(): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected a read-of-same-block-default-target error: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// A transform target must be a top-level saved resource member: read resolution and
+/// the per-record write address only handle a plain top-level field, so a nested target
+/// (`Book.name.first`) is rejected at check time rather than silently mis-resolving.
+#[test]
+fn transform_of_nested_member_is_check_error() {
+    let root = temp_project("discharge-transform-nested", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   name\n\
+             \x20       required first: string\n\
+             \x20       required last: string\n\
+             evolve\n\
+             \x20   transform Book.name.first\n\
+             \x20       return \"x\"\n\
+             pub fn add(): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected a nested-target error: {:#?}",
+        report.diagnostics
     );
 }
 

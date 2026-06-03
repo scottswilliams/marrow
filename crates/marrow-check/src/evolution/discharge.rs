@@ -28,6 +28,7 @@ use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use super::const_default::eval_const_default;
+use super::transform_reads::{TransformReadMember, transform_read_members};
 use super::witness::{ObligationVerdict, RepairReason, Verdict};
 use crate::StoreLeafKind;
 use crate::executable::{
@@ -35,7 +36,7 @@ use crate::executable::{
     checked_saved_root_place,
 };
 use crate::facts::{StoreIndexKeySource, StoredValueMeaning};
-use crate::program::{CheckedProgram, EvolveDefault};
+use crate::program::{CheckedProgram, EvolveDefault, EvolveTransform};
 
 /// The most failing-record keys a diagnostic names before summarizing the rest, so
 /// a large gap does not produce an unbounded message.
@@ -95,7 +96,147 @@ pub(crate) fn discharge(
         discharge_root(store, &place, &mut acc)?;
     }
     classify_absent_source_entries(program, store, &mut acc)?;
+    discharge_transforms(program, store, &mut acc)?;
     Ok(acc.into_discharge())
+}
+
+/// Classify every `evolve transform` obligation. A transform recomputes its target per
+/// record from the members its body reads, so the target is excluded from the
+/// presence scan (its value is being replaced) and discharged here directly. The
+/// target becomes an applyable [`Verdict::Transform`] carrying the read-member ids,
+/// guarded by a decodability proof: every record's stored bytes for each read member
+/// must decode under that member's current type, since the transform's soundness rests
+/// on reading those old bytes. A read member with an undecodable record fails closed
+/// with a typed repair, and the target is not classified applyable while any read it
+/// depends on cannot decode.
+fn discharge_transforms(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    acc: &mut Accumulator,
+) -> Result<(), StoreError> {
+    for transform in &program.catalog.evolve_transforms {
+        // An unbound transform (no accepted catalog yet) addresses no snapshot, the
+        // same way an unaccepted store does; its purity was still checked at lowering.
+        if transform.catalog_id.is_empty() {
+            continue;
+        }
+        let Some(place) = transform_place(program, transform) else {
+            continue;
+        };
+        if place.store_catalog_id.is_empty() {
+            continue;
+        }
+        let target_id = catalog_id(&transform.catalog_id)?;
+        let reads = transform_read_members(&place, &transform.reads);
+        let read_ids: Vec<CatalogId> = reads.iter().map(|read| read.catalog_id.clone()).collect();
+        // The decodability obligation lands on the transform target, not on the read
+        // member: a read member is often a normal required member with its own presence
+        // verdict, so a second verdict on its id would duplicate the obligation. The
+        // target is what cannot be recomputed when a read it depends on cannot decode,
+        // so its verdict carries the proof and the diagnostic names the failing record.
+        let undecodable = reads
+            .iter()
+            .find_map(|read| first_undecodable_record(store, &place, read).transpose())
+            .transpose()?;
+        let verdict = match &undecodable {
+            None => {
+                // An applyable transform rewrites the target cell for every record under
+                // the place, so the witness counts those records and apply re-counts the
+                // staged writes against this total.
+                acc.counts.records_to_transform += count_records(store, &place)?;
+                Verdict::Transform { reads: read_ids }
+            }
+            Some(sample) => {
+                acc.diagnostics.push(format!(
+                    "transform `{}` reads a member whose stored value does not decode under its current type (record {sample}); repair that data before activating",
+                    transform.resource
+                ));
+                Verdict::RepairRequired {
+                    reason: RepairReason::UndecodableTransformInput,
+                }
+            }
+        };
+        acc.push(
+            target_id,
+            format!("transform {}", transform.resource),
+            verdict,
+        );
+    }
+    Ok(())
+}
+
+/// The checked saved place that owns a transform's target member, found by the
+/// resource the transform names.
+fn transform_place(
+    program: &CheckedProgram,
+    transform: &EvolveTransform,
+) -> Option<CheckedSavedPlace> {
+    let root = program.modules.iter().find_map(|module| {
+        module.stores.iter().find_map(|store| {
+            let resource_path = crate::resource_type_name(&module.name, &store.resource);
+            (resource_path == transform.resource).then(|| store.root.clone())
+        })
+    })?;
+    checked_saved_root_place(program, &root, Default::default())
+}
+
+/// The first record whose stored value for a transform read member does not decode
+/// under its current leaf type, formatted for the diagnostic, or `None` when every
+/// record's value decodes (or is absent). A record that simply lacks the member places
+/// no decodability obligation; the transform reads what is present.
+fn first_undecodable_record(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    read: &TransformReadMember,
+) -> Result<Option<String>, StoreError> {
+    let store_id = catalog_id(&place.store_catalog_id)?;
+    let path = [DataPathSegment::Member(read.catalog_id.clone())];
+    let mut found = None;
+    for_each_record(
+        store,
+        &store_id,
+        place.identity_keys.len(),
+        &mut |identity| {
+            if found.is_some() {
+                return Ok(());
+            }
+            if let Some(bytes) = store.read_data_value(&store_id, identity, &path)?
+                && !leaf_decodes(&read.leaf, &bytes)
+            {
+                found = Some(format_identity(identity));
+            }
+            Ok(())
+        },
+    )?;
+    Ok(found)
+}
+
+/// The number of records under a place's store root. A transform rewrites the target
+/// cell for every record, so this is the count the witness carries and apply re-counts.
+fn count_records(store: &TreeStore, place: &CheckedSavedPlace) -> Result<usize, StoreError> {
+    let store_id = catalog_id(&place.store_catalog_id)?;
+    let mut count = 0usize;
+    for_each_record(store, &store_id, place.identity_keys.len(), &mut |_| {
+        count += 1;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+/// Whether stored bytes decode under a leaf's current type. A scalar decodes by its
+/// type, an enum to its member, an identity to its key tuple at the referenced arity.
+/// This is the soundness test for reading a transform input: old bytes that no longer
+/// decode under the current type cannot be read.
+fn leaf_decodes(leaf: &StoreLeafKind, bytes: &[u8]) -> bool {
+    match leaf {
+        StoreLeafKind::Scalar(scalar) => {
+            marrow_store::value::decode_value(bytes, *scalar).is_some()
+        }
+        StoreLeafKind::Enum { .. } => marrow_store::tree::decode_tree_enum_member(bytes).is_ok(),
+        StoreLeafKind::Identity { arity, .. } => {
+            marrow_store::key::decode_identity_payload_arity(bytes, *arity).is_some()
+        }
+    }
 }
 
 /// The stable ids of catalog entries the proposal changes relative to the accepted
@@ -278,8 +419,11 @@ fn classify_member_leaf(
     required: bool,
     acc: &Accumulator,
 ) -> MemberLeafOutcome {
+    // A transform recomputes this member per record, so its presence before the
+    // evolution is irrelevant: skip it from the presence scan and let
+    // `discharge_transforms` classify it from the decodability of the members it reads.
     if acc.is_transform(&member.catalog_id) {
-        return MemberLeafOutcome::Eager(Verdict::TypedTransformRequired);
+        return MemberLeafOutcome::Skip;
     }
     let Some(StoreLeafKind::Scalar(_)) = member.leaf else {
         return MemberLeafOutcome::Skip;

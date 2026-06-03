@@ -93,6 +93,23 @@ impl CheckedProgram {
             .map(|index| FileId(index as u32))
     }
 
+    /// The name of the module that declares the resource whose qualified type name is
+    /// `resource`, or `None` when no module declares it. An `evolve transform` names the
+    /// resource it reshapes by this qualified type name; both body lowering and apply
+    /// resolve the owning module through here so the module is never re-derived by
+    /// splitting the resource path.
+    pub fn owning_module_name(&self, resource: &str) -> Option<&str> {
+        self.modules
+            .iter()
+            .find(|module| {
+                module
+                    .resources
+                    .iter()
+                    .any(|res| crate::resource_type_name(&module.name, &res.name) == resource)
+            })
+            .map(|module| module.name.as_str())
+    }
+
     pub fn runtime(&self) -> CheckedRuntimeProgram {
         CheckedRuntimeProgram::from_checked(self)
     }
@@ -141,8 +158,65 @@ impl CheckedProgram {
                 function.runtime_body = CheckedBody::lower(&declaration.body, &context, scope);
             }
         }
+        self.lower_transform_bodies(&snapshot, &sources);
         self.facts.refresh_direct_effects(&self.modules);
     }
+
+    /// Lower each `evolve transform` body with `old` bound to the owning resource's
+    /// type, so apply can execute it per record through the runtime evaluator. The body
+    /// is read back from the parse (the checked program carries no syntax body) and
+    /// lowered against its owning module's executable context, with the module constants
+    /// and the single `old` resource binding in scope. The type pass in
+    /// `check_evolve_types` has already proven the body well-typed, so a body that fails
+    /// to lower stays `None` and discharge does not classify it applyable.
+    fn lower_transform_bodies(
+        &mut self,
+        snapshot: &CheckedProgram,
+        sources: &HashMap<PathBuf, &ParsedSource>,
+    ) {
+        let mut bodies: Vec<Option<CheckedBody>> = Vec::new();
+        for transform in &self.catalog.evolve_transforms {
+            bodies.push(lower_transform_body(snapshot, sources, transform));
+        }
+        for (transform, body) in self.catalog.evolve_transforms.iter_mut().zip(bodies) {
+            transform.runtime_body = body;
+        }
+    }
+}
+
+/// Lower one transform body against its owning module, with the module constants and
+/// `old: <resource>` in scope. Returns `None` when the owning module cannot be located,
+/// the body cannot be read back from the parse, or the body does not lower.
+fn lower_transform_body(
+    snapshot: &CheckedProgram,
+    sources: &HashMap<PathBuf, &ParsedSource>,
+    transform: &EvolveTransform,
+) -> Option<CheckedBody> {
+    let owning = snapshot.owning_module_name(&transform.resource)?;
+    let module_index = snapshot
+        .modules
+        .iter()
+        .position(|module| module.name == owning)?;
+    let module = &snapshot.modules[module_index];
+    let parsed = sources.get(&transform.file).copied()?;
+    let body =
+        crate::evolution::transform_body_in_source(parsed, &module.name, &transform.target_path)?;
+    let constants: HashMap<String, MarrowType> = module
+        .constants
+        .iter()
+        .map(|constant| {
+            (
+                constant.name.clone(),
+                constant.ty.clone().unwrap_or(MarrowType::Unknown),
+            )
+        })
+        .collect();
+    let context = CheckedExecutableContext::new(snapshot, module_index);
+    let old_scope = HashMap::from([(
+        "old".to_string(),
+        MarrowType::Resource(transform.resource.clone()),
+    )]);
+    CheckedBody::lower(body, &context, vec![constants, old_scope])
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -159,8 +233,9 @@ pub struct ProgramCatalog {
     /// attachment; the source digest binds the normalized value expressions.
     pub evolve_defaults: Vec<EvolveDefault>,
     /// The transform obligations an `evolve transform` step declares, keyed by the
-    /// member's stable catalog id. Discharge classifies each as a non-applyable
-    /// typed-transform obligation.
+    /// member's stable catalog id. Discharge classifies each as an applyable
+    /// transform obligation once its body passed the checker, carrying the read
+    /// members and the lowered body apply executes per record.
     pub evolve_transforms: Vec<EvolveTransform>,
     pub proposal: Option<marrow_project::CatalogMetadata>,
 }
@@ -173,11 +248,33 @@ pub struct EvolveDefault {
     pub value: marrow_syntax::Expression,
 }
 
-/// A bound `evolve transform`: the member's stable catalog id. Discharge classifies
-/// the member as a non-applyable typed-transform obligation.
+/// A bound `evolve transform`: the target member's stable catalog id, the read members
+/// the body names via `old.<member>` (their stable catalog ids), the resource's
+/// qualified type name (used to type the `old` binding and to locate the owning module
+/// through [`CheckedProgram::owning_module_name`]), the source file and the target's
+/// module-qualified catalog path (used to find the body in the parse), the body span
+/// (used to report a purity violation), and the lowered body apply executes.
+/// `runtime_body` is the body lowered with `old` in scope, filled in by
+/// [`CheckedProgram::lower_runtime_bodies`] from the parse; like a function's runtime
+/// body it is not a public syntax-construction bridge, so it is read through
+/// [`EvolveTransform::runtime_body`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveTransform {
     pub catalog_id: String,
+    pub reads: Vec<String>,
+    pub resource: String,
+    pub file: PathBuf,
+    pub target_path: String,
+    pub body_span: SourceSpan,
+    pub(crate) runtime_body: Option<CheckedBody>,
+}
+
+impl EvolveTransform {
+    /// The lowered transform body, or `None` when it has not been lowered (the body did
+    /// not lower, or no parse was available). Apply executes it per affected record.
+    pub fn runtime_body(&self) -> Option<&CheckedBody> {
+        self.runtime_body.as_ref()
+    }
 }
 
 /// One library module: its qualified name, the file it came from, and the

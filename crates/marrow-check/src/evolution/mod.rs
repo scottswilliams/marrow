@@ -14,14 +14,16 @@ mod const_default;
 mod discharge;
 mod intents;
 mod preview;
+mod transform_reads;
 mod witness;
 
 pub(crate) use intents::{
     DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent, check_evolve_types,
-    collect_evolve_intents,
+    check_transform_effects, collect_evolve_intents, transform_body_in_source,
 };
 
 pub use preview::preview;
+pub use transform_reads::{TransformReadMember, transform_read_members};
 pub use witness::{
     CatalogFingerprint, DefaultValue, DischargeCounts, EvolutionWitness, ObligationVerdict,
     RepairReason, Verdict,

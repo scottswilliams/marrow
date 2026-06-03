@@ -362,6 +362,7 @@ pub(crate) fn analyze_source_project(
             .iter()
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
+    crate::evolution::check_transform_effects(&program, &mut report.diagnostics);
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
 
     // Move every parse — error files included — into the snapshot now that the

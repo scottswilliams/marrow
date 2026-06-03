@@ -553,21 +553,202 @@ fn destructive_retire_requires_maintenance() {
     fs::remove_dir_all(&root).ok();
 }
 
-/// A `transform` declaration is non-applyable here: the witness is not activatable
-/// and apply refuses it with a typed not-activatable error, staging no write.
+/// A checked transform computes a new member from a sibling and apply writes the
+/// computed value per record, then stamps the epoch. Each record's `priceCents`
+/// becomes `price * 100`, derived from its own decodable `price`, and re-previewing
+/// after the apply yields the same value (idempotent over unchanged reads).
 #[test]
-fn transform_required_witness_is_refused() {
-    let root = temp_project("apply-transform", |root| {
+fn transform_computes_new_member_per_record_and_stamps() {
+    let root = temp_project("apply-transform-compute", |root| {
         write(
             root,
             "src/books.mw",
             "module books\n\
              resource Book at ^books(id: int)\n\
-             \x20   required title: string\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
              evolve\n\
-             \x20   transform Book.title\n\
-             \x20       return \"x\"\n\
-             pub fn add(title: string): Id(^books)\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    // Two records carry distinct prices and a stale priceCents the transform recomputes.
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+    seed.member(1, "priceCents", Scalar::Int(0));
+    seed.record(2);
+    seed.member(2, "price", Scalar::Int(7));
+    seed.member(2, "priceCents", Scalar::Int(0));
+
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_transformed, 2);
+
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let int = marrow_store::value::ScalarType::Int;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(300))
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &cents_id, int),
+        Some(Scalar::Int(700))
+    );
+    assert!(
+        store.read_commit_metadata().expect("read").is_some(),
+        "the transform apply stamps the store"
+    );
+
+    // Idempotent: re-previewing against the now-transformed store and re-applying
+    // recomputes the same value from the unchanged `price` reads.
+    let resumed = witness(&program, &store);
+    apply(&resumed, &program, &store, false, None).expect("re-apply succeeds");
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(300))
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &cents_id, int),
+        Some(Scalar::Int(700))
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A transform whose read member's stored bytes do not decode under the current type
+/// is non-activatable: apply refuses with a typed not-activatable error, staging no
+/// write and leaving the store unstamped.
+#[test]
+fn transform_undecodable_read_is_refused() {
+    let root = temp_project("apply-transform-undecodable", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    // `price` holds bytes that do not decode as the current `int`.
+    seed.record(1);
+    seed.member(1, "price", Scalar::Str("oops".into()));
+    seed.member(1, "priceCents", Scalar::Int(0));
+
+    let w = witness(&program, &store);
+    assert!(!w.is_activatable(), "{w:#?}");
+    let result = apply(&w, &program, &store, true, None);
+    assert!(
+        matches!(result, Err(ApplyError::NotActivatable)),
+        "expected NotActivatable, got {result:#?}"
+    );
+    assert_eq!(
+        store.read_commit_metadata().expect("read"),
+        None,
+        "no stamp"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A pure transform body can still raise a genuine runtime fault over a record (here an
+/// integer overflow). Apply reports a typed `TransformBodyFaulted` naming the target,
+/// rolls the whole transaction back, and leaves the store byte-identical with no stamp:
+/// a body fault is the developer's logic faulting on real data, not store corruption.
+#[test]
+fn transform_body_fault_aborts_byte_identical() {
+    let root = temp_project("apply-transform-fault", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 1000000000000\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = accept_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    // `price` is large enough that `price * 1e12` overflows the 64-bit range.
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(9_000_000_000));
+    seed.member(1, "priceCents", Scalar::Int(0));
+
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let int = marrow_store::value::ScalarType::Int;
+    let before = read_scalar(&store, &store_id, 1, &cents_id, int);
+
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    let result = apply(&w, &program, &store, false, None);
+    let cents_path = cents_id.clone();
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        matches!(result, Err(ApplyError::TransformBodyFaulted { .. })),
+        "expected TransformBodyFaulted, got {result:#?}"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_path, int),
+        before,
+        "the target cell is unchanged after a body fault"
+    );
+    assert_eq!(
+        store.read_commit_metadata().expect("read"),
+        None,
+        "no stamp after a body fault"
+    );
+}
+
+/// The activatable->applyable invariant for a transform: a witness whose read members
+/// all decode under their current type and whose body does not fault over the data
+/// applies successfully, writing the recomputed value and stamping the store.
+#[test]
+fn activatable_transform_with_total_body_applies() {
+    let root = temp_project("apply-transform-total", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
     });
@@ -579,14 +760,124 @@ fn transform_required_witness_is_refused() {
         place: &place,
     };
     seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member(1, "price", Scalar::Int(5));
+    seed.member(1, "priceCents", Scalar::Int(0));
 
-    let witness = witness(&program, &store);
-    assert!(!witness.is_activatable());
-    let result = apply(&witness, &program, &store, true, None);
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_transformed, 1);
+
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let int = marrow_store::value::ScalarType::Int;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(500))
+    );
+    assert!(store.read_commit_metadata().expect("read").is_some());
+    fs::remove_dir_all(&root).ok();
+}
+
+/// A transform composes with a default and a retire in one evolve block: apply
+/// computes the transform target, backfills the defaulted member, drops the retired
+/// member, and stamps once. The transform reads a sibling the retire does not touch.
+#[test]
+fn transform_composes_with_default_and_retire() {
+    let root = temp_project("apply-transform-compose", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             \x20   required currency: string\n\
+             \x20   subtitle: string\n\
+             pub fn add(price: int, currency: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    // Accept the full schema, so every member binds a stable id and current source
+    // proposes no new catalog entry: the default backfills records missing `currency`,
+    // the retire drops the accepted `subtitle` source no longer declares, and the
+    // transform recomputes the accepted `priceCents`.
+    let accepted = accept_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    // The old record predates `currency`, so the default must backfill it.
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(5));
+    seed.member(1, "priceCents", Scalar::Int(0));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("sub".into()));
+
+    // New source: transform priceCents from price, default currency, retire subtitle.
+    // The transform reads `price`, untouched by the other two intents.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         \x20   required currency: string\n\
+         evolve\n\
+         \x20   default Book.currency = \"USD\"\n\
+         \x20   retire Book.subtitle\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int, currency: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let (report, program) = check_project(&root, &config()).expect("check composed source");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let place = root_place(&program, "books");
+
+    // The retire makes the witness non-activatable on its own; the transform and the
+    // default are activatable, and the retire applies under maintenance with a scoped
+    // approval. Apply composes all three in one stamped transaction.
+    let w = witness(&program, &store);
+    let approval = Approval {
+        catalog_ids: vec![CatalogId::new(subtitle_id.clone()).unwrap()],
+        populated: 1,
+    };
+    let outcome = apply(&w, &program, &store, true, Some(&approval)).expect("apply");
+    assert_eq!(outcome.records_transformed, 1);
+    assert_eq!(outcome.records_backfilled, 1);
+    assert_eq!(outcome.records_retired, 1);
+
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let currency_id = member_catalog_id(&place, "currency");
+    let int = marrow_store::value::ScalarType::Int;
+    let str_ty = marrow_store::value::ScalarType::Str;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(500)),
+        "the transform target is recomputed"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &currency_id, str_ty),
+        Some(Scalar::Str("USD".into())),
+        "the defaulted member is backfilled"
+    );
     assert!(
-        matches!(result, Err(ApplyError::NotActivatable)),
-        "expected NotActivatable, got {result:#?}"
+        !store
+            .data_subtree_exists(
+                &store_id,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(
+                    CatalogId::new(subtitle_id).unwrap()
+                )]
+            )
+            .expect("exists"),
+        "the retired member is dropped"
     );
     fs::remove_dir_all(&root).ok();
 }

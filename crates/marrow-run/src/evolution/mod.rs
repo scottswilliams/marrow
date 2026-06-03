@@ -11,5 +11,6 @@
 mod apply;
 mod backfill;
 mod scan;
+mod transform;
 
 pub use apply::{ApplyError, ApplyOutcome, Approval, apply};

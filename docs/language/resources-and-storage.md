@@ -634,6 +634,39 @@ into every record that lacks the member, so a value that varies per record is a
 `transform`, not a `default`. A non-constant `default` is rejected with a diagnostic
 pointing to `transform`.
 
+A `transform` targets a top-level saved member and computes it per record from the
+record's other members:
+
+```mw
+evolve
+    transform Book.priceCents
+        return old.price * 100
+```
+
+The target must be a top-level member of the resource; a nested member under a group
+or keyed layer is rejected.
+
+Inside the body, `old` is the record before this evolution, read-only and typed
+against the current schema; `old.<member>` reads that member's value. The body is a
+pure function of `old` only: it computes the target as a total function of `old` with
+operators and pure helpers, and may not read or write any saved data (a `^` path),
+perform host effects, open a transaction, or call a project function. A body that
+reads saved data is rejected, because a transform sees one record at a time through
+`old` and may not reach across records. Its result must type as the target member.
+
+A transform reads *other* members, never the value it replaces: reading `old.<target>`
+is rejected. It also may not read a member the same `evolve` block changes with a
+`default` or another `transform`: `old` exposes the pre-evolution value, not the value
+that change produces, so the result would be computed from data the same evolution is
+replacing. To reinterpret a member's own stored value, add a new member computed from
+it and retire the old one rather than transforming it in place.
+
+Soundness rests on the read members, not on remembering the old types: before a
+transform applies, every value the body reads must still decode under that member's
+current type. A record whose stored bytes no longer decode fails the change closed
+with a repair diagnostic, so a transform applies only over data that is unchanged or
+compatibly widened in the members it reads.
+
 The intent is checked against the source and the accepted catalog; it does not
 itself rewrite stored data. Applying the change is an explicit maintenance action.
 
