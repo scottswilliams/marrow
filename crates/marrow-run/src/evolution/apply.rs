@@ -17,6 +17,7 @@ use super::backfill::{
     stage_default_backfill, stage_default_presence_receipt, stage_index_drop, stage_index_rebuild,
     stage_retire_deletes,
 };
+use super::evidence::retire_evidence_digest;
 use super::transform::{TransformStage, stage_transform};
 use super::validate::{assert_commit_pin, validate_witness};
 use super::window::{
@@ -60,6 +61,7 @@ pub struct ActivationReceipt {
     pub default_records_by_id: Vec<ActivationDefaultRecordCount>,
     pub indexes_rebuilt: usize,
     pub records_retired: usize,
+    pub retire_evidence_digest: String,
     pub records_retired_by_id: Vec<(CatalogId, usize)>,
     pub records_transformed: usize,
 }
@@ -199,6 +201,12 @@ pub fn apply(
     // untouched and report the current commit id rather than advancing it.
     if steps.is_empty() && current_epoch == Some(target_epoch) {
         let committed_commit_id = witness.store_commit_id.unwrap_or(0);
+        let retire_counts = retire_receipt_counts(program, &destructive_retire_counts)?;
+        let retire_digest = retire_evidence_digest(
+            committed_commit_id,
+            staged.records_retired as u64,
+            &retire_counts_u64(&retire_counts)?,
+        );
         return Ok(ApplyOutcome {
             committed_commit_id,
             catalog_epoch: target_epoch,
@@ -211,13 +219,20 @@ pub fn apply(
                 committed_commit_id,
                 target_epoch,
                 &staged,
-                &retire_receipt_counts(program, &destructive_retire_counts)?,
+                &retire_counts,
+                retire_digest,
             ),
         });
     }
 
     let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
     let retire_receipt_counts = retire_receipt_counts(program, &destructive_retire_counts)?;
+    let retire_receipt_counts_u64 = retire_counts_u64(&retire_receipt_counts)?;
+    let retire_digest = retire_evidence_digest(
+        commit_id,
+        staged.records_retired as u64,
+        &retire_receipt_counts_u64,
+    );
     steps.push(metadata_stamp(StampFacts {
         catalog_epoch: target_epoch,
         commit_id,
@@ -234,10 +249,8 @@ pub fn apply(
             default_records_by_id: staged.default_records_by_id.clone(),
             indexes_rebuilt: staged.indexes_rebuilt as u64,
             records_retired: staged.records_retired as u64,
-            records_retired_by_id: retire_receipt_counts
-                .iter()
-                .map(|(id, count)| (id.clone(), *count as u64))
-                .collect(),
+            retire_evidence_digest: retire_digest.clone(),
+            records_retired_by_id: retire_receipt_counts_u64,
             records_transformed: staged.records_transformed as u64,
         }),
     }));
@@ -256,6 +269,7 @@ pub fn apply(
             target_epoch,
             &staged,
             &retire_receipt_counts,
+            retire_digest,
         ),
     })
 }
@@ -275,6 +289,18 @@ fn retire_receipt_counts(
     counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     counts.dedup();
     Ok(counts)
+}
+
+fn retire_counts_u64(counts: &[(CatalogId, usize)]) -> Result<Vec<(CatalogId, u64)>, ApplyError> {
+    counts
+        .iter()
+        .map(|(id, count)| {
+            Ok((
+                id.clone(),
+                u64::try_from(*count).map_err(|_| ApplyError::Drift)?,
+            ))
+        })
+        .collect()
 }
 
 fn retired_resource_member_ids(program: &CheckedProgram) -> Result<Vec<CatalogId>, ApplyError> {
@@ -343,6 +369,7 @@ fn activation_receipt(
     catalog_epoch: u64,
     staged: &StagedWork,
     retire_counts: &[(CatalogId, usize)],
+    retire_evidence_digest: String,
 ) -> ActivationReceipt {
     ActivationReceipt {
         commit_id,
@@ -361,6 +388,7 @@ fn activation_receipt(
         default_records_by_id: staged.default_records_by_id.clone(),
         indexes_rebuilt: staged.indexes_rebuilt,
         records_retired: staged.records_retired,
+        retire_evidence_digest,
         records_retired_by_id: retire_counts.to_vec(),
         records_transformed: staged.records_transformed,
     }

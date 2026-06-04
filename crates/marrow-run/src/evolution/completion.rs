@@ -18,7 +18,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 
-use super::apply::{ApplyError, Approval};
+use super::apply::ApplyError;
 use default::verify_default_completion;
 use index::verify_index_completion;
 use proposal::verify_proposal_identity;
@@ -33,15 +33,14 @@ pub fn verify_activation_completion(
     program: &CheckedProgram,
     store: &TreeStore,
     commit: &CommitMetadata,
-    approval: Option<&Approval>,
 ) -> Result<(), ApplyError> {
     let (witness, _diagnostics) = preview(program, store)?;
-    verify_proposal_identity(&witness, commit)?;
+    verify_proposal_identity(&witness, store, commit)?;
 
     let places = marrow_check::checked_activation_root_places(program);
     let defaults = verify_default_completion(program, store, &places)?;
     let records_transformed = verify_transform_completion(program, store, &places, &witness)?;
-    verify_retire_completion(program, store, commit, &places, approval)?;
+    verify_retire_completion(program, store, commit, &places)?;
     let indexes_rebuilt = verify_index_completion(program, store, commit, &places)?;
 
     verify_default_receipt(&defaults, commit)?;

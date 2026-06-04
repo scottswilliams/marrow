@@ -214,6 +214,7 @@ mod tests {
             activation_default_records_by_id: Vec::new(),
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         };

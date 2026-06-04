@@ -158,6 +158,7 @@ fn commit_to_json(commit: &CommitDescriptor) -> Value {
         })).collect::<Vec<_>>(),
         "activation_indexes_rebuilt": commit.activation_indexes_rebuilt,
         "activation_records_retired": commit.activation_records_retired,
+        "activation_retire_evidence_digest": commit.activation_retire_evidence_digest,
         "activation_records_retired_by_id": commit.activation_records_retired_by_id.iter().map(|count| json!({
             "catalog_id": &count.catalog_id,
             "records": count.records,
@@ -210,6 +211,8 @@ fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
         )?,
         activation_indexes_rebuilt: u64_field(value, "activation_indexes_rebuilt")?,
         activation_records_retired: u64_field(value, "activation_records_retired")?,
+        activation_retire_evidence_digest: str_field(value, "activation_retire_evidence_digest")?
+            .to_string(),
         activation_records_retired_by_id: retire_counts_field(
             value,
             "activation_records_retired_by_id",
@@ -366,6 +369,7 @@ mod tests {
             }],
             "activation_indexes_rebuilt": 0,
             "activation_records_retired": 0,
+            "activation_retire_evidence_digest": "fnv1a64:0000000000000000",
             "activation_records_retired_by_id": [],
             "activation_records_transformed": 0,
         });
@@ -399,6 +403,7 @@ mod tests {
             }],
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
+            activation_retire_evidence_digest: "fnv1a64:0000000000000006".to_string(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         };

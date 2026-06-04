@@ -123,6 +123,7 @@ pub struct CommitDescriptor {
     pub activation_default_records_by_id: Vec<DefaultCountDescriptor>,
     pub activation_indexes_rebuilt: u64,
     pub activation_records_retired: u64,
+    pub activation_retire_evidence_digest: String,
     pub activation_records_retired_by_id: Vec<RetireCountDescriptor>,
     pub activation_records_transformed: u64,
 }
@@ -174,6 +175,7 @@ impl CommitDescriptor {
                 .collect(),
             activation_indexes_rebuilt: metadata.activation_indexes_rebuilt,
             activation_records_retired: metadata.activation_records_retired,
+            activation_retire_evidence_digest: metadata.activation_retire_evidence_digest.clone(),
             activation_records_retired_by_id: metadata
                 .activation_records_retired_by_id
                 .iter()
@@ -205,6 +207,7 @@ impl CommitDescriptor {
             )?,
             activation_indexes_rebuilt: self.activation_indexes_rebuilt,
             activation_records_retired: self.activation_records_retired,
+            activation_retire_evidence_digest: self.activation_retire_evidence_digest.clone(),
             activation_records_retired_by_id: retire_counts(
                 &self.activation_records_retired_by_id,
             )?,
@@ -360,6 +363,7 @@ mod tests {
             }],
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         };

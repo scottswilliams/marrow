@@ -43,6 +43,7 @@ pub(crate) struct ActivationStampFacts {
     pub(crate) default_records_by_id: Vec<ActivationDefaultRecordCount>,
     pub(crate) indexes_rebuilt: u64,
     pub(crate) records_retired: u64,
+    pub(crate) retire_evidence_digest: String,
     pub(crate) records_retired_by_id: Vec<(CatalogId, u64)>,
     pub(crate) records_transformed: u64,
 }
@@ -85,6 +86,10 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
             .as_ref()
             .map(|activation| activation.records_retired)
             .unwrap_or(0),
+        activation_retire_evidence_digest: activation
+            .as_ref()
+            .map(|activation| activation.retire_evidence_digest.clone())
+            .unwrap_or_default(),
         activation_records_retired_by_id: activation
             .as_ref()
             .map(|activation| activation.records_retired_by_id.clone())

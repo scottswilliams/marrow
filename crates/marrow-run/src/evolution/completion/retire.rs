@@ -2,9 +2,9 @@ use marrow_check::{CatalogEntryKind, CheckedProgram, CheckedSavedPlace};
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 
-use super::super::admission::normalized_retire_approval;
-use super::super::apply::{ApplyError, Approval, StagedWork};
+use super::super::apply::{ApplyError, StagedWork};
 use super::super::backfill::stage_retire_deletes;
+use super::super::evidence::retire_evidence_digest;
 use super::retired_ids;
 
 pub(super) fn verify_retire_completion(
@@ -12,7 +12,6 @@ pub(super) fn verify_retire_completion(
     store: &TreeStore,
     commit: &CommitMetadata,
     places: &[CheckedSavedPlace],
-    approval: Option<&Approval>,
 ) -> Result<(), ApplyError> {
     let retired = sorted_catalog_ids(retired_ids(program, CatalogEntryKind::ResourceMember));
     let expected = exact_retire_counts_u64(commit.activation_records_retired_by_id.clone())?;
@@ -20,20 +19,14 @@ pub(super) fn verify_retire_completion(
     if recorded_ids != retired {
         return Err(ApplyError::Drift);
     }
-    let destructive: Vec<_> = expected
-        .iter()
-        .filter(|(_id, count)| *count > 0)
-        .cloned()
-        .collect();
-    let approved = approval
-        .map(|approval| {
-            normalized_retire_approval(approval)
-                .into_iter()
-                .map(|(id, count)| (id, count as u64))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if approved != destructive {
+    let recorded_digest = retire_evidence_digest(
+        commit.commit_id,
+        commit.activation_records_retired,
+        &expected,
+    );
+    if commit.activation_retire_evidence_digest.is_empty()
+        || commit.activation_retire_evidence_digest != recorded_digest
+    {
         return Err(ApplyError::Drift);
     }
     let expected_total = expected

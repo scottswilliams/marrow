@@ -102,6 +102,24 @@ impl EvidenceDigest {
     }
 }
 
+pub(super) fn retire_evidence_digest(
+    commit_id: u64,
+    records_retired: u64,
+    counts: &[(CatalogId, u64)],
+) -> String {
+    let mut counts = counts.to_vec();
+    counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    let mut digest = EvidenceDigest::new("marrow-activation-retire-v1");
+    digest.u64(commit_id);
+    digest.u64(records_retired);
+    digest.u64(counts.len() as u64);
+    for (id, count) in counts {
+        digest.catalog_id(&id);
+        digest.u64(count);
+    }
+    digest.finish()
+}
+
 #[derive(Default)]
 pub(super) struct EvidenceSetDigest {
     count: u64,

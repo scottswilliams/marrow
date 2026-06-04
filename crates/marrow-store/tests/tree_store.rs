@@ -131,6 +131,7 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
             activation_default_records_by_id: Vec::new(),
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         })
@@ -168,6 +169,7 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
             activation_default_records_by_id: Vec::new(),
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         })
@@ -703,6 +705,7 @@ fn metadata_survives_native_redb_reopen() {
                 activation_default_records_by_id: Vec::new(),
                 activation_indexes_rebuilt: 0,
                 activation_records_retired: 0,
+                activation_retire_evidence_digest: String::new(),
                 activation_records_retired_by_id: Vec::new(),
                 activation_records_transformed: 0,
             })
@@ -738,6 +741,7 @@ fn metadata_survives_native_redb_reopen() {
             activation_default_records_by_id: Vec::new(),
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         })

@@ -419,8 +419,8 @@ store's data cells only; the generated indexes are derived, so a restore rebuild
 them rather than replaying them.
 When the store has activation receipts, the manifest carries the receipt facts as
 evidence only. It records proposal/catalog digests, affected IDs, counts, and
-bounded effect digests, never proposal catalog bodies or per-record default
-ledgers.
+bounded effect digests, including retire receipt digests, never proposal catalog
+bodies or per-record default ledgers.
 
 Tree-cell keys derive from catalog stable IDs, so for a given committed catalog
 and equal stored data the backup is deterministic and byte-identical, and it

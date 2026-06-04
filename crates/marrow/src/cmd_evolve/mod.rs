@@ -3,9 +3,7 @@
 use std::process::ExitCode;
 
 use marrow_check::evolution::preview;
-use marrow_run::evolution::{
-    ApplyError, Approval, FenceError, apply, verify_activation_completion,
-};
+use marrow_run::evolution::{ApplyError, FenceError, apply, verify_activation_completion};
 
 use crate::{
     CheckFormat, commit_pending_identity, load_checked_project_with_format, report_simple_error,
@@ -116,14 +114,7 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     // second stamp. Detecting it before the fence is essential, because the fence reads
     // the behind-by-one file as its accepted epoch and would reject the store as
     // evolved.
-    match resume_completion(
-        &input.dir,
-        &config,
-        &program,
-        &store,
-        input.approval.as_ref(),
-        input.format,
-    ) {
+    match resume_completion(&input.dir, &config, &program, &store, input.format) {
         Ok(Some(code)) => return code,
         Ok(None) => {}
         Err(code) => return code,
@@ -179,7 +170,6 @@ fn resume_completion(
     config: &marrow_project::ProjectConfig,
     program: &marrow_check::CheckedProgram,
     store: &marrow_store::tree::TreeStore,
-    approval: Option<&Approval>,
     format: CheckFormat,
 ) -> Result<Option<ExitCode>, ExitCode> {
     let Some(proposal) = &program.catalog.proposal else {
@@ -216,7 +206,7 @@ fn resume_completion(
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }
-    if verify_activation_completion(program, store, &commit, approval).is_err() {
+    if verify_activation_completion(program, store, &commit).is_err() {
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }

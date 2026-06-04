@@ -89,7 +89,7 @@ fn active_index<'a>(
 }
 
 fn index_is_empty(store: &TreeStore, index: &CatalogId) -> Result<bool, ApplyError> {
-    Ok(store.index_child_keys(index, &[])?.is_empty()
+    Ok(store.index_first_child(index, &[])?.is_none()
         && store.scan_index_tuple(index, &[], 1)?.entries.is_empty())
 }
 

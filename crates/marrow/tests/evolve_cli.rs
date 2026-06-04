@@ -8,7 +8,7 @@ use marrow_check::{
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment, EngineProfile, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -1656,14 +1656,7 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
         );
     }
 
-    let resume = marrow(&[
-        "evolve",
-        "apply",
-        "--maintenance",
-        "--approve-retire",
-        &format!("{subtitle_id}:1"),
-        root.to_str().unwrap(),
-    ]);
+    let resume = marrow(&["evolve", "apply", "--maintenance", root.to_str().unwrap()]);
     assert_eq!(
         resume.status.code(),
         Some(0),
@@ -1686,6 +1679,65 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
         !stderr.contains("run.store_evolved"),
         "epoch fence no longer rejects after resume completes the file: {stderr}"
     );
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_engine_profile_drifts() {
+    let root = native_books_project(
+        "evolve-apply-resume-engine-profile-drift",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let first = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        store
+            .write_engine_profile(&EngineProfile::new(999))
+            .expect("drift engine profile");
+    }
+
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
 }
 
 #[test]
@@ -1877,7 +1929,7 @@ fn evolve_apply_resume_fails_closed_when_retire_receipt_duplicates_an_id() {
 }
 
 #[test]
-fn evolve_apply_resume_fails_closed_when_retire_approval_counts_move_between_ids() {
+fn evolve_apply_resume_fails_closed_when_retire_receipt_counts_move_between_ids() {
     let root = native_books_project(
         "evolve-apply-resume-retire-per-id-drift",
         "module books\n\
@@ -1946,15 +1998,22 @@ fn evolve_apply_resume_fails_closed_when_retire_approval_counts_move_between_ids
     ]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
     fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.activation_records_retired_by_id = vec![
+            (CatalogId::new(notes_id.clone()).unwrap(), 0),
+            (CatalogId::new(subtitle_id.clone()).unwrap(), 3),
+        ];
+        store
+            .write_commit_metadata(&commit)
+            .expect("move retire receipt counts between ids");
+    }
 
-    let resume = marrow(&[
-        "evolve",
-        "apply",
-        "--maintenance",
-        "--approve-retire",
-        &format!("{subtitle_id}:3"),
-        root.to_str().unwrap(),
-    ]);
+    let resume = marrow(&["evolve", "apply", "--maintenance", root.to_str().unwrap()]);
     let catalog_epoch = accepted_catalog(&root).epoch;
     let store_epoch = store_epoch(&root);
     fs::remove_dir_all(&root).ok();

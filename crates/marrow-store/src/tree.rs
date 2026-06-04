@@ -79,6 +79,7 @@ pub struct CommitMetadata {
     pub activation_default_records_by_id: Vec<ActivationDefaultRecordCount>,
     pub activation_indexes_rebuilt: u64,
     pub activation_records_retired: u64,
+    pub activation_retire_evidence_digest: String,
     pub activation_records_retired_by_id: Vec<(CatalogId, u64)>,
     pub activation_records_transformed: u64,
 }
@@ -1590,6 +1591,10 @@ fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreErr
     bytes.extend_from_slice(&metadata.activation_indexes_rebuilt.to_be_bytes());
     bytes.extend_from_slice(&metadata.activation_records_retired.to_be_bytes());
     bytes.extend_from_slice(&metadata.activation_records_transformed.to_be_bytes());
+    put_bytes(
+        metadata.activation_retire_evidence_digest.as_bytes(),
+        &mut bytes,
+    )?;
     put_retire_counts(&metadata.activation_records_retired_by_id, &mut bytes)?;
     put_default_counts(&metadata.activation_default_records_by_id, &mut bytes)?;
     Ok(bytes)
@@ -1612,9 +1617,20 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         activation_indexes_rebuilt,
         activation_records_retired,
         activation_records_transformed,
+        activation_retire_evidence_digest,
         activation_records_retired_by_id,
     ) = if cursor.is_empty() {
-        (String::new(), None, 0, Vec::new(), 0, 0, 0, Vec::new())
+        (
+            String::new(),
+            None,
+            0,
+            Vec::new(),
+            0,
+            0,
+            0,
+            String::new(),
+            Vec::new(),
+        )
     } else {
         let evolution_digest = cursor.take_string()?;
         let proposal_digest = cursor.take_string()?;
@@ -1622,16 +1638,9 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         let activation_indexes_rebuilt = cursor.take_u64()?;
         let activation_records_retired = cursor.take_u64()?;
         let activation_records_transformed = cursor.take_u64()?;
-        let activation_records_retired_by_id = if cursor.is_empty() {
-            Vec::new()
-        } else {
-            cursor.take_retire_counts()?
-        };
-        let activation_default_records_by_id = if cursor.is_empty() {
-            Vec::new()
-        } else {
-            cursor.take_default_counts()?
-        };
+        let activation_retire_evidence_digest = cursor.take_string()?;
+        let activation_records_retired_by_id = cursor.take_retire_counts()?;
+        let activation_default_records_by_id = cursor.take_default_counts()?;
         (
             evolution_digest,
             (!proposal_digest.is_empty()).then_some(proposal_digest),
@@ -1640,6 +1649,7 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
             activation_indexes_rebuilt,
             activation_records_retired,
             activation_records_transformed,
+            activation_retire_evidence_digest,
             activation_records_retired_by_id,
         )
     };
@@ -1660,6 +1670,7 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         activation_default_records_by_id,
         activation_indexes_rebuilt,
         activation_records_retired,
+        activation_retire_evidence_digest,
         activation_records_retired_by_id,
         activation_records_transformed,
     })
@@ -1895,7 +1906,7 @@ mod tests {
 
     use super::{
         ActivationDefaultRecordCount, CellKey, CommitMetadata, DataPathSegment, NODE_MARKER,
-        TreeStore, is_data_cell_key,
+        TreeStore, decode_commit_metadata, encode_commit_metadata, is_data_cell_key,
     };
     use crate::StoreError;
     use crate::backend::{Backend, ScanPage};
@@ -2099,6 +2110,7 @@ mod tests {
             }],
             activation_indexes_rebuilt: 1,
             activation_records_retired: 4,
+            activation_retire_evidence_digest: "fnv1a64:0000000000000006".to_string(),
             activation_records_retired_by_id: vec![
                 (catalog("cat_00000000000000000000000000000003"), 3),
                 (catalog("cat_00000000000000000000000000000004"), 1),
@@ -2123,6 +2135,32 @@ mod tests {
             ..metadata.clone()
         };
         assert_ne!(other, metadata, "a distinct source digest is not equal");
+    }
+
+    #[test]
+    fn commit_metadata_rejects_truncated_activation_receipt_lists() {
+        let metadata = CommitMetadata {
+            commit_id: 7,
+            catalog_epoch: 3,
+            layout_epoch: 0,
+            source_digest: "fnv1a64:00000000deadbeef".to_string(),
+            engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
+            changed_root_catalog_ids: Vec::new(),
+            changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: "fnv1a64:00000000feedface".to_string(),
+            activation_proposal_catalog_digest: Some("fnv1a64:00000000c001d00d".to_string()),
+            activation_records_backfilled: 0,
+            activation_default_records_by_id: Vec::new(),
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_retire_evidence_digest: "fnv1a64:0000000000000000".to_string(),
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        };
+        let encoded = encode_commit_metadata(&metadata).expect("encode metadata");
+
+        assert_corruption(decode_commit_metadata(&encoded[..encoded.len() - 8]));
+        assert_corruption(decode_commit_metadata(&encoded[..encoded.len() - 4]));
     }
 
     /// `for_each_record` visits exactly the seeded single-key record identities, in key

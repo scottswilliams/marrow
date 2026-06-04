@@ -234,11 +234,12 @@ to. It intentionally excludes transition text such as `evolve` blocks.
 An evolution apply stamps activation evidence in the same transaction as its
 data effects: proposal/evolution digests, changed catalog IDs, default
 backfill counts and bounded effect digests, transform counts, exact per-id
-retire counts, and rebuilt-index counts. Receipts do not store proposal catalog
-bodies or executable migration steps. The accepted catalog file publishes only
-after those effects are verifiable; crash resume recomputes the current proposal
-from source plus the accepted catalog, checks the evidence against the current
-store effects, and then writes that generated proposal.
+retire counts with a bounded evidence digest, and rebuilt-index counts. Receipts
+do not store proposal catalog bodies or executable migration steps. The accepted
+catalog file publishes only after those effects are verifiable; crash resume
+recomputes the current proposal from source plus the accepted catalog, checks
+the evidence against the current store effects, and then writes that generated
+proposal.
 
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the
