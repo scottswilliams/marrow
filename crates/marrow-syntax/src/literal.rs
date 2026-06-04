@@ -53,7 +53,7 @@ pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{StringLiteralError, decode_string_escapes, decode_string_literal};
 
     #[test]
     fn decodes_the_five_escapes() {

@@ -2437,9 +2437,20 @@ impl Accumulator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::executable::{CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedTerminal};
-    use crate::facts::{ResourceId, ResourceMemberId, StoreId, StoreIndexId};
+    use std::collections::{BTreeSet, HashMap, HashSet};
+
+    use super::{Accumulator, catalog_id, classify_indexes, unique_index_plan};
+    use crate::StoreLeafKind;
+    use crate::evolution::{RepairReason, Verdict};
+    use crate::executable::{
+        CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedMember,
+        CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
+    };
+    use crate::facts::{
+        ResourceId, ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource,
+        StoredValueMeaning,
+    };
+    use marrow_store::cell::CatalogId;
     use marrow_store::value::ScalarType;
 
     fn unique_index(name: &str, catalog_id: &str, key_name: &str) -> CheckedSavedIndex {

@@ -164,12 +164,14 @@ fn rebuild_error(error: ApplyError) -> BackupError {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use marrow_check::{ProjectConfig, check_project, commit_pending_identity};
+    use marrow_check::{CheckedProgram, ProjectConfig, check_project, commit_pending_identity};
     use marrow_store::cell::CatalogId;
     use marrow_store::key::SavedKey;
     use marrow_store::tree::{DataPathSegment, TreeStore};
 
-    use super::*;
+    use super::{
+        BackupError, CHECKSUM_SEED, RestoreReport, archive, checksum_cell, restore_backup,
+    };
     use crate::backup::create_backup;
 
     /// Restore that verifies nothing: the restore.* codes under test fail in
@@ -340,16 +342,15 @@ mod tests {
         // Restore replays the data, then the verify proves the declared records decode.
         // A title leaf whose bytes are not a canonical string is `restore.data_invalid`.
         let target = TreeStore::memory();
-        let verify =
-            |store: &TreeStore| match crate::cmd_data::integrity::declared_integrity_problems(
-                store, &program,
-            ) {
-                Ok((_, 0)) => Ok(()),
-                Ok((_, _)) => Err(BackupError::DataInvalid(
-                    "declared data does not decode".into(),
-                )),
-                Err(error) => Err(BackupError::Store(error)),
-            };
+        let verify = |store: &TreeStore| match crate::cmd_data::integrity::count_integrity_problems(
+            store, &program,
+        ) {
+            Ok((_, 0)) => Ok(()),
+            Ok((_, _)) => Err(BackupError::DataInvalid(
+                "declared data does not decode".into(),
+            )),
+            Err(error) => Err(BackupError::Store(error)),
+        };
         // Replace the seeded title value with bytes that are not a canonical string.
         let archive = with_corrupt_first_value(&archive);
         let error = restore_backup(&program, &target, &mut &archive[..], verify)

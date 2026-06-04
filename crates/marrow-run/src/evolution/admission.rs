@@ -77,7 +77,7 @@ pub(super) fn expected_retire_count(witness: &EvolutionWitness) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Approval, approval_matches};
     use marrow_store::cell::CatalogId;
 
     fn id(hex: &str) -> CatalogId {

@@ -16,8 +16,14 @@ mod parse_decl;
 mod parse_expr;
 mod token;
 
-pub use ast::*;
-pub use diagnostic::*;
+pub use ast::{
+    ArgMode, Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement,
+    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
+    FieldDecl, ForBinding, FunctionDecl, GroupDecl, IndexDecl, InterpolationPart, KeyParam,
+    LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParamMode, ParsedSource, ResourceDecl,
+    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl,
+};
+pub use diagnostic::{Diagnose, Diagnostic, Severity, SourceSpan, kind_for_code};
 pub use format::{format_declaration_normalized, format_expression, format_source};
 pub use lexer::lex_source;
 pub use literal::{StringLiteralError, decode_string_escapes, decode_string_literal};
@@ -39,7 +45,7 @@ pub fn parse_source(source: &str) -> ParsedSource {
 
 #[cfg(test)]
 mod decl_parser_corpus {
-    use super::*;
+    use super::{BinaryOp, Declaration, Expression, PARSE_SYNTAX, ParsedSource, parse_source};
 
     /// Parsing is a pure function of the source, so a second parse must yield the
     /// identical AST and diagnostics. Running each corpus input through this also

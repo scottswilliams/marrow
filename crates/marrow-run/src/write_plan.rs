@@ -189,7 +189,8 @@ fn index_target(address: &IndexAddress, identity: &[SavedKey]) -> WriteTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{PlanStep, WriteOp, WritePlan, WriteTarget};
+    use marrow_store::tree::{CommitMetadata, EngineProfile};
 
     /// A metadata stamp projects to a write of a `Meta` target carrying the catalog
     /// epoch and no value, so a dry-run consumer reports it as a metadata change rather

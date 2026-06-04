@@ -271,17 +271,8 @@ impl Seed<'_> {
     /// under the record identity. The presence of the leaf marks the inner keyed entry
     /// (and its enclosing outer entry) as existing, so a re-key of the inner layer
     /// over this data has populated entries the new key shape cannot reach.
-    #[allow(clippy::too_many_arguments)]
-    fn deep_keyed_member(
-        &self,
-        id: i64,
-        outer: &str,
-        outer_key: SavedKey,
-        inner: &str,
-        inner_key: SavedKey,
-        leaf: &str,
-        value: Scalar,
-    ) {
+    fn deep_keyed_member(&self, id: i64, layers: [(&str, SavedKey); 2], leaf: &str, value: Scalar) {
+        let [(outer, outer_key), (inner, inner_key)] = layers;
         let outer_id =
             CatalogId::new(group_member_catalog_id(self.place, outer)).expect("outer layer id");
         let inner_id = CatalogId::new(deep_member_catalog_id(self.place, &[outer, inner]))
@@ -5414,10 +5405,10 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
     seed.record(1);
     seed.deep_keyed_member(
         1,
-        "versions",
-        SavedKey::Int(7),
-        "revisions",
-        SavedKey::Int(2),
+        [
+            ("versions", SavedKey::Int(7)),
+            ("revisions", SavedKey::Int(2)),
+        ],
         "body",
         Scalar::Str("draft".into()),
     );
@@ -5517,10 +5508,10 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
     seed.record(1);
     seed.deep_keyed_member(
         1,
-        "versions",
-        SavedKey::Int(7),
-        "revisions",
-        SavedKey::Int(2),
+        [
+            ("versions", SavedKey::Int(7)),
+            ("revisions", SavedKey::Int(2)),
+        ],
         "body",
         Scalar::Str("draft".into()),
     );
@@ -5698,10 +5689,10 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
     seed.record(1);
     seed.deep_keyed_member(
         1,
-        "versions",
-        SavedKey::Int(7),
-        "revisions",
-        SavedKey::Int(2),
+        [
+            ("versions", SavedKey::Int(7)),
+            ("revisions", SavedKey::Int(2)),
+        ],
         "body",
         Scalar::Str("draft".into()),
     );

@@ -420,11 +420,12 @@ fn is_timeout(kind: io::ErrorKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::io::Cursor;
+    use std::collections::VecDeque;
+    use std::io::{self, BufRead, Cursor, Read};
 
     use marrow_store::key::SavedKey;
 
+    use super::{Line, protocol, read_line_bounded, serve_connection};
     use crate::serve::test_support::{self, empty_state, state_with_books, write_book};
 
     #[test]
@@ -460,7 +461,7 @@ mod tests {
     /// pinned snapshot hides a concurrent commit: the write lands between the two
     /// reads, yet the second read does not observe it.
     struct ScriptedReader<'a> {
-        lines: std::collections::VecDeque<ScriptedLine<'a>>,
+        lines: VecDeque<ScriptedLine<'a>>,
         buffer: Vec<u8>,
         position: usize,
     }

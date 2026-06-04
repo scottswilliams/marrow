@@ -161,7 +161,9 @@ pub fn fence(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{FenceError, StampFacts, current_engine_profile, fence, metadata_stamp};
+    use crate::write_plan::PlanStep;
+    use marrow_store::tree::{EngineProfile, TreeStore};
 
     const DIGEST: &str = "fnv1a64:0000000000000001";
 

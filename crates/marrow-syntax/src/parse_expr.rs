@@ -3,7 +3,10 @@
 //! precedence levels including calls and saved paths.
 
 use crate::token::is_trivia;
-use crate::*;
+use crate::{
+    ArgMode, Argument, BinaryOp, Diagnostic, Expression, InterpolationPart, Keyword, LiteralKind,
+    PARSE_SYNTAX, Severity, SourceSpan, Token, TokenKind, UnaryOp,
+};
 
 /// Recursive-descent parser for a single Marrow expression over a token slice
 /// with file-absolute spans. It covers the primary, postfix, unary, and binary

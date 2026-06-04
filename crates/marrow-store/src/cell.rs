@@ -456,7 +456,11 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        CatalogId, CellKey, DataPathSegment, FAMILY_DATA, SequencePosition, decode_data_cell_key,
+        encode_id, family,
+    };
+    use crate::key::SavedKey;
 
     fn store_id(suffix: &str) -> CatalogId {
         CatalogId::new(format!("cat_0123456789abcdef{suffix}")).expect("catalog id")

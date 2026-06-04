@@ -254,13 +254,12 @@ fn store_catalog_id(root: &Path) -> CatalogId {
     CatalogId::new(place.store_catalog_id).expect("store catalog id")
 }
 
-/// A faithful backup of a store that holds an orphan cell — data under a dropped
-/// field the schema no longer declares — restores with exit 0. Restore verifies that
-/// the declared data decodes, not that the store is orphan-free, so it must not reject
-/// the faithful copy. The restored store still carries the orphan, and `data integrity`
-/// reports it.
+/// A backup carrying an orphan cell — data under a dropped field the schema no
+/// longer declares — is not valid for restore. Restore validates the replayed store
+/// through the same full integrity pass as `marrow data integrity`, so orphaned
+/// bytes fail before the target commits.
 #[test]
-fn restore_accepts_a_backup_carrying_an_orphan_cell() {
+fn restore_rejects_a_backup_carrying_an_orphan_cell() {
     let (root, data_dir) = seeded_project("backup-orphan");
     let dir = root.to_str().unwrap().to_string();
     let archive = root.join("books.mwbackup");
@@ -291,22 +290,14 @@ fn restore_accepts_a_backup_carrying_an_orphan_cell() {
     let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(
         restore.status.code(),
-        Some(0),
-        "restore accepts a faithful backup with orphan debris: {restore:?}"
-    );
-
-    // The orphan survived the round-trip, so `data integrity` reports it.
-    let integrity = marrow(&["data", "integrity", &dir]);
-    let integrity_err = String::from_utf8_lossy(&integrity.stderr).to_string();
-    fs::remove_dir_all(&root).ok();
-    assert_eq!(
-        integrity.status.code(),
         Some(1),
-        "data integrity flags the orphan: {integrity:?}"
+        "restore rejects a backup with an orphan cell: {restore:?}"
     );
+    let restore_err = String::from_utf8_lossy(&restore.stderr).to_string();
+    fs::remove_dir_all(&root).ok();
     assert!(
-        integrity_err.contains("data.orphan"),
-        "data integrity reports the restored orphan: {integrity_err}"
+        restore_err.contains("restore.data_invalid"),
+        "restore reports invalid restored data: {restore_err}"
     );
 }
 

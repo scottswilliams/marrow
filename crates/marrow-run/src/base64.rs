@@ -85,7 +85,7 @@ fn value(byte: u8) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{decode, encode};
 
     #[test]
     fn round_trips_arbitrary_bytes() {

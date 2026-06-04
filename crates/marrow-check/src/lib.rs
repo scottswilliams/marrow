@@ -540,18 +540,10 @@ fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> Option<&'p st
 
 /// Expand a dotted `module` path's leading segment through the file's import
 /// aliases, so an enum spelling qualified by a short alias (`c` under
-/// `use a::b::c`) names the imported module (`a::b::c`). Reuses [`expand_alias`]
-/// by appending a sentinel leaf, so a single-segment alias expands the same way a
-/// call's leading segment does.
+/// `use a::b::c`) names the imported module (`a::b::c`).
 pub(crate) fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<String>>) -> String {
-    let mut segments: Vec<String> = module.split("::").map(str::to_string).collect();
-    // `expand_alias` only expands a leading alias when a trailing segment follows
-    // (short-form requires the qualifier); append a sentinel so a bare alias
-    // module (`c`) expands, then drop it.
-    segments.push(String::new());
-    let mut expanded = expand_alias(&segments, aliases);
-    expanded.pop();
-    expanded.join("::")
+    let segments: Vec<String> = module.split("::").map(str::to_string).collect();
+    expand_leading_alias(&segments, aliases).join("::")
 }
 
 /// Resolve a call's `segments` to a function, also yielding the [`CheckedModule`]
@@ -1441,8 +1433,18 @@ pub(crate) fn expand_alias(
     segments: &[String],
     aliases: &std::collections::HashMap<String, Vec<String>>,
 ) -> Vec<String> {
-    if segments.len() >= 2
-        && let Some(full) = aliases.get(&segments[0])
+    if segments.len() >= 2 {
+        return expand_leading_alias(segments, aliases);
+    }
+    segments.to_vec()
+}
+
+fn expand_leading_alias(
+    segments: &[String],
+    aliases: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    if let Some(first) = segments.first()
+        && let Some(full) = aliases.get(first)
     {
         return full
             .iter()

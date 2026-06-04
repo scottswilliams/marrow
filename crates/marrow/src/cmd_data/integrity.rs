@@ -77,31 +77,6 @@ pub(crate) fn count_integrity_problems(
     Ok((records, problems))
 }
 
-/// Count the declared records and the schema problems among them, walking only the
-/// declared-record pass — decode and key-type checks — and never the orphan scan.
-/// Restore verifies that the data it just replayed decodes under the schema; a
-/// store may carry orphan debris (a faithfully copied cell under a dropped root or
-/// field) without the restored declared data being invalid, so restore must not
-/// reject a faithful backup on orphan-freeness. The orphan and corruption findings
-/// belong to `data integrity`, reported through [`count_integrity_problems`].
-pub(crate) fn declared_integrity_problems(
-    store: &TreeStore,
-    program: &CheckedProgram,
-) -> Result<(usize, usize), StoreError> {
-    let mut records = 0usize;
-    let mut problems = 0usize;
-    visit_data_records(program, store, |record| {
-        records += 1;
-        if check_record(program, &record).is_some() {
-            problems = problems.checked_add(1).ok_or(StoreError::LimitExceeded {
-                limit: "data integrity problem count",
-            })?;
-        }
-        Ok(())
-    })?;
-    Ok((records, problems))
-}
-
 /// Whether an integrity outcome came from walking a declared record or from
 /// scanning the store's actual cells for orphans. Only declared records are
 /// counted toward the verified record total.
