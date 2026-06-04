@@ -18,6 +18,7 @@ use marrow_check::{
 };
 use marrow_run::evolution::{
     ApplyError, Approval, FenceError, apply, current_engine_profile, fence,
+    verify_activation_completion,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -177,6 +178,57 @@ fn witness(program: &CheckedProgram, store: &TreeStore) -> EvolutionWitness {
     preview(program, store).expect("preview").0
 }
 
+fn applied_proposal_default_fixture(
+    name: &str,
+    records: i64,
+) -> (
+    PathBuf,
+    CheckedProgram,
+    CheckedSavedPlace,
+    TreeStore,
+    String,
+) {
+    let root = temp_project(name, |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    for id in 1..=records {
+        seed.record(id);
+        seed.member(id, "title", Scalar::Str(format!("Book {id}")));
+    }
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let w = witness(&program, &store);
+    apply(&w, &program, &store, false, None).expect("apply proposal default");
+    (root, program, accepted_place, store, pages_id)
+}
+
 /// Read a member cell value as a scalar for backfill assertions.
 fn read_scalar(
     store: &TreeStore,
@@ -305,6 +357,111 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
         "apply must not accept the proposal before the data transaction"
     );
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn default_receipt_is_bounded_for_many_records() {
+    let (root, _program, _place, store, _pages_id) =
+        applied_proposal_default_fixture("completion-default-bounded", 128);
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(commit.activation_records_backfilled, 128);
+    assert_eq!(commit.activation_default_records_by_id.len(), 1);
+    let evidence = &commit.activation_default_records_by_id[0];
+    assert_eq!(evidence.records_backfilled, 128);
+    assert_eq!(evidence.target_records, 128);
+    assert!(evidence.evidence_digest.starts_with("fnv1a64:"));
+    assert!(evidence.evidence_digest.len() <= "fnv1a64:ffffffffffffffff".len());
+}
+
+#[test]
+fn completion_rejects_forged_default_receipt_digest() {
+    let (root, program, _place, store, _pages_id) =
+        applied_proposal_default_fixture("completion-default-forged-digest", 2);
+    let mut commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    commit.activation_default_records_by_id[0].evidence_digest =
+        "fnv1a64:ffffffffffffffff".to_string();
+    store
+        .write_commit_metadata(&commit)
+        .expect("forge default evidence");
+
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("forged default receipt fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(error, ApplyError::Drift);
+}
+
+#[test]
+fn completion_rejects_missing_default_backfill_cell() {
+    let (root, program, place, store, pages_id) =
+        applied_proposal_default_fixture("completion-default-missing-cell", 2);
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    store
+        .delete_data_subtree(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(CatalogId::new(pages_id).unwrap())],
+        )
+        .expect("delete defaulted cell");
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("missing default cell fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(matches!(error, ApplyError::Store(_)));
+}
+
+#[test]
+fn completion_rejects_engine_profile_drift() {
+    let (root, program, _place, store, _pages_id) =
+        applied_proposal_default_fixture("completion-engine-profile-drift", 1);
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    store
+        .write_engine_profile(&EngineProfile::new(
+            current_engine_profile().layout_epoch() + 1,
+        ))
+        .expect("drift engine profile");
+
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("engine profile drift fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(error, ApplyError::Drift);
+}
+
+#[test]
+fn completion_rejects_erased_commit_source_digest() {
+    let (root, program, _place, store, _pages_id) =
+        applied_proposal_default_fixture("completion-source-digest-erased", 1);
+    let mut commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    commit.source_digest.clear();
+    store
+        .write_commit_metadata(&commit)
+        .expect("erase source digest");
+
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("erased source digest fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(error, ApplyError::Drift);
 }
 
 #[test]
@@ -442,6 +599,65 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
 }
 
 #[test]
+fn completion_rejects_missing_transform_cell() {
+    let root = temp_project("completion-transform-missing-cell", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let cents_id = CatalogId::new(proposal_catalog_id(&program, "books::Book::priceCents"))
+        .expect("priceCents id");
+    apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
+
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    store
+        .delete_data_subtree(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(cents_id)],
+        )
+        .expect("delete transformed cell");
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("missing transform cell fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(error, ApplyError::Drift);
+}
+
+#[test]
 fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
     let root = temp_project("apply-proposal-index-rebuild", |root| {
         write(
@@ -498,6 +714,64 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         "apply must not accept the index before the rebuild transaction"
     );
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn completion_rejects_stale_index_row_with_old_key_arity() {
+    let root = temp_project("completion-index-stale-row", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required isbn: string\n\
+             pub fn add(isbn: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "isbn", Scalar::Str("111".into()));
+    seed.record(2);
+    seed.member(2, "isbn", Scalar::Str("222".into()));
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required isbn: string\n\
+         \x20   index byIsbn(isbn, id) unique\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let index_id =
+        CatalogId::new(proposal_catalog_id(&program, "books::^books::byIsbn")).expect("index id");
+    apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
+
+    store
+        .write_index_entry(
+            &index_id,
+            &[SavedKey::Str("stale".into())],
+            &[SavedKey::Int(99)],
+            b"stale".to_vec(),
+        )
+        .expect("write stale old-arity row");
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    let error =
+        verify_activation_completion(&program, &store, &commit).expect_err("stale index row fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(error, ApplyError::Drift);
 }
 
 #[test]
@@ -963,8 +1237,21 @@ fn optional_add_stamps_epoch_without_data_step() {
 
     let witness = witness(&program, &store);
     let proposal_epoch = witness.proposal_catalog.as_ref().map(|c| c.epoch);
+    let proposal_digest = witness
+        .proposal_catalog
+        .as_ref()
+        .map(|catalog| catalog.digest.clone());
     let outcome = apply(&witness, &program, &store, false, None).expect("apply");
     assert_eq!(outcome.records_backfilled, 0);
+    assert_eq!(outcome.records_transformed, 0);
+    assert_eq!(outcome.indexes_rebuilt, 0);
+    assert_eq!(outcome.records_retired, 0);
+    assert_eq!(outcome.receipt.records_backfilled, 0);
+    assert_eq!(outcome.receipt.default_records_by_id.len(), 0);
+    assert_eq!(outcome.receipt.records_transformed, 0);
+    assert_eq!(outcome.receipt.indexes_rebuilt, 0);
+    assert_eq!(outcome.receipt.records_retired, 0);
+    assert_eq!(outcome.receipt.proposal_catalog_digest, proposal_digest);
 
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let subtitle_id = member_catalog_id(&place, "subtitle");
@@ -983,6 +1270,73 @@ fn optional_add_stamps_epoch_without_data_step() {
     if let Some(epoch) = proposal_epoch {
         assert_eq!(store.read_catalog_epoch().expect("epoch"), Some(epoch));
     }
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
+    let root = temp_project("completion-no-effect-repair-drift", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert!(w.proposal_catalog.is_some(), "{w:#?}");
+    assert_eq!(w.counts.records_to_backfill, 0);
+    assert_eq!(w.counts.records_to_transform, 0);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply");
+    assert_eq!(outcome.records_backfilled, 0);
+    assert_eq!(outcome.records_transformed, 0);
+    assert_eq!(outcome.indexes_rebuilt, 0);
+    assert_eq!(outcome.records_retired, 0);
+
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let title_id = CatalogId::new(member_catalog_id(&accepted_place, "title")).unwrap();
+    store
+        .delete_data_subtree(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(title_id)],
+        )
+        .expect("delete required title after activation stamp");
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("completion fails closed when proof verdict degrades");
+    assert_eq!(error, ApplyError::NotActivatable);
+
     fs::remove_dir_all(&root).ok();
 }
 
@@ -1373,6 +1727,83 @@ fn destructive_retire_with_matching_approval_deletes() {
         );
     }
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn completion_rejects_retire_receipt_count_moved_between_ids() {
+    let root = temp_project("completion-retire-per-id-drift", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   notes: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let notes_id = member_catalog_id(&accepted_place, "notes");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("sub-1".into()));
+    seed.member_by_id(1, &notes_id, Scalar::Str("note-1".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("Hyperion".into()));
+    seed.member_by_id(2, &subtitle_id, Scalar::Str("sub-2".into()));
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         evolve\n\
+         \x20   retire Book.subtitle\n\
+         \x20   retire Book.notes\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let approval = Approval {
+        retires: vec![
+            (CatalogId::new(subtitle_id.clone()).unwrap(), 2),
+            (CatalogId::new(notes_id.clone()).unwrap(), 1),
+        ],
+    };
+    apply(
+        &witness(&program, &store),
+        &program,
+        &store,
+        true,
+        Some(&approval),
+    )
+    .expect("apply");
+
+    let mut commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    commit.activation_records_retired_by_id = vec![
+        (CatalogId::new(notes_id).unwrap(), 0),
+        (CatalogId::new(subtitle_id).unwrap(), 3),
+    ];
+    store
+        .write_commit_metadata(&commit)
+        .expect("forge retire receipt counts");
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("forged retire receipt fails");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(error, ApplyError::Drift);
 }
 
 /// A scoped approval whose populated count does not match the witness aborts: the

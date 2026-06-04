@@ -369,10 +369,12 @@ the data to the source digest, accepted catalog epoch, engine profile, and
 value-codec version it was written under, plus the canonical tree-cell data
 stream; the generated indexes are derived, so the stream omits them and restore
 rebuilds them from the data. Restore validates that binding and the data against
-the schema, in one transaction, into an empty store. For a given committed catalog
-and equal stored data the backup is deterministic and byte-identical and portable
-across conforming backends at the same layout and codec; stable IDs differ per
-catalog commit, so backups from independently committed catalogs are not.
+the schema, in one transaction, into an empty store. Backups are deterministic
+and portable across conforming backends at the same layout and codec, but byte
+identity requires matching accepted catalog facts, engine profile, value codec,
+and stored data. Proposed IDs are deterministic; accepted IDs remain frozen, so
+divergent catalog histories may still encode equivalent-looking source with
+distinct accepted IDs.
 
 ## Also Deferred
 

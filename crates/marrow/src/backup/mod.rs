@@ -8,12 +8,11 @@
 //! carries the store's data cells only; generated indexes are derived, so a restore
 //! rebuilds them rather than replaying them.
 //!
-//! The cell stream is backend-independent (tree-cell keys derive from catalog stable
-//! IDs). For a given committed catalog and equal stored data the backup is
-//! deterministic and byte-identical, and it restores into any conforming backend at
-//! the same layout and codec. Stable IDs are assigned per catalog commit, so backups
-//! from two independently committed catalogs are not byte-identical even when the
-//! data matches.
+//! The cell stream is backend-independent: tree-cell keys derive from catalog stable
+//! IDs, and proposed IDs are generated deterministically before being frozen in the
+//! accepted catalog. Backups are deterministic and portable across conforming backends
+//! at the same layout and codec, but byte identity requires matching accepted catalog
+//! facts, engine profile, value codec, and stored data.
 //!
 //! [`create`] writes a backup over a stable read snapshot; [`restore`] validates a
 //! backup against the project and replays it into an empty store in one

@@ -553,10 +553,12 @@ Backups are not engine files: a backup carries a manifest with the source,
 catalog, engine-profile, and value-codec facts, plus the canonical tree-cell data
 stream, so it restores under the Marrow storage contract rather than by copying
 raw bytes. The generated indexes are derived data, so a backup omits them and a
-restore rebuilds them from the restored records. For a given committed catalog and
-equal stored data the backup is deterministic and byte-identical and portable
-across conforming backends at the same layout and codec; stable IDs differ per
-catalog commit, so backups from independently committed catalogs are not.
+restore rebuilds them from the restored records. Backups are deterministic and
+portable across conforming backends at the same layout and codec, but byte
+identity requires matching accepted catalog facts, engine profile, value codec,
+and stored data. Proposed IDs are deterministic; accepted IDs remain frozen, so
+divergent catalog histories may still encode equivalent-looking source with
+distinct accepted IDs.
 
 Restore replays a backup into an empty store in one transaction and validates the
 data against the schema before activating it; it never treats raw saved paths as

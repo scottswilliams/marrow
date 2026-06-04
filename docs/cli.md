@@ -422,11 +422,11 @@ evidence only. It records proposal/catalog digests, affected IDs, counts, and
 bounded effect digests, including retire receipt digests, never proposal catalog
 bodies or per-record default ledgers.
 
-Tree-cell keys derive from catalog stable IDs, so for a given committed catalog
-and equal stored data the backup is deterministic and byte-identical, and it
-restores into any conforming backend at the same layout and codec. Two
-independently committed catalogs assign different stable IDs, so backups taken
-from different projects are not byte-identical even when the data matches.
+Tree-cell keys derive from catalog stable IDs, so backups are byte-identical
+only when the accepted catalog facts, engine profile, value codec, and stored
+data match. Stable IDs are random opaque values that freeze when accepted, so
+divergent catalog histories may still freeze distinct accepted IDs for source
+that looks equivalent.
 
 The store is read through one stable snapshot, so a backup is coherent even while
 another process reads it. Backup opens the store read-only and never modifies it;

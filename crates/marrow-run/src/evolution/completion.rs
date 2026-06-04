@@ -11,6 +11,7 @@ mod proposal;
 mod receipt;
 mod retire;
 mod transform;
+mod verdict;
 
 use marrow_check::evolution::preview;
 use marrow_check::{CatalogEntryKind, CatalogLifecycle, CheckedProgram};
@@ -25,6 +26,7 @@ use proposal::verify_proposal_identity;
 use receipt::verify_default_receipt;
 use retire::verify_retire_completion;
 use transform::verify_transform_completion;
+use verdict::verify_no_repair_verdicts;
 
 /// Prove a store-stamped activation is complete before crash resume publishes the
 /// accepted-catalog file. Any missing receipt field, changed witness fingerprint, or
@@ -35,6 +37,7 @@ pub fn verify_activation_completion(
     commit: &CommitMetadata,
 ) -> Result<(), ApplyError> {
     let (witness, _diagnostics) = preview(program, store)?;
+    verify_no_repair_verdicts(&witness)?;
     verify_proposal_identity(&witness, store, commit)?;
 
     let places = marrow_check::checked_activation_root_places(program);
