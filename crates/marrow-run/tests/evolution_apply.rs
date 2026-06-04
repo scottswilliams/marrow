@@ -124,6 +124,20 @@ fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
     accepted_catalog_id(&member.catalog_id, name)
 }
 
+fn proposal_catalog_id(program: &CheckedProgram, path: &str) -> String {
+    program
+        .catalog
+        .proposal
+        .as_ref()
+        .expect("catalog proposal")
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .unwrap_or_else(|| panic!("proposal catalog entry `{path}`"))
+        .stable_id
+        .clone()
+}
+
 fn index_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
     let index = place
         .indexes
@@ -180,6 +194,658 @@ fn read_scalar(
         )
         .expect("read member");
     bytes.map(|bytes| decode_value(&bytes, scalar).expect("decode value"))
+}
+
+/// A required member added to source is proposal-only until the activation commits.
+/// Apply must still locate that proposal member from the exact witness, backfill old
+/// records under the proposed stable id, then stamp the proposal epoch. The accepted
+/// catalog file is deliberately left on the old schema for this fixture; accepting the
+/// proposal first would hide the soundness gap.
+#[test]
+fn proposal_required_default_backfills_before_catalog_acceptance() {
+    let root = temp_project("apply-proposal-required-default", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("Hyperion".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let proposal_epoch = program.catalog.proposal.as_ref().expect("proposal").epoch;
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    assert!(
+        accepted_place
+            .root_members
+            .iter()
+            .all(|member| member.name != "pages"),
+        "the accepted runtime place must not know the new member"
+    );
+
+    let w = witness(&program, &store);
+    assert_eq!(
+        w.proposal_catalog.as_ref().map(|c| c.epoch),
+        Some(proposal_epoch)
+    );
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_backfill, 2);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_backfilled, 2);
+    assert_eq!(outcome.catalog_epoch, proposal_epoch);
+    assert_eq!(outcome.receipt.commit_id, outcome.committed_commit_id);
+    assert_eq!(outcome.receipt.catalog_epoch, proposal_epoch);
+    assert_eq!(outcome.receipt.store_commit_id_before, w.store_commit_id);
+    assert_eq!(outcome.receipt.source_digest, w.source_digest);
+    assert_eq!(outcome.receipt.evolution_digest, w.evolution_digest);
+    assert_eq!(
+        outcome.receipt.accepted_catalog_digest,
+        w.accepted_catalog.digest
+    );
+    assert_eq!(
+        outcome.receipt.proposal_catalog_digest,
+        w.proposal_catalog
+            .as_ref()
+            .map(|catalog| catalog.digest.clone())
+    );
+    assert_eq!(
+        outcome.receipt.changed_root_catalog_ids,
+        w.changed_root_catalog_ids
+    );
+    assert_eq!(
+        outcome.receipt.changed_index_catalog_ids,
+        w.changed_index_catalog_ids
+    );
+    assert_eq!(outcome.receipt.records_backfilled, 2);
+
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let int = marrow_store::value::ScalarType::Int;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &pages_id, int),
+        Some(Scalar::Int(0))
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &pages_id, int),
+        Some(Scalar::Int(0))
+    );
+    assert_eq!(
+        store.read_catalog_epoch().expect("epoch"),
+        Some(proposal_epoch)
+    );
+    let catalog = fs::read_to_string(root.join("marrow.catalog.json")).expect("accepted catalog");
+    assert!(
+        !catalog.contains("books::Book::pages"),
+        "apply must not accept the proposal before the data transaction"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_required_default_rejects_preexisting_target_data() {
+    let root = temp_project("apply-proposal-required-default-existing-target", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("Hyperion".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(
+                CatalogId::new(pages_id.clone()).expect("pages id"),
+            )],
+            encode_value(&Scalar::Int(7)).expect("encode rogue value"),
+        )
+        .expect("seed rogue proposal target");
+
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_backfill, 1);
+    let result = apply(&w, &program, &store, false, None);
+    assert!(matches!(result, Err(ApplyError::Store(_))), "{result:#?}");
+
+    let int = marrow_store::value::ScalarType::Int;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &pages_id, int),
+        Some(Scalar::Int(7))
+    );
+    assert_eq!(read_scalar(&store, &store_id, 2, &pages_id, int), None);
+    assert_eq!(store.read_catalog_epoch().expect("epoch"), None);
+    assert!(store.read_commit_metadata().expect("read commit").is_none());
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_transform_writes_target_before_catalog_acceptance() {
+    let root = temp_project("apply-proposal-transform", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+    seed.record(2);
+    seed.member(2, "price", Scalar::Int(7));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_transform, 2);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_transformed, 2);
+    assert_eq!(outcome.receipt.records_transformed, 2);
+
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let int = marrow_store::value::ScalarType::Int;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(300))
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &cents_id, int),
+        Some(Scalar::Int(700))
+    );
+    let catalog = fs::read_to_string(root.join("marrow.catalog.json")).expect("accepted catalog");
+    assert!(
+        !catalog.contains("books::Book::priceCents"),
+        "apply must not accept the transform target before the data transaction"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
+    let root = temp_project("apply-proposal-index-rebuild", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required isbn: string\n\
+             pub fn add(isbn: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "isbn", Scalar::Str("111".into()));
+    seed.record(2);
+    seed.member(2, "isbn", Scalar::Str("222".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required isbn: string\n\
+         \x20   index byIsbn(isbn) unique\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byIsbn")).unwrap();
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.indexes_rebuilt, 1);
+    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
+
+    for (isbn, id) in [("111", 1), ("222", 2)] {
+        let scan = store
+            .scan_index_tuple(&index_id, &[SavedKey::Str(isbn.into())], 2)
+            .expect("scan rebuilt index");
+        assert_eq!(scan.entries.len(), 1, "index entry for {isbn}");
+        assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
+    }
+    let catalog = fs::read_to_string(root.join("marrow.catalog.json")).expect("accepted catalog");
+    assert!(
+        !catalog.contains("books::^books::byIsbn"),
+        "apply must not accept the index before the rebuild transaction"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
+    let root = temp_project("apply-proposal-index-default", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("Hyperion".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         \x20   index byPages(pages, id)\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byPages")).unwrap();
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_backfilled, 2);
+    assert_eq!(outcome.indexes_rebuilt, 1);
+
+    for id in [1, 2] {
+        let scan = store
+            .scan_index_tuple(&index_id, &[SavedKey::Int(0), SavedKey::Int(id)], 2)
+            .expect("scan rebuilt default index");
+        assert_eq!(scan.entries.len(), 1, "index entry for {id}");
+        assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
+    }
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn unique_index_over_defaulted_member_collision_fails_closed() {
+    let root = temp_project("apply-proposal-index-default-unique", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("Hyperion".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         \x20   index byPages(pages) unique\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+    assert!(!w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NotActivatable);
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
+    let root = temp_project("apply-proposal-index-transform", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+    seed.record(2);
+    seed.member(2, "price", Scalar::Int(7));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         \x20   index byCents(priceCents, id)\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byCents")).unwrap();
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_transformed, 2);
+    assert_eq!(outcome.indexes_rebuilt, 1);
+
+    for (cents, id) in [(300, 1), (700, 2)] {
+        let scan = store
+            .scan_index_tuple(&index_id, &[SavedKey::Int(cents), SavedKey::Int(id)], 2)
+            .expect("scan rebuilt transform index");
+        assert_eq!(scan.entries.len(), 1, "index entry for {cents}");
+        assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
+    }
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn unique_index_over_transform_target_fails_closed() {
+    let root = temp_project("apply-proposal-index-transform-unique", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+    seed.record(2);
+    seed.member(2, "price", Scalar::Int(7));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         \x20   index byCents(priceCents) unique\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+    assert!(!w.is_activatable(), "{w:#?}");
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NotActivatable);
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_default_backfills_every_store_using_the_resource() {
+    let root = temp_project("apply-proposal-default-multi-store", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             store ^archives(id: int): Book\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let books_place = root_place(&accepted, "books");
+    let archives_place = root_place(&accepted, "archives");
+    let store = TreeStore::memory();
+    let books_seed = Seed {
+        store: &store,
+        place: &books_place,
+    };
+    books_seed.record(1);
+    books_seed.member(1, "title", Scalar::Str("Dune".into()));
+    let archives_seed = Seed {
+        store: &store,
+        place: &archives_place,
+    };
+    archives_seed.record(2);
+    archives_seed.member(2, "title", Scalar::Str("Kindred".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         store ^archives(id: int): Book\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_backfill, 2);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_backfilled, 2);
+
+    let int = marrow_store::value::ScalarType::Int;
+    let books_store_id = CatalogId::new(books_place.store_catalog_id.clone()).unwrap();
+    let archives_store_id = CatalogId::new(archives_place.store_catalog_id.clone()).unwrap();
+    assert_eq!(
+        read_scalar(&store, &books_store_id, 1, &pages_id, int),
+        Some(Scalar::Int(0))
+    );
+    assert_eq!(
+        read_scalar(&store, &archives_store_id, 2, &pages_id, int),
+        Some(Scalar::Int(0))
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn proposal_transform_updates_every_store_using_the_resource() {
+    let root = temp_project("apply-proposal-transform-multi-store", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required price: int\n\
+             store ^books(id: int): Book\n\
+             store ^archives(id: int): Book\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let books_place = root_place(&accepted, "books");
+    let archives_place = root_place(&accepted, "archives");
+    let store = TreeStore::memory();
+    let books_seed = Seed {
+        store: &store,
+        place: &books_place,
+    };
+    books_seed.record(1);
+    books_seed.member(1, "price", Scalar::Int(3));
+    let archives_seed = Seed {
+        store: &store,
+        place: &archives_place,
+    };
+    archives_seed.record(2);
+    archives_seed.member(2, "price", Scalar::Int(7));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
+         store ^archives(id: int): Book\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_transform, 2);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.records_transformed, 2);
+
+    let int = marrow_store::value::ScalarType::Int;
+    let books_store_id = CatalogId::new(books_place.store_catalog_id.clone()).unwrap();
+    let archives_store_id = CatalogId::new(archives_place.store_catalog_id.clone()).unwrap();
+    assert_eq!(
+        read_scalar(&store, &books_store_id, 1, &cents_id, int),
+        Some(Scalar::Int(300))
+    );
+    assert_eq!(
+        read_scalar(&store, &archives_store_id, 2, &cents_id, int),
+        Some(Scalar::Int(700))
+    );
+    fs::remove_dir_all(&root).ok();
 }
 
 /// A required-with-default change backfills exactly the records lacking the member

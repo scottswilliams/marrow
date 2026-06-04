@@ -231,6 +231,13 @@ stores, enum trees, store identity-key shapes, and resource-member structural
 tokens after catalog IDs have bound the durable identities those shapes refer
 to. It intentionally excludes transition text such as `evolve` blocks.
 
+An evolution apply stamps activation evidence in the same transaction as its
+data effects: proposal/evolution digests, changed catalog IDs, default
+backfill counts and target-cell evidence that marks the backfilled subset,
+transform counts, exact per-id retire counts, and rebuilt-index counts. The
+accepted catalog file publishes only after those effects are verifiable; crash
+resume rechecks the evidence before writing the file.
+
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the
 store, so a project with a durable surface is fenced against the identity it just

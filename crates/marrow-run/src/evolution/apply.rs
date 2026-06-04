@@ -2,23 +2,26 @@
 
 use marrow_check::evolution::{EvolutionWitness, Verdict};
 use marrow_check::{
-    CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember, CheckedSavedMemberKind,
-    CheckedSavedPlace, checked_saved_root_place,
+    CatalogEntryKind, CatalogLifecycle, CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember,
+    CheckedSavedMemberKind, CheckedSavedPlace, StoreLeafKind, checked_activation_root_places,
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{ActivationDefaultBackfillCell, ActivationDefaultRecordCount, TreeStore};
 
 use crate::write_plan::{PlanStep, WritePlan};
 
-use super::admission::{expected_retire_count, gate_obligations};
+use super::admission::{expected_retire_counts, gate_obligations};
 use super::backfill::{
-    stage_default_backfill, stage_index_drop, stage_index_rebuild, stage_retire_deletes,
+    stage_default_backfill, stage_default_presence_receipt, stage_index_drop, stage_index_rebuild,
+    stage_retire_deletes,
 };
-use super::transform::stage_transform;
+use super::transform::{TransformStage, stage_transform};
 use super::validate::{assert_commit_pin, validate_witness};
-use super::window::{FenceError, StampFacts, current_engine_profile, fence, metadata_stamp};
+use super::window::{
+    ActivationStampFacts, FenceError, StampFacts, current_engine_profile, fence, metadata_stamp,
+};
 
 /// The scoped developer decision a destructive retire requires. Each entry names one
 /// retired catalog id and the exact populated count the developer approved dropping for
@@ -36,6 +39,29 @@ pub struct ApplyOutcome {
     pub records_backfilled: usize,
     pub indexes_rebuilt: usize,
     pub records_retired: usize,
+    pub records_transformed: usize,
+    pub receipt: ActivationReceipt,
+}
+
+/// Evidence for one committed activation. It records the witness fingerprints and
+/// committed counts, not executable steps or migration history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationReceipt {
+    pub commit_id: u64,
+    pub catalog_epoch: u64,
+    pub source_digest: String,
+    pub evolution_digest: String,
+    pub accepted_catalog_digest: String,
+    pub proposal_catalog_digest: Option<String>,
+    pub store_commit_id_before: Option<u64>,
+    pub changed_root_catalog_ids: Vec<CatalogId>,
+    pub changed_index_catalog_ids: Vec<CatalogId>,
+    pub records_backfilled: usize,
+    pub default_records_by_id: Vec<ActivationDefaultRecordCount>,
+    pub default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
+    pub indexes_rebuilt: usize,
+    pub records_retired: usize,
+    pub records_retired_by_id: Vec<(CatalogId, usize)>,
     pub records_transformed: usize,
 }
 
@@ -111,18 +137,25 @@ pub fn apply(
         .as_ref()
         .map(|catalog| catalog.epoch)
         .unwrap_or(witness.accepted_catalog.epoch);
+    let current_epoch = store.read_catalog_epoch()?;
 
     let mut staged = StagedWork::default();
     let mut steps = Vec::new();
-    let places = source_places(program);
+    let places = checked_activation_root_places(program);
     let runtime = program.runtime();
     let ctx = StageCtx {
         places: &places,
         store,
         program,
         runtime: &runtime,
+        reject_existing_proposal_defaults: current_epoch != Some(target_epoch),
     };
+    let mut index_rebuilds = Vec::new();
     for obligation in &witness.verdicts {
+        if matches!(obligation.verdict, Verdict::DerivedRebuild) {
+            index_rebuilds.push(obligation.catalog_id.clone());
+            continue;
+        }
         stage_obligation(
             &ctx,
             &obligation.catalog_id,
@@ -131,6 +164,10 @@ pub fn apply(
             &mut staged,
         )?;
     }
+    for catalog_id in index_rebuilds {
+        stage_index_rebuild(&catalog_id, &places, store, &mut steps, &mut staged)?;
+    }
+    stage_redundant_default_receipts(program, &places, store, &mut staged)?;
 
     if staged.records_backfilled != witness.counts.records_to_backfill {
         return Err(ApplyError::PlanMismatch {
@@ -139,7 +176,11 @@ pub fn apply(
         });
     }
 
-    let approved_retire = expected_retire_count(witness);
+    let destructive_retire_counts = expected_retire_counts(witness);
+    let approved_retire = destructive_retire_counts
+        .iter()
+        .map(|(_id, count)| *count)
+        .sum::<usize>();
     if staged.records_retired != approved_retire {
         return Err(ApplyError::PlanMismatch {
             expected: approved_retire,
@@ -157,25 +198,55 @@ pub fn apply(
     // Nothing to write and the store already sits at the target epoch: applying again
     // would only churn the commit id and restamp the same epoch. Leave the store
     // untouched and report the current commit id rather than advancing it.
-    let current_epoch = store.read_catalog_epoch()?;
     if steps.is_empty() && current_epoch == Some(target_epoch) {
+        let committed_commit_id = witness.store_commit_id.unwrap_or(0);
         return Ok(ApplyOutcome {
-            committed_commit_id: witness.store_commit_id.unwrap_or(0),
+            committed_commit_id,
             catalog_epoch: target_epoch,
             records_backfilled: staged.records_backfilled,
             indexes_rebuilt: staged.indexes_rebuilt,
             records_retired: staged.records_retired,
             records_transformed: staged.records_transformed,
+            receipt: activation_receipt(
+                witness,
+                committed_commit_id,
+                target_epoch,
+                &staged,
+                &retire_receipt_counts(program, &destructive_retire_counts)?,
+            ),
         });
     }
 
     let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
+    let retire_receipt_counts = retire_receipt_counts(program, &destructive_retire_counts)?;
     steps.push(metadata_stamp(StampFacts {
         catalog_epoch: target_epoch,
         commit_id,
         source_digest: witness.source_digest.clone(),
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
+        activation: Some(ActivationStampFacts {
+            evolution_digest: witness.evolution_digest.clone(),
+            proposal_catalog_digest: witness
+                .proposal_catalog
+                .as_ref()
+                .map(|catalog| catalog.digest.clone()),
+            proposal_catalog_json: program
+                .catalog
+                .proposal
+                .as_ref()
+                .map(|proposal| proposal.to_json_pretty()),
+            records_backfilled: staged.records_backfilled as u64,
+            default_records_by_id: staged.default_records_by_id.clone(),
+            default_backfill_cells: staged.default_backfill_cells.clone(),
+            indexes_rebuilt: staged.indexes_rebuilt as u64,
+            records_retired: staged.records_retired as u64,
+            records_retired_by_id: retire_receipt_counts
+                .iter()
+                .map(|(id, count)| (id.clone(), *count as u64))
+                .collect(),
+            records_transformed: staged.records_transformed as u64,
+        }),
     }));
     commit_apply_plan(witness, store, steps)?;
 
@@ -186,7 +257,121 @@ pub fn apply(
         indexes_rebuilt: staged.indexes_rebuilt,
         records_retired: staged.records_retired,
         records_transformed: staged.records_transformed,
+        receipt: activation_receipt(
+            witness,
+            commit_id,
+            target_epoch,
+            &staged,
+            &retire_receipt_counts,
+        ),
     })
+}
+
+fn retire_receipt_counts(
+    program: &CheckedProgram,
+    destructive_counts: &[(CatalogId, usize)],
+) -> Result<Vec<(CatalogId, usize)>, ApplyError> {
+    let mut counts = Vec::new();
+    for id in retired_resource_member_ids(program)? {
+        let count = destructive_counts
+            .iter()
+            .find_map(|(destructive_id, count)| (destructive_id == &id).then_some(*count))
+            .unwrap_or(0);
+        counts.push((id, count));
+    }
+    counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    counts.dedup();
+    Ok(counts)
+}
+
+fn retired_resource_member_ids(program: &CheckedProgram) -> Result<Vec<CatalogId>, ApplyError> {
+    let mut ids = Vec::new();
+    let Some(proposal) = &program.catalog.proposal else {
+        return Ok(ids);
+    };
+    for entry in &proposal.entries {
+        if entry.kind == CatalogEntryKind::ResourceMember
+            && retired_this_proposal(
+                program,
+                entry.stable_id.as_str(),
+                entry.lifecycle,
+                CatalogEntryKind::ResourceMember,
+            )
+        {
+            ids.push(CatalogId::new(entry.stable_id.clone()).map_err(|_| {
+                ApplyError::Store(StoreError::Corruption {
+                    message: "evolution apply saw an invalid retired member catalog id".to_string(),
+                })
+            })?);
+        }
+    }
+    Ok(ids)
+}
+
+fn retired_this_proposal(
+    program: &CheckedProgram,
+    stable_id: &str,
+    lifecycle: CatalogLifecycle,
+    kind: CatalogEntryKind,
+) -> bool {
+    lifecycle == CatalogLifecycle::Reserved
+        && program.catalog.proposal.is_some()
+        && program.catalog.accepted_entries.iter().any(|accepted| {
+            accepted.kind == kind
+                && accepted.stable_id == stable_id
+                && accepted.lifecycle == CatalogLifecycle::Active
+        })
+}
+
+fn stage_redundant_default_receipts(
+    program: &CheckedProgram,
+    places: &[CheckedSavedPlace],
+    store: &TreeStore,
+    staged: &mut StagedWork,
+) -> Result<(), ApplyError> {
+    let mut recorded: std::collections::BTreeSet<_> = staged
+        .default_records_by_id
+        .iter()
+        .map(|count| count.catalog_id.clone())
+        .collect();
+    for default in &program.catalog.evolve_defaults {
+        let catalog_id =
+            CatalogId::new(default.catalog_id.clone()).map_err(|_| ApplyError::Drift)?;
+        if recorded.insert(catalog_id.clone()) {
+            stage_default_presence_receipt(&catalog_id, places, store, staged)?;
+        }
+    }
+    Ok(())
+}
+
+fn activation_receipt(
+    witness: &EvolutionWitness,
+    commit_id: u64,
+    catalog_epoch: u64,
+    staged: &StagedWork,
+    retire_counts: &[(CatalogId, usize)],
+) -> ActivationReceipt {
+    ActivationReceipt {
+        commit_id,
+        catalog_epoch,
+        source_digest: witness.source_digest.clone(),
+        evolution_digest: witness.evolution_digest.clone(),
+        accepted_catalog_digest: witness.accepted_catalog.digest.clone(),
+        proposal_catalog_digest: witness
+            .proposal_catalog
+            .as_ref()
+            .map(|catalog| catalog.digest.clone()),
+        store_commit_id_before: witness.store_commit_id,
+        changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
+        changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
+        records_backfilled: staged.records_backfilled,
+        default_records_by_id: staged.default_records_by_id.clone(),
+        default_backfill_cells: staged.default_backfill_cells.clone(),
+        indexes_rebuilt: staged.indexes_rebuilt,
+        records_retired: staged.records_retired,
+        records_retired_by_id: retire_counts.to_vec(),
+        records_transformed: staged.records_transformed,
+    }
 }
 
 fn commit_apply_plan(
@@ -218,6 +403,8 @@ fn commit_apply_plan(
 #[derive(Default)]
 pub(super) struct StagedWork {
     pub(super) records_backfilled: usize,
+    pub(super) default_records_by_id: Vec<ActivationDefaultRecordCount>,
+    pub(super) default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
     pub(super) indexes_rebuilt: usize,
     pub(super) records_retired: usize,
     pub(super) records_transformed: usize,
@@ -232,6 +419,7 @@ struct StageCtx<'a> {
     store: &'a TreeStore,
     program: &'a CheckedProgram,
     runtime: &'a CheckedRuntimeProgram,
+    reject_existing_proposal_defaults: bool,
 }
 
 fn stage_obligation(
@@ -246,19 +434,33 @@ fn stage_obligation(
         store,
         program,
         runtime,
+        reject_existing_proposal_defaults,
     } = ctx;
     match verdict {
-        Verdict::Default { value } => {
-            stage_default_backfill(catalog_id, value, places, store, steps, staged)
-        }
+        Verdict::Default { value } => stage_default_backfill(
+            catalog_id,
+            value,
+            *reject_existing_proposal_defaults && !accepted_resource_member(program, catalog_id),
+            places,
+            store,
+            steps,
+            staged,
+        ),
         Verdict::DerivedRebuild => stage_index_rebuild(catalog_id, places, store, steps, staged),
         Verdict::IndexDropped => stage_index_drop(catalog_id, steps),
         Verdict::DestructiveDecisionRequired { .. } => {
             stage_retire_deletes(catalog_id, places, store, steps, staged)
         }
-        Verdict::Transform { .. } => {
-            stage_transform(catalog_id, program, runtime, places, store, steps, staged)
-        }
+        Verdict::Transform { reads } => stage_transform(TransformStage {
+            target_id: catalog_id,
+            witness_reads: reads,
+            program,
+            runtime,
+            places,
+            store,
+            steps,
+            staged,
+        }),
         Verdict::NoOp
         | Verdict::CatalogOnly
         | Verdict::DataProof
@@ -266,18 +468,10 @@ fn stage_obligation(
     }
 }
 
-fn source_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
-    let mut places = Vec::new();
-    for module in &program.modules {
-        for store in &module.stores {
-            if let Some(place) = checked_saved_root_place(program, &store.root, Default::default())
-                && place.store_catalog_id.is_some()
-            {
-                places.push(place);
-            }
-        }
-    }
-    places
+fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
+    program.catalog.accepted_entries.iter().any(|entry| {
+        entry.kind == CatalogEntryKind::ResourceMember && entry.stable_id == catalog_id.as_str()
+    })
 }
 
 /// The store catalog id of a place, validated once.
@@ -299,11 +493,13 @@ pub(super) fn locate_member(
     catalog_id: &CatalogId,
 ) -> Option<MemberLocation> {
     let mut steps = Vec::new();
-    locate_in(&place.root_members, &mut steps, catalog_id).then_some(MemberLocation { steps })
+    let leaf = locate_in(&place.root_members, &mut steps, catalog_id)?;
+    Some(MemberLocation { steps, leaf })
 }
 
 pub(super) struct MemberLocation {
     pub(super) steps: Vec<PathStep>,
+    pub(super) leaf: Option<StoreLeafKind>,
 }
 
 pub(super) enum PathStep {
@@ -315,7 +511,7 @@ fn locate_in(
     members: &[CheckedSavedMember],
     steps: &mut Vec<PathStep>,
     target: &CatalogId,
-) -> bool {
+) -> Option<Option<StoreLeafKind>> {
     for member in members {
         let Some(raw_id) = &member.catalog_id else {
             continue;
@@ -331,16 +527,16 @@ fn locate_in(
         };
         steps.push(step);
         if member_id == *target {
-            return true;
+            return Some(member.leaf.clone());
         }
         if matches!(member.kind, CheckedSavedMemberKind::Group)
-            && locate_in(&member.group_members, steps, target)
+            && let Some(leaf) = locate_in(&member.group_members, steps, target)
         {
-            return true;
+            return Some(leaf);
         }
         steps.pop();
     }
-    false
+    None
 }
 
 pub(super) fn for_each_place_record(

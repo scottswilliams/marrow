@@ -11,7 +11,10 @@
 
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
-use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
+use marrow_store::tree::{
+    ActivationDefaultBackfillCell, ActivationDefaultRecordCount, CommitMetadata, EngineProfile,
+    TreeStore,
+};
 
 use crate::write_plan::PlanStep;
 
@@ -33,6 +36,20 @@ pub(crate) struct StampFacts {
     pub(crate) source_digest: String,
     pub(crate) changed_root_catalog_ids: Vec<CatalogId>,
     pub(crate) changed_index_catalog_ids: Vec<CatalogId>,
+    pub(crate) activation: Option<ActivationStampFacts>,
+}
+
+pub(crate) struct ActivationStampFacts {
+    pub(crate) evolution_digest: String,
+    pub(crate) proposal_catalog_digest: Option<String>,
+    pub(crate) proposal_catalog_json: Option<String>,
+    pub(crate) records_backfilled: u64,
+    pub(crate) default_records_by_id: Vec<ActivationDefaultRecordCount>,
+    pub(crate) default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
+    pub(crate) indexes_rebuilt: u64,
+    pub(crate) records_retired: u64,
+    pub(crate) records_retired_by_id: Vec<(CatalogId, u64)>,
+    pub(crate) records_transformed: u64,
 }
 
 /// Build the metadata stamp both the runtime managed-write path and evolution apply
@@ -41,6 +58,7 @@ pub(crate) struct StampFacts {
 /// construction: the fence reads exactly the layout and digest this stamp wrote.
 pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
     let profile = current_engine_profile();
+    let activation = facts.activation;
     let commit = CommitMetadata {
         commit_id: facts.commit_id,
         catalog_epoch: facts.catalog_epoch,
@@ -49,6 +67,44 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         engine_profile_digest: profile.digest_bytes(),
         changed_root_catalog_ids: facts.changed_root_catalog_ids,
         changed_index_catalog_ids: facts.changed_index_catalog_ids,
+        activation_evolution_digest: activation
+            .as_ref()
+            .map(|activation| activation.evolution_digest.clone())
+            .unwrap_or_default(),
+        activation_proposal_catalog_digest: activation
+            .as_ref()
+            .and_then(|activation| activation.proposal_catalog_digest.clone()),
+        activation_proposal_catalog_json: activation
+            .as_ref()
+            .and_then(|activation| activation.proposal_catalog_json.clone()),
+        activation_records_backfilled: activation
+            .as_ref()
+            .map(|activation| activation.records_backfilled)
+            .unwrap_or(0),
+        activation_default_records_by_id: activation
+            .as_ref()
+            .map(|activation| activation.default_records_by_id.clone())
+            .unwrap_or_default(),
+        activation_default_backfill_cells: activation
+            .as_ref()
+            .map(|activation| activation.default_backfill_cells.clone())
+            .unwrap_or_default(),
+        activation_indexes_rebuilt: activation
+            .as_ref()
+            .map(|activation| activation.indexes_rebuilt)
+            .unwrap_or(0),
+        activation_records_retired: activation
+            .as_ref()
+            .map(|activation| activation.records_retired)
+            .unwrap_or(0),
+        activation_records_retired_by_id: activation
+            .as_ref()
+            .map(|activation| activation.records_retired_by_id.clone())
+            .unwrap_or_default(),
+        activation_records_transformed: activation
+            .as_ref()
+            .map(|activation| activation.records_transformed)
+            .unwrap_or(0),
     };
     PlanStep::StampMetadata {
         catalog_epoch: facts.catalog_epoch,
@@ -182,6 +238,7 @@ mod tests {
             source_digest: digest.to_string(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
+            activation: None,
         });
         let PlanStep::StampMetadata { commit, .. } = step else {
             panic!("metadata_stamp builds a StampMetadata step");

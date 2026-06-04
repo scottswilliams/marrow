@@ -19,9 +19,11 @@
 //! required leaf and derives every prospective unique-index key tuple, so the scan
 //! retains only bounded per-obligation state.
 
+mod absent_source;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle};
+use marrow_project::{CatalogEntry, CatalogEntryKind};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -29,11 +31,11 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use super::const_default::eval_const_default;
 use super::transform_reads::{TransformReadMember, transform_read_members};
-use super::witness::{ObligationVerdict, RepairReason, Verdict};
+use super::witness::{DefaultValue, ObligationVerdict, RepairReason, Verdict};
 use crate::StoreLeafKind;
 use crate::executable::{
     CheckedSavedIndex, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
-    checked_saved_root_place,
+    checked_activation_root_places,
 };
 use crate::facts::{StoreIndexKeySource, StoredValueMeaning};
 use crate::program::{CheckedProgram, EvolveDefault, EvolveTransform};
@@ -81,7 +83,6 @@ pub(crate) fn discharge(
             .collect(),
         renamed_member_ids(program),
         accepted_member_leaves(program),
-        new_member_proposal_ids(program),
     );
     let enum_members = EnumMembers::collect(program);
     acc.set_shrunk_enums(ShrunkEnums::collect(program, &enum_members));
@@ -93,42 +94,27 @@ pub(crate) fn discharge(
     for (id, kind) in proposal_changed_catalog_ids(program) {
         acc.insert_affected(&id, kind)?;
     }
-    for root in source_store_roots(program) {
-        let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
-            continue;
-        };
-        // A store whose catalog id is unbound has not been accepted, so it addresses
-        // no durable snapshot to discharge against. Its members carry no obligation
-        // until the proposal is accepted and their ids are minted.
-        if place.store_catalog_id.is_none() {
-            continue;
-        }
+    let places = checked_activation_root_places(program);
+    for place in &places {
         // An identity-key shape change orphans every record addressed by the old key
         // bytes, which v0.1 cannot migrate, so it fails closed ahead of any per-record
         // scan. The old records are unreachable under the new key shape, so a per-member
         // presence scan would read them under a key arity they were never written at and
         // report meaningless verdicts; the store-level repair subsumes them, so the scan
         // is skipped for a re-keyed store.
-        if classify_store_key_shape(program, &place, &accepted_key_shapes, &mut acc)? {
+        if classify_store_key_shape(program, place, &accepted_key_shapes, &mut acc)? {
             continue;
         }
-        let resource_path = qualified_resource_path(program, &place);
-        discharge_root(store, &place, &resource_path, &enum_members, &mut acc)?;
+        discharge_root(store, place, &enum_members, &mut acc)?;
     }
-    classify_absent_source_entries(program, store, &mut acc)?;
-    discharge_transforms(program, store, &enum_members, &mut acc)?;
+    absent_source::classify_absent_source_entries(program, store, &mut acc)?;
+    discharge_transforms(program, store, &places, &enum_members, &mut acc)?;
     // The default-deny structural backstop runs last, after every targeted classifier has had
     // its say, so it fails closed only what nothing else claimed. It keeps the fail-closed
     // invariant total by construction: any member whose structural signature changed and still
     // carries no verdict is an unhandled transition, so it cannot silently activate.
-    for root in source_store_roots(program) {
-        let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
-            continue;
-        };
-        if place.store_catalog_id.is_none() {
-            continue;
-        }
-        classify_structural_backstop(program, store, &place, &mut acc)?;
+    for place in &places {
+        classify_structural_backstop(store, place, &mut acc)?;
     }
     Ok(acc.into_discharge())
 }
@@ -145,38 +131,62 @@ pub(crate) fn discharge(
 fn discharge_transforms(
     program: &CheckedProgram,
     store: &TreeStore,
+    places: &[CheckedSavedPlace],
     enum_members: &EnumMembers,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     for transform in &program.catalog.evolve_transforms {
-        // An unbound transform (no accepted catalog yet) addresses no snapshot, the
-        // same way an unaccepted store does; its purity was still checked at lowering.
+        // The type pass already reported an unresolved target; the lowered body still
+        // had its purity checked, but there is no catalog obligation to discharge.
         let Some(target_raw_id) = transform.catalog_id.as_deref() else {
             continue;
         };
-        let Some(place) = transform_place(program, transform) else {
-            continue;
-        };
-        if place.store_catalog_id.is_none() {
+        let target_places = transform_places(program, places, transform);
+        if target_places.is_empty() {
+            // No accepted/proposal activation place uses this resource, so there is no
+            // store snapshot for the transform to read.
             continue;
         }
         let target_id = catalog_id(target_raw_id)?;
-        let reads = transform_read_members(&place, &transform.reads);
-        let read_ids: Vec<CatalogId> = reads.iter().map(|read| read.catalog_id.clone()).collect();
-        // One pass over the place proves decodability and counts the records, the way
-        // `discharge_root` fuses its presence and index probes. The decodability
-        // obligation lands on the transform target, not on the read member: a read member
-        // is often a normal required member with its own presence verdict, so a second
-        // verdict on its id would duplicate the obligation. The target is what cannot be
-        // recomputed when a read it depends on cannot decode, so its verdict carries the
-        // proof and the diagnostic names the failing record.
-        let scan = scan_transform_records(store, &place, &reads, enum_members)?;
-        let verdict = match &scan.undecodable {
+        let mut read_ids = None;
+        let mut records = 0usize;
+        let mut undecodable = None;
+        for place in target_places {
+            let reads = transform_read_members(place, &transform.reads);
+            let place_read_ids: Vec<CatalogId> =
+                reads.iter().map(|read| read.catalog_id.clone()).collect();
+            match &read_ids {
+                Some(expected) if expected != &place_read_ids => {
+                    return Err(StoreError::Corruption {
+                        message: format!(
+                            "transform `{}` resolved different read members across stores of the same resource",
+                            transform.resource
+                        ),
+                    });
+                }
+                Some(_) => {}
+                None => read_ids = Some(place_read_ids),
+            }
+            // One pass over each place proves decodability and counts the records, the way
+            // `discharge_root` fuses its presence and index probes. The decodability
+            // obligation lands on the transform target, not on the read member: a read member
+            // is often a normal required member with its own presence verdict, so a second
+            // verdict on its id would duplicate the obligation. The target is what cannot be
+            // recomputed when a read it depends on cannot decode, so its verdict carries the
+            // proof and the diagnostic names the failing record.
+            let scan = scan_transform_records(store, place, &reads, enum_members)?;
+            records += scan.records;
+            if undecodable.is_none() {
+                undecodable = scan.undecodable;
+            }
+        }
+        let read_ids = read_ids.unwrap_or_default();
+        let verdict = match &undecodable {
             None => {
                 // An applyable transform rewrites the target cell for every record under
-                // the place, so the witness counts those records and apply re-counts the
-                // staged writes against this total.
-                acc.counts.records_to_transform += scan.records;
+                // every store using the resource, so the witness counts those records and
+                // apply re-counts the staged writes against this total.
+                acc.counts.records_to_transform += records;
                 Verdict::Transform { reads: read_ids }
             }
             Some(sample) => {
@@ -192,24 +202,32 @@ fn discharge_transforms(
                 }
             }
         };
-        acc.push(target_id, verdict);
+        acc.push(target_id, verdict)?;
     }
     Ok(())
 }
 
-/// The checked saved place that owns a transform's target member, found by the
+/// The checked saved places that own a transform's target member, found by the
 /// resource the transform names.
-fn transform_place(
+fn transform_places<'a>(
     program: &CheckedProgram,
+    places: &'a [CheckedSavedPlace],
     transform: &EvolveTransform,
-) -> Option<CheckedSavedPlace> {
-    let root = program.modules.iter().find_map(|module| {
-        module.stores.iter().find_map(|store| {
-            let resource_path = crate::resource_type_name(&module.name, &store.resource);
-            (resource_path == transform.resource).then(|| store.root.clone())
+) -> Vec<&'a CheckedSavedPlace> {
+    let roots: HashSet<&str> = program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module.stores.iter().filter_map(|store| {
+                let resource_path = crate::resource_type_name(&module.name, &store.resource);
+                (resource_path == transform.resource).then_some(store.root.as_str())
+            })
         })
-    })?;
-    checked_saved_root_place(program, &root, Default::default())
+        .collect();
+    places
+        .iter()
+        .filter(|place| roots.contains(place.root.as_str()))
+        .collect()
 }
 
 /// The result of the single transform scan: the record count the witness carries, and
@@ -271,7 +289,7 @@ impl EnumMembers {
     fn collect(program: &CheckedProgram) -> Self {
         let mut by_enum: HashMap<crate::facts::EnumId, HashSet<String>> = HashMap::new();
         for member in program.facts.enum_members() {
-            let Some(catalog_id) = member.catalog_id.as_deref() else {
+            let Some(catalog_id) = member.catalog_id.as_ref() else {
                 continue;
             };
             if !program.facts.enum_member_is_selectable(member.id) {
@@ -280,7 +298,7 @@ impl EnumMembers {
             by_enum
                 .entry(member.enum_id)
                 .or_default()
-                .insert(catalog_id.to_string());
+                .insert(catalog_id.clone());
         }
         Self { by_enum }
     }
@@ -522,34 +540,6 @@ fn accepted_member_structs(program: &CheckedProgram) -> HashMap<String, String> 
         .collect()
 }
 
-/// The proposal-minted stable id of each brand-new resource member, keyed by its
-/// module-qualified catalog path. A member current source adds but the accepted catalog does
-/// not yet carry has no bound facts id, so its checked place carries no catalog id and the
-/// presence scan cannot reach it by id alone. Its identity lives only in the proposal, so
-/// discharge resolves it here by source path: a brand-new required member is then presence-
-/// scanned against existing records, failing closed when they lack it and no default covers it
-/// (the add-required-field obligation). A member whose stable id is already in the accepted
-/// snapshot is not brand-new and is reached by its bound id as before, so it is omitted.
-fn new_member_proposal_ids(program: &CheckedProgram) -> HashMap<String, String> {
-    let Some(proposal) = &program.catalog.proposal else {
-        return HashMap::new();
-    };
-    let accepted: HashSet<&str> = program
-        .catalog
-        .accepted_entries
-        .iter()
-        .map(|entry| entry.stable_id.as_str())
-        .collect();
-    proposal
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == CatalogEntryKind::ResourceMember)
-        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
-        .filter(|entry| !accepted.contains(entry.stable_id.as_str()))
-        .map(|entry| (entry.path.clone(), entry.stable_id.clone()))
-        .collect()
-}
-
 /// The accepted identity-key shape recorded for each store in the accepted snapshot, keyed
 /// by its raw catalog id, as `Some(shape)` when the entry records one. A store with no
 /// recorded shape (accepted before key shapes were recorded) is absent from the map: there
@@ -584,19 +574,23 @@ fn classify_store_key_shape(
     accepted_key_shapes: &HashMap<String, String>,
     acc: &mut Accumulator,
 ) -> Result<bool, StoreError> {
-    let Some(store_raw_id) = place.store_catalog_id.as_deref() else {
+    let Some(store_catalog_id) = place.store_catalog_id.as_deref() else {
         return Ok(false);
     };
-    let Some(accepted) = accepted_key_shapes.get(store_raw_id) else {
+    let Some(accepted) = accepted_key_shapes.get(store_catalog_id) else {
         return Ok(false);
     };
-    let Some(declared) = program.catalog.declared_store_key_shapes.get(store_raw_id) else {
+    let Some(declared) = program
+        .catalog
+        .declared_store_key_shapes
+        .get(store_catalog_id)
+    else {
         return Ok(false);
     };
     if accepted == declared {
         return Ok(false);
     }
-    let store_id = catalog_id(store_raw_id)?;
+    let store_id = required_catalog_id(&place.store_catalog_id)?;
     acc.diagnostic(
         store_id.clone(),
         format!(
@@ -609,7 +603,7 @@ fn classify_store_key_shape(
         Verdict::RepairRequired {
             reason: RepairReason::StoreKeyShapeChange,
         },
-    );
+    )?;
     Ok(true)
 }
 
@@ -648,22 +642,12 @@ struct StructuralCandidate {
 /// bless (an optional add, a rename, a retype, a reorder) keep their verdicts and are not
 /// re-judged here.
 fn classify_structural_backstop(
-    program: &CheckedProgram,
     store: &TreeStore,
     place: &CheckedSavedPlace,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
-    let resource_path = qualified_resource_path(program, place);
     let mut candidates = Vec::new();
-    collect_structural_candidates(
-        place,
-        &resource_path,
-        &place.root_members,
-        &[],
-        &[],
-        acc,
-        &mut candidates,
-    )?;
+    collect_structural_candidates(place, &place.root_members, &[], &[], acc, &mut candidates)?;
     if candidates.is_empty() {
         return Ok(());
     }
@@ -691,7 +675,7 @@ fn classify_structural_backstop(
             Verdict::RepairRequired {
                 reason: candidate.reason,
             },
-        );
+        )?;
     }
     Ok(())
 }
@@ -753,7 +737,6 @@ fn descend_path(
 /// leaf does not also emit a misleading data proof. A pure leaf carries no interior to walk.
 fn collect_structural_candidates(
     place: &CheckedSavedPlace,
-    resource_path: &str,
     members: &[CheckedSavedMember],
     descent: &[DescentStep],
     names: &[&str],
@@ -763,9 +746,7 @@ fn collect_structural_candidates(
     for member in members {
         let mut member_names = names.to_vec();
         member_names.push(member.name.as_str());
-        let Some(raw_id) =
-            resolved_member_id(resource_path, member, &member_names, acc.new_members())
-        else {
+        let Some(raw_id) = resolved_member_id(member) else {
             continue;
         };
         let member_id = catalog_id(&raw_id)?;
@@ -794,7 +775,6 @@ fn collect_structural_candidates(
         });
         collect_structural_candidates(
             place,
-            resource_path,
             &member.group_members,
             &child_descent,
             &member_names,
@@ -837,25 +817,6 @@ fn structural_repair(
     }
 }
 
-/// The module-qualified catalog path of the resource a place addresses (`module::Resource`),
-/// the prefix every member's catalog path shares. A brand-new member's proposal path is
-/// `module::Resource::member...`, so this is how the presence scan reconstructs that path to
-/// resolve the member's proposal id when its facts id is not yet bound.
-fn qualified_resource_path(program: &CheckedProgram, place: &CheckedSavedPlace) -> String {
-    let resource = program.facts.resource(place.resource_id);
-    let module = &program.modules[resource.module.0 as usize];
-    crate::catalog::resource_path(&module.name, &resource.name)
-}
-
-/// The saved-store roots current source declares, in declaration order.
-fn source_store_roots(program: &CheckedProgram) -> Vec<String> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| module.stores.iter().map(|store| store.root.clone()))
-        .collect()
-}
-
 /// Classify the member-presence and index obligations a single saved root carries.
 /// A single streaming scan visits each record once, probing every required leaf and
 /// deriving every prospective unique-index key tuple; the verdicts fall out of the
@@ -863,16 +824,15 @@ fn source_store_roots(program: &CheckedProgram) -> Vec<String> {
 fn discharge_root(
     store: &TreeStore,
     place: &CheckedSavedPlace,
-    resource_path: &str,
     enum_members: &EnumMembers,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     let store_id = required_catalog_id(&place.store_catalog_id)?;
-    let leaves = required_leaf_obligations(place, resource_path, acc)?;
+    let leaves = required_leaf_obligations(place, acc)?;
     let UniqueIndexPlan {
         probes: unique_indexes,
         unprobeable,
-    } = unique_index_plan(place)?;
+    } = unique_index_plan(place, acc)?;
     let unprobeable: HashSet<CatalogId> = unprobeable.into_iter().collect();
 
     let mut leaf_state: Vec<LeafScan> = leaves.iter().map(|_| LeafScan::default()).collect();
@@ -911,7 +871,7 @@ fn discharge_root(
     acc.counts.scanned_records += scanned;
 
     for (leaf, state) in leaves.into_iter().zip(leaf_state) {
-        classify_leaf(leaf, state, acc);
+        classify_leaf(leaf, state, acc)?;
     }
     let collisions: HashMap<CatalogId, IndexScan> = unique_indexes
         .into_iter()
@@ -919,7 +879,7 @@ fn discharge_root(
         .zip(index_state)
         .collect();
     classify_indexes(place, &collisions, &unprobeable, acc)?;
-    discharge_keyed_layers(store, place, resource_path, enum_members, acc)?;
+    discharge_keyed_layers(store, place, enum_members, acc)?;
     Ok(())
 }
 
@@ -952,13 +912,10 @@ struct LeafObligation {
     retyped: bool,
 }
 
-/// The invariant context of a member-tree walk: the saved place being discharged and the
-/// module-qualified resource path its members hang under. Bundling the two read-only refs
-/// keeps each recursive walker to its varying arguments (the member slice, the data-path
-/// prefix, and the name chain) rather than re-threading the invariants at every level.
+/// The invariant context of a member-tree walk: the saved place being discharged.
+/// Bundling it keeps each recursive walker to its varying arguments.
 struct LeafWalk<'a> {
     place: &'a CheckedSavedPlace,
-    resource_path: &'a str,
 }
 
 /// The required-leaf obligations at the root and inside unkeyed groups: leaves whose
@@ -967,24 +924,18 @@ struct LeafWalk<'a> {
 /// classified separately by [`discharge_keyed_layers`].
 fn required_leaf_obligations(
     place: &CheckedSavedPlace,
-    resource_path: &str,
     acc: &mut Accumulator,
 ) -> Result<Vec<LeafObligation>, StoreError> {
-    let walk = LeafWalk {
-        place,
-        resource_path,
-    };
+    let walk = LeafWalk { place };
     let mut obligations = Vec::new();
     collect_required_leaves(&walk, &place.root_members, &[], &[], &mut obligations, acc)?;
     Ok(obligations)
 }
 
 /// Walk the member tree, emitting a leaf obligation for each required leaf and each
-/// retyped leaf — of any kind, scalar, enum, or identity — at the root or inside an unkeyed
-/// group, building the nested data-path chain to its cell. `names` is the member name chain
-/// from the resource down to here, used to resolve a brand-new member's proposal id. A
-/// transform-targeted member is classified eagerly and not scanned. A keyed member is left to
-/// the keyed-layer check.
+/// retyped leaf — of any kind, scalar, enum, or identity — at the root or inside an
+/// unkeyed group. A transform-targeted member is classified eagerly and not scanned.
+/// A keyed member is left to the keyed-layer check.
 fn collect_required_leaves(
     walk: &LeafWalk,
     members: &[CheckedSavedMember],
@@ -999,14 +950,7 @@ fn collect_required_leaves(
         }
         let mut member_names = names.to_vec();
         member_names.push(member.name.as_str());
-        // A brand-new member current source adds has no bound facts id, so its checked
-        // catalog id is absent; resolve its proposal-minted id by source path so a new
-        // required member is still presence-scanned against existing records. A member with
-        // neither a bound id nor a proposal id (a pending first-run identity with no proposal)
-        // anchors no obligation.
-        let Some(raw_id) =
-            resolved_member_id(walk.resource_path, member, &member_names, acc.new_members())
-        else {
+        let Some(raw_id) = resolved_member_id(member) else {
             continue;
         };
         let member_id = catalog_id(&raw_id)?;
@@ -1066,27 +1010,17 @@ fn collect_required_leaves(
                     path,
                     obligations,
                     acc,
-                );
+                )?;
             }
         }
     }
     Ok(())
 }
 
-/// The raw catalog id to scan a member under: its bound facts id when source already carries
-/// one, else the proposal-minted id of a brand-new member at this source path. `None` when the
-/// member has neither — a pending first-run identity with no proposal to mint from.
-fn resolved_member_id(
-    resource_path: &str,
-    member: &CheckedSavedMember,
-    names: &[&str],
-    new_members: &HashMap<String, String>,
-) -> Option<String> {
-    if let Some(catalog_id) = &member.catalog_id {
-        return Some(catalog_id.clone());
-    }
-    let source_path = format!("{resource_path}::{}", names.join("::"));
-    new_members.get(&source_path).cloned()
+/// The raw catalog id to scan a member under. Activation places carry accepted
+/// IDs and proposal-only IDs; a member with neither anchors no durable obligation.
+fn resolved_member_id(member: &CheckedSavedMember) -> Option<String> {
+    member.catalog_id.clone()
 }
 
 /// One leaf and the decision discharge makes about it before the scan, shared by the
@@ -1194,13 +1128,13 @@ fn emit_member_leaf(
     path: Vec<DataPathSegment>,
     obligations: &mut Vec<LeafObligation>,
     acc: &mut Accumulator,
-) {
+) -> Result<(), StoreError> {
     let CheckedSavedMemberKind::Field { required } = &member.kind else {
-        return;
+        return Ok(());
     };
     match classify_member_leaf(place, member, raw_id, *required, acc) {
         MemberLeafOutcome::Eager(verdict) => {
-            acc.push(member_id, verdict);
+            acc.push_leaf(member_id, verdict)?;
         }
         MemberLeafOutcome::Skip => {}
         MemberLeafOutcome::Obligation {
@@ -1221,6 +1155,7 @@ fn emit_member_leaf(
             retyped,
         }),
     }
+    Ok(())
 }
 
 /// Emit the retype obligation for a member that was a plain leaf and is now a non-leaf (a
@@ -1259,11 +1194,10 @@ fn emit_disappeared_leaf(
 fn discharge_keyed_layers(
     store: &TreeStore,
     place: &CheckedSavedPlace,
-    resource_path: &str,
     enum_members: &EnumMembers,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
-    let obligations = keyed_leaf_obligations(place, resource_path, acc)?;
+    let obligations = keyed_leaf_obligations(place, acc)?;
     if obligations.is_empty() {
         return Ok(());
     }
@@ -1284,8 +1218,6 @@ fn discharge_keyed_layers(
         store_id: &store_id,
         obligations: &per_entry,
         enum_members,
-        resource_path,
-        new_members: acc.new_members(),
         state: HashMap::new(),
     };
     let mut flat_state: Vec<LeafScan> = flat_retyped.iter().map(|_| LeafScan::default()).collect();
@@ -1301,26 +1233,22 @@ fn discharge_keyed_layers(
     let mut state = scan.state;
     for obligation in per_entry {
         let leaf_scan = state.remove(&obligation.catalog_id).unwrap_or_default();
-        classify_leaf(obligation, leaf_scan, acc);
+        classify_leaf(obligation, leaf_scan, acc)?;
     }
     for (obligation, leaf_scan) in flat_retyped.into_iter().zip(flat_state) {
-        classify_leaf(obligation, leaf_scan, acc);
+        classify_leaf(obligation, leaf_scan, acc)?;
     }
     Ok(())
 }
 
-/// The read-only context of one keyed-layer scan: the store and its root id, the leaf
-/// obligations to record, the current enum members the value-validity check consults, and
-/// the inputs to resolve a brand-new member's id by source path. `state` accumulates the
-/// per-leaf presence keyed by leaf catalog id. Bundling the invariants here keeps the
-/// recursive descent to its varying arguments alone.
+/// The read-only context of one keyed-layer scan. `state` accumulates the per-leaf
+/// presence keyed by leaf catalog id, while the recursive descent carries only the
+/// varying path arguments.
 struct KeyedScan<'a> {
     store: &'a TreeStore,
     store_id: &'a CatalogId,
     obligations: &'a [LeafObligation],
     enum_members: &'a EnumMembers,
-    resource_path: &'a str,
-    new_members: &'a HashMap<String, String>,
     state: HashMap<CatalogId, LeafScan>,
 }
 
@@ -1331,9 +1259,6 @@ impl KeyedScan<'_> {
     /// the entry with its key appended; at a keyed-leaf-map member it pages every entry and
     /// records the value cell under each entry's key; an unkeyed group is descended in place;
     /// a top-level leaf with an obligation records its presence and value-validity directly.
-    /// Each member's id is resolved bound-or-proposal by its source-path name chain, so a
-    /// brand-new required leaf inside an existing keyed layer is reached at its proposal id
-    /// and fails closed over the populated entries rather than escaping the bound-id scan.
     fn descend(
         &mut self,
         identity: &[SavedKey],
@@ -1344,9 +1269,7 @@ impl KeyedScan<'_> {
         for member in members {
             let mut member_names = names.to_vec();
             member_names.push(member.name.as_str());
-            let Some(raw_id) =
-                resolved_member_id(self.resource_path, member, &member_names, self.new_members)
-            else {
+            let Some(raw_id) = resolved_member_id(member) else {
                 continue;
             };
             let member_id = catalog_id(&raw_id)?;
@@ -1423,13 +1346,9 @@ impl KeyedScan<'_> {
 /// recorded as a no-op.
 fn keyed_leaf_obligations(
     place: &CheckedSavedPlace,
-    resource_path: &str,
     acc: &mut Accumulator,
 ) -> Result<Vec<LeafObligation>, StoreError> {
-    let walk = LeafWalk {
-        place,
-        resource_path,
-    };
+    let walk = LeafWalk { place };
     let mut obligations = Vec::new();
     collect_keyed_leaves(
         &walk,
@@ -1465,9 +1384,7 @@ fn collect_keyed_leaves(
     for member in members {
         let mut member_names = names.to_vec();
         member_names.push(member.name.as_str());
-        let Some(raw_id) =
-            resolved_member_id(walk.resource_path, member, &member_names, acc.new_members())
-        else {
+        let Some(raw_id) = resolved_member_id(member) else {
             continue;
         };
         let member_id = catalog_id(&raw_id)?;
@@ -1530,7 +1447,7 @@ fn collect_keyed_leaves(
                     obligation_path,
                     obligations,
                     acc,
-                );
+                )?;
             }
             CheckedSavedMemberKind::Field { .. } => {}
         }
@@ -1602,7 +1519,11 @@ impl LeafScan {
 /// Otherwise the leaf is proven when every record carries it, a constant default when an
 /// `evolve default` supplies a typed fill, else a fail-closed repair. A leaf a rename
 /// moved this cycle reports as the catalog-only identity move it is.
-fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
+fn classify_leaf(
+    leaf: LeafObligation,
+    state: LeafScan,
+    acc: &mut Accumulator,
+) -> Result<(), StoreError> {
     let id = leaf.catalog_id;
     // A populated retype is steered to a transform ahead of every other classification.
     // An unpopulated retype has no bytes to reinterpret, so it falls through to the
@@ -1615,13 +1536,13 @@ fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
                 leaf.label, state.present_count
             ),
         );
-        acc.push(
+        acc.push_leaf(
             id,
             Verdict::RepairRequired {
                 reason: RepairReason::TypeChangeRequiresTransform,
             },
-        );
-        return;
+        )?;
+        return Ok(());
     }
     // An optional leaf places no presence obligation: its absence is the sparse-absence
     // contract, not a repair. It reaches the scan only when retyped (handled above) or when
@@ -1637,21 +1558,21 @@ fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
                     leaf.label, state.invalid_count
                 ),
             );
-            acc.push(
+            acc.push_leaf(
                 id,
                 Verdict::RepairRequired {
                     reason: RepairReason::InvalidStoredValue,
                 },
-            );
-            return;
+            )?;
+            return Ok(());
         }
         let verdict = if leaf.renamed {
             Verdict::CatalogOnly
         } else {
             Verdict::NoOp
         };
-        acc.push(id, verdict);
-        return;
+        acc.push_leaf(id, verdict)?;
+        return Ok(());
     }
     if state.missing_count == 0 && state.invalid_count == 0 {
         let verdict = if leaf.renamed {
@@ -1659,8 +1580,8 @@ fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
         } else {
             Verdict::DataProof
         };
-        acc.push(id, verdict);
-        return;
+        acc.push_leaf(id, verdict)?;
+        return Ok(());
     }
     acc.counts.records_lacking_member += state.missing_count + state.invalid_count;
     let repair = Verdict::RepairRequired {
@@ -1674,13 +1595,13 @@ fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
                 leaf.label, state.invalid_count
             ),
         );
-        acc.push(
+        acc.push_leaf(
             id,
             Verdict::RepairRequired {
                 reason: RepairReason::InvalidStoredValue,
             },
-        );
-        return;
+        )?;
+        return Ok(());
     }
     let verdict = match acc.default_value_for(&leaf.raw_catalog_id, leaf.leaf.as_ref()) {
         Some(Ok(value)) => {
@@ -1699,7 +1620,8 @@ fn classify_leaf(leaf: LeafObligation, state: LeafScan, acc: &mut Accumulator) {
             repair
         }
     };
-    acc.push(id, verdict);
+    acc.push_leaf(id, verdict)?;
+    Ok(())
 }
 
 /// One unique-index obligation to probe during the record scan: the index catalog id
@@ -1728,6 +1650,7 @@ enum IndexKeyColumn {
     Member {
         path: DataPathSegment,
         meaning: StoredValueMeaning,
+        default: Option<DefaultValue>,
     },
 }
 
@@ -1736,19 +1659,26 @@ enum IndexKeyColumn {
 /// column resolves becomes a probe the record scan checks for collisions, while one with
 /// any unresolvable column is recorded as unprobeable and fails closed rather than
 /// rebuilding an unchecked uniqueness guarantee.
-fn unique_index_plan(place: &CheckedSavedPlace) -> Result<UniqueIndexPlan, StoreError> {
+fn unique_index_plan(
+    place: &CheckedSavedPlace,
+    acc: &Accumulator,
+) -> Result<UniqueIndexPlan, StoreError> {
     let mut probes = Vec::new();
     let mut unprobeable = Vec::new();
     for index in &place.indexes {
         if !index.unique {
             continue;
         }
-        match index_key_columns(place, index)? {
+        let Some(index_catalog_id) = index.catalog_id.as_deref() else {
+            continue;
+        };
+        let index_id = catalog_id(index_catalog_id)?;
+        match index_key_columns(place, index, acc)? {
             Some(columns) => probes.push(UniqueIndexProbe {
-                catalog_id: required_catalog_id(&index.catalog_id)?,
+                catalog_id: index_id,
                 columns,
             }),
-            None => unprobeable.push(required_catalog_id(&index.catalog_id)?),
+            None => unprobeable.push(index_id),
         }
     }
     Ok(UniqueIndexPlan {
@@ -1766,6 +1696,7 @@ fn unique_index_plan(place: &CheckedSavedPlace) -> Result<UniqueIndexPlan, Store
 fn index_key_columns(
     place: &CheckedSavedPlace,
     index: &CheckedSavedIndex,
+    acc: &Accumulator,
 ) -> Result<Option<Vec<IndexKeyColumn>>, StoreError> {
     let mut columns = Vec::with_capacity(index.keys.len());
     for key in &index.keys {
@@ -1788,9 +1719,19 @@ fn index_key_columns(
                 else {
                     return Ok(None);
                 };
+                let Some(member_catalog_id) = member.catalog_id.as_deref() else {
+                    return Ok(None);
+                };
+                if acc.is_transform(member_catalog_id) {
+                    return Ok(None);
+                }
+                let default = acc
+                    .default_value_for(member_catalog_id, member.leaf.as_ref())
+                    .and_then(Result::ok);
                 columns.push(IndexKeyColumn::Member {
-                    path: DataPathSegment::Member(required_catalog_id(&member.catalog_id)?),
+                    path: DataPathSegment::Member(catalog_id(member_catalog_id)?),
                     meaning: key.value_meaning.clone(),
+                    default,
                 });
             }
         }
@@ -1816,13 +1757,20 @@ fn prospective_index_key(
                 };
                 tuple.push(key.clone());
             }
-            IndexKeyColumn::Member { path, meaning } => {
-                let Some(bytes) =
-                    store.read_data_value(store_id, identity, std::slice::from_ref(path))?
+            IndexKeyColumn::Member {
+                path,
+                meaning,
+                default,
+            } => {
+                let stored =
+                    store.read_data_value(store_id, identity, std::slice::from_ref(path))?;
+                let Some(bytes) = stored
+                    .as_deref()
+                    .or_else(|| default.as_ref().map(|value| value.encoded.as_slice()))
                 else {
                     return Ok(None);
                 };
-                let Some(key) = meaning.stored_key(&bytes) else {
+                let Some(key) = meaning.stored_key(bytes) else {
                     return Ok(None);
                 };
                 tuple.push(key);
@@ -1866,7 +1814,10 @@ fn classify_indexes(
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     for index in &place.indexes {
-        let index_id = required_catalog_id(&index.catalog_id)?;
+        let Some(index_catalog_id) = index.catalog_id.as_deref() else {
+            continue;
+        };
+        let index_id = catalog_id(index_catalog_id)?;
         let colliding = collisions
             .get(&index_id)
             .map(|state| state.collisions.len())
@@ -1897,278 +1848,9 @@ fn classify_indexes(
         } else {
             Verdict::DerivedRebuild
         };
-        acc.push_index(index_id, verdict);
+        acc.push_index(index_id, verdict)?;
     }
     Ok(())
-}
-
-/// Classify accepted catalog entries current source no longer declares. A retire
-/// intent reserves the proposal entry's spelling and is still a destructive decision
-/// when it transitions from an accepted active entry: the witness names the exact
-/// catalog id and count. A source-dropped index deletes its derived cell subtree on
-/// apply. A member source merely stopped declaring, with no retire and no dependent,
-/// is a dependency-free sparse-field drop: a legal no-op whose data lingers. A
-/// dropped member an active index still reads cannot be silently dropped; it needs an
-/// explicit retire intent that also removes or rebinds the index.
-fn classify_absent_source_entries(
-    program: &CheckedProgram,
-    store: &TreeStore,
-    acc: &mut Accumulator,
-) -> Result<(), StoreError> {
-    let source_paths = crate::catalog::source_catalog_entries(program);
-    let declared: HashSet<(CatalogEntryKind, &str)> = source_paths
-        .iter()
-        .map(|entry| (entry.kind, entry.path.as_str()))
-        .collect();
-
-    for entry in catalog_entries_for_drop_discharge(program) {
-        if declared.contains(&(entry.kind, entry.path.as_str())) {
-            continue;
-        }
-        let entry_id = catalog_id(&entry.stable_id)?;
-        let is_index = entry.kind == CatalogEntryKind::StoreIndex;
-        let state = absent_entry_state(program, entry);
-        match state {
-            AbsentEntryState::RetiredThisProposal if is_index => {
-                // An index holds no per-record source data, so an explicit retire of one
-                // is the same durable operation as a bare source-drop: delete the derived
-                // index-cell subtree. Routing it through the per-record member-deletion
-                // path would clear nothing and orphan the real index cells.
-                acc.record(entry_id, Verdict::IndexDropped, true);
-            }
-            AbsentEntryState::RetiredThisProposal => {
-                if retired_member_is_nested(program, entry) {
-                    acc.diagnostic(
-                        entry_id.clone(),
-                        format!(
-                            "retiring `{}` drops a member nested under a group or keyed layer, which apply does not yet support; retire a top-level member instead",
-                            entry.path
-                        ),
-                    );
-                    acc.record(
-                        entry_id,
-                        Verdict::RepairRequired {
-                            reason: RepairReason::NestedRetireUnsupported,
-                        },
-                        is_index,
-                    );
-                } else {
-                    let populated = populated_member_records(program, store, entry)?;
-                    acc.record(
-                        entry_id,
-                        Verdict::DestructiveDecisionRequired { populated },
-                        is_index,
-                    );
-                }
-            }
-            AbsentEntryState::Reserved => {}
-            AbsentEntryState::Active | AbsentEntryState::Deprecated => {
-                if is_index {
-                    // A source-dropped index is a derived structure whose cells outlive
-                    // their binding. Apply deletes the index-cell subtree under this id
-                    // so the entries do not leak; no source data moves.
-                    acc.record(entry_id, Verdict::IndexDropped, true);
-                } else if let Some((index_name, index_id)) = index_depends_on(program, entry)? {
-                    acc.diagnostic(
-                        entry_id.clone(),
-                        format!(
-                            "dropped `{}` is still used by index `{index_name}`; retire it with an evolve intent",
-                            entry.path
-                        ),
-                    );
-                    acc.record(
-                        entry_id,
-                        Verdict::RepairRequired {
-                            reason: RepairReason::RetireRequired { index: index_id },
-                        },
-                        false,
-                    );
-                } else {
-                    // A dependency-free dropped sparse field is a legal no-op: its data
-                    // simply lingers under a stable id source no longer declares.
-                    acc.record(entry_id, Verdict::NoOp, false);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum AbsentEntryState {
-    Active,
-    Deprecated,
-    Reserved,
-    RetiredThisProposal,
-}
-
-fn absent_entry_state(program: &CheckedProgram, entry: &CatalogEntry) -> AbsentEntryState {
-    if entry.lifecycle == CatalogLifecycle::Reserved
-        && program.catalog.proposal.is_some()
-        && program.catalog.accepted_entries.iter().any(|accepted| {
-            accepted.stable_id == entry.stable_id && accepted.lifecycle == CatalogLifecycle::Active
-        })
-    {
-        return AbsentEntryState::RetiredThisProposal;
-    }
-    match entry.lifecycle {
-        CatalogLifecycle::Active => AbsentEntryState::Active,
-        CatalogLifecycle::Deprecated => AbsentEntryState::Deprecated,
-        CatalogLifecycle::Reserved => AbsentEntryState::Reserved,
-    }
-}
-
-/// The catalog entries discharge must consider for a source drop: the proposal
-/// entries when source proposed a change, else the accepted entries. The proposal
-/// already carries consumed retire reservations and the lingering still-active
-/// entries, so it supersedes the accepted snapshot; when source proposed nothing,
-/// the accepted entries are the snapshot to diff against.
-fn catalog_entries_for_drop_discharge(program: &CheckedProgram) -> &[CatalogEntry] {
-    match &program.catalog.proposal {
-        Some(proposal) => &proposal.entries,
-        None => &program.catalog.accepted_entries,
-    }
-}
-
-/// Count records that carry a value for the dropped member identified by `entry`.
-/// Only a resource-member entry holds per-record data; a store, index, or enum entry
-/// has none to count. The records are streamed, never materialized.
-fn populated_member_records(
-    program: &CheckedProgram,
-    store: &TreeStore,
-    entry: &CatalogEntry,
-) -> Result<usize, StoreError> {
-    if entry.kind != CatalogEntryKind::ResourceMember {
-        return Ok(0);
-    }
-    let Some((store_id, member_id)) = dropped_member_addresses(program, entry)? else {
-        return Ok(0);
-    };
-    let path = [DataPathSegment::Member(member_id)];
-    let mut populated = 0;
-    store.for_each_record(
-        &store_id,
-        owning_root_arity(program, entry),
-        &mut |identity| {
-            if store.data_subtree_exists(&store_id, identity, &path)? {
-                populated += 1;
-            }
-            Ok(())
-        },
-    )?;
-    Ok(populated)
-}
-
-/// The store and member catalog ids for a dropped resource-member entry. The store id
-/// comes from the owning resource's store; the member id is the entry's own stable id,
-/// since a dropped member's cells were written under that id.
-fn dropped_member_addresses(
-    program: &CheckedProgram,
-    entry: &CatalogEntry,
-) -> Result<Option<(CatalogId, CatalogId)>, StoreError> {
-    let Some(root) = owning_root(program, entry) else {
-        return Ok(None);
-    };
-    let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
-        return Ok(None);
-    };
-    let store_id = required_catalog_id(&place.store_catalog_id)?;
-    let member_id = catalog_id(&entry.stable_id)?;
-    Ok(Some((store_id, member_id)))
-}
-
-/// The store root whose resource owns the dropped member, found by matching the
-/// member path's resource prefix against a source store's resource. A member path is
-/// `module::Resource::field...`; its resource prefix is the source resource path.
-fn owning_root(program: &CheckedProgram, entry: &CatalogEntry) -> Option<String> {
-    let resource_prefix = entry.path.rsplit_once("::").map(|(head, _)| head)?;
-    program.modules.iter().find_map(|module| {
-        module.stores.iter().find_map(|store| {
-            let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
-            (resource_path == resource_prefix).then(|| store.root.clone())
-        })
-    })
-}
-
-/// Whether a retired resource-member entry names a member nested under an unkeyed group
-/// or a keyed layer rather than a top-level member of the record. The member chain is
-/// everything after the owning resource path; a top-level member is a single segment,
-/// while a nested member carries the group or layer segments before its own. A retired
-/// member is gone from current source, so its nesting is read from its catalog path
-/// against the owning source resource, not from the live member tree.
-fn retired_member_is_nested(program: &CheckedProgram, entry: &CatalogEntry) -> bool {
-    if entry.kind != CatalogEntryKind::ResourceMember {
-        return false;
-    }
-    program.modules.iter().any(|module| {
-        module.stores.iter().any(|store| {
-            let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
-            entry
-                .path
-                .strip_prefix(&resource_path)
-                .and_then(|tail| tail.strip_prefix("::"))
-                .is_some_and(|member_chain| member_chain.contains("::"))
-        })
-    })
-}
-
-/// The identity arity of the store that owns the dropped member, or `1` when it
-/// cannot be resolved (the common single-key store).
-fn owning_root_arity(program: &CheckedProgram, entry: &CatalogEntry) -> usize {
-    owning_root(program, entry)
-        .and_then(|root| checked_saved_root_place(program, &root, Default::default()))
-        .map(|place| place.identity_keys.len())
-        .unwrap_or(1)
-}
-
-/// An active source index that reads the dropped member, as its developer-facing name
-/// and its catalog identity. A dropped member an index still needs cannot be silently
-/// deprecated. The name is for the diagnostic; the catalog id is the typed identity the
-/// verdict carries across into apply. The index is matched on its source-declared key
-/// columns, which still name the dropped member, and its stable id is read from the
-/// catalog entry for the index path.
-fn index_depends_on(
-    program: &CheckedProgram,
-    entry: &CatalogEntry,
-) -> Result<Option<(String, CatalogId)>, StoreError> {
-    if entry.kind != CatalogEntryKind::ResourceMember {
-        return Ok(None);
-    }
-    let Some(member_name) = entry.path.rsplit_once("::").map(|(_, tail)| tail) else {
-        return Ok(None);
-    };
-    let found = program.modules.iter().find_map(|module| {
-        module.stores.iter().find_map(|store| {
-            store
-                .indexes
-                .iter()
-                .find(|index| index.args.iter().any(|arg| arg == member_name))
-                .map(|index| {
-                    (
-                        index.name.clone(),
-                        crate::catalog::store_index_path(&module.name, &store.root, &index.name),
-                    )
-                })
-        })
-    });
-    let Some((index_name, index_path)) = found else {
-        return Ok(None);
-    };
-    let Some(stable_id) = index_stable_id(program, &index_path) else {
-        return Ok(None);
-    };
-    Ok(Some((index_name, catalog_id(&stable_id)?)))
-}
-
-/// The stable id of the store-index catalog entry at `path`, from the proposal when
-/// source proposed a change, else the accepted snapshot. Both carry the index entry;
-/// the proposal supersedes the accepted snapshot the same way the dropped-entry scan
-/// chooses its source.
-fn index_stable_id(program: &CheckedProgram, path: &str) -> Option<String> {
-    catalog_entries_for_drop_discharge(program)
-        .iter()
-        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex && entry.path == path)
-        .map(|entry| entry.stable_id.clone())
 }
 
 fn catalog_id(raw: &str) -> Result<CatalogId, StoreError> {
@@ -2238,7 +1920,6 @@ struct Accumulator {
     transforms: BTreeSet<String>,
     renamed: HashSet<String>,
     accepted_leaves: HashMap<String, Option<String>>,
-    new_members: HashMap<String, String>,
     accepted_structs: HashMap<String, String>,
     declared_structs: HashMap<String, String>,
     classified: HashSet<CatalogId>,
@@ -2251,7 +1932,6 @@ impl Accumulator {
         transforms: BTreeSet<String>,
         renamed: HashSet<String>,
         accepted_leaves: HashMap<String, Option<String>>,
-        new_members: HashMap<String, String>,
     ) -> Self {
         Self {
             verdicts: Vec::new(),
@@ -2266,7 +1946,6 @@ impl Accumulator {
             transforms,
             renamed,
             accepted_leaves,
-            new_members,
             accepted_structs: HashMap::new(),
             declared_structs: HashMap::new(),
             classified: HashSet::new(),
@@ -2297,14 +1976,6 @@ impl Accumulator {
     /// when it is optional and otherwise unchanged.
     fn enum_shrank(&self, leaf: Option<&StoreLeafKind>) -> bool {
         matches!(leaf, Some(StoreLeafKind::Enum { enum_id }) if self.shrunk_enums.shrank(*enum_id))
-    }
-
-    /// The proposal-minted stable id of a brand-new member at `source_path`, or `None` when no
-    /// member current source adds anew lives there. A brand-new member has no bound facts id,
-    /// so the presence scan resolves its identity here to reach it; an already-accepted member
-    /// is reached by its bound id and is absent from this map.
-    fn new_members(&self) -> &HashMap<String, String> {
-        &self.new_members
     }
 
     fn is_transform(&self, catalog_id: &str) -> bool {
@@ -2398,23 +2069,63 @@ impl Accumulator {
 
     /// Record a verdict for a data-root obligation (a member, store, resource, or
     /// enum). Its catalog id joins the changed-root partition.
-    fn push(&mut self, id: CatalogId, verdict: Verdict) {
-        self.record(id, verdict, false);
+    fn push(&mut self, id: CatalogId, verdict: Verdict) -> Result<(), StoreError> {
+        self.record(id, verdict, false)
     }
 
-    /// Record a verdict for a store-index obligation. Its catalog id joins the
-    /// changed-index partition, so apply stamps it as an index rather than a root.
-    fn push_index(&mut self, id: CatalogId, verdict: Verdict) {
-        self.record(id, verdict, true);
-    }
-
-    fn record(&mut self, id: CatalogId, verdict: Verdict, is_index: bool) {
-        self.changed_set(is_index).insert(id.clone());
+    /// Record or aggregate a resource-member leaf verdict. A resource shape may be stored
+    /// by several roots, so a single member id can be discharged once per root. This is the
+    /// only expected duplicate data-root obligation: the counts have already accumulated per
+    /// root, while the witness must still carry one catalog-id verdict for apply.
+    fn push_leaf(&mut self, id: CatalogId, verdict: Verdict) -> Result<(), StoreError> {
+        self.changed_roots.insert(id.clone());
         self.classified.insert(id.clone());
+        if let Some(existing) = self
+            .verdicts
+            .iter_mut()
+            .find(|existing| existing.catalog_id == id)
+        {
+            merge_leaf_verdict(&id, &mut existing.verdict, verdict)?;
+            return Ok(());
+        }
         self.verdicts.push(ObligationVerdict {
             catalog_id: id,
             verdict,
         });
+        Ok(())
+    }
+
+    /// Record a verdict for a store-index obligation. Its catalog id joins the
+    /// changed-index partition, so apply stamps it as an index rather than a root.
+    fn push_index(&mut self, id: CatalogId, verdict: Verdict) -> Result<(), StoreError> {
+        self.record(id, verdict, true)
+    }
+
+    fn record(
+        &mut self,
+        id: CatalogId,
+        verdict: Verdict,
+        is_index: bool,
+    ) -> Result<(), StoreError> {
+        self.changed_set(is_index).insert(id.clone());
+        self.classified.insert(id.clone());
+        if self
+            .verdicts
+            .iter()
+            .any(|existing| existing.catalog_id == id)
+        {
+            return Err(StoreError::Corruption {
+                message: format!(
+                    "evolution discharge produced duplicate non-leaf verdicts for catalog id `{}`",
+                    id.as_str()
+                ),
+            });
+        }
+        self.verdicts.push(ObligationVerdict {
+            catalog_id: id,
+            verdict,
+        });
+        Ok(())
     }
 
     /// Whether obligation `id` already carries a verdict from a targeted classifier. The
@@ -2476,6 +2187,46 @@ impl Accumulator {
     }
 }
 
+fn merge_leaf_verdict(
+    id: &CatalogId,
+    existing: &mut Verdict,
+    incoming: Verdict,
+) -> Result<(), StoreError> {
+    if *existing == incoming {
+        return Ok(());
+    }
+    match (existing, incoming) {
+        (Verdict::RepairRequired { .. }, _) => {}
+        (slot, Verdict::RepairRequired { reason }) => {
+            *slot = Verdict::RepairRequired { reason };
+        }
+        (Verdict::Default { .. }, Verdict::DataProof | Verdict::CatalogOnly | Verdict::NoOp) => {}
+        (
+            slot @ (Verdict::DataProof | Verdict::CatalogOnly | Verdict::NoOp),
+            Verdict::Default { value },
+        ) => {
+            *slot = Verdict::Default { value };
+        }
+        (Verdict::CatalogOnly, Verdict::DataProof)
+        | (Verdict::CatalogOnly, Verdict::NoOp)
+        | (Verdict::DataProof, Verdict::CatalogOnly)
+        | (Verdict::DataProof, Verdict::NoOp)
+        | (Verdict::NoOp, Verdict::CatalogOnly)
+        | (Verdict::NoOp, Verdict::DataProof) => {}
+        (slot, incoming) => {
+            return Err(StoreError::Corruption {
+                message: format!(
+                    "evolution discharge produced incompatible leaf verdicts for catalog id `{}`: existing `{:?}`, incoming `{:?}`",
+                    id.as_str(),
+                    slot,
+                    incoming
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
@@ -2498,7 +2249,7 @@ mod tests {
         CheckedSavedIndex {
             id: StoreIndexId(0),
             name: name.to_string(),
-            catalog_id: Some(catalog_id.to_string()),
+            catalog_id: catalog_id.to_string(),
             unique: true,
             keys: vec![CheckedSavedIndexKey {
                 name: key_name.to_string(),
@@ -2513,14 +2264,14 @@ mod tests {
             root: "books".to_string(),
             store_id: StoreId(0),
             resource_id: ResourceId(0),
-            store_catalog_id: Some("cat_000000000000000000000000000000aa".to_string()),
+            store_catalog_id: "cat_00000000000000aa".to_string(),
             resource_name: "Book".to_string(),
             root_members: vec![CheckedSavedMember {
                 id: Some(ResourceMemberId(0)),
                 name: "isbn".to_string(),
                 key_params: Vec::new(),
                 kind: CheckedSavedMemberKind::Field { required: true },
-                catalog_id: Some("cat_000000000000000000000000000000bb".to_string()),
+                catalog_id: "cat_00000000000000bb".to_string(),
                 leaf: Some(StoreLeafKind::Scalar(ScalarType::Str)),
                 group_members: Vec::new(),
             }],
@@ -2540,13 +2291,7 @@ mod tests {
     }
 
     fn empty_accumulator() -> Accumulator {
-        Accumulator::new(
-            Vec::new(),
-            BTreeSet::new(),
-            HashSet::new(),
-            HashMap::new(),
-            HashMap::new(),
-        )
+        Accumulator::new(Vec::new(), BTreeSet::new(), HashSet::new(), HashMap::new())
     }
 
     // A unique index whose key resolves to a top-level plain field is probeable; one whose
@@ -2555,11 +2300,12 @@ mod tests {
     #[test]
     fn unique_index_with_unresolvable_key_is_unprobeable() {
         let place = place_with_indexes(vec![
-            unique_index("byIsbn", "cat_000000000000000000000000000000c1", "isbn"),
-            unique_index("byGhost", "cat_000000000000000000000000000000c2", "ghost"),
+            unique_index("byIsbn", "cat_00000000000000c1", "isbn"),
+            unique_index("byGhost", "cat_00000000000000c2", "ghost"),
         ]);
 
-        let plan = unique_index_plan(&place).expect("plan");
+        let acc = empty_accumulator();
+        let plan = unique_index_plan(&place, &acc).expect("plan");
 
         let probed: Vec<&str> = plan
             .probes
@@ -2569,12 +2315,12 @@ mod tests {
         let unprobeable: Vec<&str> = plan.unprobeable.iter().map(CatalogId::as_str).collect();
         assert_eq!(
             probed,
-            ["cat_000000000000000000000000000000c1"],
+            ["cat_00000000000000c1"],
             "probed {probed:?} unprobeable {unprobeable:?}"
         );
         assert_eq!(
             unprobeable,
-            ["cat_000000000000000000000000000000c2"],
+            ["cat_00000000000000c2"],
             "probed {probed:?} unprobeable {unprobeable:?}"
         );
     }
@@ -2585,13 +2331,12 @@ mod tests {
     #[test]
     fn unprobeable_unique_index_fails_closed() {
         let place = place_with_indexes(vec![
-            unique_index("byIsbn", "cat_000000000000000000000000000000c1", "isbn"),
-            unique_index("byGhost", "cat_000000000000000000000000000000c2", "ghost"),
+            unique_index("byIsbn", "cat_00000000000000c1", "isbn"),
+            unique_index("byGhost", "cat_00000000000000c2", "ghost"),
         ]);
-        let unprobeable: HashSet<CatalogId> =
-            [catalog_id("cat_000000000000000000000000000000c2").unwrap()]
-                .into_iter()
-                .collect();
+        let unprobeable: HashSet<CatalogId> = [catalog_id("cat_00000000000000c2").unwrap()]
+            .into_iter()
+            .collect();
         let mut acc = empty_accumulator();
 
         classify_indexes(&place, &HashMap::new(), &unprobeable, &mut acc).expect("classify");
@@ -2599,7 +2344,7 @@ mod tests {
         let ghost = acc
             .verdicts
             .iter()
-            .find(|v| v.catalog_id.as_str() == "cat_000000000000000000000000000000c2")
+            .find(|v| v.catalog_id.as_str() == "cat_00000000000000c2")
             .expect("ghost verdict");
         assert!(
             matches!(
@@ -2614,7 +2359,7 @@ mod tests {
         let isbn = acc
             .verdicts
             .iter()
-            .find(|v| v.catalog_id.as_str() == "cat_000000000000000000000000000000c1")
+            .find(|v| v.catalog_id.as_str() == "cat_00000000000000c1")
             .expect("isbn verdict");
         assert!(
             matches!(isbn.verdict, Verdict::DerivedRebuild),

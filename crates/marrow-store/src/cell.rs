@@ -88,7 +88,7 @@ impl SequencePosition {
 pub(crate) struct CellKey(Vec<u8>);
 
 /// A stable member/key segment below a record node in the tree-cell data family.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DataPathSegment {
     Member(CatalogId),
     Key(SavedKey),

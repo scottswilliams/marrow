@@ -3,8 +3,9 @@
 use marrow_check::{
     CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedPlace, StoreIndexKeySource,
 };
+use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::store::{DataAddress, IndexAddress, read_data};
@@ -13,6 +14,52 @@ use crate::write::{ResourceValue, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError
 use crate::write_plan::PlanStep;
 
 const INDEX_MARKER: &[u8] = b"1";
+
+pub(crate) trait StagedDataView {
+    fn staged_data_value(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Option<&[u8]>;
+}
+
+pub(crate) struct EmptyStagedData;
+
+impl StagedDataView for EmptyStagedData {
+    fn staged_data_value(
+        &self,
+        _store: &CatalogId,
+        _identity: &[SavedKey],
+        _path: &[DataPathSegment],
+    ) -> Option<&[u8]> {
+        None
+    }
+}
+
+pub(crate) struct PlanStepStagedData<'a> {
+    pub(crate) steps: &'a [PlanStep],
+}
+
+impl StagedDataView for PlanStepStagedData<'_> {
+    fn staged_data_value(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Option<&[u8]> {
+        self.steps.iter().rev().find_map(|step| match step {
+            PlanStep::WriteData { address, value }
+                if &address.store == store
+                    && address.identity == identity
+                    && address.path.as_slice() == path =>
+            {
+                Some(value.as_slice())
+            }
+            _ => None,
+        })
+    }
+}
 
 pub(crate) fn reject_resource_unique_conflicts(
     place: &CheckedSavedPlace,
@@ -70,15 +117,33 @@ pub(crate) fn stage_index_rebuild_entry(
     store: &TreeStore,
     span: SourceSpan,
 ) -> Result<bool, WriteError> {
-    let Some(keys) = stored_index_keys(&index.keys, place, identity, store, span)? else {
+    let Some(step) =
+        index_rebuild_entry_with_staged(index, place, identity, store, &EmptyStagedData, span)?
+    else {
         return Ok(false);
     };
-    steps.push(PlanStep::WriteIndex {
+    steps.push(step);
+    Ok(true)
+}
+
+pub(crate) fn index_rebuild_entry_with_staged(
+    index: &CheckedSavedIndex,
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    store: &TreeStore,
+    staged: &dyn StagedDataView,
+    span: SourceSpan,
+) -> Result<Option<PlanStep>, WriteError> {
+    let Some(keys) =
+        stored_index_keys_with_staged(&index.keys, place, identity, store, staged, span)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(PlanStep::WriteIndex {
         address: index_address(index, keys, span)?,
         identity: identity.to_vec(),
         value: index_entry_value(index.unique, identity),
-    });
-    Ok(true)
+    }))
 }
 
 pub(crate) fn stage_resource_index_deletes(
@@ -226,6 +291,17 @@ fn stored_arg_key(
     store: &TreeStore,
     span: SourceSpan,
 ) -> Result<Option<SavedKey>, WriteError> {
+    stored_arg_key_with_staged(key, place, identity, store, &EmptyStagedData, span)
+}
+
+fn stored_arg_key_with_staged(
+    key: &CheckedSavedIndexKey,
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    store: &TreeStore,
+    staged: &dyn StagedDataView,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, WriteError> {
     match key.source {
         StoreIndexKeySource::IdentityKey => {
             let Some(position) = place
@@ -241,6 +317,11 @@ fn stored_arg_key(
             let field_path = vec![key.name.clone()];
             let address = DataAddress::member_path(place, identity, &[], &field_path, span)
                 .map_err(runtime_store_error)?;
+            if let Some(bytes) =
+                staged.staged_data_value(&address.store, &address.identity, &address.path)
+            {
+                return Ok(key.value_meaning.stored_key(bytes));
+            }
             let Some(bytes) = read_data(store, &address, span).map_err(runtime_store_error)? else {
                 return Ok(None);
             };
@@ -256,8 +337,19 @@ fn stored_index_keys(
     store: &TreeStore,
     span: SourceSpan,
 ) -> Result<Option<Vec<SavedKey>>, WriteError> {
+    stored_index_keys_with_staged(keys, place, identity, store, &EmptyStagedData, span)
+}
+
+fn stored_index_keys_with_staged(
+    keys: &[CheckedSavedIndexKey],
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    store: &TreeStore,
+    staged: &dyn StagedDataView,
+    span: SourceSpan,
+) -> Result<Option<Vec<SavedKey>>, WriteError> {
     keys.iter()
-        .map(|key| stored_arg_key(key, place, identity, store, span))
+        .map(|key| stored_arg_key_with_staged(key, place, identity, store, staged, span))
         .collect()
 }
 

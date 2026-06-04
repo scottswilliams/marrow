@@ -32,6 +32,7 @@ mod typerules;
 
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
+pub use catalog::program_with_activation_proposal;
 pub use durable_path::{
     PathParseError, PathSegment, StoreLeafKind, StorePathClass, classify_store_path, display_path,
     identity_leaf_key_mismatch, parse_path,
@@ -44,7 +45,8 @@ pub use executable::{
     CheckedResourceConstructorField, CheckedResourceRef, CheckedRuntimeValueType,
     CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
-    CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_saved_root_place,
+    CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_activation_root_places,
+    checked_saved_root_place,
 };
 pub use facts::PresenceProofRead;
 pub use facts::{
@@ -60,6 +62,7 @@ pub use facts::{
     PresenceProofStatus,
 };
 pub use marrow_project::ProjectConfig;
+pub use marrow_project::{CatalogEntryKind, CatalogLifecycle};
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 use program::TypeNames;
 pub use program::{

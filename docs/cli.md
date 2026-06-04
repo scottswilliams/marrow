@@ -112,8 +112,11 @@ witness, then reports the counts and blocking diagnostics.
 requires an exact match, checks the activation window, and commits the data work
 plus metadata stamp in one transaction. Like `run`, it records a project's
 baseline durable identity first when the project has none yet, then applies the
-evolution against the accepted catalog. Destructive retire needs `--maintenance`
-and an approval whose catalog ID and populated count match the preview.
+evolution against the accepted catalog. The accepted catalog file is published
+only after the store commit carries verifiable activation evidence for defaults,
+transforms, retires, and rebuilt indexes. Destructive retire needs
+`--maintenance` and an approval whose catalog ID and populated count match the
+preview.
 
 ---
 

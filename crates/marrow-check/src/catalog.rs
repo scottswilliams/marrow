@@ -334,6 +334,112 @@ fn proposal_id_map(entries: &[CatalogEntry]) -> HashMap<CatalogKey, String> {
         .collect()
 }
 
+/// The active proposal identity map for activation-only readers. It is the same map
+/// catalog binding uses for proposal-only referents, kept here so executable places
+/// do not rebuild proposal identity semantics.
+pub(crate) fn active_proposal_id_map(program: &CheckedProgram) -> HashMap<CatalogKey, String> {
+    program
+        .catalog
+        .proposal
+        .as_ref()
+        .map(|proposal| proposal_id_map(&proposal.entries))
+        .unwrap_or_default()
+}
+
+/// Rebind activation-only proposal identities to a proposal recovered from store
+/// evidence. Crash resume validates and publishes the exact catalog an activation
+/// transaction stamped; a freshly checked proposal can mint different ids while naming
+/// the same source paths, so resume must not validate data effects against those fresh
+/// ids.
+pub fn program_with_activation_proposal(
+    program: &CheckedProgram,
+    proposal: CatalogMetadata,
+) -> CheckedProgram {
+    let mut rebound = program.clone();
+    let replacement_ids = proposal_id_map(&proposal.entries);
+    let current_entries = rebound
+        .catalog
+        .proposal
+        .as_ref()
+        .map(|catalog| catalog.entries.clone())
+        .unwrap_or_else(|| rebound.catalog.accepted_entries.clone());
+    let current_paths = active_id_paths(&current_entries);
+
+    rebound.catalog.evolve_defaults = rebound
+        .catalog
+        .evolve_defaults
+        .iter()
+        .map(|default| {
+            let mut rebound_default = default.clone();
+            rebound_default.catalog_id = rebind_catalog_id(
+                CatalogEntryKind::ResourceMember,
+                &default.catalog_id,
+                &current_paths,
+                &replacement_ids,
+            );
+            rebound_default
+        })
+        .collect();
+    rebound.catalog.evolve_transforms = rebound
+        .catalog
+        .evolve_transforms
+        .iter()
+        .map(|transform| {
+            let mut rebound_transform = transform.clone();
+            rebound_transform.catalog_id =
+                member_target_id(&transform.target_path, &replacement_ids).or_else(|| {
+                    transform.catalog_id.as_deref().map(|catalog_id| {
+                        rebind_catalog_id(
+                            CatalogEntryKind::ResourceMember,
+                            catalog_id,
+                            &current_paths,
+                            &replacement_ids,
+                        )
+                    })
+                });
+            rebound_transform.reads = transform
+                .reads
+                .iter()
+                .map(|read| {
+                    rebind_catalog_id(
+                        CatalogEntryKind::ResourceMember,
+                        read,
+                        &current_paths,
+                        &replacement_ids,
+                    )
+                })
+                .collect();
+            rebound_transform
+        })
+        .collect();
+    rebound.catalog.proposal = Some(proposal);
+    rebound.catalog.declared_store_key_shapes =
+        declared_store_key_shapes(&rebound, &replacement_ids);
+    rebound.catalog.declared_member_structs = declared_member_structs(&rebound, &replacement_ids);
+    rebound
+}
+
+fn active_id_paths(entries: &[CatalogEntry]) -> HashMap<(CatalogEntryKind, String), String> {
+    entries
+        .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+        .map(|entry| ((entry.kind, entry.stable_id.clone()), entry.path.clone()))
+        .collect()
+}
+
+fn rebind_catalog_id(
+    kind: CatalogEntryKind,
+    stable_id: &str,
+    current_paths: &HashMap<(CatalogEntryKind, String), String>,
+    replacement_ids: &HashMap<CatalogKey, String>,
+) -> String {
+    current_paths
+        .get(&(kind, stable_id.to_string()))
+        .and_then(|path| replacement_ids.get(&CatalogKey::new(kind, path.clone())))
+        .cloned()
+        .unwrap_or_else(|| stable_id.to_string())
+}
+
 /// The stable id a member-target evolve path binds to, or `None` when it names no
 /// resource member (the type pass already reported it). A default or transform
 /// targets a resource member, so it is keyed by `ResourceMember`.
@@ -362,12 +468,10 @@ fn bound_defaults(
         .collect()
 }
 
-/// Record every `evolve transform` with the owning resource type name and the body
-/// apply executes. The target's stable id and the read members' stable ids bind only
-/// once a catalog is accepted; before that the target is absent, so the transform's
-/// body is still lowered and its purity still checked, but discharge skips it because
-/// it addresses no accepted snapshot. A transform whose target names no resource
-/// member is dropped: the type pass already reports it, and it anchors no obligation.
+/// Record every `evolve transform` with the owning resource type name, the stable
+/// accepted or proposal ids it addresses, and the body apply executes. A transform
+/// whose target names no resource member is dropped: the type pass already reports it,
+/// and it anchors no obligation.
 fn bound_transforms(
     transforms: &[TransformIntent],
     ids: &HashMap<CatalogKey, String>,

@@ -41,6 +41,10 @@ pub fn checked_saved_root_place(
     place::checked_root_place(program, root, span)
 }
 
+pub fn checked_activation_root_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
+    place::checked_activation_root_places(program)
+}
+
 pub(crate) struct CheckedExecutableContext<'a> {
     program: &'a CheckedProgram,
     from_module: &'a str,

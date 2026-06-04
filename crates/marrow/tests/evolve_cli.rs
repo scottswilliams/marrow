@@ -8,7 +8,7 @@ use marrow_check::{
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{ActivationDefaultBackfillCell, DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -134,6 +134,84 @@ fn read_scalar(
         .map(|bytes| decode_value(&bytes, ty).expect("decode value"))
 }
 
+fn read_scalar_by_catalog_id(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    id: i64,
+    member_id: &str,
+    ty: ScalarType,
+) -> Option<Scalar> {
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    store
+        .read_data_value(
+            &store_id,
+            &[SavedKey::Int(id)],
+            &[DataPathSegment::Member(
+                CatalogId::new(member_id.to_string()).unwrap(),
+            )],
+        )
+        .expect("read member")
+        .map(|bytes| decode_value(&bytes, ty).expect("decode value"))
+}
+
+fn delete_member_by_catalog_id(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    id: i64,
+    member_id: &str,
+) {
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    store
+        .delete_data_subtree(
+            &store_id,
+            &[SavedKey::Int(id)],
+            &[DataPathSegment::Member(
+                CatalogId::new(member_id.to_string()).unwrap(),
+            )],
+        )
+        .expect("delete member");
+}
+
+fn write_member_by_catalog_id(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    id: i64,
+    member_id: &str,
+    value: Scalar,
+) {
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(id)],
+            &[DataPathSegment::Member(
+                CatalogId::new(member_id.to_string()).unwrap(),
+            )],
+            encode_value(&value).expect("encode member"),
+        )
+        .expect("write member");
+}
+
+fn write_member_bytes_by_catalog_id(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    id: i64,
+    member_id: &str,
+    value: Vec<u8>,
+) {
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(id)],
+            &[DataPathSegment::Member(
+                CatalogId::new(member_id.to_string()).unwrap(),
+            )],
+            value,
+        )
+        .expect("write member bytes");
+}
+
 fn native_books_project(name: &str, source: &str) -> PathBuf {
     temp_project(name, |root| {
         write(
@@ -159,6 +237,78 @@ resource Book at ^books(id: int)\n\
 \x20   required title: string\n\
 \x20   required pages: int\n\
 pub fn add(title: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const REQUIRED_BASELINE_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required title: string\n\
+pub fn add(title: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const OPTIONAL_PAGES_BASELINE_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required title: string\n\
+\x20   pages: int\n\
+pub fn add(title: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const OPTIONAL_PAGES_DEFAULT_TITLE_INDEX_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required title: string\n\
+\x20   required pages: int\n\
+\x20   index byTitle(title, id)\n\
+evolve\n\
+\x20   default Book.pages = 0\n\
+pub fn add(title: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required title: string\n\
+\x20   required pages: int\n\
+\x20   index byPages(pages, id)\n\
+evolve\n\
+\x20   default Book.pages = 0\n\
+pub fn add(title: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const PRICE_BASELINE_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required price: int\n\
+pub fn add(price: int): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const PRICE_CENTS_TRANSFORM_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required price: int\n\
+\x20   required priceCents: int\n\
+evolve\n\
+\x20   transform Book.priceCents\n\
+\x20       return old.price * 100\n\
+pub fn add(price: int): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const PRICE_CENTS_DRIFTED_TRANSFORM_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required price: int\n\
+\x20   required priceCents: int\n\
+evolve\n\
+\x20   transform Book.priceCents\n\
+\x20       return old.price * 101\n\
+pub fn add(price: int): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const ISBN_BASELINE_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required isbn: string\n\
+pub fn add(isbn: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
+const ISBN_INDEX_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required isbn: string\n\
+\x20   index byIsbn(isbn) unique\n\
+pub fn add(isbn: string): Id(^books)\n\
 \x20   return nextId(^books)\n";
 
 #[test]
@@ -232,6 +382,794 @@ fn evolve_apply_consumes_preview_witness_and_backfills() {
         commit.catalog_epoch,
         program.catalog.accepted_epoch.unwrap()
     );
+}
+
+#[test]
+fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
+    let root = native_books_project("evolve-apply-proposal-default", REQUIRED_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let output = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(stdout.contains("records backfilled: 2"), "{stdout}");
+
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    for id in [1, 2] {
+        assert_eq!(
+            read_scalar_by_catalog_id(&store, &accepted_place, id, &pages_id, ScalarType::Int),
+            Some(Scalar::Int(0)),
+            "pages backfilled before accepted catalog publication"
+        );
+    }
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("commit stamp");
+    let stamped_epoch = store.read_catalog_epoch().expect("store epoch");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(catalog_epoch, baseline_epoch + 1);
+    assert_eq!(commit.catalog_epoch, baseline_epoch + 1);
+    assert_eq!(stamped_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resumes_proposal_default_after_store_commit() {
+    let root = native_books_project(
+        "evolve-apply-proposal-default-resume",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    assert_eq!(accepted_catalog(&root).epoch, baseline_epoch);
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(
+        resume.status.code(),
+        Some(0),
+        "resume completes: {resume:?}"
+    );
+    let stdout = String::from_utf8(resume.stdout).expect("stdout utf8");
+    assert!(stdout.contains("completed evolution"), "{stdout}");
+    assert!(stdout.contains("records backfilled: 0"), "{stdout}");
+
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        for id in [1, 2] {
+            assert_eq!(
+                read_scalar_by_catalog_id(&store, &accepted_place, id, &pages_id, ScalarType::Int),
+                Some(Scalar::Int(0)),
+                "resume must not lose the committed backfill"
+            );
+        }
+    }
+    assert_eq!(accepted_catalog(&root).epoch, baseline_epoch + 1);
+    assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn evolve_apply_resumes_existing_optional_default_with_preserved_value() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-resume",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(
+        resume.status.code(),
+        Some(0),
+        "resume completes: {resume:?}"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let preserved =
+        read_scalar_by_catalog_id(&store, &accepted_place, 1, &pages_id, ScalarType::Int);
+    let defaulted =
+        read_scalar_by_catalog_id(&store, &accepted_place, 2, &pages_id, ScalarType::Int);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(preserved, Some(Scalar::Int(7)));
+    assert_eq!(defaulted, Some(Scalar::Int(0)));
+    assert_eq!(catalog_epoch, baseline_epoch + 1);
+}
+
+#[test]
+fn evolve_apply_resumes_redundant_existing_optional_default_without_backfill() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-no-backfill-resume",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+        seed_member(&store, &accepted_place, 2, "pages", Scalar::Int(9));
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let first_pages =
+        read_scalar_by_catalog_id(&store, &accepted_place, 1, &pages_id, ScalarType::Int);
+    let second_pages =
+        read_scalar_by_catalog_id(&store, &accepted_place, 2, &pages_id, ScalarType::Int);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(0), "{resume:?}");
+    assert_eq!(first_pages, Some(Scalar::Int(7)));
+    assert_eq!(second_pages, Some(Scalar::Int(9)));
+    assert_eq!(catalog_epoch, baseline_epoch + 1);
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_default_receipt_count_changes() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-count-drift",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.activation_records_backfilled += 1;
+        commit.activation_default_records_by_id[0].records_backfilled += 1;
+        store
+            .write_commit_metadata(&commit)
+            .expect("corrupt backfill count");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_default_receipt_evidence_is_erased() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-evidence-erased",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.activation_records_backfilled = 0;
+        commit.activation_default_records_by_id[0].records_backfilled = 0;
+        commit.activation_default_backfill_cells.clear();
+        store
+            .write_commit_metadata(&commit)
+            .expect("erase default receipt evidence");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_default_receipt_cell_is_outside_target_path() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-cell-path-drift",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let pages_id = CatalogId::new(accepted_catalog_id(&root, "books::Book::pages")).unwrap();
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        let forged_path = vec![
+            DataPathSegment::Member(pages_id.clone()),
+            DataPathSegment::Key(SavedKey::Str("forged".to_string())),
+        ];
+        store
+            .write_data_value(
+                &store_id,
+                &[SavedKey::Int(1)],
+                &forged_path,
+                encode_value(&Scalar::Int(0)).expect("encode forged default"),
+            )
+            .expect("write forged default receipt cell");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.activation_records_backfilled += 1;
+        commit.activation_default_records_by_id[0].records_backfilled += 1;
+        commit
+            .activation_default_backfill_cells
+            .push(ActivationDefaultBackfillCell {
+                catalog_id: pages_id,
+                store_id,
+                identity: vec![SavedKey::Int(1)],
+                path: forged_path,
+                backfilled: true,
+            });
+        store
+            .write_commit_metadata(&commit)
+            .expect("corrupt backfill cell evidence");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_preserved_default_cell_does_not_decode() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-preserved-decode-drift",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(
+        &root,
+        "src/books.mw",
+        OPTIONAL_PAGES_DEFAULT_TITLE_INDEX_SOURCE,
+    );
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        write_member_bytes_by_catalog_id(
+            &store,
+            &accepted_place,
+            1,
+            &pages_id,
+            b"not-int".to_vec(),
+        );
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_default_receipt_cell_uses_non_target_identity() {
+    let root = native_books_project(
+        "evolve-apply-existing-optional-default-forged-identity",
+        OPTIONAL_PAGES_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(
+        &root,
+        "src/books.mw",
+        OPTIONAL_PAGES_DEFAULT_TITLE_INDEX_SOURCE,
+    );
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let pages_id = CatalogId::new(accepted_catalog_id(&root, "books::Book::pages")).unwrap();
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        let forged_identity = vec![SavedKey::Int(1), SavedKey::Str("ghost".to_string())];
+        let pages_path = vec![DataPathSegment::Member(pages_id.clone())];
+        store
+            .write_node(&store_id, &forged_identity)
+            .expect("write forged record node");
+        store
+            .write_data_value(
+                &store_id,
+                &forged_identity,
+                &pages_path,
+                encode_value(&Scalar::Int(0)).expect("encode forged default"),
+            )
+            .expect("write forged default cell");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        let target = commit
+            .activation_default_backfill_cells
+            .iter_mut()
+            .find(|cell| cell.identity == vec![SavedKey::Int(2)])
+            .expect("record 2 backfill receipt");
+        target.store_id = store_id;
+        target.identity = forged_identity;
+        target.path = pages_path;
+        target.backfilled = true;
+        store
+            .write_commit_metadata(&commit)
+            .expect("write forged receipt identity");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_committed_default_cell_is_missing() {
+    let root = native_books_project(
+        "evolve-apply-proposal-default-resume-missing-cell",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        delete_member_by_catalog_id(&store, &accepted_place, 2, &pages_id);
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_committed_default_cell_has_wrong_value() {
+    let root = native_books_project(
+        "evolve-apply-proposal-default-resume-wrong-cell",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        write_member_by_catalog_id(&store, &accepted_place, 1, &pages_id, Scalar::Int(7));
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_committed_transform_cell_is_missing() {
+    let root = native_books_project(
+        "evolve-apply-proposal-transform-resume-missing-cell",
+        PRICE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        store
+            .write_node(&store_id, &[SavedKey::Int(1)])
+            .expect("write record");
+        seed_member(&store, &accepted_place, 1, "price", Scalar::Int(3));
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", PRICE_CENTS_TRANSFORM_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let price_cents_id = accepted_catalog_id(&root, "books::Book::priceCents");
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        delete_member_by_catalog_id(&store, &accepted_place, 1, &price_cents_id);
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resumes_proposal_transform_after_store_commit() {
+    let root = native_books_project(
+        "evolve-apply-proposal-transform-resume",
+        PRICE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        store
+            .write_node(&store_id, &[SavedKey::Int(1)])
+            .expect("write record");
+        seed_member(&store, &accepted_place, 1, "price", Scalar::Int(3));
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", PRICE_CENTS_TRANSFORM_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let price_cents_id = accepted_catalog_id(&root, "books::Book::priceCents");
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(
+        resume.status.code(),
+        Some(0),
+        "resume completes: {resume:?}"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let cents =
+        read_scalar_by_catalog_id(&store, &accepted_place, 1, &price_cents_id, ScalarType::Int);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(cents, Some(Scalar::Int(300)));
+    assert_eq!(catalog_epoch, baseline_epoch + 1);
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_committed_index_entries_are_missing() {
+    let root = native_books_project(
+        "evolve-apply-proposal-index-resume-missing-entries",
+        ISBN_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        for (id, isbn) in [(1, "111"), (2, "222")] {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id)])
+                .expect("write record");
+            seed_member(
+                &store,
+                &accepted_place,
+                id,
+                "isbn",
+                Scalar::Str(isbn.into()),
+            );
+        }
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", ISBN_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let index_id = CatalogId::new(accepted_catalog_id(&root, "books::^books::byIsbn")).unwrap();
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        store
+            .delete_index_subtree(&index_id, &[])
+            .expect("delete rebuilt index");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_commit_source_digest_is_missing() {
+    let root = native_books_project(
+        "evolve-apply-proposal-default-resume-missing-source-digest",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.source_digest.clear();
+        store
+            .write_commit_metadata(&commit)
+            .expect("erase source digest");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_default_witness_changes() {
+    let root = native_books_project(
+        "evolve-apply-proposal-default-resume-drift",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         evolve\n\
+         \x20   default Book.pages = 1\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_transform_witness_changes() {
+    let root = native_books_project(
+        "evolve-apply-proposal-transform-resume-drift",
+        PRICE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        store
+            .write_node(&store_id, &[SavedKey::Int(1)])
+            .expect("write record");
+        seed_member(&store, &accepted_place, 1, "price", Scalar::Int(3));
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", PRICE_CENTS_TRANSFORM_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    write(&root, "src/books.mw", PRICE_CENTS_DRIFTED_TRANSFORM_SOURCE);
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
 }
 
 #[test]
@@ -386,6 +1324,15 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
 fn accepted_catalog(root: &Path) -> marrow_project::CatalogMetadata {
     let json = fs::read_to_string(root.join("marrow.catalog.json")).expect("read accepted catalog");
     marrow_project::CatalogMetadata::from_json(&json).expect("parse accepted catalog")
+}
+
+fn accepted_catalog_id(root: &Path, path: &str) -> String {
+    accepted_catalog(root)
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == path)
+        .unwrap_or_else(|| panic!("accepted catalog entry `{path}`"))
+        .stable_id
 }
 
 fn store_epoch(root: &Path) -> Option<u64> {
@@ -783,6 +1730,282 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
         !stderr.contains("run.store_evolved"),
         "epoch fence no longer rejects after resume completes the file: {stderr}"
     );
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_retire_receipt_count_changes() {
+    let root = native_books_project(
+        "evolve-apply-resume-retire-count-drift",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let first = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.activation_records_retired = 0;
+        store
+            .write_commit_metadata(&commit)
+            .expect("corrupt retire count");
+    }
+
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_retire_receipt_evidence_is_erased() {
+    let root = native_books_project(
+        "evolve-apply-resume-retire-evidence-erased",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let first = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit.activation_records_retired = 0;
+        commit.activation_records_retired_by_id.clear();
+        store
+            .write_commit_metadata(&commit)
+            .expect("erase retire receipt evidence");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_retire_receipt_duplicates_an_id() {
+    let root = native_books_project(
+        "evolve-apply-resume-retire-duplicate-id",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let first = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("commit metadata");
+        commit
+            .activation_records_retired_by_id
+            .push((CatalogId::new(subtitle_id.clone()).unwrap(), 0));
+        store
+            .write_commit_metadata(&commit)
+            .expect("duplicate retire receipt evidence");
+    }
+
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_retire_approval_counts_move_between_ids() {
+    let root = native_books_project(
+        "evolve-apply-resume-retire-per-id-drift",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         \x20   notes: string\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let notes_id = member_catalog_id(&accepted_place, "notes");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub-1".into()),
+        );
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "notes",
+            Scalar::Str("note-1".into()),
+        );
+        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+        seed_member(
+            &store,
+            &accepted_place,
+            2,
+            "subtitle",
+            Scalar::Str("sub-2".into()),
+        );
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         evolve\n\
+         \x20   retire Book.subtitle\n\
+         \x20   retire Book.notes\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let first = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:2"),
+        "--approve-retire",
+        &format!("{notes_id}:1"),
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:3"),
+        root.to_str().unwrap(),
+    ]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
 }
 
 #[test]

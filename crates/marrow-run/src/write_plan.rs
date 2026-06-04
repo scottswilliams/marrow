@@ -208,6 +208,16 @@ mod tests {
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: String::new(),
+            activation_proposal_catalog_digest: None,
+            activation_proposal_catalog_json: None,
+            activation_records_backfilled: 0,
+            activation_default_records_by_id: Vec::new(),
+            activation_default_backfill_cells: Vec::new(),
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
         };
         let plan = WritePlan {
             steps: vec![PlanStep::StampMetadata {

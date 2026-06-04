@@ -31,7 +31,7 @@ use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest};
 
 /// The on-disk format version. It advances only on an incompatible change to the
 /// header, manifest, or cell framing.
-pub(crate) const FORMAT_VERSION: u32 = 1;
+pub(crate) const FORMAT_VERSION: u32 = 2;
 
 /// A short name identifying the engine family a backup was taken from. v0.1 has
 /// one; the layout, key-profile, and value-codec versions distinguish revisions.
@@ -117,6 +117,68 @@ pub struct CommitDescriptor {
     pub engine_profile_digest: EngineProfileDigest,
     pub changed_root_catalog_ids: Vec<String>,
     pub changed_index_catalog_ids: Vec<String>,
+    pub activation_evolution_digest: String,
+    pub activation_proposal_catalog_digest: Option<String>,
+    pub activation_proposal_catalog_json: Option<String>,
+    pub activation_records_backfilled: u64,
+    pub activation_default_records_by_id: Vec<DefaultCountDescriptor>,
+    pub activation_default_backfill_cells: Vec<DefaultBackfillCellDescriptor>,
+    pub activation_indexes_rebuilt: u64,
+    pub activation_records_retired: u64,
+    pub activation_records_retired_by_id: Vec<RetireCountDescriptor>,
+    pub activation_records_transformed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultCountDescriptor {
+    pub catalog_id: String,
+    pub records_backfilled: u64,
+    pub target_records: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultBackfillCellDescriptor {
+    pub catalog_id: String,
+    pub store_id: String,
+    pub identity: Vec<KeyDescriptor>,
+    pub path: Vec<PathSegmentDescriptor>,
+    pub backfilled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathSegmentDescriptor {
+    pub kind: PathSegmentKind,
+    pub catalog_id: Option<String>,
+    pub key: Option<KeyDescriptor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathSegmentKind {
+    Member,
+    Key,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyDescriptor {
+    pub kind: KeyKind,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    Int,
+    Bool,
+    Str,
+    Date,
+    Duration,
+    Instant,
+    Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetireCountDescriptor {
+    pub catalog_id: String,
+    pub records: u64,
 }
 
 impl CommitDescriptor {
@@ -137,6 +199,41 @@ impl CommitDescriptor {
                 .iter()
                 .map(|id| id.as_str().to_string())
                 .collect(),
+            activation_evolution_digest: metadata.activation_evolution_digest.clone(),
+            activation_proposal_catalog_digest: metadata.activation_proposal_catalog_digest.clone(),
+            activation_proposal_catalog_json: metadata.activation_proposal_catalog_json.clone(),
+            activation_records_backfilled: metadata.activation_records_backfilled,
+            activation_default_records_by_id: metadata
+                .activation_default_records_by_id
+                .iter()
+                .map(|count| DefaultCountDescriptor {
+                    catalog_id: count.catalog_id.as_str().to_string(),
+                    records_backfilled: count.records_backfilled,
+                    target_records: count.target_records,
+                })
+                .collect(),
+            activation_default_backfill_cells: metadata
+                .activation_default_backfill_cells
+                .iter()
+                .map(|cell| DefaultBackfillCellDescriptor {
+                    catalog_id: cell.catalog_id.as_str().to_string(),
+                    store_id: cell.store_id.as_str().to_string(),
+                    identity: cell.identity.iter().map(key_descriptor).collect(),
+                    path: cell.path.iter().map(path_segment_descriptor).collect(),
+                    backfilled: cell.backfilled,
+                })
+                .collect(),
+            activation_indexes_rebuilt: metadata.activation_indexes_rebuilt,
+            activation_records_retired: metadata.activation_records_retired,
+            activation_records_retired_by_id: metadata
+                .activation_records_retired_by_id
+                .iter()
+                .map(|(catalog_id, records)| RetireCountDescriptor {
+                    catalog_id: catalog_id.as_str().to_string(),
+                    records: *records,
+                })
+                .collect(),
+            activation_records_transformed: metadata.activation_records_transformed,
         }
     }
 
@@ -151,6 +248,22 @@ impl CommitDescriptor {
             engine_profile_digest: self.engine_profile_digest,
             changed_root_catalog_ids: catalog_ids(&self.changed_root_catalog_ids)?,
             changed_index_catalog_ids: catalog_ids(&self.changed_index_catalog_ids)?,
+            activation_evolution_digest: self.activation_evolution_digest.clone(),
+            activation_proposal_catalog_digest: self.activation_proposal_catalog_digest.clone(),
+            activation_proposal_catalog_json: self.activation_proposal_catalog_json.clone(),
+            activation_records_backfilled: self.activation_records_backfilled,
+            activation_default_records_by_id: default_counts(
+                &self.activation_default_records_by_id,
+            )?,
+            activation_default_backfill_cells: default_backfill_cells(
+                &self.activation_default_backfill_cells,
+            )?,
+            activation_indexes_rebuilt: self.activation_indexes_rebuilt,
+            activation_records_retired: self.activation_records_retired,
+            activation_records_retired_by_id: retire_counts(
+                &self.activation_records_retired_by_id,
+            )?,
+            activation_records_transformed: self.activation_records_transformed,
         })
     }
 }
@@ -160,6 +273,190 @@ fn catalog_ids(ids: &[String]) -> Result<Vec<marrow_store::cell::CatalogId>, Bac
         .map(|id| {
             marrow_store::cell::CatalogId::new(id.clone())
                 .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))
+        })
+        .collect()
+}
+
+fn default_counts(
+    counts: &[DefaultCountDescriptor],
+) -> Result<Vec<marrow_store::tree::ActivationDefaultRecordCount>, BackupError> {
+    counts
+        .iter()
+        .map(|count| {
+            let id = marrow_store::cell::CatalogId::new(count.catalog_id.clone())
+                .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))?;
+            Ok(marrow_store::tree::ActivationDefaultRecordCount {
+                catalog_id: id,
+                records_backfilled: count.records_backfilled,
+                target_records: count.target_records,
+            })
+        })
+        .collect()
+}
+
+fn default_backfill_cells(
+    cells: &[DefaultBackfillCellDescriptor],
+) -> Result<Vec<marrow_store::tree::ActivationDefaultBackfillCell>, BackupError> {
+    cells
+        .iter()
+        .map(|cell| {
+            Ok(marrow_store::tree::ActivationDefaultBackfillCell {
+                catalog_id: catalog_id(&cell.catalog_id)?,
+                store_id: catalog_id(&cell.store_id)?,
+                identity: cell
+                    .identity
+                    .iter()
+                    .map(saved_key)
+                    .collect::<Result<Vec<_>, _>>()?,
+                path: cell
+                    .path
+                    .iter()
+                    .map(data_path_segment)
+                    .collect::<Result<Vec<_>, _>>()?,
+                backfilled: cell.backfilled,
+            })
+        })
+        .collect()
+}
+
+fn retire_counts(
+    counts: &[RetireCountDescriptor],
+) -> Result<Vec<(marrow_store::cell::CatalogId, u64)>, BackupError> {
+    counts
+        .iter()
+        .map(|count| {
+            let id = marrow_store::cell::CatalogId::new(count.catalog_id.clone())
+                .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))?;
+            Ok((id, count.records))
+        })
+        .collect()
+}
+
+fn catalog_id(id: &str) -> Result<marrow_store::cell::CatalogId, BackupError> {
+    marrow_store::cell::CatalogId::new(id.to_string())
+        .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))
+}
+
+fn path_segment_descriptor(segment: &marrow_store::tree::DataPathSegment) -> PathSegmentDescriptor {
+    match segment {
+        marrow_store::tree::DataPathSegment::Member(id) => PathSegmentDescriptor {
+            kind: PathSegmentKind::Member,
+            catalog_id: Some(id.as_str().to_string()),
+            key: None,
+        },
+        marrow_store::tree::DataPathSegment::Key(key) => PathSegmentDescriptor {
+            kind: PathSegmentKind::Key,
+            catalog_id: None,
+            key: Some(key_descriptor(key)),
+        },
+    }
+}
+
+fn data_path_segment(
+    segment: &PathSegmentDescriptor,
+) -> Result<marrow_store::tree::DataPathSegment, BackupError> {
+    match segment.kind {
+        PathSegmentKind::Member => {
+            let Some(catalog_id_text) = segment.catalog_id.as_deref() else {
+                return Err(BackupError::corrupt(
+                    "manifest carries a malformed data path segment",
+                ));
+            };
+            Ok(marrow_store::tree::DataPathSegment::Member(catalog_id(
+                catalog_id_text,
+            )?))
+        }
+        PathSegmentKind::Key => {
+            let Some(key) = segment.key.as_ref() else {
+                return Err(BackupError::corrupt(
+                    "manifest carries a malformed data path segment",
+                ));
+            };
+            Ok(marrow_store::tree::DataPathSegment::Key(saved_key(key)?))
+        }
+    }
+}
+
+fn key_descriptor(key: &marrow_store::key::SavedKey) -> KeyDescriptor {
+    match key {
+        marrow_store::key::SavedKey::Int(value) => KeyDescriptor {
+            kind: KeyKind::Int,
+            value: value.to_string(),
+        },
+        marrow_store::key::SavedKey::Bool(value) => KeyDescriptor {
+            kind: KeyKind::Bool,
+            value: value.to_string(),
+        },
+        marrow_store::key::SavedKey::Str(value) => KeyDescriptor {
+            kind: KeyKind::Str,
+            value: value.clone(),
+        },
+        marrow_store::key::SavedKey::Date(value) => KeyDescriptor {
+            kind: KeyKind::Date,
+            value: value.to_string(),
+        },
+        marrow_store::key::SavedKey::Duration(value) => KeyDescriptor {
+            kind: KeyKind::Duration,
+            value: value.to_string(),
+        },
+        marrow_store::key::SavedKey::Instant(value) => KeyDescriptor {
+            kind: KeyKind::Instant,
+            value: value.to_string(),
+        },
+        marrow_store::key::SavedKey::Bytes(value) => KeyDescriptor {
+            kind: KeyKind::Bytes,
+            value: {
+                let mut text = String::new();
+                crate::push_hex(&mut text, value);
+                text
+            },
+        },
+    }
+}
+
+fn saved_key(key: &KeyDescriptor) -> Result<marrow_store::key::SavedKey, BackupError> {
+    match key.kind {
+        KeyKind::Int => key
+            .value
+            .parse()
+            .map(marrow_store::key::SavedKey::Int)
+            .map_err(|_| BackupError::corrupt("manifest carries a malformed int key")),
+        KeyKind::Bool => key
+            .value
+            .parse()
+            .map(marrow_store::key::SavedKey::Bool)
+            .map_err(|_| BackupError::corrupt("manifest carries a malformed bool key")),
+        KeyKind::Str => Ok(marrow_store::key::SavedKey::Str(key.value.clone())),
+        KeyKind::Date => key
+            .value
+            .parse()
+            .map(marrow_store::key::SavedKey::Date)
+            .map_err(|_| BackupError::corrupt("manifest carries a malformed date key")),
+        KeyKind::Duration => key
+            .value
+            .parse()
+            .map(marrow_store::key::SavedKey::Duration)
+            .map_err(|_| BackupError::corrupt("manifest carries a malformed duration key")),
+        KeyKind::Instant => key
+            .value
+            .parse()
+            .map(marrow_store::key::SavedKey::Instant)
+            .map_err(|_| BackupError::corrupt("manifest carries a malformed instant key")),
+        KeyKind::Bytes => hex_bytes(&key.value).map(marrow_store::key::SavedKey::Bytes),
+    }
+}
+
+fn hex_bytes(text: &str) -> Result<Vec<u8>, BackupError> {
+    if !text.len().is_multiple_of(2) {
+        return Err(BackupError::corrupt(
+            "manifest carries a malformed bytes key",
+        ));
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&text[index..index + 2], 16)
+                .map_err(|_| BackupError::corrupt("manifest carries a malformed bytes key"))
         })
         .collect()
 }
@@ -236,5 +533,67 @@ impl From<std::io::Error> for BackupError {
 impl From<marrow_store::StoreError> for BackupError {
     fn from(error: marrow_store::StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::cell::CatalogId;
+    use marrow_store::key::SavedKey;
+    use marrow_store::tree::{
+        ActivationDefaultBackfillCell, ActivationDefaultRecordCount, CommitMetadata,
+        DataPathSegment,
+    };
+
+    use super::CommitDescriptor;
+
+    fn catalog(text: &str) -> CatalogId {
+        CatalogId::new(text.to_string()).expect("valid catalog id")
+    }
+
+    #[test]
+    fn commit_descriptor_preserves_default_backfill_cell_evidence() {
+        let metadata = CommitMetadata {
+            commit_id: 12,
+            catalog_epoch: 9,
+            layout_epoch: 1,
+            source_digest: "fnv1a64:0000000000000001".to_string(),
+            engine_profile_digest: [1, 3, 5, 7, 9, 11, 13, 15],
+            changed_root_catalog_ids: vec![catalog("cat_0000000000000001")],
+            changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: "fnv1a64:0000000000000002".to_string(),
+            activation_proposal_catalog_digest: Some("fnv1a64:0000000000000003".to_string()),
+            activation_proposal_catalog_json: Some(
+                r#"{"epoch":9,"digest":"fnv1a64:0000000000000003","entries":[]}"#.to_string(),
+            ),
+            activation_records_backfilled: 1,
+            activation_default_records_by_id: vec![ActivationDefaultRecordCount {
+                catalog_id: catalog("cat_0000000000000005"),
+                records_backfilled: 1,
+                target_records: 2,
+            }],
+            activation_default_backfill_cells: vec![ActivationDefaultBackfillCell {
+                catalog_id: catalog("cat_0000000000000005"),
+                store_id: catalog("cat_0000000000000001"),
+                identity: vec![SavedKey::Int(42), SavedKey::Str("tenant".to_string())],
+                path: vec![
+                    DataPathSegment::Member(catalog("cat_0000000000000004")),
+                    DataPathSegment::Key(SavedKey::Str("slot".to_string())),
+                    DataPathSegment::Member(catalog("cat_0000000000000005")),
+                ],
+                backfilled: true,
+            }],
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        };
+
+        let descriptor = CommitDescriptor::from_metadata(&metadata);
+        let restored = descriptor
+            .to_metadata()
+            .expect("descriptor restores metadata");
+
+        assert_eq!(restored, metadata);
     }
 }

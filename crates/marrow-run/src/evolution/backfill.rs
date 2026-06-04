@@ -19,9 +19,10 @@ use marrow_check::evolution::DefaultValue;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
+use marrow_store::tree::{ActivationDefaultBackfillCell, ActivationDefaultRecordCount};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
-use crate::index_maintenance::stage_index_rebuild_entry;
+use crate::index_maintenance::{PlanStepStagedData, index_rebuild_entry_with_staged};
 use crate::store::{DataAddress, IndexAddress};
 use crate::write_plan::PlanStep;
 
@@ -31,34 +32,111 @@ use super::apply::{
 };
 
 /// Stage a `WriteData` of the encoded default at every record (or keyed entry) that
-/// lacks the defaulted member. Backfilling a member a record already carries is a
-/// no-op, so a resumed apply over an already-applied store stages nothing.
+/// lacks the defaulted member. Existing cells on accepted optional members are
+/// preserved; existing cells on proposal-new members fail closed before commit because
+/// the accepted catalog never owned those target paths.
 pub(super) fn stage_default_backfill(
     catalog_id: &CatalogId,
     value: &DefaultValue,
+    fail_on_existing: bool,
     places: &[CheckedSavedPlace],
     store: &TreeStore,
     steps: &mut Vec<PlanStep>,
     staged: &mut StagedWork,
 ) -> Result<(), ApplyError> {
-    let Some((place, location)) = locate(places, catalog_id) else {
-        return Ok(());
-    };
-    let sid = store_id(place)?;
     let mut count = 0usize;
-    for_each_place_record(store, place, &mut |identity| {
-        for path in member_cell_paths(store, &sid, identity, &location.steps)? {
-            if !store.data_subtree_exists(&sid, identity, &path)? {
-                steps.push(PlanStep::WriteData {
-                    address: DataAddress::raw(sid.clone(), identity.to_vec(), path),
-                    value: value.encoded.clone(),
-                });
-                count += 1;
-            }
-        }
-        Ok(())
-    })?;
+    let mut target_count = 0usize;
+    for (place, location) in locations(places, catalog_id) {
+        let sid = store_id(place)?;
+        for_each_place_record(store, place, &mut |identity| {
+            visit_member_cell_paths(store, &sid, identity, &location.steps, &mut |path| {
+                target_count += 1;
+                if store.data_subtree_exists(&sid, identity, path)? {
+                    if fail_on_existing {
+                        return Err(StoreError::Corruption {
+                            message: "proposal default target already exists before activation"
+                                .to_string(),
+                        });
+                    }
+                    staged
+                        .default_backfill_cells
+                        .push(ActivationDefaultBackfillCell {
+                            catalog_id: catalog_id.clone(),
+                            store_id: sid.clone(),
+                            identity: identity.to_vec(),
+                            path: path.to_vec(),
+                            backfilled: false,
+                        });
+                } else {
+                    steps.push(PlanStep::WriteData {
+                        address: DataAddress::raw(sid.clone(), identity.to_vec(), path.to_vec()),
+                        value: value.encoded.clone(),
+                    });
+                    staged
+                        .default_backfill_cells
+                        .push(ActivationDefaultBackfillCell {
+                            catalog_id: catalog_id.clone(),
+                            store_id: sid.clone(),
+                            identity: identity.to_vec(),
+                            path: path.to_vec(),
+                            backfilled: true,
+                        });
+                    count += 1;
+                }
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+    }
     staged.records_backfilled += count;
+    staged
+        .default_records_by_id
+        .push(ActivationDefaultRecordCount {
+            catalog_id: catalog_id.clone(),
+            records_backfilled: count as u64,
+            target_records: target_count as u64,
+        });
+    Ok(())
+}
+
+pub(super) fn stage_default_presence_receipt(
+    catalog_id: &CatalogId,
+    places: &[CheckedSavedPlace],
+    store: &TreeStore,
+    staged: &mut StagedWork,
+) -> Result<(), ApplyError> {
+    let mut target_count = 0usize;
+    for (place, location) in locations(places, catalog_id) {
+        let sid = store_id(place)?;
+        for_each_place_record(store, place, &mut |identity| {
+            visit_member_cell_paths(store, &sid, identity, &location.steps, &mut |path| {
+                target_count += 1;
+                if !store.data_subtree_exists(&sid, identity, path)? {
+                    return Err(StoreError::Corruption {
+                        message: "default receipt target is missing before activation".to_string(),
+                    });
+                }
+                staged
+                    .default_backfill_cells
+                    .push(ActivationDefaultBackfillCell {
+                        catalog_id: catalog_id.clone(),
+                        store_id: sid.clone(),
+                        identity: identity.to_vec(),
+                        path: path.to_vec(),
+                        backfilled: false,
+                    });
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+    }
+    staged
+        .default_records_by_id
+        .push(ActivationDefaultRecordCount {
+            catalog_id: catalog_id.clone(),
+            records_backfilled: 0,
+            target_records: target_count as u64,
+        });
     Ok(())
 }
 
@@ -93,19 +171,32 @@ pub(super) fn stage_index_rebuild(
             .map_err(|_| StoreError::Corruption {
                 message: "evolution apply saw an invalid index catalog id".to_string(),
             })?;
-        steps.push(PlanStep::DeleteIndexSubtree {
+        let mut index_steps = vec![PlanStep::DeleteIndexSubtree {
             address: IndexAddress {
                 index: index_id,
                 keys: Vec::new(),
             },
-        });
+        }];
+        let staged_data = PlanStepStagedData {
+            steps: steps.as_slice(),
+        };
         for_each_place_record(store, place, &mut |identity| {
-            stage_index_rebuild_entry(steps, &index, place, identity, store, Default::default())
-                .map(|_| ())
-                .map_err(|error| StoreError::Corruption {
-                    message: error.message,
-                })
+            if let Some(step) = index_rebuild_entry_with_staged(
+                &index,
+                place,
+                identity,
+                store,
+                &staged_data,
+                Default::default(),
+            )
+            .map_err(|error| StoreError::Corruption {
+                message: error.message,
+            })? {
+                index_steps.push(step);
+            }
+            Ok(())
         })?;
+        steps.extend(index_steps);
         staged.indexes_rebuilt += 1;
         return Ok(());
     }
@@ -162,37 +253,29 @@ pub(super) fn stage_retire_deletes(
     Ok(())
 }
 
-/// Find the place and member location for `catalog_id` across the source places.
-fn locate<'a>(
+/// Find every place and member location for `catalog_id` across the source places.
+pub(super) fn locations<'a>(
     places: &'a [CheckedSavedPlace],
     catalog_id: &CatalogId,
-) -> Option<(&'a CheckedSavedPlace, MemberLocation)> {
+) -> Vec<(&'a CheckedSavedPlace, MemberLocation)> {
     places
         .iter()
-        .find_map(|place| locate_member(place, catalog_id).map(|location| (place, location)))
+        .filter_map(|place| locate_member(place, catalog_id).map(|location| (place, location)))
+        .collect()
 }
 
-/// Every concrete data path a member's descent steps reach for one record. A `Member`
-/// step appends one named segment; a `Layer` step pages each existing keyed entry and
-/// recurses with its key appended, so a member under a keyed layer yields one path per
-/// existing entry and a direct member yields exactly one path. The store cursor pages
-/// the entries, so only the current record's paths are held.
-fn member_cell_paths(
+/// Visit every concrete data path a member's descent steps reach for one record.
+/// A `Member` step appends one named segment; a `Layer` step pages existing keyed
+/// entries through the store cursor and recurses with one key at a time.
+pub(super) fn visit_member_cell_paths(
     store: &TreeStore,
     store_id: &CatalogId,
     identity: &[SavedKey],
     steps: &[PathStep],
-) -> Result<Vec<Vec<DataPathSegment>>, StoreError> {
-    let mut paths = Vec::new();
-    descend(
-        store,
-        store_id,
-        identity,
-        &mut Vec::new(),
-        steps,
-        &mut paths,
-    )?;
-    Ok(paths)
+    visit: &mut dyn FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    descend(store, store_id, identity, &mut Vec::new(), steps, visit)?;
+    Ok(())
 }
 
 fn descend(
@@ -201,24 +284,29 @@ fn descend(
     identity: &[SavedKey],
     prefix: &mut Vec<DataPathSegment>,
     steps: &[PathStep],
-    paths: &mut Vec<Vec<DataPathSegment>>,
+    visit: &mut dyn FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let Some((step, rest)) = steps.split_first() else {
-        paths.push(prefix.clone());
-        return Ok(());
+        return visit(prefix);
     };
     match step {
         PathStep::Member(id) => {
             prefix.push(DataPathSegment::Member(id.clone()));
-            descend(store, store_id, identity, prefix, rest, paths)?;
+            descend(store, store_id, identity, prefix, rest, visit)?;
             prefix.pop();
         }
         PathStep::Layer(id) => {
             prefix.push(DataPathSegment::Member(id.clone()));
-            for entry_key in store.data_child_keys(store_id, identity, prefix)? {
+            let mut child = store.data_first_child(store_id, identity, prefix)?;
+            while let Some(entry_key) = child {
                 prefix.push(DataPathSegment::Key(entry_key));
-                descend(store, store_id, identity, prefix, rest, paths)?;
-                prefix.pop();
+                descend(store, store_id, identity, prefix, rest, visit)?;
+                let Some(DataPathSegment::Key(entry_key)) = prefix.pop() else {
+                    return Err(StoreError::Corruption {
+                        message: "evolution default traversal lost its keyed cursor".to_string(),
+                    });
+                };
+                child = store.data_next_child(store_id, identity, prefix, &entry_key)?;
             }
             prefix.pop();
         }

@@ -2,8 +2,10 @@
 
 use std::process::ExitCode;
 
-use marrow_check::evolution::preview;
-use marrow_run::evolution::{ApplyError, FenceError, apply};
+use marrow_check::{evolution::preview, program_with_activation_proposal};
+use marrow_run::evolution::{
+    ApplyError, Approval, FenceError, apply, verify_activation_completion,
+};
 
 use crate::{
     CheckFormat, commit_pending_identity, load_checked_project_with_format, report_simple_error,
@@ -114,7 +116,14 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     // second stamp. Detecting it before the fence is essential, because the fence reads
     // the behind-by-one file as its accepted epoch and would reject the store as
     // evolved.
-    match resume_completion(&input.dir, &config, &program, &store, input.format) {
+    match resume_completion(
+        &input.dir,
+        &config,
+        &program,
+        &store,
+        input.approval.as_ref(),
+        input.format,
+    ) {
         Ok(Some(code)) => return code,
         Ok(None) => {}
         Err(code) => return code,
@@ -170,6 +179,7 @@ fn resume_completion(
     config: &marrow_project::ProjectConfig,
     program: &marrow_check::CheckedProgram,
     store: &marrow_store::tree::TreeStore,
+    approval: Option<&Approval>,
     format: CheckFormat,
 ) -> Result<Option<ExitCode>, ExitCode> {
     let Some(proposal) = &program.catalog.proposal else {
@@ -192,24 +202,49 @@ fn resume_completion(
     // so requiring the current shape to match that recorded digest is the same fact the
     // open fence checks at an equal epoch. A mismatch means the file would freeze a
     // catalog the store never activated, so resume fails closed instead of writing it.
-    let recorded_digest = match store.read_commit_metadata() {
-        Ok(commit) => commit.map(|commit| commit.source_digest),
+    let commit = match store.read_commit_metadata() {
+        Ok(commit) => commit,
         Err(error) => {
             report_simple_error(error.code(), &error.to_string(), format);
             return Err(ExitCode::FAILURE);
         }
     };
-    if recorded_digest
-        .as_deref()
-        .is_some_and(|recorded| !recorded.is_empty() && recorded != program.source_digest())
-    {
-        let drift = FenceError::SchemaDrift;
-        report_simple_error(drift.code(), &drift.message(), format);
+    let Some(commit) = commit else {
+        report_resume_drift(format);
+        return Err(ExitCode::FAILURE);
+    };
+    if commit.source_digest.is_empty() || commit.source_digest != program.source_digest() {
+        report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }
-    write_accepted_catalog(dir, config, proposal)?;
+    let Some(stored_proposal_json) = commit.activation_proposal_catalog_json.as_deref() else {
+        report_resume_drift(format);
+        return Err(ExitCode::FAILURE);
+    };
+    let stored_proposal = match marrow_project::CatalogMetadata::from_json(stored_proposal_json) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            report_simple_error(error.code, &error.message, format);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if stored_proposal.epoch != proposal.epoch {
+        report_resume_drift(format);
+        return Err(ExitCode::FAILURE);
+    }
+    let activation_program = program_with_activation_proposal(program, stored_proposal.clone());
+    if verify_activation_completion(&activation_program, store, &commit, approval).is_err() {
+        report_resume_drift(format);
+        return Err(ExitCode::FAILURE);
+    }
+    write_accepted_catalog(dir, config, &stored_proposal)?;
     render::apply_resumed(proposal.epoch, format);
     Ok(Some(ExitCode::SUCCESS))
+}
+
+fn report_resume_drift(format: CheckFormat) {
+    let drift = FenceError::SchemaDrift;
+    report_simple_error(drift.code(), &drift.message(), format);
 }
 
 fn print_help() {

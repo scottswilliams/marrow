@@ -102,23 +102,25 @@ Store-level metadata is written through typed meta cells:
 | Catalog epoch | `01` | `u64_be(catalog_epoch)` |
 | Layout epoch | `02` | `u64_be(layout_epoch)` |
 | Engine profile digest | `03` | 8 bytes, the stable v0 engine-profile digest |
-| Commit metadata | `04` | Commit id, catalog epoch, layout epoch, profile digest, changed root catalog IDs, and changed index catalog IDs |
+| Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs, and activation evidence |
 
 The v0 engine profile records layout epoch and key profile version `0`. Its
 digest is deterministic FNV-1a 64-bit over a fixed profile label, the key
 profile version, and the big-endian layout epoch.
 
-Commit metadata stores the commit id, catalog epoch, and layout epoch as
-big-endian `u64` values. The engine profile digest and catalog ID lists are
-length-prefixed with big-endian `u32` counts or byte lengths. Catalog IDs remain
-opaque storage IDs inside metadata values.
+Commit metadata stores the commit id, catalog epoch, layout epoch, activation
+counts, and target counts as big-endian `u64` values. Strings, the engine
+profile digest, catalog ID lists, per-default activation counts, and per-retire
+approval counts are length-prefixed with big-endian `u32` counts or byte
+lengths. Catalog IDs remain opaque storage IDs inside metadata values.
 
-Future online activation needs commit metadata to describe the durable commit
-boundary, not the last write plan that happened to run inside it. The metadata
-surface may grow runtime-generation, activation-job, source/catalog digest, and
-adapter/window evidence fields. Those fields remain typed Marrow evidence above
-the engine; they do not make raw engine keys, migration ledgers, or backend
-history part of the production API.
+Activation evidence binds the durable commit boundary: source digest, evolution
+digest, proposal catalog digest and JSON, changed root/index IDs, default
+backfill counts and target-cell evidence that marks the backfilled subset,
+rebuilt-index count, per-id retire counts, and transform count. These fields are
+receipts over the committed activation, not executable migration history. Crash
+resume may publish the accepted catalog only after it verifies this evidence
+against the current store effects.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, and malformed index identity suffixes report

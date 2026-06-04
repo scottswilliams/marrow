@@ -2388,6 +2388,87 @@ fn dropped_field_an_index_needs_requires_retire() {
     );
 }
 
+#[test]
+fn dropped_field_ignores_same_named_index_on_another_resource() {
+    let book_subtitle_id = hex_id(5);
+    let root = temp_project("discharge-f12-index-owner", |root| {
+        write(
+            root,
+            "src/media.mw",
+            "module media\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             resource Movie at ^movies(id: int)\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   index bySubtitle(subtitle) unique\n",
+        );
+        let accepted = CatalogMetadata::new(
+            12,
+            vec![
+                entry(CatalogEntryKind::Resource, "media::Book", &hex_id(1)),
+                entry(CatalogEntryKind::Store, "media::^books", &hex_id(2)),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "media::Book::title",
+                    &hex_id(3),
+                ),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "media::Book::subtitle",
+                    &book_subtitle_id,
+                ),
+                entry(CatalogEntryKind::Resource, "media::Movie", &hex_id(6)),
+                entry(CatalogEntryKind::Store, "media::^movies", &hex_id(7)),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "media::Movie::title",
+                    &hex_id(8),
+                ),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "media::Movie::subtitle",
+                    &hex_id(9),
+                ),
+                entry(
+                    CatalogEntryKind::StoreIndex,
+                    "media::^movies::bySubtitle",
+                    &hex_id(10),
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    checked(&root);
+    write(
+        &root,
+        "src/media.mw",
+        "module media\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         resource Movie at ^movies(id: int)\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         \x20   index bySubtitle(subtitle) unique\n",
+    );
+    let (_report, program) = check_project(&root, &config()).expect("check");
+    let store = TreeStore::memory();
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        matches!(verdict_for(&result, &book_subtitle_id), Verdict::NoOp),
+        "{result:#?}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("bySubtitle")),
+        "{diagnostics:#?}"
+    );
+}
+
 /// Dropping a source index while keeping the member it covered is an index-subtree
 /// deletion, not a silent no-op: the index binding is gone but its cells would linger.
 /// The accepted catalog carries a member `isbn` and an index `byIsbn(isbn)`; current

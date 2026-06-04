@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+
+use marrow_project::CatalogEntryKind;
 use marrow_schema::{KeyDef, Node, NodeKind, Type};
 use marrow_syntax::SourceSpan;
 
+use crate::catalog::{CatalogKey, active_proposal_id_map, resource_member_path, store_index_path};
 use crate::facts::{ModuleId, ResourceId, ResourceMemberId, StoreId, StoreIndexFact};
 use crate::program::CheckedProgram;
 use crate::resolve::{resolve_store_by_root, resolve_store_by_root as store_by_root};
@@ -51,6 +55,78 @@ pub(super) fn checked_root_place(
         terminal: CheckedSavedTerminal::Record,
         span,
     })
+}
+
+pub(super) fn checked_activation_root_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
+    let proposal_ids = active_proposal_id_map(program);
+    let mut places = Vec::new();
+    for module in &program.modules {
+        for store in &module.stores {
+            let Some(mut place) = checked_root_place(program, &store.root, SourceSpan::default())
+            else {
+                continue;
+            };
+            overlay_index_ids(&mut place, &proposal_ids, &module.name, &store.root);
+            overlay_member_ids(
+                &mut place.root_members,
+                &proposal_ids,
+                &module.name,
+                &store.resource,
+                &mut Vec::new(),
+            );
+            place.members = place.root_members.clone();
+            if place.store_catalog_id.is_some() {
+                places.push(place);
+            }
+        }
+    }
+    places
+}
+
+fn overlay_index_ids(
+    place: &mut CheckedSavedPlace,
+    proposal_ids: &HashMap<CatalogKey, String>,
+    module: &str,
+    root: &str,
+) {
+    for index in &mut place.indexes {
+        if index.catalog_id.is_none()
+            && let Some(catalog_id) = proposal_ids.get(&CatalogKey::new(
+                CatalogEntryKind::StoreIndex,
+                store_index_path(module, root, &index.name),
+            ))
+        {
+            index.catalog_id = Some(catalog_id.clone());
+        }
+    }
+}
+
+fn overlay_member_ids(
+    members: &mut [CheckedSavedMember],
+    proposal_ids: &HashMap<CatalogKey, String>,
+    module: &str,
+    resource: &str,
+    parent_path: &mut Vec<String>,
+) {
+    for member in members {
+        parent_path.push(member.name.clone());
+        if member.catalog_id.is_none()
+            && let Some(catalog_id) = proposal_ids.get(&CatalogKey::new(
+                CatalogEntryKind::ResourceMember,
+                resource_member_path(module, resource, parent_path),
+            ))
+        {
+            member.catalog_id = Some(catalog_id.clone());
+        }
+        overlay_member_ids(
+            &mut member.group_members,
+            proposal_ids,
+            module,
+            resource,
+            parent_path,
+        );
+        parent_path.pop();
+    }
 }
 
 pub(super) fn checked_call_place(

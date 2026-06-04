@@ -42,70 +42,96 @@ use crate::write_plan::PlanStep;
 
 use super::apply::{ApplyError, StagedWork, for_each_place_record, store_id};
 
+pub(super) struct TransformStage<'a> {
+    pub(super) target_id: &'a CatalogId,
+    pub(super) witness_reads: &'a [CatalogId],
+    pub(super) program: &'a CheckedProgram,
+    pub(super) runtime: &'a CheckedRuntimeProgram,
+    pub(super) places: &'a [CheckedSavedPlace],
+    pub(super) store: &'a TreeStore,
+    pub(super) steps: &'a mut Vec<PlanStep>,
+    pub(super) staged: &'a mut StagedWork,
+}
+
 /// Stage one `WriteData` of the recomputed value at the transform target cell for every
 /// record. For each record the read members' decoded values bind `old`, the pure body
 /// runs through the runtime evaluator, and the returned value encodes to the target's
 /// leaf type. The body never writes, so the only durable effect is the staged target
 /// write; a body that raises, returns no value, or yields a value the target cannot
 /// encode aborts apply with a typed body fault.
-pub(super) fn stage_transform(
-    target_id: &CatalogId,
-    program: &CheckedProgram,
-    runtime: &CheckedRuntimeProgram,
-    places: &[CheckedSavedPlace],
-    store: &TreeStore,
-    steps: &mut Vec<PlanStep>,
-    staged: &mut StagedWork,
-) -> Result<(), ApplyError> {
-    let transform = program
+pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError> {
+    let transform = ctx
+        .program
         .catalog
         .evolve_transforms
         .iter()
-        .find(|transform| transform.catalog_id.as_deref() == Some(target_id.as_str()))
+        .find(|transform| transform.catalog_id.as_deref() == Some(ctx.target_id.as_str()))
         .ok_or_else(|| diverged("no bound transform for the target the witness names"))?;
     let body = transform
         .runtime_body()
         .ok_or_else(|| diverged("the transform body did not lower"))?;
-    let (place, target_leaf) = locate_target(places, target_id)
-        .ok_or_else(|| diverged("the transform target is not a top-level field of any place"))?;
-    let module = owning_module(program, runtime, transform)
+    let targets = locate_targets(ctx.places, ctx.target_id);
+    if targets.is_empty() {
+        return Err(diverged(
+            "the transform target is not a top-level field of any place",
+        ));
+    }
+    let module = owning_module(ctx.program, ctx.runtime, transform)
         .ok_or_else(|| diverged("the transform owning module is not in the runtime program"))?;
 
-    let reads = transform_read_members(place, &transform.reads);
-    let sid = store_id(place)?;
-    let target_path = [DataPathSegment::Member(target_id.clone())];
     let mut count = 0usize;
     // A body fault is a per-record `ApplyError`, but the shared record scan threads only
     // `StoreError`. The fault is captured here and the scan stops staging further writes
     // once it is set; apply returns it before any write commits, so the staged steps are
     // discarded and the store is untouched.
     let mut body_fault: Option<ApplyError> = None;
-    for_each_place_record(store, place, &mut |identity| {
+    for (place, target_leaf) in targets {
+        let reads = transform_read_members(place, &transform.reads);
+        let read_ids = reads
+            .iter()
+            .map(|read| read.catalog_id.clone())
+            .collect::<Vec<_>>();
+        if read_ids != ctx.witness_reads {
+            return Err(diverged(
+                "the transform read members no longer match the witness proof",
+            ));
+        }
+        let sid = store_id(place)?;
+        let target_path = [DataPathSegment::Member(ctx.target_id.clone())];
+        for_each_place_record(ctx.store, place, &mut |identity| {
+            if body_fault.is_some() {
+                return Ok(());
+            }
+            let old = bind_old(ctx.runtime, ctx.store, &sid, identity, &reads)?;
+            match recompute(ctx.runtime, ctx.store, module, body, old, &target_leaf) {
+                Ok(bytes) => {
+                    ctx.steps.push(PlanStep::WriteData {
+                        address: DataAddress::raw(
+                            sid.clone(),
+                            identity.to_vec(),
+                            target_path.to_vec(),
+                        ),
+                        value: bytes,
+                    });
+                    count += 1;
+                }
+                Err(reason) => {
+                    body_fault = Some(ApplyError::TransformBodyFaulted {
+                        target: ctx.target_id.clone(),
+                        reason,
+                    });
+                }
+            }
+            Ok(())
+        })?;
         if body_fault.is_some() {
-            return Ok(());
+            break;
         }
-        let old = bind_old(runtime, store, &sid, identity, &reads)?;
-        match recompute(runtime, store, module, body, old, &target_leaf) {
-            Ok(bytes) => {
-                steps.push(PlanStep::WriteData {
-                    address: DataAddress::raw(sid.clone(), identity.to_vec(), target_path.to_vec()),
-                    value: bytes,
-                });
-                count += 1;
-            }
-            Err(reason) => {
-                body_fault = Some(ApplyError::TransformBodyFaulted {
-                    target: target_id.clone(),
-                    reason,
-                });
-            }
-        }
-        Ok(())
-    })?;
+    }
     if let Some(fault) = body_fault {
         return Err(fault);
     }
-    staged.records_transformed += count;
+    ctx.staged.records_transformed += count;
     Ok(())
 }
 
@@ -209,20 +235,23 @@ fn encode_target(value: Value, leaf: &StoreLeafKind) -> Result<Vec<u8>, String> 
     leaf_value.bytes().map_err(|error| error.to_string())
 }
 
-/// The place and target leaf for a transform target catalog id, when the target is a
-/// top-level plain field of one of the source places.
-fn locate_target<'a>(
+/// Every place and target leaf for a transform target catalog id, when the target is a
+/// top-level plain field of the resource shape used by one or more stores.
+fn locate_targets<'a>(
     places: &'a [CheckedSavedPlace],
     target_id: &CatalogId,
-) -> Option<(&'a CheckedSavedPlace, StoreLeafKind)> {
-    places.iter().find_map(|place| {
-        place
-            .root_members
-            .iter()
-            .find(|member| member.catalog_id.as_deref() == Some(target_id.as_str()))
-            .and_then(target_leaf)
-            .map(|leaf| (place, leaf))
-    })
+) -> Vec<(&'a CheckedSavedPlace, StoreLeafKind)> {
+    places
+        .iter()
+        .filter_map(|place| {
+            place
+                .root_members
+                .iter()
+                .find(|member| member.catalog_id.as_deref() == Some(target_id.as_str()))
+                .and_then(target_leaf)
+                .map(|leaf| (place, leaf))
+        })
+        .collect()
 }
 
 /// The leaf kind of a transform target member, when it is a plain scalar/enum/identity

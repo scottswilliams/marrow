@@ -11,12 +11,14 @@
 mod admission;
 mod apply;
 mod backfill;
+mod completion;
 mod rebuild;
 mod transform;
 mod validate;
 mod window;
 
 pub use apply::{ApplyError, ApplyOutcome, Approval, apply};
+pub use completion::verify_activation_completion;
 pub use rebuild::rebuild_store_indexes;
 pub use window::{FenceError, current_engine_profile, fence};
 pub(crate) use window::{StampFacts, metadata_stamp};

@@ -1,6 +1,7 @@
 //! Repair and destructive-decision admission for evolution apply.
 
 use marrow_check::evolution::{EvolutionWitness, Verdict};
+use marrow_store::cell::CatalogId;
 
 use super::apply::{ApplyError, Approval};
 
@@ -9,16 +10,7 @@ pub(super) fn gate_obligations(
     maintenance: bool,
     approval: Option<&Approval>,
 ) -> Result<(), ApplyError> {
-    let destructive: Vec<_> = witness
-        .verdicts
-        .iter()
-        .filter_map(|obligation| match &obligation.verdict {
-            Verdict::DestructiveDecisionRequired { populated } => {
-                Some((obligation.catalog_id.clone(), *populated))
-            }
-            _ => None,
-        })
-        .collect();
+    let destructive = expected_retire_counts(witness);
     for obligation in &witness.verdicts {
         match &obligation.verdict {
             Verdict::RepairRequired { .. } => {
@@ -49,30 +41,33 @@ pub(super) fn gate_obligations(
 /// The witness has one entry per destructive id, so the approval is deduped first: a
 /// flag repeated verbatim collapses and still matches, while two entries for one id with
 /// different counts survive the dedup and correctly mismatch the single witness entry.
-fn approval_matches(
-    approval: &Approval,
-    destructive: &[(marrow_store::cell::CatalogId, usize)],
-) -> bool {
-    let mut approved = approval.retires.clone();
-    approved.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-    approved.dedup();
-    let mut expected = destructive.to_vec();
-    expected.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-    approved == expected
+fn approval_matches(approval: &Approval, destructive: &[(CatalogId, usize)]) -> bool {
+    normalized_retire_approval(approval) == sorted_retire_counts(destructive)
 }
 
-/// The total populated cell count every destructive retire in the witness recorded.
-/// The staged deletes must match this sum, so apply refuses a store that changed under
-/// an approved decision.
-pub(super) fn expected_retire_count(witness: &EvolutionWitness) -> usize {
-    witness
+pub(super) fn normalized_retire_approval(approval: &Approval) -> Vec<(CatalogId, usize)> {
+    sorted_retire_counts(&approval.retires)
+}
+
+pub(super) fn expected_retire_counts(witness: &EvolutionWitness) -> Vec<(CatalogId, usize)> {
+    let counts: Vec<_> = witness
         .verdicts
         .iter()
-        .map(|obligation| match &obligation.verdict {
-            Verdict::DestructiveDecisionRequired { populated } => *populated,
-            _ => 0,
+        .filter_map(|obligation| match &obligation.verdict {
+            Verdict::DestructiveDecisionRequired { populated } => {
+                Some((obligation.catalog_id.clone(), *populated))
+            }
+            _ => None,
         })
-        .sum()
+        .collect();
+    sorted_retire_counts(&counts)
+}
+
+fn sorted_retire_counts(counts: &[(CatalogId, usize)]) -> Vec<(CatalogId, usize)> {
+    let mut counts = counts.to_vec();
+    counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    counts.dedup();
+    counts
 }
 
 #[cfg(test)]
