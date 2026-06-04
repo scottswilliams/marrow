@@ -172,8 +172,14 @@ Current remaining queue:
 
 Completed foundations:
 
+- [Lane 5](lanes/lane-05-resource-store-surface.md) supplies the v0.1
+  resource/store surface: resources and stores are distinct, and saved roots are
+  declared by `store ^root(...)`.
 - [Lane 6](lanes/lane-06-catalog-presence-ledger.md) supplies catalog-backed
   enum identity and the presence ledger consumed by runtime and tooling.
+- [Lane 7](lanes/lane-07-tree-cell-store-engine.md) supplies the typed tree-cell
+  store keyed by stable catalog ids, with typed key values, sequence state,
+  index cells, commit metadata, and an explicit engine profile.
 - [Lane 8](lanes/lane-08-runtime-checked-execution.md) supplies checked runtime
   execution, checked durable traversal, write planning, and enum/index runtime
   value handling. Runtime no longer has a syntax-body production path or a
