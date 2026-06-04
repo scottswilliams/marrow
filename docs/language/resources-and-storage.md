@@ -561,8 +561,10 @@ values that freeze when accepted, so divergent catalog histories may still
 freeze distinct accepted IDs for source that looks equivalent.
 
 Restore replays a backup into an empty store in one transaction and validates the
-data against the schema before activating it; it never treats raw saved paths as
-the production backup contract.
+data against the schema before activating it. Managed cells under roots or
+members the current source/catalog does not declare are rejected as data-attached
+integrity failures; restore never treats raw saved paths as the production backup
+contract.
 
 Non-empty restore modes are explicit maintenance actions.
 
@@ -631,8 +633,10 @@ data-integrity risk.
 
 Durable schema changes state their intent in an `evolve` block. A bare source
 diff implies nothing about stored data: renaming a member in the resource alone
-changes the on-disk path and orphans the data behind it. The `evolve` block names
-what the change means for durable identity:
+is ambiguous between delete-and-add and identity-preserving rename. The old
+catalog entity and its stored cells remain tied to the prior accepted identity,
+and the newly spelled member does not inherit them unless source evolution states
+that intent. The `evolve` block names what the change means for durable identity:
 
 ```mw
 evolve

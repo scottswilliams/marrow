@@ -90,12 +90,14 @@ Comparison is by the referenced keys after the nominal store match, so the same
 reference written twice is equal.
 
 Saving an identity in a field does not create a foreign-key constraint, cascade,
-or join: it is a typed value, not an enforced relationship. The field is not
-checked against the referent's existence — a reference may name a resource that
+or join: it is a typed value, not an enforced relationship. The field is not an
+unconditional write-time existence check — a reference may name a resource that
 was never written or was later deleted, and a `delete` does not follow stored
-references. Referential actions (cascade, restrict) and dangling-reference
-handling are a deferred layer; applications enforce relationship rules in code or
-model them as resources and indexes.
+references. Dangling references are still compiler-visible integrity facts:
+data-attached compiler and integrity flows can report an `Id(^store)` value whose
+referent is absent without turning that report into an implicit cascade or write
+rejection. Applications enforce relationship policy in code or model it as
+resources and indexes.
 
 Saved keys are orderable scalar types — every scalar except `decimal`. A key
 may not be `decimal`, an enum or other named type, a whole resource, a
@@ -336,15 +338,16 @@ Each key passed through a store identity boundary must match the referenced
 store's declared identity key type. A string key for an `int`-keyed `^books`
 store is a `check.key_type`, as is a wrong-typed key of a composite identity.
 
-At run time the key scalar type and arity are enforced before any store write: a
-key whose scalar kind or count does not match the declared keyspace faults
-(`run.type`) rather than reaching the store, and `marrow data integrity` reports
-an already-stored key of the wrong scalar type as `data.key_type`. Composite
-identity values carry their checked store root at run time, including
-single-key identities, so a same-shaped foreign identity cannot be spliced into
-another root or stored in an identity field. Raw scalar keys are accepted only as
-explicit key arguments to a saved path; they are not `Id(^store)` values at
-dynamic, host, or unknown boundaries.
+At run time the key scalar type, arity, and identity store root are enforced
+before any store write: a key whose scalar kind, count, or nominal store root
+does not match the declared keyspace faults (`run.type`) rather than reaching the
+store, and `marrow data integrity` reports an already-stored key of the wrong
+scalar type as `data.key_type`. Dynamic data that arrives through `unknown` must
+be checked at the identity boundary before it can reenter typed Marrow code or
+managed saved data; same-shaped foreign identities are not accepted merely
+because their scalar keys match. Raw scalar keys are accepted only as explicit key
+arguments to a saved path; they are not `Id(^store)` values at dynamic, host, or
+unknown boundaries.
 
 Marrow provides default `nextId` allocation for a single `int` identity key.
 Other identity shapes are application-provided.

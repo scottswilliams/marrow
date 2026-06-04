@@ -4,7 +4,8 @@ The Marrow language and database kernel is implemented: the `.mw` parser,
 formatter, checker, and runtime; resources as typed local and saved trees;
 memory and native (redb) storage behind one backend contract; managed writes
 with generated indexes; transactions and savepoints; and the `marrow` CLI,
-inspection tools, language server, and data server. The language reference in
+inspection tools, language server, and loopback debug/admin data inspection
+server. The language reference in
 [`../language/`](../language/) and the runtime design in
 [`../implementation.md`](../implementation.md) describe what exists today.
 
@@ -20,9 +21,12 @@ The active implementation plan and forward tracker is
 maps the accepted Marrow ADR packet to file-disjoint lanes, review gates,
 deletion targets, and verification commands for the v0.1 rewrite.
 
-The per-orchestrator tracking plans live under [`lanes/`](lanes/). Start new
-implementation orchestrators from those files so worktree ownership, target
-directories, dependencies, deletion ledgers, and review prompts stay consistent.
+The per-orchestrator tracking plans live under [`lanes/`](lanes/). Research
+reports under [`research/`](research/) are archived evidence, not an active
+roadmap or prompt tracker. Start new implementation orchestrators from the
+central execution plan and the current lane file so ownership, dependencies,
+deletion ledgers, and review gates stay consistent without preserving temporary
+worktree paths in tracked docs.
 
 Closed implementation records:
 

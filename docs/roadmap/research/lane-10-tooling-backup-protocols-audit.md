@@ -2,7 +2,9 @@
 
 ## 1. Local Vision Summary With File/Line References
 
-Evidence base: I audited a fresh `marrow` worktree at `3f7178a3d6712f2e715259574fc446a552f34302` on branch `research/lane-10-tooling-audit`, based on `origin/main`. The original `/Users/scottwilliams/Dev/marrow` checkout was on `research/lane-09-source-native-evolution-audit` at `f0623c9287f3f2483c6ee5996f13f4f16b324a84` with untracked roadmap research. The `/Users/scottwilliams/Dev/marrow-decisions` checkout was on `main` at `7ce51f17f8037201747baa3cffdf0fdbc214aaae` with unstaged edits to two ADRs, both included below.
+Archive note: this report preserves historical research findings only. Its
+environment notes are not current authority; use the accepted ADRs and canonical
+docs for product truth.
 
 Lane 16 resolution note: this report is historical audit evidence. Current v0.1
 tooling has moved data query/path/preview/integrity/explain/metadata facts into
@@ -26,8 +28,9 @@ and debug/admin only.
 The dedicated docs sharpen the same rule. Data tools must not define a second
 semantic model or expose raw store keys/backend APIs as production APIs
 (`docs/data-tools.md:3`). They read through checked source, accepted catalog, and
-typed tree-cell APIs (`docs/data-tools.md:10`) and should page large results with
-opaque cursors (`docs/data-tools.md:14`). Serve operations are intentionally named
+typed tree-cell APIs (`docs/data-tools.md:10`); production previews and protocol
+reads page with opaque cursors, while explicit operator/admin dumps may walk a
+whole stable snapshot. Serve operations are intentionally named
 `debug_data_*`, read through checked source/catalog/tree-cell APIs, and are not
 production app server/sync/backup/raw saved-path surfaces
 (`docs/serve-protocol.md:3`). Per-connection snapshots, stale catalog epoch
@@ -43,9 +46,9 @@ raw protocols must be debug/admin-only, data previews must be bounded snapshot
 reads, continuations must be catalog-epoch/snapshot bound, and there is no
 production bridge for protocols.
 
-The accepted ADRs agree. The tools ADR says every CLI/LSP/DAP/MCP/backup/restore/repair/server surface should render shared analysis facts, and missing facts belong in the compiler, not tool-local schema logic (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:17`, `/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:63`). Stable surfaces must be versioned, typed, cancelable where needed, and catalog-epoch bound (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:30`). Raw keys, backend bytes, and saved-store paths are debug/admin only (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:45`). The product-scope ADR makes Marrow a SQLite-like local embedded durable app language, not a server/database product (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:19`, `/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:33`). The unstaged ADR edits strengthen the same conclusion by adding a source-owned access-path law and rejecting lower-layer cost-based plan choice (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56`, `/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28`).
+The accepted ADRs agree. The tools ADR says every CLI/LSP/DAP/MCP/backup/restore/repair/server surface should render shared analysis facts, and missing facts belong in the compiler, not tool-local schema logic (`marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:17`, `marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:63`). Stable surfaces must be versioned, typed, cancelable where needed, and catalog-epoch bound (`marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:30`). Raw keys, backend bytes, and saved-store paths are debug/admin only (`marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:45`). The product-scope ADR makes Marrow a SQLite-like local embedded durable app language, not a server/database product (`marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:19`, `marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:33`). The historical ADR edits strengthen the same conclusion by adding a source-owned access-path law and rejecting lower-layer cost-based plan choice (`marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56`, `marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28`).
 
-There is one decision-doc drift to resolve: the backup/restore/repair ADR still says raw inspection can run when source does not check (`/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/05-backup-restore-and-repair.md:38`), while the current docs and implementation require checked source for `data` commands (`docs/data-tools.md:38`, `crates/marrow/src/cmd_data.rs:140`). The implementation direction is better for the v0.1 vision, but the ADR must stop implying a raw inspection island.
+There is one decision-doc drift to resolve: the backup/restore/repair ADR still says raw inspection can run when source does not check (`marrow-decisions/adr/storage-engine/05-backup-restore-and-repair.md:38`), while the current docs and implementation require checked source for `data` commands (`docs/data-tools.md:38`, `crates/marrow/src/cmd_data.rs:140`). The implementation direction is better for the v0.1 vision, but the ADR must stop implying a raw inspection island.
 
 ## 2. Implementation Summary With Crate/Module References
 
@@ -128,7 +131,10 @@ Weak Rust shape. At audit time, `cmd_data`, `serve::protocol::data`, and `serve:
 
 Hidden compatibility glue. `serve` has no protocol version or initialization handshake. That is fine for a debug/admin loopback protocol but dangerous if clients are encouraged to persist against it. The cursor tokens are session-bound and non-durable, which is correct for debug, but the docs should not let them sound like stable signed cursors.
 
-Unbounded or insufficiently bounded previews. `serve` children/walk operations are capped and cursored, but CLI `data dump` has no cursor/limit and can walk all records (`crates/marrow/src/cmd_data.rs:223`). That may be tolerable as an operator dump command, but it contradicts the broad data-tools statement that large results should page through opaque cursors.
+Unbounded or insufficiently bounded previews. `serve` children/walk operations
+are capped and cursored. CLI `data dump` intentionally walks all records as an
+operator/admin snapshot dump; it must remain separate from production preview and
+protocol reads.
 
 Unidiomatic language/database design. `marrow debug explain` borrows a database term that can imply execution-strategy inspection. Because Marrow's ADR edits keep access paths source-owned, a Postgres-like EXPLAIN path would be a design error. The command name is acceptable only if docs/tests keep it about source-owned facts and debug/admin saved-path classification.
 
@@ -158,7 +164,9 @@ justify why it is a view over existing facts rather than a new product surface.
 
 4. Add protocol version/capability framing to any non-debug protocol before it ships. `serve` can remain unversioned only while debug/admin-only; a future stable protocol should follow LSP/MCP/DAP conventions with initialize/version/capabilities, cancellation where work can be long-running, and typed error envelopes.
 
-5. Make data previews consistently bounded. Add `--limit`/cursor support to `marrow data dump`, or explicitly mark unbounded dump as an operator/admin command separate from preview APIs. Keep serve cursors snapshot/session bound and document them as opaque non-durable tokens.
+5. Keep data previews consistently bounded. `marrow data dump` is explicitly an
+   operator/admin full-snapshot dump, separate from preview APIs. Keep serve
+   cursors snapshot/session bound and document them as opaque non-durable tokens.
 
 6. LSP UTF-16 position encoding is fixed for the default protocol coordinate space. Future LSP work can add negotiated `general.positionEncodings` and diagnostic document versions when the client supports them.
 

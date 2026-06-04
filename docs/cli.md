@@ -500,10 +500,10 @@ This is the editor language server, distinct from `marrow serve`.
 marrow serve [--port <port>] <projectdir>
 ```
 
-Run the Marrow data server: a long-lived owner of the project's saved data that
-answers newline-delimited JSON requests over a loopback (`127.0.0.1`) TCP
-connection. It is a read-only debug/admin tooling surface and never writes
-managed data.
+Run the Marrow debug/admin loopback inspection server. It answers
+newline-delimited JSON requests over a loopback (`127.0.0.1`) TCP connection,
+reads checked saved data, and never writes managed data. It is not a production
+app server, sync protocol, generated API, or remote database.
 
 The bound address is printed on startup, then the server blocks accepting
 connections one at a time:

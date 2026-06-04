@@ -139,8 +139,8 @@ the family. Examples:
 Use one cargo target directory per lane, for example:
 
 ```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/<lane> \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-<lane>/Cargo.toml ...
+CARGO_TARGET_DIR=<outside-repo-target-dir> \
+    cargo test --manifest-path <lane-worktree>/Cargo.toml ...
 ```
 
 Never run broad cargo gates in parallel against the same target directory.
@@ -163,12 +163,7 @@ Tracking is forward-only:
 - keep temporary worktree paths, target directories, review transcripts, and
   throwaway artifacts out of tracked files.
 
-Current remaining queue:
-
-| Order | Lane | Why It Is Next | Must Prove |
-| --- | --- | --- | --- |
-| 1 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces now that runtime and evolution expose shared facts; its first deliverable is a feature-surface audit that deletes, demotes, or rebuilds prototype-only commands and protocols. | Raw bytes, raw paths, unsupported commands, broad server/query promises, and local semantic rediscovery disappear from production protocols. |
-| 2 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
+Current status:
 
 Completed foundations:
 
@@ -189,50 +184,34 @@ Completed foundations:
   fail-closed, identity-aware proof-discharge pipeline (`check`, `check --data`,
   `evolve preview`/`apply`) over an exact witness, with stale-writer fencing on
   catalog epoch, engine profile, and schema digest.
+- [Lane 10](lanes/lane-10-tooling-backup-protocols.md) supplies the typed
+  backup/restore artifact, checked read-only data inspection, loopback
+  `debug_data_*` serve inspection, and the tooling boundary that keeps raw/path
+  surfaces out of production semantics.
+
+Active follow-up work is tracked here and in the current lane files. The
+research synthesis is archived evidence, not a second roadmap or prompt
+tracker. The next docs/ADR step is to keep accepted ADRs and canonical docs
+aligned with the settled v0.1 architecture. Remaining implementation work is
+limited to explicit follow-up lanes such as future online activation,
+language-surface simplification, product-decision closure, and final Rust
+hardening.
 
 ## Active Quality Intervention
 
-Lane 10 is the next quality intervention for tooling/protocol surfaces. Its
-first deliverable is a feature-surface verdict matrix that deletes, demotes, or
-rebuilds every raw/path-addressed tool and protocol before production tooling
-claims. Declaration order may remain a source traversal index only; it must not
-be stored meaning or index-key meaning. Runtime enum values and index
-maintenance now consume catalog-backed checked facts.
+The active quality intervention is no longer a pre-Lane-10 audit. The current
+intervention is consistency: accepted ADRs, canonical docs, lane files, and
+future implementation prompts must agree that source is the access path,
+identity is `Id(^store)`, restore is compiler-owned and orphan-rejecting,
+`unknown` is not `any`, `merge`/`lock` are reserved not supported syntax, and
+data/serve rawness is debug/admin only. They must also agree that v0.1
+activation is exact-epoch and fail-closed, while future online activation is
+compiler-mediated through bounded jobs, generated/deleted adapters, finite
+compatibility windows, and shadow decant for major reshapes.
 
-The Lane 7 store pass owns the tree-cell store boundary. Raw archive behavior may
-remain only as explicitly debug/admin store access; typed backup manifests,
-backup/restore, and deeper tooling workflows belong to Lane 10 once shared
-runtime and store facts are available.
-
-Lane 10 owns the product-surface audit for tooling and protocol commands before
-it writes replacement code. Current suspect surfaces include `marrow debug explain` as
-a raw saved-path/name resolver, `marrow serve` as a raw saved-data server or
-public app-server stand-in, raw `marrow data` inspection as production protocol,
-trace/dry-run/maintenance output that exposes raw storage, and docs promising
-server, sync, generated API, query, or raw-path compatibility beyond the
-accepted v0.1 scope.
-
-The feature audit is global, but ownership stays with the lane that owns the
-files and semantics. Each active lane must classify suspect features in its area
-as keep production, debug/admin only, rename/rescope, or delete, then turn the
-verdict into code, docs, tests, or an owning-lane blocker before review:
-
-- Lane 5/6 own language-source and catalog identity residue such as `@id`, raw
-  path identity, source-name identity, and enum member order as stored meaning.
-- Lane 7 owns store-facing raw physical key, raw archive, and backend surface
-  residue.
-- Lane 8 owns executable language/runtime/database behavior: `lock`, `merge`,
-  saved `inout`, production `~` roots, runtime query-like scans, fallback name
-  resolution, runtime path classifiers, maintenance bypasses, and syntax-body
-  execution.
-- Lane 9 owns evolution/activation workflow surfaces: source-native preview and
-  apply, compatibility lenses, checked transforms, repair, invisible catalog
-  identity recorded on run and `evolve apply`, and rejection of migration-script
-  or source-diff identity workflows.
-- Lane 10 owns tool, CLI, LSP, data, serve, backup, restore, and protocol
-  surfaces that render those facts.
-- Lane 11 owns final absence scans and file-disjoint cleanup only after the
-  semantic owner lands; it sends known semantic residue back to the owner.
+Every active lane must classify suspect surfaces in its area as keep production,
+debug/admin only, rename/rescope, delete, or product-decision pending, then turn
+the verdict into code, docs, tests, or an owning-lane blocker before review.
 
 Every active orchestrator must include these items in the next handoff:
 
@@ -245,6 +224,19 @@ Every active orchestrator must include these items in the next handoff:
   behavior;
 - a statement that no roadmap wording was narrowed to hide unfinished deletion.
 
+## Scott-Pending Product Decisions
+
+These questions block narrow parts of later lanes. They are tracked here so
+archived research documents do not become a second active backlog:
+
+- whether `out` exists in v0.1 or whether returned values cover the use case;
+- future compatibility-window defaults for server mode, including one-old-epoch
+  policy and old-write admission;
+- required-field `default` meaning: temporary activation fill or durable read
+  default;
+- re-key identity semantics: new store plus explicit transform/decant by
+  default, or narrowly proven identity-preserving cases.
+
 ## Parallel Orchestrator Split
 
 Assign one lead orchestrator per lane file. Parallelize design scans, review,
@@ -255,8 +247,8 @@ edit the checker/schema identity surface.
 | --- | --- | --- | --- | --- |
 | Catalog/presence corrective | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns checker/schema enum identity and presence classifier cleanup; no runtime/store physical-key edits. |
 | Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns runtime checked execution and enum value/index conversion; no syntax-body compatibility path survives. |
-| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns one proof-discharge pipeline with command-specific surfaces. |
-| Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Read-only feature-surface and stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the feature-surface verdict matrix, then the typed backup manifest, adapters, and rendering; no unsupported commands, raw public protocols, or tool-local semantic classifiers. |
+| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Complete | Integrated; future edits are regressions, Lane 14 online-activation implementation work, or Lane 11 cleanup findings | Owns one v0.1 proof-discharge pipeline with command-specific surfaces; future windows/adapters/decant remain compiler-owned job facts. |
+| Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Integrated foundation | Follow-up work owns future activation rendering, future local API shape, and hardening that keeps diagnostic/admin commands fenced | No unsupported commands, raw public protocols, restore that imports orphaned managed cells, execution-strategy claims, migration-ledger claims, or tool-local semantic classifiers. |
 | Hardening | [Lane 11](lanes/lane-11-rust-hardening.md) | Read-only scans anytime | Final fixes after owning lanes land, except truly file-disjoint style fixes | Owns deletion proof, not postponed semantic rewrites. |
 
 Lane 8 owns the runtime as one vertical replacement so the project does not grow
@@ -455,7 +447,7 @@ path it replaces. Examples:
 | Whole-resource assignment with hidden clearing | Keep source law, expose destructive effects | checked write plan reports subtree clearing and requires tests |
 | No-op or underspecified `lock` | Reject in production and remove from canonical docs | transaction lane defines v0.1 behavior without `lock` as a primitive |
 | Saved `inout` or durable reference-like mutation | Reject in production | checked effects forbid saved `inout` writeback |
-| Current `merge` surface as broad patch semantics | Reject, then replace with `edit` or checked transform semantics | runtime and evolution lanes define exact write or transform behavior |
+| Current `merge` surface as broad partial-update semantics | Reject as v0.1 syntax; field writes express partial changes, and transforms handle source-native evolution | runtime and evolution lanes define exact write or checked transform behavior |
 | Hidden merge or implicit durable traversal | Reject; explicit durable `for` iteration is the v0.1 surface and platform/tool scans stream bounded chunks | durable-traversal facts lane |
 | Runtime execution of syntax bodies | Delete production entry | checked IR runtime lane |
 | Runtime string splitting or fallback resolution | Delete production use | checked model carries resolved IDs and saved places |
@@ -511,8 +503,12 @@ they do not need new ADRs:
 
 - The minimum checked IR shape that deletes syntax-body execution without
   inventing a low-level bytecode.
-- The Lane 10 minimum typed backup manifest that is v0.1 portable without
-  implementing engine recompile.
+- The future local API and diagnostic-command hardening points that keep
+  diagnostics from becoming execution-strategy or raw-path production APIs.
+- The future online-activation facts surface: activation job status, chunk
+  progress, verification findings, publish readiness, compatibility-window
+  admission, adapter names, and close conditions without creating a migration
+  ledger.
 - The local runtime-generation state machine needed for stale-writer fencing
   without prematurely building a server.
 

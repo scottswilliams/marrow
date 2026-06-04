@@ -68,7 +68,7 @@ work without the maintenance capability: `write.requires_maintenance` for a
 whole managed-root delete. Deleting a required field on its own raises
 `write.required_field` outside maintenance.
 
-The `marrow serve` data server reports a `protocol.*` code when a request is bad:
+The `marrow serve` debug/admin loopback server reports a `protocol.*` code when a request is bad:
 `protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`,
 `protocol.bad_request` (malformed operation arguments, durable places, cursors,
 or encoded payloads), and `protocol.stale_epoch` when the served store has
@@ -110,7 +110,8 @@ a category label, not a separate code prefix).
 Every code below is emitted by the current build. Codes are grouped by family.
 The "Surface" column says where a developer first meets the code: a single-file
 `check`, a project `check`/`run`/`test`, a managed write inside a running
-program, the store, the `serve` data server, or a `data` maintenance command.
+program, the store, the `serve` debug/admin loopback server, or a `data`
+maintenance command.
 
 ### `parse.*` — kind `parse`
 
@@ -287,7 +288,7 @@ store fault met during a program read or write travels as `run.store` or
 
 ### `protocol.*` — kind `protocol`
 
-Request faults from the `marrow serve` data server. A serve error reply is
+Request faults from the `marrow serve` debug/admin loopback server. A serve error reply is
 `{"id": …, "error": {"code": …, "message": …}}`; it does not carry `kind` or
 `source_span`. A request that reaches the store carries the store's own
 `store.*` code through.

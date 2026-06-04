@@ -353,9 +353,10 @@ export artifacts.
 
 ## Data Evolution And Maintenance
 
-Schemas evolve through source changes and explicit data-evolution work. For
-v0.1, rename tooling uses explicit source paths and maintenance code. Durable
-rename identity belongs to future catalog work.
+Schemas evolve through source changes and explicit data-evolution work. V0.1
+uses source-native preview/apply over checked catalog and store facts. A rename
+carries durable identity only when `evolve rename` or an accepted catalog alias
+states that intent; a bare source spelling change is not identity authority.
 
 Marrow does not guess data movement. If a change moves data, populates a new
 required field, rebuilds an index, or changes identity, that work is explicit,
@@ -380,7 +381,7 @@ Inspection uses typed resources and checked/catalog facts. `marrow data`
 provides read-only `roots`, `stats`, `dump`, `integrity`, and `get` commands
 over the typed tree-cell store. It does not expose backend traversal, physical
 keys, or archive replay as production APIs. `diff` and `load` are deferred; typed
-backup/restore is the separate bulk data movement contract. See
+backup/restore is the current bulk data movement contract. See
 [tooling-surfaces.md](tooling-surfaces.md) for the v0.1 surface matrix.
 
 `marrow backup` and `marrow restore` are typed backup/restore. A backup is a
@@ -426,8 +427,9 @@ embedded runtime — and from explicit repair, restore, data-evolution, and stor
 maintenance workflows, never from the serve protocol. That read-only guarantee is
 what lets serve be a long-lived shared owner of the store.
 
-The v0.1 server binds loopback TCP only. Binding beyond loopback would require a
-separate authenticated and transport-secure design.
+Loopback TCP is the v0.1 boundary. Binding beyond loopback is not supported by
+the server; any remote transport requires a future protocol with explicit
+authentication and transport security.
 
 The protocol is a tooling surface, not Marrow's application API. Application
 APIs are written in Marrow code.
@@ -441,9 +443,10 @@ data.
 Storage errors name the failed operation and the capability or limit involved.
 Backend-specific messages remain plain operator text, not the machine contract.
 
-Bounds are part of the design. Tool reads are bounded or paged. Backends may
-advertise key and value limits. A small bounded implementation is better than
-an unbounded one that is hard to reason about.
+Bounds are part of the design. Production previews and protocol reads are
+bounded or paged; explicit operator/admin dumps may walk a whole stable snapshot.
+Backends may advertise key and value limits. A small bounded implementation is
+better than an unbounded one that is hard to reason about.
 
 ## Security Model
 
@@ -452,8 +455,8 @@ The normal security boundary is the host process, filesystem or backend
 credentials, and the selected transport.
 
 Local CLI commands use the current user's access to project source and data.
-Remote server transport requires explicit authentication and transport
-security before it leaves loopback.
+Remote server transport is out of v0.1. If it is designed later, it requires
+explicit authentication and transport security before it leaves loopback.
 
 Application authorization belongs in application data and application code. It
 is not a hidden backend permission layer and it is not stored in `marrow.json`.

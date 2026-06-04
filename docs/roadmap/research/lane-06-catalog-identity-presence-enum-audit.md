@@ -1,25 +1,24 @@
 # Lane 6 Catalog Identity, Presence Ledger, And Enum Member Identity Audit
 
 Research audit only. This is not an ADR and proposes no production-code changes.
-References below are repository-relative unless they point into
-`marrow-decisions`.
+
+Archive note: this report preserves historical research findings only. Its
+environment notes are not current authority; use the accepted ADRs and canonical
+docs for product truth.
 
 ## 1. Local Vision Summary With File And Line References
-
-The audit compared the Marrow repository with the `marrow-decisions` ADR packet,
-including then-current edits in the foundations and storage-engine ADRs.
 
 The local vision is coherent and ambitious: Marrow treats saved state as part
 of one compiled program, where source declares shape and intent, the catalog
 owns durable identity, the compiler checks source/catalog/data/engine together,
 runtime executes checked IR, and the engine persists ordered bytes without
-knowing Marrow semantics. The unstaged foundations ADR edit makes this sharper:
+knowing Marrow semantics. The historical foundations ADR edit makes this sharper:
 source owns access paths, and no lower layer may choose a cost-based plan below
 the language contract
 (`marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:20`,
-`:34`, `:56`, `:68`). The unstaged storage ADR edit mirrors that by allowing
-only provably redundant-operation elision in write lowering, not runtime
-statistics choosing another operation shape
+`:34`, `:56`, `:68`). The historical storage ADR edit mirrors that by allowing
+only provably redundant-operation elision in write lowering, not a runtime
+optimizer
 (`marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:23`,
 `:28`, `:55`, `:83`).
 
@@ -41,10 +40,10 @@ may propose but not mutate it; and accepted/evolve boundaries advance durable
 state explicitly
 (`marrow-decisions/adr/catalog-identity/02-catalog-lifecycle-and-identity-binding.md:18`,
 `:23`, `:28`, `:33`, `:52`, `:68`). It also states that stable IDs are never
-regenerated for branch merges and public aliases should move through
-`active`, `deprecated`, or `reserved` states
+regenerated for branch merges and public aliases should move through active,
+deprecated, and reserved tombstone states
 (`marrow-decisions/adr/catalog-identity/02-catalog-lifecycle-and-identity-binding.md:61`,
-`:63`). That alias lifecycle is the v0.1 implementation contract.
+`:63`). That alias lifecycle is stronger than the implementation today.
 
 Resource and storage docs reject source-spelling identity: stores own identity,
 the canonical identity type is `Id(^store)`, and every durable entity receives
@@ -54,7 +53,7 @@ annotations
 `:179`, `:207`, `:229`). The data-evolution doc states the same operationally:
 renames require `evolve rename`, the catalog records old aliases and the same
 stable ID, source-only checks propose but do not write the catalog, and stable
-IDs are random `cat_<32 lowercase hex>` values precisely to tolerate branch
+IDs are random `cat_<16 lowercase hex>` values precisely to tolerate branch
 parallel allocation
 (`docs/data-evolution.md:131`,
 `:149`, `:163`, `:178`).
@@ -77,9 +76,9 @@ must have exactly one proof source, activation succeeds only when every
 obligation is discharged, and runtime, CLI, LSP, evolution, backup, and restore
 should read one ledger rather than rediscovering presence
 (`marrow-decisions/adr/model-ir/02-presence-proof-and-activation.md:14`,
-`:20`, `:33`, `:49`, `:59`). Lane 13 gives presence proofs explicit proof
-identity and discharged/pending-attached-data status, which keeps consumers from
-rediscovering maybe-present semantics.
+`:20`, `:33`, `:49`, `:59`). This is the right long-term direction, but the
+implementation has not fully grown the explicit discharged/pending status shape
+that the ADR describes.
 
 One local vision conflict must be fixed: the proposed physical encoding ADR says
 stable IDs are a single per-catalog monotonic space
@@ -101,12 +100,9 @@ on read
 `:89`, `:107`). Entries cover resources, stores, store indexes, resource
 members, enums, and enum members
 (`crates/marrow-project/src/lib.rs:145`,
-`:196`). The lifecycle enum has `Active`, `Deprecated`, and `Reserved`
-(`crates/marrow-project/src/lib.rs:207`),
-matching the accepted v0.1 reserved-spelling model. The digest is the canonical
-`sha256:<64 lowercase hex>` digest over JSON payload
-(`crates/marrow-project/src/lib.rs:583`,
-`:590`).
+`:196`). The integrated v0.1 lifecycle model uses active, deprecated, and
+reserved entries, and accepted catalog metadata uses a `sha256:<hex>` digest
+over canonical JSON.
 
 Catalog binding lives in `marrow-check/src/catalog.rs`. It reads the accepted
 catalog, computes current source catalog entries, binds accepted IDs onto facts,
@@ -122,12 +118,12 @@ records the old path as an alias
 (`crates/marrow-check/src/catalog.rs:706`).
 
 New catalog entries are proposal-only until accepted. The allocator emits
-random opaque `cat_<32 lowercase hex>` IDs from operating-system entropy,
-rerolling against all existing IDs from every lifecycle state. The code comment
-explicitly rejects a monotonic counter for branch-parallel work
+random opaque 128-bit-shaped IDs, rerolling against all existing IDs from every
+lifecycle state. The code comment explicitly rejects a monotonic counter for
+branch-parallel work
 (`crates/marrow-check/src/catalog.rs:982`,
 `:1000`, `:1022`, `:1033`). Tests assert proposal IDs do not collide with
-accepted IDs and do not derive identity from kind/path text
+accepted IDs and do not derive from source spelling
 (`crates/marrow-check/tests/catalog_presence.rs:303`,
 `:2272`).
 
@@ -253,7 +249,7 @@ and reported as `check.prototype_only`
 2. Source-name identity or path-derived IDs.
    This is the weakest option. It collapses spelling and durable meaning, makes
    renames destructive or heuristic, and fails the roadmap's explicit delete list.
-   The current implementation correctly rejects the old path-hash derivation and
+   The audited implementation correctly rejects the old path-hash derivation and
    fail-closes bare source rename.
 
 3. Regenerating IDs from source order, source path, or content.
@@ -282,9 +278,8 @@ and reported as `check.prototype_only`
    IDs, not entity stable IDs.
 
 7. Collision-resistant random IDs plus deterministic validation and merge tools.
-   The v0.1 contract uses a 128-bit random shape and fail-closed validation.
-   Branch-merge tooling remains useful for human conflict resolution, but stable
-   identity is no longer waiting on a larger ID space.
+   This is the accepted v0.1 direction: IDs are random opaque values with enough
+   margin for branch-parallel proposals, while validation fail-closes collisions.
 
 ## 5. Verdict: Refine
 
@@ -295,9 +290,9 @@ for Marrow because durable state is compiled with source, catalog, data, and
 engine profile together, and because enum member storage/index meaning is now
 catalog identity rather than source order.
 
-The Lane 13 hardening pass resolved the monotonic-vs-random ID conflict,
-strengthened digest semantics, and implemented the `reserved` alias lifecycle.
-Branch merge UX is still a foundation risk, not polish.
+The integrated stack resolves the identity-size, digest, and reserved lifecycle
+items that were open when this audit was written. Catalog-aware branch merge UX
+remains follow-up product work.
 
 ## 6. Long-Term Risks
 
@@ -307,21 +302,19 @@ Branch merge UX is still a foundation risk, not polish.
   signatures. Without a catalog-aware merge/check tool, the right foundation may
   feel worse than source-visible field numbers.
 
-- The ID strategy is inconsistent in docs. Accepted/local docs and code use
-  random content-independent IDs, while the proposed physical-key ADR still says
-  single per-catalog monotonic space. A future implementer could "clean up" the
-  conflict in the wrong direction.
+- The audit found ID-strategy drift. Accepted/local docs and code used random
+  content-independent IDs, while proposed physical-key wording described a
+  single per-catalog monotonic space. That historical conflict could have been
+  "cleaned up" in the wrong direction.
 
-- Catalog, source, and evolution digests use the SHA-256 contract. Keep any
-  remaining non-cryptographic checksum language scoped to accidental-corruption
-  detection or narrow engine-profile stamps, not durable compatibility fences.
+- Digest and alias-lifecycle risks were resolved in the integrated v0.1 stack:
+  durable catalog/source/evolution fences use SHA-256-shaped strings, and
+  reserved catalog entries prevent accidental reuse of retired public spellings.
 
-- Alias lifecycle is no longer a missing enum state. Future work should focus on
-  review/merge UX for reserved public spellings.
-
-- Checked facts now use typed optional catalog IDs instead of empty-string
-  sentinels for proposal-only entries. Keep that shape from regressing into
-  stringly identity.
+- Empty-string catalog IDs in checked facts are a latent compatibility smell.
+  `catalog_id(...).unwrap_or_default()` can represent "not accepted/proposal-only"
+  as `""`; tests may keep this contained today, but a typed `Option` or distinct
+  accepted/proposed fact type would better fit the architecture.
 
 - Source-order enum helpers remain exposed enough to be tempting. They appear to
   serve traversal/lowering only, while runtime storage and index keys use catalog
@@ -329,10 +322,11 @@ Branch merge UX is still a foundation risk, not polish.
   lowering boundary would keep source-order from drifting back into durable
   meaning.
 
-- The presence ledger records proof identity, proof source, place, keys, read
-  kind, discharged/pending-attached-data status, and span. Future consumers
-  should keep reading this ledger rather than rediscovering maybe-present
-  semantics.
+- The presence ledger records proof source, place, keys, read kind, and span, but
+  not an explicit proof ID or discharged/pending status. `AttachedDataPending`
+  encodes pending status by source variant. That is compact, but weaker than the
+  ADR's per-read ledger contract for runtime, CLI, LSP, evolution, backup, and
+  restore.
 
 - Presence AST walkers are cleaner than before, but still broad. The architecture
   tests prevent a few duplicate helper names from returning; they do not prove
@@ -357,24 +351,33 @@ Branch merge UX is still a foundation risk, not polish.
    merged catalog to preserve both IDs, recompute epoch/digest deterministically,
    and diagnose real alias/stable-ID conflicts without regeneration.
 
-3. Make enum source-order helpers private to lowering/traversal or rename them to
+3. Keep absence tests around catalog/source/evolution digest shapes and reserved
+   tombstones so the resolved v0.1 identity model does not regress.
+
+4. Replace empty-string catalog IDs in facts with typed optionality or separate
+   accepted/proposal identity surfaces. Production facts should not encode "not
+   bound yet" as a valid string value.
+
+5. Make enum source-order helpers private to lowering/traversal or rename them to
    expose their non-durable nature. Add an architecture test that runtime,
    storage, index maintenance, evolution discharge, and saved-key decoding cannot
    call ordinal helpers for stored meaning.
 
-4. Add consumer-side tests proving runtime/tooling/evolution reads the presence
-   ledger rather than rediscovering maybe-present semantics.
+6. Extend the presence ledger toward the ADR shape: per-read proof identity,
+   explicit `Discharged` or `PendingAttachedData` status, and a consumer-side test
+   proving runtime/tooling/evolution reads the ledger rather than rediscovering
+   maybe-present semantics.
 
-5. Keep `@id` dead with feature-surface tests across parser, checker, fixtures,
+7. Keep `@id` dead with feature-surface tests across parser, checker, fixtures,
    docs, and CLI output. It is good that syntax rejects it now; future generated
    catalog tooling should not reintroduce an annotation escape hatch.
 
-6. Give generated catalog review a first-class command or report even if the
+8. Give generated catalog review a first-class command or report even if the
    source language has no catalog syntax. A command such as `marrow catalog diff`
    or a structured check diagnostic should explain new IDs, renames, aliases,
    retired/reserved spellings, epoch/digest changes, and branch conflicts.
 
-7. Keep presence walkers under code-shape review. When new language constructs
+9. Keep presence walkers under code-shape review. When new language constructs
     land, require a sibling scan over `presence::direct`, `presence::walk`,
     `presence::effects`, `presence::target`, and `presence::proofs` so one
     construct cannot gain duplicate semantics in two walkers.

@@ -39,7 +39,7 @@ point at the [language reference](language/) for the exact rules.
 - [Tooling Feature Surfaces](tooling-surfaces.md) — v0.1 verdicts for debug,
   admin, production, and deferred tool surfaces.
 - [Serve Protocol](serve-protocol.md) — the newline-delimited JSON protocol the
-  `marrow serve` data server speaks.
+  `marrow serve` debug/admin loopback server speaks.
 - [Language Server](lsp.md) — the `marrow lsp` editor language server and its
   planned path.
 - [Errors](error-codes.md) — CLI exit codes, the machine-readable error

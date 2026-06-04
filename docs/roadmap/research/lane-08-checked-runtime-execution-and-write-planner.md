@@ -2,31 +2,17 @@
 
 Date: 2026-06-04
 
-Scope: Lane 8 checked runtime execution and write planner. This is a research and
-architecture review only. It includes the current `marrow` main worktree, the
-active Lane 10 worktree evidence named in roadmap docs, and the unstaged
-`marrow-decisions` ADR edits to the foundation and transaction ADRs.
+Scope: Lane 8 checked runtime execution and write planner. This is a research
+and architecture review only.
 
-Git state checked first:
-
-- `/Users/scottwilliams/Dev/marrow` was clean on `main` at
-  `854cd150da9a0a5a6d21014b0c809aa95da818f0`.
-- `/Users/scottwilliams/Dev/marrow-decisions` was on `main` with unstaged edits
-  to `adr/foundations/01-architecture-laws-and-five-layers.md` and
-  `adr/storage-engine/02-transactions-commits-and-recovery.md`.
-- The prompt says Lanes 5-10 are complete, but local docs do not support that
-  claim. The central roadmap marks Lane 8 integrated
-  (`docs/roadmap/prototype-to-v1-execution-plan.md:183`) and Lane 9 complete
-  (`docs/roadmap/prototype-to-v1-execution-plan.md:187`), but Lane 10 remains
-  the first remaining queue item (`docs/roadmap/prototype-to-v1-execution-plan.md:166`)
-  and has an active worktree/status block
-  (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:10`,
-  `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:14`).
+Archive note: this report preserves historical research findings only. Its
+environment notes are not current authority; use the accepted ADRs and canonical
+docs for product truth.
 
 ## 1. Local Vision Summary
 
 The local vision is unusually explicit: Marrow is not a general query engine with
-a hidden access-strategy layer. It is a programming language whose durable data is checked as
+a hidden optimizer. It is a programming language whose durable data is checked as
 part of the program, and whose source syntax names the durable access path.
 
 The central roadmap frames v0.1 as a replacement of prototype runtime behavior
@@ -55,7 +41,7 @@ or fallback iteration
 (`docs/roadmap/lanes/lane-08-runtime-checked-execution.md:29`).
 
 The language docs match that design. The cost model says there is no hidden
-access-strategy layer; code names stores, indexes, and fields, and the access path is source
+optimizer; code names stores, indexes, and fields, and the access path is source
 (`docs/language/cost-model.md:3`). It defines the cost of a program as storage
 operations performed by the checked program
 (`docs/language/cost-model.md:11`), records traversal and write facts for tools,
@@ -75,11 +61,11 @@ paths, traversal, or declared indexes rather than a separate query language
 (`docs/language/resources-and-storage.md:286`), and managed writes update data
 and indexes together (`docs/language/resources-and-storage.md:324`).
 
-The unstaged ADR edits in `marrow-decisions` strengthen the same conclusion. The
+The historical ADR edits in `marrow-decisions` strengthen the same conclusion. The
 foundation ADR now adds law 15: the access path is source, store/index/field reads
 and writes are written by hand, and the planner emits only minimal forced
 operations (`adr/foundations/01-architecture-laws-and-five-layers.md:56` in the
-current working tree). It also says statistics-based operation selection below the language is
+current working tree). It also says a cost-based optimizer below the language is
 foreclosed (`adr/foundations/01-architecture-laws-and-five-layers.md:68`). The
 transaction ADR now says the write planner may only elide provably redundant work,
 never add operations or choose semantically distinct plans by statistics
@@ -87,7 +73,7 @@ never add operations or choose semantically distinct plans by statistics
 path cost is a source property
 (`adr/storage-engine/02-transactions-commits-and-recovery.md:91`).
 
-The vision is therefore not "Marrow lacks hidden access selection for now." It is "source is
+The vision is therefore not "Marrow lacks an optimizer for now." It is "source is
 the plan" as a language contract for v0.1, with future optimization limited to
 source-visible diagnostics, source rewrites, source-declared indexes, or
 proof-preserving redundant-operation elision.
@@ -211,11 +197,12 @@ Residual implementation risks are real but bounded:
 
 ## 3. External Precedents And Counter-Precedents
 
-SQL engines are the strongest counter-precedent to "source names the work", but
-they apply to a different language shape. PostgreSQL describes execution of a SQL
-query in many equivalent ways and tries to select the fastest one; when
-exhaustive search is too costly, it falls back to heuristics such as GEQO for
-large joins.
+SQL optimizers are the strongest counter-precedent to "source is the plan", but
+they apply to a different language shape. PostgreSQL describes a planner that can
+execute a SQL query in many equivalent ways and tries to select the fastest one;
+when exhaustive search is too costly, it falls back to heuristics such as GEQO
+for large joins:
+[PostgreSQL Planner/Optimizer](https://www.postgresql.org/docs/17/planner-optimizer.html).
 PostgreSQL's `EXPLAIN` docs emphasize plan trees, alternative scan/join nodes,
 estimated total cost, row estimates, and cost parameters:
 [Using EXPLAIN](https://www.postgresql.org/docs/current/using-explain.html). Its
@@ -250,7 +237,8 @@ Datalog is a strong precedent for checked facts and declarative derivation, but 
 counter-precedent for Marrow's imperative source-as-plan claim. Souffle describes
 Datalog as a declarative logic query language for recursive queries:
 [Souffle tutorial](https://souffle-lang.github.io/tutorial). Its rule docs ground
-variables through positive predicates and expose rule execution-order qualifiers:
+variables through positive predicates and expose execution-order qualifiers for rule
+execution order:
 [Souffle rules](https://souffle-lang.github.io/rules). Its relation docs describe
 auto-indexing and magic-set/inlining transformations:
 [Souffle relations](https://souffle-lang.github.io/relations). This shows that
@@ -318,10 +306,10 @@ out of normal expressions, lets the checker reject missing presence/index facts,
 and makes old prototype paths easy to delete by absence scans. This is the current
 approach.
 
-**Alternative B: add SQL-style cost-based access selection under Marrow.** This would help
-only if Marrow had declarative relational queries with multiple equivalent access paths.
+**Alternative B: add a SQL-style cost optimizer under Marrow.** This would help
+only if Marrow had declarative relational queries with multiple equivalent plans.
 Today the source names store roots, declared indexes, fields, and loops. A hidden
-selector would either do nothing meaningful, or it would violate the language
+optimizer would either do nothing meaningful, or it would violate the language
 promise that the written access path determines operations. It would also require
 statistics, cardinality estimation, plan invalidation, and explain tooling. That
 is too much foundation for v0.1 and cuts against the accepted ADR edits.
@@ -365,12 +353,12 @@ Verdict: **refine, not reverse**.
 Runtime execution from checked facts/IR is the right long-term architecture for
 Marrow v0.1. The "source is the plan" claim is strong for Marrow's current
 language shape because source code explicitly names stores, indexes, fields,
-loops, transactions, writes, and deletes. Hidden cost-based access selection would be a weak
+loops, transactions, writes, and deletes. A hidden cost optimizer would be a weak
 foundation here: it would add a second planning semantics without giving SQL-like
 benefits, because Marrow is not yet a declarative set-query language with many
 equivalent relational plans.
 
-The current implementation is good enough to build on, provided two refinements
+The audited implementation is good enough to build on, provided two refinements
 happen before Marrow treats the runtime/tooling surface as complete:
 
 1. Make checked operation plans/facts first-class enough for `explain`, trace,
@@ -380,7 +368,7 @@ happen before Marrow treats the runtime/tooling surface as complete:
    helpers so they cannot become a public compatibility bridge.
 
 Do not reverse into syntax-body interpretation, raw saved-path resolution, ORM-like
-lazy loaders, GraphQL resolver planning, or statistics-based access selection below the
+lazy loaders, GraphQL resolver planning, or a statistics-based optimizer below the
 language. If Marrow later needs query optimization, add it as a source-visible,
 checked query feature with its own explicit contract, not as a hidden runtime
 rewrite of ordinary source paths.
@@ -420,12 +408,12 @@ but their names and shapes are close to raw path compatibility. If Lane 10 or
 Lane 11 imports or widens them, Marrow will have recreated a raw-path bridge under
 a checked veneer.
 
-**Unidiomatic language/database design.** Source-owned access is idiomatic only if
+**Unidiomatic language/database design.** "No optimizer" is idiomatic only if
 Marrow keeps durable access explicit and explainable. It would become unidiomatic
 if Marrow grows report/query workloads where users must write manual nested loops
 for complex joins but receive no query language, no plan diagnostics, and no
 index suggestions. The correct mitigation is source-visible query/index tooling,
-not hidden access selection in ordinary runtime execution.
+not a hidden optimizer in ordinary runtime execution.
 
 **Transaction and side-effect modeling.** The current transaction model matches
 SQLite/local embedded expectations and the ADR: many read snapshots, one writer,
@@ -449,19 +437,18 @@ way to bypass normal semantics. Lane 10 names this exact surface
 
 ## 7. Concrete Follow-Up Recommendations
 
-1. **Block hidden access-strategy work below the language.** Treat the unstaged ADR
-   edits as architecturally correct: no cost/statistics-based runtime selector
+1. **Block hidden optimizer work below the language.** Treat the historical ADR
+   edits as architecturally correct: no cost/statistics-based runtime optimizer
    under ordinary Marrow code. Any query optimization proposal must be
    source-visible and checked.
 
-2. **Add a checked operation-plan/explain fact surface.** Do not let `marrow
-   explain`, trace, dry-run, LSP, backup, or serve infer runtime operations from
-   raw paths. They should render checked operation facts: root/index/field reads,
-   traversal scans, write plan steps, index maintenance, transaction grouping, and
-   bounded/materialization errors.
+2. **Keep checked operation facts behind debug/admin tooling.** Do not let
+   `marrow debug explain`, trace, dry-run, LSP, backup, or serve infer runtime
+   operations from raw paths. They should render checked operation facts:
+   root/index/field reads, traversal scans, write plan steps, index maintenance,
+   transaction grouping, and bounded/materialization errors.
 
-3. **Send Lane 10 back to completion before claiming Lanes 5-10 complete.** Local
-   docs show Lane 10 is active, not complete. Its raw/path protocol cleanup is
+3. **Preserve Lane 10's integrated boundary.** Raw/path protocol cleanup is
    foundation-level because a raw production protocol can undo Lane 8's runtime
    cleanup from the outside.
 

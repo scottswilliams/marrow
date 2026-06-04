@@ -14,11 +14,15 @@ The v0.1 tooling contract is:
   store APIs;
 - render durable places from checked/catalog facts, not by decoding physical
   engine keys into source-shaped paths;
-- page large results with opaque cursors;
+- page production previews and protocol reads with opaque cursors;
 - report typed data findings such as `data.decode`, `data.key_type`, and
   `data.orphan`;
 - surface tree-cell store faults through the `store.*` family;
 - keep repair as explicit maintenance code over modeled data.
+
+`marrow data dump` is the operator/admin exception: it intentionally walks the
+whole typed store snapshot and prints every record. It is not a production
+preview API.
 
 Typed backup/restore is a tooling and backup-protocol contract, not a raw
 archive replay: it carries a typed manifest binding the data to the source
@@ -98,8 +102,10 @@ The record count is a full store scan; it is exact, not an estimate.
 
 ## `marrow data dump`
 
-Prints every stored `(path, value)` in encoded order. Values render as canonical
-payload bytes; text uses UTF-8 when possible and `0x<hex>` otherwise.
+Prints every stored `(path, value)` in encoded order from one read-only snapshot.
+This is an explicit operator/admin dump, so it is allowed to walk the whole store;
+production preview or protocol reads must use bounded pages. Values render as
+canonical payload bytes; text uses UTF-8 when possible and `0x<hex>` otherwise.
 
 ```
 $ marrow data dump ./project
@@ -204,7 +210,8 @@ It surfaces three data findings plus typed store corruption:
   schema no longer declares, left behind by a dropped root or field. Beyond
   verifying declared cells, integrity enumerates the store's actual data cells
   and flags any the schema does not account for; derived index cells are never
-  flagged.
+  flagged. Restore rejects this condition before activation instead of treating
+  it as production archive replay.
 
   ```
   ^books(7).blurb: data.orphan: stored data is under a saved member the schema no longer declares

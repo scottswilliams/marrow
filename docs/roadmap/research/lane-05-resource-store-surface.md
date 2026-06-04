@@ -4,10 +4,9 @@ Audit date: 2026-06-04
 
 Scope: Lane 5 resource/store surface for Marrow v0.1. This is research and architecture review, not implementation.
 
-Local state inspected:
-
-- `marrow` was audited at `854cd15` (`docs(roadmap): list lanes 5 and 7 in completed foundations`), matching `main` and `origin/main`. At final verification, the primary `/Users/scottwilliams/Dev/marrow` worktree was checked out on `research/lane-09-source-native-evolution-audit` at that same commit and contained sibling untracked research docs outside this audit's write set, so this report was kept in the isolated `architecture-lane-05-resource-store-audit` worktree.
-- `marrow-decisions` main had unstaged edits in `adr/foundations/01-architecture-laws-and-five-layers.md` and `adr/storage-engine/02-transactions-commits-and-recovery.md`; this report treats those edits as part of the current decision state.
+Archive note: this report preserves historical research findings only. Its
+environment notes are not current authority; use the accepted ADRs and canonical
+docs for product truth.
 
 ## 1. Local Vision Summary
 
@@ -21,9 +20,12 @@ The grammar matches that surface. It parses `resource_decl`, `store_decl`, and `
 
 Typed references are value-level identities, not foreign-key relationships. A saved field such as `authorId: Id(^authors)` accepts only `Id(^authors)`, rejects raw scalars and other stores, and round-trips as the same identity value (`docs/language/types.md:69-78`). The docs also explicitly defer referential actions: no FK constraint, cascade, join, or existence check is implied (`docs/language/types.md:92-98`).
 
-The updated decision state reinforces the model. The local unstaged foundation ADR edit says the access path is source: store, index, and fields are hand-written rather than selected by a hidden runtime layer (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56-61`). The local unstaged transactions ADR edit says lowering may only elide provably redundant work and never choose semantically distinct operation shapes by runtime statistics (`/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28-35`).
+The historical decision context reinforces the model. The historical foundation ADR edit says the access path is source: store, index, and fields are hand-written rather than selected by lower layers (`marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56-61`). The historical transactions ADR edit says lowering may only elide provably redundant work and never choose semantically distinct plans by runtime statistics (`marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28-35`).
 
-There is one important ADR conflict. The Lane 5 doc says resource-name identities such as `Book::Id` exist only as rejection fixtures (`docs/roadmap/lanes/lane-05-resource-store-surface.md:15-16`). The language docs say first-surface Marrow has no user-defined type aliases and uses `Id(^store)` for saved identities (`docs/language/types.md:51-53`). But the accepted catalog identity ADR still says a single-store resource auto-exports a `Book::Id` alias (`/Users/scottwilliams/Dev/marrow-decisions/adr/catalog-identity/01-catalog-addressed-resource-trees.md:31-35`), and the typed-reference ADR still illustrates resource identities as `Author::Id` before later repeating the `Book::Id` alias rule (`/Users/scottwilliams/Dev/marrow-decisions/adr/language/05-typed-references-and-enums.md:16-18`, `:32-34`). Current implementation and canonical language docs reject the alias, so the ADR packet is stale on this point.
+The audit found an ADR conflict around resource-owned identity aliases such as
+`Book::Id`. That was historical evidence for the reconciliation pass; current
+accepted ADRs and canonical docs reject resource-owned aliases in favor of
+`Id(^store)`.
 
 ## 2. Implementation Summary
 
@@ -35,7 +37,7 @@ Index checking is store-centered and intentionally narrow. `check_store_index_ar
 
 The checker models identity nominally by store root. `type_compatible` accepts `MarrowType::Identity(a)` only against the same root (`crates/marrow-check/src/typerules.rs:116-123`), and diagnostics render identity as `Id(^root)` (`crates/marrow-check/src/typerules.rs:246-255`). Tests verify same-shape resources in different stores have distinct identities and that `Book::Id` plus legacy constructors are unresolved (`crates/marrow-check/tests/project.rs:4195-4244`, `:4285-4310`). The focused contract test repeats that resource-named identity is rejection-only (`crates/marrow-check/tests/resource_store_contract.rs:107-130`).
 
-The name resolver is module-aware for resources and project-wide only for saved roots. Bare resource names resolve in the referencing module only; cross-module scans enrich diagnostics but do not first-match a foreign resource (`crates/marrow-check/src/resolve.rs:79-163`). Saved roots use `resolve_store_by_root` (`crates/marrow-check/src/resolve.rs:188-208`). `marrow debug explain` calls the same resolver for names and `resolve_store_by_root` for saved paths (`crates/marrow/src/cmd_explain.rs:64-83`, `:249-263`).
+The name resolver is module-aware for resources and project-wide only for saved roots. Bare resource names resolve in the referencing module only; cross-module scans enrich diagnostics but do not first-match a foreign resource (`crates/marrow-check/src/resolve.rs:79-163`). Saved roots use `resolve_store_by_root` (`crates/marrow-check/src/resolve.rs:188-208`). `marrow debug explain` calls the same resolver for names and `resolve_store_by_root` for saved paths.
 
 One dead/public residue remains: `resolve_resource_by_name_any` is still a public function in `crates/marrow-check/src/resolve.rs:210-221`. Current search found no production caller, and `cmd_explain` no longer uses it, but its public existence contradicts the Lane 5 doc statement that no production helper performs project-wide resource-name search (`docs/roadmap/lanes/lane-05-resource-store-surface.md:25-27`). This is not enough to reverse the model, but it is enough to keep "no duplicate semantic owner" from being fully proven.
 
@@ -67,7 +69,7 @@ Keep the current split model: `resource` is shape, `store ^root(...)` is durable
 
 Use resource-owned identity, such as `Book::Id`. This is familiar to ORM users and short when a resource has one store, but it becomes misleading the moment `Book` is stored in `^books` and `^archivedBooks`. The current tests already prove those identities must remain distinct. Reviving `Book::Id` would either be a compatibility alias with surprising absence in multi-store cases or a second semantic model.
 
-Collapse resource and store into `table`/`model`. This would align with SQL, Prisma, Ent, and Gel, and make indexes/PKs easier to explain. It would also lose Marrow's local/saved shape reuse and encourage table-style migrations, FKs, hidden access-strategy expectations, and storage-schema coupling.
+Collapse resource and store into `table`/`model`. This would align with SQL, Prisma, Ent, and Gel, and make indexes/PKs easier to explain. It would also lose Marrow's local/saved shape reuse and encourage table-style migrations, FKs, hidden execution-strategy expectations, and storage-schema coupling.
 
 Adopt a document collection model with `_id` inside each resource. This would be intuitive for MongoDB users, but it would conflate identity key fields with stored fields and weaken the current rule that keys live in the address, not in the resource body.
 
@@ -86,21 +88,26 @@ The long-term model is strong: `Id(^store)` is idiomatic for Marrow because Marr
 The main refinements are not conceptual reversals. They are cleanup and coherence fixes:
 
 - delete or make private the dead `resolve_resource_by_name_any` surface;
-- update ADR text that still advertises `Book::Id`;
+- historical cleanup target: remove ADR text that advertised `Book::Id`;
 - clarify the internal encoding distinction for identity reference values so docs, ADRs, and comments agree on whether value bytes include store identity or whether the store identity is supplied by field schema/catalog context;
 - keep top-level-only index args for v0.1, but write a future design only after the write planner has one production owner for nested/child index maintenance.
 
 ## 6. Long-Term Risks
 
-Duplicate semantics: the live implementation has no production caller for project-wide resource first-match resolution, but the public `resolve_resource_by_name_any` helper remains. Even dead public helpers are architecture hazards in a checker crate because tooling, LSP, or future CLI code can import them and silently re-open the old path.
+Duplicate semantics: the audited implementation has no production caller for project-wide resource first-match resolution, but the public `resolve_resource_by_name_any` helper remains. Even dead public helpers are architecture hazards in a checker crate because tooling, LSP, or future CLI code can import them and silently re-open the old path.
 
-Stale canonical/ADR conflict: language docs, tests, and Lane 5 docs reject `Book::Id`, while accepted ADRs still describe it as store-derived alias sugar. This is not harmless prose: identity surface is one of the highest-leverage API choices in Marrow.
+Historical canonical/ADR conflict: language docs, tests, and Lane 5 docs
+rejected `Book::Id` while accepted ADRs described it as store-derived alias
+sugar. This was not harmless prose: identity surface is one of the
+highest-leverage API choices in Marrow.
 
-Encoding ambiguity: docs/ADRs say identity values encode store identity plus key (`docs/language/types.md:76-77`, `/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/04-physical-key-and-value-encoding.md:66-67`), while checker comments warn that a stored identity carries only keys and relies on the typed field context to distinguish stores (`crates/marrow-check/src/typerules.rs:160-170`). That may be an internal leaf-value-vs-index-key distinction, but it must be named precisely before backup/restore and corruption checks harden.
+Encoding ambiguity: docs/ADRs say identity values encode store identity plus key (`docs/language/types.md:76-77`, `marrow-decisions/adr/storage-engine/04-physical-key-and-value-encoding.md:66-67`), while checker comments warn that a stored identity carries only keys and relies on the typed field context to distinguish stores (`crates/marrow-check/src/typerules.rs:160-170`). That may be an internal leaf-value-vs-index-key distinction, but it must be named precisely before backup/restore and corruption checks harden.
 
 Weak Rust shape: no clippy allow/expect suppressions were found in the searched Lane 5 semantic surfaces, but `crates/marrow-check/src/checks.rs` is still 3,521 lines and remains a broad semantic dispatcher. This does not invalidate Lane 5's public contract, but it raises the cost of proving there is only one semantic owner per invariant.
 
-Roadmap sediment: Lane 5 is durable and clean, but sibling lane docs still contain temporary worktree/target paths even where status says complete or integrated (`docs/roadmap/lanes/lane-06-catalog-presence-ledger.md:11-15`, `docs/roadmap/lanes/lane-07-tree-cell-store-engine.md:11-15`, `docs/roadmap/lanes/lane-09-evolution-activation.md:11-15`). Lane 10 is also locally not reported complete despite the prompt's claim (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:10-14`). Do not use chat memory as status authority.
+Roadmap sediment found during the audit included completed lane docs that carried
+temporary execution scaffolding and lane-status drift. That was historical
+evidence for the cleanup pass, not current product authority.
 
 Unidiomatic permanent narrowness risk: top-level-only index args are acceptable v0.1, but if permanent they will feel weaker than document, ORM, and graph/object systems. The constraint is justified only if Marrow keeps an explicit future path for bounded owned-child or nested-group index maintenance through one planner-owned API.
 
@@ -110,7 +117,9 @@ Hidden compatibility glue risk: typed references without FK semantics are clean 
 
 1. Delete or privatize `resolve_resource_by_name_any` in `crates/marrow-check/src/resolve.rs`, then add an absence scan or focused test proving no public production API can project-wide first-match a resource name.
 
-2. Update the ADR packet to remove `Book::Id` alias claims from catalog identity and typed-reference ADRs. Do not add a new ADR; amend the existing accepted records so they match canonical language docs and implementation.
+2. Historical recommendation: update the ADR packet to remove `Book::Id` alias
+   claims from catalog identity and typed-reference ADRs. The reconciliation
+   pass amends the existing accepted records rather than adding a new ADR.
 
 3. Clarify identity value encoding in one owner. Decide whether saved identity leaf payloads physically include store ID or are key-only under a field schema that names the store. Then align `docs/language/types.md`, storage ADR 04, `typerules.rs` comments, backup/restore expectations, and corruption diagnostics.
 
@@ -120,6 +129,8 @@ Hidden compatibility glue risk: typed references without FK semantics are clean 
 
 6. Split `crates/marrow-check/src/checks.rs` by semantic invariant during Lane 11 or the next checker-owning lane. Prioritize type annotations/identity types, saved access/key checks, call resolution, collection traversal, and write/read admission. The goal is not aesthetics; it is making duplicate semantic owners easier to prove absent.
 
-7. Remove roadmap execution sediment from completed sibling lane docs before using them as architecture state. Keep worktree and target-dir instructions in prompts or orchestrator notes, not durable lane contracts.
+7. Remove roadmap execution sediment from completed sibling lane docs before
+   using them as architecture state. Keep execution instructions in prompts or
+   orchestrator notes, not durable lane contracts.
 
 8. Preserve typed references as non-FK values. Add any future referential actions as an explicit relationship/resource layer with its own source syntax, planner effects, evolution obligations, and tests; do not grow them out of `Id(^store)` fields implicitly.

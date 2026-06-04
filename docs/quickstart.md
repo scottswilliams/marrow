@@ -198,7 +198,7 @@ marrow data integrity .
 ```
 
 ```text
-ok: /tmp/marrow-docs/shelf integrity verified (8 records)
+ok: store integrity verified (8 records)
 ```
 
 Every `marrow data` subcommand also takes `--format text|json|jsonl` for

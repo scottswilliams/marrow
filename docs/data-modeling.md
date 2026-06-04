@@ -212,7 +212,9 @@ keyed child layers:
 Marrow has no implicit foreign keys. Saving an identity does not create a
 constraint, cascade, or join; it is a typed value. Applications enforce
 relationship rules in code, or model the relationship as a resource plus an
-index.
+index. A reference may dangle, but that is still visible to compiler/data
+integrity flows as an `Id(^store)` whose referent is absent; Marrow reports that
+fact rather than inventing implicit referential actions.
 
 Model a reference by storing the related record's store-aware identity. The
 canonical type is `Id(^authors)`.

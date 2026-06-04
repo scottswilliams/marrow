@@ -384,7 +384,7 @@ doing so is a parse error.
 have no accepted statement form or formatter round trip in v0.1; the parser
 reports them as reserved when they are used as statement keywords.
 
-An `assert` precondition statement is planned write-path surface that v0.1 does
+An `assert` precondition statement is a planned write-path surface that v0.1 does
 not implement: there is no keyword for it, and it is not part of the accepted
 grammar. It is noted here so its absence is intentional rather than an oversight;
 the syntax in this reference is what the current implementation accepts. A

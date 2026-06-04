@@ -15,8 +15,8 @@ and future local APIs are renderers over those facts.
 |---|---|---|---|
 | `marrow debug explain` | Keep as diagnostic/admin explanation. | Checked resolver and saved-path classifier through shared explain facts. | Does not expose physical keys, production preview contracts, or runtime-strategy output. |
 | `marrow data roots` / `stats` | Keep as operator/admin inspection. | Checked saved roots plus typed tree-cell traversal. | Exact scans are allowed for admin commands; they are not production preview APIs. |
-| `marrow data dump` | Keep only as operator/admin inspection while product naming remains open. | Checked/catalog path rendering plus typed data traversal. | May expose canonical payload bytes; not a backup/restore format, sync format, or production data API. |
-| `marrow data get` | Keep only as operator/admin point inspection while product naming remains open. | Checked data-query resolution plus typed store read. | Presence states are typed facts; raw payload bytes remain diagnostic/admin output. |
+| `marrow data dump` | Keep as operator/admin inspection. | Checked/catalog path rendering plus typed data traversal. | May expose canonical payload bytes; walks a full stable snapshot by explicit operator request; not a backup/restore format, sync format, production preview, or production data API. |
+| `marrow data get` | Keep as operator/admin point inspection. | Checked data-query resolution plus typed store read. | Presence states are typed facts; raw payload bytes remain diagnostic/admin output. |
 | `marrow data integrity` | Keep as data-integrity tooling. | Checked schema, accepted catalog IDs, typed store traversal, and actual-cell orphan scan. | Reports `data.orphan` with repair guidance. It is read-only and does not bless orphaned managed data. |
 | `marrow serve debug_data_*` | Keep as v0.1 loopback debug/admin protocol. | Shared data-query, path, preview, cursor, and metadata facts. | Bounded reads only, per-connection snapshot, stale-epoch refusal, no production app/sync/backup/raw-path contract. |
 | `run --trace` | Keep as debug execution rendering. | Runtime statement/write observations using checked source spans and typed write targets. | Observes behavior; it does not change run semantics or expose raw storage paths. |
@@ -32,10 +32,9 @@ and future local APIs are renderers over those facts.
 | Unbounded scans | Allowed only for explicit operator/admin commands. | Typed store traversal under one stable snapshot. | Production previews and protocol reads must be bounded or paged. |
 | Generated API/server/sync language | Defer. | Future checked local API generated from shared facts. | Do not promote `debug_data_*`, raw bytes, raw paths, or ad hoc query language into production semantics. |
 
-## Open Product Choices
+## Follow-Up Boundaries
 
-`marrow data dump` and `marrow data get` remain diagnostic/admin surfaces while
-their final product names are unsettled. The implementation must keep them as
-thin fact renderers either way: if the product decision is to rename, delete, or
-rebuild them under a checked preview surface, that change must not add raw path
-compatibility, runtime-strategy exposure, or a second semantic classifier.
+`marrow data dump` and `marrow data get` are diagnostic/admin surfaces. The
+implementation must keep them as read-only, checked-fact renderers. If a future
+production local API exists, it is generated from shared checked facts instead
+of promoting these inspection commands.

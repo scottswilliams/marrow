@@ -11,6 +11,13 @@ The saved-data model these changes operate on is defined in
 [Data Modeling](data-modeling.md) covers how to shape it. Future project
 compilation ideas live in [future/data-evolution.md](future/data-evolution.md).
 
+Apply is shaped as a compiler-owned activation job created from the exact
+preview witness. V0.1 executes that job immediately in one transaction, but the
+shape is durable: verify the witness, perform catalog/data/index work, stamp the
+commit, and emit evidence. Future large rebuilds, backfills, and transforms can
+be chunked or resumed as the same job model instead of becoming migration
+scripts or hidden database history.
+
 ## What A Change Requires
 
 A schema change is a source change to a `resource` or `store` declaration. Some
@@ -25,7 +32,7 @@ schema does not fully describe until explicit data-evolution work runs.
 | Change a leaf's type | A populated leaf-type change fails closed: the stored bytes were written under the old type, so the new type cannot read them — even when its decoder would accept the old bytes — and `marrow evolve preview` reports it. A transform may not read the member it replaces, so an in-place reinterpret is not the resolution. Instead add a new field of the new type, populate it with an `evolve transform` computed from the old field, then retire the old field. The check is total over leaf-position members — every plain field and every `map[K, V]` value, required and sparse alike — and detects any change to a member's leaf type: scalar to scalar, scalar to an enum or a reference, or one named type to another. An empty leaf has no data to reinterpret and changes freely. |
 | Remove or unselect an enum member | While saved data still selects the member, the change fails closed: a stored value carries the member's stable identity, which the new enum no longer offers. Removing the member, marking it `category`, or giving it children all make it unselectable, and `marrow evolve preview` reports repair-required. Every leaf referencing the enum is scanned, required and sparse alike, so a stored value naming the gone member is caught regardless of the holding field's requiredness. Migrate the affected records to a current member first. Reordering members keeps every identity and is a source change only. Renaming a member is identity-preserving the same way a field rename is: declare it with `evolve rename`, and the member's stable identity moves to the new spelling so stored values addressed by that identity stay valid. A bare source rename with no `evolve rename` intent is read as the old member removed plus a new one added, so a stored value naming the old member then fails closed at preview. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
-| Remove a field | A sparse drop nothing reads is a no-op: its data lingers harmlessly under a stable id source no longer declares. Populated destructive removal needs `evolve retire` plus approval. |
+| Remove a field | If no stored cells exist for that field, removal is a source/catalog no-op. Stored cells under a field the current source no longer declares are `data.orphan`; populated destructive removal needs `evolve retire` plus approval, or maintenance repair that deletes or moves the data before activation. |
 | Change a store's identity key shape | Not supported over saved data. Changing the key arity or any identity key type fails closed: existing records are keyed by the old shape and the new shape cannot address them. Model a new store and migrate with maintenance code. |
 | Re-key a keyed layer | Not supported over populated entries. A keyed layer — a keyed-leaf layer (including `sequence`/`map` sugar) or an author-written keyed-group layer — keys its entries by its key shape; changing that layer's key arity or any key type fails closed — existing entries are keyed by the old shape and the new one addresses none of them. A keyed-leaf `map[K, V]` is a leaf position whose token folds in both its key shape and its value type, so a change to its key arity or key type is detected as a leaf type change exactly like a value-type change; a keyed-group layer is detected as a structural divergence. Either way `marrow evolve preview` reports it; model a new layer and migrate with maintenance code. |
 | Reshape a group to or from a keyed layer | Not supported over populated data. Turning a plain group into a keyed layer (or the reverse) changes the durable shape its data occupies, so it fails closed: the old data lives under the old shape and the new shape cannot read it. `marrow evolve preview` reports it; model a new member of the new shape and migrate with maintenance code. |
@@ -326,6 +333,11 @@ maintained by writes before it is readable, but production reads may not use it
 until the activation job verifies the whole derived tree and publishes the
 catalog state that makes it visible.
 
+Activation receipts record the source digest, previous and next catalog facts,
+engine profile, affected stable IDs, counts, approvals, and final commit as
+evidence. Tooling, backup, restore, and support may render or verify that
+evidence, but receipts are not executable migration history.
+
 ## Maintenance Mode
 
 Ordinary `marrow run` protects managed roots. Two operations are rejected
@@ -369,10 +381,11 @@ the data to the source digest, accepted catalog epoch, engine profile, and
 value-codec version it was written under, plus the canonical tree-cell data
 stream as typed cell targets; the generated indexes are derived, so the stream
 omits them and restore rebuilds them from the data. Restore validates that
-binding and the data against the schema, in one transaction, into an empty store.
-Backups are deterministic and portable across conforming backends at the same
-layout and codec, but byte identity requires matching accepted catalog facts,
-engine profile, value codec, and stored data. Stable IDs are random opaque
+binding and the data against the schema, rejects managed cells the current
+source/catalog does not declare, and activates only after the one transaction
+verifies. Backups are deterministic and portable across conforming backends at
+the same layout and codec, but byte identity requires matching accepted catalog
+facts, engine profile, value codec, and stored data. Stable IDs are random opaque
 values that freeze when accepted, so divergent catalog histories may still
 freeze distinct accepted IDs for source that looks equivalent.
 

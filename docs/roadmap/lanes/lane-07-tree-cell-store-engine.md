@@ -1,15 +1,12 @@
 # Lane 7: Tree-Cell Store And Engine Profile
 
-> For agentic workers: use the lane loop in `/Users/scottwilliams/Dev/AGENTS.md`.
-> Lane 7 owns the store crate boundary and the direct production callers needed
-> to keep that boundary compiling.
-
 Goal: make the Marrow v0.1 store foundation a typed tree-cell store keyed by
 stable catalog IDs, typed key values, sequence state, index cells, commit
 metadata, and an explicit engine profile.
 
-Status: historical lane plan. The durable store contract below is the useful
-reference; do not treat old lane execution details as active state.
+Status: integrated foundation. Future changes in this area are regressions,
+hardening work, or explicit follow-up lanes; this file is a historical contract
+reference.
 
 ## Store Contract
 
@@ -66,16 +63,11 @@ transactions, rollback, nested savepoints, and read-your-writes behavior. Public
 tests cover the typed tree-cell contract through `TreeStore::memory`,
 `TreeStore::open`, and `TreeStore::open_read_only`.
 
-## Integration Blockers
+## Consumer Status
 
-There is no active Lane 8 blocker in this worktree. Runtime, CLI, and serve no
-longer import removed raw store modules. They use checked facts, checker-owned
-source path parsing where text paths are still needed, and typed tree-cell
-operations.
-
-Lane 7 is integration-ready only after fresh store gates, affected runtime/CLI
-tests, workspace compile, formatter/diff checks, and soundness plus idiom/spec
-reviews pass with no production-reachable raw storage surface.
+Runtime, CLI, and serve no longer import removed raw store modules. They use
+checked facts, checker-owned source path parsing where text paths are still
+needed for diagnostics, and typed tree-cell operations.
 
 ## Consumer Migration Contract
 
@@ -122,23 +114,9 @@ raw archive replay. If a new store primitive is needed, it must be typed by
 catalog IDs, `DataPathSegment`, and `SavedKey` values rather than source-shaped
 path segments or raw backend bytes.
 
-## Verification
+## Reopen Criteria
 
-Focused store gates must run from the active integration worktree with an
-explicit isolated target directory and explicit manifest path.
-
-Architecture scans must prove raw saved-path/archive APIs are absent from the
-store crate public surface. Matches are acceptable only for private substrate
-tests, downstream blocker references, or docs that explicitly exclude raw
-storage from production semantics.
-
-## Review Lenses
-
-Soundness review attacks raw backend/path/archive reachability, source-name
-physical identity, rollback, redb read-only and one-writer behavior, corrupt
-metadata, catalog-backed reference/enum values, and typed tree-cell invariants.
-
-Idiom/spec review checks that touched Rust stays small and direct, comments
-explain durable rationale only, tests assert focused invariants, docs describe
-the v0.1 typed contract, and no compatibility shim exists merely to keep old
-tests green.
+Reopen this lane only for a concrete store-surface regression: public raw
+saved-path/archive reachability, source-name physical identity, rollback or
+read-only native-store unsoundness, corrupt metadata handling, catalog-backed
+reference/enum value encoding, or typed tree-cell invariant drift.

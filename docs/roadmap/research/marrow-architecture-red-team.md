@@ -1,13 +1,9 @@
 # Marrow Architecture Red-Team
 
-Scope: architecture research audit, not implementation. I inspected the current git state for both Marrow repositories before trusting any docs: `/Users/scottwilliams/Dev/marrow` is on `research/lane-09-source-native-evolution-audit` at `f0623c9287f3f2483c6ee5996f13f4f16b324a84` with untracked `docs/roadmap/research/`; this report was written in the fresh worktree `/Users/scottwilliams/Dev/marrow-architecture-red-team-audit` on `research/architecture-red-team-audit` at `3f7178a3d6712f2e715259574fc446a552f34302`. `/Users/scottwilliams/Dev/marrow-decisions` is on `main` at `7ce51f17f8037201747baa3cffdf0fdbc214aaae` with unstaged edits in `adr/foundations/01-architecture-laws-and-five-layers.md` and `adr/storage-engine/02-transactions-commits-and-recovery.md`; those edits are included below.
-
-Lane 16 resolution note: this report is historical audit evidence. Current v0.1
-tooling has moved data query/path/preview/integrity/explain/metadata facts into
-`marrow_check::tooling`; `serve` no longer imports CLI data semantics; LSP
-diagnostic positions count UTF-16 code units; and restore now rejects orphaned
-managed cells before commit. File references to deleted prototype modules below
-are preserved only as audit-time evidence.
+Scope: architecture research audit, not implementation. Archive note: this
+report preserves historical research findings only. Its environment notes are
+not current authority; use the accepted ADRs and canonical docs for product
+truth.
 
 Skeptical thesis: Marrow is trying to own a language, compiler, catalog, runtime, store, evolution system, backup format, CLI, LSP, and data protocol at once. That is exactly the kind of ambition that can turn a clean language into a private database engine with duplicate semantics and accidental compatibility promises. The burden of proof is on Marrow to show that these pieces are one idiomatic tree/database language, not a pile of machinery that SQLite, Postgres, MongoDB, CouchDB, or a migration framework already solved better.
 
@@ -17,11 +13,14 @@ The strongest local vision is not SQL-shaped. Marrow says a resource is a typed 
 
 The language docs make the same point in source-native terms. Saved data is logical, while Marrow decides physical storage for roots, keyed layers, fields, and indexes (`docs/language/resources-and-storage.md:13-15`). `^books(id)` is a saved `Book`, with identity canonically modeled as `Id(^books)` (`docs/language/resources-and-storage.md:52-56`). Durable identity is owned by an invisible catalog, not by source spelling; stable IDs are random, opaque, and advanced by durable flows while `check` stays read-only (`docs/language/resources-and-storage.md:179-187`, `docs/data-evolution.md:149-184`). Managed writes update indexed data coherently and reject raw untyped writes into managed roots (`docs/language/resources-and-storage.md:324-350`, `609-617`). Backup is supposed to be a typed manifest plus canonical tree-cell data stream, not a raw engine copy (`docs/language/resources-and-storage.md:541-555`, `docs/data-evolution.md:298-309`).
 
-The most non-SQL part is the cost model. Marrow says the source names the store, index, and fields; the access path is the source (`docs/language/cost-model.md:3-5`). Cost is counted in point reads, scans, writes, index touches, and commits as properties of the checked program, not runtime statistics (`docs/language/cost-model.md:11-16`). Hidden traversal is a compile error, while explicit traversal is valid (`docs/language/cost-model.md:43-49`). Checked lowering may elide redundant work but does not choose between semantically distinct operation shapes from statistics (`docs/language/cost-model.md:51-62`).
+The most non-SQL part is the cost model. Marrow explicitly says it has no query optimizer: the source names the store, index, and fields; the access path is the source (`docs/language/cost-model.md:3-5`). Cost is counted in point reads, scans, writes, index touches, and commits as properties of the checked program, not runtime statistics (`docs/language/cost-model.md:11-16`). Hidden traversal is a compile error, while explicit traversal is valid (`docs/language/cost-model.md:43-49`). The planner may elide redundant work but does not choose between semantically distinct plans from statistics (`docs/language/cost-model.md:51-62`).
 
-The unstaged foundation ADR edits sharpen this into laws: one program is source files, one catalog, attached data, and a target engine compiled together; source declares, catalog preserves identity, compiler checks source/catalog/data/engine together, runtime executes checked IR, and engine stores ordered bytes (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:20-30`). The new law 15 says access path is source and no lower layer silently selects another operation shape (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56-61`). The unstaged transaction ADR likewise says lowering is a property of checked source, not a statistics-based strategy selector, and commit metadata should address every committed write (`/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28-35`, `55-62`).
+The historical foundation ADR edits sharpen this into laws: one program is source files, one catalog, attached data, and a target engine compiled together; source declares, catalog preserves identity, compiler checks source/catalog/data/engine together, runtime executes checked IR, and engine stores ordered bytes (`marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:20-30`). The new law 15 says access path is source and there is no optimizer below the language (`marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56-61`). The historical transaction ADR likewise says lowering is a property of checked source, not a cost-based optimizer, and commit metadata should address every committed write (`marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28-35`, `55-62`).
 
-Important doc drift changes the audit posture. The roadmap README claims the parser/checker/runtime, resources, redb storage, managed writes, transactions, CLI, inspection tools, LSP, and data server exist today (`docs/roadmap/README.md:3-9`), while the execution plan still queues Lane 10 as next and lists Lane 10/Lane 11 as remaining work (`docs/roadmap/prototype-to-v1-execution-plan.md:166-171`). The Lane 10 doc itself says early status is read-only audit and first code phase begins with backup APIs (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:14-18`), but the actual code contains backup/restore and `debug_data_*` serve operations. Lane 11 still cites `crates/marrow-store/src/archive.rs` as evidence (`docs/roadmap/lanes/lane-11-rust-hardening.md:151-166`), but that file does not exist in the current worktree. Also, accepted ADR text still advertises `Book::Id` alias sugar (`/Users/scottwilliams/Dev/marrow-decisions/adr/catalog-identity/01-catalog-addressed-resource-trees.md:31-35`), while the lane and language docs say `Id(^store)` is the canonical surface and resource-name identities are rejection fixtures (`docs/roadmap/lanes/lane-05-resource-store-surface.md:15-16`). Treat roadmap docs as hypotheses, not truth.
+The audit recorded doc drift as a risk: server wording, lane status, old raw
+archive evidence, and resource-owned identity alias claims could make archived
+or stale prose look authoritative. That drift is historical evidence for this
+cleanup pass, not current status.
 
 ## 2. Implementation Summary
 
@@ -36,29 +35,14 @@ The runtime/write path is much less fake than a prototype. `WritePlan` has expli
 The red-team findings are also concrete:
 
 - Proposal-only evolution identity appears mismatched between checker and runtime. Discharge explicitly handles brand-new proposal IDs (`crates/marrow-check/src/evolution/discharge.rs:518-522`, `1070-1074`), and tests call a brand-new required member with `evolve default` activatable (`crates/marrow-check/tests/evolution_discharge.rs:3915-3919`). But checked executable places fill member catalog IDs from accepted facts and default to empty when no accepted member ID exists (`crates/marrow-check/src/executable/place.rs:203-211`). Runtime default and transform apply locate targets by the `CheckedSavedPlace` member catalog ID (`crates/marrow-run/src/evolution/backfill.rs:36-50`, `crates/marrow-run/src/evolution/transform.rs:64-76`). Existing runtime apply tests avoid the hard case by accepting the expanded schema first (`crates/marrow-run/tests/evolution_apply.rs:218-223`). This is a v0.1 blocker if source-native add-required/default apply is in scope.
-- Commit metadata at the physical durable boundary was a confirmed risk before
-  Lane 15. The current runtime aggregates managed writes and generated index
-  writes into the outer durable transaction, and tests assert that commit
-  metadata covers that whole transaction.
-- Snapshot plus write state was a confirmed risk before Lane 15. The current
-  store contract prohibits overlapping read snapshots and write transactions on
-  one handle, rejects same-handle writes while a snapshot is pinned, and covers
-  the rule in memory/redb conformance.
-- At red-team time, the path/query surface was duplicated: `data get` parsed
-  source path text and `serve` owned a distinct JSON segment codec. Lane 16
-  resolved the semantic-owner problem by moving data-query resolution,
-  path-shape validation, checked path rendering, bounded previews, and cursor
-  contracts into `marrow_check::tooling`; CLI and serve now adapt their
-  wire/text formats around those facts.
-- Debug/admin protocols are intentionally demoted, but still tempting. Serve
-  only dispatches `debug_data_*`, and tests reject non-debug `data_*`
-  operations (`crates/marrow/src/serve/protocol.rs:77-100`,
-  `crates/marrow/src/serve/protocol/tests.rs:93-100`). That is good. It also
-  means Marrow does not yet have a production data API.
-- Integrity is schema-aware, and restore rejects orphan backup cells before
-  commit. `data integrity` reports orphan cells already present in a local
-  store; Lane 16 moved integrity/orphan facts into `marrow_check::tooling` so
-  adapters do not own a second classifier.
+- Commit metadata is stamped per managed plan, not clearly per physical transaction. `Env::apply_plan` calls `stamp_managed_write` for every plan (`crates/marrow-run/src/env.rs:240-264`), while in-transaction plans apply without committing (`crates/marrow-run/src/write_plan.rs:80-83`). A multi-write transaction can therefore risk metadata describing the last plan rather than the whole durable commit. This conflicts with the ADR intent that every committed write be addressable by commit metadata (`marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:55-62`).
+- Snapshot semantics need a conformance law for snapshot plus open write transaction. Memory reads the pinned snapshot whenever one exists (`crates/marrow-store/src/mem.rs:23-29`). Redb says an open write transaction takes precedence over the pinned read view (`crates/marrow-store/src/redb.rs:149-160`, `453-457`). Current conformance checks a snapshot against later writes, but not the combined snapshot/write state (`crates/marrow-store/src/conformance.rs:161-176`).
+- At audit time, the path/query surface was duplicated between CLI data tools and
+  serve protocol adapters. Lane 16 moved shared query, path, preview, integrity,
+  metadata, and cursor facts into `marrow_check::tooling`; future adapters should
+  extend that facts layer rather than rebuilding transport-local classifiers.
+- Debug/admin protocols are intentionally demoted, but still tempting. Serve only dispatches `debug_data_*`, and tests reject non-debug `data_*` operations (`crates/marrow/src/serve/protocol.rs:77-100`, `crates/marrow/src/serve/protocol/tests.rs:93-100`). That is good. It also means Marrow does not yet have a production data API.
+- Integrity is schema-aware, but orphan handling is shallow by design. Restore verification counts declared-record integrity only and explicitly does not reject orphan debris (`crates/marrow/src/cmd_data/integrity.rs:80-103`). Orphan classification is catalog-ID membership and does not validate exact nesting (`crates/marrow/src/cmd_data/orphan.rs:81-88`). This may be a faithful-backup choice, but it is a sharp long-term compatibility edge.
 - There is weak Rust shape in high-risk areas. `checks.rs` is 3521 lines, `evolution/discharge.rs` is 2572 lines, `tree.rs` is 2175 lines, `lib.rs` in `marrow-check` is 1556 lines, and `binding.rs` is 1542 lines. `evolution/discharge.rs` holds top-level discharge, proposal scans, structural backstops, index repair, text ownership parsing, and accumulator state (`crates/marrow-check/src/evolution/discharge.rs:68-82`, `2048-2052`, `2186-2194`). Prototype syntax is fenced by checks, not removed from the grammar and walkers (`crates/marrow-check/src/prototype.rs:12-34`; see reserved `merge`/`lock` in `docs/language/syntax.md:371-386`).
 
 ## 3. External Precedents And Counter-Precedents
@@ -69,9 +53,9 @@ These comparisons should not force Marrow to become SQL. The best precedents are
 - MongoDB is a useful NoSQL counterweight to SQL normalization. Its modeling docs say related data can be embedded or referenced depending on access shape, and warn that production schema changes can be hard even with flexible schema (https://www.mongodb.com/docs/manual/data-modeling/best-practices/#link-related-data). Its schema validation docs frame validation as optional and flexible once an application schema is established (https://www.mongodb.com/docs/manual/core/schema-validation/). Marrow's stricter typed trees are differentiated if they keep the document/tree ergonomics while avoiding MongoDB's "schema lives partly in app convention" problem.
 - Datomic is a strong precedent for separating identity from user spelling. It assigns stable database entity IDs, uses idents for programmatic schema/enumeration names, and models unique domain identities separately (https://docs.datomic.com/schema/identity.html). Marrow's catalog IDs and `Id(^store)` are in the same design family: identity is durable and semantic, not a table/field spelling.
 - FoundationDB Record Layer is the closest architectural precedent for "semantics above ordered bytes." It is a structured record layer on FoundationDB with fields, types, schema evolution, primary and secondary indexes, nested data, and declarative queries (https://foundationdb.github.io/fdb-record-layer/index.html). Its FAQ explicitly avoids features with unbounded resource use unless constrained by primary-key order or indexes (https://foundationdb.github.io/fdb-record-layer/FAQ.html). This supports Marrow owning a tree-cell layer over redb, but it also strongly indicts unbounded materialization and broad traversal helpers.
-- Redb is a reasonable local substrate for v0.1 because it supplies durable ordered key-value transactions, multiple readers, and one writer, while staying below Marrow semantics (https://docs.rs/redb/latest/redb/struct.Database.html). This argues against "Marrow is building a database engine from scratch"; the current implementation is closer to a semantic layer over an embedded KV store.
-- SQLite is the strongest alternative for "do not own storage." SQLite's own docs say a SQLite file with a defined schema often makes an excellent application file format, with single-file documents, atomic transactions, cross-platform stability, and many language bindings (https://www.sqlite.org/appfileformat.html). But SQLite owns SQL statement access selection and transactions are SQL statement/connection semantics (https://sqlite.org/lang_transaction.html). Choosing SQLite would be a valid product pivot only if Marrow wants a SQL-ish table substrate or is willing to hide a table-mapping layer under the language. That hidden layer is exactly the compatibility glue Marrow is trying to avoid.
-- PostgreSQL is a poor target for v0.1 local Marrow, unless the product changes. It owns SQL access selection, join strategy, cost constants, and statistics tuning as server-operational concepts (https://www.postgresql.org/docs/current/runtime-config-query.html). Marrow's "source is access path" model is not inferior because it is not SQL; it is a different, more explicit modeling contract. The danger is only if Marrow grows hidden access selection while still claiming source-visible cost.
+- Redb is a reasonable local substrate for v0.1 because it supplies durable ordered key-value transactions, multiple readers, and one writer, while staying below Marrow semantics (https://docs.rs/redb/latest/redb/struct.Database.html). This argues against "Marrow is building a database engine from scratch"; the audited implementation is closer to a semantic layer over an embedded KV store.
+- SQLite is the strongest alternative for "do not own storage." SQLite's own docs say a SQLite file with a defined schema often makes an excellent application file format, with single-file documents, atomic transactions, cross-platform stability, and many language bindings (https://www.sqlite.org/appfileformat.html). But SQLite chooses access strategies over SQL statements and indexes (https://www.sqlite.org/queryplanner.html), and transactions are SQL statement/connection semantics (https://sqlite.org/lang_transaction.html). Choosing SQLite would be a valid product pivot only if Marrow wants a SQL-ish table substrate or is willing to hide a table-mapping layer under the language. That hidden layer is exactly the compatibility glue Marrow is trying to avoid.
+- PostgreSQL is a poor target for v0.1 local Marrow, unless the product changes. It examines possible execution strategies and join strategies, using costs and heuristics when exhaustive planning is too expensive (https://www.postgresql.org/docs/current/planner-optimizer.html). Its cost constants and statistics tuning are server-operational concepts (https://www.postgresql.org/docs/current/runtime-config-query.html). Marrow's "source is access path" model is not inferior because it is not SQL; it is a different, more explicit modeling contract. The danger is only if Marrow grows hidden execution-strategy selection while still claiming source-visible cost.
 - Gel/EdgeDB is a useful hybrid precedent: declarative schema files are edited, a migration plan is generated, user clarification may be required, and both schema files and migration files are checked in (https://docs.geldata.com/reference/datamodel/migrations). This is friendlier than raw SQL migrations but still retains migration files and server-generated plans. Marrow is more novel because it wants one-off source `evolve` intent rather than durable migration history.
 - Prisma Migrate and Alembic are migration failure-mode precedents. Prisma uses a shadow database to detect drift and potential data loss before generating migrations (https://www.prisma.io/docs/orm/prisma-migrate/understanding-prisma-migrate/shadow-database). Alembic explicitly says autogeneration is not perfect and generated migrations require human review (https://alembic.sqlalchemy.org/en/latest/autogenerate.html). Marrow's source-native approach is attractive because it makes rename/default/transform intent explicit, but the implementation must be even more exact because it rejects the safety net of a migration ledger.
 
@@ -79,7 +63,7 @@ These comparisons should not force Marrow to become SQL. The best precedents are
 
 Target SQLite directly. This is the simplest credible reversal: compile resources to SQLite tables, use SQLite transactions, use SQLite backup tooling, and let users inspect the file with ordinary tools. The cost is semantic leakage. Marrow would need to map trees, stable catalog IDs, keyed child layers, generated indexes, typed references, evolution witnesses, and source-visible cost onto tables. If that mapping is public, Marrow becomes an ORM/schema DSL over SQLite. If it is private, it becomes hidden compatibility glue with SQL semantics underneath. This is acceptable only if the product target pivots to "SQLite with a nicer language," not if the target remains source-native typed trees.
 
-Target PostgreSQL. This is not a v0.1 fit. It would buy concurrency, server ops, indexes, and mature declarative-query execution, but it would force Marrow into a remote DB/server product and pressure it toward SQL semantics. It also contradicts the local embedded target in the foundation ADRs and roadmap (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:19-28`, `33-43`). A Postgres backend might be a later adapter only if Marrow's tree-cell contract stays authoritative.
+Target PostgreSQL. This is not a v0.1 fit. It would buy concurrency, server ops, indexes, and mature access-strategy machinery, but it would force Marrow into a remote DB/server product and pressure it toward SQL execution semantics. It also contradicts the local embedded target in the foundation ADRs and roadmap (`marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:19-28`, `33-43`). A Postgres backend might be a later adapter only if Marrow's tree-cell contract stays authoritative.
 
 Use MongoDB/CouchDB-style documents without a compiler-owned catalog. This would be more NoSQL-idiomatic at first: store documents, validate at boundaries, and let shape evolve gradually. It loses Marrow's main differentiation: stable durable identity across renames, typed references as `Id(^store)`, fail-closed enum/member storage, source-visible access cost, and exact evolution witnesses.
 
@@ -103,13 +87,13 @@ Foundations worth keeping:
 - `Id(^store)` and catalog-backed stable IDs. This is more idiomatic for Marrow than `Book::Id`, because identity belongs to durable store role plus key, not resource shape.
 - Redb as private ordered-byte engine, not public backend semantics.
 - Store-owned indexes as generated lookup trees, not user-maintained secondary records.
-- Source-visible cost and hidden-traversal rejection. This is source-owned access, and that is the point.
+- Source-visible cost and hidden-traversal rejection. This is not a SQL optimizer, and that is the point.
 - Source-native evolution with explicit `rename`, `default`, `transform`, and `retire`, as long as it remains narrow and exact.
 - Typed backup/restore that validates source/catalog/engine/data and rebuilds derived indexes.
 
 Risky but defensible:
 
-- Source-owned access paths. This is elegant if Marrow stays access-pattern-first like a document/KV language; it becomes hostile if the language surface grows arbitrary joins, broad scans, or implicit traversals.
+- No query optimizer. This is elegant if Marrow stays access-pattern-first like a document/KV language; it becomes hostile if the language surface grows arbitrary joins, broad scans, or implicit traversals.
 - Source-native evolution. It is novel and costly, but useful if implemented as a compiler/catalog/data proof, not as a hidden migration ledger.
 - The typed tree-cell store. It is justified only while redb remains private and while store APIs do not expose raw physical key compatibility.
 - Debug/admin data inspection. It is useful, but it must stay visibly debug/admin until a canonical semantic data API exists.
@@ -119,9 +103,10 @@ Weak foundations to cut or fix before v0.1:
 1. Proposal-only evolution apply mismatch. If a source proposal can discharge as activatable but runtime apply cannot stage it before accepting the proposal, v0.1's source-native evolution story is unsound.
 2. Production serve/query/API promises. Current `debug_data_*` is a debug protocol, not a product protocol.
 3. Duplicate data path/query/key rendering. CLI path text, serve JSON, explain, trace, and checker durable paths need one semantic owner.
-4. Unbounded materialization and shallow orphan classification in storage/evolution/tooling. Record Layer's bounded-resource lesson applies hard here.
-5. Prototype grammar sediment and stale ADR claims such as `Book::Id`, `merge`, `lock`, and old byte-archive evidence.
-6. Large multipurpose Rust files in checker/evolution/store. They are not just aesthetic debt; they make soundness review unreliable.
+4. Statement-scoped metadata stamping inside multi-write transactions. Commit metadata must describe the physical durable commit, not the last plan.
+5. Unbounded materialization and shallow orphan classification in storage/evolution/tooling. Record Layer's bounded-resource lesson applies hard here.
+6. Prototype grammar sediment and stale ADR claims such as `Book::Id`, `merge`, `lock`, and old raw archive evidence.
+7. Large multipurpose Rust files in checker/evolution/store. They are not just aesthetic debt; they make soundness review unreliable.
 
 ## 6. Long-Term Risks
 
@@ -131,18 +116,22 @@ Dead prototype paths. The grammar and formatter still carry reserved or prototyp
 
 Weak Rust shape. The largest files are exactly the semantic hotspots: checking, evolution discharge, catalog binding, and store traversal. A 2500-line discharge module that includes proposal IDs, scans, repair verdicts, and text path ownership is too easy to review shallowly. The architecture needs smaller modules with one invariant each before more language surface is added.
 
-Hidden compatibility glue. Data dump/get/explain and serve debug paths are useful tools, but path strings and byte renderings can become de facto stable APIs. Backup streaming data-family cell bytes is acceptable because manifest, validation, and index rebuild wrap it; it becomes weak if callers learn to depend on the physical cell stream.
+Hidden compatibility glue. Data dump/get/debug explain and serve debug paths are
+useful tools, but path strings and byte renderings can become de facto stable
+APIs. Backup streaming data-family cell bytes is acceptable because manifest,
+validation, and index rebuild wrap it; it becomes weak if callers learn to depend
+on the physical cell stream.
 
-Unidiomatic language/database design. The risk is not that Marrow is insufficiently SQL-like. The risk is that it becomes neither elegant NoSQL/tree nor mature relational: too much explicit ceremony for small apps, too little declarative-query power for relational workloads, and too much compiler/catalog machinery for document-store users. The design must keep earning its cost by making typed tree identity, evolution, and source-visible access feel natural.
+Unidiomatic language/database design. The risk is not that Marrow is insufficiently SQL-like. The risk is that it becomes neither elegant NoSQL/tree nor mature relational: too much explicit ceremony for small apps, too little optimizer/query power for relational workloads, and too much compiler/catalog machinery for document-store users. The design must keep earning its cost by making typed tree identity, evolution, and source-visible access feel natural.
 
 Local embedded limits. Redb and the current foundation are many readers plus one writer. That is good for a local language/database kernel, not for multi-tenant server claims. Future server or sync work must be explicit typed architecture, not a thin wrapper around debug data operations.
 
 Evolution novelty. Gel, Prisma, and Alembic keep migration histories because schema evolution is hard and irreversible. Marrow's one-off `evolve` blocks are elegant, but only if preview/apply/source digest/catalog proposal/runtime place lowering are exact. The proposal-only mismatch is a warning sign.
 
-Restore and repair boundary. Restore rejects orphan backup cells and verifies
-before commit. Repair tooling can report existing local-store debris through the
-same typed tooling facts, but restore is no longer a raw debris-preserving import
-path.
+Restore and repair policy. The integrated contract rejects orphaned managed cells
+before restore commit. Existing local stores can still report `data.orphan`
+through integrity tooling, but backup restore must not import unreachable managed
+data.
 
 ## 7. Concrete Follow-Up Recommendations
 
@@ -151,12 +140,10 @@ Ranked by foundation risk:
 1. Fix or explicitly reject proposal-only `evolve default` and `evolve transform` apply before v0.1. Add a runtime/CLI apply fixture where accepted catalog lacks the new required member, current source adds it with `evolve default`, old records exist, and apply must backfill before accepting the proposal. Either executable places must carry proposal data-cell IDs, or preview must mark such changes non-activatable until accepted.
 2. Keep `marrow serve` as debug/admin only until there is a stable semantic API. Do not rename `debug_data_*` to product operations. Do not ship a public query/data protocol on path strings, raw bytes, or tool-local classifiers.
 3. Centralize durable data path/query/key encoding into one shared semantic API. Delete the permissive `SourceMember` collapse or make it a strictly diagnostic parser layered over canonical typed segments. Standardize byte key rendering across dump, trace, serve, and explain.
-4. Keep commit metadata boundary tests in place: multi-write transactions and generated index writes must describe the whole physical commit.
-5. Keep backend conformance for the prohibited snapshot/write overlap so memory and redb cannot diverge.
-6. Keep store traversal and evolution backfill on streaming visitors or paged cursors where the contract is unbounded data. Where full materialization remains, document it as a v0.1 bound with tests.
-7. Keep orphan/integrity semantics on shared tooling facts. Restore rejects
-   orphan backup cells before commit, and repair/data-integrity tooling reports
-   existing local-store debris through the same typed classifier.
+4. Move commit metadata stamping to the physical durable commit boundary. Add a transaction test with multiple managed writes and generated index updates, then assert changed roots/indexes and commit ID describe the whole transaction.
+5. Add backend conformance for snapshot plus open write transaction, or prohibit that state explicitly. Memory and redb should not have different behavior for the same `TreeStore` call sequence.
+6. Replace unbounded child/path collection in store traversal and evolution backfill with streaming visitors or paged cursors where the contract is unbounded data. Where full materialization remains, document it as a v0.1 bound with tests.
+7. Strengthen orphan/integrity semantics. Decide whether restore should reject orphan/corrupt extra cells, report them while succeeding, or define faithful restore as preserving invalid debris. Make the CLI wording and tests match that decision.
 8. Decide whether `TreeStore` node/leaf/sequence APIs are production, test/debug, or removable. If runtime production writes use generic data/index paths, old facade shapes should not survive by accident.
 9. Split `crates/marrow-check/src/evolution/discharge.rs` before adding any new evolution semantics. Suggested owners: proposal ID resolution, structural compatibility, data scans, default/transform obligations, index obligations, repair diagnostics, and witness accumulation.
 10. Replace semantic string path parsing in catalog/evolution (`CatalogKey { path: String }`, path formatting, `rsplit_once`) with typed catalog addresses where feasible. Stable IDs are weakened whenever path text still carries hidden structure.
