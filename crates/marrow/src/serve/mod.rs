@@ -19,7 +19,6 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use marrow_check::CheckedProgram;
-use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 
 use crate::{load_checked_project, open_store_for_inspection};
@@ -47,7 +46,9 @@ pub(crate) mod test_support {
     const SOURCE: &str = "module app\n\n\
                          resource Book at ^books(id: int)\n\
                          \x20\x20\x20\x20title: string\n\
-                         \x20\x20\x20\x20tags(pos: int): string\n";
+                         \x20\x20\x20\x20tags(pos: int): string\n\
+                         \x20\x20\x20\x20details\n\
+                         \x20\x20\x20\x20\x20\x20\x20\x20summary: string\n";
 
     pub(crate) fn empty_state() -> ServeState {
         ServeState {
@@ -83,6 +84,37 @@ pub(crate) mod test_support {
             &title_path,
             title.as_bytes().to_vec(),
         )
+    }
+
+    pub(crate) fn write_tag(state: &ServeState, pos: i64, tag: &str) {
+        let place = books_place(&state.program);
+        let store_id = catalog_id(&place.store_catalog_id);
+        let mut path = field_path(&place, "tags");
+        path.push(DataPathSegment::Key(SavedKey::Int(pos)));
+        state
+            .store
+            .write_data_value(
+                &store_id,
+                &[SavedKey::Int(1)],
+                &path,
+                tag.as_bytes().to_vec(),
+            )
+            .expect("write checked tree-cell fixture data");
+    }
+
+    pub(crate) fn write_summary(state: &ServeState, summary: &str) {
+        let place = books_place(&state.program);
+        let store_id = catalog_id(&place.store_catalog_id);
+        let path = nested_field_path(&place, "details", "summary");
+        state
+            .store
+            .write_data_value(
+                &store_id,
+                &[SavedKey::Int(1)],
+                &path,
+                summary.as_bytes().to_vec(),
+            )
+            .expect("write checked tree-cell fixture data");
     }
 
     fn checked_program() -> CheckedProgram {
@@ -159,6 +191,22 @@ pub(crate) mod test_support {
             &place.root_members,
             name,
         ))]
+    }
+
+    fn nested_field_path(
+        place: &CheckedSavedPlace,
+        group_name: &str,
+        field_name: &str,
+    ) -> Vec<DataPathSegment> {
+        let group = place
+            .root_members
+            .iter()
+            .find(|member| member.name == group_name)
+            .expect("checked group member");
+        vec![
+            DataPathSegment::Member(catalog_id(&group.catalog_id)),
+            DataPathSegment::Member(member_catalog_id(&group.group_members, field_name)),
+        ]
     }
 }
 
@@ -319,13 +367,14 @@ fn serve_connection(
             return Ok(());
         }
     };
-    let stale = match store_is_stale(program, store) {
-        Ok(stale) => stale,
+    let metadata = match marrow_check::tooling::tooling_metadata(program, store) {
+        Ok(metadata) => metadata,
         Err(error) => {
             write_reply(writer, &snapshot_error_reply(&error.to_string()))?;
             return Ok(());
         }
     };
+    let stale = marrow_check::tooling::store_is_newer_than_program(&metadata);
     let session = protocol::ProtocolSession::new(stale);
     loop {
         let line = match read_line_bounded(reader)? {
@@ -349,19 +398,6 @@ fn serve_connection(
     }
     drop(snapshot);
     Ok(())
-}
-
-/// Whether the store has evolved past the schema this serve binary was checked
-/// against: its stamped catalog epoch is newer than the program's accepted epoch.
-/// A matching, older, or absent stamp serves normally.
-fn store_is_stale(program: &CheckedProgram, store: &TreeStore) -> Result<bool, StoreError> {
-    let Some(stored) = store.read_catalog_epoch()? else {
-        return Ok(false);
-    };
-    Ok(match program.catalog.accepted_epoch {
-        Some(accepted) => stored > accepted,
-        None => true,
-    })
 }
 
 /// A `protocol.malformed` reply envelope with a null id (the request could not be

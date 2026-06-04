@@ -4,6 +4,13 @@
 
 Evidence base: I audited a fresh `marrow` worktree at `3f7178a3d6712f2e715259574fc446a552f34302` on branch `research/lane-10-tooling-audit`, based on `origin/main`. The original `/Users/scottwilliams/Dev/marrow` checkout was on `research/lane-09-source-native-evolution-audit` at `f0623c9287f3f2483c6ee5996f13f4f16b324a84` with untracked roadmap research. The `/Users/scottwilliams/Dev/marrow-decisions` checkout was on `main` at `7ce51f17f8037201747baa3cffdf0fdbc214aaae` with unstaged edits to two ADRs, both included below.
 
+Lane 16 resolution note: this report is historical audit evidence. Current v0.1
+tooling has moved data query/path/preview/integrity/explain/metadata facts into
+`marrow_check::tooling`; `serve` no longer imports CLI data semantics; LSP
+diagnostic positions count UTF-16 code units; and restore now rejects orphaned
+managed cells before commit. File references to deleted prototype modules below
+are preserved only as audit-time evidence.
+
 The local vision is not "make tools smart." It is "make tools render canonical compiler/runtime/store facts." The implementation overview says Marrow is a small language with a built-in typed database and that the language semantics remain unchanged by the backing store (`docs/implementation.md:3`, `docs/implementation.md:20`). It assigns durable-data meaning to Marrow rather than to the storage backend: the engine should not parse `.mw`, maintain language indexes, plan evolution, or expose backend-specific APIs (`docs/implementation.md:20`, `docs/implementation.md:45`). Checked programs contain facts that tools consume directly (`docs/implementation.md:61`), and typed code addresses durable data through checked durable places rather than raw key tuples (`docs/implementation.md:139`).
 
 The tooling vision is explicit. Tools inspect the same source, schema, saved-tree, and error model as the checker/runtime (`docs/implementation.md:376`). `data` is read-only over typed tree-cell store APIs, while backend traversal, physical keys, and archive replay are excluded from production APIs (`docs/implementation.md:376`). Typed backup/restore must bind source digest, catalog epoch, engine profile, value codec, checksums, and derived indexes (`docs/implementation.md:386`). `lsp` is JSON-RPC over stdio and distinct from `serve` (`docs/implementation.md:397`). `serve` is optional, loopback, read-only debug/admin inspection, not an app protocol (`docs/implementation.md:403`, `docs/implementation.md:422`). Bounded/pageable reads are required for large data (`docs/implementation.md:444`), and remote transport/auth is explicitly out of v0.1 scope (`docs/implementation.md:450`, `docs/implementation.md:472`).
@@ -12,7 +19,7 @@ The CLI docs match that product boundary. They list `explain`, `backup`, `restor
 
 The dedicated docs sharpen the same rule. Data tools must not define a second semantic model or expose raw store keys/backend APIs as production APIs (`docs/data-tools.md:3`). They read through checked source, accepted catalog, and typed tree-cell APIs (`docs/data-tools.md:10`) and should page large results with opaque cursors (`docs/data-tools.md:14`). Serve operations are intentionally named `debug_data_*`, read through checked source/catalog/tree-cell APIs, and are not production app server/sync/backup/raw saved-path surfaces (`docs/serve-protocol.md:3`). Per-connection snapshots, stale catalog epoch detection, capped child/walk limits, and session cursors are part of that contract (`docs/serve-protocol.md:53`, `docs/serve-protocol.md:124`, `docs/serve-protocol.md:178`). LSP is a minimal diagnostics server using checker facts or parse fallback (`docs/lsp.md:3`, `docs/lsp.md:20`), but it currently documents an intentional UTF-16 gap for astral characters (`docs/lsp.md:77`).
 
-The lane doc is stale and should not be treated as status truth. It still says the first code phase is waiting on lane blockers (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:14`), while `origin/main` contains Lane 10 backup/tooling commits. Its architectural criteria are still useful: all tooling must consume shared facts, raw protocols must be debug/admin-only, data previews must be bounded snapshot reads, continuations must be catalog-epoch/snapshot bound, and there is no production bridge for protocols (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:1`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:180`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:203`).
+The lane doc is stale and should not be treated as status truth. It still describes the code phase as blocked on earlier lane work (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:14`), while `origin/main` contains Lane 10 backup/tooling commits. Its architectural criteria are still useful: all tooling must consume shared facts, raw protocols must be debug/admin-only, data previews must be bounded snapshot reads, continuations must be catalog-epoch/snapshot bound, and there is no production bridge for protocols (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:1`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:180`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:203`).
 
 The accepted ADRs agree. The tools ADR says every CLI/LSP/DAP/MCP/backup/restore/repair/server surface should render shared analysis facts, and missing facts belong in the compiler, not tool-local schema logic (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:17`, `/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:63`). Stable surfaces must be versioned, typed, cancelable where needed, and catalog-epoch bound (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:30`). Raw keys, backend bytes, and saved-store paths are debug/admin only (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:45`). The product-scope ADR makes Marrow a SQLite-like local embedded durable app language, not a server/database product (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:19`, `/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:33`). The unstaged ADR edits strengthen the same conclusion by adding a source-owned access-path law and rejecting lower-layer cost-based plan choice (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56`, `/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28`).
 
@@ -20,19 +27,26 @@ There is one decision-doc drift to resolve: the backup/restore/repair ADR still 
 
 ## 2. Implementation Summary With Crate/Module References
 
-The top-level CLI dispatch is small and direct (`crates/marrow/src/main.rs:22`, `crates/marrow/src/main.rs:48`). It includes `explain`, `backup`, `restore`, `lsp`, and `serve` as first-class commands, which is acceptable only because the docs demote data/serve rawness to debug/admin and because backup/restore are typed.
+The top-level CLI dispatch is small and direct (`crates/marrow/src/main.rs:22`,
+`crates/marrow/src/main.rs:48`). Backup, restore, LSP, and serve are first-class
+commands; saved-path/name explanation is demoted under `marrow debug explain`
+because it is diagnostic/admin checked-fact output.
 
-`marrow explain` loads a checked project, uses checker path parsing/classification for saved paths, and checker resolution for source names (`crates/marrow/src/cmd_explain.rs:7`, `crates/marrow/src/cmd_explain.rs:64`, `crates/marrow/src/cmd_explain.rs:85`, `crates/marrow/src/cmd_explain.rs:249`). This is aligned in spirit, but the command still centers saved-path explanation and local output helpers (`crates/marrow/src/cmd_explain.rs:161`, `crates/marrow/src/cmd_explain.rs:266`). As a product term, `explain` risks inviting Postgres-style plan expectations Marrow explicitly rejects for v0.1.
+`marrow debug explain` loads a checked project, uses checker path parsing/classification for saved paths, and checker resolution for source names (`crates/marrow/src/cmd_explain.rs:7`, `crates/marrow/src/cmd_explain.rs:64`, `crates/marrow/src/cmd_explain.rs:85`, `crates/marrow/src/cmd_explain.rs:249`). This is aligned in spirit, but the command still centers saved-path explanation and local output helpers (`crates/marrow/src/cmd_explain.rs:161`, `crates/marrow/src/cmd_explain.rs:266`). As a product term, `explain` risks inviting Postgres-style plan expectations Marrow explicitly rejects for v0.1.
 
-`marrow data` is read-only and requires checked source before opening/reading the store (`crates/marrow/src/cmd_data.rs:140`, `crates/marrow/src/cmd_data.rs:181`, `crates/marrow/src/cmd_data.rs:223`). It pins a snapshot for multi-pass reads (`crates/marrow/src/cmd_data.rs:181`, `crates/marrow/src/cmd_data.rs:228`). The data inspection walkers traverse declared checked places and tree-cell APIs (`crates/marrow/src/cmd_data/inspect.rs:20`, `crates/marrow/src/cmd_data/inspect.rs:56`, `crates/marrow/src/cmd_data/inspect.rs:90`). Integrity checking classifies declared decode/key problems and orphan/corruption problems (`crates/marrow/src/cmd_data/integrity.rs:118`, `crates/marrow/src/cmd_data/orphan.rs:27`). However, path query resolution is implemented inside the CLI data module (`crates/marrow/src/cmd_data/get.rs:70`, `crates/marrow/src/cmd_data/get.rs:89`, `crates/marrow/src/cmd_data/get.rs:111`), and `serve` imports it. That is the main duplication risk.
+At audit time, `marrow data` was read-only, required checked source before opening/reading the store, and pinned a snapshot for multi-pass reads (`crates/marrow/src/cmd_data.rs:140`, `crates/marrow/src/cmd_data.rs:181`, `crates/marrow/src/cmd_data.rs:223`, `crates/marrow/src/cmd_data.rs:228`). The old data inspection walkers and orphan code lived under CLI modules (`crates/marrow/src/cmd_data/inspect.rs:20`, `crates/marrow/src/cmd_data/orphan.rs:27`), and `serve` imported `cmd_data::get` query resolution. Lane 16 moved those facts into `marrow_check::tooling` and made CLI/serve/explain thin adapters.
 
 Typed backup is a strong v0.1 slice. The backup module frames the contract as typed, portable, manifest-bound data-cell streams with indexes rebuilt on restore (`crates/marrow/src/backup/mod.rs:1`). The manifest records source digest, catalog epoch, engine profile/layout/value codec, commit metadata, record count, and checksum (`crates/marrow/src/backup/mod.rs:40`, `crates/marrow/src/backup/create.rs:68`). Backup reads under one snapshot and writes cells with bounded memory (`crates/marrow/src/backup/create.rs:20`, `crates/marrow/src/backup/create.rs:30`). Restore validates project/source/catalog/engine/codec, requires an empty store, replays cells in one transaction, rejects trailing bytes, rebuilds indexes, stamps metadata, and verifies before commit (`crates/marrow/src/backup/restore.rs:21`, `crates/marrow/src/backup/restore.rs:52`, `crates/marrow/src/backup/restore.rs:91`, `crates/marrow/src/backup/restore.rs:117`, `crates/marrow/src/backup/restore.rs:144`). This should be kept. The checksum is non-cryptographic (`crates/marrow/src/backup/archive.rs:26`), so docs/tests should avoid implying tamper resistance.
 
-`marrow restore` verifies declared integrity before committing (`crates/marrow/src/cmd_restore.rs:60`). It rejects orphan backup cells rather than importing unreachable durable data; `data integrity` remains responsible for reporting orphan cells that already exist in a local store. Compiler-owned target cleanliness is the restore contract.
+`marrow restore` verifies full data integrity before committing
+(`crates/marrow/src/cmd_restore.rs:60`). It rejects orphan backup cells rather
+than importing unreachable durable data; `data integrity` remains responsible for
+reporting orphan cells that already exist in a local store. Compiler-owned target
+cleanliness is the restore contract.
 
-`marrow serve` is a loopback-only, one-connection-at-a-time, read-only debug/admin server (`crates/marrow/src/serve/mod.rs:1`, `crates/marrow/src/serve/mod.rs:180`, `crates/marrow/src/serve/mod.rs:263`). It pins a per-connection snapshot and checks stale stored epochs against the checked project (`crates/marrow/src/serve/mod.rs:295`, `crates/marrow/src/serve/mod.rs:349`). Its protocol only dispatches `debug_data_*` operations (`crates/marrow/src/serve/protocol.rs:64`). Children/walk operations cap limits at 10,000 and use session cursors (`crates/marrow/src/serve/protocol/data.rs:57`, `crates/marrow/src/serve/protocol/walk.rs:16`, `crates/marrow/src/serve/protocol/cursor.rs:15`). The debug prefix is good. The weak points are lack of request/reply protocol-version negotiation (`crates/marrow/src/serve/protocol.rs:48`), tool-local data-query resolution reuse from `cmd_data`, and a slight docs/code mismatch where non-integer JSON numbers may clamp instead of returning `protocol.bad_request` in `debug_data_children` (`crates/marrow/src/serve/protocol/data.rs:57`).
+`marrow serve` is a loopback-only, one-connection-at-a-time, read-only debug/admin server (`crates/marrow/src/serve/mod.rs:1`, `crates/marrow/src/serve/mod.rs:180`, `crates/marrow/src/serve/mod.rs:263`). It pins a per-connection snapshot and checks stale stored epochs against the checked project (`crates/marrow/src/serve/mod.rs:295`, `crates/marrow/src/serve/mod.rs:349`). Its protocol only dispatches `debug_data_*` operations (`crates/marrow/src/serve/protocol.rs:64`). Children/walk operations cap limits at 10,000 and use session cursors (`crates/marrow/src/serve/protocol/data.rs:57`, `crates/marrow/src/serve/protocol/walk.rs:16`, `crates/marrow/src/serve/protocol/cursor.rs:15`). Lane 16 resolved the audit-time CLI-owned data-query reuse and the children-limit docs/code mismatch. The remaining v0.1 boundary is intentional: serve has no production protocol-version negotiation while it remains loopback debug/admin only.
 
-The LSP implementation follows base framing, lifecycle, full-text sync, and diagnostics from `marrow_check::analyze_project` with open overlays (`crates/marrow/src/lsp.rs:1`, `crates/marrow/src/lsp.rs:49`, `crates/marrow/src/lsp.rs:147`). It does not implement hover/definition/completion yet (`docs/lsp.md:114`). It maps diagnostics through a local adapter (`crates/marrow/src/lsp.rs:211`) and currently counts Unicode scalar values for positions, not UTF-16 code units or negotiated encodings (`crates/marrow/src/lsp.rs:243`). For ASCII v0.1 projects this is fine; for protocol correctness it is a known spec gap.
+At audit time, the LSP implementation followed base framing, lifecycle, full-text sync, and diagnostics from `marrow_check::analyze_project` with open overlays (`crates/marrow/src/lsp.rs:1`, `crates/marrow/src/lsp.rs:49`, `crates/marrow/src/lsp.rs:147`) but counted Unicode scalar values for positions rather than UTF-16 code units (`crates/marrow/src/lsp.rs:243`). Lane 16 fixed the default LSP position encoding to UTF-16 code units; hover/definition/completion remain deferred.
 
 The shared analysis API is source/editor oriented, not yet a complete tooling facts API. `marrow-check` has `AnalysisSnapshot`, project analysis, `type_at`, and `scope_at` (`crates/marrow-check/src/analysis.rs:1`, `crates/marrow-check/src/analysis.rs:27`, `crates/marrow-check/src/analysis.rs:413`). Checked facts expose modules, functions, resources, stores, indexes, members, enums, and presence proofs (`crates/marrow-check/src/facts.rs:47`, `crates/marrow-check/src/facts.rs:108`). That is enough for v0.1 tooling to avoid raw engine ownership, but not enough to prevent `cmd_data`, `serve`, and `cmd_explain` from accreting the next layer of semantic ownership.
 
@@ -42,7 +56,7 @@ PostgreSQL's backup tools are a strong precedent for typed, snapshot-bound logic
 
 SQLite's backup API is a counter-precedent and a useful boundary. It intentionally makes the destination a bit-wise identical snapshot of the source database and exists partly because raw file-copy backup has locking and crash hazards ([SQLite backup API](https://www.sqlite.org/backup.html)). Marrow should not imitate bitwise SQLite backup as its portability contract, because Marrow's source/catalog/value-codec semantics sit above the engine. It should imitate the snapshot discipline.
 
-PostgreSQL `EXPLAIN` is a warning label for `marrow explain`. In PostgreSQL, `EXPLAIN` displays planner-chosen execution plans, costs, scan choices, join algorithms, and optionally actual execution statistics with side effects under `ANALYZE` ([PostgreSQL EXPLAIN docs](https://www.postgresql.org/docs/current/sql-explain.html)). Marrow's recent decision edits explicitly reject lower-layer cost-based plan choice. Therefore `marrow explain` should not grow toward planner inspection; if retained, it should explain source-owned facts, checked access paths, and debug/admin data classification.
+PostgreSQL `EXPLAIN` is a warning label for `marrow debug explain`. In PostgreSQL, `EXPLAIN` displays planner-chosen execution plans, costs, scan choices, join algorithms, and optionally actual execution statistics with side effects under `ANALYZE` ([PostgreSQL EXPLAIN docs](https://www.postgresql.org/docs/current/sql-explain.html)). Marrow's recent decision edits explicitly reject lower-layer cost-based plan choice. Therefore `marrow debug explain` should not grow toward planner inspection; if retained, it should explain source-owned facts, checked access paths, and debug/admin data classification.
 
 PostgreSQL `psql` and the SQLite CLI are precedents for keeping human/admin shells separate from engine semantics. `psql` is a terminal front-end that sends queries to PostgreSQL and offers meta-commands/scripting convenience ([PostgreSQL psql docs](https://www.postgresql.org/docs/current/app-psql.html)). SQLite states plainly that its CLI is an application that passes user input down into the library, and that the CLI is not the underlying database library ([SQLite CLI docs](https://www.sqlite.org/cli.html)). Marrow should keep `marrow data` and `marrow serve` as adapters over shared facts, not as alternate semantic runtimes.
 
@@ -54,7 +68,7 @@ Local dev servers are a scope warning. Vite's preview server explicitly says not
 
 ## 4. Alternatives Considered
 
-Keep the current approach as-is. This is tempting because tests cover backup/restore, data, explain, serve, and LSP. It is too lax. Green tests do not prevent `cmd_data::get`, `serve::protocol`, and `cmd_explain` from becoming a second semantic layer.
+Keep the audit-time approach as-is. This was tempting because tests covered backup/restore, data, explain, serve, and LSP. It was too lax: green tests did not prevent `cmd_data::get`, `serve::protocol`, and `cmd_explain` from becoming a second semantic layer. Lane 16 addressed this for data/query/integrity/explain/serve metadata by extracting shared tooling facts.
 
 Delete `serve`, `data dump`, and saved-path `explain` for v0.1. This is architecturally clean, but too severe. The current debug/admin naming, loopback-only binding, read-only behavior, snapshot discipline, and checked-source requirement make these tools useful without making them production APIs. Deletion should be reserved for any surface that refuses to stay debug/admin.
 
@@ -64,7 +78,9 @@ Adopt a SQL/GraphQL/OpenAPI-style public query/API surface now. This should be r
 
 Move all tooling semantics behind a transport-free data/explain facts API. This is the best refinement. The CLI, serve protocol, LSP, backup verification, and future generated surfaces should adapt request/response formats around that API. The API should expose typed query resolution, bounded previews, path rendering, integrity findings, explain facts, catalog epoch/snapshot metadata, and cursor construction without depending on CLI modules.
 
-Rename or demote `marrow explain`. The command can stay if it means "explain compiler/runtime/store facts." If users will read it as database query-plan EXPLAIN, move saved-path/debug behavior under `marrow data explain` or `marrow debug explain`, and reserve `marrow explain` for source-owned effects/access-path facts.
+Demote `marrow debug explain`. The command stays only as diagnostic/admin
+compiler/runtime/store fact rendering. It must not become database
+execution-strategy inspection.
 
 ## 5. Verdict: Keep, Refine, Or Reverse
 
@@ -76,32 +92,31 @@ Keep `serve` only as debug/admin loopback inspection. Its `debug_data_*` namespa
 
 Keep the LSP diagnostics slice as acceptable v0.1 work. It uses the checker pipeline rather than inventing editor semantics. Fix protocol-position details before claiming robust LSP conformance.
 
-Refine `data`, `serve`, and `explain` before building more tools on them. They currently render shared facts in many places, but the transport/tool modules still own too much path/query traversal, path rendering, integrity classification shape, and output semantics. This is not bad enough to reverse Lane 10, but it is the next foundation risk.
+Lane 16 has refined `data`, `serve`, and `explain` by moving path/query traversal, path rendering, integrity classification, explain facts, metadata, and cursor contracts into `marrow_check::tooling`. Future work should keep CLI, serve, LSP, backup/restore, and generated adapters as renderers over that facts layer.
 
 Reverse only prototype momentum: any future command or endpoint that exists because saved-path text, backend bytes, archive-byte replay, or local dispatcher convenience made it easy should be deleted or moved behind explicit debug/admin naming.
 
 ## 6. Long-Term Risks
 
-Duplicate semantics. `cmd_data::get::resolve_data_query` and related helpers are now imported by `serve` (`crates/marrow/src/cmd_data/get.rs:111`, `crates/marrow/src/serve/protocol/codec.rs:10`). This avoids raw backend ownership, but it still makes a CLI module the semantic owner of query-path interpretation. That shape will age badly once LSP, MCP/DAP, generated API previews, or repair tooling need the same facts.
+Duplicate semantics. At audit time, `cmd_data::get::resolve_data_query` and related helpers were imported by `serve` (`crates/marrow/src/cmd_data/get.rs:111`, `crates/marrow/src/serve/protocol/codec.rs:10`). This avoided raw backend ownership but made a CLI module the semantic owner of query-path interpretation. Lane 16 moved that ownership to `marrow_check::tooling`.
 
 Dead prototype paths. The lane doc explicitly says raw protocols have no production bridge, but the stale status text can hide whether cleanup was completed (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:14`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:203`). Any command named without `debug` but operating on saved paths is vulnerable to becoming accidental product.
 
-Weak Rust shape. The code is not egregious, but `cmd_data`, `serve::protocol::data`, and `serve::protocol::walk` are already close to broad dispatcher/walker territory. More feature work here without extracting a shared facts/query module will create the exact oversized Rust shape the lane review instructions warn against.
+Weak Rust shape. At audit time, `cmd_data`, `serve::protocol::data`, and `serve::protocol::walk` were close to broad dispatcher/walker territory. Lane 16 split the data tooling facts into focused modules and moved shared query/path traversal out of CLI and serve adapters. More feature work should preserve that module shape instead of growing transport-local walkers.
 
 Hidden compatibility glue. `serve` has no protocol version or initialization handshake. That is fine for a debug/admin loopback protocol but dangerous if clients are encouraged to persist against it. The cursor tokens are session-bound and non-durable, which is correct for debug, but the docs should not let them sound like stable signed cursors.
 
 Unbounded or insufficiently bounded previews. `serve` children/walk operations are capped and cursored, but CLI `data dump` has no cursor/limit and can walk all records (`crates/marrow/src/cmd_data.rs:223`). That may be tolerable as an operator dump command, but it contradicts the broad data-tools statement that large results should page through opaque cursors.
 
-Unidiomatic language/database design. `marrow explain` borrows a database term that normally means planner output. Because Marrow's ADR edits reject cost-based plan ownership below source semantics, a Postgres-like EXPLAIN path would be a design error. The command name is acceptable only if docs/tests keep it about source-owned facts and debug/admin saved-path classification.
+Unidiomatic language/database design. `marrow debug explain` borrows a database term that can imply execution-strategy inspection. Because Marrow's ADR edits keep access paths source-owned, a Postgres-like EXPLAIN path would be a design error. The command name is acceptable only if docs/tests keep it about source-owned facts and debug/admin saved-path classification.
 
 ADR drift. The accepted backup/restore/repair ADR still describes raw inspection commands that can run without checked source, while the current implementation rightly requires checked source for `data`. This stale text can legitimize the old prototype model unless corrected.
 
-Protocol-conformance debt. LSP position encoding is not yet fully spec-correct for astral characters (`docs/lsp.md:77`, `crates/marrow/src/lsp.rs:243`). LSP diagnostics omit document versions even though the spec supports them when clients opt in. Serve request parameter validation also has small mismatches with its docs.
+Protocol-conformance debt. Lane 16 fixed LSP's default diagnostic coordinates to UTF-16 code units and aligned `debug_data_children` request validation with the serve protocol docs. LSP diagnostics still omit document versions even though the spec supports them when clients opt in.
 
-Restore policy settled. Restore validates declared cells, rejects orphan backup
-cells, rebuilds indexes, and verifies before commit. `data integrity` still
-reports orphan cells in existing local stores, but restore must not import
-unreachable durable data from a backup.
+Restore policy settled. Restore validates declared cells, rebuilds indexes,
+scans actual data cells for orphans and impossible schema shapes, and rejects
+orphaned managed cells before commit.
 
 Checksum overclaim risk. The backup archive checksum is suitable for accidental corruption detection, not adversarial tamper resistance. Do not build security claims on the archive checksum.
 
@@ -109,24 +124,26 @@ CLI product sprawl. The v0.1 CLI already lists check, evolve, fmt, run, test, da
 
 ## 7. Concrete Follow-Up Recommendations Ordered By Foundation Risk
 
-1. Extract a shared, transport-free tooling facts module before adding any new data/explain/serve/LSP feature. It should own typed data-query resolution, checked path rendering, bounded previews, integrity finding construction, explain facts, snapshot/catalog-epoch metadata, and cursor contracts. `cmd_data`, `serve`, `cmd_explain`, restore verification, and future MCP/DAP/generated APIs should become adapters.
+1. Keep future data/explain/serve/LSP features on the shared transport-free tooling facts module. Lane 16 established typed data-query resolution, checked path rendering, bounded previews, integrity finding construction, explain facts, snapshot/catalog-epoch metadata, and cursor contracts; new adapters should extend those facts rather than reclassifying locally.
 
 2. Resolve ADR drift in backup/restore/repair: either amend the accepted ADR through the normal decision process or add a follow-up ADR that supersedes the raw-inspection wording. The implementation should keep requiring checked source for typed data inspection unless an explicitly named emergency admin raw command is introduced outside production semantics.
 
-3. Re-scope `marrow explain` now. Either rename saved-path behavior under `marrow data explain` or document/test that `marrow explain` explains compiler/runtime/store facts, not query plans. Do not add costs, planner choices, or `ANALYZE`-style execution semantics.
+3. Keep `marrow debug explain` as a diagnostic/admin checked-fact renderer. Lane
+   16 removed execution-strategy output wording; do not add costs, hidden
+   runtime choices, or `ANALYZE`-style execution semantics.
 
 4. Add protocol version/capability framing to any non-debug protocol before it ships. `serve` can remain unversioned only while debug/admin-only; a future stable protocol should follow LSP/MCP/DAP conventions with initialize/version/capabilities, cancellation where work can be long-running, and typed error envelopes.
 
 5. Make data previews consistently bounded. Add `--limit`/cursor support to `marrow data dump`, or explicitly mark unbounded dump as an operator/admin command separate from preview APIs. Keep serve cursors snapshot/session bound and document them as opaque non-durable tokens.
 
-6. Fix LSP position encoding before claiming protocol correctness. Use UTF-16 code units by default or negotiate `general.positionEncodings`; include diagnostic document versions when the client supports them.
+6. LSP UTF-16 position encoding is fixed for the default protocol coordinate space. Future LSP work can add negotiated `general.positionEncodings` and diagnostic document versions when the client supports them.
 
-7. Tighten serve request validation and error mapping. Reject non-integer JSON numbers where docs require integers, preserve exact store error codes when possible, and add protocol tests for those cases.
+7. Serve request validation now rejects non-integer JSON numbers where docs require integers. Future protocol work can improve exact store error-code preservation without changing the debug/admin boundary.
 
-8. Preserve restore's clean-target orphan policy. Restore rejects orphan backup
-   cells before commit; future repair tooling may report existing local orphans
-   but must not make restore a raw import path.
+8. Preserve restore's clean-target orphan policy: reject orphan cells and
+   impossible managed data-cell shapes before commit and report them through
+   `data.orphan` / `restore.data_invalid`.
 
 9. Avoid checksum overclaiming. Keep current checksum for corruption detection, but call it non-cryptographic. If backups ever cross a trust boundary, add a signed manifest or cryptographic digest as a new explicit contract.
 
-10. Update the Lane 10 roadmap status. The existing doc should stop saying the first code phase is waiting. Preserve its audit criteria, but mark implementation reality: typed backup/restore exists, debug serve exists, LSP diagnostics exist, and the remaining foundation work is shared tooling facts plus scope cleanup.
+10. Keep Lane 10 roadmap status historical. Preserve its audit criteria, and mark implementation reality: typed backup/restore exists, debug serve exists, LSP diagnostics exist, and Lane 16 established shared tooling facts plus scope cleanup for data/query/integrity/explain/serve metadata.

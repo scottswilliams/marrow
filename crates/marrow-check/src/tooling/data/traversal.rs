@@ -1,28 +1,18 @@
-use marrow_check::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, ScalarType,
-    checked_saved_root_place,
-};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
-use marrow_store::value::{SavedValue, encode_value};
 
-pub(crate) fn checked_catalog_id(
-    raw: &Option<String>,
-    context: &'static str,
-) -> Result<CatalogId, StoreError> {
-    let Some(raw) = raw.as_deref() else {
-        return Err(StoreError::Corruption {
-            message: format!("checked {context} catalog id is missing"),
-        });
-    };
-    CatalogId::new(raw.to_string()).map_err(|_| StoreError::Corruption {
-        message: format!("checked {context} catalog id is malformed"),
-    })
-}
+use crate::{
+    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
+    checked_saved_root_place,
+};
 
-pub(crate) fn data_roots_in_store(
+use super::render::{push_key, push_member};
+use super::shape::{key_mismatch, tooling_catalog_id};
+use super::{DataRecord, DebugDataPayload, KeyMismatch};
+
+pub fn data_roots_in_store(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> Result<Vec<String>, StoreError> {
@@ -35,14 +25,14 @@ pub(crate) fn data_roots_in_store(
     Ok(roots)
 }
 
-pub(crate) fn count_data_records(
+pub fn count_data_records(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> Result<usize, StoreError> {
     visit_data_records(program, store, |_| Ok(()))
 }
 
-pub(crate) fn visit_data_records(
+pub fn visit_data_records(
     program: &CheckedProgram,
     store: &TreeStore,
     mut visit: impl FnMut(DataRecord) -> Result<(), StoreError>,
@@ -78,7 +68,7 @@ fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
 }
 
 fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, StoreError> {
-    let store_id = checked_catalog_id(&place.store_catalog_id, "store")?;
+    let store_id = tooling_catalog_id(&place.store_catalog_id, "store")?;
     if place.identity_keys.is_empty() {
         return store.data_subtree_exists(&store_id, &[], &[]);
     }
@@ -87,25 +77,12 @@ fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, 
         .map(|key| key.is_some())
 }
 
-pub(crate) struct DataRecord {
-    pub(crate) path: String,
-    pub(crate) value: Vec<u8>,
-    pub(crate) leaf: marrow_check::StoreLeafKind,
-    pub(crate) key_mismatch: Option<KeyMismatch>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct KeyMismatch {
-    pub(crate) expected: ScalarType,
-    pub(crate) found: ScalarType,
-}
-
 fn visit_place_records(
     place: &CheckedSavedPlace,
     store: &TreeStore,
     visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    let store_id = checked_catalog_id(&place.store_catalog_id, "store")?;
+    let store_id = tooling_catalog_id(&place.store_catalog_id, "store")?;
     let mut identity = Vec::new();
     let mut path = format!("^{}", place.root);
     visit_identity_records(
@@ -215,7 +192,7 @@ fn visit_member(
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    let catalog_id = checked_catalog_id(&member.catalog_id, "resource member")?;
+    let catalog_id = tooling_catalog_id(&member.catalog_id, "resource member")?;
     let prior_len = push_member(path, &member.name);
     data_path.push(DataPathSegment::Member(catalog_id));
     let records = if member.key_params.is_empty() {
@@ -300,7 +277,7 @@ fn visit_member_terminal(
             };
             visit(DataRecord {
                 path: path.clone(),
-                value,
+                payload: DebugDataPayload::new(value),
                 leaf,
                 key_mismatch: mismatch,
             })?;
@@ -314,60 +291,5 @@ fn visit_member_terminal(
             mismatch,
             visit,
         ),
-    }
-}
-
-pub(crate) fn key_mismatch(expected: Option<ScalarType>, key: &SavedKey) -> Option<KeyMismatch> {
-    let expected = expected?;
-    let found = key.scalar_type();
-    (expected != found).then_some(KeyMismatch { expected, found })
-}
-
-fn push_member(path: &mut String, name: &str) -> usize {
-    let prior_len = path.len();
-    path.push('.');
-    path.push_str(name);
-    prior_len
-}
-
-pub(crate) fn push_key(path: &mut String, key: &SavedKey) -> usize {
-    let prior_len = path.len();
-    path.push('(');
-    path.push_str(&render_key(key));
-    path.push(')');
-    prior_len
-}
-
-fn render_key(key: &SavedKey) -> String {
-    match key {
-        SavedKey::Int(value) => value.to_string(),
-        SavedKey::Bool(value) => value.to_string(),
-        SavedKey::Str(value) => format!("{value:?}"),
-        SavedKey::Bytes(value) => {
-            let mut text = String::from("0x");
-            crate::push_hex(&mut text, value);
-            text
-        }
-        SavedKey::Date(value) => render_key_temporal(SavedValue::Date(*value)),
-        SavedKey::Instant(value) => render_key_temporal(SavedValue::Instant(*value)),
-        SavedKey::Duration(value) => render_key_temporal(SavedValue::Duration(*value)),
-    }
-}
-
-fn render_key_temporal(value: SavedValue) -> String {
-    encode_value(&value)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_else(|| format!("{value:?}"))
-}
-
-pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_string(),
-        Err(_) => {
-            let mut text = String::from("0x");
-            crate::push_hex(&mut text, bytes);
-            text
-        }
     }
 }

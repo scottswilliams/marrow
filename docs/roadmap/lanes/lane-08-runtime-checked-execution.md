@@ -56,7 +56,7 @@ protocol surfaces. The concrete owning files are `crates/marrow/src/cmd_data.rs`
 
 Known Lane 10 work:
 
-- `marrow data get`, `marrow data dump`, and `marrow explain ^path` are
+- `marrow data get`, `marrow data dump`, and `marrow debug explain ^path` are
   diagnostic/admin inspection surfaces until Lane 10 replaces raw/path-addressed
   production previews with a typed, bounded protocol.
 - The old raw `marrow serve saved_children` surface is gone. Current serve

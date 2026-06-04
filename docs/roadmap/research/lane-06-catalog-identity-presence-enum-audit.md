@@ -18,8 +18,8 @@ source owns access paths, and no lower layer may choose a cost-based plan below
 the language contract
 (`marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:20`,
 `:34`, `:56`, `:68`). The unstaged storage ADR edit mirrors that by allowing
-only provably redundant-operation elision in write lowering, not a runtime
-optimizer
+only provably redundant-operation elision in write lowering, not runtime
+statistics choosing another operation shape
 (`marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:23`,
 `:28`, `:55`, `:83`).
 

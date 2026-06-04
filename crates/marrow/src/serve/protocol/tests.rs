@@ -5,8 +5,10 @@ use marrow_run::base64;
 use marrow_store::key::SavedKey;
 use serde_json::{Value, json};
 
-use crate::cmd_data::get::{DataQuerySegment, resolve_data_query};
-use crate::serve::test_support::{ServeState, empty_state, state_with_books};
+use crate::serve::test_support::{
+    ServeState, empty_state, state_with_books, write_summary, write_tag,
+};
+use marrow_check::tooling::DataQuerySegment;
 
 fn request(state: &ServeState, value: Value) -> Value {
     let session = ProtocolSession::new(false);
@@ -41,31 +43,15 @@ fn state_with_two_books() -> ServeState {
 fn state_with_tags(tags: &[(i64, &str)]) -> ServeState {
     let state = empty_state();
     for (pos, tag) in tags {
-        write_checked_value(
-            &state,
-            &[
-                DataQuerySegment::Root("books".into()),
-                DataQuerySegment::Key(SavedKey::Int(1)),
-                DataQuerySegment::Layer("tags".into()),
-                DataQuerySegment::Key(SavedKey::Int(*pos)),
-            ],
-            tag.as_bytes(),
-        );
+        write_tag(&state, *pos, tag);
     }
     state
 }
 
-fn write_checked_value(state: &ServeState, segments: &[DataQuerySegment], value: &[u8]) {
-    let query = resolve_data_query(&state.program, segments).expect("checked fixture path");
+fn state_with_details(summary: &str) -> ServeState {
+    let state = empty_state();
+    write_summary(&state, summary);
     state
-        .store
-        .write_data_value(
-            &query.store,
-            &query.identity,
-            &query.data_path,
-            value.to_vec(),
-        )
-        .expect("write checked fixture value");
 }
 
 #[test]
@@ -156,6 +142,64 @@ fn debug_data_children_lists_record_keys_then_field_names() {
         json!({ "op": "debug_data_children", "path": [{"root": "books"}, {"key": {"int": 1}}] }),
     );
     assert_eq!(under_record["ok"]["children"], json!([{"name": "title"}]));
+}
+
+#[test]
+fn debug_data_children_lists_populated_keyed_leaf_layers_under_a_record() {
+    let state = state_with_tags(&[(1, "favorite")]);
+    let reply = request(
+        &state,
+        json!({ "op": "debug_data_children", "path": [{"root": "books"}, {"key": {"int": 1}}] }),
+    );
+    assert_eq!(reply["ok"]["children"], json!([{"name": "tags"}]));
+}
+
+#[test]
+fn debug_data_children_lists_nested_group_members() {
+    let state = state_with_details("paperback");
+    let under_record = request(
+        &state,
+        json!({ "op": "debug_data_children", "path": [{"root": "books"}, {"key": {"int": 1}}] }),
+    );
+    assert_eq!(under_record["ok"]["children"], json!([{"name": "details"}]));
+
+    let under_group = request(
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 1}}, {"layer": "details"}],
+        }),
+    );
+    assert_eq!(under_group["ok"]["children"], json!([{"name": "summary"}]));
+}
+
+#[test]
+fn debug_data_children_rejects_limit_and_cursor_for_declared_member_listings() {
+    let state = state_with_a_book();
+    for payload in [
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 1}}],
+            "limit": 1,
+        }),
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 1}}],
+            "cursor": "not-a-member-listing-cursor",
+        }),
+    ] {
+        let reply = request(&state, payload);
+        assert_eq!(
+            reply["error"]["code"],
+            json!(PROTOCOL_BAD_REQUEST),
+            "{reply}"
+        );
+        assert_eq!(
+            reply["error"]["message"],
+            json!("`debug_data_children` declared-member listings take no `limit` or `cursor`"),
+            "{reply}"
+        );
+    }
 }
 
 #[test]
@@ -265,6 +309,22 @@ fn debug_data_children_clamps_an_oversized_limit_rather_than_rejecting() {
 }
 
 #[test]
+fn debug_data_children_without_a_limit_uses_the_server_maximum() {
+    let state = state_with_two_books();
+    let reply = request(
+        &state,
+        json!({ "op": "debug_data_children", "path": [{"root": "books"}] }),
+    );
+    assert_eq!(reply["error"], Value::Null, "{reply}");
+    assert_eq!(
+        reply["ok"]["children"],
+        json!([{"key": {"int": 1}}, {"key": {"int": 2}}]),
+        "{reply}"
+    );
+    assert_eq!(reply["ok"]["truncated"], json!(false), "{reply}");
+}
+
+#[test]
 fn debug_data_children_rejects_a_zero_limit() {
     let state = state_with_a_book();
     let reply = request(
@@ -276,6 +336,44 @@ fn debug_data_children_rejects_a_zero_limit() {
         json!(PROTOCOL_BAD_REQUEST),
         "{reply}"
     );
+}
+
+#[test]
+fn debug_data_children_rejects_negative_float_and_malformed_limits() {
+    let state = state_with_a_book();
+    for limit in [json!(-1), json!(1.0), json!(1.5), json!("10"), Value::Null] {
+        let reply = request(
+            &state,
+            json!({ "op": "debug_data_children", "path": [{"root": "books"}], "limit": limit }),
+        );
+        assert_eq!(
+            reply["error"]["code"],
+            json!(PROTOCOL_BAD_REQUEST),
+            "{reply}"
+        );
+        assert_eq!(
+            reply["error"]["message"],
+            json!("`debug_data_children` `limit` must be a positive integer"),
+            "{reply}"
+        );
+    }
+}
+
+#[test]
+fn debug_data_children_caps_an_over_u64_integer_limit() {
+    let state = state_with_two_books();
+    let value: Value = serde_json::from_str(
+        r#"{"op":"debug_data_children","path":[{"root":"books"}],"limit":18446744073709551616}"#,
+    )
+    .expect("json integer beyond u64");
+    let reply = request(&state, value);
+    assert_eq!(reply["error"], Value::Null, "{reply}");
+    assert_eq!(
+        reply["ok"]["children"],
+        json!([{"key": {"int": 1}}, {"key": {"int": 2}}]),
+        "{reply}"
+    );
+    assert_eq!(reply["ok"]["truncated"], json!(false), "{reply}");
 }
 
 #[test]

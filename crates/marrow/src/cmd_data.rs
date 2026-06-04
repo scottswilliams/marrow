@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use marrow_check::CheckedProgram;
+use marrow_check::tooling::{count_data_records, data_roots_in_store, visit_data_records};
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
@@ -14,14 +15,8 @@ use crate::{
 
 #[path = "cmd_data/get.rs"]
 pub(crate) mod get;
-#[path = "cmd_data/inspect.rs"]
-pub(crate) mod inspect;
 #[path = "cmd_data/integrity.rs"]
 pub(crate) mod integrity;
-#[path = "cmd_data/orphan.rs"]
-mod orphan;
-
-pub(crate) use inspect::render_value_bytes;
 
 /// Parse one positional project directory plus an optional `--format` flag, for
 /// the `data` inspection commands. Reuses `check`'s `--format` grammar so the
@@ -146,7 +141,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let roots = match &store {
-        Some(store) => match inspect::data_roots_in_store(&program, store) {
+        Some(store) => match data_roots_in_store(&program, store) {
             Ok(roots) => roots,
             Err(error) => return report_store_error(error, format),
         },
@@ -194,11 +189,11 @@ fn data_stats(args: &[String]) -> ExitCode {
                 Ok(snapshot) => snapshot,
                 Err(error) => return report_store_error(error, format),
             };
-            let roots = match inspect::data_roots_in_store(&program, store) {
+            let roots = match data_roots_in_store(&program, store) {
                 Ok(roots) => roots.len(),
                 Err(error) => return report_store_error(error, format),
             };
-            let records = match inspect::count_data_records(&program, store) {
+            let records = match count_data_records(&program, store) {
                 Ok(records) => records,
                 Err(error) => return report_store_error(error, format),
             };
@@ -243,7 +238,7 @@ fn data_dump(args: &[String]) -> ExitCode {
         None => None,
     };
     let records = match &store {
-        Some(store) => match inspect::count_data_records(&program, store) {
+        Some(store) => match count_data_records(&program, store) {
             Ok(records) => records,
             Err(error) => return report_store_error(error, format),
         },
@@ -255,8 +250,12 @@ fn data_dump(args: &[String]) -> ExitCode {
                 println!("(no saved data)");
             } else {
                 let store = store.as_ref().expect("non-empty data dump has a store");
-                if let Err(error) = inspect::visit_data_records(&program, store, |record| {
-                    println!("{}\t{}", record.path, render_value_bytes(&record.value));
+                if let Err(error) = visit_data_records(&program, store, |record| {
+                    println!(
+                        "{}\t{}",
+                        record.path,
+                        render_value_bytes(record.payload.as_bytes())
+                    );
                     Ok(())
                 }) {
                     return report_store_error(error, format);
@@ -274,8 +273,8 @@ fn data_dump(args: &[String]) -> ExitCode {
         }
         CheckFormat::Jsonl => {
             if let Some(store) = &store {
-                let result = inspect::visit_data_records(&program, store, |record| {
-                    write_json(dump_record(&record.path, &record.value));
+                let result = visit_data_records(&program, store, |record| {
+                    write_json(dump_record(&record.path, record.payload.as_bytes()));
                     Ok(())
                 });
                 if let Err(error) = result {
@@ -299,13 +298,16 @@ fn write_dump_json(
     serde_json::to_writer(&mut out, dir).expect("serialize project path");
     write!(out, ",\"records\":[").expect("write dump JSON");
     let mut first = true;
-    inspect::visit_data_records(program, store, |record| {
+    visit_data_records(program, store, |record| {
         if !first {
             write!(out, ",").expect("write dump JSON separator");
         }
         first = false;
-        serde_json::to_writer(&mut out, &dump_record(&record.path, &record.value))
-            .expect("serialize dump record");
+        serde_json::to_writer(
+            &mut out,
+            &dump_record(&record.path, record.payload.as_bytes()),
+        )
+        .expect("serialize dump record");
         Ok(())
     })?;
     writeln!(out, "]}}").expect("write dump JSON");
@@ -318,4 +320,17 @@ fn dump_record(path: &str, value: &[u8]) -> serde_json::Value {
         "path": path,
         "value_b64": marrow_run::base64::encode(value),
     })
+}
+
+fn render_value_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => {
+            let mut text = String::from("0x");
+            for byte in bytes {
+                text.push_str(&format!("{byte:02x}"));
+            }
+            text
+        }
+    }
 }

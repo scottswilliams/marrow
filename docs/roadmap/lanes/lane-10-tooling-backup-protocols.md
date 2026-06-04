@@ -11,22 +11,25 @@ Worktree: `/Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols`
 
 Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-10-tooling-protocols`
 
-Status: read-only feature-surface audit and stale protocol/docs inventory may
-start now; tracked edits wait for the relevant fact, store, runtime, and
-evolution generation contracts. The first deliverable is a feature-surface
-verdict matrix. The first code phase defines the typed backup manifest and
-production backup/restore API.
+Status: historical lane plan. Lane 10's typed backup/restore foundation landed;
+Lane 16 supersedes the stale tooling/protocol blockers by moving data, explain,
+integrity, metadata, and cursor facts into `marrow_check::tooling`. Treat this
+file as audit/design context, not the active status source for current tooling
+work.
 
-Active blockers inherited from the Lane 8 repair:
+Resolved or superseded blockers inherited from the Lane 8 repair:
 
-- `marrow data get`, `marrow data dump`, and `marrow explain ^path` are
-  diagnostic/admin inspection surfaces until Lane 10 replaces raw/path-addressed
-  production previews with a typed, bounded protocol.
+- `marrow data get`, `marrow data dump`, and `marrow debug explain ^path` are
+  diagnostic/admin inspection surfaces rendered from shared facts. Final product
+  naming for `explain` and raw data inspection remains a Scott decision, but
+  these commands are not production preview APIs.
 - Raw `marrow serve saved_children` is gone. Current serve inspection operations
   are explicitly `debug_data_*`; the production protocol must be checked-fact
   based, bounded, and snapshot/catalog-epoch scoped.
 - No backup, restore, LSP, or production preview client may depend on raw saved
-  path strings, backend bytes, or tool-local path classifiers.
+  path strings, backend bytes, or tool-local path classifiers; Lane 16 added
+  architecture coverage for the public tooling signatures and serve/CLI
+  separation.
 
 ## Completion Claim Discipline
 
@@ -117,7 +120,7 @@ documented tool, protocol, language/database-facing flag, and saved-data surface
   an explicit debug/admin or maintenance selection and must be absent from
   default production docs;
 - **rename/rescope**: the underlying capability is valid, but the command name,
-  docs, output, or protocol implies a broader product such as query planning,
+  docs, output, or protocol implies a broader product such as hidden execution planning,
   database server behavior, stable raw path access, or public generated APIs;
 - **delete**: unsupported by accepted ADRs, overlapping with another production
   surface, preserving prototype behavior, or needing local semantic
@@ -125,7 +128,7 @@ documented tool, protocol, language/database-facing flag, and saved-data surface
 
 Known suspects for the first audit:
 
-- `marrow explain`: not a query planner. Current saved-path/name inspection must
+- `marrow debug explain`: not hidden execution planning. Current saved-path/name inspection must
   either become a typed shared-fact explanation surface or leave production.
 - `marrow serve`: v0.1 is not a public app server or remote database server.
   Any retained serve path must be typed, versioned, bounded, and explicit about
@@ -208,7 +211,7 @@ becoming semantic owners.
 Delete or isolate:
 
 - unsupported product commands and flags found by the feature-surface audit;
-- `marrow explain` as a raw saved-path/name resolver unless rebuilt as typed
+- `marrow debug explain` as a raw saved-path/name resolver unless rebuilt as typed
   shared-fact explanation;
 - `marrow serve` as a raw saved-data server or public app-server stand-in;
 - raw data/serve protocol claims as stable production APIs;
@@ -303,7 +306,7 @@ missing, return **audit complete** or **blocked**, not done.
 
 Deliver a verdict matrix for every current or documented tool/protocol/language
 or database-facing surface: keep production, debug/admin only, rename/rescope,
-or delete. Audit at least `marrow explain`, `marrow serve`, `marrow data`
+or delete. Audit at least `marrow debug explain`, `marrow serve`, `marrow data`
 roots/stats/dump/get/integrity, `run --trace`, `test --trace`, `run --dry-run`,
 `--maintenance`, backup/restore/archive/debug_admin, LSP/future adapters, raw
 saved paths, raw backend bytes, public server/sync/generated API promises,

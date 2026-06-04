@@ -379,24 +379,27 @@ There is no private admin database.
 Inspection uses typed resources and checked/catalog facts. `marrow data`
 provides read-only `roots`, `stats`, `dump`, `integrity`, and `get` commands
 over the typed tree-cell store. It does not expose backend traversal, physical
-keys, or archive replay as production APIs. `diff`, `load`, and typed
-backup/restore are separate tooling contracts (see
-[future/data-tools.md](future/data-tools.md)).
+keys, or archive replay as production APIs. `diff` and `load` are deferred; typed
+backup/restore is the separate bulk data movement contract. See
+[tooling-surfaces.md](tooling-surfaces.md) for the v0.1 surface matrix.
 
 `marrow backup` and `marrow restore` are typed backup/restore. A backup is a
 manifest plus the canonical tree-cell data stream, not a raw engine-byte copy; the
 manifest binds the data to the source digest, accepted catalog epoch, engine
 profile, and value-codec version it was written under. The generated indexes are
 derived, so the stream omits them and restore rebuilds them from the data. Restore
-validates that binding and the data against the schema, then replays into an empty
-store in one transaction. Backups are deterministic and portable across conforming
-backends at the same layout and codec, but byte identity requires matching accepted
-catalog facts, engine profile, value codec, and stored data.
+validates that binding and full data integrity, including orphaned managed cells,
+then replays into an empty store in one transaction. Backups are deterministic and
+portable across conforming backends at the same layout and codec, but byte
+identity requires matching accepted catalog facts, engine profile, value codec,
+and stored data.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and
-publishes diagnostics; today those are parse diagnostics, with hover and
-project-level (checked-fact) diagnostics to follow. It is distinct from
+publishes diagnostics from the project checker when the editor supplies a valid
+project root, falling back to parse diagnostics for standalone buffers. Diagnostic
+positions use UTF-16 code units. Hover and navigation are deferred. It is distinct
+from
 `marrow serve` below — a different protocol for a different purpose.
 
 `marrow serve` is optional. Normal commands may open a project store directly.
@@ -413,10 +416,9 @@ against checked saved facts before reading. The operations are:
 - read an exact typed data query with `debug_data_get`;
 - walk a bounded typed data subtree with `debug_data_walk`.
 
-Two read-only extensions are planned for later, not in the first release:
-evaluating one checked, non-mutating query in a session and returning its typed
-result, and registering a session so a client can publish its own in-memory
-trees for read-only inspection. Neither would mutate saved data.
+The future production local API path is separate from these `debug_data_*`
+operations. It must be generated from checked facts with explicit
+version/capability negotiation, not by stabilizing the debug protocol names.
 
 The protocol never writes managed roots: it is a read-only inspection surface.
 Managed data changes come only from checked Marrow execution — `marrow run` or an
@@ -424,9 +426,8 @@ embedded runtime — and from explicit repair, restore, data-evolution, and stor
 maintenance workflows, never from the serve protocol. That read-only guarantee is
 what lets serve be a long-lived shared owner of the store.
 
-Loopback TCP is available for clients that cannot use local IPC. Binding TCP
-beyond loopback is an explicit operator choice and requires authentication and
-transport security.
+The v0.1 server binds loopback TCP only. Binding beyond loopback would require a
+separate authenticated and transport-secure design.
 
 The protocol is a tooling surface, not Marrow's application API. Application
 APIs are written in Marrow code.

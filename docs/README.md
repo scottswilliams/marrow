@@ -36,6 +36,8 @@ point at the [language reference](language/) for the exact rules.
   its validation rules.
 - [Data Inspection And Repair Tools](data-tools.md) — the read-only `marrow
   data` subcommands in depth.
+- [Tooling Feature Surfaces](tooling-surfaces.md) — v0.1 verdicts for debug,
+  admin, production, and deferred tool surfaces.
 - [Serve Protocol](serve-protocol.md) — the newline-delimited JSON protocol the
   `marrow serve` data server speaks.
 - [Language Server](lsp.md) — the `marrow lsp` editor language server and its

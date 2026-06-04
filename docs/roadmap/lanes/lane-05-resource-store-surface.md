@@ -63,7 +63,7 @@ Status: complete for the Marrow v0.1 public resource/store surface.
 
 Lane 5 stays complete unless a later audit finds a concrete resource/store
 surface regression. Do not reopen this lane just because Lane 10 deletes,
-demotes, or rebuilds `marrow explain`; Lane 5 owns the resource/store resolver
+demotes, or rebuilds `marrow debug explain`; Lane 5 owns the resource/store resolver
 contract, not that command as a product feature.
 
 Reopen Lane 5 only for a narrow fix if a surviving production surface accepts

@@ -7,7 +7,9 @@ saved-path compatibility surface.
 The current v0.1 operations are intentionally named `debug_data_*` because they
 can expose canonical stored payload bytes for local inspection. They still read
 through checked source, accepted catalog metadata, and typed tree-cell store
-APIs. Lane 10 owns the future production protocol surface.
+APIs. A future production local API must be generated from the same checked
+facts with its own version/capability boundary; it does not grow by stabilizing
+the debug operation names.
 
 The debug inspection operations are:
 
@@ -114,7 +116,7 @@ REQ   {"id": 2, "op": "debug_data_children", "path": [{"root": "books"}]}
 REPLY {"id":2,"ok":{"children":[{"key":{"int":1}},{"key":{"int":2}}],"truncated":false,"cursor":null}}
 
 REQ   {"id": 3, "op": "debug_data_children", "path": [{"root": "books"}, {"key": {"int": 1}}]}
-REPLY {"id":3,"ok":{"children":[{"name":"tags"},{"name":"title"}]}}
+REPLY {"id":3,"ok":{"children":[{"name":"tags"},{"name":"title"}],"truncated":false,"cursor":null}}
 ```
 
 Record and keyed-layer keys sort before named members at one tree level; that
@@ -123,10 +125,10 @@ order is preserved in the reply.
 Key listings (record identity keys and keyed-layer keys) are paged so a record
 with many children cannot force an unbounded scan:
 
-- `limit` is optional. When given it must be a positive JSON integer; `0` or a
-  negative integer is a `protocol.bad_request`. Omitting it, or passing a value
-  above the server maximum of 10000, uses that maximum — an oversized limit is
-  clamped, not rejected.
+- `limit` is optional. When given it must be a positive JSON integer; `0`, a
+  negative integer, a float, or a non-number is a `protocol.bad_request`.
+  Omitting it, or passing an integer above the server maximum of 10000, uses
+  that maximum — an oversized integer limit is clamped, not rejected.
 - `truncated` is `true` when more keys remained past the limit, and the reply
   then carries an opaque `cursor`. Send it back as `cursor` on the same
   connection with the same `path` to resume after the last returned key.
@@ -324,7 +326,8 @@ What works today: the four debug read operations (`debug_data_roots`,
 `debug_data_children`, `debug_data_get`, `debug_data_walk`) over loopback TCP,
 with the path/key/base64 encodings and `protocol.*` / `store.*` error replies
 described above. Production preview, backup, restore, sync, and generated API
-protocols are not implemented here.
+protocols are not implemented here. See
+[tooling-surfaces.md](tooling-surfaces.md) for the surface verdicts.
 
 Designed read extensions that are not yet implemented — local IPC over Unix
 sockets or Windows named pipes, and two read-only session extensions — are

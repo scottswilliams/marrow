@@ -328,7 +328,7 @@ project schema. Read-only; it never modifies the store.
 |---|---|
 | `data.decode` | A stored value is not a canonical form of its declared type. |
 | `data.key_type` | A stored record key, keyed-layer key, or identity payload key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
-| `data.orphan` | A stored data cell is under a saved root or member the schema no longer declares — data a dropped root or field left behind. Derived index cells are never flagged. An actual stored cell whose key does not decode under the tree-cell key grammar is reported as `store.corruption`. |
+| `data.orphan` | A stored data cell is under a saved root or member the schema no longer declares; integrity reports repair guidance for source-native evolution or maintenance repair. Derived index cells are never flagged. An actual stored cell whose key does not decode under the tree-cell key grammar is reported as `store.corruption`. |
 
 ### `evolve.*` — kind `tooling`
 
@@ -366,7 +366,7 @@ store. `marrow backup` itself reports `io.write` for a file it cannot write and 
 | `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
 | `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. |
 | `restore.catalog_mismatch` | The backup's catalog epoch does not match this project's accepted catalog. |
-| `restore.data_invalid` | The replayed data does not validate against the project schema; the restore was rolled back. |
+| `restore.data_invalid` | The replayed data does not validate against the project schema, including orphaned managed cells; the restore was rolled back. |
 
 ## Typed Errors In Running Programs
 

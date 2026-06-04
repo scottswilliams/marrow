@@ -28,6 +28,7 @@ pub mod program;
 mod rejected_surface;
 pub mod resolve;
 mod rules;
+pub mod tooling;
 mod typerules;
 
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};

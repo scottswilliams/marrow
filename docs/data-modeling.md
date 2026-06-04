@@ -411,7 +411,8 @@ with a structural name like an index named `byShelf`.
 Other inspection commands: `marrow data roots` (list saved roots), `marrow data
 stats` (count roots and records), `marrow data get <projectdir> <path>` (one
 path's value), and `marrow data integrity` (verify stored values decode against
-the schema — note this checks decoding, not required-field completeness).
+the schema and actual stored cells are still declared - note this does not check
+required-field completeness).
 
 ## What Is Deferred
 

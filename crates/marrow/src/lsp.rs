@@ -240,10 +240,8 @@ fn lsp_diagnostic(
     })
 }
 
-/// Convert a byte offset into a 0-based LSP `{line, character}`. `character`
-/// counts Unicode scalar values on the line, which matches UTF-16 code units for
-/// the basic multilingual plane (exactly so for ASCII source). Astral characters
-/// are not yet translated to UTF-16 offsets.
+/// Convert a byte offset into a 0-based LSP `{line, character}` using the LSP
+/// default UTF-16 code-unit coordinate space.
 fn position(byte: usize, text: &str) -> Value {
     let byte = byte.min(text.len());
     let mut line = 0u32;
@@ -257,7 +255,7 @@ fn position(byte: usize, text: &str) -> Value {
             line += 1;
             character = 0;
         } else {
-            character += 1;
+            character += ch.len_utf16() as u32;
         }
         offset += ch.len_utf8();
     }
@@ -354,4 +352,26 @@ fn write_message(writer: &mut impl Write, body: &Value) -> io::Result<()> {
     write!(writer, "Content-Length: {}\r\n\r\n", bytes.len())?;
     writer.write_all(&bytes)?;
     writer.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::position;
+
+    #[test]
+    fn positions_count_utf16_code_units() {
+        let text = "a😀b\nz";
+        let after_astral = "a😀".len();
+
+        assert_eq!(
+            position(after_astral, text),
+            json!({ "line": 0, "character": 3 })
+        );
+        assert_eq!(
+            position(text.len(), text),
+            json!({ "line": 1, "character": 1 })
+        );
+    }
 }

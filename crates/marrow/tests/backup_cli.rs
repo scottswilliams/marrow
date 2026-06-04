@@ -328,24 +328,42 @@ fn restore_rebuilds_indexes_usable_through_lookups() {
     );
 }
 
-/// The real store catalog id of `^books`, read through the production check path so
-/// an orphan cell can be written under the live store but an undeclared member.
-fn store_catalog_id(root: &Path) -> CatalogId {
+fn checked_books_place(root: &Path) -> marrow_check::CheckedSavedPlace {
     support::commit_catalog_if_clean(root);
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
     let (report, program) = marrow_check::check_project(root, &config).expect("check project");
     assert!(!report.has_errors(), "fixture checks cleanly: {report:#?}");
-    let place = checked_saved_root_place(&program, "books", marrow_syntax::SourceSpan::default())
-        .expect("checked saved root place");
+    checked_saved_root_place(&program, "books", marrow_syntax::SourceSpan::default())
+        .expect("checked saved root place")
+}
+
+/// The real store catalog id of `^books`, read through the production check path so
+/// an orphan cell can be written under the live store but an undeclared member.
+fn store_catalog_id(root: &Path) -> CatalogId {
+    let place = checked_books_place(root);
     CatalogId::new(place.store_catalog_id.expect("accepted store catalog id"))
         .expect("store catalog id")
 }
 
-/// A backup carrying an orphan cell — data under a dropped field the schema no
-/// longer declares — is not valid for restore. Restore validates the replayed store
-/// through the same full integrity pass as `marrow data integrity`, so orphaned
-/// bytes fail before the target commits.
+fn member_catalog_id(members: &[marrow_check::CheckedSavedMember], name: &str) -> CatalogId {
+    let member = members
+        .iter()
+        .find(|member| member.name == name)
+        .expect("checked member");
+    CatalogId::new(
+        member
+            .catalog_id
+            .clone()
+            .expect("accepted member catalog id"),
+    )
+    .expect("member catalog id")
+}
+
+/// A backup that carries an orphan data cell is not valid under the target
+/// source/catalog, so restore rejects it before committing anything to the empty
+/// target. Orphans are compiler/data-integrity facts, not faithful debris restore
+/// may activate.
 #[test]
 fn restore_rejects_a_backup_carrying_an_orphan_cell() {
     let (root, data_dir) = seeded_project("backup-orphan");
@@ -377,16 +395,75 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", &dir, &archive_arg]);
+    let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
+    fs::remove_dir_all(&root).ok();
     assert_eq!(
         restore.status.code(),
         Some(1),
-        "restore rejects a backup with an orphan cell: {restore:?}"
+        "restore rejects a backup with orphan debris: {restore:?}"
     );
     let restore_err = String::from_utf8_lossy(&restore.stderr).to_string();
-    fs::remove_dir_all(&root).ok();
     assert!(
         restore_err.contains("restore.data_invalid"),
-        "restore reports invalid restored data: {restore_err}"
+        "orphan restore reports restore.data_invalid: {restore:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&roots_after_failed_restore.stdout).contains("(no saved data)"),
+        "failed restore leaves the target empty: {roots_after_failed_restore:?}"
+    );
+}
+
+#[test]
+fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
+    let (root, data_dir) = seeded_project("backup-impossible-cell-shape");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let place = checked_books_place(&root);
+    let store_catalog = CatalogId::new(
+        place
+            .store_catalog_id
+            .clone()
+            .expect("accepted store catalog id"),
+    )
+    .expect("store catalog id");
+    let title_catalog = member_catalog_id(&place.root_members, "title");
+    {
+        let store = TreeStore::open(&data_dir.join("marrow.redb"))
+            .expect("open native store for impossible cell");
+        store
+            .write_data_value(
+                &store_catalog,
+                &[SavedKey::Int(1)],
+                &[
+                    DataPathSegment::Member(title_catalog),
+                    DataPathSegment::Key(SavedKey::Int(99)),
+                ],
+                b"impossible".to_vec(),
+            )
+            .expect("write impossible cell shape");
+    }
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        restore.status.code(),
+        Some(1),
+        "restore rejects a backup with an impossible data cell shape: {restore:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&restore.stderr).contains("restore.data_invalid"),
+        "impossible shape restore reports restore.data_invalid: {restore:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&roots_after_failed_restore.stdout).contains("(no saved data)"),
+        "failed restore leaves the target empty: {roots_after_failed_restore:?}"
     );
 }
 

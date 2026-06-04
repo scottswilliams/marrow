@@ -84,7 +84,8 @@ Raw untyped writes to managed roots are rejected
 (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/language/resources-and-storage.md:601`).
 
 The cost model and the unstaged decision edits make this more explicit. The
-language docs say the access path is the source and there is no query optimizer
+language docs say the access path is the source and there is no hidden
+access-strategy layer
 (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/language/cost-model.md:3`).
 The minimal-plan guarantee says the planner may elide provably redundant
 operations, but never chooses between semantically distinct plans by runtime
@@ -93,7 +94,8 @@ statistics
 The dirty foundations ADR adds that no layer below the language can perform the
 same program in fewer operations
 (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56`),
-and its consequences now foreclose a cost-based optimizer below the language
+and its consequences now foreclose runtime statistics choosing operation shapes
+below the language
 (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:68`).
 The dirty transactions ADR mirrors that for write planning
 (`/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28`).
@@ -282,7 +284,8 @@ Rust-shape risk before v0.1 API freeze.
 
 4. Adopt a Postgres-like heap plus secondary-index architecture.
    This is the long-term high-scale relational shape, but it imports heap tuple
-   visibility, vacuum, HOT-like update rules, page layout policy, and optimizer
+   visibility, vacuum, HOT-like update rules, page layout policy, and automatic
+   access-strategy behavior
    expectations. For local v0.1, tree cells over engine snapshots are simpler and
    more congruent with typed resource trees.
 

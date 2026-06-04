@@ -1,8 +1,8 @@
 //! The `marrow serve` request/response protocol.
 //!
 //! Each request and reply is one JSON object on its own line. This module is
-//! the transport-free core: [`ProtocolSession`] turns request values into reply
-//! values against checked tree-cell data.
+//! the debug/admin adapter: [`ProtocolSession`] turns request values into reply
+//! values over shared checked tooling facts.
 
 mod codec;
 mod cursor;
@@ -113,6 +113,13 @@ pub(super) fn store_error(error: marrow_store::StoreError) -> ProtocolError {
     ProtocolError {
         code: error.code(),
         message: error.to_string(),
+    }
+}
+
+pub(super) fn tooling_error(error: marrow_check::tooling::ToolingError) -> ProtocolError {
+    match error {
+        marrow_check::tooling::ToolingError::Query(message) => bad_request(&message),
+        marrow_check::tooling::ToolingError::Store(error) => store_error(error),
     }
 }
 

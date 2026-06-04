@@ -1,9 +1,8 @@
 use marrow_check::CheckedProgram;
+use marrow_check::tooling::{DataQuery, DataQuerySegment, resolve_data_query};
 use marrow_run::base64;
 use marrow_store::key::SavedKey;
 use serde_json::{Value, json};
-
-use crate::cmd_data::get::{DataQuery, DataQuerySegment, resolve_data_query};
 
 use super::{ProtocolError, bad_request};
 
@@ -137,9 +136,7 @@ pub(super) fn encode_query_path(path: &[DataQuerySegment]) -> Value {
 fn encode_query_segment(segment: &DataQuerySegment) -> Value {
     match segment {
         DataQuerySegment::Root(name) => json!({ "root": name }),
-        DataQuerySegment::Field(name) | DataQuerySegment::SourceMember(name) => {
-            json!({ "field": name })
-        }
+        DataQuerySegment::Field(name) => json!({ "field": name }),
         DataQuerySegment::Layer(name) => json!({ "layer": name }),
         DataQuerySegment::Key(key) => json!({ "key": encode_key(key) }),
     }

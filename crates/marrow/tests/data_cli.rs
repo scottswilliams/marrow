@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use marrow_check::tooling::{DataQuerySegment, ToolingError, data_children};
 use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
 };
@@ -121,6 +122,33 @@ fn seeded_project(name: &str) -> (PathBuf, String) {
         Some(0)
     );
     (project, dir)
+}
+
+#[test]
+fn shared_data_children_rejects_zero_limit() {
+    let (project, _dir) = seeded_project("data-children-zero-limit");
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let error = data_children(
+        &program,
+        &store,
+        &[DataQuerySegment::Root("counter".into())],
+        0,
+        None,
+    )
+    .expect_err("shared child pages reject a zero limit");
+    fs::remove_dir_all(&project).ok();
+
+    match error {
+        ToolingError::Query(message) => {
+            assert!(
+                message.contains("limit"),
+                "zero-limit query error: {message}"
+            );
+        }
+        ToolingError::Store(error) => panic!("expected query error, got store error: {error}"),
+    }
 }
 
 #[test]
@@ -310,6 +338,12 @@ fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert!(stderr.contains("data.orphan"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "help: run `marrow data integrity` after source-native evolution or maintenance repair"
+        ),
+        "orphan text output includes repair guidance: {stderr}"
+    );
 }
 
 #[test]
@@ -334,6 +368,63 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
 }
 
 #[test]
+fn data_integrity_reports_an_extra_key_below_a_scalar_field_as_data_orphan() {
+    let (project, dir) = seeded_project("data-integrity-orphan-extra-key");
+    let place = checked_place(&project, "counter");
+    let mut path = field_path(&place, "value");
+    path.push(DataPathSegment::Key(SavedKey::Int(99)));
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &path,
+        b"7".to_vec(),
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.orphan"), "{stderr}");
+    assert!(stderr.contains("^counter(1).value(99)"), "{stderr}");
+}
+
+#[test]
+fn data_integrity_reports_a_keyed_member_value_without_its_key_as_data_orphan() {
+    let project = temp_dir("data-integrity-orphan-missing-key");
+    write(
+        &project,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Hits at ^hits\n\
+         \x20\x20\x20\x20when(moment: instant): int\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let place = checked_place(&project, "hits");
+    write_tree_value(
+        &project,
+        "hits",
+        &[],
+        &field_path(&place, "when"),
+        b"7".to_vec(),
+    );
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.orphan"), "{stderr}");
+    assert!(stderr.contains("^hits.when"), "{stderr}");
+}
+
+#[test]
 fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
     let (project, dir) = seeded_project("data-integrity-orphan-json");
     write_orphan_cell(
@@ -355,6 +446,13 @@ fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
         .find(|problem| problem["code"] == serde_json::json!("data.orphan"))
         .expect("an orphan problem");
     assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
+    assert_eq!(
+        problem["help"],
+        serde_json::json!(
+            "run `marrow data integrity` after source-native evolution or maintenance repair"
+        ),
+        "{value}"
+    );
 }
 
 #[test]

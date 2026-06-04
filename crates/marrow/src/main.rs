@@ -30,7 +30,7 @@ Usage:
   marrow test <projectdir>
   marrow data <roots|stats|dump|integrity> <projectdir>
   marrow data get <projectdir> <path>
-  marrow explain [--format text|json|jsonl] <projectdir> <target>
+  marrow debug explain [--format text|json|jsonl] <projectdir> <target>
   marrow backup [--format text|json|jsonl] <projectdir> <output-file>
   marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
   marrow lsp
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
         "run" => cmd_run::run(rest),
         "test" => cmd_test::test(rest),
         "data" => cmd_data::data(rest),
-        "explain" => cmd_explain::explain(rest),
+        "debug" => cmd_explain::debug(rest),
         "backup" => cmd_backup::backup(rest),
         "restore" => cmd_restore::restore(rest),
         "lsp" => lsp::run(rest),

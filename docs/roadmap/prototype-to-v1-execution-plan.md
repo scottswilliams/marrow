@@ -205,7 +205,7 @@ backup/restore, and deeper tooling workflows belong to Lane 10 once shared
 runtime and store facts are available.
 
 Lane 10 owns the product-surface audit for tooling and protocol commands before
-it writes replacement code. Current suspect surfaces include `marrow explain` as
+it writes replacement code. Current suspect surfaces include `marrow debug explain` as
 a raw saved-path/name resolver, `marrow serve` as a raw saved-data server or
 public app-server stand-in, raw `marrow data` inspection as production protocol,
 trace/dry-run/maintenance output that exposes raw storage, and docs promising

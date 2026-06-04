@@ -1,8 +1,8 @@
 # Cost Model
 
-Marrow has no query optimizer. Code names the store, the index, and the fields it
-reads and writes, so the storage work a program does is written in its source.
-There is no query plan to discover: the access path is the source.
+Marrow source names the store, the index, and the fields it reads and writes, so
+the storage work a program does is written in its source. There is no hidden
+access strategy to discover: the access path is the source.
 
 This page defines what cost means in Marrow and how to read it off the code.
 
@@ -31,8 +31,8 @@ Each construct maps to a fixed shape of work:
   maintained counter.
 - `^books(id).shelf = "fiction"` — one field write plus, for each index the
   field feeds, a read of the old indexed value, removal of the old entry, and
-  addition of the new entry. (The old-value read is one the planner may elide
-  when the value is already held in the open transaction; see below.)
+  addition of the new entry. (The old-value read can be skipped when the value is
+  already held in the open transaction; see below.)
 - `^books(id) = book` — exact replacement: it writes the record body and clears
   every omitted field, unkeyed group, and keyed child layer.
 - A bare write commits on its own; writes grouped in a `transaction` commit once.
@@ -48,18 +48,18 @@ you declare the index or write the traversal, so a scan is never discovered as a
 slow path in production. Full traversal is fine when you write it
 (`for id in ^books`); only a hidden one is an error.
 
-## The Minimal-Plan Guarantee
+## Minimal Storage Work
 
 For the program as written, Marrow performs the minimal storage operations its
-semantics require. The planner may remove a provably-redundant operation — it
+semantics require. Checked lowering may remove a provably-redundant operation: it
 does not clear a subtree under an identity it has proven absent, and it does not
-re-read an indexed value it already holds in the open transaction — but it never
-adds an operation and never chooses between semantically distinct plans by
-runtime statistics.
+re-read an indexed value it already holds in the open transaction. It never adds
+an operation or lets runtime statistics change which storage work the source
+requires.
 
 Because the engine stores opaque ordered bytes and knows no Marrow semantics,
-there is no plan-choosing layer beneath the language. No lower level can perform
-the same program in fewer operations: the source already is the plan.
+there is no access-strategy layer beneath the language. No lower level can
+perform the same program in fewer operations: the source already names the work.
 
 ## Changing Cost Means Changing The Program
 
@@ -74,4 +74,4 @@ To do less work, write different code — and every lever is in the language:
 - group writes in a `transaction` so many commits collapse into one.
 
 These are ordinary modeling choices with visible cost. There is no lower level to
-drop to for a cheaper plan, because the plan is the program.
+drop to for cheaper storage work, because the program names the access path.

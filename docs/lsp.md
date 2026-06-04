@@ -74,11 +74,8 @@ a missing return type produces:
 
 Field details:
 
-- `range` is built from the diagnostic's byte span. `character` counts Unicode
-  scalar values on the line. This matches UTF-16 code units for the basic
-  multilingual plane and is exact for ASCII source, which covers `.mw` in
-  practice; precise UTF-16 translation for astral characters is a later
-  refinement.
+- `range` is built from the diagnostic's byte span. `character` counts UTF-16
+  code units, matching the default LSP coordinate space.
 - `severity` is `1` for errors and `2` for warnings, matching the LSP
   `DiagnosticSeverity` numbering.
 - `code` is the stable dotted Marrow error code (for example `parse.syntax`).
@@ -120,8 +117,7 @@ These are not provided today:
 - incremental document sync (`textDocumentSync: 2`);
 - diagnostics for unopened files;
 - formatting through the server (use [`marrow fmt`](cli.md#marrow-fmt) on the
-  command line);
-- precise UTF-16 column offsets for astral (non-BMP) characters.
+  command line).
 
 ## Planned Path
 

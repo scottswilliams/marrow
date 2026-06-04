@@ -37,11 +37,11 @@ With it, data is saved in the project's typed tree store.
 
 ## What Marrow Is Not
 
-Marrow is not a SQL dialect, ORM, query optimizer, migration DSL, or general
-database server. It has one source language and one typed tree data model. Saved
-data uses the same resource shapes as local data; indexes are declared lookup
-trees owned by stores; exact whole-resource assignment is ordinary assignment,
-not a warning-producing operation.
+Marrow is not a SQL dialect, ORM, migration DSL, general database server, or
+hidden access-strategy layer. It has one source language and one typed tree data
+model. Saved data uses the same resource shapes as local data; indexes are
+declared lookup trees owned by stores; exact whole-resource assignment is
+ordinary assignment, not a warning-producing operation.
 
 ## First Look
 

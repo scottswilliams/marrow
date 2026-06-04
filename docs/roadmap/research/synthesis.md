@@ -58,7 +58,7 @@ Current docs and ADRs reviewed:
 
 The reports converge on one strong thesis: Marrow should stay a source-native,
 typed tree language with built-in durable data, not drift toward SQL, an ORM, a
-document-store wrapper, a query planner, or a private database server.
+document-store wrapper, a hidden planner, or a private database server.
 
 The load-bearing model is:
 
@@ -70,8 +70,8 @@ The load-bearing model is:
 - The runtime executes checked IR and explicit write plans.
 - The store persists typed tree cells over a private ordered-byte engine.
 - Tools render compiler/runtime/store facts; they do not rediscover semantics.
-- The access path is source. There is no hidden optimizer and no query plan to
-  discover beneath ordinary Marrow code.
+- The access path is source. Tools render checked source facts, not hidden
+  execution choices beneath ordinary Marrow code.
 
 This foundation is strong. The main risk is not the absence of SQL. The main
 risk is letting prototype residue and tool convenience create a second semantic
@@ -234,7 +234,7 @@ existing ADRs in place, not by creating new ADRs, to remove or clarify:
 - raw inspection that runs without checked source;
 - stale defaulted-field or absence-narrowing syntax not present in the language;
 - stale `archive.rs` evidence and old raw archive language;
-- any wording that implies a query planner, migration DSL, or source-diff
+- any wording that implies hidden execution planning, migration DSL, or source-diff
   identity inference.
 
 Also reconcile the current docs' random catalog stable IDs with the physical
@@ -321,10 +321,10 @@ Other evolution refinements:
 - define future compatibility windows instead of ad hoc old-binary exceptions;
 - keep source-diff tooling as suggestions only, never identity authority.
 
-### Refine Tooling Around Shared Facts
+### Tooling Facts Baseline
 
-Tooling is the highest risk for reintroducing a second model. Refine toward a
-shared, transport-free tooling facts API that owns:
+Tooling is the highest risk for reintroducing a second model. Lane 16 establishes
+a shared, transport-free tooling facts API that owns:
 
 - typed data-query resolution;
 - checked path rendering;
@@ -335,33 +335,27 @@ shared, transport-free tooling facts API that owns:
 - cursor contracts;
 - backup/restore/repair status.
 
-Then make CLI, serve, LSP, backup, restore, and future adapters thin renderers.
+CLI, serve, LSP, backup, restore, and future adapters must stay thin renderers
+over those facts.
 
-### Refine Or Rename `marrow explain`
+### Keep `marrow debug explain` Diagnostic/Admin
 
-The current name is dangerous because SQL users read `EXPLAIN` as planner
-output. Marrow has no query plan to discover.
-
-Valid outcomes:
-
-- rename saved-path behavior under `marrow data explain` or `marrow debug
-  explain`;
-- keep `marrow explain` only if it renders checked source-owned facts and
-  operation classes, not planner choices, costs from statistics, or
-  `ANALYZE`-style execution output;
-- delete it from v0.1 if its product story is not clear.
+The `explain` term can invite SQL-style expectations, so v0.1 keeps it under the
+explicit `debug` namespace and documents it as diagnostic/admin checked-fact
+output. It renders checked source-owned facts and operation classes, not hidden
+execution-strategy choices, costs from statistics, or `ANALYZE`-style execution
+output.
 
 ### Refine Data/Serve Boundaries
 
-Data and serve should stay read-only debug/admin unless promoted through a
-source-visible typed API design. Current risks to refine:
+Data and serve stay read-only debug/admin unless promoted through a
+source-visible typed API design. Current boundaries:
 
 - `data dump` is unbounded as an operator command;
-- data/serve path codecs and query resolution may become duplicate semantics;
+- data/serve path codecs and query resolution use shared tooling facts;
 - serve lacks version/capability negotiation, which is acceptable only while
   debug/admin;
-- LSP position encoding needs UTF-16 or negotiated encoding before protocol
-  correctness is claimed;
+- LSP diagnostic positions use UTF-16 code units by default;
 - restore must be compiler-owned and clean relative to source/catalog: restoring
   orphaned managed cells is a data-attached compiler error, and `marrow data
   integrity` should report what to do next.
@@ -431,11 +425,12 @@ later.
 Saved paths are not first-class mutable reference arguments. Use explicit saved
 assignments at the call site.
 
-### Reverse Any Hidden Optimizer Or Query Planner
+### Reverse Hidden Execution Planning
 
-Do not add a cost/statistics optimizer beneath ordinary Marrow source. Do not
-teach users that there is a query plan to discover. If Marrow later adds a query
-language, it must be source-visible, checked, bounded, and explicitly scoped.
+Do not add cost/statistics-based execution choice beneath ordinary Marrow source.
+Do not teach users that tools can discover hidden execution choices. If Marrow
+later adds a query language, it must be source-visible, checked, bounded, and
+explicitly scoped.
 
 ### Reverse Production Raw Paths And Backend Bytes
 
@@ -511,14 +506,12 @@ These still need explicit product decisions before v0.1 freeze:
 
 1. Should `out` exist in v0.1, or should the language prefer returned records,
    tuples, booleans-plus-result resources, or `Result`-like values?
-2. Should `marrow explain` survive as a top-level command, be renamed under
-   `data` or `debug`, or be deleted from v0.1?
-3. Should `marrow data dump/get` remain default CLI commands if they expose
+2. Should `marrow data dump/get` remain default CLI commands if they expose
    canonical payload bytes, or should raw-byte inspection require a debug/admin
    namespace or flag?
-4. Should `data dump` be allowed as an explicitly unbounded operator command, or
+3. Should `data dump` be allowed as an explicitly unbounded operator command, or
    must every durable-data preview be cursor/paging based?
-5. Should any remaining non-cryptographic checksum wording be narrowed to
+4. Should any remaining non-cryptographic checksum wording be narrowed to
    accidental-corruption detection?
 
 ## Proposed Follow-Up Lane Plan
@@ -530,21 +523,15 @@ AGENTS.md.
 
 ### Sequencing
 
-1. Lane 12 runs after the code stack so ADRs and canonical docs reconcile the
-   implemented contract rather than branch-local plans.
-2. Lanes 13, 14, 15, and 17 define baseline contracts later lanes must
+1. Lane 12 runs after the composed code stack so ADRs and canonical docs
+   reconcile implemented contracts rather than branch-local plans.
+2. Lanes 13, 14, 15, 16, and 17 define baseline contracts later lanes must
    preserve: catalog identity/presence, evolution soundness, transaction/store
-   durability, and rejected syntax cleanup. They are not open implementation
-   lanes in this synthesis.
-3. Lane 16 can start full implementation for settled tooling decisions:
-   restore/orphan rejection, v0.1 debug/admin serve boundaries, shared tooling
-   facts, LSP correctness, and raw production surface deletion. It must isolate
-   unresolved `explain` and `data dump/get` product choices rather than blocking
-   the whole lane.
-4. Lane 19 is a short product-decision closure lane for the remaining product
-   questions. It should run early and unblock the `out`, `explain`, `data dump`,
+   durability, shared tooling/debug boundaries, and rejected syntax cleanup.
+3. Lane 19 is a short product-decision closure lane for the remaining product
+   questions. It should run early for `out`, `data dump/get`,
    compatibility-window, default, and re-key pieces.
-5. Lane 18 runs last as final Rust hardening, after semantic owners have landed.
+4. Lane 18 runs last as final Rust hardening, after semantic owners have landed.
 
 ### Lane 12: ADR And Canonical Docs Reconciliation
 
@@ -568,13 +555,23 @@ Work in a fresh isolated sibling worktree from current main. Do not create new A
 
 First inspect git state for the Marrow checkout and `marrow-decisions`, including dirty files. Read every integrated research report in marrow/docs/roadmap/research, the current docs/language set, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/backend-contract.md, docs/data-evolution.md, and the full ADR packet.
 
-Fix doc drift only. Remove or rewrite stale claims about Book::Id, @id, edit, unchecked byte inspection, production byte-level archive replay, monotonic entity stable IDs, merge/lock as supported syntax, source-diff identity, migration scripts, query plans, and stale lane status. Keep Id(^store) as the v0.1 store-identity type constructor, random or collision-resistant catalog identity, source-is-access-path, typed backup/restore, checked facts, clean orphan-rejecting restore, unknown-not-any, dangling references as compiler-visible integrity facts, explicit user-mode history, exact whole-resource replacement, activation as a compiler-owned job shape, deferred external adapters, and current serve as debug/admin loopback only while preserving the future local API path.
+Fix doc drift only. Remove or rewrite stale claims about Book::Id, @id, edit, raw
+inspection without checked source, production byte-level archive replay,
+monotonic entity stable IDs, merge/lock as supported syntax, source-diff
+identity, migration scripts, execution-strategy explain output, and stale lane
+status. Keep Id(^store) as the v0.1 store-identity type constructor, random or
+collision-resistant catalog identity, source-is-access-path, typed
+backup/restore, checked facts, clean orphan-rejecting restore, unknown-not-any,
+dangling references as compiler-visible integrity facts, explicit user-mode
+history, exact whole-resource replacement, activation as a compiler-owned job
+shape, deferred external adapters, and current serve as debug/admin loopback only
+while preserving the future local API path.
 
 Do not preserve completed-history sediment or temp worktree paths. Do not create new roadmap umbrellas. Every changed paragraph must be current product truth.
 
 Verification:
 - git diff --check in both repos if both are touched.
-- Markdown scan for Book::Id, @id, edit, raw inspection, migration script, query plan, optimizer, merge, lock, archive, explain, unknown, orphan, serve, dangling, audit, history, activation job, and external adapter; every remaining match must be current product truth, accepted, reserved/rejected, future-only, or debug/admin with a clear verdict.
+- Markdown scan for Book::Id, @id, edit, raw inspection, migration script, explain wording that sounds like execution-strategy inspection, merge, lock, archive, explain, unknown, orphan, serve, dangling, audit, history, activation job, and external adapter; every remaining match must be current product truth, accepted, reserved/rejected, future-only, or debug/admin with a clear verdict.
 
 Before claiming done, run read-only review with two lenses: consistency against synthesis and anti-sediment. Return changed files, exact scans, and reviewer verdicts.
 ```
@@ -698,42 +695,25 @@ Owned areas:
 - CLI/data/serve/LSP/backup tests
 - `docs/cli.md`, `docs/data-tools.md`, `docs/serve-protocol.md`, `docs/lsp.md`
 
-Prompt:
+Status: implemented by Lane 16 as shared tooling facts plus thin adapters.
 
-```text
-You are Lane 16: Tooling Facts, Debug Surface, And Explain Rescope.
+Settled outcomes:
 
-Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, Lane 10 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/lsp.md, tooling ADRs, and storage backup ADRs.
-
-Mission: make tools render shared facts and stop raw/path/debug surfaces from becoming production semantics. Compiler equals data integrity: tools report compiler/store facts; they do not become a second database model.
-
-Start with TDD for settled decisions:
 - restore rejects orphaned managed cells under the current source/catalog before commit;
-- data integrity reports orphaned managed cells with actionable compiler/data-integrity guidance;
-- serve remains loopback debug/admin only in v0.1, while docs preserve the future local checked API direction;
-- unknown/raw payload/debug surfaces cannot become typed production APIs;
-- LSP position encoding is corrected before protocol correctness is claimed.
+- data integrity reports orphaned managed cells with compiler/data-integrity guidance;
+- serve remains loopback debug/admin only in v0.1, with future local checked APIs kept separate;
+- raw payload/debug surfaces are explicit diagnostic/admin wrappers, not production APIs;
+- LSP diagnostic positions use UTF-16 code units by default;
+- public tooling signatures hide physical catalog/path locators and raw byte vectors.
 
-Also produce a refreshed feature-surface verdict matrix for: marrow explain, marrow data roots/stats/dump/get/integrity, marrow serve debug_data_*, run --trace, test --trace, run --dry-run, --maintenance, backup/restore, LSP, future adapters, raw saved paths, raw payload bytes, cursors, unbounded scans, and generated API/server/sync language. This matrix drives implementation; it is not a stop point.
+Remaining Scott product choices:
 
-Then implement only surfaces that have a clear verdict:
-- Keep production only if ADR-backed, typed, bounded, snapshot/epoch bound, and rendered from shared facts.
-- Keep debug/admin only if explicitly named or flagged and excluded from production protocol semantics.
-- Rename/rescope if names imply query planning, SQL EXPLAIN, production server behavior, or stable raw paths.
-- Delete unsupported surfaces and their docs/tests/help output.
+- whether `marrow data dump` and `marrow data get` remain as operator/admin
+  inspection commands, move under debug naming, or become checked preview
+  operations.
 
-Specific focus:
-- Isolate unresolved Scott decisions for marrow explain and raw data dump/get. Do not block restore, serve, LSP, backup, or shared-facts cleanup on those choices. Once Scott decides, implement delete, rename under data/debug, or rebuild as checked fact/operation rendering. It must not expose a query plan or planner choices.
-- Extract or create a transport-free tooling facts API for typed data-query resolution, checked path rendering, bounded previews, integrity findings, explain facts, snapshot/catalog metadata, and cursor contracts. CLI and serve become adapters.
-- Add future activation rendering to the shared-facts backlog: preview outcome, activation job status, chunk progress, verification findings, publish readiness, compatibility-window admission, adapter names, and close conditions. The v0.1 CLI may only render exact apply/receipt evidence, but the facts API should not force a migration-ledger model later.
-- Keep data previews consistently bounded where they are previews. If unbounded dump remains before Scott's decision, explicitly classify it as an operator/admin command, not a production preview API.
-- Keep serve loopback debug/admin only for v0.1. Preserve the future local API direction as a separate checked-fact surface; do not rename debug_data_* into product operations.
-- Fix LSP position encoding before protocol correctness is claimed.
-
-Do not patch missing semantic facts locally in tools. Send missing facts back to the owning checker/runtime/store lane.
-
-Before claiming done, run soundness review for private-byte leakage, stale epoch/snapshot, cursor forgery/replay, unbounded previews, and restore/tool mismatch. Run idiom/spec review for thin adapters, no tool-local classifiers, split protocol modules, no comment sediment, and docs that clearly mark debug/admin boundaries.
-```
+Future tools must extend `marrow_check::tooling` rather than reclassifying paths,
+payloads, cursors, integrity shapes, or explain facts inside adapters.
 
 ### Lane 17: Language Surface Simplification
 
@@ -762,7 +742,7 @@ Targets:
 - Keep saved-path inout rejected.
 - Remove edit/patch/update-style wording from language docs and samples. Field writes express partial updates; transactions group them.
 - Do not block on the unresolved out-parameter decision. Exclude out from this lane unless Scott decides before you finish; if a decision lands, either delete out syntax/docs/tests and migrate examples, or document why it earns its place and ensure it cannot become saved-reference mutation.
-- Add or update a "What Marrow Is Not" language doc section if Lane 12 did not already do it: not SQL, not ORM, not query optimizer, not migration DSL, not temporal fact DB, not raw KV.
+- Add or update a "What Marrow Is Not" language doc section if Lane 12 did not already do it: not SQL, not ORM, not hidden execution planner, not migration DSL, not temporal fact DB, not raw KV.
 - Make sequence/map docs consistently describe saved tree-layer conveniences, not general local list/map abstractions.
 - Keep exact whole-resource assignment as normal replacement semantics. Do not add a warning system by default.
 
@@ -796,7 +776,7 @@ Required scans:
 - clippy allow/expect suppressions
 - Unknown/fallback/sentinel strings in production paths
 - raw path/backend bytes/archive/debug_admin production leakage
-- @id, Book::Id, Author::Id, merge, lock, saved inout, edit, patch, query plan, optimizer, migration script
+- @id, Book::Id, Author::Id, merge, lock, saved inout, edit, patch, explain wording that sounds like execution-strategy inspection, migration script
 - unknown used as any, dynamic identity without store-root reentry checks, orphan-preserving restore, accidental production serve APIs, and non-job-shaped activation state
 - duplicate classifiers in checker/runtime/schema/tools
 - unbounded materialization APIs
@@ -843,7 +823,6 @@ For each remaining question, produce:
 
 The remaining questions are:
 - out parameters;
-- marrow explain;
 - marrow data dump/get debug/admin scope;
 - unbounded data dump versus cursor/page contract;
 - compatibility-window defaults for future server mode: one-old-epoch rule and
@@ -866,11 +845,14 @@ Be skeptical. Do not keep a feature because it exists. Default to delete or defe
 3. Start Lane 17 immediately for ready language cleanup: `merge`, `lock`, `@id`,
    saved `inout`, `edit`/patch wording, "What Marrow Is Not", and collection
    wording. Exclude `out` until Lane 19 closes it.
-4. Start Lane 16 immediately for settled tooling work: orphan-rejecting restore,
-   data-integrity guidance, debug/admin serve boundary, shared tooling facts,
-   LSP position correctness, and raw production surface deletion. Isolate
-   unresolved `explain` and `data dump/get` choices.
-5. Run Lane 19 early as the short decision closure lane for the remaining
+4. Lane 16 settled tooling work is implemented on the current lane branch:
+   orphan-rejecting restore, data-integrity guidance, debug/admin serve
+   boundary, shared tooling facts, LSP UTF-16 positions, and raw production
+   surface deletion. Keep remaining `data dump/get` choices as Scott product
+   decisions, not blockers for restore/serve/LSP/shared facts.
+5. Start Lane 13 in parallel on catalog/presence hardening. Coordinate with Lane
+   12 and Lane 19 only for ID size, digest, and reserved-alias wording.
+6. Run Lane 19 early as the short decision closure lane for the remaining
    product choices.
 6. Run Lane 18 last as final hardening, not as a substitute for lane-local
    cleanup.

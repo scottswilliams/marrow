@@ -19,7 +19,6 @@ use marrow_syntax::SourceSpan;
 use serde_json::json;
 
 use crate::CheckFormat;
-use crate::cmd_data::render_value_bytes;
 
 /// Observes a run and reports each statement and managed write. The `label`
 /// prefixes every event under text format and is carried on each JSON record, so
@@ -248,6 +247,19 @@ fn render_scalar(value: &SavedValue) -> String {
     match value {
         SavedValue::Bool(value) => value.to_string(),
         other => render_value_bytes(&encode_value(other).unwrap_or_default()),
+    }
+}
+
+fn render_value_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => {
+            let mut text = String::from("0x");
+            for byte in bytes {
+                text.push_str(&format!("{byte:02x}"));
+            }
+            text
+        }
     }
 }
 

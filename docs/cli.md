@@ -11,7 +11,7 @@ marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <typed inspection subcommand> <projectdir>
-marrow explain [--format text|json|jsonl] <projectdir> <target>
+marrow debug explain [--format text|json|jsonl] <projectdir> <target>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 marrow lsp
@@ -48,8 +48,8 @@ Commands that report diagnostics or saved data take `--format`:
 Plain `run` output is the program's own `print`/`write` stream, which carries no
 envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
 for their tooling reports; when reports compose, more than one top-level JSON
-object may appear on stdout. `--format` is also accepted by `check`, `explain`,
-and typed `data` subcommands.
+object may appear on stdout. `--format` is also accepted by `check`,
+`debug explain`, and typed `data` subcommands.
 
 ---
 
@@ -276,19 +276,20 @@ The implemented assertions are `std::assert::isTrue`, `isFalse`, `absent`, and
 
 ---
 
-## `marrow explain`
+## `marrow debug explain`
 
 ```
-marrow explain [--format text|json|jsonl] <projectdir> <target>
+marrow debug explain [--format text|json|jsonl] <projectdir> <target>
 ```
 
 Statically explain a target without running code. The target is either a saved
 `^path` or a name. Saved-path explanation is a diagnostic/admin inspection
-surface; typed production previews are deferred to the Lane 10 tooling protocol.
+surface; typed production previews are deferred to a future checked local API
+generated from shared tooling facts.
 
-A `^path` target reports its path/index plan: the root and resource it names,
-the resolved class — a scalar leaf and its type, a generated index entry, a
-key-type mismatch, or an orphan — and, for a field, the indexes it participates
+A `^path` target reports checked path facts: the root and resource it names, the
+resolved class — a scalar leaf and its type, a generated index entry, a key-type
+mismatch, or an orphan — and, for a field, the declared indexes it participates
 in. The classification is the same one `data integrity` applies per record, so
 explain and integrity agree on what each path means.
 
@@ -298,11 +299,11 @@ modules), not visible (a private function reached by a qualified path), or
 unresolved.
 
 ```console
-$ marrow explain ./proj '^books(1).title'
+$ marrow debug explain ./proj '^books(1).title'
 ^books(1).title resolves to field `title` of resource Book, type string
-index plan: covered by `byTitle`(title) unique
+indexes: covered by `byTitle`(title) unique
 
-$ marrow explain --format json ./proj shelf::add
+$ marrow debug explain --format json ./proj shelf::add
 {"target":"shelf::add","kind":"name","resolution":"found","module":"shelf","resolved_kind":"function"}
 ```
 
@@ -372,10 +373,12 @@ $ marrow data dump --format jsonl ./proj
 ### `data integrity`
 
 Verify each checked, reachable stored value decodes against its declared schema
-type. It needs the checked project, so it loads and checks the source first. It
-reports decode mismatches (`data.decode`), key type mismatches (`data.key_type`),
-and corrupt typed tree-cell keys (`store.corruption`). Exits `0` on a clean
-store, `1` when any problem is found.
+type, and verify that no actual stored data cell is left under a root or member
+the schema no longer declares. It needs the checked project, so it loads and
+checks the source first. It reports decode mismatches (`data.decode`), key type
+mismatches (`data.key_type`), orphaned managed cells (`data.orphan`), and corrupt
+typed tree-cell keys (`store.corruption`). Exits `0` on a clean store, `1` when
+any problem is found.
 
 ```console
 $ marrow data integrity ./proj
@@ -452,13 +455,14 @@ validates the backup against it (`restore.source_mismatch`,
 `restore.catalog_mismatch`, `restore.engine_recompile_required`), and refuses a
 non-empty target (`restore.not_empty`) — v0.1 restores into an empty store only.
 The whole replay runs in one transaction: a checksum mismatch or trailing bytes
-(`restore.corrupt_chunk`) or restored data that does not decode against the schema
-(`restore.data_invalid`) rolls the target back to empty, so it either gains the
-whole backup or is left unchanged. Because the replay is a single transaction, its
-memory use is proportional to the backup size — a known v0.1 bound. Restore rebuilds
-the generated indexes from the restored data inside the same transaction. A
-different engine, layout, or codec reports `restore.engine_recompile_required`;
-applying that recompile is future work.
+(`restore.corrupt_chunk`), restored data that does not decode against the schema,
+or an orphaned managed cell in the restored stream (`restore.data_invalid`) rolls
+the target back to empty, so it either gains the whole backup or is left
+unchanged. Because the replay is a single transaction, its memory use is
+proportional to the backup size - a known v0.1 bound. Restore rebuilds the
+generated indexes from the restored data inside the same transaction. A different
+engine, layout, or codec reports `restore.engine_recompile_required`; applying
+that recompile is future work.
 
 ```console
 $ marrow restore ./proj ./proj-backup.mwbackup

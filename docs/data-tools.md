@@ -4,6 +4,10 @@ Data tools inspect typed Marrow data. They do not define a second storage model
 and they do not expose raw store keys, raw saved-path encoders, or backend byte
 streams as production APIs.
 
+The cross-tool product boundary is summarized in
+[tooling-surfaces.md](tooling-surfaces.md): `data dump` and `data get` are
+operator/admin inspection, not production data APIs.
+
 The v0.1 tooling contract is:
 
 - read through checked source, accepted catalog metadata, and typed tree-cell
@@ -19,9 +23,10 @@ The v0.1 tooling contract is:
 Typed backup/restore is a tooling and backup-protocol contract, not a raw
 archive replay: it carries a typed manifest binding the data to the source
 digest, accepted catalog epoch, engine profile, and value-codec version it was
-written under, and a restore validates that binding and the data against the
-schema before it activates. It is a separate command pair, not a `data`
-subcommand — see [`marrow backup` and `marrow restore`](cli.md#marrow-backup).
+written under, and a restore validates that binding plus full data integrity,
+including orphaned managed cells, before it activates. It is a separate command
+pair, not a `data` subcommand — see
+[`marrow backup` and `marrow restore`](cli.md#marrow-backup).
 `data` itself only reads.
 
 Inspection never creates or modifies the store. It opens the configured native
@@ -123,7 +128,7 @@ Paths in text use Marrow path syntax: `^root` for a root, `.name` for a field
 or layer, and `(key)` for a record identity or keyed-layer key. String keys render
 quoted (e.g. `^users("alice")`), int and bool keys bare, bytes keys as
 `0x<hex>`, and temporal keys as their canonical ISO text. A stored key that does
-not decode renders as `?<hex>`.
+not decode is reported as store corruption by integrity and traversal commands.
 
 ## `marrow data get`
 
@@ -203,6 +208,7 @@ It surfaces three data findings plus typed store corruption:
 
   ```
   ^books(7).blurb: data.orphan: stored data is under a saved member the schema no longer declares
+  help: run `marrow data integrity` after source-native evolution or maintenance repair
   ```
 
 - `store.corruption` — a tree-cell key or payload cannot be decoded by the typed
@@ -230,9 +236,10 @@ These findings have no source line, so the location is a `path` field rather
 than a span. The `data.*` codes carry kind `tooling`. See
 [error-codes.md](error-codes.md) for the full code list.
 
-When integrity reports problems, correct the schema, run source-native
-`evolve preview`/`evolve apply`, or repair modeled data through explicit
-maintenance code. There is no in-place fix.
+When integrity reports orphaned managed cells, correct the schema, run
+source-native `evolve preview`/`evolve apply`, or repair modeled data through
+explicit maintenance code, then run `marrow data integrity` again. There is no
+in-place fix.
 
 ## Deferred: `diff` and `load`
 

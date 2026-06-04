@@ -106,7 +106,7 @@ The replacement production imports are:
   decode_value}` for canonical leaf payloads.
 
 Checker-owned source path text remains a CLI/diagnostic convenience for
-`marrow data get` and `marrow explain`. It is not a store replacement API and
+`marrow data get` and `marrow debug explain`. It is not a store replacement API and
 must not be used to construct physical store keys or raw traversal.
 
 Runtime callers must resolve source roots, fields, keyed layers, indexes, enum

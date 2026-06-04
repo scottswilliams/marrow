@@ -406,7 +406,8 @@ mod tests {
         // A title leaf whose bytes are not a canonical string is `restore.data_invalid`.
         let target = TreeStore::memory();
         let verify = |restore_program: &CheckedProgram, store: &TreeStore| {
-            match crate::cmd_data::integrity::count_integrity_problems(store, restore_program) {
+            match marrow_check::tooling::count_activation_integrity_problems(store, restore_program)
+            {
                 Ok((_, 0)) => Ok(()),
                 Ok((_, _)) => Err(BackupError::DataInvalid(
                     "declared data does not decode".into(),

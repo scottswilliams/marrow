@@ -2,10 +2,11 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 
 use marrow_check::CheckedProgram;
+use marrow_check::tooling::{
+    DataQuery, DataQuerySegment, data_query_under_prefix, resolve_data_query,
+};
 use marrow_store::key::SavedKey;
 use serde_json::{Value, json};
-
-use crate::cmd_data::get::{DataQuery, DataQuerySegment, resolve_data_query};
 
 use super::codec::{
     decode_base64_field, decode_key, decode_query_path, encode_key, encode_query_path,
@@ -63,13 +64,13 @@ impl CursorState {
         if sig != self.signature(scope, path) {
             return Err(bad_request("`cursor` is not a debug_data_walk cursor"));
         }
-        if scope != prefix.path {
+        if scope != prefix.path() {
             return Err(bad_request("`cursor` is outside the requested path"));
         }
         let segments = decode_query_path(path)?;
         let query =
             resolve_data_query(program, &segments).map_err(|message| bad_request(&message))?;
-        if !query_under_prefix(&query, prefix) {
+        if !data_query_under_prefix(&query, prefix) {
             return Err(bad_request("`cursor` is outside the requested path"));
         }
         Ok(query)
@@ -141,17 +142,4 @@ impl CursorState {
         after.to_string().hash(&mut hasher);
         format!("{:016x}", hasher.finish())
     }
-}
-
-pub(super) fn query_under_prefix(query: &DataQuery, prefix: &DataQuery) -> bool {
-    if query.store != prefix.store || query.identity_arity != prefix.identity_arity {
-        return false;
-    }
-    if !query.identity.starts_with(&prefix.identity) {
-        return false;
-    }
-    if prefix.identity.len() < prefix.identity_arity {
-        return true;
-    }
-    query.identity.len() == prefix.identity_arity && query.data_path.starts_with(&prefix.data_path)
 }

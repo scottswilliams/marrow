@@ -8,7 +8,6 @@ use marrow_store::tree::TreeStore;
 use serde_json::json;
 
 use crate::backup::{BackupError, restore_backup};
-use crate::cmd_data::integrity::count_activation_integrity_problems;
 use crate::{
     CheckFormat, dir_and_path_args, load_checked_project, report_simple_error, resolve_store_path,
     write_json,
@@ -60,7 +59,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
     // Restore validates the whole replayed store before commit, including orphan
     // cells under dropped roots or members.
     let verify = |restore_program: &marrow_check::CheckedProgram, store: &TreeStore| {
-        match count_activation_integrity_problems(store, restore_program) {
+        match marrow_check::tooling::count_activation_integrity_problems(store, restore_program) {
             Ok((_, 0)) => Ok(()),
             Ok((_, problems)) => Err(BackupError::DataInvalid(format!(
                 "restored data has {problems} schema problem(s); the backup does not match this project"
