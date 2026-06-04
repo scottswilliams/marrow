@@ -204,15 +204,15 @@ impl CellKey {
     }
 }
 
-/// Whether `bytes` is a well-formed data- or index-family cell key — the two
-/// families a backup carries and restore replays. Meta cells are reconstructed
-/// from the backup manifest, and reserved families are never restored, so a key
-/// outside data/index is a malformed backup rather than a cell to write.
-pub(crate) fn is_backup_cell_key(bytes: &[u8]) -> bool {
+/// Whether `bytes` is a well-formed data-family cell key — the only family a
+/// backup carries and restore replays. Index cells are derived from data and are
+/// rebuilt on restore; meta cells are reconstructed from the manifest. A key
+/// outside the data family is a malformed backup rather than a cell to write.
+pub(crate) fn is_data_cell_key(bytes: &[u8]) -> bool {
     matches!(
         bytes,
         [EMPTY_PLACEMENT_PREFIX, TREE_CELL_PROFILE_V0, family, ..]
-            if *family == FAMILY_DATA || *family == FAMILY_INDEX
+            if *family == FAMILY_DATA
     )
 }
 

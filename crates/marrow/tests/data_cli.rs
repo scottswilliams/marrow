@@ -320,7 +320,7 @@ fn data_integrity_reports_an_undecodable_data_cell_key_as_store_corruption() {
     let (project, dir) = seeded_project("data-integrity-corrupt-key");
     // A data-family cell key (the `00 01 20` tree-cell data prefix) whose body does
     // not decode under the key grammar: an unterminated store id. Restore replays
-    // any data/index-family key, so this writes a structurally corrupt cell.
+    // any data-family key, so this writes a structurally corrupt cell.
     {
         let store_dir = project.join(".data");
         let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");

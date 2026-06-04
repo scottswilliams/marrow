@@ -4,10 +4,16 @@
 //! typed manifest, and the canonical ordered tree-cell stream. The manifest binds
 //! the data to the program that wrote it — its source digest, accepted catalog
 //! epoch, engine profile, value-codec version, and a checksum over the cell
-//! stream — so a restore refuses data it cannot faithfully reproduce. The cell
-//! stream itself is backend-independent (tree-cell keys derive from catalog stable
-//! IDs), so equal data yields a byte-identical backup that restores into any
-//! conforming backend at the same layout and codec.
+//! stream — so a restore refuses data it cannot faithfully reproduce. The stream
+//! carries the store's data cells only; generated indexes are derived, so a restore
+//! rebuilds them rather than replaying them.
+//!
+//! The cell stream is backend-independent (tree-cell keys derive from catalog stable
+//! IDs). For a given committed catalog and equal stored data the backup is
+//! deterministic and byte-identical, and it restores into any conforming backend at
+//! the same layout and codec. Stable IDs are assigned per catalog commit, so backups
+//! from two independently committed catalogs are not byte-identical even when the
+//! data matches.
 //!
 //! [`create`] writes a backup over a stable read snapshot; [`restore`] validates a
 //! backup against the project and replays it into an empty store in one
@@ -63,14 +69,39 @@ pub struct EngineDescriptor {
 }
 
 impl EngineDescriptor {
-    /// The engine identity the running binary writes and restores into.
+    /// The engine identity the running binary writes and restores into. The layout
+    /// epoch and profile digest come from the running profile.
     pub(crate) fn current(profile: &EngineProfile) -> Self {
+        Self::build(profile, profile.layout_epoch(), profile.digest_bytes())
+    }
+
+    /// The engine identity a backup records: the running binary's name, key-profile,
+    /// and value-codec versions, but the store's recorded layout epoch and profile
+    /// digest when present so a backup describes the engine its data was written
+    /// under. An unstamped store falls back to the running profile's values.
+    pub(crate) fn recorded(
+        profile: &EngineProfile,
+        recorded_layout_epoch: Option<u64>,
+        recorded_profile_digest: Option<EngineProfileDigest>,
+    ) -> Self {
+        Self::build(
+            profile,
+            recorded_layout_epoch.unwrap_or_else(|| profile.layout_epoch()),
+            recorded_profile_digest.unwrap_or_else(|| profile.digest_bytes()),
+        )
+    }
+
+    fn build(
+        profile: &EngineProfile,
+        layout_epoch: u64,
+        profile_digest: EngineProfileDigest,
+    ) -> Self {
         Self {
             name: ENGINE_NAME.to_string(),
-            layout_epoch: profile.layout_epoch(),
+            layout_epoch,
             key_profile_version: profile.key_profile_version(),
             value_codec_version: marrow_store::value::VALUE_CODEC_VERSION,
-            profile_digest: profile.digest_bytes(),
+            profile_digest,
         }
     }
 }

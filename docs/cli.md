@@ -408,9 +408,15 @@ artifact, not a raw engine-file copy: a small header, a typed manifest, and the
 project's canonical ordered tree-cell stream. The manifest binds the data to the
 program that wrote it — its source digest, accepted catalog epoch, engine
 profile, value-codec version, and a checksum over the cell stream — so a later
-restore can refuse data it cannot faithfully reproduce. Because tree-cell keys
-derive from catalog stable IDs, equal data yields a byte-identical backup that
-restores into any conforming backend at the same layout and codec.
+restore can refuse data it cannot faithfully reproduce. The backup carries the
+store's data cells only; the generated indexes are derived, so a restore rebuilds
+them rather than replaying them.
+
+Tree-cell keys derive from catalog stable IDs, so for a given committed catalog
+and equal stored data the backup is deterministic and byte-identical, and it
+restores into any conforming backend at the same layout and codec. Two
+independently committed catalogs assign different stable IDs, so backups taken
+from different projects are not byte-identical even when the data matches.
 
 The store is read through one stable snapshot, so a backup is coherent even while
 another process reads it. Backup opens the store read-only and never modifies it;
@@ -435,11 +441,14 @@ Replay a backup into the project's native store. Restore compiles the project,
 validates the backup against it (`restore.source_mismatch`,
 `restore.catalog_mismatch`, `restore.engine_recompile_required`), and refuses a
 non-empty target (`restore.not_empty`) — v0.1 restores into an empty store only.
-The whole replay runs in one transaction: a checksum mismatch
-(`restore.corrupt_chunk`) or data that does not validate against the schema
+The whole replay runs in one transaction: a checksum mismatch or trailing bytes
+(`restore.corrupt_chunk`) or restored data that does not decode against the schema
 (`restore.data_invalid`) rolls the target back to empty, so it either gains the
-whole backup or is left unchanged. A different engine, layout, or codec reports
-`restore.engine_recompile_required`; applying that recompile is future work.
+whole backup or is left unchanged. Because the replay is a single transaction, its
+memory use is proportional to the backup size — a known v0.1 bound. Restore rebuilds
+the generated indexes from the restored data inside the same transaction. A
+different engine, layout, or codec reports `restore.engine_recompile_required`;
+applying that recompile is future work.
 
 ```console
 $ marrow restore ./proj ./proj-backup.mwbackup

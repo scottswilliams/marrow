@@ -252,8 +252,6 @@ fn digest_field(value: &Value, field: &'static str) -> Result<EngineProfileDiges
 
 fn hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        text.push_str(&format!("{byte:02x}"));
-    }
+    crate::push_hex(&mut text, bytes);
     text
 }

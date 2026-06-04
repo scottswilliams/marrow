@@ -80,6 +80,11 @@ impl DeclaredSchema {
 
     /// Classify one stored cell key. Returns a problem when the cell is an orphan or
     /// its key does not decode, or `None` when it is a declared or index cell.
+    ///
+    /// Classification is catalog-id membership: a cell whose store id or any member id
+    /// the schema no longer declares is an orphan, which catches data under a dropped
+    /// root or field — the ADR-named orphan cases. It does not validate exact member
+    /// nesting, so an exotic misnesting of declared ids is out of v0.1 scope.
     fn classify(&self, key: &[u8]) -> Option<OrphanProblem> {
         let (store, identity, path) = match decode_backup_cell_key(key) {
             Some(BackupCellKey::Data {
@@ -189,8 +194,6 @@ fn member_segment(segment: &DataPathSegment) -> Option<&str> {
 
 fn render_raw_key(key: &[u8]) -> String {
     let mut text = String::from("0x");
-    for byte in key {
-        text.push_str(&format!("{byte:02x}"));
-    }
+    crate::push_hex(&mut text, key);
     text
 }

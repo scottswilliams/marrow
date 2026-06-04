@@ -128,6 +128,25 @@ fn checked_program_files(files: &[(PathBuf, String)]) -> CheckedRuntimeProgram {
     program.runtime()
 }
 
+/// Check and commit one snippet, returning both the committed checked program and
+/// its runtime projection. The checked program carries the saved-place and index
+/// facts an index rebuild needs; the runtime projection drives entries.
+fn committed_program_and_runtime(source: &str) -> (CheckedProgram, CheckedRuntimeProgram) {
+    let (path, text) = checked_source_file(source, &[]);
+    let root = tempfile::tempdir().expect("create checked-program project");
+    write_temp_source(root.path(), &path, &text);
+    let config = test_project_config();
+    let (report, program) = check_project(root.path(), &config).expect("check project");
+    assert!(
+        !report.has_errors(),
+        "runtime tests require a clean checked program: {:#?}",
+        report.diagnostics
+    );
+    let program = commit_catalog(root.path(), &config, program);
+    let runtime = program.runtime();
+    (program, runtime)
+}
+
 fn check_source_files(
     files: &[(PathBuf, String)],
 ) -> (marrow_check::CheckReport, CheckedRuntimeProgram) {
@@ -3124,6 +3143,109 @@ fn a_unique_index_lookup_loop_skips_an_absent_entry() {
 
     let outcome = run_full(checked_entry!(&program, "test::f")).expect("run");
     assert_eq!(outcome.output, "");
+}
+
+/// A rebuilt index over seeded records resolves exactly like the maintained one: a
+/// store whose index subtrees are wiped resolves nothing, and `rebuild_store_indexes`
+/// reconstructs both a unique and a non-unique index from data alone so the same
+/// lookups resolve again. The runtime managed-write path seeds the data and the
+/// reference index, so this proves the rebuild matches what the runtime maintains.
+#[test]
+fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
+    let source = "resource Book at ^books(id: int)\n    \
+        required title: string\n    \
+        shelf: string\n    \
+        isbn: string\n\n    \
+        index byShelf(shelf, id)\n    \
+        index byIsbn(isbn) unique\n\n\
+        fn add(id: int, t: string, s: string, i: string)\n    \
+        ^books(id).title = t\n    \
+        ^books(id).shelf = s\n    \
+        ^books(id).isbn = i\n\n\
+        fn isbn_title(i: string): string\n    \
+        var found = \"\"\n    \
+        for id in ^books.byIsbn(i)\n        \
+        found = ^books(id).title\n    \
+        return found\n\n\
+        fn shelf_count(s: string): int\n    \
+        var c = 0\n    \
+        for id in keys(^books.byShelf(s))\n        \
+        c = c + 1\n    \
+        return c\n";
+    let (program, runtime) = committed_program_and_runtime(source);
+    let store = TreeStore::memory();
+
+    for (id, shelf, isbn) in [
+        (1, "fiction", "978-1"),
+        (2, "fiction", "978-2"),
+        (3, "history", "978-3"),
+    ] {
+        run_entry(
+            &store,
+            checked_entry!(
+                &runtime,
+                "test::add",
+                Value::Int(id),
+                Value::Str(format!("title-{id}")),
+                Value::Str(shelf.into()),
+                Value::Str(isbn.into()),
+            ),
+        )
+        .expect("seed book");
+    }
+
+    let isbn_lookup = |isbn: &str| {
+        run_entry(
+            &store,
+            checked_entry!(&runtime, "test::isbn_title", Value::Str(isbn.into())),
+        )
+        .expect("isbn lookup")
+        .value
+    };
+    let shelf_count = |shelf: &str| {
+        run_entry(
+            &store,
+            checked_entry!(&runtime, "test::shelf_count", Value::Str(shelf.into())),
+        )
+        .expect("shelf count")
+        .value
+    };
+
+    // The maintained indexes resolve the seeded records.
+    assert_eq!(isbn_lookup("978-2"), Some(Value::Str("title-2".into())));
+    assert_eq!(shelf_count("fiction"), Some(Value::Int(2)));
+
+    // Wipe every index cell, leaving only the data: the lookups can no longer resolve.
+    let place = marrow_check::checked_saved_root_place(
+        &program,
+        "books",
+        marrow_syntax::SourceSpan::default(),
+    )
+    .expect("checked saved place for ^books");
+    for index in &place.indexes {
+        let index_id = CatalogId::new(index.catalog_id.clone()).expect("index catalog id");
+        store
+            .delete_index_subtree(&index_id, &[])
+            .expect("clear index subtree");
+    }
+    assert_eq!(
+        isbn_lookup("978-2"),
+        Some(Value::Str(String::new())),
+        "no unique entry resolves after the index is wiped"
+    );
+    assert_eq!(shelf_count("fiction"), Some(Value::Int(0)), "no entries");
+
+    // Rebuild every index from the data, inside the caller's transaction.
+    store.begin().expect("begin rebuild");
+    marrow_run::evolution::rebuild_store_indexes(&program, &store).expect("rebuild indexes");
+    store.commit().expect("commit rebuild");
+
+    // The rebuilt indexes resolve exactly like the maintained ones did.
+    assert_eq!(isbn_lookup("978-1"), Some(Value::Str("title-1".into())));
+    assert_eq!(isbn_lookup("978-2"), Some(Value::Str("title-2".into())));
+    assert_eq!(isbn_lookup("978-3"), Some(Value::Str("title-3".into())));
+    assert_eq!(shelf_count("fiction"), Some(Value::Int(2)));
+    assert_eq!(shelf_count("history"), Some(Value::Int(1)));
 }
 
 #[test]

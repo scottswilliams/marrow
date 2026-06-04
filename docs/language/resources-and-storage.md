@@ -542,9 +542,13 @@ data-evolution code.
 
 Typed backup and restore are commands (`marrow backup`, `marrow restore`).
 Backups are not engine files: a backup carries a manifest with the source,
-catalog, engine-profile, and value-codec facts, plus the canonical tree-cell
+catalog, engine-profile, and value-codec facts, plus the canonical tree-cell data
 stream, so it restores under the Marrow storage contract rather than by copying
-raw bytes.
+raw bytes. The generated indexes are derived data, so a backup omits them and a
+restore rebuilds them from the restored records. For a given committed catalog and
+equal stored data the backup is deterministic and byte-identical and portable
+across conforming backends at the same layout and codec; stable IDs differ per
+catalog commit, so backups from independently committed catalogs are not.
 
 Restore replays a backup into an empty store in one transaction and validates the
 data against the schema before activating it; it never treats raw saved paths as

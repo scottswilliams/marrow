@@ -332,7 +332,7 @@ fn render_key(key: &SavedKey) -> String {
         SavedKey::Str(value) => format!("{value:?}"),
         SavedKey::Bytes(value) => {
             let mut text = String::from("0x");
-            push_hex(&mut text, value);
+            crate::push_hex(&mut text, value);
             text
         }
         SavedKey::Date(value) => render_key_temporal(SavedValue::Date(*value)),
@@ -348,18 +348,12 @@ fn render_key_temporal(value: SavedValue) -> String {
         .unwrap_or_else(|| format!("{value:?}"))
 }
 
-fn push_hex(out: &mut String, bytes: &[u8]) {
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-}
-
 pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
         Err(_) => {
             let mut text = String::from("0x");
-            push_hex(&mut text, bytes);
+            crate::push_hex(&mut text, bytes);
             text
         }
     }

@@ -8,7 +8,7 @@ use marrow_store::tree::TreeStore;
 use serde_json::json;
 
 use crate::backup::{BackupError, restore_backup};
-use crate::cmd_data::integrity::count_integrity_problems;
+use crate::cmd_data::integrity::declared_integrity_problems;
 use crate::{
     CheckFormat, dir_and_path_args, load_checked_project, report_simple_error, resolve_store_path,
     write_json,
@@ -57,7 +57,11 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
     };
     let mut reader = BufReader::new(file);
 
-    let verify = |store: &TreeStore| match count_integrity_problems(store, &program) {
+    // Restore verifies that the data it replayed decodes under the declared schema,
+    // not that the store is orphan-free: a faithful backup of a store that holds
+    // orphan debris (a cell under a dropped root or field) must still restore. Orphans
+    // are a `data integrity` finding, not a restore-faithfulness failure.
+    let verify = |store: &TreeStore| match declared_integrity_problems(store, &program) {
         Ok((_, 0)) => Ok(()),
         Ok((_, problems)) => Err(BackupError::DataInvalid(format!(
             "restored data has {problems} schema problem(s); the backup does not match this project"

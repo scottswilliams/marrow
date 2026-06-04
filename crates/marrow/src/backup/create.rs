@@ -9,9 +9,7 @@ use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 
 use super::archive::{self, CHECKSUM_SEED, checksum_cell};
-use super::{
-    BackupError, BackupManifest, CommitDescriptor, ENGINE_NAME, EngineDescriptor, FORMAT_VERSION,
-};
+use super::{BackupError, BackupManifest, CommitDescriptor, EngineDescriptor, FORMAT_VERSION};
 
 /// What a completed backup wrote.
 pub struct BackupReport {
@@ -73,18 +71,11 @@ fn build_manifest(
     record_count: u64,
     data_checksum: u64,
 ) -> Result<BackupManifest, BackupError> {
-    let current = current_engine_profile();
-    let engine = EngineDescriptor {
-        name: ENGINE_NAME.to_string(),
-        layout_epoch: store
-            .read_layout_epoch()?
-            .unwrap_or_else(|| current.layout_epoch()),
-        key_profile_version: current.key_profile_version(),
-        value_codec_version: marrow_store::value::VALUE_CODEC_VERSION,
-        profile_digest: store
-            .read_engine_profile_digest()?
-            .unwrap_or_else(|| current.digest_bytes()),
-    };
+    let engine = EngineDescriptor::recorded(
+        &current_engine_profile(),
+        store.read_layout_epoch()?,
+        store.read_engine_profile_digest()?,
+    );
     Ok(BackupManifest {
         format_version: FORMAT_VERSION,
         source_digest: program.source_digest().to_string(),

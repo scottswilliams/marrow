@@ -384,11 +384,15 @@ backup/restore are separate tooling contracts (see
 [future/data-tools.md](future/data-tools.md)).
 
 `marrow backup` and `marrow restore` are typed backup/restore. A backup is a
-manifest plus the canonical tree-cell stream, not a raw engine-byte copy; the
+manifest plus the canonical tree-cell data stream, not a raw engine-byte copy; the
 manifest binds the data to the source digest, accepted catalog epoch, engine
-profile, and value-codec version it was written under. Restore validates that
-binding and the data against the schema, then replays into an empty store in one
-transaction.
+profile, and value-codec version it was written under. The generated indexes are
+derived, so the stream omits them and restore rebuilds them from the data. Restore
+validates that binding and the data against the schema, then replays into an empty
+store in one transaction. For a given committed catalog and equal stored data the
+backup is deterministic and byte-identical, and portable across conforming backends
+at the same layout and codec; stable IDs are assigned per catalog commit, so
+backups from independently committed catalogs are not byte-identical.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and

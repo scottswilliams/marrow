@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use crate::backend::{Backend, ScanPage, StoreError};
-use crate::cell::{CatalogId, CellKey, MetaCell, SequencePosition, is_backup_cell_key};
+use crate::cell::{CatalogId, CellKey, MetaCell, SequencePosition, is_data_cell_key};
 use crate::key::{SavedKey, decode_key_value};
 
 pub use crate::cell::DataPathSegment;
@@ -631,25 +631,24 @@ impl TreeStore {
             && self.first_cell(&CellKey::index_family())?.is_none())
     }
 
-    /// Visit every data- and index-family cell in encoded order — the canonical
-    /// `(key, value)` stream a backup carries. Cells page internally so the whole
-    /// store streams in bounded chunks; wrap the call in a [`read_snapshot`] to
-    /// read one coherent version.
+    /// Visit every data-family cell in encoded order — the canonical `(key, value)`
+    /// stream a backup carries. Index-family cells are derived from data and are
+    /// rebuilt on restore, so a backup carries data only. Cells page internally so
+    /// the whole store streams in bounded chunks; wrap the call in a
+    /// [`read_snapshot`] to read one coherent version.
     ///
     /// [`read_snapshot`]: TreeStore::read_snapshot
     pub fn visit_backup_cells(
         &self,
         mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        for family in [CellKey::data_family(), CellKey::index_family()] {
-            self.visit_family(family.as_bytes(), &mut visit)?;
-        }
-        Ok(())
+        self.visit_family(CellKey::data_family().as_bytes(), &mut visit)
     }
 
-    /// Replay one backup cell, validating that its key addresses a data- or
-    /// index-family cell. Restore writes cells inside one transaction; a key
-    /// outside those families is a malformed backup, not a cell to write.
+    /// Replay one backup cell, validating that its key addresses a data-family
+    /// cell. A backup carries data only — index cells are derived and rebuilt on
+    /// restore — so an index or meta key is a malformed backup, not a cell to
+    /// write. Restore writes cells inside one transaction.
     pub fn restore_cell(&self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.with_cell(|cell| cell.restore_cell(key, value))
     }
@@ -725,9 +724,9 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     }
 
     fn restore_cell(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        if !is_backup_cell_key(key) {
+        if !is_data_cell_key(key) {
             return Err(StoreError::Corruption {
-                message: "backup cell key is not a data or index cell".into(),
+                message: "backup cell key is not a data cell".into(),
             });
         }
         self.backend.write(key, value)
@@ -1758,7 +1757,9 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
 mod tests {
     use std::cell::Cell;
 
-    use super::{CellKey, CommitMetadata, DataPathSegment, NODE_MARKER, TreeStore};
+    use super::{
+        CellKey, CommitMetadata, DataPathSegment, NODE_MARKER, TreeStore, is_data_cell_key,
+    };
     use crate::StoreError;
     use crate::backend::{Backend, ScanPage};
     use crate::cell::CatalogId;
@@ -2056,11 +2057,12 @@ mod tests {
         assert!(!store.is_empty().expect("is_empty"));
     }
 
-    /// A backup carries every data- and index-family cell and nothing else, and
-    /// replaying that stream into a fresh store reproduces it byte-for-byte. Meta
-    /// cells stay out of the stream because restore restamps them from the manifest.
+    /// A backup carries every data-family cell and nothing else, and replaying that
+    /// stream into a fresh store reproduces it byte-for-byte. Index cells are derived
+    /// and rebuilt on restore, so they stay out of the stream; meta cells stay out
+    /// because restore restamps them from the manifest.
     #[test]
-    fn backup_cells_round_trip_and_exclude_meta() {
+    fn backup_cells_round_trip_and_exclude_index_and_meta() {
         let store_id = catalog("cat_0000000000000001");
         let title = catalog("cat_0000000000000002");
         let index = catalog("cat_0000000000000003");
@@ -2073,6 +2075,8 @@ mod tests {
         source
             .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"Mort".to_vec())
             .expect("write leaf");
+        // An index cell the backup stream must not carry: it is derived from the data
+        // above and is rebuilt, not replayed, on restore.
         source
             .write_index_entry(
                 &index,
@@ -2086,6 +2090,12 @@ mod tests {
 
         let cells = collect_backup_cells(&source);
         assert!(!cells.is_empty(), "the populated store has backup cells");
+        assert!(
+            cells
+                .iter()
+                .all(|(key, _)| is_data_cell_key(key) && !is_index_family(key)),
+            "the backup stream carries only data-family cells: {cells:?}"
+        );
 
         let restored = TreeStore::memory();
         assert!(restored.is_empty().expect("fresh store is empty"));
@@ -2094,6 +2104,7 @@ mod tests {
                 .restore_cell(key, value.clone())
                 .expect("restore cell");
         }
+        // `is_empty` checks the index family too, and the data cells round-tripped.
         assert!(!restored.is_empty().expect("restored store is populated"));
 
         assert_eq!(collect_backup_cells(&restored), cells, "stream round-trips");
@@ -2107,12 +2118,26 @@ mod tests {
         assert_eq!(restored.read_catalog_epoch().expect("read epoch"), None);
     }
 
+    fn is_index_family(key: &[u8]) -> bool {
+        key.starts_with(CellKey::index_family().as_bytes())
+    }
+
     #[test]
-    fn restore_cell_rejects_a_key_outside_the_data_and_index_families() {
+    fn restore_cell_rejects_a_meta_key() {
         let store = TreeStore::memory();
         // A meta-family key (catalog-epoch cell) is not a restorable backup cell.
         let meta_key = CellKey::meta(super::MetaCell::CatalogEpoch);
         assert_corruption(store.restore_cell(meta_key.as_bytes(), b"4".to_vec()));
+    }
+
+    #[test]
+    fn restore_cell_rejects_an_index_key() {
+        let store = TreeStore::memory();
+        // An index-family cell is derived and rebuilt on restore; a backup never
+        // carries one, so replaying an index key is a malformed backup.
+        let mut index_key = CellKey::index_family().as_bytes().to_vec();
+        index_key.extend_from_slice(b"entry");
+        assert_corruption(store.restore_cell(&index_key, b"1".to_vec()));
     }
 
     /// A pinned read snapshot keeps a backup traversal coherent: cells written after

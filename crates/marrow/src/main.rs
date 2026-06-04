@@ -510,3 +510,12 @@ pub(crate) fn write_json(value: serde_json::Value) {
         serde_json::to_string(&value).expect("JSON value should serialize")
     );
 }
+
+/// Append the lowercase hexadecimal of `bytes` to `out`, two digits per byte, with no
+/// separator or `0x` prefix. Writing into the buffer avoids a per-byte allocation.
+pub(crate) fn push_hex(out: &mut String, bytes: &[u8]) {
+    use std::fmt::Write;
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+}

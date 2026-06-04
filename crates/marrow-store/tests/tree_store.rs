@@ -498,6 +498,107 @@ fn exact_index_tuple_delete_removes_only_the_exact_identity() {
 }
 
 #[test]
+fn visit_backup_cells_streams_data_only_in_encoded_order() {
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
+    let by_title = catalog_id("3333333333333333");
+    let store = TreeStore::memory();
+
+    // Two records, written out of order, plus an index entry derived from them.
+    for id in [3, 1, 2] {
+        store
+            .write_data_value(
+                &books,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(title.clone())],
+                format!("title-{id}").into_bytes(),
+            )
+            .expect("write data value");
+    }
+    store
+        .write_index_entry(
+            &by_title,
+            &[SavedKey::Str("title-1".into())],
+            &[SavedKey::Int(1)],
+            b"present".to_vec(),
+        )
+        .expect("write index entry");
+
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    store
+        .visit_backup_cells(|key, _value| {
+            keys.push(key.to_vec());
+            Ok(())
+        })
+        .expect("visit backup cells");
+
+    // Every visited cell is a data-family cell; the index entry is excluded.
+    assert!(
+        keys.iter().all(|key| key.starts_with(&[0x00, 0x01, 0x20])),
+        "backup stream carries only data-family cells: {keys:?}"
+    );
+    assert!(
+        keys.iter().all(|key| !key.starts_with(&[0x00, 0x01, 0x30])),
+        "backup stream excludes the index-family entry: {keys:?}"
+    );
+    // The stream is in ascending encoded-key order.
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "backup cells stream in encoded order");
+}
+
+#[test]
+fn is_empty_sees_data_and_index_families() {
+    let books = catalog_id("1111111111111111");
+    let by_title = catalog_id("3333333333333333");
+    let store = TreeStore::memory();
+    assert!(store.is_empty().expect("fresh store is empty"));
+
+    // An index-only store is not empty even though a backup carries no cells for it.
+    store
+        .write_index_entry(
+            &by_title,
+            &[SavedKey::Str("title-1".into())],
+            &[SavedKey::Int(1)],
+            b"present".to_vec(),
+        )
+        .expect("write index entry");
+    assert!(
+        !store.is_empty().expect("index-only store is not empty"),
+        "is_empty checks the index family so a leftover entry still blocks restore"
+    );
+
+    let mut backup_cells = 0usize;
+    store
+        .visit_backup_cells(|_key, _value| {
+            backup_cells += 1;
+            Ok(())
+        })
+        .expect("visit backup cells");
+    assert_eq!(
+        backup_cells, 0,
+        "the backup stream is empty even though the store is not"
+    );
+
+    store
+        .delete_index_subtree(&by_title, &[])
+        .expect("clear index");
+    assert!(store.is_empty().expect("store is empty again"));
+    let _ = books;
+}
+
+#[test]
+fn restore_cell_rejects_a_non_data_family_key() {
+    let store = TreeStore::memory();
+    // An index-family key (the `00 01 30` tree-cell index prefix) is derived data a
+    // backup never carries; replaying it is a malformed backup.
+    let error = store
+        .restore_cell(&[0x00, 0x01, 0x30, b'x'], b"entry".to_vec())
+        .expect_err("an index-family key is not a restorable backup cell");
+    assert_eq!(error.code(), "store.corruption");
+}
+
+#[test]
 fn malformed_tree_values_are_store_corruption() {
     let error = decode_tree_reference(&[0xff]).expect_err("malformed reference is corruption");
     assert_eq!(error.code(), "store.corruption");

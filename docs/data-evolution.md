@@ -300,9 +300,13 @@ your own code, verified before and after with `marrow data integrity`.
 Typed backup/restore is a separate command pair (`marrow backup` and
 `marrow restore`), not a raw engine-byte copy. A backup carries a manifest binding
 the data to the source digest, accepted catalog epoch, engine profile, and
-value-codec version it was written under, plus the canonical tree-cell stream;
-restore validates that binding and the data against the schema, in one
-transaction, into an empty store.
+value-codec version it was written under, plus the canonical tree-cell data
+stream; the generated indexes are derived, so the stream omits them and restore
+rebuilds them from the data. Restore validates that binding and the data against
+the schema, in one transaction, into an empty store. For a given committed catalog
+and equal stored data the backup is deterministic and byte-identical and portable
+across conforming backends at the same layout and codec; stable IDs differ per
+catalog commit, so backups from independently committed catalogs are not.
 
 ## Also Deferred
 

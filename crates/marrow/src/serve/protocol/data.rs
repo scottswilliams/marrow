@@ -61,26 +61,18 @@ fn request_children_limit(request: &Value) -> Result<usize, ProtocolError> {
     let Some(value) = request.get("limit") else {
         return Ok(MAX_WALK);
     };
-    if value.as_i64().is_some_and(|limit| limit <= 0) {
-        return Err(bad_request(
-            "`debug_data_children` `limit` must be a positive integer",
-        ));
+    let invalid = bad_request("`debug_data_children` `limit` must be a positive integer");
+    match value.as_u64() {
+        // A positive integer is used as the page size, clamped to the server max.
+        Some(limit) if limit > 0 => Ok(limit.min(MAX_WALK as u64) as usize),
+        // Zero is not a page size.
+        Some(_) => Err(invalid),
+        // A negative integer is rejected. A non-integer JSON number, or a magnitude
+        // beyond u64, clamps to the max. Any non-number is not a valid limit.
+        None if value.as_i64().is_some_and(|limit| limit < 0) => Err(invalid),
+        None if value.is_number() => Ok(MAX_WALK),
+        None => Err(invalid),
     }
-    let Some(limit) = value.as_u64() else {
-        // A non-integer JSON number, or an integer beyond u64, clamps to the max.
-        if value.is_number() {
-            return Ok(MAX_WALK);
-        }
-        return Err(bad_request(
-            "`debug_data_children` `limit` must be a positive integer",
-        ));
-    };
-    if limit == 0 {
-        return Err(bad_request(
-            "`debug_data_children` `limit` must be a positive integer",
-        ));
-    }
-    Ok(limit.min(MAX_WALK as u64) as usize)
 }
 
 fn checked_children(

@@ -2,6 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use marrow_check::checked_saved_root_place;
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::{DataPathSegment, TreeStore};
+
 mod support;
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -143,6 +148,257 @@ fn restore_rejects_a_corrupt_backup() {
     assert!(
         String::from_utf8_lossy(&restore.stderr).contains("restore.corrupt_chunk"),
         "a corrupt backup reports restore.corrupt_chunk: {restore:?}"
+    );
+}
+
+/// A native-store project with both a non-unique and a unique index over a keyed
+/// root, plus a `seed` entry that writes several books and lookups that read through
+/// each index. Running `seed` populates the data and the maintained indexes.
+fn indexed_project(name: &str) -> (PathBuf, PathBuf) {
+    let root = temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20required title: string\n\
+             \x20\x20\x20\x20shelf: string\n\
+             \x20\x20\x20\x20isbn: string\n\
+             \n\
+             \x20\x20\x20\x20index byShelf(shelf, id)\n\
+             \x20\x20\x20\x20index byIsbn(isbn) unique\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).shelf = \"fiction\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).isbn = \"978-1\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).title = \"Reaper\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).shelf = \"fiction\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).isbn = \"978-2\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).title = \"Sourcery\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).shelf = \"history\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).isbn = \"978-3\"\n\
+             \n\
+             pub fn find_isbn()\n\
+             \x20\x20\x20\x20for id in ^books.byIsbn(\"978-2\")\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print(^books(id).title)\n\
+             \n\
+             pub fn count_shelf()\n\
+             \x20\x20\x20\x20var c = 0\n\
+             \x20\x20\x20\x20for id in keys(^books.byShelf(\"fiction\"))\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
+             \x20\x20\x20\x20print($\"{c}\")\n",
+        );
+    });
+    let data_dir = root.join(".data");
+    let seed = marrow(&["run", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+    (root, data_dir)
+}
+
+/// A backup carries data only; restore rebuilds the generated indexes from the
+/// restored records. After a backup, an emptied store, and a restore, both a unique
+/// lookup and a non-unique `keys` traversal resolve the rebuilt entries.
+#[test]
+fn restore_rebuilds_indexes_usable_through_lookups() {
+    let (root, data_dir) = indexed_project("backup-index-rebuild");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    // Remove the entire store data directory, then restore from the archive.
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+
+    // The unique index resolves the looked-up record by isbn.
+    let unique = marrow(&["run", "--entry", "shelf::find_isbn", &dir]);
+    let unique_out = String::from_utf8_lossy(&unique.stdout).to_string();
+    // The non-unique index resolves both fiction books.
+    let count = marrow(&["run", "--entry", "shelf::count_shelf", &dir]);
+    let count_out = String::from_utf8_lossy(&count.stdout).to_string();
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(unique.status.code(), Some(0), "find_isbn run: {unique:?}");
+    assert!(
+        unique_out.contains("Reaper"),
+        "rebuilt unique index resolves the book: {unique_out}"
+    );
+    assert_eq!(count.status.code(), Some(0), "count_shelf run: {count:?}");
+    assert!(
+        count_out.contains('2'),
+        "rebuilt non-unique index resolves both fiction books: {count_out}"
+    );
+}
+
+/// The real store catalog id of `^books`, read through the production check path so
+/// an orphan cell can be written under the live store but an undeclared member.
+fn store_catalog_id(root: &Path) -> CatalogId {
+    support::commit_catalog_if_clean(root);
+    let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let (report, program) = marrow_check::check_project(root, &config).expect("check project");
+    assert!(!report.has_errors(), "fixture checks cleanly: {report:#?}");
+    let place = checked_saved_root_place(&program, "books", marrow_syntax::SourceSpan::default())
+        .expect("checked saved root place");
+    CatalogId::new(place.store_catalog_id).expect("store catalog id")
+}
+
+/// A faithful backup of a store that holds an orphan cell — data under a dropped
+/// field the schema no longer declares — restores with exit 0. Restore verifies that
+/// the declared data decodes, not that the store is orphan-free, so it must not reject
+/// the faithful copy. The restored store still carries the orphan, and `data integrity`
+/// reports it.
+#[test]
+fn restore_accepts_a_backup_carrying_an_orphan_cell() {
+    let (root, data_dir) = seeded_project("backup-orphan");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    // Write a data cell under the live store but an undeclared member catalog id: a
+    // dropped field left this behind. It is a data-family cell, so the backup copies it.
+    let store_catalog = store_catalog_id(&root);
+    {
+        let store =
+            TreeStore::open(&data_dir.join("marrow.redb")).expect("open native store for orphan");
+        store
+            .write_data_value(
+                &store_catalog,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(
+                    CatalogId::new("cat_00000000cafef00d".to_string()).expect("orphan member id"),
+                )],
+                b"left-behind".to_vec(),
+            )
+            .expect("write orphan cell");
+    }
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+    assert_eq!(
+        restore.status.code(),
+        Some(0),
+        "restore accepts a faithful backup with orphan debris: {restore:?}"
+    );
+
+    // The orphan survived the round-trip, so `data integrity` reports it.
+    let integrity = marrow(&["data", "integrity", &dir]);
+    let integrity_err = String::from_utf8_lossy(&integrity.stderr).to_string();
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        integrity.status.code(),
+        Some(1),
+        "data integrity flags the orphan: {integrity:?}"
+    );
+    assert!(
+        integrity_err.contains("data.orphan"),
+        "data integrity reports the restored orphan: {integrity_err}"
+    );
+}
+
+/// A faithful backup ends exactly at its last cell. Appending bytes makes the file
+/// no longer the backup the manifest describes, so restore rejects it.
+#[test]
+fn restore_rejects_trailing_bytes() {
+    let (root, data_dir) = seeded_project("backup-trailing");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    assert_eq!(
+        marrow(&["backup", &dir, &archive_arg]).status.code(),
+        Some(0)
+    );
+
+    // Append stray bytes after the cell stream, leaving the header and checksum intact.
+    let mut bytes = fs::read(&archive).expect("read archive");
+    bytes.extend_from_slice(b"trailing");
+    fs::write(&archive, &bytes).expect("write archive with trailing bytes");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+    fs::remove_dir_all(&root).ok();
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert!(
+        String::from_utf8_lossy(&restore.stderr).contains("restore.corrupt_chunk"),
+        "trailing bytes report restore.corrupt_chunk: {restore:?}"
+    );
+}
+
+/// `nextId(^books)` allocates from the highest stored record id, which lives in the
+/// data the backup carries. After a round-trip into an emptied store, the next id
+/// continues from the same value the original store would have allocated.
+#[test]
+fn restore_continues_next_id_from_the_restored_data() {
+    let root = temp_project("backup-next-id", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20required title: string\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"a\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).title = \"b\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).title = \"c\"\n\
+             \n\
+             pub fn peek_next()\n\
+             \x20\x20\x20\x20print($\"{nextId(^books)}\")\n",
+        );
+    });
+    let data_dir = root.join(".data");
+    let dir = root.to_str().unwrap().to_string();
+    assert_eq!(marrow(&["run", &dir]).status.code(), Some(0), "seed");
+
+    // The highest stored id is 3, so nextId is 4 before any round-trip.
+    let before = marrow(&["run", "--entry", "shelf::peek_next", &dir]);
+    assert!(
+        String::from_utf8_lossy(&before.stdout).contains('4'),
+        "nextId before restore is 4: {before:?}"
+    );
+
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+    assert_eq!(
+        marrow(&["backup", &dir, &archive_arg]).status.code(),
+        Some(0),
+        "backup"
+    );
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    assert_eq!(
+        marrow(&["restore", &dir, &archive_arg]).status.code(),
+        Some(0),
+        "restore"
+    );
+
+    // After restore, nextId continues from the restored data: still 4.
+    let after = marrow(&["run", "--entry", "shelf::peek_next", &dir]);
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        String::from_utf8_lossy(&after.stdout).contains('4'),
+        "nextId after restore continues from the restored data: {after:?}"
     );
 }
 
