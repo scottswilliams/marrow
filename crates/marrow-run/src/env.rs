@@ -60,6 +60,7 @@ pub(crate) struct TransactionState {
     /// maintenance delete of the same path must not count as repairing existing
     /// invalid data.
     pub(crate) created_required_paths: Vec<RequiredPath>,
+    pub(crate) pending_commit_metadata: Vec<PendingCommitMetadata>,
 }
 
 /// A resource or keyed-group entry whose required fields must be checked before
@@ -89,6 +90,13 @@ impl RequiredEntryCheck {
 pub(crate) struct RequiredPath {
     pub(crate) depth: usize,
     pub(crate) path: DataAddress,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PendingCommitMetadata {
+    pub(crate) depth: usize,
+    pub(crate) root_catalog_ids: BTreeSet<CatalogId>,
+    pub(crate) index_catalog_ids: BTreeSet<CatalogId>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -253,14 +261,19 @@ impl<'p> Env<'p> {
                 hook.before_write(op, &target, value, self.depth);
             }
         }
-        stamp_managed_write(
-            &mut plan,
-            self.program.accepted_catalog_epoch(),
-            self.program.source_digest(),
-            self.store,
-        )
-        .map_err(|error| error.located(span))?;
-        plan.commit(self.store, self.transaction_depth() > 0)
+        let in_transaction = self.transaction_depth() > 0;
+        if in_transaction {
+            self.note_managed_write_metadata(&plan);
+        } else {
+            stamp_managed_write(
+                &mut plan,
+                self.program.accepted_catalog_epoch(),
+                self.program.source_digest(),
+                self.store,
+            )
+            .map_err(|error| error.located(span))?;
+        }
+        plan.commit(self.store, in_transaction)
             .map_err(|error| error.located(span))
     }
 
@@ -454,6 +467,105 @@ impl<'p> Env<'p> {
         transaction
             .created_required_paths
             .retain(|created| created.depth < depth);
+    }
+
+    pub(crate) fn stamp_transaction_commit(
+        &mut self,
+        depth: usize,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        if depth != 1 {
+            return Ok(());
+        }
+        let Some(catalog_epoch) = self.program.accepted_catalog_epoch() else {
+            return Ok(());
+        };
+        let pending = self.pending_commit_metadata(depth);
+        if pending.root_catalog_ids.is_empty() && pending.index_catalog_ids.is_empty() {
+            return Ok(());
+        }
+        let commit_id = self
+            .store
+            .read_commit_metadata()
+            .map_err(|error| error.located(span))?
+            .map(|commit| commit.commit_id + 1)
+            .unwrap_or(1);
+        let stamp = crate::evolution::metadata_stamp(crate::evolution::StampFacts {
+            catalog_epoch,
+            commit_id,
+            source_digest: self.program.source_digest().to_string(),
+            changed_root_catalog_ids: pending.root_catalog_ids.into_iter().collect(),
+            changed_index_catalog_ids: pending.index_catalog_ids.into_iter().collect(),
+            activation: None,
+        });
+        WritePlan { steps: vec![stamp] }
+            .commit(self.store, true)
+            .map_err(|error| error.located(span))
+    }
+
+    pub(crate) fn commit_transaction_metadata(&mut self, depth: usize) {
+        let mut transaction = self.transaction.borrow_mut();
+        if depth > 1 {
+            for pending in &mut transaction.pending_commit_metadata {
+                if pending.depth == depth {
+                    pending.depth -= 1;
+                }
+            }
+        } else {
+            transaction
+                .pending_commit_metadata
+                .retain(|pending| pending.depth < depth);
+        }
+        merge_pending_commit_metadata(&mut transaction.pending_commit_metadata);
+    }
+
+    pub(crate) fn discard_transaction_metadata(&mut self, depth: usize) {
+        let mut transaction = self.transaction.borrow_mut();
+        transaction
+            .pending_commit_metadata
+            .retain(|pending| pending.depth < depth);
+    }
+
+    fn note_managed_write_metadata(&mut self, plan: &WritePlan) {
+        if plan
+            .steps
+            .iter()
+            .any(|step| matches!(step, PlanStep::StampMetadata { .. }))
+        {
+            return;
+        }
+        let (changed_root_catalog_ids, changed_index_catalog_ids) =
+            changed_catalog_ids(&plan.steps);
+        if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
+            return;
+        }
+        let depth = self.transaction_depth();
+        let mut transaction = self.transaction.borrow_mut();
+        let pending = pending_commit_metadata_at_depth(&mut transaction, depth);
+        pending.root_catalog_ids.extend(changed_root_catalog_ids);
+        pending.index_catalog_ids.extend(changed_index_catalog_ids);
+    }
+
+    fn pending_commit_metadata(&self, depth: usize) -> PendingCommitMetadata {
+        let transaction = self.transaction.borrow();
+        let mut pending = PendingCommitMetadata {
+            depth,
+            root_catalog_ids: BTreeSet::new(),
+            index_catalog_ids: BTreeSet::new(),
+        };
+        for change in transaction
+            .pending_commit_metadata
+            .iter()
+            .filter(|change| change.depth == depth)
+        {
+            pending
+                .root_catalog_ids
+                .extend(change.root_catalog_ids.iter().cloned());
+            pending
+                .index_catalog_ids
+                .extend(change.index_catalog_ids.iter().cloned());
+        }
+        pending
     }
 
     fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {
@@ -727,6 +839,46 @@ fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
         }
     }
     (roots.into_iter().collect(), indexes.into_iter().collect())
+}
+
+fn pending_commit_metadata_at_depth(
+    transaction: &mut TransactionState,
+    depth: usize,
+) -> &mut PendingCommitMetadata {
+    if let Some(index) = transaction
+        .pending_commit_metadata
+        .iter()
+        .position(|pending| pending.depth == depth)
+    {
+        return &mut transaction.pending_commit_metadata[index];
+    }
+    transaction
+        .pending_commit_metadata
+        .push(PendingCommitMetadata {
+            depth,
+            root_catalog_ids: BTreeSet::new(),
+            index_catalog_ids: BTreeSet::new(),
+        });
+    transaction
+        .pending_commit_metadata
+        .last_mut()
+        .expect("pending metadata was just inserted")
+}
+
+fn merge_pending_commit_metadata(changes: &mut Vec<PendingCommitMetadata>) {
+    let mut merged: Vec<PendingCommitMetadata> = Vec::new();
+    for change in changes.drain(..) {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|existing| existing.depth == change.depth)
+        {
+            existing.root_catalog_ids.extend(change.root_catalog_ids);
+            existing.index_catalog_ids.extend(change.index_catalog_ids);
+        } else {
+            merged.push(change);
+        }
+    }
+    *changes = merged;
 }
 
 fn data_child_under<'a>(

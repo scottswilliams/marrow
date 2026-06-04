@@ -1,18 +1,18 @@
 //! Typed portable backup of a project's saved data.
 //!
 //! A backup is a Marrow artifact, not a raw engine-file copy: a small header, a
-//! typed manifest, and the canonical ordered tree-cell stream. The manifest binds
+//! typed manifest, and the canonical ordered data-cell stream. The manifest binds
 //! the data to the program that wrote it — its source digest, accepted catalog
 //! epoch, engine profile, value-codec version, and a checksum over the cell
 //! stream — so a restore refuses data it cannot faithfully reproduce. The stream
 //! carries the store's data cells only; generated indexes are derived, so a restore
 //! rebuilds them rather than replaying them.
 //!
-//! The cell stream is backend-independent: tree-cell keys derive from catalog stable
-//! IDs, and stable IDs are random opaque values that freeze when accepted. Backups are
-//! deterministic and portable across conforming backends at the same layout and codec,
-//! but byte identity requires matching accepted catalog facts, engine profile, value
-//! codec, and stored data.
+//! The cell stream is backend-independent and stores typed cell targets derived
+//! from catalog stable IDs. Stable IDs are random opaque values that freeze when
+//! accepted. Backups are deterministic and portable across conforming backends at
+//! the same layout and codec, but byte identity requires matching accepted
+//! catalog facts, engine profile, value codec, and stored data.
 //!
 //! [`create`] writes a backup over a stable read snapshot; [`restore`] validates a
 //! backup against the project and replays it into an empty store in one

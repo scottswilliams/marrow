@@ -714,12 +714,14 @@ fn descend_path(
         DescentStep::KeyedLayer(layer_id) => {
             let mut layer_path = prefix.to_vec();
             layer_path.push(DataPathSegment::Member(layer_id.clone()));
-            for entry_key in store.data_child_keys(store_id, identity, &layer_path)? {
+            let mut next = store.data_first_child(store_id, identity, &layer_path)?;
+            while let Some(entry_key) = next {
                 let mut entry_path = layer_path.clone();
-                entry_path.push(DataPathSegment::Key(entry_key));
+                entry_path.push(DataPathSegment::Key(entry_key.clone()));
                 if descend_path(store, store_id, identity, &entry_path, rest)? {
                     return Ok(true);
                 }
+                next = store.data_next_child(store_id, identity, &layer_path, &entry_key)?;
             }
             Ok(false)
         }
@@ -1280,12 +1282,12 @@ impl KeyedScan<'_> {
                 // recurses into each entry to reach its sub-members; a keyed-leaf-map
                 // (`map[K, V]`) holds its value directly under the entry key, so the value
                 // cell at the key path is recorded against the map member's own obligation.
-                for entry_key in
+                let mut next =
                     self.store
-                        .data_child_keys(self.store_id, identity, &member_path)?
-                {
+                        .data_first_child(self.store_id, identity, &member_path)?;
+                while let Some(entry_key) = next {
                     let mut entry_path = member_path.clone();
-                    entry_path.push(DataPathSegment::Key(entry_key));
+                    entry_path.push(DataPathSegment::Key(entry_key.clone()));
                     match &member.kind {
                         CheckedSavedMemberKind::Group => {
                             self.descend(
@@ -1299,6 +1301,12 @@ impl KeyedScan<'_> {
                             self.record_leaf(&member_id, identity, &entry_path)?;
                         }
                     }
+                    next = self.store.data_next_child(
+                        self.store_id,
+                        identity,
+                        &member_path,
+                        &entry_key,
+                    )?;
                 }
                 continue;
             }

@@ -67,11 +67,21 @@ impl Backend for MemStore {
     }
 
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        if self.snapshot.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot write while a read snapshot is pinned".into(),
+            });
+        }
         MemStore::write(self, key, value);
         Ok(())
     }
 
     fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
+        if self.snapshot.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot delete while a read snapshot is pinned".into(),
+            });
+        }
         MemStore::delete(self, prefix);
         Ok(())
     }
@@ -90,6 +100,11 @@ impl Backend for MemStore {
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {
+        if self.snapshot.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot begin a write transaction while a read snapshot is pinned".into(),
+            });
+        }
         self.savepoints.push(self.entries.clone());
         Ok(())
     }
@@ -107,6 +122,16 @@ impl Backend for MemStore {
     }
 
     fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+        if !self.savepoints.is_empty() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot pin a read snapshot while a write transaction is open".into(),
+            });
+        }
+        if self.snapshot.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot pin a second read snapshot on the same store handle".into(),
+            });
+        }
         self.snapshot = Some(self.entries.clone());
         Ok(())
     }

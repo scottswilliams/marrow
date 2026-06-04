@@ -5,7 +5,8 @@
 //! the store's actual data-family cells and flags any whose store catalog id or
 //! member catalog path the schema no longer declares — data a dropped root or field
 //! left behind. Index-family cells are derived from data and are never flagged. A
-//! cell key that does not decode under the tree-cell key grammar is store corruption.
+//! cell key that does not decode under the tree-cell key grammar is reported by
+//! the store before orphan classification.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,22 +14,22 @@ use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
 };
 use marrow_store::StoreError;
-use marrow_store::cell::{DataCellKey, decode_data_cell_key};
+use marrow_store::cell::DataCellKey;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use super::inspect::push_key;
 
-/// One stored cell the schema does not declare, or whose key does not decode.
+/// One stored cell the schema does not declare.
 pub(super) struct OrphanProblem {
     pub(super) code: &'static str,
     pub(super) path: String,
     pub(super) message: String,
 }
 
-/// Visit every stored data cell the checked schema does not declare, plus any cell
-/// whose key does not decode, invoking `report` for each. Index-family cells are
-/// derived and never reported. Bounded: `visit_backup_cells` pages internally.
+/// Visit every stored data cell the checked schema does not declare, invoking
+/// `report` for each. Index-family cells are derived and never reported.
+/// Bounded: `visit_backup_cells` pages internally.
 pub(super) fn visit_orphans(
     store: &TreeStore,
     program: &CheckedProgram,
@@ -52,7 +53,8 @@ fn visit_orphans_in_schema(
     schema: &DeclaredSchema,
     report: &mut impl FnMut(OrphanProblem) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
-    store.visit_backup_cells(|key, _value| {
+    store.visit_backup_cells(|cell| {
+        let key = cell.data_key().clone();
         if let Some(problem) = schema.classify(key) {
             report(problem)?;
         }
@@ -105,29 +107,20 @@ impl DeclaredSchema {
         Self { roots, members }
     }
 
-    /// Classify one stored cell key. Returns a problem when the cell is an orphan or
-    /// its key does not decode, or `None` when it is a declared or index cell.
+    /// Classify one decoded stored cell key. Returns a problem when the cell is an
+    /// orphan, or `None` when it is declared.
     ///
     /// Classification is catalog-id membership: a cell whose store id or any member id
     /// the schema no longer declares is an orphan, which catches data under a dropped
     /// root or field — the ADR-named orphan cases. It does not validate exact member
     /// nesting, so an exotic misnesting of declared ids is out of v0.1 scope.
-    fn classify(&self, key: &[u8]) -> Option<OrphanProblem> {
+    fn classify(&self, key: DataCellKey) -> Option<OrphanProblem> {
+        let path = key.path();
         let DataCellKey {
             store,
             identity,
-            path,
-        } = match decode_data_cell_key(key) {
-            Some(cell) => cell,
-            None => {
-                return Some(OrphanProblem {
-                    code: "store.corruption",
-                    path: render_raw_key(key),
-                    message: "stored data cell key does not decode under the tree-cell key grammar"
-                        .to_string(),
-                });
-            }
-        };
+            kind: _,
+        } = key;
         let store_id = store.as_str();
         let Some(member_set) = self.members.get(store_id) else {
             return Some(self.orphan(
@@ -217,10 +210,4 @@ fn member_segment(segment: &DataPathSegment) -> Option<&str> {
         DataPathSegment::Member(member) => Some(member.as_str()),
         DataPathSegment::Key(_) => None,
     }
-}
-
-fn render_raw_key(key: &[u8]) -> String {
-    let mut text = String::from("0x");
-    crate::push_hex(&mut text, key);
-    text
 }

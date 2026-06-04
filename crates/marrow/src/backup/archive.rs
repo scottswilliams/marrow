@@ -10,7 +10,9 @@ use super::{
     BackupError, BackupManifest, CommitDescriptor, DefaultCountDescriptor, EngineDescriptor,
     FORMAT_VERSION, RetireCountDescriptor,
 };
-use marrow_store::tree::EngineProfileDigest;
+use marrow_store::tree::{
+    EngineProfileDigest, TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError,
+};
 
 /// Identifies a Marrow backup file. A file that does not begin with it is not a
 /// backup this build can restore.
@@ -22,26 +24,14 @@ const MAX_MANIFEST_BYTES: u32 = 16 * 1024 * 1024;
 const MAX_CELL_BYTES: u32 = 256 * 1024 * 1024;
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Fold one cell's framed bytes into the running checksum, exactly as they are
 /// written, so the write and read sides agree.
-pub(super) fn checksum_cell(hash: u64, key: &[u8], value: &[u8]) -> u64 {
-    let mut hash = fold(hash, &(key.len() as u32).to_be_bytes());
-    hash = fold(hash, key);
-    hash = fold(hash, &(value.len() as u32).to_be_bytes());
-    fold(hash, value)
+pub(super) fn checksum_cell(hash: u64, cell: TreeBackupCell<'_>) -> u64 {
+    cell.fold_checksum(hash)
 }
 
 pub(super) const CHECKSUM_SEED: u64 = FNV_OFFSET;
-
-fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
 
 pub(super) fn write_header(
     out: &mut impl Write,
@@ -55,11 +45,8 @@ pub(super) fn write_header(
     Ok(())
 }
 
-pub(super) fn write_cell(out: &mut impl Write, key: &[u8], value: &[u8]) -> std::io::Result<()> {
-    out.write_all(&(key.len() as u32).to_be_bytes())?;
-    out.write_all(key)?;
-    out.write_all(&(value.len() as u32).to_be_bytes())?;
-    out.write_all(value)
+pub(super) fn write_cell(out: &mut impl Write, cell: TreeBackupCell<'_>) -> std::io::Result<()> {
+    cell.write_framed(out)
 }
 
 pub(super) fn read_header(input: &mut impl Read) -> Result<BackupManifest, BackupError> {
@@ -91,23 +78,8 @@ pub(super) fn read_header(input: &mut impl Read) -> Result<BackupManifest, Backu
 }
 
 /// Read one framed cell, or a checksum/framing error if the stream is short.
-pub(super) fn read_cell(input: &mut impl Read) -> Result<(Vec<u8>, Vec<u8>), BackupError> {
-    let key = read_chunk(input)?;
-    let value = read_chunk(input)?;
-    Ok((key, value))
-}
-
-fn read_chunk(input: &mut impl Read) -> Result<Vec<u8>, BackupError> {
-    let len =
-        read_u32(input).map_err(|_| BackupError::corrupt("backup cell stream ended early"))?;
-    if len > MAX_CELL_BYTES {
-        return Err(BackupError::corrupt("backup cell is implausibly large"));
-    }
-    let mut bytes = vec![0u8; len as usize];
-    input
-        .read_exact(&mut bytes)
-        .map_err(|_| BackupError::corrupt("backup cell stream ended early"))?;
-    Ok(bytes)
+pub(super) fn read_cell(input: &mut impl Read) -> Result<TreeBackupCellBuf, BackupError> {
+    TreeBackupCellBuf::read_framed(input, MAX_CELL_BYTES).map_err(read_cell_error)
 }
 
 fn read_u32(input: &mut impl Read) -> std::io::Result<u32> {
@@ -118,6 +90,18 @@ fn read_u32(input: &mut impl Read) -> std::io::Result<u32> {
 
 fn format_version_io(error: std::io::Error) -> BackupError {
     BackupError::FormatVersion(format!("backup header is truncated: {error}"))
+}
+
+fn read_cell_error(error: TreeBackupCellReadError) -> BackupError {
+    match error {
+        TreeBackupCellReadError::EndedEarly => {
+            BackupError::corrupt("backup cell stream ended early")
+        }
+        TreeBackupCellReadError::CellTooLarge => {
+            BackupError::corrupt("backup cell is implausibly large")
+        }
+        TreeBackupCellReadError::MalformedCell => BackupError::corrupt("backup cell is malformed"),
+    }
 }
 
 fn manifest_to_json(manifest: &BackupManifest) -> Value {

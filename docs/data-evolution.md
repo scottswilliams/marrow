@@ -367,14 +367,14 @@ Typed backup/restore is a separate command pair (`marrow backup` and
 `marrow restore`), not a raw engine-byte copy. A backup carries a manifest binding
 the data to the source digest, accepted catalog epoch, engine profile, and
 value-codec version it was written under, plus the canonical tree-cell data
-stream; the generated indexes are derived, so the stream omits them and restore
-rebuilds them from the data. Restore validates that binding and the data against
-the schema, in one transaction, into an empty store. Backups are deterministic
-and portable across conforming backends at the same layout and codec, but byte
-identity requires matching accepted catalog facts, engine profile, value codec,
-and stored data. Stable IDs are random opaque values that freeze when accepted,
-so divergent catalog histories may still freeze distinct accepted IDs for source
-that looks equivalent.
+stream as typed cell targets; the generated indexes are derived, so the stream
+omits them and restore rebuilds them from the data. Restore validates that
+binding and the data against the schema, in one transaction, into an empty store.
+Backups are deterministic and portable across conforming backends at the same
+layout and codec, but byte identity requires matching accepted catalog facts,
+engine profile, value codec, and stored data. Stable IDs are random opaque
+values that freeze when accepted, so divergent catalog histories may still
+freeze distinct accepted IDs for source that looks equivalent.
 
 ## Also Deferred
 

@@ -23,6 +23,8 @@ const DATA_VALUE_END: u8 = 0x00;
 const INDEX_IDENTITY: u8 = 0x00;
 const INDEX_ENTRY_END: u8 = 0x00;
 
+pub(crate) const NODE_MARKER: &[u8] = b"node";
+
 /// An opaque catalog ID in the tree-cell storage key shape.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CatalogId(String);
@@ -204,18 +206,6 @@ impl CellKey {
     }
 }
 
-/// Whether `bytes` is a well-formed data-family cell key — the only family a
-/// backup carries and restore replays. Index cells are derived from data and are
-/// rebuilt on restore; meta cells are reconstructed from the manifest. A key
-/// outside the data family is a malformed backup rather than a cell to write.
-pub(crate) fn is_data_cell_key(bytes: &[u8]) -> bool {
-    matches!(
-        bytes,
-        [EMPTY_PLACEMENT_PREFIX, TREE_CELL_PROFILE_V0, family, ..]
-            if *family == FAMILY_DATA
-    )
-}
-
 pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()> {
     if bytes.first().copied() != Some(DATA_KEY_SEGMENT) {
         return Ok(None);
@@ -225,20 +215,49 @@ pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()
         .ok_or(())
 }
 
-/// A decoded data-family cell key: its store catalog id, record identity, and the
-/// member/key path below the identity. A backup carries only data cells, so this is
-/// what the integrity orphan scan classifies against the checked schema.
+/// Which kind of data-family tree cell a typed backup cell carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataCellKind {
+    Node,
+    Leaf {
+        member: CatalogId,
+    },
+    Sequence {
+        member: CatalogId,
+        position: SequencePosition,
+    },
+    Value {
+        path: Vec<DataPathSegment>,
+    },
+}
+
+/// A decoded data-family cell: its store catalog id, record identity, and exact
+/// data-cell kind. A backup carries only data cells, so tooling can classify
+/// these typed facts without seeing physical key bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataCellKey {
     pub store: CatalogId,
     pub identity: Vec<SavedKey>,
-    pub path: Vec<DataPathSegment>,
+    pub kind: DataCellKind,
+}
+
+impl DataCellKey {
+    pub fn path(&self) -> Vec<DataPathSegment> {
+        match &self.kind {
+            DataCellKind::Node => Vec::new(),
+            DataCellKind::Leaf { member } | DataCellKind::Sequence { member, .. } => {
+                vec![DataPathSegment::Member(member.clone())]
+            }
+            DataCellKind::Value { path } => path.clone(),
+        }
+    }
 }
 
 /// Decode a data-family cell key into its structural pieces, or `None` when the
 /// bytes are not a well-formed data cell under the v0 tree-cell key grammar — the
 /// caller reports that as store corruption. Index and meta cells are derived or
 /// reconstructed, not carried in a backup, so a non-data key also decodes to `None`.
-pub fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
+pub(crate) fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     let [
         EMPTY_PLACEMENT_PREFIX,
         TREE_CELL_PROFILE_V0,
@@ -252,11 +271,11 @@ pub fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     let store = CatalogId::new(store).ok()?;
     let (identity, after_identity) = decode_leading_keys(after_store)?;
     let after_node = after_identity.strip_prefix(&[NODE_END])?;
-    let path = decode_data_cell_path(after_node)?;
+    let kind = decode_data_cell_kind(after_node)?;
     Some(DataCellKey {
         store,
         identity,
-        path,
+        kind,
     })
 }
 
@@ -277,14 +296,19 @@ fn decode_leading_keys(mut bytes: &[u8]) -> Option<(Vec<SavedKey>, &[u8])> {
 /// at the value marker; a leaf or sequence cell carries one member id after its
 /// cell tag. The decoded path keeps only structural member/key segments — a
 /// sequence position is not part of the schema path.
-fn decode_data_cell_path(mut bytes: &[u8]) -> Option<Vec<DataPathSegment>> {
+fn decode_data_cell_kind(mut bytes: &[u8]) -> Option<DataCellKind> {
     let mut path = Vec::new();
     loop {
         let Some(tag) = bytes.first().copied() else {
-            return Some(path);
+            return path.is_empty().then_some(DataCellKind::Node);
         };
         match tag {
-            DATA_VALUE_END => return bytes.get(1..).filter(|rest| rest.is_empty()).map(|_| path),
+            DATA_VALUE_END => {
+                return bytes
+                    .get(1..)
+                    .filter(|rest| rest.is_empty())
+                    .map(|_| DataCellKind::Value { path });
+            }
             DATA_MEMBER_SEGMENT => {
                 let (id, rest) = decode_escaped_id(bytes.get(1..)?)?;
                 path.push(DataPathSegment::Member(CatalogId::new(id).ok()?));
@@ -300,18 +324,17 @@ fn decode_data_cell_path(mut bytes: &[u8]) -> Option<Vec<DataPathSegment>> {
                 if !rest.is_empty() {
                     return None;
                 }
-                path.push(DataPathSegment::Member(CatalogId::new(id).ok()?));
-                return Some(path);
+                return Some(DataCellKind::Leaf {
+                    member: CatalogId::new(id).ok()?,
+                });
             }
             SEQUENCE_CELL => {
                 let (id, rest) = decode_escaped_id(bytes.get(1..)?)?;
-                // The trailing 8-byte sequence position is not a schema path
-                // segment; the member id is enough to classify the cell.
-                if rest.len() != 8 {
-                    return None;
-                }
-                path.push(DataPathSegment::Member(CatalogId::new(id).ok()?));
-                return Some(path);
+                let position = rest.try_into().ok().map(u64::from_be_bytes)?;
+                return Some(DataCellKind::Sequence {
+                    member: CatalogId::new(id).ok()?,
+                    position: SequencePosition::new(position),
+                });
             }
             _ => return None,
         }
@@ -439,8 +462,8 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogId, CellKey, DataPathSegment, FAMILY_DATA, SequencePosition, decode_data_cell_key,
-        encode_id, family,
+        CatalogId, CellKey, DataCellKind, DataPathSegment, FAMILY_DATA, SequencePosition,
+        decode_data_cell_key, encode_id, family,
     };
     use crate::key::SavedKey;
 
@@ -464,7 +487,7 @@ mod tests {
         let store = store_id("");
         let cell = decode_data_cell_key(key.as_bytes()).expect("a data cell decodes");
         assert_eq!(cell.store, store);
-        assert_eq!(cell.path, expected_path);
+        assert_eq!(cell.path(), expected_path);
     }
 
     #[test]
@@ -477,7 +500,7 @@ mod tests {
         let cell = decode_data_cell_key(key.as_bytes()).expect("decode");
         assert_eq!(cell.store, store);
         assert_eq!(cell.identity, identity);
-        assert_eq!(cell.path, path);
+        assert_eq!(cell.kind, DataCellKind::Value { path });
     }
 
     #[test]
@@ -508,7 +531,14 @@ mod tests {
         let store = store_id("");
         let member = member_id();
         let key = CellKey::sequence(&store, &[], &member, SequencePosition::new(7));
-        assert_data(&key, &[DataPathSegment::Member(member)]);
+        let cell = decode_data_cell_key(key.as_bytes()).expect("decode sequence");
+        assert_eq!(
+            cell.kind,
+            DataCellKind::Sequence {
+                member,
+                position: SequencePosition::new(7)
+            }
+        );
     }
 
     #[test]

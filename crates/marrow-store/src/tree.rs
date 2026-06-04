@@ -3,98 +3,24 @@
 use std::cell::RefCell;
 
 use crate::backend::{Backend, ScanPage, StoreError};
-use crate::cell::{CatalogId, CellKey, MetaCell, SequencePosition, is_data_cell_key};
+use crate::cell::{CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition};
 use crate::key::{SavedKey, decode_key_value};
+use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
+pub use crate::backup::{TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError};
 pub use crate::cell::DataPathSegment;
+pub use crate::metadata::{
+    ActivationDefaultRecordCount, CommitMetadata, EngineProfile, EngineProfileDigest,
+};
 
-const NODE_MARKER: &[u8] = b"node";
 /// How many cells a backup traversal pages at a time, so the whole store is
 /// streamed in bounded chunks rather than materialized at once.
 const BACKUP_SCAN_PAGE: usize = 1024;
-const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const TREE_VALUE_VERSION_V0: u8 = 0;
-const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
-const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_00000000000000000000000000000000".len();
 const MIN_LENGTH_PREFIX_BYTES: usize = 4;
 const CHILD_SCAN_PAGE_LIMIT: usize = 128;
-
-pub type EngineProfileDigest = [u8; ENGINE_PROFILE_DIGEST_BYTES];
 type IndexEntryVisitor<'a> =
     dyn FnMut(&[SavedKey], &[SavedKey], &[u8]) -> Result<(), StoreError> + 'a;
-
-/// The engine profile recorded with tree-cell metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineProfile {
-    layout_epoch: u64,
-}
-
-impl EngineProfile {
-    pub fn new(layout_epoch: u64) -> Self {
-        Self { layout_epoch }
-    }
-
-    pub fn layout_epoch(&self) -> u64 {
-        self.layout_epoch
-    }
-
-    pub fn key_profile_version(&self) -> u8 {
-        ENGINE_PROFILE_KEY_VERSION_V0
-    }
-
-    pub fn digest_bytes(&self) -> EngineProfileDigest {
-        fnv1a64(&self.digest_preimage()).to_be_bytes()
-    }
-
-    pub fn digest_hex(&self) -> String {
-        let digest = u64::from_be_bytes(self.digest_bytes());
-        format!("{digest:016x}")
-    }
-
-    fn digest_preimage(&self) -> Vec<u8> {
-        let mut bytes = b"marrow-tree-cell-engine-profile-v0".to_vec();
-        bytes.push(0);
-        bytes.push(self.key_profile_version());
-        bytes.extend_from_slice(&self.layout_epoch.to_be_bytes());
-        bytes
-    }
-}
-
-/// Metadata recorded for the latest tree-cell commit.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommitMetadata {
-    pub commit_id: u64,
-    pub catalog_epoch: u64,
-    pub layout_epoch: u64,
-    /// The analyzed-source digest the commit activated, in the `sha256:<hex>` form the
-    /// evolution witness records. It binds the schema shape (member types, identity key
-    /// types, index uniqueness and columns) the store was last written against, so the
-    /// activation fence can reject a structurally different schema even at the same
-    /// catalog epoch.
-    pub source_digest: String,
-    pub engine_profile_digest: EngineProfileDigest,
-    pub changed_root_catalog_ids: Vec<CatalogId>,
-    pub changed_index_catalog_ids: Vec<CatalogId>,
-    pub activation_evolution_digest: String,
-    pub activation_proposal_catalog_digest: Option<String>,
-    pub activation_proposal_new_catalog_ids: Vec<CatalogId>,
-    pub activation_records_backfilled: u64,
-    pub activation_default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub activation_indexes_rebuilt: u64,
-    pub activation_records_retired: u64,
-    pub activation_retire_evidence_digest: String,
-    pub activation_records_retired_by_id: Vec<(CatalogId, u64)>,
-    pub activation_records_transformed: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActivationDefaultRecordCount {
-    pub catalog_id: CatalogId,
-    pub records_backfilled: u64,
-    pub target_records: u64,
-    pub evidence_digest: String,
-}
-
 /// One index row from an exact index tuple scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexEntry {
@@ -347,24 +273,6 @@ impl TreeStore {
         self.with_cell(|cell| cell.data_subtree_exists(store, identity, path))
     }
 
-    pub fn data_child_keys(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.data_child_keys(store, identity, path))
-    }
-
-    pub fn data_child_keys_rev(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.data_child_keys_rev(store, identity, path))
-    }
-
     pub fn data_next_child(
         &self,
         store: &CatalogId,
@@ -421,14 +329,6 @@ impl TreeStore {
         self.with_cell(|cell| cell.max_int_data_child(store, identity, path))
     }
 
-    pub fn record_child_keys(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.record_child_keys(store, identity_prefix))
-    }
-
     pub fn record_child_count(
         &self,
         store: &CatalogId,
@@ -443,14 +343,6 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
     ) -> Result<(), StoreError> {
         self.with_cell(|cell| cell.delete_record_subtree(store, identity_prefix))
-    }
-
-    pub fn record_child_keys_rev(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.record_child_keys_rev(store, identity_prefix))
     }
 
     pub fn record_next_child(
@@ -559,28 +451,12 @@ impl TreeStore {
         self.with_cell(|cell| cell.delete_index_entry(index, index_keys, identity))
     }
 
-    pub fn index_child_keys(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.index_child_keys(index, key_prefix))
-    }
-
     pub fn delete_index_subtree(
         &self,
         index: &CatalogId,
         key_prefix: &[SavedKey],
     ) -> Result<(), StoreError> {
         self.with_cell(|cell| cell.delete_index_subtree(index, key_prefix))
-    }
-
-    pub fn index_child_keys_rev(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.index_child_keys_rev(index, key_prefix))
     }
 
     pub fn index_next_child(
@@ -662,26 +538,17 @@ impl TreeStore {
             && self.first_cell(&CellKey::index_family())?.is_none())
     }
 
-    /// Visit every data-family cell in encoded order — the canonical `(key, value)`
-    /// stream a backup carries. Index-family cells are derived from data and are
-    /// rebuilt on restore, so a backup carries data only. Cells page internally so
-    /// the whole store streams in bounded chunks; wrap the call in a
-    /// [`read_snapshot`] to read one coherent version.
+    /// Visit every data-family cell in encoded order. Index-family cells are
+    /// derived from data and are rebuilt on restore, so a backup carries data
+    /// only. Cells page internally so the whole store streams in bounded chunks;
+    /// wrap the call in a [`read_snapshot`] to read one coherent version.
     ///
     /// [`read_snapshot`]: TreeStore::read_snapshot
     pub fn visit_backup_cells(
         &self,
-        mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
+        mut visit: impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         self.visit_family(CellKey::data_family().as_bytes(), &mut visit)
-    }
-
-    /// Replay one backup cell, validating that its key addresses a data-family
-    /// cell. A backup carries data only — index cells are derived and rebuilt on
-    /// restore — so an index or meta key is a malformed backup, not a cell to
-    /// write. Restore writes cells inside one transaction.
-    pub fn restore_cell(&self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.restore_cell(key, value))
     }
 
     fn first_cell(&self, prefix: &CellKey) -> Result<Option<Vec<u8>>, StoreError> {
@@ -692,12 +559,12 @@ impl TreeStore {
     fn visit_family(
         &self,
         prefix: &[u8],
-        visit: &mut impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
+        visit: &mut impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         let mut page = self.with_cell(|cell| cell.scan_cells(prefix, BACKUP_SCAN_PAGE))?;
         loop {
             for (key, value) in &page.entries {
-                visit(key, value)?;
+                visit(TreeBackupCell::from_raw(key, value)?)?;
             }
             if !page.truncated {
                 return Ok(());
@@ -752,15 +619,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
         self.backend.scan_after(prefix, cursor, limit)
-    }
-
-    fn restore_cell(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        if !is_data_cell_key(key) {
-            return Err(StoreError::Corruption {
-                message: "backup cell key is not a data cell".into(),
-            });
-        }
-        self.backend.write(key, value)
     }
 
     fn write_catalog_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
@@ -939,27 +797,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         Ok(!self.backend.scan(prefix.as_bytes(), 1)?.entries.is_empty())
     }
 
-    fn data_child_keys(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.child_keys(prefix.as_bytes(), decode_data_child)
-    }
-
-    fn data_child_keys_rev(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let mut keys = self.data_child_keys(store, identity, path)?;
-        keys.reverse();
-        Ok(keys)
-    }
-
     fn data_next_child(
         &self,
         store: &CatalogId,
@@ -1020,15 +857,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.child_count(prefix.as_bytes(), decode_data_child)
     }
 
-    fn record_child_keys(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.child_keys(prefix.as_bytes(), decode_record_child)
-    }
-
     fn record_child_count(
         &self,
         store: &CatalogId,
@@ -1045,16 +873,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     ) -> Result<(), StoreError> {
         self.backend
             .delete(CellKey::record_prefix(store, identity_prefix).as_bytes())
-    }
-
-    fn record_child_keys_rev(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let mut keys = self.record_child_keys(store, identity_prefix)?;
-        keys.reverse();
-        Ok(keys)
     }
 
     fn record_next_child(
@@ -1137,15 +955,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .delete(CellKey::index(index, index_keys, identity).as_bytes())
     }
 
-    fn index_child_keys(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.child_keys(prefix.as_bytes(), decode_index_child)
-    }
-
     fn delete_index_subtree(
         &mut self,
         index: &CatalogId,
@@ -1153,16 +962,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     ) -> Result<(), StoreError> {
         self.backend
             .delete(CellKey::index_key_prefix(index, key_prefix).as_bytes())
-    }
-
-    fn index_child_keys_rev(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let mut keys = self.index_child_keys(index, key_prefix)?;
-        keys.reverse();
-        Ok(keys)
     }
 
     fn index_next_child(
@@ -1330,16 +1129,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             .read(CellKey::meta(cell).as_bytes())?
             .map(|bytes| decode_u64(&bytes))
             .transpose()
-    }
-
-    fn child_keys(
-        &self,
-        prefix: &[u8],
-        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
-    ) -> Result<Vec<SavedKey>, StoreError> {
-        let mut keys = Vec::new();
-        self.scan_children(prefix, |child| keys.push(child), decode)?;
-        Ok(keys)
     }
 
     fn child_count(
@@ -1633,143 +1422,17 @@ pub fn decode_tree_enum_member(bytes: &[u8]) -> Result<TreeEnumMember, StoreErro
     Ok(TreeEnumMember { enum_id, member_id })
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
-fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreError> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&metadata.commit_id.to_be_bytes());
-    bytes.extend_from_slice(&metadata.catalog_epoch.to_be_bytes());
-    bytes.extend_from_slice(&metadata.layout_epoch.to_be_bytes());
-    put_bytes(metadata.source_digest.as_bytes(), &mut bytes)?;
-    put_bytes(&metadata.engine_profile_digest, &mut bytes)?;
-    put_catalog_ids(&metadata.changed_root_catalog_ids, &mut bytes)?;
-    put_catalog_ids(&metadata.changed_index_catalog_ids, &mut bytes)?;
-    put_bytes(metadata.activation_evolution_digest.as_bytes(), &mut bytes)?;
-    put_bytes(
-        metadata
-            .activation_proposal_catalog_digest
-            .as_deref()
-            .unwrap_or("")
-            .as_bytes(),
-        &mut bytes,
-    )?;
-    bytes.extend_from_slice(&metadata.activation_records_backfilled.to_be_bytes());
-    bytes.extend_from_slice(&metadata.activation_indexes_rebuilt.to_be_bytes());
-    bytes.extend_from_slice(&metadata.activation_records_retired.to_be_bytes());
-    bytes.extend_from_slice(&metadata.activation_records_transformed.to_be_bytes());
-    put_bytes(
-        metadata.activation_retire_evidence_digest.as_bytes(),
-        &mut bytes,
-    )?;
-    put_retire_counts(&metadata.activation_records_retired_by_id, &mut bytes)?;
-    put_default_counts(&metadata.activation_default_records_by_id, &mut bytes)?;
-    put_catalog_ids(&metadata.activation_proposal_new_catalog_ids, &mut bytes)?;
-    Ok(bytes)
-}
-
-fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
-    let mut cursor = Cursor::new(bytes);
-    let commit_id = cursor.take_u64()?;
-    let catalog_epoch = cursor.take_u64()?;
-    let layout_epoch = cursor.take_u64()?;
-    let source_digest = cursor.take_string()?;
-    let engine_profile_digest = cursor.take_digest()?;
-    let changed_root_catalog_ids = cursor.take_catalog_ids()?;
-    let changed_index_catalog_ids = cursor.take_catalog_ids()?;
-    let activation_evolution_digest = cursor.take_string()?;
-    let proposal_digest = cursor.take_string()?;
-    let activation_records_backfilled = cursor.take_u64()?;
-    let activation_indexes_rebuilt = cursor.take_u64()?;
-    let activation_records_retired = cursor.take_u64()?;
-    let activation_records_transformed = cursor.take_u64()?;
-    let activation_retire_evidence_digest = cursor.take_string()?;
-    let activation_records_retired_by_id = cursor.take_retire_counts()?;
-    let activation_default_records_by_id = cursor.take_default_counts()?;
-    let activation_proposal_new_catalog_ids = cursor.take_catalog_ids()?;
-    let activation_proposal_catalog_digest =
-        (!proposal_digest.is_empty()).then_some(proposal_digest);
-    if !cursor.is_empty() {
-        return Err(corrupt_cell(bytes));
-    }
-    Ok(CommitMetadata {
-        commit_id,
-        catalog_epoch,
-        layout_epoch,
-        source_digest,
-        engine_profile_digest,
-        changed_root_catalog_ids,
-        changed_index_catalog_ids,
-        activation_evolution_digest,
-        activation_proposal_catalog_digest,
-        activation_proposal_new_catalog_ids,
-        activation_records_backfilled,
-        activation_default_records_by_id,
-        activation_indexes_rebuilt,
-        activation_records_retired,
-        activation_retire_evidence_digest,
-        activation_records_retired_by_id,
-        activation_records_transformed,
-    })
-}
-
 fn put_bytes(value: &[u8], out: &mut Vec<u8>) -> Result<(), StoreError> {
     let len = u32::try_from(value.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
+        limit: "tree cell value length",
     })?;
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(value);
     Ok(())
 }
 
-fn put_catalog_ids(ids: &[CatalogId], out: &mut Vec<u8>) -> Result<(), StoreError> {
-    let len = u32::try_from(ids.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for id in ids {
-        put_bytes(id.as_str().as_bytes(), out)?;
-    }
-    Ok(())
-}
-
 fn put_catalog_id(id: &CatalogId, out: &mut Vec<u8>) -> Result<(), StoreError> {
     put_bytes(id.as_str().as_bytes(), out)
-}
-
-fn put_retire_counts(counts: &[(CatalogId, u64)], out: &mut Vec<u8>) -> Result<(), StoreError> {
-    let len = u32::try_from(counts.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for (id, count) in counts {
-        put_catalog_id(id, out)?;
-        out.extend_from_slice(&count.to_be_bytes());
-    }
-    Ok(())
-}
-
-fn put_default_counts(
-    counts: &[ActivationDefaultRecordCount],
-    out: &mut Vec<u8>,
-) -> Result<(), StoreError> {
-    let len = u32::try_from(counts.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for count in counts {
-        put_catalog_id(&count.catalog_id, out)?;
-        out.extend_from_slice(&count.records_backfilled.to_be_bytes());
-        out.extend_from_slice(&count.target_records.to_be_bytes());
-        put_bytes(count.evidence_digest.as_bytes(), out)?;
-    }
-    Ok(())
 }
 
 fn put_saved_keys(keys: &[SavedKey], out: &mut Vec<u8>) -> Result<(), StoreError> {
@@ -1825,12 +1488,6 @@ impl<'a> Cursor<'a> {
         self.bytes.is_empty()
     }
 
-    fn take_u64(&mut self) -> Result<u64, StoreError> {
-        let bytes = self.take(8)?;
-        let raw: [u8; 8] = bytes.try_into().map_err(|_| corrupt_cell(bytes))?;
-        Ok(u64::from_be_bytes(raw))
-    }
-
     fn take_version(&mut self) -> Result<(), StoreError> {
         let version = self.take(1)?[0];
         if version == TREE_VALUE_VERSION_V0 {
@@ -1845,64 +1502,10 @@ impl<'a> Cursor<'a> {
         self.take(len)
     }
 
-    fn take_digest(&mut self) -> Result<EngineProfileDigest, StoreError> {
-        decode_digest(self.take_bytes()?)
-    }
-
-    fn take_string(&mut self) -> Result<String, StoreError> {
-        let raw = self.take_bytes()?;
-        std::str::from_utf8(raw)
-            .map(str::to_string)
-            .map_err(|_| corrupt_cell(raw))
-    }
-
     fn take_catalog_id(&mut self) -> Result<CatalogId, StoreError> {
         let raw = self.take_bytes()?;
         let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
         CatalogId::new(id).map_err(|_| corrupt_cell(raw))
-    }
-
-    fn take_catalog_ids(&mut self) -> Result<Vec<CatalogId>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / MIN_ENCODED_CATALOG_ID_BYTES {
-            return Err(corrupt_cell(self.bytes));
-        }
-        let mut ids = Vec::new();
-        for _ in 0..len {
-            let raw = self.take_bytes()?;
-            let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
-            ids.push(CatalogId::new(id).map_err(|_| corrupt_cell(raw))?);
-        }
-        Ok(ids)
-    }
-
-    fn take_retire_counts(&mut self) -> Result<Vec<(CatalogId, u64)>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 8) {
-            return Err(corrupt_cell(self.bytes));
-        }
-        let mut counts = Vec::new();
-        for _ in 0..len {
-            counts.push((self.take_catalog_id()?, self.take_u64()?));
-        }
-        Ok(counts)
-    }
-
-    fn take_default_counts(&mut self) -> Result<Vec<ActivationDefaultRecordCount>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 16 + MIN_LENGTH_PREFIX_BYTES) {
-            return Err(corrupt_cell(self.bytes));
-        }
-        let mut counts = Vec::new();
-        for _ in 0..len {
-            counts.push(ActivationDefaultRecordCount {
-                catalog_id: self.take_catalog_id()?,
-                records_backfilled: self.take_u64()?,
-                target_records: self.take_u64()?,
-                evidence_digest: self.take_string()?,
-            });
-        }
-        Ok(counts)
     }
 
     fn take_saved_keys(&mut self) -> Result<Vec<SavedKey>, StoreError> {
@@ -1949,13 +1552,14 @@ mod tests {
 
     use super::{
         ActivationDefaultRecordCount, CellKey, CommitMetadata, DataPathSegment, NODE_MARKER,
-        TreeStore, decode_commit_metadata, encode_commit_metadata, is_data_cell_key,
+        TreeBackupCellBuf, TreeStore,
     };
     use crate::StoreError;
     use crate::backend::{Backend, ScanPage};
-    use crate::cell::CatalogId;
+    use crate::cell::{CatalogId, DataCellKind};
     use crate::key::SavedKey;
     use crate::mem::MemStore;
+    use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
     /// A backend that delegates to an in-memory store but fails the Nth write, after
     /// the earlier writes have already mutated the transaction buffer. It models a
@@ -2278,11 +1882,11 @@ mod tests {
         );
     }
 
-    fn collect_backup_cells(store: &TreeStore) -> Vec<(Vec<u8>, Vec<u8>)> {
+    fn collect_backup_cells(store: &TreeStore) -> Vec<TreeBackupCellBuf> {
         let mut cells = Vec::new();
         store
-            .visit_backup_cells(|key, value| {
-                cells.push((key.to_vec(), value.to_vec()));
+            .visit_backup_cells(|cell| {
+                cells.push(TreeBackupCellBuf::from_cell(cell));
                 Ok(())
             })
             .expect("visit backup cells");
@@ -2343,16 +1947,14 @@ mod tests {
         assert!(
             cells
                 .iter()
-                .all(|(key, _)| is_data_cell_key(key) && !is_index_family(key)),
+                .all(|cell| cell.data_key().store.as_str() == store_id.as_str()),
             "the backup stream carries only data-family cells: {cells:?}"
         );
 
         let restored = TreeStore::memory();
         assert!(restored.is_empty().expect("fresh store is empty"));
-        for (key, value) in &cells {
-            restored
-                .restore_cell(key, value.clone())
-                .expect("restore cell");
+        for cell in &cells {
+            replay_backup_cell(&restored, cell).expect("restore cell");
         }
         // `is_empty` checks the index family too, and the data cells round-tripped.
         assert!(!restored.is_empty().expect("restored store is populated"));
@@ -2368,30 +1970,27 @@ mod tests {
         assert_eq!(restored.read_catalog_epoch().expect("read epoch"), None);
     }
 
-    fn is_index_family(key: &[u8]) -> bool {
-        key.starts_with(CellKey::index_family().as_bytes())
-    }
-
     #[test]
-    fn restore_cell_rejects_a_meta_key() {
-        let store = TreeStore::memory();
+    fn backup_cell_rejects_a_meta_key() {
         // A meta-family key (catalog-epoch cell) is not a restorable backup cell.
         let meta_key = CellKey::meta(super::MetaCell::CatalogEpoch);
-        assert_corruption(store.restore_cell(meta_key.as_bytes(), b"4".to_vec()));
+        assert_corruption(TreeBackupCellBuf::from_raw(
+            meta_key.into_bytes(),
+            b"4".to_vec(),
+        ));
     }
 
     #[test]
-    fn restore_cell_rejects_an_index_key() {
-        let store = TreeStore::memory();
+    fn backup_cell_rejects_an_index_key() {
         // An index-family cell is derived and rebuilt on restore; a backup never
         // carries one, so replaying an index key is a malformed backup.
         let mut index_key = CellKey::index_family().as_bytes().to_vec();
         index_key.extend_from_slice(b"entry");
-        assert_corruption(store.restore_cell(&index_key, b"1".to_vec()));
+        assert_corruption(TreeBackupCellBuf::from_raw(index_key, b"1".to_vec()));
     }
 
-    /// A pinned read snapshot keeps a backup traversal coherent: cells written after
-    /// the snapshot opens are invisible until it is released.
+    /// A pinned read snapshot owns the handle's read view, so the same handle cannot
+    /// publish writes until the snapshot is released.
     #[test]
     fn read_snapshot_keeps_a_backup_traversal_coherent() {
         let store_id = catalog("cat_00000000000000000000000000000001");
@@ -2404,19 +2003,45 @@ mod tests {
 
         let before = {
             let _snapshot = store.read_snapshot().expect("snapshot");
-            store
+            let error = store
                 .write_data_value(&store_id, &[SavedKey::Int(2)], &path, b"second".to_vec())
-                .expect("write second");
+                .expect_err("write is rejected while snapshot is pinned");
+            assert_eq!(error.code(), "store.transaction");
             collect_backup_cells(&store)
         };
-        assert_eq!(before.len(), 1, "snapshot hid the concurrent write");
+        assert_eq!(before.len(), 1, "snapshot still reads the existing cell");
 
-        // After the snapshot drops, the traversal sees both records.
+        store
+            .write_data_value(&store_id, &[SavedKey::Int(2)], &path, b"second".to_vec())
+            .expect("write after snapshot");
         assert_eq!(collect_backup_cells(&store).len(), 2);
     }
 
     fn catalog(raw: &str) -> CatalogId {
         CatalogId::new(raw.to_string()).expect("valid catalog id")
+    }
+
+    fn replay_backup_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), StoreError> {
+        let target = cell.data_key();
+        match &target.kind {
+            DataCellKind::Node => store.write_node(&target.store, &target.identity),
+            DataCellKind::Leaf { member } => store.write_leaf(
+                &target.store,
+                &target.identity,
+                member,
+                cell.value().to_vec(),
+            ),
+            DataCellKind::Sequence { member, position } => store.write_sequence_position(
+                &target.store,
+                &target.identity,
+                member,
+                *position,
+                cell.value().to_vec(),
+            ),
+            DataCellKind::Value { path } => {
+                store.write_data_value(&target.store, &target.identity, path, cell.value().to_vec())
+            }
+        }
     }
 
     fn assert_corruption<T>(result: Result<T, StoreError>) {

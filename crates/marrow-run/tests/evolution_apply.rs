@@ -76,6 +76,13 @@ fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
         .expect("checked saved root place")
 }
 
+fn index_has_children(store: &TreeStore, index: &CatalogId, prefix: &[SavedKey]) -> bool {
+    store
+        .index_first_child(index, prefix)
+        .expect("read first index child")
+        .is_some()
+}
+
 /// A minimal seeded store rooted at one single-key-identity saved place, identical to
 /// the discharge harness: a record is its `id` key; a member is seeded at the bound
 /// member catalog id exactly as the runtime write path does.
@@ -1542,10 +1549,7 @@ fn dropped_index_apply_deletes_index_cells() {
             .expect("seed index entry");
     }
     assert!(
-        !store
-            .index_child_keys(&index_id, &[])
-            .expect("read index")
-            .is_empty(),
+        index_has_children(&store, &index_id, &[]),
         "the index starts with cells"
     );
 
@@ -1571,10 +1575,7 @@ fn dropped_index_apply_deletes_index_cells() {
     // The drop leaves no index cells under the dropped id.
     assert_eq!(outcome.catalog_epoch, w.accepted_catalog.epoch);
     assert!(
-        store
-            .index_child_keys(&index_id, &[])
-            .expect("read index after drop")
-            .is_empty(),
+        !index_has_children(&store, &index_id, &[]),
         "the dropped index must have no remaining cells"
     );
     // The base records and their members survive untouched.
@@ -1642,10 +1643,7 @@ fn explicit_index_retire_deletes_index_cells() {
             .expect("seed index entry");
     }
     assert!(
-        !store
-            .index_child_keys(&index_id, &[])
-            .expect("read index")
-            .is_empty(),
+        index_has_children(&store, &index_id, &[]),
         "the index starts with cells"
     );
 
@@ -1675,10 +1673,7 @@ fn explicit_index_retire_deletes_index_cells() {
 
     assert_eq!(outcome.records_retired, 0);
     assert!(
-        store
-            .index_child_keys(&index_id, &[])
-            .expect("read index after retire")
-            .is_empty(),
+        !index_has_children(&store, &index_id, &[]),
         "an explicit index retire must leave no index cells"
     );
     for (id, isbn) in [(1, "111"), (2, "222")] {

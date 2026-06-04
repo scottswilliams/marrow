@@ -309,6 +309,11 @@ impl Backend for RedbStore {
 
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.db.require_write_access("write")?;
+        if self.read_view.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot write while a read snapshot is pinned".into(),
+            });
+        }
         if self.txn.is_none() {
             let write = self.db.begin_write("write")?;
             {
@@ -333,6 +338,11 @@ impl Backend for RedbStore {
 
     fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
         self.db.require_write_access("delete")?;
+        if self.read_view.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot delete while a read snapshot is pinned".into(),
+            });
+        }
         if self.txn.is_none() {
             let write = self.db.begin_write("delete")?;
             {
@@ -393,6 +403,11 @@ impl Backend for RedbStore {
 
     fn begin(&mut self) -> Result<(), StoreError> {
         self.db.require_write_access("begin")?;
+        if self.read_view.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot begin a write transaction while a read snapshot is pinned".into(),
+            });
+        }
         if self.txn.is_none() {
             self.txn = Some(self.db.begin_write("begin")?);
         }
@@ -451,9 +466,18 @@ impl Backend for RedbStore {
     }
 
     fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+        if self.txn.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot pin a read snapshot while a write transaction is open".into(),
+            });
+        }
+        if self.read_view.is_some() {
+            return Err(StoreError::InvalidTransaction {
+                message: "cannot pin a second read snapshot on the same store handle".into(),
+            });
+        }
         // A read transaction is a stable version, unaffected by later writes. It
-        // works on read-only and writable handles alike; an open write transaction
-        // already provides read-your-writes, so it takes precedence in `read_view!`.
+        // works on read-only and writable handles alike.
         self.read_view = Some(self.db.begin_read("snapshot")?);
         Ok(())
     }

@@ -7,10 +7,12 @@
 //! Tree-cell keys ([`cell`]) derive from stable catalog IDs and typed key values.
 
 mod backend;
+mod backup;
 pub mod cell;
 pub mod decimal;
 pub mod key;
 mod mem;
+mod metadata;
 #[cfg(feature = "native")]
 mod redb;
 mod traversal;

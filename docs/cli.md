@@ -411,7 +411,7 @@ marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 
 Write a typed portable backup of a project's saved data. The backup is a Marrow
 artifact, not a raw engine-file copy: a small header, a typed manifest, and the
-project's canonical ordered tree-cell stream. The manifest binds the data to the
+project's canonical ordered data-cell stream. The manifest binds the data to the
 program that wrote it — its source digest, accepted catalog epoch, engine
 profile, value-codec version, and a checksum over the cell stream — so a later
 restore can refuse data it cannot faithfully reproduce. The backup carries the
@@ -422,15 +422,15 @@ evidence only. It records proposal/catalog digests, affected IDs, counts, and
 bounded effect digests, including retire receipt digests, never proposal catalog
 bodies or per-record default ledgers.
 
-Tree-cell keys derive from catalog stable IDs, so backups are byte-identical
-only when the accepted catalog facts, engine profile, value codec, and stored
-data match. Stable IDs are random opaque values that freeze when accepted, so
-divergent catalog histories may still freeze distinct accepted IDs for source
-that looks equivalent.
+Backup cell targets derive from catalog stable IDs, so backups are
+byte-identical only when the accepted catalog facts, engine profile, value
+codec, and stored data match. Stable IDs are random opaque values that freeze
+when accepted, so divergent catalog histories may still freeze distinct
+accepted IDs for source that looks equivalent.
 
-The store is read through one stable snapshot, so a backup is coherent even while
-another process reads it. Backup opens the store read-only and never modifies it;
-a project with no saved data yet writes a valid empty backup.
+The store is read through one stable snapshot for the backup traversal. Backup
+opens the store read-only and never modifies it; a project with no saved data
+yet writes a valid empty backup.
 
 ```console
 $ marrow backup ./proj ./proj-backup.mwbackup

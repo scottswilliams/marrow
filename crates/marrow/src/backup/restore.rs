@@ -6,7 +6,8 @@ use std::io::Read;
 
 use marrow_check::CheckedProgram;
 use marrow_run::evolution::{ApplyError, current_engine_profile, rebuild_store_indexes};
-use marrow_store::tree::TreeStore;
+use marrow_store::cell::DataCellKind;
+use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
 
 use super::archive::{self, CHECKSUM_SEED, checksum_cell};
 use super::{BackupError, BackupManifest, CommitDescriptor, EngineDescriptor};
@@ -150,9 +151,9 @@ fn replay(
 ) -> Result<RestoreReport, BackupError> {
     let mut checksum = CHECKSUM_SEED;
     for _ in 0..manifest.record_count {
-        let (key, value) = archive::read_cell(input)?;
-        checksum = checksum_cell(checksum, &key, &value);
-        store.restore_cell(&key, value)?;
+        let cell = archive::read_cell(input)?;
+        checksum = checksum_cell(checksum, cell.as_ref());
+        restore_cell(store, &cell)?;
     }
     if checksum != manifest.data_checksum {
         return Err(BackupError::CorruptChunk(
@@ -194,6 +195,30 @@ fn replay(
     })
 }
 
+fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), BackupError> {
+    let target = cell.data_key();
+    match &target.kind {
+        DataCellKind::Node => store.write_node(&target.store, &target.identity)?,
+        DataCellKind::Leaf { member } => store.write_leaf(
+            &target.store,
+            &target.identity,
+            member,
+            cell.value().to_vec(),
+        )?,
+        DataCellKind::Sequence { member, position } => store.write_sequence_position(
+            &target.store,
+            &target.identity,
+            member,
+            *position,
+            cell.value().to_vec(),
+        )?,
+        DataCellKind::Value { path } => {
+            store.write_data_value(&target.store, &target.identity, path, cell.value().to_vec())?
+        }
+    }
+    Ok(())
+}
+
 /// Whether the input has any byte left after the cell stream. A faithful backup ends
 /// exactly at the last cell, so one readable byte means the file is not the backup the
 /// manifest describes.
@@ -219,7 +244,7 @@ mod tests {
 
     use marrow_check::{CheckedProgram, ProjectConfig, check_project, commit_pending_identity};
     use marrow_store::cell::CatalogId;
-    use marrow_store::key::SavedKey;
+    use marrow_store::key::{SavedKey, encode_identity_payload};
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
     use super::{
@@ -452,6 +477,50 @@ mod tests {
         cleanup(&root);
     }
 
+    #[test]
+    fn rejects_a_malformed_data_cell_target_even_when_the_checksum_matches() {
+        let (root, program) = committed_program("restore-malformed-target", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = with_malformed_first_target(&archive);
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("a malformed backup data target is rejected during replay");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_an_impossible_backup_target_count_even_when_the_checksum_matches() {
+        let (root, program) = committed_program("restore-impossible-target-count", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = with_impossible_first_target_count(&archive);
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("an impossible backup target count is rejected during replay");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_an_empty_path_value_target_even_when_the_checksum_matches() {
+        let (root, program) = committed_program("restore-empty-value-target", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = with_empty_path_value_target(&program, &archive);
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("an empty value target aliases a node cell and is rejected");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_commit_metadata_that_disagrees_with_the_manifest() {
+        let (root, program) = committed_program("restore-commit-mismatch", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = with_mismatched_commit_descriptor(&archive);
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("inconsistent commit metadata is rejected");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        cleanup(&root);
+    }
+
     /// Re-encode the manifest with a layout epoch bumped past the running build's, so a
     /// restore validates it as a foreign engine. The cell stream is left intact.
     fn with_bumped_layout_epoch(archive: &[u8]) -> Vec<u8> {
@@ -481,6 +550,90 @@ mod tests {
         rebuild_checksum(&bytes)
     }
 
+    fn with_malformed_first_target(archive: &[u8]) -> Vec<u8> {
+        let (mut manifest, stream) = split_archive(archive);
+        let mut cursor = &stream[..];
+        let mut first = read_raw_test_cell(&mut cursor);
+        first.0[0] = 0xff;
+
+        let mut rewritten = Vec::new();
+        write_raw_test_cell(&mut rewritten, &first.0, &first.1);
+        rewritten.extend_from_slice(cursor);
+
+        let mut checksum = CHECKSUM_SEED;
+        let mut checksum_cursor = &rewritten[..];
+        let count = manifest
+            .get("record_count")
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        for _ in 0..count {
+            let (key, value) = read_raw_test_cell(&mut checksum_cursor);
+            checksum = checksum_raw_test_cell(checksum, &key, &value);
+        }
+        manifest["data_checksum"] = serde_json::json!(checksum);
+        frame(&manifest, rewritten)
+    }
+
+    fn with_impossible_first_target_count(archive: &[u8]) -> Vec<u8> {
+        let (mut manifest, stream) = split_archive(archive);
+        let mut cursor = &stream[..];
+        let mut first = read_raw_test_cell(&mut cursor);
+        first.0.truncate(2);
+        write_test_chunk(&mut first.0, b"cat_0123456789abcdef");
+        first.0.extend_from_slice(&(u32::MAX).to_be_bytes());
+
+        let mut rewritten = Vec::new();
+        write_raw_test_cell(&mut rewritten, &first.0, &first.1);
+        rewritten.extend_from_slice(cursor);
+        write_matching_checksum(&mut manifest, &rewritten);
+        frame(&manifest, rewritten)
+    }
+
+    fn with_empty_path_value_target(program: &CheckedProgram, archive: &[u8]) -> Vec<u8> {
+        let (mut manifest, _stream) = split_archive(archive);
+        manifest["record_count"] = serde_json::json!(1);
+
+        let place = marrow_check::checked_saved_root_place(
+            program,
+            "books",
+            marrow_syntax::SourceSpan::default(),
+        )
+        .expect("checked saved place");
+        let mut target = Vec::new();
+        target.push(0); // typed target-frame version.
+        target.push(3); // value target.
+        target.extend_from_slice(&0u32.to_be_bytes()); // empty member/key path.
+        write_test_chunk(&mut target, place.store_catalog_id.as_bytes());
+        target.extend_from_slice(&1u32.to_be_bytes());
+        write_test_chunk(&mut target, &encode_identity_payload(&[SavedKey::Int(1)]));
+
+        let mut rewritten = Vec::new();
+        write_raw_test_cell(&mut rewritten, &target, b"not-a-node-marker");
+        write_matching_checksum(&mut manifest, &rewritten);
+        frame(&manifest, rewritten)
+    }
+
+    fn with_mismatched_commit_descriptor(archive: &[u8]) -> Vec<u8> {
+        rewrite_manifest(archive, |manifest| {
+            let engine = manifest.get("engine").expect("engine object");
+            let catalog_epoch = manifest
+                .get("catalog_epoch")
+                .and_then(|v| v.as_u64())
+                .unwrap();
+            let layout_epoch = engine.get("layout_epoch").and_then(|v| v.as_u64()).unwrap();
+            let profile_digest = engine.get("profile_digest").cloned().unwrap();
+            manifest["commit"] = serde_json::json!({
+                "commit_id": 1,
+                "catalog_epoch": catalog_epoch,
+                "layout_epoch": layout_epoch,
+                "source_digest": "fnv1a64:0000000000000000",
+                "engine_profile_digest": profile_digest,
+                "changed_root_catalog_ids": [],
+                "changed_index_catalog_ids": [],
+            });
+        })
+    }
+
     /// Parse the manifest JSON, apply `edit`, and re-frame the archive with the rewritten
     /// manifest and an unchanged cell stream.
     fn rewrite_manifest(archive: &[u8], edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
@@ -493,18 +646,63 @@ mod tests {
     /// into the manifest, so a value mutation is not caught as a checksum error first.
     fn rebuild_checksum(archive: &[u8]) -> Vec<u8> {
         let (mut manifest, stream) = split_archive(archive);
+        write_matching_checksum(&mut manifest, &stream);
+        frame(&manifest, stream)
+    }
+
+    fn write_matching_checksum(manifest: &mut serde_json::Value, stream: &[u8]) {
         let mut checksum = CHECKSUM_SEED;
-        let mut cursor = &stream[..];
+        let mut cursor = stream;
         let count = manifest
             .get("record_count")
             .and_then(|v| v.as_u64())
             .unwrap();
         for _ in 0..count {
-            let (key, value) = archive::read_cell(&mut cursor).expect("read seeded cell");
-            checksum = checksum_cell(checksum, &key, &value);
+            let (key, value) = read_raw_test_cell(&mut cursor);
+            checksum = checksum_raw_test_cell(checksum, &key, &value);
         }
         manifest["data_checksum"] = serde_json::json!(checksum);
-        frame(&manifest, stream)
+    }
+
+    fn read_raw_test_cell(input: &mut &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let key = read_raw_test_chunk(input);
+        let value = read_raw_test_chunk(input);
+        (key, value)
+    }
+
+    fn read_raw_test_chunk(input: &mut &[u8]) -> Vec<u8> {
+        let (len, rest) = input.split_at(4);
+        let len = u32::from_be_bytes(len.try_into().expect("cell chunk length")) as usize;
+        let (chunk, rest) = rest.split_at(len);
+        *input = rest;
+        chunk.to_vec()
+    }
+
+    fn write_raw_test_cell(out: &mut Vec<u8>, key: &[u8], value: &[u8]) {
+        out.extend_from_slice(&(key.len() as u32).to_be_bytes());
+        out.extend_from_slice(key);
+        out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        out.extend_from_slice(value);
+    }
+
+    fn write_test_chunk(out: &mut Vec<u8>, bytes: &[u8]) {
+        out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+        out.extend_from_slice(bytes);
+    }
+
+    fn checksum_raw_test_cell(hash: u64, key: &[u8], value: &[u8]) -> u64 {
+        let mut hash = fold_raw_test_checksum(hash, &(key.len() as u32).to_be_bytes());
+        hash = fold_raw_test_checksum(hash, key);
+        hash = fold_raw_test_checksum(hash, &(value.len() as u32).to_be_bytes());
+        fold_raw_test_checksum(hash, value)
+    }
+
+    fn fold_raw_test_checksum(mut hash: u64, bytes: &[u8]) -> u64 {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
     }
 
     /// Split a framed archive into its parsed manifest JSON and the trailing cell stream.

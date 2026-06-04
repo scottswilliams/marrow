@@ -3472,6 +3472,150 @@ fn nested_transaction_defers_required_check_until_outer_commit() {
 }
 
 #[test]
+fn transaction_commit_metadata_reports_every_touched_root_and_index() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         \x20   index byShelf(shelf, id)\n\n\
+         resource Audit at ^audits(id: int)\n\
+         \x20   required message: string\n\n\
+         fn save()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Mort\"\n\
+         \x20       ^books(1).shelf = \"fiction\"\n\
+         \x20       ^audits(1).message = \"created\"\n",
+    );
+    let books = store_catalog_id(&program, "books");
+    let audits = store_catalog_id(&program, "audits");
+    let by_shelf = index_catalog_id(&program, "books", "byShelf");
+    let store = TreeStore::memory();
+
+    run_entry(&store, checked_entry!(&program, "test::save")).expect("transaction commits");
+
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit metadata")
+        .expect("commit metadata is stamped");
+    assert_eq!(commit.commit_id, 1);
+    assert_eq!(commit.source_digest, program.source_digest());
+    assert!(
+        commit.changed_root_catalog_ids.contains(&books),
+        "books root missing from commit metadata: {commit:#?}"
+    );
+    assert!(
+        commit.changed_root_catalog_ids.contains(&audits),
+        "audits root missing from commit metadata: {commit:#?}"
+    );
+    assert_eq!(
+        commit.changed_root_catalog_ids.len(),
+        2,
+        "commit metadata should report each changed root once: {commit:#?}"
+    );
+    assert_eq!(commit.changed_index_catalog_ids, vec![by_shelf]);
+}
+
+#[test]
+fn nested_transaction_commit_metadata_reports_the_outer_durable_commit() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         \x20   index byShelf(shelf, id)\n\n\
+         resource Audit at ^audits(id: int)\n\
+         \x20   required message: string\n\n\
+         fn save()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Mort\"\n\
+         \x20       transaction\n\
+         \x20           ^audits(1).message = \"created\"\n\
+         \x20       ^books(1).shelf = \"fiction\"\n",
+    );
+    let books = store_catalog_id(&program, "books");
+    let audits = store_catalog_id(&program, "audits");
+    let by_shelf = index_catalog_id(&program, "books", "byShelf");
+    let store = TreeStore::memory();
+
+    run_entry(&store, checked_entry!(&program, "test::save")).expect("transaction commits");
+
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit metadata")
+        .expect("commit metadata is stamped");
+    assert_eq!(commit.commit_id, 1);
+    assert_eq!(commit.source_digest, program.source_digest());
+    assert!(
+        commit.changed_root_catalog_ids.contains(&books),
+        "books root missing from nested commit metadata: {commit:#?}"
+    );
+    assert!(
+        commit.changed_root_catalog_ids.contains(&audits),
+        "audits root missing from nested commit metadata: {commit:#?}"
+    );
+    assert_eq!(
+        commit.changed_root_catalog_ids.len(),
+        2,
+        "inner and outer writes are reported on the same durable commit: {commit:#?}"
+    );
+    assert_eq!(commit.changed_index_catalog_ids, vec![by_shelf]);
+}
+
+#[test]
+fn nested_transaction_rollback_does_not_stamp_attempted_inner_writes() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         \x20   index byShelf(shelf, id)\n\n\
+         resource Audit at ^audits(id: int)\n\
+         \x20   required message: string\n\n\
+         fn seed()\n\
+         \x20   ^books(1).title = \"Mort\"\n\n\
+         fn fail()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).shelf = \"fiction\"\n\
+         \x20       transaction\n\
+         \x20           ^audits(1).message = \"attempt\"\n\
+         \x20       throw Error(code: \"test.rollback\", message: \"stop\")\n\n\
+         fn shelf(): string\n\
+         \x20   return ^books(1).shelf ?? \"\"\n\n\
+         fn has_audit(): bool\n\
+         \x20   return exists(^audits(1))\n",
+    );
+    let books = store_catalog_id(&program, "books");
+    let store = TreeStore::memory();
+
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed commits");
+    let before = store
+        .read_commit_metadata()
+        .expect("read commit metadata")
+        .expect("seed commit metadata");
+    assert_eq!(before.commit_id, 1);
+    assert_eq!(before.changed_root_catalog_ids, vec![books]);
+
+    let error = run_entry(&store, checked_entry!(&program, "test::fail")).expect_err("roll back");
+    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+
+    let after = store
+        .read_commit_metadata()
+        .expect("read commit metadata")
+        .expect("commit metadata remains");
+    assert_eq!(after, before);
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::shelf"))
+            .expect("read shelf")
+            .value,
+        Some(Value::Str(String::new()))
+    );
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::has_audit"))
+            .expect("read audit")
+            .value,
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
 fn a_mistyped_field_write_is_rejected() {
     checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn bad(id: int)\n    ^books(id).title = 5\n",

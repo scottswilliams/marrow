@@ -32,8 +32,7 @@ rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
 
 A command that traverses the store more than once — `dump`, `stats`, and
 `integrity` each make several passes — pins one store snapshot for the whole
-command, so its output describes a single coherent version of the data even if
-another process commits while it runs.
+command, so its output describes a single coherent version of the data.
 
 There is no in-place repair command: repair is operator-authored maintenance code
 run under `marrow run --maintenance`.
@@ -171,7 +170,7 @@ schema type, that no stored cell is left under a root or member the schema no
 longer declares, and that typed store traversal does not report corruption. It is
 read-only and typed: it needs the checked project to know each path's type. The
 whole verdict reads one stable store snapshot, so it describes a single coherent
-version of the data even while another process commits.
+version of the data.
 
 It exits `0` on a clean store and `1` when it finds any problem.
 

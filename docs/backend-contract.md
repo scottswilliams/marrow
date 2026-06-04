@@ -2,9 +2,9 @@
 
 A Marrow v0.1 store is a typed tree-cell store over a private ordered-byte
 engine. Production callers use tree-cell operations. They do not receive raw
-engine keys, saved-path segment encoders, backend traversal traits, or archive
-replay APIs. Leaf and index payloads are canonical store value bytes whose
-meaning is supplied by checked facts; they are not backend records or raw
+engine keys, saved-path segment encoders, backend traversal traits, or raw
+archive replay APIs. Leaf and index payloads are canonical store value bytes
+whose meaning is supplied by checked facts; they are not backend records or raw
 saved-path entries.
 
 The public store crate surface is:
@@ -14,8 +14,8 @@ The public store crate surface is:
 - `marrow_store::key`: typed saved key values and the canonical identity
   payload codec;
 - `marrow_store::tree`: `TreeStore`, engine profile metadata, commit metadata,
-  exact index pages, opaque index cursors, typed references, and enum-member
-  codecs;
+  exact index pages, opaque index cursors, opaque backup cells, typed
+  references, and enum-member codecs;
 - `marrow_store::value`: canonical scalar value codecs;
 - `marrow_store::StoreError` and `marrow_store::Decimal`.
 
@@ -40,7 +40,7 @@ constructs physical bytes internally.
 
 There is no public production raw saved-path API in v0.1 store. There is no
 public production raw archive API. Backup, tooling, and runtime code consume
-the typed tree-cell surface or define their own typed contracts above it.
+the typed tree-cell surface or opaque backup cells owned by the store.
 
 ## Tree-Cell Keys
 
@@ -80,9 +80,12 @@ uses the in-memory development/test engine; `TreeStore::open(path)` and
 - write/read/delete leaves;
 - write/read/delete sequence positions;
 - write/read/delete typed nested-data values;
-- typed record, nested-data, and index child/neighbor helpers;
+- typed record, nested-data, and index child/neighbor helpers using counts,
+  first/next/last/previous navigation, or bounded pages rather than unbounded
+  child-key lists;
 - write/read/delete exact index entries;
-- scan an exact index tuple with an opaque cursor.
+- scan an exact index tuple with an opaque cursor;
+- visit validated backup cells.
 
 `TreeStore` methods take a shared reference and serialize access through the
 store facade. A native read-only open can read existing tree cells and rejects
@@ -92,6 +95,13 @@ Exact index scans return only entries in the requested typed tuple range. The
 cursor contains private engine key bytes, but callers can only receive and
 return it through the typed index-scan API; a cursor from another exact tuple is
 rejected as `store.cursor`.
+
+Backup traversal returns `TreeBackupCell`, an opaque borrowed data-family cell.
+Callers can read its typed data-cell identity, fold its framed checksum, and
+write its length-prefixed typed frame, but they cannot read or provide physical
+tree-cell key bytes. `TreeBackupCellBuf` reads the same typed frame back. Restore
+replays those cells through ordinary typed tree writes after manifest validation;
+there is no public physical-cell replay method.
 
 ## Metadata
 
@@ -130,8 +140,12 @@ reference/enum values, and malformed index identity suffixes report
 ## Value Codecs
 
 Scalar leaves use the canonical scalar value codec in `marrow_store::value`.
-Typed reads know the scalar type from checked facts, so scalar bytes carry no
-type tag. Identity leaves and unique index entries use
+The Rust API intentionally accepts and returns `Vec<u8>` for leaf, nested-data,
+sequence, index, and backup-cell payloads because checked facts supply the type
+at the caller boundary. Those bytes are the explicit canonical typed payload
+contract, not raw backend records or physical path/value entries. Typed reads
+know the scalar type from checked facts, so scalar bytes carry no type tag.
+Identity leaves and unique index entries use
 `marrow_store::key::{encode_identity_payload, decode_identity_payload_arity}`.
 These payload bytes are part of the typed value contract, not raw backend
 records.
@@ -158,6 +172,14 @@ The in-memory engine snapshots the whole map at each savepoint. The native
 engine holds one redb write transaction while the outermost savepoint is open
 and records per-level undo journals for nested rollback.
 
+A pinned read snapshot and an open write transaction are mutually exclusive on
+one store handle. `begin` fails with `store.transaction` while a read snapshot is
+pinned, and `read_snapshot` fails with `store.transaction` while a write
+transaction is open. A second pinned read snapshot on the same handle also
+fails with `store.transaction`, so dropping one guard cannot unpin another.
+Backups and long inspections pin snapshots outside write transactions; source
+transactions use the write transaction's read-your-writes view.
+
 ## Native Store Duties
 
 The native store records format version `1` in a metadata table. Opening a file
@@ -175,7 +197,9 @@ The private substrate conformance suite keeps memory and redb aligned on:
 - value round trips and replacement writes;
 - prefix delete and absent delete;
 - prefix scan order, bounded scans, and cursor-resumed scans;
-- transaction commit, rollback, nested savepoints, and read-your-writes scans.
+- transaction commit, rollback, nested savepoints, read-your-writes scans,
+  rejection of a pinned snapshot plus open write transaction on one handle, and
+  rejection of nested read snapshots on one handle.
 
 Public tree-cell tests assert the production contract: stable catalog-ID
 physical keys, typed leaves, sequence cells, exact index entries and scans,

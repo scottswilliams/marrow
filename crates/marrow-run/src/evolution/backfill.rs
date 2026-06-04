@@ -264,28 +264,34 @@ pub(super) fn locations<'a>(
         .collect()
 }
 
-/// Visit every concrete data path a member's descent steps reach for one record.
-/// A `Member` step appends one named segment; a `Layer` step pages existing keyed
-/// entries through the store cursor and recurses with one key at a time.
-pub(super) fn visit_member_cell_paths(
+/// A `Member` step appends one named segment; a `Layer` step pages each existing
+/// keyed entry and recurses with its key appended, so a member under a keyed
+/// layer yields one path per existing entry and a direct member yields exactly
+/// one path.
+pub(super) fn visit_member_cell_paths<F>(
     store: &TreeStore,
     store_id: &CatalogId,
     identity: &[SavedKey],
     steps: &[PathStep],
-    visit: &mut dyn FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
-) -> Result<(), StoreError> {
-    descend(store, store_id, identity, &mut Vec::new(), steps, visit)?;
-    Ok(())
+    visit: &mut F,
+) -> Result<(), StoreError>
+where
+    F: FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
+{
+    descend(store, store_id, identity, &mut Vec::new(), steps, visit)
 }
 
-fn descend(
+fn descend<F>(
     store: &TreeStore,
     store_id: &CatalogId,
     identity: &[SavedKey],
     prefix: &mut Vec<DataPathSegment>,
     steps: &[PathStep],
-    visit: &mut dyn FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
-) -> Result<(), StoreError> {
+    visit: &mut F,
+) -> Result<(), StoreError>
+where
+    F: FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
+{
     let Some((step, rest)) = steps.split_first() else {
         return visit(prefix);
     };

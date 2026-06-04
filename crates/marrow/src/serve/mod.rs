@@ -33,6 +33,7 @@ pub(crate) mod test_support {
     use marrow_check::{
         CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
     };
+    use marrow_store::StoreError;
     use marrow_store::cell::CatalogId;
     use marrow_store::key::SavedKey;
     use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -63,21 +64,25 @@ pub(crate) mod test_support {
         state
     }
 
-    /// Write one `^books(id).title` record into an existing state's store, for a
-    /// test that commits data into a store a connection is already serving.
+    /// Write one `^books(id).title` record into an existing state's store.
     pub(crate) fn write_book(state: &ServeState, id: i64, title: &str) {
+        try_write_book(state, id, title).expect("write checked tree-cell fixture data");
+    }
+
+    pub(crate) fn try_write_book(
+        state: &ServeState,
+        id: i64,
+        title: &str,
+    ) -> Result<(), StoreError> {
         let place = books_place(&state.program);
         let store_id = catalog_id(&place.store_catalog_id);
         let title_path = field_path(&place, "title");
-        state
-            .store
-            .write_data_value(
-                &store_id,
-                &[SavedKey::Int(id)],
-                &title_path,
-                title.as_bytes().to_vec(),
-            )
-            .expect("write checked tree-cell fixture data");
+        state.store.write_data_value(
+            &store_id,
+            &[SavedKey::Int(id)],
+            &title_path,
+            title.as_bytes().to_vec(),
+        )
     }
 
     fn checked_program() -> CheckedProgram {
@@ -296,11 +301,11 @@ enum Line {
 /// a newline-delimited JSON object, until the client hangs up (clean EOF).
 ///
 /// The whole connection reads one pinned store snapshot, so every `debug_data_*`
-/// read it answers observes one coherent version of saved data even while another
-/// process commits. The snapshot also fixes the catalog epoch the connection sees:
-/// if the store has evolved past the schema this serve binary was checked against,
-/// every data op replies `protocol.stale_epoch` rather than rendering evolved data
-/// under the stale schema.
+/// read it answers observes one coherent version of saved data. The snapshot also
+/// fixes the catalog epoch the connection sees: if the store has evolved past the
+/// schema this serve binary was checked against, every data op replies
+/// `protocol.stale_epoch` rather than rendering evolved data under the stale
+/// schema.
 fn serve_connection(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
@@ -426,7 +431,7 @@ mod tests {
     use marrow_store::key::SavedKey;
 
     use super::{Line, protocol, read_line_bounded, serve_connection};
-    use crate::serve::test_support::{self, empty_state, state_with_books, write_book};
+    use crate::serve::test_support::{self, empty_state, state_with_books};
 
     #[test]
     fn serves_newline_delimited_requests_over_a_stream() {
@@ -452,14 +457,14 @@ mod tests {
         );
     }
 
-    /// One scripted request line, with an optional side effect (a store write that
-    /// commits mid-connection) run just before the line is handed over.
+    /// One scripted request line, with an optional side effect run just before the
+    /// line is handed over.
     type ScriptedLine<'a> = (String, Option<Box<dyn FnOnce() + 'a>>);
 
     /// A reader that yields scripted request lines, running each line's side effect
     /// just before handing the line over. It lets a test prove the connection's
-    /// pinned snapshot hides a concurrent commit: the write lands between the two
-    /// reads, yet the second read does not observe it.
+    /// pinned snapshot owns the served handle: an attempted same-handle write
+    /// between reads is rejected, and the second read still observes the snapshot.
     struct ScriptedReader<'a> {
         lines: VecDeque<ScriptedLine<'a>>,
         buffer: Vec<u8>,
@@ -511,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_pins_one_snapshot_so_a_mid_connection_write_is_invisible() {
+    fn a_connection_pins_one_snapshot_and_rejects_same_handle_writes() {
         let state = state_with_books(&[(1, "Mort")]);
         let children_request =
             "{\"id\":2,\"op\":\"debug_data_children\",\"path\":[{\"root\":\"books\"}]}\n";
@@ -519,7 +524,11 @@ mod tests {
             ("{\"id\":1,\"op\":\"debug_data_roots\"}\n".to_string(), None),
             (
                 children_request.to_string(),
-                Some(Box::new(|| write_book(&state, 2, "Sourcery"))),
+                Some(Box::new(|| {
+                    let error = test_support::try_write_book(&state, 2, "Sourcery")
+                        .expect_err("snapshot rejects same-handle writes");
+                    assert_eq!(error.code(), "store.transaction");
+                })),
             ),
         ]);
         let mut output: Vec<u8> = Vec::new();
@@ -531,14 +540,13 @@ mod tests {
             .map(|line| serde_json::from_str(line).expect("reply json"))
             .collect();
         assert_eq!(replies.len(), 2, "{replies:?}");
-        // The mid-connection write of `^books(2)` committed between the two reads,
-        // but the connection's pinned snapshot hides it: only `^books(1)` is seen.
+        // The attempted same-handle write of `^books(2)` was rejected while the
+        // connection held a snapshot, so only `^books(1)` is seen.
         assert_eq!(
             replies[1]["ok"]["children"],
             serde_json::json!([{ "key": { "int": 1 } }]),
-            "the second read must not observe the concurrent write: {replies:?}"
+            "the second read must not observe the rejected write: {replies:?}"
         );
-        // The write did land in the store; a fresh connection would see it.
         let mut keys = Vec::new();
         let store_id = test_support::books_store_id(&state.program);
         let mut child = state
@@ -555,8 +563,8 @@ mod tests {
         }
         assert_eq!(
             keys,
-            vec![SavedKey::Int(1), SavedKey::Int(2)],
-            "the concurrent write is durable in the store, just not in the snapshot"
+            vec![SavedKey::Int(1)],
+            "the rejected write did not land in the store"
         );
     }
 

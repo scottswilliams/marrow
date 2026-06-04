@@ -31,6 +31,7 @@ fn rollback_throw(
 ) -> Result<Flow, RuntimeError> {
     let rollback = env.store.rollback();
     env.discard_required_entry_checks(depth);
+    env.discard_transaction_metadata(depth);
     match rollback {
         Ok(()) => Ok(Flow::Throw(value)),
         Err(error) => Err(error.located(span)),
@@ -45,6 +46,7 @@ fn rollback_error(
 ) -> Result<Flow, RuntimeError> {
     let rollback = env.store.rollback();
     env.discard_required_entry_checks(depth);
+    env.discard_transaction_metadata(depth);
     match rollback {
         Ok(()) => Err(error),
         Err(error) => Err(error.located(span)),
@@ -62,6 +64,17 @@ fn commit_flow(
     {
         let rollback = env.store.rollback();
         env.discard_required_entry_checks(depth);
+        env.discard_transaction_metadata(depth);
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(error) => Err(error.located(span)),
+        };
+    }
+
+    if let Err(error) = env.stamp_transaction_commit(depth, span) {
+        let rollback = env.store.rollback();
+        env.discard_required_entry_checks(depth);
+        env.discard_transaction_metadata(depth);
         return match rollback {
             Ok(()) => Err(error),
             Err(error) => Err(error.located(span)),
@@ -72,10 +85,12 @@ fn commit_flow(
     match commit {
         Ok(()) => {
             env.commit_required_entry_checks(depth);
+            env.commit_transaction_metadata(depth);
             Ok(flow)
         }
         Err(error) => {
             env.discard_required_entry_checks(depth);
+            env.discard_transaction_metadata(depth);
             Err(error.located(span))
         }
     }

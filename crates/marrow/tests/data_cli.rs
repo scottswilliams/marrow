@@ -334,28 +334,6 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
 }
 
 #[test]
-fn data_integrity_reports_an_undecodable_data_cell_key_as_store_corruption() {
-    let (project, dir) = seeded_project("data-integrity-corrupt-key");
-    // A data-family cell key (the `00 01 20` tree-cell data prefix) whose body does
-    // not decode under the key grammar: an unterminated store id. Restore replays
-    // any data-family key, so this writes a structurally corrupt cell.
-    {
-        let store_dir = project.join(".data");
-        let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
-        store
-            .restore_cell(&[0x00, 0x01, 0x20, b'x'], b"corrupt".to_vec())
-            .expect("write corrupt data-family cell");
-    }
-
-    let output = marrow(&["data", "integrity", &dir]);
-    fs::remove_dir_all(&project).ok();
-
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("store.corruption"), "{stderr}");
-}
-
-#[test]
 fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
     let (project, dir) = seeded_project("data-integrity-orphan-json");
     write_orphan_cell(

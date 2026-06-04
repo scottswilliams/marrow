@@ -551,14 +551,14 @@ Cascading cleanup is ordinary application or data-evolution code.
 Typed backup and restore are commands (`marrow backup`, `marrow restore`).
 Backups are not engine files: a backup carries a manifest with the source,
 catalog, engine-profile, and value-codec facts, plus the canonical tree-cell data
-stream, so it restores under the Marrow storage contract rather than by copying
-raw bytes. The generated indexes are derived data, so a backup omits them and a
-restore rebuilds them from the restored records. Backups are deterministic and
-portable across conforming backends at the same layout and codec, but byte
-identity requires matching accepted catalog facts, engine profile, value codec,
-and stored data. Stable IDs are random opaque values that freeze when accepted,
-so divergent catalog histories may still freeze distinct accepted IDs for source
-that looks equivalent.
+stream as typed cell targets, so it restores under the Marrow storage contract
+rather than by copying raw bytes. The generated indexes are derived data, so a
+backup omits them and a restore rebuilds them from the restored records.
+Backups are deterministic and portable across conforming backends at the same
+layout and codec, but byte identity requires matching accepted catalog facts,
+engine profile, value codec, and stored data. Stable IDs are random opaque
+values that freeze when accepted, so divergent catalog histories may still
+freeze distinct accepted IDs for source that looks equivalent.
 
 Restore replays a backup into an empty store in one transaction and validates the
 data against the schema before activating it; it never treats raw saved paths as

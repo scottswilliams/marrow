@@ -17,6 +17,9 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     three_level_nesting_with_a_middle_commit_and_outer_rollback(&mut make());
     a_transaction_sees_its_writes_in_scans(&mut make());
     a_snapshot_pins_one_consistent_view(&mut make());
+    a_snapshot_and_write_transaction_cannot_overlap(&mut make());
+    read_snapshots_are_not_reentrant(&mut make());
+    writes_are_rejected_while_a_read_snapshot_is_pinned(&mut make());
 }
 
 fn values_round_trip(store: &mut dyn Backend) {
@@ -161,17 +164,16 @@ fn a_transaction_sees_its_writes_in_scans(store: &mut dyn Backend) {
 fn a_snapshot_pins_one_consistent_view(store: &mut dyn Backend) {
     store.write(b"\x70\x01", b"before".to_vec()).unwrap();
     store.begin_snapshot().unwrap();
-    // Writes that commit after the snapshot is pinned are invisible to it.
-    store.write(b"\x70\x01", b"after".to_vec()).unwrap();
-    store.write(b"\x70\x02", b"added".to_vec()).unwrap();
     assert_eq!(store.read(b"\x70\x01").unwrap(), Some(b"before".to_vec()));
     assert_eq!(store.read(b"\x70\x02").unwrap(), None);
     assert_eq!(
         store.scan(b"\x70", 10).unwrap().entries,
         vec![(b"\x70\x01".to_vec(), b"before".to_vec())]
     );
-    // Releasing the snapshot resumes reading the latest committed data.
     store.end_snapshot();
+
+    store.write(b"\x70\x01", b"after".to_vec()).unwrap();
+    store.write(b"\x70\x02", b"added".to_vec()).unwrap();
     assert_eq!(store.read(b"\x70\x01").unwrap(), Some(b"after".to_vec()));
     assert_eq!(
         store.scan(b"\x70", 10).unwrap().entries,
@@ -180,4 +182,57 @@ fn a_snapshot_pins_one_consistent_view(store: &mut dyn Backend) {
             (b"\x70\x02".to_vec(), b"added".to_vec()),
         ]
     );
+}
+
+fn a_snapshot_and_write_transaction_cannot_overlap(store: &mut dyn Backend) {
+    store.begin_snapshot().unwrap();
+    let begin = store
+        .begin()
+        .expect_err("begin must reject an already pinned snapshot");
+    assert_eq!(begin.code(), "store.transaction");
+    store.end_snapshot();
+
+    store.begin().unwrap();
+    let snapshot = store
+        .begin_snapshot()
+        .expect_err("begin_snapshot must reject an open write transaction");
+    assert_eq!(snapshot.code(), "store.transaction");
+    store.rollback().unwrap();
+}
+
+fn read_snapshots_are_not_reentrant(store: &mut dyn Backend) {
+    store.write(b"\x80\x01", b"before".to_vec()).unwrap();
+    store.begin_snapshot().unwrap();
+    let nested = store
+        .begin_snapshot()
+        .expect_err("a second pinned snapshot on the same handle must be rejected");
+    assert_eq!(nested.code(), "store.transaction");
+    let begin = store
+        .begin()
+        .expect_err("the original snapshot still blocks a write transaction");
+    assert_eq!(begin.code(), "store.transaction");
+    store.end_snapshot();
+
+    store.begin().unwrap();
+    store.write(b"\x80\x01", b"after".to_vec()).unwrap();
+    store.commit().unwrap();
+    assert_eq!(store.read(b"\x80\x01").unwrap(), Some(b"after".to_vec()));
+}
+
+fn writes_are_rejected_while_a_read_snapshot_is_pinned(store: &mut dyn Backend) {
+    store.write(b"\x90\x01", b"before".to_vec()).unwrap();
+    store.begin_snapshot().unwrap();
+    let write = store
+        .write(b"\x90\x01", b"after".to_vec())
+        .expect_err("autocommit writes must reject a pinned read snapshot");
+    assert_eq!(write.code(), "store.transaction");
+    let delete = store
+        .delete(b"\x90")
+        .expect_err("autocommit deletes must reject a pinned read snapshot");
+    assert_eq!(delete.code(), "store.transaction");
+    assert_eq!(store.read(b"\x90\x01").unwrap(), Some(b"before".to_vec()));
+    store.end_snapshot();
+
+    store.write(b"\x90\x01", b"after".to_vec()).unwrap();
+    assert_eq!(store.read(b"\x90\x01").unwrap(), Some(b"after".to_vec()));
 }

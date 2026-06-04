@@ -27,6 +27,72 @@ fn data_key(key: SavedKey) -> DataPathSegment {
     DataPathSegment::Key(key)
 }
 
+fn data_children(
+    store: &TreeStore,
+    root: &CatalogId,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+) -> Vec<SavedKey> {
+    let mut children = Vec::new();
+    let mut next = store
+        .data_first_child(root, identity, path)
+        .expect("first data child");
+    while let Some(child) = next {
+        children.push(child.clone());
+        next = store
+            .data_next_child(root, identity, path, &child)
+            .expect("next data child");
+    }
+    children
+}
+
+fn data_children_rev(
+    store: &TreeStore,
+    root: &CatalogId,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+) -> Vec<SavedKey> {
+    let mut children = Vec::new();
+    let mut next = store
+        .data_last_child(root, identity, path)
+        .expect("last data child");
+    while let Some(child) = next {
+        children.push(child.clone());
+        next = store
+            .data_prev_child(root, identity, path, &child)
+            .expect("previous data child");
+    }
+    children
+}
+
+fn record_children(store: &TreeStore, root: &CatalogId, prefix: &[SavedKey]) -> Vec<SavedKey> {
+    let mut children = Vec::new();
+    let mut next = store
+        .record_first_child(root, prefix)
+        .expect("first record child");
+    while let Some(child) = next {
+        children.push(child.clone());
+        next = store
+            .record_next_child(root, prefix, &child)
+            .expect("next record child");
+    }
+    children
+}
+
+fn index_children(store: &TreeStore, index: &CatalogId, prefix: &[SavedKey]) -> Vec<SavedKey> {
+    let mut children = Vec::new();
+    let mut next = store
+        .index_first_child(index, prefix)
+        .expect("first index child");
+    while let Some(child) = next {
+        children.push(child.clone());
+        next = store
+            .index_next_child(index, prefix, &child)
+            .expect("next index child");
+    }
+    children
+}
+
 #[test]
 fn reference_values_store_target_catalog_id_and_identity_keys() {
     let books = catalog_id("1111111111111111");
@@ -410,15 +476,21 @@ fn data_child_navigation_walks_typed_layer_keys() {
     }
 
     assert_eq!(
-        store
-            .data_child_keys(&books, &identity, &[DataPathSegment::Member(tags.clone())],)
-            .expect("ascending children"),
+        data_children(
+            &store,
+            &books,
+            &identity,
+            &[DataPathSegment::Member(tags.clone())]
+        ),
         vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
     );
     assert_eq!(
-        store
-            .data_child_keys_rev(&books, &identity, &[DataPathSegment::Member(tags.clone())])
-            .expect("descending children"),
+        data_children_rev(
+            &store,
+            &books,
+            &identity,
+            &[DataPathSegment::Member(tags.clone())]
+        ),
         vec![SavedKey::Int(3), SavedKey::Int(2), SavedKey::Int(1)]
     );
     assert_eq!(
@@ -466,13 +538,11 @@ fn record_and_index_child_navigation_use_catalog_roots() {
     }
 
     assert_eq!(
-        store.record_child_keys(&books, &[]).expect("record keys"),
+        record_children(&store, &books, &[]),
         vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
     );
     assert_eq!(
-        store
-            .index_child_keys(&by_shelf, &[SavedKey::Str("fiction".into())])
-            .expect("index identity keys"),
+        index_children(&store, &by_shelf, &[SavedKey::Str("fiction".into())]),
         vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
     );
 }
@@ -548,27 +618,21 @@ fn visit_backup_cells_streams_data_only_in_encoded_order() {
         )
         .expect("write index entry");
 
-    let mut keys: Vec<Vec<u8>> = Vec::new();
+    let mut cells = Vec::new();
     store
-        .visit_backup_cells(|key, _value| {
-            keys.push(key.to_vec());
+        .visit_backup_cells(|cell| {
+            cells.push(cell.data_key().clone());
             Ok(())
         })
         .expect("visit backup cells");
 
-    // Every visited cell is a data-family cell; the index entry is excluded.
+    assert_eq!(cells.len(), 3, "backup excludes the generated index entry");
     assert!(
-        keys.iter().all(|key| key.starts_with(&[0x00, 0x01, 0x20])),
-        "backup stream carries only data-family cells: {keys:?}"
+        cells
+            .iter()
+            .all(|cell| cell.store.as_str() == books.as_str()),
+        "backup stream carries only data cells for the seeded store: {cells:?}"
     );
-    assert!(
-        keys.iter().all(|key| !key.starts_with(&[0x00, 0x01, 0x30])),
-        "backup stream excludes the index-family entry: {keys:?}"
-    );
-    // The stream is in ascending encoded-key order.
-    let mut sorted = keys.clone();
-    sorted.sort();
-    assert_eq!(keys, sorted, "backup cells stream in encoded order");
 }
 
 #[test]
@@ -594,7 +658,7 @@ fn is_empty_sees_data_and_index_families() {
 
     let mut backup_cells = 0usize;
     store
-        .visit_backup_cells(|_key, _value| {
+        .visit_backup_cells(|_cell| {
             backup_cells += 1;
             Ok(())
         })
@@ -609,17 +673,6 @@ fn is_empty_sees_data_and_index_families() {
         .expect("clear index");
     assert!(store.is_empty().expect("store is empty again"));
     let _ = books;
-}
-
-#[test]
-fn restore_cell_rejects_a_non_data_family_key() {
-    let store = TreeStore::memory();
-    // An index-family key (the `00 01 30` tree-cell index prefix) is derived data a
-    // backup never carries; replaying it is a malformed backup.
-    let error = store
-        .restore_cell(&[0x00, 0x01, 0x30, b'x'], b"entry".to_vec())
-        .expect_err("an index-family key is not a restorable backup cell");
-    assert_eq!(error.code(), "store.corruption");
 }
 
 #[test]

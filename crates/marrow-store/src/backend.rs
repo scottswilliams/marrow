@@ -15,6 +15,8 @@ pub enum StoreError {
     LimitExceeded { limit: &'static str },
     /// A bounded scan cursor does not belong to the scan being resumed.
     InvalidCursor { message: String },
+    /// A transaction or snapshot operation was requested in an invalid store state.
+    InvalidTransaction { message: String },
     /// A write-capability operation was requested through a read-only store handle.
     ReadOnly { op: &'static str },
 }
@@ -29,6 +31,7 @@ impl StoreError {
             Self::Corruption { .. } => "store.corruption",
             Self::LimitExceeded { .. } => "store.limit",
             Self::InvalidCursor { .. } => "store.cursor",
+            Self::InvalidTransaction { .. } => "store.transaction",
             Self::ReadOnly { .. } => "store.read_only",
         }
     }
@@ -50,6 +53,9 @@ impl std::fmt::Display for StoreError {
             Self::Corruption { message } => write!(f, "the store is corrupt: {message}"),
             Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
             Self::InvalidCursor { message } => write!(f, "storage cursor is invalid: {message}"),
+            Self::InvalidTransaction { message } => {
+                write!(f, "storage transaction state is invalid: {message}")
+            }
             Self::ReadOnly { op } => write!(f, "cannot {op} through a read-only store handle"),
         }
     }

@@ -31,9 +31,9 @@ pub fn create_backup(
 
     let mut record_count = 0u64;
     let mut checksum = CHECKSUM_SEED;
-    store.visit_backup_cells(|key, value| {
+    store.visit_backup_cells(|cell| {
         record_count += 1;
-        checksum = checksum_cell(checksum, key, value);
+        checksum = checksum_cell(checksum, cell);
         Ok(())
     })?;
 
@@ -43,8 +43,8 @@ pub fn create_backup(
     // The store traversal reports a `StoreError`, so a write failure is stashed and
     // surfaced as the `io.write` it really is rather than a store error.
     let mut write_error = None;
-    let traversal = store.visit_backup_cells(|key, value| {
-        if let Err(error) = archive::write_cell(out, key, value) {
+    let traversal = store.visit_backup_cells(|cell| {
+        if let Err(error) = archive::write_cell(out, cell) {
             write_error = Some(error);
             return Err(StoreError::Io {
                 op: "backup",

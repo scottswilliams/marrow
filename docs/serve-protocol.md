@@ -54,13 +54,12 @@ connection, not the server).
 
 A connection pins one store read snapshot at the moment it is accepted and holds
 it until it closes. Every `debug_data_*` read on that connection — across many
-request lines — observes one coherent version of saved data, even while another
-process commits. A write that commits mid-connection is invisible to that
-connection; a later connection sees it. The snapshot also fixes the catalog epoch
-the connection serves under: if the stamped store epoch is newer than the schema
-this `marrow serve` process was checked against, the store has evolved past the
-running server, and every data op on that connection replies
-`protocol.stale_epoch` rather than rendering evolved data under the stale schema.
+request lines — observes one coherent version of saved data. The snapshot also
+fixes the catalog epoch the connection serves under: if the stamped store epoch
+is newer than the schema this `marrow serve` process was checked against, the
+store has evolved past the running server, and every data op on that connection
+replies `protocol.stale_epoch` rather than rendering evolved data under the
+stale schema.
 Restart `marrow serve` to read the evolved data.
 
 ## Reply envelope
