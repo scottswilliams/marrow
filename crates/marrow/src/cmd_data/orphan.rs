@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use marrow_check::{CheckedProgram, CheckedSavedMember, checked_saved_root_place};
 use marrow_store::StoreError;
-use marrow_store::cell::{BackupCellKey, decode_backup_cell_key};
+use marrow_store::cell::{DataCellKey, decode_data_cell_key};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
@@ -86,13 +86,12 @@ impl DeclaredSchema {
     /// root or field — the ADR-named orphan cases. It does not validate exact member
     /// nesting, so an exotic misnesting of declared ids is out of v0.1 scope.
     fn classify(&self, key: &[u8]) -> Option<OrphanProblem> {
-        let (store, identity, path) = match decode_backup_cell_key(key) {
-            Some(BackupCellKey::Data {
-                store,
-                identity,
-                path,
-            }) => (store, identity, path),
-            Some(BackupCellKey::Index) => return None,
+        let DataCellKey {
+            store,
+            identity,
+            path,
+        } = match decode_data_cell_key(key) {
+            Some(cell) => cell,
             None => {
                 return Some(OrphanProblem {
                     code: "store.corruption",

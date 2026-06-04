@@ -225,48 +225,35 @@ pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()
         .ok_or(())
 }
 
-/// A decoded backup cell key, classified by family. Index-family cells are derived
-/// from data and carry no independent structure to classify, so they decode to
-/// [`BackupCellKey::Index`]; a data-family cell decodes to its store catalog id and
-/// the member/key path below the record identity.
-pub enum BackupCellKey {
-    Data {
-        store: CatalogId,
-        identity: Vec<SavedKey>,
-        path: Vec<DataPathSegment>,
-    },
-    Index,
+/// A decoded data-family cell key: its store catalog id, record identity, and the
+/// member/key path below the identity. A backup carries only data cells, so this is
+/// what the integrity orphan scan classifies against the checked schema.
+pub struct DataCellKey {
+    pub store: CatalogId,
+    pub identity: Vec<SavedKey>,
+    pub path: Vec<DataPathSegment>,
 }
 
-/// Decode a backup data- or index-family cell key into its structural pieces.
-/// Returns `None` when the bytes are not a well-formed cell key under the v0
-/// tree-cell key grammar — the caller reports that as store corruption. A data
-/// cell decodes to its store catalog id, record identity, and the member/key path
-/// below the identity; an index cell decodes to [`BackupCellKey::Index`].
-pub fn decode_backup_cell_key(bytes: &[u8]) -> Option<BackupCellKey> {
+/// Decode a data-family cell key into its structural pieces, or `None` when the
+/// bytes are not a well-formed data cell under the v0 tree-cell key grammar — the
+/// caller reports that as store corruption. Index and meta cells are derived or
+/// reconstructed, not carried in a backup, so a non-data key also decodes to `None`.
+pub fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     let [
         EMPTY_PLACEMENT_PREFIX,
         TREE_CELL_PROFILE_V0,
-        family,
+        FAMILY_DATA,
         rest @ ..,
     ] = bytes
     else {
         return None;
     };
-    match *family {
-        FAMILY_INDEX => Some(BackupCellKey::Index),
-        FAMILY_DATA => decode_data_cell_key(rest),
-        _ => None,
-    }
-}
-
-fn decode_data_cell_key(rest: &[u8]) -> Option<BackupCellKey> {
     let (store, after_store) = decode_escaped_id(rest)?;
     let store = CatalogId::new(store).ok()?;
     let (identity, after_identity) = decode_leading_keys(after_store)?;
     let after_node = after_identity.strip_prefix(&[NODE_END])?;
     let path = decode_data_cell_path(after_node)?;
-    Some(BackupCellKey::Data {
+    Some(DataCellKey {
         store,
         identity,
         path,
@@ -481,16 +468,9 @@ mod tests {
 
     fn assert_data(key: &CellKey, expected_path: &[DataPathSegment]) {
         let store = store_id("");
-        match decode_backup_cell_key(key.as_bytes()) {
-            Some(BackupCellKey::Data {
-                store: id, path, ..
-            }) => {
-                assert_eq!(id, store);
-                assert_eq!(path, expected_path);
-            }
-            Some(BackupCellKey::Index) => panic!("expected a data cell, got an index cell"),
-            None => panic!("expected a data cell, got an undecodable key"),
-        }
+        let cell = decode_data_cell_key(key.as_bytes()).expect("a data cell decodes");
+        assert_eq!(cell.store, store);
+        assert_eq!(cell.path, expected_path);
     }
 
     #[test]
@@ -500,18 +480,10 @@ mod tests {
         let identity = vec![SavedKey::Int(1)];
         let path = vec![DataPathSegment::Member(member.clone())];
         let key = CellKey::data_path_value(&store, &identity, &path);
-        match decode_backup_cell_key(key.as_bytes()).expect("decode") {
-            BackupCellKey::Data {
-                store: decoded_store,
-                identity: decoded_identity,
-                path: decoded_path,
-            } => {
-                assert_eq!(decoded_store, store);
-                assert_eq!(decoded_identity, identity);
-                assert_eq!(decoded_path, path);
-            }
-            BackupCellKey::Index => panic!("a data cell is not an index cell"),
-        }
+        let cell = decode_data_cell_key(key.as_bytes()).expect("decode");
+        assert_eq!(cell.store, store);
+        assert_eq!(cell.identity, identity);
+        assert_eq!(cell.path, path);
     }
 
     #[test]
@@ -546,21 +518,19 @@ mod tests {
     }
 
     #[test]
-    fn classifies_an_index_cell_and_rejects_a_corrupt_key() {
+    fn rejects_a_non_data_cell_and_a_corrupt_key() {
+        // An index cell is not a data cell, so it does not decode as one.
         let index = member_id();
-        let key = CellKey::index(&index, &[SavedKey::Int(1)], &[SavedKey::Int(2)]);
-        assert!(matches!(
-            decode_backup_cell_key(key.as_bytes()),
-            Some(BackupCellKey::Index)
-        ));
+        let index_key = CellKey::index(&index, &[SavedKey::Int(1)], &[SavedKey::Int(2)]);
+        assert!(decode_data_cell_key(index_key.as_bytes()).is_none());
 
         // A data-family prefix with a truncated key body does not decode.
         let mut corrupt = family(FAMILY_DATA);
         encode_id(store_id("").as_str(), &mut corrupt);
         corrupt.push(KEY_INT_TAG_PROBE);
-        assert!(decode_backup_cell_key(&corrupt).is_none());
+        assert!(decode_data_cell_key(&corrupt).is_none());
         // A non-cell key (wrong placement/profile) does not decode.
-        assert!(decode_backup_cell_key(&[0x01, 0x02, 0x03]).is_none());
+        assert!(decode_data_cell_key(&[0x01, 0x02, 0x03]).is_none());
     }
 
     // The int key tag begins a fixed 9-byte key; a tag with no body is truncated.
