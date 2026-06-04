@@ -43,6 +43,55 @@ The future planner can emit outcomes such as:
 - `RepairRequired`: saved data is already invalid under the catalog it claims to
   use.
 
+Developer tooling should render these details through a small activation
+vocabulary: `safe`, `needs apply`, `needs job`, `blocked`, and `needs approval`.
+Operator tooling may expose the internal job states, but those states are not a
+second user model.
+
+## Online Activation Jobs
+
+Future OLTP activation is a compiler-owned job, not a migration script. The
+source, accepted catalog, checked facts, engine profile, and data snapshot define
+the semantics. A job records execution evidence derived from an exact preview
+witness.
+
+The intended protocol is:
+
+1. `preview` produces the exact witness.
+2. `start` creates a durable job from that witness.
+3. `backfill` processes bounded, deterministic chunks.
+4. `verify` proves required fields, transforms, derived indexes, uniqueness, and
+   shadow-layout identity facts.
+5. `publish` advances the readable catalog epoch in a small commit.
+6. `close` drains old runtime generations, removes adapters, and purges retired
+   physical state.
+
+The v0.1 implementation may collapse those steps into one exact local apply, but
+the public facts should not assume a future online system can hold a global
+write fence for the entire backfill.
+
+## Compatibility Windows
+
+Future server runtimes admit compiled programs by catalog epoch and runtime
+generation. The default v0.1 policy remains exact epoch/schema equality. A future
+online compatibility window is finite and normally spans one old epoch to one new
+epoch.
+
+Old reads may use compiler-generated typed adapters. Old writes are rejected
+unless the compiler proves an adapter lowers them to the latest write plan and
+maintains every active or building durable fact. Adapters are named,
+digest-stamped, visible to tooling, and deleted when the window closes.
+
+## Shadow Decant
+
+Changing a store's identity key shape, reshaping a populated resource/layer, or
+moving between layouts/engines may require a shadow-decant workflow instead of
+an in-place backfill. Shadow decant writes a new store or layout in chunks,
+bridges a bounded set of writes, verifies identity/count/checksum facts, publishes
+a small binding change, and then closes the compatibility window. It is the
+Marrow-native version of online copy/cutover, still governed by source and
+catalog facts rather than raw store patches.
+
 ## Stable Identity
 
 Durable identity should be catalog-owned and opaque. Source names are authoring

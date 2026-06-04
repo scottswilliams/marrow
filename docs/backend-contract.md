@@ -105,6 +105,13 @@ big-endian `u64` values. The engine profile digest and catalog ID lists are
 length-prefixed with big-endian `u32` counts or byte lengths. Catalog IDs remain
 opaque storage IDs inside metadata values.
 
+Future online activation needs commit metadata to describe the durable commit
+boundary, not the last write plan that happened to run inside it. The metadata
+surface may grow runtime-generation, activation-job, source/catalog digest, and
+adapter/window evidence fields. Those fields remain typed Marrow evidence above
+the engine; they do not make raw engine keys, migration ledgers, or backend
+history part of the production API.
+
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, and malformed index identity suffixes report
 `store.corruption`.

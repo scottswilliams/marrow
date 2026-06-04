@@ -224,6 +224,39 @@ This is the v0.1 compatibility window: a binary supports exactly its own accepte
 epoch and schema. Old and new binaries outside that exact window fail closed
 before writing.
 
+## Long-Term Online Activation Direction
+
+v0.1 activation is intentionally strict and local. That strictness is the
+foundation for future online activation, not the final OLTP operating model.
+
+Future server/OLTP Marrow keeps the same source-native authority but stretches
+activation over a compiler-owned job:
+
+1. preview emits an exact witness;
+2. start records a durable activation job from that witness;
+3. background chunks backfill required fields, transforms, indexes, or shadow
+   layouts through checked facts;
+4. verification proves the affected durable facts;
+5. publish advances the readable catalog epoch in a small commit;
+6. close drains old runtime generations and deletes bounded adapters.
+
+The job state and final activation receipt are evidence. They are not migration
+history and cannot decide schema meaning. Source, accepted catalog, checked
+facts, runtime, engine profile, and durable data remain the only semantic model.
+
+Future compatibility windows are explicit and finite. A server may admit an old
+compiled client only when its catalog epoch is in the declared window. Old reads
+may use a compiler-generated typed adapter. Old writes are rejected unless the
+compiler proves the adapter lowers them to latest-format write plans while
+maintaining every active and building derived fact. The normal window supports at
+most one old epoch; a wider window needs an explicit architecture decision.
+
+Large key-shape, resource-shape, layout, or engine changes do not become raw
+store patches. They use a shadow-decant workflow when needed: build a new
+store/layout in chunks, bridge a bounded set of writes, verify identity/count and
+checksum facts, publish a small binding change, then close the window and purge
+the old physical state.
+
 ## Evolve Block Lifecycle
 
 An `evolve` block is a one-off transition, not durable schema. It states the
@@ -259,6 +292,11 @@ marrow evolve apply ./project
 
 Apply rebuilds the index entries from the checked store facts and stamps the same
 transaction. A failed rebuild publishes no partial index data.
+
+Future online index builds use the same visibility law. A building index may be
+maintained by writes before it is readable, but production reads may not use it
+until the activation job verifies the whole derived tree and publishes the
+catalog state that makes it visible.
 
 ## Maintenance Mode
 

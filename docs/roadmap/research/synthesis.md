@@ -3,9 +3,10 @@
 Date: 2026-06-04
 
 This synthesis consolidates the finalized research reports for Lanes 5 through
-10, the holistic language audit, the architecture red-team audit, the current
-Marrow docs, and the current ADR packet in `marrow-decisions`, including the
-unstaged edits to the foundation and transaction ADRs.
+10, Lane 14A online evolution foundation research, the holistic language audit,
+the architecture red-team audit, the current Marrow docs, and the current ADR
+packet in `marrow-decisions`, including the unstaged edits to the foundation and
+transaction ADRs.
 
 This is a research and planning artifact. It does not implement code, create a
 new ADR, or bless any incomplete lane as complete.
@@ -42,6 +43,8 @@ Unique finalized reports read and integrated into
   `holistic-language-ergonomics-and-idiom.md`
 - Architecture red-team:
   `marrow-architecture-red-team.md`
+- Lane 14A online evolution foundation:
+  `lane-14a-online-evolution-foundation.md`
 
 Lane 5 appeared in multiple worktrees with the same content hash and is
 integrated once.
@@ -148,6 +151,25 @@ hidden migration ledger.
 
 The research strongly favors source/catalog/data/engine proof over conventional
 migration files for Marrow's language-owned data model.
+
+### Keep Staged Online Activation As The Future Foundation
+
+Keep v0.1 strict and single-epoch, but do not make single-epoch fencing the
+long-term OLTP architecture. Future Marrow should grow toward multi-epoch online
+activation: reads pin snapshot plus catalog epoch, writes run through checked
+epoch facts and runtime generations, background jobs backfill bounded chunks,
+and a tiny publish step advances readable catalog state after verification.
+
+Compatibility adapters are allowed only inside explicit, bounded windows. They
+are generated from source/evolution facts, named, visible in tooling, and deleted
+when the window closes. Old writes are rejected unless the compiler proves they
+lower to latest-format write plans and maintain every active or building fact.
+
+For key changes, resource reshapes, layout recompiles, and engine moves, use a
+shadow-decant workflow when needed: build a new store/layout in chunks, bridge a
+bounded set of writes, verify identity/count/checksum facts, publish a small
+binding change, then close and purge. This is an activation job, not a raw store
+patch or migration script.
 
 ### Keep Typed Backup/Restore
 
@@ -295,6 +317,15 @@ Other evolution refinements:
   job immediately in one exact transaction, but preview/apply should be modeled
   as a compiler-owned activation job so large future rebuilds/backfills do not
   require a migration-system rewrite;
+- preserve the future online protocol in the facts even before it exists:
+  preview, start, bridge, backfill, verify, publish, and close are separate
+  conceptual phases, while v0.1 may collapse them into exact apply;
+- make the normal future compatibility window one old epoch to one new epoch,
+  with old clients read-only or rejected unless a compiler-generated write
+  adapter is proven;
+- require shadow decant, not in-place reinterpretation, for key-shape,
+  resource-shape, layout, or engine changes that cannot be proven as ordinary
+  backfill;
 - split the large discharge kernel by invariant;
 - design online activation jobs for large index rebuilds, backfills, and
   transforms as the future chunked/resumable form of the same witness, not as a
@@ -530,9 +561,10 @@ worktrees under `/Users/scottwilliams/Dev`, explicit isolated
 4. Lane 13 can start in parallel on catalog/presence hardening. If Lane 12
    changes ADR wording for ID size, digest, or reserved aliases, Lane 13 rebases
    and aligns; it should not wait on unrelated docs.
-5. Lane 19 is a short product-decision closure lane for the remaining seven
+5. Lane 19 is a short product-decision closure lane for the remaining product
    questions. It should run early and unblock the `out`, `explain`, `data dump`,
-   catalog ID, digest, and reserved-alias pieces.
+   catalog ID, digest, reserved-alias, compatibility-window, default, and re-key
+   pieces.
 6. Lane 18 runs last as final Rust hardening, after semantic owners have landed.
 
 ### Lane 12: ADR And Canonical Docs Reconciliation
@@ -625,7 +657,7 @@ Prompt:
 ```text
 You are Lane 14: Evolution Soundness And Activation Receipts.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 9 report, architecture red-team report, catalog ADRs, evolution ADRs, docs/data-evolution.md, and docs/language/resources-and-storage.md.
+Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 9 report, Lane 14A online evolution foundation report, architecture red-team report, catalog ADRs, evolution ADRs, docs/data-evolution.md, and docs/language/resources-and-storage.md.
 
 Mission: make source-native evolution sound before v0.1 freeze. Compiler equals data integrity: preview/apply must prove source, catalog, attached data, and engine facts together. Do not add migration scripts, source-diff identity, hidden ledgers, host migration shims, or compatibility glue.
 
@@ -633,10 +665,13 @@ Start with the red-team blocker. Write a production runtime/CLI apply fixture wh
 
 Then make activation job-shaped:
 - Model apply as a compiler-owned activation job created from the exact preview witness. The v0.1 job may execute immediately in one transaction, but the type/API shape should leave a clean path to future chunked/resumable jobs.
+- Preserve the conceptual future protocol in names and facts where it naturally fits: preview, start, bridge, backfill, verify, publish, and close. Do not implement future online execution unless it is required to fix v0.1 soundness.
 - The catalog epoch must not publish until the activation job verifies and commits.
 - Generated indexes, required-field backfills, and transforms must not become half-visible product state. A crash or drift resumes from typed job evidence or fails closed.
 - Job facts/receipts are derived evidence, not executable migration history. They may include epoch, source digest, previous and next catalog digests, engine profile, store commit pin, affected stable IDs, verdicts, counts, approvals, and final commit id.
 - Tie backup/restore and CLI rendering to job/receipt facts only as evidence, not as a second source of semantics.
+- Record compatibility-window policy as future facts only: v0.1 remains exact epoch/schema equality; future server mode normally supports one old epoch, old clients default to read-only or rejected, and old writes require a checked adapter proof.
+- Treat key-shape, resource-shape, layout, and engine changes that cannot be proven as ordinary backfill as future shadow-decant work, not raw store patching or identity-preserving reinterpretation.
 
 Split the evolution discharge kernel by invariant if touched: proposal ID resolution, structural compatibility, data scans, default/transform obligations, index obligations, repair diagnostics, and witness accumulation. Do not grow another broad dispatcher.
 
@@ -669,12 +704,13 @@ Prompt:
 ```text
 You are Lane 15: Transaction, Commit Metadata, And Store Contract Hardening.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 7 report, Lane 8 report, architecture red-team report, backend contract docs, storage ADRs, and transaction ADRs including current unstaged decision edits if still present.
+Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 7 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, backend contract docs, storage ADRs, and transaction ADRs including current unstaged decision edits if still present.
 
 Mission: harden the physical durable boundary without exposing raw engine semantics.
 
 Targets:
 - Move or prove commit metadata stamping at the physical durable commit boundary. Add a transaction test with multiple managed writes and generated index updates, then assert changed roots/indexes and commit id describe the whole transaction, not the last plan.
+- Leave the commit metadata shape ready for future online activation evidence: runtime generation, optional activation job id, source/catalog digest, layout epoch, changed roots/indexes for the whole commit, and adapter/window evidence. Do not implement unused online machinery; preserve the typed metadata seam.
 - Add store conformance for pinned snapshot plus open write transaction, or explicitly reject/prohibit that state so memory and redb cannot diverge.
 - Reconcile backend-contract metadata docs with implementation, including source digest if still present.
 - Replace or quarantine unbounded child-key helpers with bounded pages/cursors or crate-private test conveniences.
@@ -708,7 +744,7 @@ Prompt:
 ```text
 You are Lane 16: Tooling Facts, Debug Surface, And Explain Rescope.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 10 report, Lane 8 report, architecture red-team report, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/lsp.md, tooling ADRs, and storage backup ADRs.
+Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 10 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/lsp.md, tooling ADRs, and storage backup ADRs.
 
 Mission: make tools render shared facts and stop raw/path/debug surfaces from becoming production semantics. Compiler equals data integrity: tools report compiler/store facts; they do not become a second database model.
 
@@ -730,6 +766,7 @@ Then implement only surfaces that have a clear verdict:
 Specific focus:
 - Isolate unresolved Scott decisions for marrow explain and raw data dump/get. Do not block restore, serve, LSP, backup, or shared-facts cleanup on those choices. Once Scott decides, implement delete, rename under data/debug, or rebuild as checked fact/operation rendering. It must not expose a query plan or planner choices.
 - Extract or create a transport-free tooling facts API for typed data-query resolution, checked path rendering, bounded previews, integrity findings, explain facts, snapshot/catalog metadata, and cursor contracts. CLI and serve become adapters.
+- Add future activation rendering to the shared-facts backlog: preview outcome, activation job status, chunk progress, verification findings, publish readiness, compatibility-window admission, adapter names, and close conditions. The v0.1 CLI may only render exact apply/receipt evidence, but the facts API should not force a migration-ledger model later.
 - Keep data previews consistently bounded where they are previews. If unbounded dump remains before Scott's decision, explicitly classify it as an operator/admin command, not a production preview API.
 - Keep serve loopback debug/admin only for v0.1. Preserve the future local API direction as a separate checked-fact surface; do not rename debug_data_* into product operations.
 - Fix LSP position encoding before protocol correctness is claimed.
@@ -853,8 +890,14 @@ The remaining questions are:
 - catalog ID size;
 - catalog/source/evolution digest algorithm;
 - reserved alias lifecycle.
+- compatibility-window defaults for future server mode: one-old-epoch rule and
+  old-write admission policy;
+- required-field `default` meaning: temporary activation fill only versus a
+  durable read default;
+- re-key identity semantics: always new store plus explicit transform/decant, or
+  some identity-preserving cases with proof.
 
-Use the settled Scott decisions as constraints: Id(^store) is v0.1 spelling, serve v0.1 is debug/admin loopback with a future local checked API path, restore rejects orphans, unknown is not any, dangling references are allowed but compiler-visible, history is user-mode, whole-resource assignment is exact replacement, activation is job-shaped, and external adapters are deferred.
+Use the settled Scott decisions as constraints: Id(^store) is v0.1 spelling, serve v0.1 is debug/admin loopback with a future local checked API path, restore rejects orphans, unknown is not any, dangling references are allowed but compiler-visible, history is user-mode, whole-resource assignment is exact replacement, activation is job-shaped, v0.1 stays strict exact-epoch, future online activation is multi-epoch and compiler-mediated, compatibility adapters are bounded/generated/deleted, shadow decant is the major-reshape path, and external adapters are deferred.
 
 Be skeptical. Do not keep a feature because it exists. Default to delete or defer unless the v0.1 language/database vision clearly needs it.
 ```
@@ -874,7 +917,7 @@ Be skeptical. Do not keep a feature because it exists. Default to delete or defe
    unresolved `explain` and `data dump/get` choices.
 5. Start Lane 13 in parallel on catalog/presence hardening. Coordinate with Lane
    12 and Lane 19 only for ID size, digest, and reserved-alias wording.
-6. Run Lane 19 early as the short decision closure lane for the seven remaining
+6. Run Lane 19 early as the short decision closure lane for the remaining
    product choices.
 7. Run Lane 18 last as final hardening, not as a substitute for lane-local
    cleanup.
