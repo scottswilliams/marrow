@@ -380,13 +380,17 @@ A reserved word cannot be used as a name. Bindings, parameters, resources,
 fields, functions, and module segments must not be spelled as a reserved word;
 doing so is a parse error.
 
-`merge` and `lock` are reserved even though they are not v0.1 statements.
+`merge` and `lock` are reserved even though they are not v0.1 statements. `merge`
+is reserved for the value-level overlay write — apply a partial value to an
+existing place, preserving omitted fields and keyed children — as the counterpart
+to exact root assignment; `lock` is reserved for future use.
 
-An `assert` precondition statement and an `edit` grouped-write form are planned
-write-path surface that v0.1 does not implement: there is no keyword for either,
-and they are not part of the accepted grammar. They are noted here so their
-absence is intentional rather than an oversight; the syntax in this reference is
-what the current implementation accepts.
+An `assert` precondition statement is planned write-path surface that v0.1 does
+not implement: there is no keyword for it, and it is not part of the accepted
+grammar. It is noted here so its absence is intentional rather than an oversight;
+the syntax in this reference is what the current implementation accepts. A
+multi-field patch needs no dedicated form — it is several field writes, grouped in
+a `transaction` when they must commit together.
 
 The `evolve` step words `rename`, `default`, `retire`, and `transform` are
 contextual: they lead a step only inside an `evolve` block, so they remain valid
