@@ -12,6 +12,8 @@ marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <typed inspection subcommand> <projectdir>
 marrow explain [--format text|json|jsonl] <projectdir> <target>
+marrow backup [--format text|json|jsonl] <projectdir> <output-file>
+marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 marrow lsp
 marrow serve [--port <port>] <projectdir>
 marrow --version
@@ -387,6 +389,61 @@ $ marrow data get --format json ./proj '^books(1).title'
 $ marrow data get ./proj '^books(99).title'
 (absent)
 ```
+
+---
+
+## `marrow backup`
+
+```
+marrow backup [--format text|json|jsonl] <projectdir> <output-file>
+```
+
+Write a typed portable backup of a project's saved data. The backup is a Marrow
+artifact, not a raw engine-file copy: a small header, a typed manifest, and the
+project's canonical ordered tree-cell stream. The manifest binds the data to the
+program that wrote it — its source digest, accepted catalog epoch, engine
+profile, value-codec version, and a checksum over the cell stream — so a later
+restore can refuse data it cannot faithfully reproduce. Because tree-cell keys
+derive from catalog stable IDs, equal data yields a byte-identical backup that
+restores into any conforming backend at the same layout and codec.
+
+The store is read through one stable snapshot, so a backup is coherent even while
+another process reads it. Backup opens the store read-only and never modifies it;
+a project with no saved data yet writes a valid empty backup.
+
+```console
+$ marrow backup ./proj ./proj-backup.mwbackup
+ok: backed up 12 record(s) to ./proj-backup.mwbackup
+```
+
+Exits `0` on success, `1` if the project does not check, the store cannot be
+read, or the output file cannot be written, and `2` on a command-line usage
+error.
+
+## `marrow restore`
+
+```
+marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
+```
+
+Replay a backup into the project's native store. Restore compiles the project,
+validates the backup against it (`restore.source_mismatch`,
+`restore.catalog_mismatch`, `restore.engine_recompile_required`), and refuses a
+non-empty target (`restore.not_empty`) — v0.1 restores into an empty store only.
+The whole replay runs in one transaction: a checksum mismatch
+(`restore.corrupt_chunk`) or data that does not validate against the schema
+(`restore.data_invalid`) rolls the target back to empty, so it either gains the
+whole backup or is left unchanged. A different engine, layout, or codec reports
+`restore.engine_recompile_required`; applying that recompile is future work.
+
+```console
+$ marrow restore ./proj ./proj-backup.mwbackup
+ok: restored 12 record(s) from ./proj-backup.mwbackup
+```
+
+Exits `0` on success, `1` on any validation, checksum, store, or i/o failure, and
+`2` on a command-line usage error. See [error-codes.md](error-codes.md) for the
+`restore.*` family.
 
 ---
 

@@ -77,4 +77,13 @@ pub(crate) trait Backend {
     fn begin(&mut self) -> Result<(), StoreError>;
     fn commit(&mut self) -> Result<(), StoreError>;
     fn rollback(&mut self) -> Result<(), StoreError>;
+    /// Pin a consistent read view so a multi-call traversal observes one snapshot
+    /// even while another writer commits. Reads and scans route through the pinned
+    /// view until [`end_snapshot`](Backend::end_snapshot) releases it. A read-only
+    /// handle can pin a snapshot; this is how a backup or a long-lived inspection
+    /// reads a coherent view of saved data.
+    fn begin_snapshot(&mut self) -> Result<(), StoreError>;
+    /// Release the pinned read view, so later reads observe the latest committed
+    /// data. Idempotent, so a guard's `Drop` can call it unconditionally.
+    fn end_snapshot(&mut self);
 }

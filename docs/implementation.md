@@ -383,10 +383,12 @@ keys, or archive replay as production APIs. `diff`, `load`, and typed
 backup/restore are separate tooling contracts (see
 [future/data-tools.md](future/data-tools.md)).
 
-Typed backup/restore is deferred until the tree-cell backup manifest lands. It
-must compile source, accepted catalog metadata, typed values, index cells,
-sequence state and engine-profile metadata together instead of
-treating raw engine bytes as the backup contract.
+`marrow backup` and `marrow restore` are typed backup/restore. A backup is a
+manifest plus the canonical tree-cell stream, not a raw engine-byte copy; the
+manifest binds the data to the source digest, accepted catalog epoch, engine
+profile, and value-codec version it was written under. Restore validates that
+binding and the data against the schema, then replays into an empty store in one
+transaction.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and

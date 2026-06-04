@@ -14,7 +14,7 @@ use crate::{CheckFormat, load_checked_project, write_json};
 use super::inspect::{checked_catalog_id, key_mismatch, push_key, render_value_bytes};
 
 pub(super) fn data_get(args: &[String]) -> ExitCode {
-    let (dir, path_text, format) = match super::data_get_args(args) {
+    let (dir, path_text, format) = match crate::dir_and_path_args("data get", "path", args) {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };

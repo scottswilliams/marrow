@@ -16,6 +16,7 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     an_inner_commit_then_outer_rollback_discards_everything(&mut make());
     three_level_nesting_with_a_middle_commit_and_outer_rollback(&mut make());
     a_transaction_sees_its_writes_in_scans(&mut make());
+    a_snapshot_pins_one_consistent_view(&mut make());
 }
 
 fn values_round_trip(store: &mut dyn Backend) {
@@ -155,4 +156,28 @@ fn a_transaction_sees_its_writes_in_scans(store: &mut dyn Backend) {
         vec![(b"\x60\x01".to_vec(), b"inside".to_vec())]
     );
     store.rollback().unwrap();
+}
+
+fn a_snapshot_pins_one_consistent_view(store: &mut dyn Backend) {
+    store.write(b"\x70\x01", b"before".to_vec()).unwrap();
+    store.begin_snapshot().unwrap();
+    // Writes that commit after the snapshot is pinned are invisible to it.
+    store.write(b"\x70\x01", b"after".to_vec()).unwrap();
+    store.write(b"\x70\x02", b"added".to_vec()).unwrap();
+    assert_eq!(store.read(b"\x70\x01").unwrap(), Some(b"before".to_vec()));
+    assert_eq!(store.read(b"\x70\x02").unwrap(), None);
+    assert_eq!(
+        store.scan(b"\x70", 10).unwrap().entries,
+        vec![(b"\x70\x01".to_vec(), b"before".to_vec())]
+    );
+    // Releasing the snapshot resumes reading the latest committed data.
+    store.end_snapshot();
+    assert_eq!(store.read(b"\x70\x01").unwrap(), Some(b"after".to_vec()));
+    assert_eq!(
+        store.scan(b"\x70", 10).unwrap().entries,
+        vec![
+            (b"\x70\x01".to_vec(), b"after".to_vec()),
+            (b"\x70\x02".to_vec(), b"added".to_vec()),
+        ]
+    );
 }

@@ -16,9 +16,12 @@ The v0.1 tooling contract is:
 - keep repair as explicit maintenance code over modeled data.
 
 Typed backup/restore is a tooling and backup-protocol contract, not a raw
-archive replay. It must compile source, accepted catalog metadata, typed values,
-index cells, sequence state, and engine-profile metadata together.
-Derived structures are verified or rebuilt before publication.
+archive replay: it carries a typed manifest binding the data to the source
+digest, accepted catalog epoch, engine profile, and value-codec version it was
+written under, and a restore validates that binding and the data against the
+schema before it activates. It is a separate command pair, not a `data`
+subcommand — see [`marrow backup` and `marrow restore`](cli.md#marrow-backup).
+`data` itself only reads.
 
 Inspection never creates or modifies the store. It opens the configured native
 store read-only, and if no store file exists yet it reports an empty result
@@ -26,8 +29,8 @@ rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
 `get` against an unseeded project prints `(no saved data)` (or `(absent)` for
 `get`) and leaves the data directory untouched — no `marrow.redb` is written.
 
-There is no in-place repair command. Typed backup/restore is deferred until the
-tree-cell backup manifest lands. `data` itself only reads.
+There is no in-place repair command: repair is operator-authored maintenance code
+run under `marrow run --maintenance`.
 
 ## What needs source, what does not
 
@@ -213,8 +216,10 @@ maintenance code. There is no in-place fix.
 
 ## Deferred: `diff` and `load`
 
-`marrow data diff`, `marrow data load`, and typed backup/restore are not
-implemented — see [future/data-tools.md](future/data-tools.md).
+`marrow data diff` and `marrow data load` are not implemented — see
+[future/data-tools.md](future/data-tools.md). Bulk data movement is
+[`marrow backup` and `marrow restore`](cli.md#marrow-backup), not a `data`
+subcommand.
 
 ## See also
 

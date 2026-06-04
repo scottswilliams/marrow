@@ -540,13 +540,15 @@ data-evolution code.
 
 ## Backup And Restore
 
-Typed backup/restore is deferred until the tree-cell backup manifest exists.
-Backups are not engine files: they must carry enough source, catalog, typed data,
-index, sequence, and engine-profile facts to restore under the Marrow storage
-contract.
+Typed backup and restore are commands (`marrow backup`, `marrow restore`).
+Backups are not engine files: a backup carries a manifest with the source,
+catalog, engine-profile, and value-codec facts, plus the canonical tree-cell
+stream, so it restores under the Marrow storage contract rather than by copying
+raw bytes.
 
-Generated index data is restored by validation or rebuild, not by treating raw
-saved paths as the production backup contract.
+Restore replays a backup into an empty store in one transaction and validates the
+data against the schema before activating it; it never treats raw saved paths as
+the production backup contract.
 
 Non-empty restore modes are explicit maintenance actions.
 

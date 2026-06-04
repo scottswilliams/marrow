@@ -48,7 +48,7 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
     }
 }
 
-fn count_integrity_problems(
+pub(crate) fn count_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {

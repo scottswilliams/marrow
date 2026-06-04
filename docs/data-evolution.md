@@ -297,10 +297,12 @@ your own code, verified before and after with `marrow data integrity`.
 
 ## Backup And Restore
 
-Typed backup/restore is deferred until the tree-cell backup manifest lands. The
-backup contract must compile source, accepted catalog metadata, typed values,
-index cells, sequence state, and engine-profile metadata together instead of
-copying raw engine bytes.
+Typed backup/restore is a separate command pair (`marrow backup` and
+`marrow restore`), not a raw engine-byte copy. A backup carries a manifest binding
+the data to the source digest, accepted catalog epoch, engine profile, and
+value-codec version it was written under, plus the canonical tree-cell stream;
+restore validates that binding and the data against the schema, in one
+transaction, into an empty store.
 
 ## Also Deferred
 

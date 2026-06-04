@@ -17,7 +17,7 @@ pub(crate) mod get;
 #[path = "cmd_data/inspect.rs"]
 pub(crate) mod inspect;
 #[path = "cmd_data/integrity.rs"]
-mod integrity;
+pub(crate) mod integrity;
 
 pub(crate) use inspect::render_value_bytes;
 
@@ -59,45 +59,6 @@ fn one_positional_with_format(
         ExitCode::from(2)
     })?;
     Ok((dir, format))
-}
-
-/// Parse `data get`'s arguments: a project directory, a path string, and an
-/// optional `--format`, rejecting options and a wrong positional count.
-fn data_get_args(args: &[String]) -> Result<(String, String, CheckFormat), ExitCode> {
-    let mut positionals = Vec::new();
-    let mut format = CheckFormat::Text;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--format" => {
-                index += 1;
-                format = parse_format_value(args.get(index))?;
-            }
-            "--help" | "-h" => {
-                print!(
-                    "Usage:\n  marrow data get [--format text|json|jsonl] <projectdir> <path>\n"
-                );
-                return Err(ExitCode::SUCCESS);
-            }
-            value if value.starts_with('-') => {
-                eprintln!("unknown data get option: {value}");
-                return Err(ExitCode::from(2));
-            }
-            value => positionals.push(value.to_string()),
-        }
-        index += 1;
-    }
-    match positionals.as_slice() {
-        [dir, path] => Ok((dir.clone(), path.clone(), format)),
-        [] | [_] => {
-            eprintln!("marrow data get requires a project directory and a path");
-            Err(ExitCode::from(2))
-        }
-        _ => {
-            eprintln!("marrow data get accepts one project directory and one path");
-            Err(ExitCode::from(2))
-        }
-    }
 }
 
 /// Parse a `--format` value (the argument after the flag), or a usage error when

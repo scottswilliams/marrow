@@ -417,8 +417,10 @@ the schema — note this checks decoding, not required-field completeness).
 
 Some maintenance operations are not yet implemented:
 
-- `marrow data diff`, `marrow data load`, and typed backup/restore are deferred
-  — see [future/data-tools.md](future/data-tools.md) and
+- `marrow data diff` and `marrow data load` are deferred — see
+  [future/data-tools.md](future/data-tools.md). (Typed backup/restore is
+  implemented: `marrow backup` and `marrow restore`.)
+- Non-empty restore (replace/merge) and cross-engine restore are deferred — see
   [future/cli.md](future/cli.md).
 - Store-aware identity fields are canonical; relationship behavior remains
   explicit application logic, not implicit foreign-key enforcement.

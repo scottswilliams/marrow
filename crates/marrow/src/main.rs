@@ -4,11 +4,14 @@ use std::process::ExitCode;
 use marrow_syntax::Diagnose;
 use serde_json::json;
 
+mod backup;
+mod cmd_backup;
 mod cmd_check;
 mod cmd_data;
 mod cmd_evolve;
 mod cmd_explain;
 mod cmd_fmt;
+mod cmd_restore;
 mod cmd_run;
 mod cmd_test;
 mod dry_run;
@@ -20,7 +23,7 @@ const HELP: &str = "\
 Marrow
 
 Usage:
-  marrow check [--format text|json|jsonl] <file.mw>
+  marrow check [--format text|json|jsonl] <file.mw | projectdir>
   marrow evolve <preview|apply> <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run <projectdir>
@@ -28,6 +31,8 @@ Usage:
   marrow data <roots|stats|dump|integrity> <projectdir>
   marrow data get <projectdir> <path>
   marrow explain [--format text|json|jsonl] <projectdir> <target>
+  marrow backup [--format text|json|jsonl] <projectdir> <output-file>
+  marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
   marrow lsp
   marrow serve [--port <port>] <projectdir>
   marrow --version
@@ -48,6 +53,8 @@ fn main() -> ExitCode {
         "test" => cmd_test::test(rest),
         "data" => cmd_data::data(rest),
         "explain" => cmd_explain::explain(rest),
+        "backup" => cmd_backup::backup(rest),
+        "restore" => cmd_restore::restore(rest),
         "lsp" => lsp::run(rest),
         "serve" => serve::run(rest),
         "--help" | "-h" | "help" => {
@@ -169,6 +176,57 @@ pub(crate) fn report_simple_error(code: &str, message: &str, format: CheckFormat
             "message": message,
             "source_span": null,
         })),
+    }
+}
+
+/// Parse a project directory, a second path argument, and an optional `--format`
+/// for commands shaped `marrow <command> [--format ...] <projectdir> <path>`.
+/// `path_label` names the second argument in usage and errors.
+pub(crate) fn dir_and_path_args(
+    command: &str,
+    path_label: &str,
+    args: &[String],
+) -> Result<(String, String, CheckFormat), ExitCode> {
+    let mut positionals = Vec::new();
+    let mut format = CheckFormat::Text;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --format");
+                    return Err(ExitCode::from(2));
+                };
+                format = CheckFormat::parse(value).ok_or_else(|| {
+                    eprintln!("unknown format: {value}");
+                    ExitCode::from(2)
+                })?;
+            }
+            "--help" | "-h" => {
+                print!(
+                    "Usage:\n  marrow {command} [--format text|json|jsonl] <projectdir> <{path_label}>\n"
+                );
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => {
+                eprintln!("unknown {command} option: {value}");
+                return Err(ExitCode::from(2));
+            }
+            value => positionals.push(value.to_string()),
+        }
+        index += 1;
+    }
+    match positionals.as_slice() {
+        [dir, path] => Ok((dir.clone(), path.clone(), format)),
+        [] | [_] => {
+            eprintln!("marrow {command} requires a project directory and a {path_label}");
+            Err(ExitCode::from(2))
+        }
+        _ => {
+            eprintln!("marrow {command} accepts one project directory and one {path_label}");
+            Err(ExitCode::from(2))
+        }
     }
 }
 

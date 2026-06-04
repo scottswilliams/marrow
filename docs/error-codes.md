@@ -96,7 +96,7 @@ code is stable and predictable:
 | `store` | `storage` |
 | `io` | `io` |
 | `protocol` | `protocol` |
-| everything else (`config`, `project`, `data`, `evolve`, `write`, `test`) | `tooling` |
+| everything else (`config`, `project`, `data`, `evolve`, `write`, `test`, `restore`) | `tooling` |
 
 A `run.capability` error is the runtime form of a missing host capability; it
 carries `kind` `runtime` (the `capability` kind named in the envelope section is
@@ -347,6 +347,22 @@ Source-native data-evolution preview/apply faults.
 |---|---|
 | `test.none` | `marrow test` found no tests; check the `tests` patterns in `marrow.json`. Exit code `1`. (Failing tests are reported per test with their own `run.assertion` or other `run.*` code, not a `test.*` code.)|
 
+### `restore.*` — kind `tooling`
+
+Faults from `marrow restore` when a backup cannot be replayed into the project's
+store. `marrow backup` itself reports `io.write` for a file it cannot write and a
+`store.*` code for a read fault; it has no codes of its own.
+
+| Code | Meaning |
+|---|---|
+| `restore.format_version` | The file is not a Marrow backup, or its format version is not the one this build restores. |
+| `restore.corrupt_chunk` | The backup's cell stream is truncated or its data checksum does not match the manifest. |
+| `restore.not_empty` | The target store already holds saved data. v0.1 restore writes into an empty store only. |
+| `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
+| `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. |
+| `restore.catalog_mismatch` | The backup's catalog epoch does not match this project's accepted catalog. |
+| `restore.data_invalid` | The replayed data does not validate against the project schema; the restore was rolled back. |
+
 ## Typed Errors In Running Programs
 
 In `.mw` code an error is an `Error` value with its own dotted `code`, raised by
@@ -367,6 +383,7 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 
 ## Deferred Surfaces
 
-`marrow data diff`/`data load` and typed backup/restore are deferred — see
-[future/data-tools.md](future/data-tools.md) and [future/cli.md](future/cli.md).
-No new code family appears for a deferred surface until that surface ships.
+`marrow data diff`/`data load`, non-empty restore modes, and cross-engine restore
+are deferred — see [future/data-tools.md](future/data-tools.md) and
+[future/cli.md](future/cli.md). No new code family appears for a deferred surface
+until that surface ships.

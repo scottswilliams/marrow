@@ -47,6 +47,9 @@ pub(crate) struct RedbStore {
     txn: Option<WriteTransaction>,
     /// One undo log per open nesting level (innermost last).
     journals: Vec<Vec<Undo>>,
+    /// A pinned read transaction while a snapshot is held, so reads observe one
+    /// consistent version even as later write transactions commit.
+    read_view: Option<ReadTransaction>,
 }
 
 /// The redb handle is either writable or truly read-only at the storage layer.
@@ -149,12 +152,19 @@ where
 /// object-safe — the body is monomorphized for each table type instead.
 macro_rules! read_view {
     ($self:expr, $op:expr, |$table:ident| $body:expr) => {
-        match &$self.txn {
-            Some(write) => {
+        match (&$self.txn, &$self.read_view) {
+            // An open write transaction reads its own writes.
+            (Some(write), _) => {
                 let $table = write.open_table(TABLE).map_err(io($op))?;
                 $body
             }
-            None => {
+            // A pinned snapshot reads its consistent version.
+            (None, Some(read)) => {
+                let $table = read.open_table(TABLE).map_err(io($op))?;
+                $body
+            }
+            // Otherwise read the latest committed data.
+            (None, None) => {
                 let read = $self.db.begin_read($op)?;
                 let $table = read.open_table(TABLE).map_err(io($op))?;
                 $body
@@ -220,6 +230,7 @@ impl RedbStore {
             db: DatabaseHandle::ReadWrite(db),
             txn: None,
             journals: Vec::new(),
+            read_view: None,
         })
     }
 
@@ -274,6 +285,7 @@ impl RedbStore {
             db: DatabaseHandle::ReadOnly(db),
             txn: None,
             journals: Vec::new(),
+            read_view: None,
         })
     }
 
@@ -436,6 +448,18 @@ impl Backend for RedbStore {
             }
         }
         Ok(())
+    }
+
+    fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+        // A read transaction is a stable version, unaffected by later writes. It
+        // works on read-only and writable handles alike; an open write transaction
+        // already provides read-your-writes, so it takes precedence in `read_view!`.
+        self.read_view = Some(self.db.begin_read("snapshot")?);
+        Ok(())
+    }
+
+    fn end_snapshot(&mut self) {
+        self.read_view = None;
     }
 }
 

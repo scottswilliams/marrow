@@ -10,6 +10,11 @@
 use crate::Decimal;
 use crate::key::SavedKey;
 
+/// The version of the canonical scalar value encoding. A backup records it so a
+/// restore refuses data written under an encoding it cannot decode. It advances
+/// only on an incompatible change to the canonical value bytes.
+pub const VALUE_CODEC_VERSION: u32 = 0;
+
 /// A scalar value in decoded form: the one type the store, the runtime, and the
 /// serve protocol all share for a stored leaf. The eight arms are exactly the
 /// storable scalars.

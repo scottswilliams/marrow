@@ -2,13 +2,16 @@
 
 use std::cell::RefCell;
 
-use crate::backend::{Backend, StoreError};
-use crate::cell::{CatalogId, CellKey, MetaCell, SequencePosition};
+use crate::backend::{Backend, ScanPage, StoreError};
+use crate::cell::{CatalogId, CellKey, MetaCell, SequencePosition, is_backup_cell_key};
 use crate::key::{SavedKey, decode_key_value};
 
 pub use crate::cell::DataPathSegment;
 
 const NODE_MARKER: &[u8] = b"node";
+/// How many cells a backup traversal pages at a time, so the whole store is
+/// streamed in bounded chunks rather than materialized at once.
+const BACKUP_SCAN_PAGE: usize = 1024;
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const TREE_VALUE_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
@@ -613,6 +616,72 @@ impl TreeStore {
         self.with_cell(|cell| cell.scan_index_tuple_after(index, index_keys, cursor, limit))
     }
 
+    /// Pin a consistent read snapshot for the lifetime of the returned guard, so a
+    /// multi-call traversal — a backup, or a long-lived inspection — reads one
+    /// coherent version of saved data even while a writer commits.
+    pub fn read_snapshot(&self) -> Result<ReadSnapshot<'_>, StoreError> {
+        self.backend.borrow_mut().begin_snapshot()?;
+        Ok(ReadSnapshot { store: self })
+    }
+
+    /// Whether the store holds no saved data: no data or index cells. A freshly
+    /// created store is empty, and restore refuses a non-empty target.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.first_cell(&CellKey::data_family())?.is_none()
+            && self.first_cell(&CellKey::index_family())?.is_none())
+    }
+
+    /// Visit every data- and index-family cell in encoded order — the canonical
+    /// `(key, value)` stream a backup carries. Cells page internally so the whole
+    /// store streams in bounded chunks; wrap the call in a [`read_snapshot`] to
+    /// read one coherent version.
+    ///
+    /// [`read_snapshot`]: TreeStore::read_snapshot
+    pub fn visit_backup_cells(
+        &self,
+        mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        for family in [CellKey::data_family(), CellKey::index_family()] {
+            self.visit_family(family.as_bytes(), &mut visit)?;
+        }
+        Ok(())
+    }
+
+    /// Replay one backup cell, validating that its key addresses a data- or
+    /// index-family cell. Restore writes cells inside one transaction; a key
+    /// outside those families is a malformed backup, not a cell to write.
+    pub fn restore_cell(&self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.restore_cell(key, value))
+    }
+
+    fn first_cell(&self, prefix: &CellKey) -> Result<Option<Vec<u8>>, StoreError> {
+        let page = self.with_cell(|cell| cell.scan_cells(prefix.as_bytes(), 1))?;
+        Ok(page.entries.into_iter().next().map(|(key, _)| key))
+    }
+
+    fn visit_family(
+        &self,
+        prefix: &[u8],
+        visit: &mut impl FnMut(&[u8], &[u8]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut page = self.with_cell(|cell| cell.scan_cells(prefix, BACKUP_SCAN_PAGE))?;
+        loop {
+            for (key, value) in &page.entries {
+                visit(key, value)?;
+            }
+            if !page.truncated {
+                return Ok(());
+            }
+            let resume = page
+                .entries
+                .last()
+                .map(|(key, _)| key.clone())
+                .expect("a truncated page has a last entry");
+            page =
+                self.with_cell(|cell| cell.scan_cells_after(prefix, &resume, BACKUP_SCAN_PAGE))?;
+        }
+    }
+
     fn with_cell<R>(
         &self,
         f: impl for<'b> FnOnce(&mut TreeCellStore<'b, dyn Backend>) -> Result<R, StoreError>,
@@ -623,9 +692,45 @@ impl TreeStore {
     }
 }
 
+/// A pinned read snapshot over a [`TreeStore`]. While it is held, every read and
+/// scan observes one consistent version of saved data; dropping it resumes
+/// reading the latest committed data.
+#[must_use = "a read snapshot is released as soon as it is dropped"]
+pub struct ReadSnapshot<'a> {
+    store: &'a TreeStore,
+}
+
+impl Drop for ReadSnapshot<'_> {
+    fn drop(&mut self) {
+        self.store.backend.borrow_mut().end_snapshot();
+    }
+}
+
 impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     fn new(backend: &'a mut B) -> Self {
         Self { backend }
+    }
+
+    fn scan_cells(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        self.backend.scan(prefix, limit)
+    }
+
+    fn scan_cells_after(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        self.backend.scan_after(prefix, cursor, limit)
+    }
+
+    fn restore_cell(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        if !is_backup_cell_key(key) {
+            return Err(StoreError::Corruption {
+                message: "backup cell key is not a data or index cell".into(),
+            });
+        }
+        self.backend.write(key, value)
     }
 
     fn write_catalog_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
@@ -1723,6 +1828,14 @@ mod tests {
         fn rollback(&mut self) -> Result<(), StoreError> {
             self.inner.rollback()
         }
+
+        fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+            self.inner.begin_snapshot()
+        }
+
+        fn end_snapshot(&mut self) {
+            self.inner.end_snapshot();
+        }
     }
 
     /// A storage fault part-way through a staged transaction rolls the whole bracket
@@ -1912,6 +2025,119 @@ mod tests {
                 vec![SavedKey::Str("history".into()), SavedKey::Int(5)],
             ]
         );
+    }
+
+    fn collect_backup_cells(store: &TreeStore) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut cells = Vec::new();
+        store
+            .visit_backup_cells(|key, value| {
+                cells.push((key.to_vec(), value.to_vec()));
+                Ok(())
+            })
+            .expect("visit backup cells");
+        cells
+    }
+
+    #[test]
+    fn is_empty_distinguishes_a_fresh_store_from_a_populated_one() {
+        let store_id = catalog("cat_0000000000000001");
+        let member = catalog("cat_0000000000000002");
+        let store = TreeStore::memory();
+        assert!(store.is_empty().expect("is_empty"));
+
+        store
+            .write_data_value(
+                &store_id,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(member)],
+                b"v".to_vec(),
+            )
+            .expect("write data");
+        assert!(!store.is_empty().expect("is_empty"));
+    }
+
+    /// A backup carries every data- and index-family cell and nothing else, and
+    /// replaying that stream into a fresh store reproduces it byte-for-byte. Meta
+    /// cells stay out of the stream because restore restamps them from the manifest.
+    #[test]
+    fn backup_cells_round_trip_and_exclude_meta() {
+        let store_id = catalog("cat_0000000000000001");
+        let title = catalog("cat_0000000000000002");
+        let index = catalog("cat_0000000000000003");
+        let path = [DataPathSegment::Member(title.clone())];
+
+        let source = TreeStore::memory();
+        source
+            .write_node(&store_id, &[SavedKey::Int(1)])
+            .expect("write node");
+        source
+            .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"Mort".to_vec())
+            .expect("write leaf");
+        source
+            .write_index_entry(
+                &index,
+                &[SavedKey::Str("Mort".into())],
+                &[SavedKey::Int(1)],
+                Vec::new(),
+            )
+            .expect("write index");
+        // A meta stamp that the backup stream must not carry.
+        source.write_catalog_epoch(4).expect("stamp catalog epoch");
+
+        let cells = collect_backup_cells(&source);
+        assert!(!cells.is_empty(), "the populated store has backup cells");
+
+        let restored = TreeStore::memory();
+        assert!(restored.is_empty().expect("fresh store is empty"));
+        for (key, value) in &cells {
+            restored
+                .restore_cell(key, value.clone())
+                .expect("restore cell");
+        }
+        assert!(!restored.is_empty().expect("restored store is populated"));
+
+        assert_eq!(collect_backup_cells(&restored), cells, "stream round-trips");
+        assert_eq!(
+            restored
+                .read_data_value(&store_id, &[SavedKey::Int(1)], &path)
+                .expect("read restored leaf"),
+            Some(b"Mort".to_vec()),
+        );
+        // The catalog-epoch meta cell was never part of the stream.
+        assert_eq!(restored.read_catalog_epoch().expect("read epoch"), None);
+    }
+
+    #[test]
+    fn restore_cell_rejects_a_key_outside_the_data_and_index_families() {
+        let store = TreeStore::memory();
+        // A meta-family key (catalog-epoch cell) is not a restorable backup cell.
+        let meta_key = CellKey::meta(super::MetaCell::CatalogEpoch);
+        assert_corruption(store.restore_cell(meta_key.as_bytes(), b"4".to_vec()));
+    }
+
+    /// A pinned read snapshot keeps a backup traversal coherent: cells written after
+    /// the snapshot opens are invisible until it is released.
+    #[test]
+    fn read_snapshot_keeps_a_backup_traversal_coherent() {
+        let store_id = catalog("cat_0000000000000001");
+        let member = catalog("cat_0000000000000002");
+        let path = [DataPathSegment::Member(member)];
+        let store = TreeStore::memory();
+        store
+            .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"first".to_vec())
+            .expect("write first");
+
+        let before = {
+            let _snapshot = store.read_snapshot().expect("snapshot");
+            store
+                .write_data_value(&store_id, &[SavedKey::Int(2)], &path, b"second".to_vec())
+                .expect("write second");
+            collect_backup_cells(&store)
+        };
+        assert_eq!(before.len(), 1, "snapshot hid the concurrent write");
+
+        // After the snapshot drops, the traversal sees both records.
+        assert_eq!(collect_backup_cells(&store).len(), 2);
     }
 
     fn catalog(raw: &str) -> CatalogId {

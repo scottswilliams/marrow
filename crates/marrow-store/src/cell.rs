@@ -181,6 +181,16 @@ impl CellKey {
         Self(bytes)
     }
 
+    /// The prefix covering every data-family cell (nodes, leaves, sequences).
+    pub(crate) fn data_family() -> Self {
+        Self(family(FAMILY_DATA))
+    }
+
+    /// The prefix covering every index-family cell.
+    pub(crate) fn index_family() -> Self {
+        Self(family(FAMILY_INDEX))
+    }
+
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -192,6 +202,18 @@ impl CellKey {
     pub(crate) fn range(&self) -> CellRange {
         CellRange::for_prefix(self.as_bytes())
     }
+}
+
+/// Whether `bytes` is a well-formed data- or index-family cell key — the two
+/// families a backup carries and restore replays. Meta cells are reconstructed
+/// from the backup manifest, and reserved families are never restored, so a key
+/// outside data/index is a malformed backup rather than a cell to write.
+pub(crate) fn is_backup_cell_key(bytes: &[u8]) -> bool {
+    matches!(
+        bytes,
+        [EMPTY_PLACEMENT_PREFIX, TREE_CELL_PROFILE_V0, family, ..]
+            if *family == FAMILY_DATA || *family == FAMILY_INDEX
+    )
 }
 
 pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()> {

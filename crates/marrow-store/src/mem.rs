@@ -10,6 +10,9 @@ use crate::traversal;
 pub(crate) struct MemStore {
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
     savepoints: Vec<BTreeMap<Vec<u8>, Vec<u8>>>,
+    /// A frozen copy of `entries` while a read snapshot is pinned; reads observe
+    /// it so a multi-call traversal stays coherent against concurrent writes.
+    snapshot: Option<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl MemStore {
@@ -17,8 +20,13 @@ impl MemStore {
         self.entries.insert(key.to_vec(), value);
     }
 
+    /// The map reads observe: the pinned snapshot if one is held, else live data.
+    fn view(&self) -> &BTreeMap<Vec<u8>, Vec<u8>> {
+        self.snapshot.as_ref().unwrap_or(&self.entries)
+    }
+
     fn read(&self, key: &[u8]) -> Option<&[u8]> {
-        self.entries.get(key).map(Vec::as_slice)
+        self.view().get(key).map(Vec::as_slice)
     }
 
     fn delete(&mut self, prefix: &[u8]) {
@@ -38,7 +46,7 @@ impl MemStore {
         &'a self,
         prefix: &[u8],
     ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
-        self.entries
+        self.view()
             .range(prefix.to_vec()..)
             .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
@@ -47,7 +55,7 @@ impl MemStore {
         &'a self,
         cursor: &[u8],
     ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
-        self.entries
+        self.view()
             .range((Bound::Excluded(cursor.to_vec()), Bound::Unbounded))
             .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
@@ -96,6 +104,15 @@ impl Backend for MemStore {
             self.entries = snapshot;
         }
         Ok(())
+    }
+
+    fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+        self.snapshot = Some(self.entries.clone());
+        Ok(())
+    }
+
+    fn end_snapshot(&mut self) {
+        self.snapshot = None;
     }
 }
 
