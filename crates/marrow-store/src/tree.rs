@@ -20,6 +20,8 @@ const MIN_LENGTH_PREFIX_BYTES: usize = 4;
 const CHILD_SCAN_PAGE_LIMIT: usize = 128;
 
 pub type EngineProfileDigest = [u8; ENGINE_PROFILE_DIGEST_BYTES];
+type IndexEntryVisitor<'a> =
+    dyn FnMut(&[SavedKey], &[SavedKey], &[u8]) -> Result<(), StoreError> + 'a;
 
 /// The engine profile recorded with tree-cell metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,6 +635,17 @@ impl TreeStore {
         self.with_cell(|cell| cell.scan_index_tuple_after(index, index_keys, cursor, limit))
     }
 
+    /// Visit every row under one index id in bounded backend pages. The callback sees the
+    /// stored index-key tuple and identity exactly as encoded, so callers can detect stale
+    /// rows whose key arity no longer matches the current source declaration.
+    pub fn for_each_index_entry(
+        &self,
+        index: &CatalogId,
+        visit: &mut IndexEntryVisitor<'_>,
+    ) -> Result<(), StoreError> {
+        self.with_cell(|cell| cell.for_each_index_entry(index, visit))
+    }
+
     /// Pin a consistent read snapshot for the lifetime of the returned guard, so a
     /// multi-call traversal — a backup, or a long-lived inspection — reads one
     /// coherent version of saved data even while a writer commits.
@@ -1218,6 +1231,41 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         self.scan_index_tuple_from(index, index_keys, Some(cursor), limit)
     }
 
+    fn for_each_index_entry(
+        &self,
+        index: &CatalogId,
+        visit: &mut IndexEntryVisitor<'_>,
+    ) -> Result<(), StoreError> {
+        let prefix = CellKey::index_key_prefix(index, &[]);
+        let mut cursor: Option<Vec<u8>> = None;
+        loop {
+            let page = match cursor.as_ref() {
+                Some(cursor) => {
+                    self.backend
+                        .scan_after(prefix.as_bytes(), cursor, CHILD_SCAN_PAGE_LIMIT)?
+                }
+                None => self
+                    .backend
+                    .scan(prefix.as_bytes(), CHILD_SCAN_PAGE_LIMIT)?,
+            };
+            cursor = page.entries.last().map(|(key, _)| key.clone());
+            for (key, value) in page.entries {
+                let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
+                let (index_keys, identity) = decode_index_entry_key(rest, &key)?;
+                visit(&index_keys, &identity, &value)?;
+            }
+            if !page.truncated {
+                break;
+            }
+            if cursor.is_none() {
+                return Err(StoreError::InvalidCursor {
+                    message: "index scan page was truncated without a cursor".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn scan_index_tuple_from(
         &self,
         index: &CatalogId,
@@ -1522,6 +1570,30 @@ fn decode_index_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
     decode_key_value(bytes)
         .map(|(key, _)| Some(key))
         .ok_or_else(|| corrupt_cell(bytes))
+}
+
+fn decode_index_entry_key(
+    mut bytes: &[u8],
+    full_key: &[u8],
+) -> Result<(Vec<SavedKey>, Vec<SavedKey>), StoreError> {
+    let mut index_keys = Vec::new();
+    loop {
+        match bytes.first().copied() {
+            Some(0) => {
+                bytes = bytes.get(1..).unwrap_or_default();
+                break;
+            }
+            Some(_) => {
+                let (key, consumed) =
+                    decode_key_value(bytes).ok_or_else(|| corrupt_cell(full_key))?;
+                index_keys.push(key);
+                bytes = bytes.get(consumed..).unwrap_or_default();
+            }
+            None => return Err(corrupt_cell(full_key)),
+        }
+    }
+    let identity = decode_index_identity(bytes, full_key)?;
+    Ok((index_keys, identity))
 }
 
 pub fn encode_tree_reference(value: &TreeReference) -> Result<Vec<u8>, StoreError> {

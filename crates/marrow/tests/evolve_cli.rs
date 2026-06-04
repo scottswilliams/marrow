@@ -311,6 +311,13 @@ resource Book at ^books(id: int)\n\
 pub fn add(isbn: string): Id(^books)\n\
 \x20   return nextId(^books)\n";
 
+const ISBN_COMPOSITE_INDEX_SOURCE: &str = "module books\n\
+resource Book at ^books(id: int)\n\
+\x20   required isbn: string\n\
+\x20   index byIsbn(isbn, id)\n\
+pub fn add(isbn: string): Id(^books)\n\
+\x20   return nextId(^books)\n";
+
 #[test]
 fn check_data_reports_repair_required_from_attached_store() {
     let root = native_books_project("check-data-repair", REQUIRED_NO_DEFAULT_SOURCE);
@@ -977,6 +984,62 @@ fn evolve_apply_resume_fails_closed_when_committed_index_entries_are_missing() {
         store
             .delete_index_subtree(&index_id, &[])
             .expect("delete rebuilt index");
+    }
+
+    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let catalog_epoch = accepted_catalog(&root).epoch;
+    let store_epoch = store_epoch(&root);
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
+    assert_eq!(catalog_epoch, baseline_epoch);
+    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+}
+
+#[test]
+fn evolve_apply_resume_fails_closed_when_stale_shorter_index_tuple_remains() {
+    let root = native_books_project(
+        "evolve-apply-proposal-index-resume-stale-short-row",
+        ISBN_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        for (id, isbn) in [(1, "111"), (2, "222")] {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id)])
+                .expect("write record");
+            seed_member(
+                &store,
+                &accepted_place,
+                id,
+                "isbn",
+                Scalar::Str(isbn.into()),
+            );
+        }
+    }
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+    write(&root, "src/books.mw", ISBN_COMPOSITE_INDEX_SOURCE);
+
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let index_id = CatalogId::new(accepted_catalog_id(&root, "books::^books::byIsbn")).unwrap();
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        store
+            .write_index_entry(
+                &index_id,
+                &[SavedKey::Str("stale".into())],
+                &[SavedKey::Int(99)],
+                b"stale".to_vec(),
+            )
+            .expect("write stale old-arity index row");
     }
 
     let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
