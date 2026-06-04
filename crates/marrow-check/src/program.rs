@@ -256,6 +256,22 @@ pub struct ProgramCatalog {
     /// transform obligation once its body passed the checker, carrying the read
     /// members and the lowered body apply executes per record.
     pub evolve_transforms: Vec<EvolveTransform>,
+    /// The current source's identity-key shape token for each store, keyed by stable catalog
+    /// id. The token is the comma-joined key types in order, so discharge compares it against
+    /// the accepted shape to detect a key arity or key-type change. Like the structural
+    /// signatures it comes from source, so a re-key is detected even for an otherwise-unchanged
+    /// program.
+    pub declared_store_key_shapes: HashMap<String, String>,
+    /// The current source's identity-aware structural signature for each resource member,
+    /// keyed by stable catalog id. The signature records the member's kind, its key shape if
+    /// keyed, and its leaf token if a leaf, so discharge compares it against the accepted
+    /// signature to fail closed on any structural divergence — a keyed-layer re-key, a
+    /// group<->keyed-group reshape, or an unforeseen transition — that no targeted classifier
+    /// already covers, and the leaf-position arm derives the member's declared leaf token by
+    /// stripping its `leaf:` prefix, so the signature is the single in-memory source for that
+    /// token. It comes from source, so the divergence is detected even for an
+    /// otherwise-unchanged program that emits no proposal.
+    pub declared_member_structs: HashMap<String, String>,
     pub proposal: Option<marrow_project::CatalogMetadata>,
 }
 

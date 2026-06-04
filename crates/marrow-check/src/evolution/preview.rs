@@ -9,7 +9,7 @@
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 
-use super::discharge::discharge;
+use super::discharge::{RepairDiagnostic, discharge};
 use super::witness::{CatalogFingerprint, EvolutionWitness};
 use crate::program::CheckedProgram;
 
@@ -20,7 +20,7 @@ use crate::program::CheckedProgram;
 pub fn preview(
     program: &CheckedProgram,
     store: &TreeStore,
-) -> Result<(EvolutionWitness, Vec<String>), StoreError> {
+) -> Result<(EvolutionWitness, Vec<RepairDiagnostic>), StoreError> {
     let discharge = discharge(program, store)?;
 
     let commit = store.read_commit_metadata()?;

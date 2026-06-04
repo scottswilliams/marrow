@@ -5,6 +5,7 @@ use std::path::Path;
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_syntax::{Severity, SourceSpan};
 
+use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CheckDiagnostic, CheckedProgram};
@@ -28,6 +29,10 @@ pub(crate) struct CatalogBinding {
     pub(crate) accepted_epoch: Option<u64>,
     pub(crate) accepted_digest: Option<String>,
     pub(crate) ids: HashMap<CatalogKey, String>,
+    /// The `(kind, path) -> stable id` map for resolving a member's referent enum or store
+    /// to its identity-aware leaf token. It covers proposal-only ids the accepted-only `ids`
+    /// omits, and is never bound onto live facts.
+    pub(crate) leaf_token_ids: HashMap<CatalogKey, String>,
     pub(crate) proposal: Option<CatalogMetadata>,
 }
 
@@ -40,15 +45,86 @@ pub(crate) fn bind_catalog(
 ) {
     let accepted = read_accepted_catalog(project_root, config, diagnostics);
     let binding = catalog_binding(program, accepted.as_ref(), evolve, diagnostics);
+    let declared_store_key_shapes = declared_store_key_shapes(program, &binding.leaf_token_ids);
+    let declared_member_structs = declared_member_structs(program, &binding.leaf_token_ids);
     program
         .facts
         .bind_catalog_ids(&program.modules, &binding.ids);
     program.catalog.accepted_epoch = binding.accepted_epoch;
     program.catalog.accepted_digest = binding.accepted_digest;
     program.catalog.accepted_entries = accepted.map(|catalog| catalog.entries).unwrap_or_default();
-    program.catalog.evolve_defaults = bound_defaults(&evolve.defaults, &binding.ids);
-    program.catalog.evolve_transforms = bound_transforms(&evolve.transforms, &binding.ids);
+    // Defaults and transforms bind through the proposal id map, not the accepted-only ids:
+    // a default or transform may target a brand-new member current source adds, whose stable
+    // id lives only in the proposal until it is accepted. Discharge keys that member's
+    // obligation by the same proposal id, so the fill resolves to the obligation it covers.
+    program.catalog.evolve_defaults = bound_defaults(&evolve.defaults, &binding.leaf_token_ids);
+    program.catalog.evolve_transforms =
+        bound_transforms(&evolve.transforms, &binding.leaf_token_ids);
+    program.catalog.declared_store_key_shapes = declared_store_key_shapes;
+    program.catalog.declared_member_structs = declared_member_structs;
     program.catalog.proposal = binding.proposal;
+}
+
+/// The current source's identity-key shape token for each store, keyed by its bound stable
+/// catalog id. The token is the comma-joined key types in order, so discharge can detect a
+/// key arity or key-type change even when the program is otherwise unchanged and emits no
+/// proposal. A store with no bound identity (pending first-run identity) is omitted, the same
+/// way a member with no bound identity is.
+fn declared_store_key_shapes(
+    program: &CheckedProgram,
+    ids: &HashMap<CatalogKey, String>,
+) -> HashMap<String, String> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module.stores.iter().filter_map(|store| {
+                let catalog_id = ids.get(&CatalogKey::new(
+                    CatalogEntryKind::Store,
+                    store_path(&module.name, &store.root),
+                ))?;
+                let token = leaf_type::store_key_shape_token(&store.identity_keys);
+                Some((catalog_id.clone(), token))
+            })
+        })
+        .collect()
+}
+
+/// The current source's identity-aware structural signature for each resource member, keyed
+/// by its bound stable catalog id. The signature records the member's kind, its key shape if a
+/// keyed layer, and its leaf token if a leaf, so discharge compares it against the accepted
+/// signature and fails closed on a structural divergence the leaf-token, reshape, rename,
+/// default, transform, and retire classifiers all leave unclaimed. Read from source so a
+/// divergence is detected even when the program is otherwise unchanged and emits no proposal. A
+/// member with no bound identity (a pending first-run identity) or an unresolved leaf referent
+/// is omitted, the same way the store key shapes are.
+fn declared_member_structs(
+    program: &CheckedProgram,
+    ids: &HashMap<CatalogKey, String>,
+) -> HashMap<String, String> {
+    source_catalog_entries(program)
+        .into_iter()
+        .filter(|source| source.kind == CatalogEntryKind::ResourceMember)
+        .filter_map(|source| {
+            let module = member_struct_module(&source);
+            let leaf = source.leaf.as_ref().map(|leaf| &leaf.ty);
+            let token =
+                leaf_type::member_struct_token(program, module, leaf, &source.key_params, ids)?;
+            let catalog_id = ids.get(&CatalogKey::new(source.kind, source.path))?;
+            Some((catalog_id.clone(), token))
+        })
+        .collect()
+}
+
+/// The declaring module a member's structural signature resolves its leaf referent under: a
+/// leaf member's own declaring module, or the empty string for a group (whose signature needs
+/// no referent resolution).
+fn member_struct_module(source: &SourceCatalogEntry) -> &str {
+    source
+        .leaf
+        .as_ref()
+        .map(|leaf| leaf.module.as_str())
+        .unwrap_or("")
 }
 
 fn read_accepted_catalog(
@@ -132,10 +208,8 @@ fn catalog_binding(
                     if rename.is_some() {
                         push_rename_target_live(source, diagnostics);
                     }
-                    ids.insert(
-                        CatalogKey::new(source.kind, source.path.clone()),
-                        binding.entry.stable_id.clone(),
-                    );
+                    let stable_id = binding.entry.stable_id.clone();
+                    ids.insert(CatalogKey::new(source.kind, source.path.clone()), stable_id);
                 } else if let Some(rename) = rename {
                     apply_rename(&mut proposal_entries, source, &rename.from_path, &mut ids);
                     changed = true;
@@ -159,6 +233,29 @@ fn catalog_binding(
             ) {
                 changed = true;
             }
+            // Record each store's identity-key shape and each member's structural signature into
+            // the proposal once every referent's id is bound, so a renamed enum or store resolves
+            // to its preserved identity. The proposal id map covers freshly-minted referents the
+            // accepted-only `ids` map does not, without binding proposal ids onto live facts. A
+            // signature that differs from the accepted snapshot is a real change that advances the
+            // proposal; backfilling an unknown one is not.
+            let leaf_token_ids = proposal_id_map(&proposal_entries);
+            if record_store_key_shapes(
+                program,
+                &mut proposal_entries,
+                &leaf_token_ids,
+                Some(catalog),
+            ) {
+                changed = true;
+            }
+            if record_member_structs(
+                program,
+                &mut proposal_entries,
+                &leaf_token_ids,
+                Some(catalog),
+            ) {
+                changed = true;
+            }
             changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
         }
         None => {
@@ -169,13 +266,14 @@ fn catalog_binding(
                 report_unresolved_intent(&retire.file, retire.span, diagnostics);
             }
             let mut allocator = StableIdAllocator::empty();
-            Some(CatalogMetadata::new(
-                1,
-                source_entries
-                    .iter()
-                    .map(|source| proposed_catalog_entry(source, &mut allocator))
-                    .collect(),
-            ))
+            let mut proposal_entries: Vec<CatalogEntry> = source_entries
+                .iter()
+                .map(|source| proposed_catalog_entry(source, &mut allocator))
+                .collect();
+            let leaf_token_ids = proposal_id_map(&proposal_entries);
+            record_store_key_shapes(program, &mut proposal_entries, &leaf_token_ids, None);
+            record_member_structs(program, &mut proposal_entries, &leaf_token_ids, None);
+            Some(CatalogMetadata::new(1, proposal_entries))
         }
     };
 
@@ -195,12 +293,40 @@ fn catalog_binding(
         });
     }
 
+    // The leaf token resolves a member's referent enum or store to its stable id. When a
+    // proposal exists its entries carry every referent's id, including freshly-minted ones
+    // the accepted-only `ids` map omits; when nothing changed, all referents are accepted
+    // and `ids` already has them. This map is for token resolution only and is never bound
+    // onto live facts, so a proposal-only identity does not leak into the program's facts.
+    let leaf_token_ids = match &proposal {
+        Some(proposal) => proposal_id_map(&proposal.entries),
+        None => ids.clone(),
+    };
+
     CatalogBinding {
         accepted_epoch: accepted.map(|catalog| catalog.epoch),
         accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
         ids,
+        leaf_token_ids,
         proposal,
     }
+}
+
+/// The `(kind, path) -> stable id` map of a proposal's entries, keyed by each entry's
+/// current path. Unlike the accepted-only binding map, this covers freshly-minted and
+/// renamed referents, so the identity-aware leaf token can resolve an enum or store the
+/// accepted catalog does not yet record.
+fn proposal_id_map(entries: &[CatalogEntry]) -> HashMap<CatalogKey, String> {
+    entries
+        .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+        .map(|entry| {
+            (
+                CatalogKey::new(entry.kind, entry.path.clone()),
+                entry.stable_id.clone(),
+            )
+        })
+        .collect()
 }
 
 /// The stable id a member-target evolve path binds to, or `None` when it names no
@@ -398,6 +524,120 @@ fn apply_rename(
     );
 }
 
+/// Record each store's identity-key shape into its proposal entry, once its id is bound.
+/// Returns whether any store's shape is a real change relative to the accepted snapshot, so
+/// an otherwise-unchanged program that only re-keyed a store still advances the proposal.
+///
+/// A store accepted before key shapes were recorded carries no accepted shape; filling it
+/// from current source is not a re-key, since the durable keys are unchanged. With no accepted
+/// snapshot (a first-run catalog) every shape is recorded without flagging change, because the
+/// whole catalog is new. The discharge fail-closes on a real re-key; this only freezes the
+/// shape so a later change has a baseline to compare against.
+fn record_store_key_shapes(
+    program: &CheckedProgram,
+    entries: &mut [CatalogEntry],
+    ids: &HashMap<CatalogKey, String>,
+    accepted: Option<&CatalogMetadata>,
+) -> bool {
+    let accepted_shapes: HashMap<&str, &Option<String>> = accepted
+        .map(|catalog| {
+            catalog
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == CatalogEntryKind::Store)
+                .map(|entry| (entry.stable_id.as_str(), &entry.accepted_key_shape))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut changed = false;
+    for module in &program.modules {
+        for store in &module.stores {
+            let key = CatalogKey::new(
+                CatalogEntryKind::Store,
+                store_path(&module.name, &store.root),
+            );
+            let Some(stable_id) = ids.get(&key) else {
+                continue;
+            };
+            let Some(entry) = entries
+                .iter_mut()
+                .find(|entry| &entry.stable_id == stable_id)
+            else {
+                continue;
+            };
+            let shape = Some(leaf_type::store_key_shape_token(&store.identity_keys));
+            let accepted_shape = accepted_shapes.get(stable_id.as_str()).copied();
+            if let Some(Some(_)) = accepted_shape
+                && accepted_shape != Some(&shape)
+            {
+                changed = true;
+            }
+            entry.accepted_key_shape = shape;
+        }
+    }
+    changed
+}
+
+/// Record each resource member's identity-aware structural signature into its proposal entry,
+/// once every referent's id is bound. The signature covers leaf and group members alike, so a
+/// keyed-layer re-key, a group<->keyed-group reshape, or any other structural transition reads
+/// as a different signature. Returns whether any member's signature is a real change relative to
+/// the accepted snapshot, so an otherwise-unchanged program that only reshaped a member still
+/// advances the proposal.
+///
+/// A member accepted before signatures were recorded carries none; filling it from current
+/// source is not a change, since the durable shape is unchanged. With no accepted snapshot (a
+/// first-run catalog) every signature is recorded without flagging change, because the whole
+/// catalog is new. The discharge fail-closes on a real divergence; this only freezes the
+/// signature so a later change has a baseline to compare against.
+fn record_member_structs(
+    program: &CheckedProgram,
+    entries: &mut [CatalogEntry],
+    ids: &HashMap<CatalogKey, String>,
+    accepted: Option<&CatalogMetadata>,
+) -> bool {
+    let accepted_structs: HashMap<&str, &Option<String>> = accepted
+        .map(|catalog| {
+            catalog
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == CatalogEntryKind::ResourceMember)
+                .map(|entry| (entry.stable_id.as_str(), &entry.accepted_struct))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut changed = false;
+    for source in source_catalog_entries(program) {
+        if source.kind != CatalogEntryKind::ResourceMember {
+            continue;
+        }
+        let module = member_struct_module(&source);
+        let leaf = source.leaf.as_ref().map(|leaf| &leaf.ty);
+        let token = leaf_type::member_struct_token(program, module, leaf, &source.key_params, ids);
+        let Some(stable_id) = ids.get(&CatalogKey::new(source.kind, source.path.clone())) else {
+            continue;
+        };
+        let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| &entry.stable_id == stable_id)
+        else {
+            continue;
+        };
+        let accepted_struct = accepted_structs.get(stable_id.as_str()).copied();
+        // A signature differing from a known accepted one is a real structural change. A member
+        // with no recorded accepted signature (minted before signatures, or a fresh entry this
+        // cycle) has an unchanged durable shape, so recording its signature forward is not a
+        // change.
+        if let Some(Some(_)) = accepted_struct
+            && accepted_struct != Some(&token)
+        {
+            changed = true;
+        }
+        entry.accepted_struct = token;
+    }
+    changed
+}
+
 /// Mark each retired entity removed in the proposal. A retire names a destructive
 /// intent over an accepted entry whose source declaration is gone; a path that
 /// matches no active accepted entry is a target diagnostic. A retire of an entry
@@ -490,12 +730,39 @@ impl<'a> AcceptedCatalog<'a> {
     }
 }
 
+/// The leaf-position facts of a resource member that holds a single value cell: a plain
+/// field or a keyed-leaf layer. The declaring module resolves an unqualified enum referent,
+/// and the value type yields the value half of the member's identity-aware leaf token. The
+/// member's key-param shape lives on the [`SourceCatalogEntry`], which the structural
+/// signature reads, so a value-type change and a key-shape change are both detected by
+/// identity.
+#[derive(Debug)]
+pub(crate) struct MemberLeaf {
+    pub(crate) module: String,
+    pub(crate) ty: marrow_schema::Type,
+}
+
 #[derive(Debug)]
 pub(crate) struct SourceCatalogEntry {
     pub(crate) kind: CatalogEntryKind,
     pub(crate) path: String,
     pub(crate) file: std::path::PathBuf,
     pub(crate) span: SourceSpan,
+    /// The leaf-position facts of a resource member, `None` for a group (which holds no
+    /// single value cell). A plain field and a keyed-leaf layer (a desugared `sequence`/`map`,
+    /// whose value cell is the member itself) both record their declaring module and value
+    /// type. The module resolves an unqualified enum referent; the value type and the
+    /// member's `key_params` together feed the identity-aware leaf token, so a later change of
+    /// value type OR of key shape (a plain field becoming a keyed leaf, or its key arity/types
+    /// changing) is detected by identity rather than by source spelling.
+    pub(crate) leaf: Option<MemberLeaf>,
+    /// The member's key-param shape: empty for a plain field or an unkeyed group, non-empty
+    /// for a keyed group or a keyed-leaf layer. The structural signature reads this to tell a
+    /// keyed group from a plain one (and to record its key shape), so a group<->keyed-group
+    /// reshape or a keyed-group re-key is a different signature. A non-member entry leaves it
+    /// empty. A leaf member's key shape is already inside its `leaf` facts; this is the only
+    /// place a group's key shape lives.
+    pub(crate) key_params: Vec<marrow_schema::KeyDef>,
 }
 
 pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCatalogEntry> {
@@ -507,6 +774,8 @@ pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCata
                 path: resource_path(&module.name, &resource.name),
                 file: module.source_file.clone(),
                 span: SourceSpan::default(),
+                leaf: None,
+                key_params: Vec::new(),
             });
             collect_resource_members(&mut entries, module, &resource.name, &[], &resource.members);
         }
@@ -516,6 +785,8 @@ pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCata
                 path: store_path(&module.name, &store.root),
                 file: module.source_file.clone(),
                 span: SourceSpan::default(),
+                leaf: None,
+                key_params: Vec::new(),
             });
             for index in &store.indexes {
                 entries.push(SourceCatalogEntry {
@@ -523,6 +794,8 @@ pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCata
                     path: store_index_path(&module.name, &store.root, &index.name),
                     file: module.source_file.clone(),
                     span: SourceSpan::default(),
+                    leaf: None,
+                    key_params: Vec::new(),
                 });
             }
         }
@@ -532,6 +805,8 @@ pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCata
                 path: enum_path(&module.name, &enum_schema.name),
                 file: module.source_file.clone(),
                 span: SourceSpan::default(),
+                leaf: None,
+                key_params: Vec::new(),
             });
             for index in 0..enum_schema.members.len() {
                 entries.push(SourceCatalogEntry {
@@ -539,6 +814,8 @@ pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCata
                     path: enum_member_path(&module.name, &enum_schema.name, index, enum_schema),
                     file: module.source_file.clone(),
                     span: SourceSpan::default(),
+                    leaf: None,
+                    key_params: Vec::new(),
                 });
             }
         }
@@ -561,9 +838,25 @@ fn collect_resource_members(
             path: resource_member_path(&module.name, resource, &path),
             file: module.source_file.clone(),
             span: SourceSpan::default(),
+            leaf: member_leaf(module, node),
+            key_params: node.key_params.clone(),
         });
         collect_resource_members(entries, module, resource, &path, &node.members);
     }
+}
+
+/// The declaring module and declared type a resource member carries its durable bytes as,
+/// or `None` for a group (which holds no single leaf cell). A plain field records its own
+/// type; a keyed-leaf-layer (`map[K, V]`) member records its value type V, since the map
+/// field is itself the leaf its entries' values are stored under. The module resolves an
+/// unqualified enum referent; both feed the identity-aware leaf token that detects a value
+/// type change by referent identity across leaf kinds, so a map value retype is caught the
+/// same way a plain-field retype is.
+fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Option<MemberLeaf> {
+    node.leaf_value_type().map(|ty| MemberLeaf {
+        module: module.name.clone(),
+        ty: ty.clone(),
+    })
 }
 
 /// A source entity the accepted catalog does not yet record has no durable
@@ -696,6 +989,11 @@ fn proposed_catalog_entry(
         stable_id: allocator.allocate(),
         aliases: Vec::new(),
         lifecycle: CatalogLifecycle::Active,
+        // A store's identity-key shape and a member's structural signature are recorded in
+        // post-passes once every referent's id is bound; a freshly minted entry starts without
+        // either, and a leaf member's accepted leaf token is read back off its signature.
+        accepted_key_shape: None,
+        accepted_struct: None,
     }
 }
 
@@ -761,19 +1059,15 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// at commit and the activation-window fence enforces, so it binds exactly the facts a
 /// stored snapshot must satisfy: each `resource`, `store`, `enum`, and module `const`.
 ///
-/// It deliberately excludes the `evolve` block. An evolve block is a transient
-/// transition: once a rename or retire is recorded in the accepted catalog, the block
-/// describes work already done, and the author may keep or delete it. Hashing it here
-/// would fence the store on a transient, so deleting a consumed block would read as
-/// schema drift. The durable shape a stored snapshot must match does not include the
-/// transition that produced it, so the stamp and fence track shape alone.
+/// It excludes the `evolve` block. A consumed block describes work already recorded in
+/// the accepted catalog, so hashing it would read its deletion as schema drift; the fence
+/// tracks the durable shape, not the transition that produced it.
 ///
-/// The digest is gap-free by construction: rather than enumerate durable facts field
-/// by field, it renders every shape declaration through the canonical formatter and
-/// hashes the normalized text. Reformatting binds every member type, required flag,
-/// identity key, index uniqueness and columns, keyed-layer key name and type at any
-/// nesting depth, enum member, and module constant, so any shape change drifts the
-/// digest while a pure whitespace reformat of the same declarations leaves it unchanged.
+/// The digest hashes the canonical formatter's rendering of those declarations rather than
+/// enumerating their fields, so any shape change drifts it while a whitespace reformat does
+/// not. The formatter is therefore a frozen anchor: a golden over its output pins the text,
+/// so a formatter change that moved it for an unchanged shape surfaces for review rather
+/// than silently re-reading every committed snapshot as drift.
 pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
     digest_of(render_declarations(program, DigestScope::Shape))
 }

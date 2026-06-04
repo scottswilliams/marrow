@@ -13,17 +13,20 @@ use marrow_store::tree::TreeStore;
 use crate::write_plan::{PlanStep, WritePlan};
 
 use super::admission::{expected_retire_count, gate_obligations};
-use super::backfill::{stage_default_backfill, stage_index_rebuild, stage_retire_deletes};
-use super::scan::for_each_record;
+use super::backfill::{
+    stage_default_backfill, stage_index_drop, stage_index_rebuild, stage_retire_deletes,
+};
 use super::transform::stage_transform;
 use super::validate::{assert_commit_pin, validate_witness};
 use super::window::{FenceError, StampFacts, current_engine_profile, fence, metadata_stamp};
 
-/// The scoped developer decision a destructive retire requires.
+/// The scoped developer decision a destructive retire requires. Each entry names one
+/// retired catalog id and the exact populated count the developer approved dropping for
+/// it. Admission matches every entry against the witness per-id, so an approval is in
+/// scope only when its ids and their counts equal the witness destructive set exactly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approval {
-    pub catalog_ids: Vec<CatalogId>,
-    pub populated: usize,
+    pub retires: Vec<(CatalogId, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,16 +116,19 @@ pub fn apply(
     let mut steps = Vec::new();
     let places = source_places(program);
     let runtime = program.runtime();
+    let ctx = StageCtx {
+        places: &places,
+        store,
+        program,
+        runtime: &runtime,
+    };
     for obligation in &witness.verdicts {
         stage_obligation(
+            &ctx,
             &obligation.catalog_id,
             &obligation.verdict,
-            &places,
-            store,
             &mut steps,
             &mut staged,
-            program,
-            &runtime,
         )?;
     }
 
@@ -217,22 +223,36 @@ pub(super) struct StagedWork {
     pub(super) records_transformed: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The read-only context every staging helper consults: the source places to scan, the
+/// store snapshot, and the checked program and runtime a transform evaluates against.
+/// The mutable accumulators (`steps`, `staged`) stay separate so the staging walk owns
+/// them across obligations.
+struct StageCtx<'a> {
+    places: &'a [CheckedSavedPlace],
+    store: &'a TreeStore,
+    program: &'a CheckedProgram,
+    runtime: &'a CheckedRuntimeProgram,
+}
+
 fn stage_obligation(
+    ctx: &StageCtx,
     catalog_id: &CatalogId,
     verdict: &Verdict,
-    places: &[CheckedSavedPlace],
-    store: &TreeStore,
     steps: &mut Vec<PlanStep>,
     staged: &mut StagedWork,
-    program: &CheckedProgram,
-    runtime: &CheckedRuntimeProgram,
 ) -> Result<(), ApplyError> {
+    let StageCtx {
+        places,
+        store,
+        program,
+        runtime,
+    } = ctx;
     match verdict {
         Verdict::Default { value } => {
             stage_default_backfill(catalog_id, value, places, store, steps, staged)
         }
         Verdict::DerivedRebuild => stage_index_rebuild(catalog_id, places, store, steps, staged),
+        Verdict::IndexDropped => stage_index_drop(catalog_id, steps),
         Verdict::DestructiveDecisionRequired { .. } => {
             stage_retire_deletes(catalog_id, places, store, steps, staged)
         }
@@ -241,7 +261,6 @@ fn stage_obligation(
         }
         Verdict::NoOp
         | Verdict::CatalogOnly
-        | Verdict::Deprecated
         | Verdict::DataProof
         | Verdict::RepairRequired { .. } => Ok(()),
     }
@@ -325,6 +344,6 @@ pub(super) fn for_each_place_record(
     visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
 ) -> Result<(), ApplyError> {
     let store_id = store_id(place)?;
-    for_each_record(store, &store_id, place.identity_keys.len(), visit)?;
+    store.for_each_record(&store_id, place.identity_keys.len(), visit)?;
     Ok(())
 }

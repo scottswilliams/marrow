@@ -1,4 +1,6 @@
-use marrow_check::evolution::{EvolutionWitness, Verdict};
+use std::collections::HashMap;
+
+use marrow_check::evolution::{EvolutionWitness, RepairDiagnostic, Verdict};
 use marrow_run::evolution::{ApplyError, ApplyOutcome};
 
 use crate::{CheckFormat, report_simple_error, write_json};
@@ -17,7 +19,11 @@ pub(super) fn data_check_ok(dir: &str, witness: &EvolutionWitness, format: Check
     }
 }
 
-pub(super) fn preview(witness: &EvolutionWitness, diagnostics: &[String], format: CheckFormat) {
+pub(super) fn preview(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+    format: CheckFormat,
+) {
     match format {
         CheckFormat::Text => {
             println!("evolution preview");
@@ -56,13 +62,17 @@ pub(super) fn preview(witness: &EvolutionWitness, diagnostics: &[String], format
             "records_scanned": witness.counts.scanned_records,
             "records_to_backfill": witness.counts.records_to_backfill,
             "records_to_transform": witness.counts.records_to_transform,
-            "diagnostics": diagnostics,
+            "diagnostics": diagnostics.iter().map(|diagnostic| &diagnostic.message).collect::<Vec<_>>(),
             "blocking": blocking_json(witness, diagnostics),
         })),
     }
 }
 
-pub(super) fn blocked(witness: &EvolutionWitness, diagnostics: &[String], format: CheckFormat) {
+pub(super) fn blocked(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+    format: CheckFormat,
+) {
     match format {
         CheckFormat::Text => {
             render_blocking_text(witness, diagnostics);
@@ -92,7 +102,7 @@ fn report_envelope(report: &BlockingReport) -> serde_json::Value {
     })
 }
 
-fn render_blocking_text(witness: &EvolutionWitness, diagnostics: &[String]) {
+fn render_blocking_text(witness: &EvolutionWitness, diagnostics: &[RepairDiagnostic]) {
     for report in blocking_reports(witness, diagnostics) {
         eprintln!("{}: {}", report.code, report.message);
     }
@@ -106,35 +116,48 @@ struct BlockingReport {
     populated: Option<usize>,
 }
 
-fn first_blocking_report(witness: &EvolutionWitness, diagnostics: &[String]) -> BlockingReport {
+fn first_blocking_report(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+) -> BlockingReport {
     blocking_reports(witness, diagnostics)
         .into_iter()
         .next()
         .unwrap_or_else(generic_blocking_report)
 }
 
-fn blocking_json(witness: &EvolutionWitness, diagnostics: &[String]) -> Vec<serde_json::Value> {
+fn blocking_json(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+) -> Vec<serde_json::Value> {
     blocking_reports(witness, diagnostics)
         .iter()
         .map(report_envelope)
         .collect()
 }
 
-fn blocking_reports(witness: &EvolutionWitness, diagnostics: &[String]) -> Vec<BlockingReport> {
+fn blocking_reports(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+) -> Vec<BlockingReport> {
+    let messages: HashMap<&str, &str> = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.catalog_id.as_str(), diagnostic.message.as_str()))
+        .collect();
     let mut reports = Vec::new();
-    let mut repair_diagnostics = diagnostics.iter();
     for obligation in &witness.verdicts {
         match &obligation.verdict {
             Verdict::RepairRequired { .. } => {
+                let catalog_id = obligation.catalog_id.as_str();
                 reports.push(BlockingReport {
                     code: "evolve.repair_required",
-                    message: repair_diagnostics.next().cloned().unwrap_or_else(|| {
-                        format!(
-                            "catalog id {} requires repair before activation",
-                            obligation.catalog_id.as_str()
-                        )
-                    }),
-                    catalog_id: Some(obligation.catalog_id.as_str().to_string()),
+                    message: messages
+                        .get(catalog_id)
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| {
+                            format!("catalog id {catalog_id} requires repair before activation")
+                        }),
+                    catalog_id: Some(catalog_id.to_string()),
                     populated: None,
                 });
             }

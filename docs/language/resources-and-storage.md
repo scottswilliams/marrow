@@ -176,9 +176,15 @@ value, or the type of the field. In the example above, code still reads and writ
 ^books(id).title = "Small Gods"
 ```
 
-Source stable-id annotations are not part of v0.1. Durable field identity is
-catalog work; for this release, data evolution treats source spelling and
-explicit maintenance code as the contract.
+Durable identity is owned by an invisible catalog, not by source spelling. The
+catalog is compiler and tooling infrastructure: there are no stable-id
+annotations in source and no user-facing catalog command. Each resource, store,
+field, keyed layer, index, and enum member gets a random opaque stable id,
+recorded automatically the first time the project runs and advanced only by
+`evolve apply`; `check` never writes it. Because identity lives in the catalog,
+renaming a field in source does not change its durable identity or move stored
+data — the rename carries identity forward through `evolve rename` or an alias
+the accepted catalog already records (see Evolution below).
 
 Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code

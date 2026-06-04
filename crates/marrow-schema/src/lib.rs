@@ -211,6 +211,18 @@ impl Node {
             _ => None,
         }
     }
+
+    /// The type a single value cell of this node holds, for any [`NodeKind::Slot`]: a
+    /// plain field's own type, or a keyed-leaf-layer (`map[K, V]`) entry's value type V.
+    /// A group holds no single value cell and resolves to `None`. Evolution records this
+    /// as the member's identity-aware leaf token, so a value-type change is detected by
+    /// referent identity for a keyed-leaf value the same way it is for a plain field.
+    pub fn leaf_value_type(&self) -> Option<&Type> {
+        match &self.kind {
+            NodeKind::Slot { ty, .. } => Some(ty),
+            NodeKind::Group => None,
+        }
+    }
 }
 
 /// The durable root and identity key shape declared by a store. Identity keys

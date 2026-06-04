@@ -43,6 +43,20 @@ level a `state: Status` field reads back as its member: a read of `state` is a
 `Status` value, equal to `Status::archived` again. Raw inspection works on the
 stored bytes, so `marrow data get` shows the stored member identity.
 
+Because the stored value is a member identity rather than a position, removing a
+selectable member — or marking it `category`, or giving it children, all of which
+make it no longer selectable — is checked against saved data, not assumed safe.
+While saved data still selects such a member, `marrow evolve preview` reports the
+change as repair-required and `marrow evolve apply` refuses it: the stored identity
+names a member the new enum no longer offers as a value. Resolve it by migrating
+the affected records to a current member before removing the old one. Reordering
+members keeps every identity and needs no repair. Renaming a member is
+identity-preserving when declared with `evolve rename`: the member's stable identity
+moves to the new spelling, so stored values stay valid. A bare source rename with no
+`evolve rename` intent is read as the old member removed plus a new one added, so a
+stored value naming the old member fails closed like any other removal. [Data
+Evolution](../data-evolution.md) covers the preview-and-apply flow.
+
 ## Hierarchies
 
 Members may nest into a tree. A flat enum is the degenerate one-level tree, so

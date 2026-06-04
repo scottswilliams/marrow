@@ -22,9 +22,61 @@ schema does not fully describe until explicit data-evolution work runs.
 | Add a sparse field | Source change only. Existing records stay valid; the field reads as absent until written. |
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
 | Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. |
+| Change a leaf's type | A populated leaf-type change fails closed: the stored bytes were written under the old type, so the new type cannot read them — even when its decoder would accept the old bytes — and `marrow evolve preview` reports it. A transform may not read the member it replaces, so an in-place reinterpret is not the resolution. Instead add a new field of the new type, populate it with an `evolve transform` computed from the old field, then retire the old field. The check is total over leaf-position members — every plain field and every `map[K, V]` value, required and sparse alike — and detects any change to a member's leaf type: scalar to scalar, scalar to an enum or a reference, or one named type to another. An empty leaf has no data to reinterpret and changes freely. |
+| Remove or unselect an enum member | While saved data still selects the member, the change fails closed: a stored value carries the member's stable identity, which the new enum no longer offers. Removing the member, marking it `category`, or giving it children all make it unselectable, and `marrow evolve preview` reports repair-required. Every leaf referencing the enum is scanned, required and sparse alike, so a stored value naming the gone member is caught regardless of the holding field's requiredness. Migrate the affected records to a current member first. Reordering members keeps every identity and is a source change only. Renaming a member is identity-preserving the same way a field rename is: declare it with `evolve rename`, and the member's stable identity moves to the new spelling so stored values addressed by that identity stay valid. A bare source rename with no `evolve rename` intent is read as the old member removed plus a new one added, so a stored value naming the old member then fails closed at preview. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
-| Remove a field | A sparse drop is deprecated when nothing reads it; populated destructive removal needs `evolve retire` plus approval. |
+| Remove a field | A sparse drop nothing reads is a no-op: its data lingers harmlessly under a stable id source no longer declares. Populated destructive removal needs `evolve retire` plus approval. |
+| Change a store's identity key shape | Not supported over saved data. Changing the key arity or any identity key type fails closed: existing records are keyed by the old shape and the new shape cannot address them. Model a new store and migrate with maintenance code. |
+| Re-key a keyed layer | Not supported over populated entries. A keyed layer — a keyed-leaf layer (including `sequence`/`map` sugar) or an author-written keyed-group layer — keys its entries by its key shape; changing that layer's key arity or any key type fails closed — existing entries are keyed by the old shape and the new one addresses none of them. A keyed-leaf `map[K, V]` is a leaf position whose token folds in both its key shape and its value type, so a change to its key arity or key type is detected as a leaf type change exactly like a value-type change; a keyed-group layer is detected as a structural divergence. Either way `marrow evolve preview` reports it; model a new layer and migrate with maintenance code. |
+| Reshape a group to or from a keyed layer | Not supported over populated data. Turning a plain group into a keyed layer (or the reverse) changes the durable shape its data occupies, so it fails closed: the old data lives under the old shape and the new shape cannot read it. `marrow evolve preview` reports it; model a new member of the new shape and migrate with maintenance code. |
 | Delete a whole root or drop a required field | Explicit maintenance/repair code under `--maintenance`, checked before and after. |
+
+The type-change check covers every leaf the same way, by the identity of the type
+its stored bytes were accepted under. A `map[K, V]` keyed-leaf layer is a leaf
+position whose accepted leaf token folds in both its key shape and its value type
+V, so a change to its value type — or to its key arity or key type — changes the
+token and is detected and fails closed exactly like a plain-field retype:
+`marrow evolve preview` reports it as repair-required and the resolution is the
+same add-new, transform, retire path. A value type Marrow cannot reduce to a
+single comparable leaf — a `sequence` value (`map[K, sequence[V]]`) or an
+`unknown` — still records a stable "untokenizable" marker rather than no token, so
+a change into, out of, or between such values reads as a different value and fails
+closed the same way; it is never silently reinterpreted. The map's key shape rides
+inside the same leaf token as a prefix on the value, so a key-arity or key-type
+change is caught as a leaf type change, not through the store/keyed-group key-shape
+path.
+
+Beyond these named cases the check is total by construction. Each durable member
+records the identity-aware shape its data was accepted under — its kind, its key
+shape if it is a keyed layer, and its leaf token if it is a leaf — and a
+default-deny backstop fails closed any member whose recorded shape diverges from
+current source and which still holds data, even when no named classifier handles
+that exact transition. The backstop is total over nesting depth: it reaches a member
+nested below any number of keyed layers by descending through each layer's existing
+entries, so a divergence deep under unchanged keyed ancestors is judged against the
+entries it would orphan, not skipped. So a keyed-layer re-key, a group-to-keyed-layer
+reshape, or any structural change v0.1 has no specific migration path for cannot
+silently activate over saved data, at any depth; an unpopulated member, having nothing
+to orphan, reshapes freely.
+
+Changing a store's identity key shape — its key arity or any identity key type —
+is not supported over saved data and fails closed. Existing records are addressed
+by the old key bytes, which live in the saved path itself, so a record keyed by an
+`int` cannot be found under a `string` key and a single-key record cannot be found
+under a composite key. v0.1 has no graceful key migration: `marrow evolve preview`
+reports the change as repair-required and `marrow evolve apply` refuses it. To
+re-key, model a new store and migrate with maintenance code.
+
+A keyed layer's key shape fails closed the same way over its populated entries.
+Changing a layer's key arity or any key type orphans every entry addressed by the
+old shape, so `marrow evolve preview` reports it as repair-required and the
+resolution is to model a new layer and migrate with maintenance code. The two layer
+shapes reach that verdict by different detectors: a keyed-leaf `map[K, V]` is a
+leaf, and its key shape rides inside its leaf token as a prefix on the value, so a
+key change is caught as a leaf type change; a keyed-group layer is not a leaf, so
+its key change is caught as a structural divergence. Reshaping a plain group into a
+keyed group, or the reverse, changes the durable shape its data occupies and fails
+closed as a structural divergence the same way.
 
 ## Sparse And Required Fields
 

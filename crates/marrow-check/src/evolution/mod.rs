@@ -13,6 +13,7 @@
 mod const_default;
 mod discharge;
 mod intents;
+pub(crate) mod leaf_type;
 mod preview;
 mod transform_reads;
 mod witness;
@@ -22,6 +23,7 @@ pub(crate) use intents::{
     check_transform_effects, collect_evolve_intents, transform_body_in_source,
 };
 
+pub use discharge::RepairDiagnostic;
 pub use preview::preview;
 pub use transform_reads::{TransformReadMember, transform_read_members};
 pub use witness::{

@@ -5,6 +5,7 @@
 //! producing a resolved [`CheckedProgram`] alongside the diagnostics.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, discover_test_modules};
@@ -374,22 +375,64 @@ pub fn commit_pending_identity(
 /// accepted file to the activated proposal through it once the store transaction has
 /// committed. The byte form is the same pretty JSON both the baseline and an evolution
 /// proposal already serialize to.
+///
+/// The accepted catalog is the project's durable ABI: every binding's stable identity is
+/// resolved against it, so a torn write would brick the project. The write is therefore
+/// all-or-nothing. The bytes land in a temp file in the same directory and are flushed to
+/// disk, then an atomic rename swaps the complete file over the target so a reader sees
+/// either the old catalog or the whole new one, never a prefix. The parent directory is
+/// flushed last so the rename itself survives a crash. A failure before the rename leaves
+/// the prior catalog intact and removes the temp file.
 pub fn write_accepted_catalog(
     project_root: &Path,
     config: &ProjectConfig,
     catalog: &marrow_project::CatalogMetadata,
 ) -> Result<(), CommitIdentityError> {
     let path = project_root.join(&config.accepted_catalog);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| CommitIdentityError::Io {
-            path: parent.to_path_buf(),
-            error,
-        })?;
-    }
-    std::fs::write(&path, catalog.to_json_pretty()).map_err(|error| CommitIdentityError::Io {
-        path: path.clone(),
+    let parent = path.parent().unwrap_or(project_root);
+    std::fs::create_dir_all(parent).map_err(|error| CommitIdentityError::Io {
+        path: parent.to_path_buf(),
         error,
-    })
+    })?;
+
+    // The temp name must be unique per write so two writers in this process — concurrent
+    // threads sharing the same pid — never target the same temp file and rename a half-written
+    // one over the other. The process-wide counter makes every call in this process distinct;
+    // the pid keeps it distinct from other processes writing the same project.
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut temp = path.clone();
+    let mut name = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    name.push(format!(".tmp.{}.{seq}", std::process::id()));
+    temp.set_file_name(name);
+
+    let io = |path: &Path, error| CommitIdentityError::Io {
+        path: path.to_path_buf(),
+        error,
+    };
+    let write_temp = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(catalog.to_json_pretty().as_bytes())?;
+        file.sync_all()
+    };
+    if let Err(error) = write_temp() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(io(&temp, error));
+    }
+    if let Err(error) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(io(&path, error));
+    }
+    // Flushing the directory persists the rename. A failure here is non-fatal: the bytes
+    // and the rename are already durable on common platforms, and the next write will
+    // re-establish the entry, so the catalog is never left torn.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 /// The schema of the resource stored at saved root `^root`, if any. Saved roots

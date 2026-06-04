@@ -11,7 +11,6 @@
 mod admission;
 mod apply;
 mod backfill;
-mod scan;
 mod transform;
 mod validate;
 mod window;

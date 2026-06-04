@@ -472,6 +472,42 @@ impl TreeStore {
         self.with_cell(|cell| cell.max_int_record_child(store, identity_prefix))
     }
 
+    /// Visit every record identity under `store_id`, descending `arity` key levels and
+    /// invoking `visit` with each full identity tuple. The descent reads one key at a
+    /// time through the paged record cursor, so the scan never materializes the whole
+    /// store; only the current identity path is held. A store always has at least one
+    /// identity level, so an `arity` of zero is treated as one.
+    pub fn for_each_record(
+        &self,
+        store_id: &CatalogId,
+        arity: usize,
+        visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut identity = Vec::new();
+        self.descend_records(store_id, arity.max(1), &mut identity, visit)
+    }
+
+    fn descend_records(
+        &self,
+        store_id: &CatalogId,
+        remaining: usize,
+        identity: &mut Vec<SavedKey>,
+        visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut next = self.record_first_child(store_id, identity)?;
+        while let Some(key) = next {
+            identity.push(key.clone());
+            if remaining == 1 {
+                visit(identity)?;
+            } else {
+                self.descend_records(store_id, remaining - 1, identity, visit)?;
+            }
+            identity.pop();
+            next = self.record_next_child(store_id, identity, &key)?;
+        }
+        Ok(())
+    }
+
     pub fn write_index_entry(
         &self,
         index: &CatalogId,
@@ -1811,6 +1847,71 @@ mod tests {
             ..metadata.clone()
         };
         assert_ne!(other, metadata, "a distinct source digest is not equal");
+    }
+
+    /// `for_each_record` visits exactly the seeded single-key record identities, in key
+    /// order regardless of insertion order. Evolution apply walks every record through
+    /// this primitive, so it must reach each one once and invent none.
+    #[test]
+    fn for_each_record_visits_every_single_key_identity() {
+        let store_id = catalog("cat_0000000000000001");
+        let store = TreeStore::memory();
+        for id in [3, 1, 2] {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id)])
+                .expect("seed record");
+        }
+
+        let mut visited = Vec::new();
+        store
+            .for_each_record(&store_id, 1, &mut |identity| {
+                visited.push(identity.to_vec());
+                Ok(())
+            })
+            .expect("traverse records");
+
+        assert_eq!(
+            visited,
+            vec![
+                vec![SavedKey::Int(1)],
+                vec![SavedKey::Int(2)],
+                vec![SavedKey::Int(3)],
+            ]
+        );
+    }
+
+    /// A composite key descends one level per identity key and yields the full tuple for
+    /// each leaf record, never a partial prefix. The seed shares a first-level key across
+    /// two records to prove the descent enumerates every second-level child under it.
+    #[test]
+    fn for_each_record_visits_every_composite_key_identity() {
+        let store_id = catalog("cat_0000000000000001");
+        let store = TreeStore::memory();
+        let identities = [
+            vec![SavedKey::Str("fiction".into()), SavedKey::Int(2)],
+            vec![SavedKey::Str("fiction".into()), SavedKey::Int(1)],
+            vec![SavedKey::Str("history".into()), SavedKey::Int(5)],
+        ];
+        for identity in &identities {
+            store.write_node(&store_id, identity).expect("seed record");
+        }
+
+        let mut visited = Vec::new();
+        store
+            .for_each_record(&store_id, 2, &mut |identity| {
+                visited.push(identity.to_vec());
+                Ok(())
+            })
+            .expect("traverse records");
+
+        assert_eq!(
+            visited,
+            vec![
+                vec![SavedKey::Str("fiction".into()), SavedKey::Int(1)],
+                vec![SavedKey::Str("fiction".into()), SavedKey::Int(2)],
+                vec![SavedKey::Str("history".into()), SavedKey::Int(5)],
+            ]
+        );
     }
 
     fn catalog(raw: &str) -> CatalogId {

@@ -122,19 +122,14 @@ fn common(
 }
 
 /// Fold the repeated `--approve-retire` flags into one approval: each flag names one
-/// retired catalog id and its populated count, and the approval's total is the sum
-/// across all named ids. Admission matches the approved id set and total against the
-/// witness, so one approval covers a multi-id destructive evolution.
+/// retired catalog id and its populated count, which admission matches per id against
+/// the witness. One approval covers a multi-id destructive evolution, and a wrong count
+/// on any single id is rejected even if the counts across ids would sum the same.
 fn build_approval(retires: Vec<(CatalogId, usize)>) -> Option<Approval> {
     if retires.is_empty() {
         return None;
     }
-    let populated = retires.iter().map(|(_, count)| count).sum();
-    let catalog_ids = retires.into_iter().map(|(id, _)| id).collect();
-    Some(Approval {
-        catalog_ids,
-        populated,
-    })
+    Some(Approval { retires })
 }
 
 fn parse_retire(value: &str) -> Result<(CatalogId, usize), ParseStop> {

@@ -104,6 +104,25 @@ pub(super) fn stage_index_rebuild(
     Ok(())
 }
 
+/// Stage a `DeleteIndexSubtree` of every cell under a source-dropped index. The index
+/// is gone from current source, so it is addressed directly by its catalog id rather
+/// than located in a place: an empty key prefix names the whole index-cell subtree.
+/// Catalog ids are globally unique, so this drops exactly the dropped index's cells and
+/// nothing else. The delete is idempotent — a resumed apply over an already-cleared
+/// index subtree deletes nothing.
+pub(super) fn stage_index_drop(
+    catalog_id: &CatalogId,
+    steps: &mut Vec<PlanStep>,
+) -> Result<(), ApplyError> {
+    steps.push(PlanStep::DeleteIndexSubtree {
+        address: IndexAddress {
+            index: catalog_id.clone(),
+            keys: Vec::new(),
+        },
+    });
+    Ok(())
+}
+
 /// Stage a `DeleteData` of the retired member subtree at every record that carries it.
 /// A retired member is gone from current source, so it is addressed directly by its
 /// catalog id rather than located in the member tree: its cells were written under that

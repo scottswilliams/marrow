@@ -439,6 +439,202 @@ fn new_non_unique_index_rebuild_writes_entries() {
     fs::remove_dir_all(&root).ok();
 }
 
+/// Dropping a source index deletes its derived cells on apply. The schema with the
+/// index is committed and base records seed live index cells; current source drops the
+/// index, so discharge classifies `IndexDropped` and apply deletes the whole index
+/// subtree, leaving no cells under the dropped id. The base records and their members
+/// are untouched.
+#[test]
+fn dropped_index_apply_deletes_index_cells() {
+    let root = temp_project("apply-index-drop", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required isbn: string\n\
+             \x20   index byIsbn(isbn) unique\n\
+             pub fn add(isbn: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    // Commit the schema that declares the index, so the index binds a stable id.
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "isbn", Scalar::Str("111".into()));
+    seed.record(2);
+    seed.member(2, "isbn", Scalar::Str("222".into()));
+    // Live index cells the dropped index would otherwise leak.
+    for (key, id) in [("111", 1), ("222", 2)] {
+        store
+            .write_index_entry(
+                &index_id,
+                &[SavedKey::Str(key.into())],
+                &[SavedKey::Int(id)],
+                Vec::new(),
+            )
+            .expect("seed index entry");
+    }
+    assert!(
+        !store
+            .index_child_keys(&index_id, &[])
+            .expect("read index")
+            .is_empty(),
+        "the index starts with cells"
+    );
+
+    // Drop the index from source while keeping the member it covered.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required isbn: string\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let (_report, program) = check_project(&root, &config()).expect("check dropping index");
+
+    let w = witness(&program, &store);
+    // Dropping an index leaves the accepted entry lingering rather than proposing a new
+    // catalog, so apply stamps the accepted epoch while the derived cells are cleared.
+    assert!(w.proposal_catalog.is_none());
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    fs::remove_dir_all(&root).ok();
+
+    // The drop leaves no index cells under the dropped id.
+    assert_eq!(outcome.catalog_epoch, w.accepted_catalog.epoch);
+    assert!(
+        store
+            .index_child_keys(&index_id, &[])
+            .expect("read index after drop")
+            .is_empty(),
+        "the dropped index must have no remaining cells"
+    );
+    // The base records and their members survive untouched.
+    for (id, isbn) in [(1, "111"), (2, "222")] {
+        let bytes = store
+            .read_data_value(
+                &store_id,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(
+                    CatalogId::new(member_catalog_id(&accepted_place, "isbn")).unwrap(),
+                )],
+            )
+            .expect("read isbn")
+            .expect("isbn present");
+        assert_eq!(bytes, encode_value(&Scalar::Str(isbn.into())).unwrap());
+    }
+}
+
+/// An explicit `retire` of a store index deletes its derived cells, exactly as a bare
+/// source-drop does. An index holds no per-record source data, so retiring one is the
+/// same durable operation as dropping it: delete the index-cell subtree under its id.
+/// The retire intent must not route to the per-record member-deletion path, which would
+/// leave the real index cells orphaned. Apply needs no destructive approval because no
+/// source data moves; only derived cells are cleared, and the base records survive.
+#[test]
+fn explicit_index_retire_deletes_index_cells() {
+    let root = temp_project("apply-index-retire", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required isbn: string\n\
+             \x20   index byIsbn(isbn) unique\n\
+             pub fn add(isbn: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
+    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "isbn", Scalar::Str("111".into()));
+    seed.record(2);
+    seed.member(2, "isbn", Scalar::Str("222".into()));
+    for (key, id) in [("111", 1), ("222", 2)] {
+        store
+            .write_index_entry(
+                &index_id,
+                &[SavedKey::Str(key.into())],
+                &[SavedKey::Int(id)],
+                Vec::new(),
+            )
+            .expect("seed index entry");
+    }
+    assert!(
+        !store
+            .index_child_keys(&index_id, &[])
+            .expect("read index")
+            .is_empty(),
+        "the index starts with cells"
+    );
+
+    // Drop the index from source and declare an explicit retire of it.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required isbn: string\n\
+         evolve\n\
+         \x20   retire ^books.byIsbn\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+
+    let w = witness(&program, &store);
+    // The index retire clears derived cells only, so it stays activatable with no
+    // approval, just like a bare source-drop of the index.
+    assert!(
+        w.is_activatable(),
+        "an index retire must not require a destructive approval"
+    );
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    fs::remove_dir_all(&root).ok();
+
+    assert_eq!(outcome.records_retired, 0);
+    assert!(
+        store
+            .index_child_keys(&index_id, &[])
+            .expect("read index after retire")
+            .is_empty(),
+        "an explicit index retire must leave no index cells"
+    );
+    for (id, isbn) in [(1, "111"), (2, "222")] {
+        let bytes = store
+            .read_data_value(
+                &store_id,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(
+                    CatalogId::new(member_catalog_id(&accepted_place, "isbn")).unwrap(),
+                )],
+            )
+            .expect("read isbn")
+            .expect("isbn present");
+        assert_eq!(bytes, encode_value(&Scalar::Str(isbn.into())).unwrap());
+    }
+}
+
 /// A retire over populated data needs maintenance plus a scoped approval. With no
 /// approval, apply refuses: the witness is non-activatable.
 #[test]
@@ -479,8 +675,7 @@ fn destructive_retire_with_matching_approval_deletes() {
     let witness = witness(&program, &store);
 
     let approval = Approval {
-        catalog_ids: vec![CatalogId::new(subtitle_id.clone()).unwrap()],
-        populated: 2,
+        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 2)],
     };
     let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.records_retired, 2);
@@ -512,8 +707,7 @@ fn destructive_retire_count_drift_aborts() {
     let witness = witness(&program, &store);
 
     let approval = Approval {
-        catalog_ids: vec![CatalogId::new(subtitle_id.clone()).unwrap()],
-        populated: 1, // witness recorded 2 populated records
+        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 1)], // witness recorded 2
     };
     let result = apply(&witness, &program, &store, true, Some(&approval));
     assert!(
@@ -537,10 +731,13 @@ fn destructive_retire_count_drift_aborts() {
 }
 
 /// A multi-retire approval must approve the total destructive witness, not one
-/// per-id count repeated across every retired catalog id. Under-scoping the count
-/// would let a caller approve two populated retires with a count of one.
+/// A multi-retire approval is matched per id: each approved count must equal the
+/// witness count for that exact id. When two retired members hold different populated
+/// counts, swapping the counts between them keeps the sum identical but is out of scope,
+/// so apply must refuse. A merely summed check would bless the swap and drop data the
+/// developer did not approve at that scope.
 #[test]
-fn destructive_multi_retire_approval_count_is_total() {
+fn destructive_multi_retire_approval_is_matched_per_id() {
     let root = temp_project("apply-retire-multi-count", |root| {
         write(
             root,
@@ -564,9 +761,14 @@ fn destructive_multi_retire_approval_count_is_total() {
         store: &store,
         place: &accepted_place,
     };
-    seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
-    seed.member_by_id(1, &subtitle_id, Scalar::Str("sub".into()));
+    // Asymmetric populations: subtitle on two records, notes on one. The witness records
+    // subtitle = 2 and notes = 1, so a swapped approval (subtitle = 1, notes = 2) sums to
+    // the same 3 yet is out of scope per id.
+    for id in [1, 2] {
+        seed.record(id);
+        seed.member(id, "title", Scalar::Str(format!("title-{id}")));
+        seed.member_by_id(id, &subtitle_id, Scalar::Str(format!("sub-{id}")));
+    }
     seed.member_by_id(1, &notes_id, Scalar::Str("note".into()));
 
     write(
@@ -583,32 +785,43 @@ fn destructive_multi_retire_approval_count_is_total() {
     );
     let program = checked(&root);
     let witness = witness(&program, &store);
-    let approval = Approval {
-        catalog_ids: vec![
-            CatalogId::new(subtitle_id.clone()).unwrap(),
-            CatalogId::new(notes_id.clone()).unwrap(),
+    let swapped = Approval {
+        retires: vec![
+            (CatalogId::new(subtitle_id.clone()).unwrap(), 1),
+            (CatalogId::new(notes_id.clone()).unwrap(), 2),
         ],
-        populated: 1,
     };
-    let result = apply(&witness, &program, &store, true, Some(&approval));
+    let result = apply(&witness, &program, &store, true, Some(&swapped));
     assert!(
         matches!(result, Err(ApplyError::ApprovalMismatch)),
-        "expected ApprovalMismatch, got {result:#?}"
+        "a per-id-wrong approval with a matching sum must be rejected, got {result:#?}"
     );
 
     let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
-    for member_id in [subtitle_id, notes_id] {
+    for member_id in [&subtitle_id, &notes_id] {
         assert!(
             store
                 .data_subtree_exists(
                     &store_id,
                     &[SavedKey::Int(1)],
-                    &[DataPathSegment::Member(CatalogId::new(member_id).unwrap())]
+                    &[DataPathSegment::Member(
+                        CatalogId::new(member_id.clone()).unwrap()
+                    )]
                 )
                 .expect("exists"),
-            "an under-counted approval must not drop data"
+            "a per-id-wrong approval must not drop data"
         );
     }
+
+    // The correctly scoped per-id approval activates and drops both members.
+    let scoped = Approval {
+        retires: vec![
+            (CatalogId::new(subtitle_id.clone()).unwrap(), 2),
+            (CatalogId::new(notes_id.clone()).unwrap(), 1),
+        ],
+    };
+    let outcome = apply(&witness, &program, &store, true, Some(&scoped)).expect("apply");
+    assert_eq!(outcome.records_retired, 3);
     fs::remove_dir_all(&root).ok();
 }
 
@@ -622,8 +835,7 @@ fn destructive_retire_requires_maintenance() {
     let place = root_place(&program, "books");
     let witness = witness(&program, &store);
     let approval = Approval {
-        catalog_ids: vec![CatalogId::new(subtitle_id.clone()).unwrap()],
-        populated: 2,
+        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 2)],
     };
     let result = apply(&witness, &program, &store, false, Some(&approval));
     assert!(
@@ -936,8 +1148,7 @@ fn transform_composes_with_default_and_retire() {
     // approval. Apply composes all three in one stamped transaction.
     let w = witness(&program, &store);
     let approval = Approval {
-        catalog_ids: vec![CatalogId::new(subtitle_id.clone()).unwrap()],
-        populated: 1,
+        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 1)],
     };
     let outcome = apply(&w, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.records_transformed, 1);
@@ -1397,8 +1608,7 @@ fn nested_group_retire_fails_closed() {
     // Even under the maintenance gate with an approval, apply must refuse rather than
     // stamp success while the nested cells survive.
     let approval = Approval {
-        catalog_ids: vec![CatalogId::new(note_id.clone()).unwrap()],
-        populated: 0,
+        retires: vec![(CatalogId::new(note_id.clone()).unwrap(), 0)],
     };
     let result = apply(&w, &program, &store, true, Some(&approval));
     assert!(
@@ -1431,10 +1641,10 @@ fn nested_group_retire_fails_closed() {
     fs::remove_dir_all(&root).ok();
 }
 
-/// Dropping a unique index from source stamps its deprecated catalog id in the commit
-/// metadata's index partition, never among the data roots. The discharge already knows
-/// the id is a store index by its catalog entry kind, so apply must not re-derive the
-/// index set from current source (which no longer declares the index).
+/// Dropping a unique index from source stamps its catalog id in the commit metadata's
+/// index partition, never among the data roots. The discharge already knows the id is a
+/// store index by its catalog entry kind, so apply must not re-derive the index set
+/// from current source (which no longer declares the index).
 #[test]
 fn dropped_index_id_stamped_as_index_not_root() {
     let root = temp_project("apply-drop-index", |root| {
@@ -1463,7 +1673,7 @@ fn dropped_index_id_stamped_as_index_not_root() {
     seed.member(1, "isbn", Scalar::Str("111".into()));
 
     // Drop the index from source while keeping the member; the accepted catalog still
-    // names it, so discharge deprecates the index. Apply stays activatable and stamps.
+    // names it, so discharge classifies an index drop. Apply stays activatable and stamps.
     write(
         &root,
         "src/books.mw",

@@ -151,6 +151,46 @@ pub struct CatalogEntry {
     pub stable_id: String,
     pub aliases: Vec<String>,
     pub lifecycle: CatalogLifecycle,
+    /// The identity-key shape a store's durable records are keyed under: the comma-joined
+    /// scalar type names of its identity keys in order (`int`, `int,string`), so the
+    /// arity and each key type are both recorded. v0.1 has no graceful store-key migration,
+    /// so a discharge compares this against the current declared shape and fails closed when
+    /// they differ: re-keying would orphan every record addressed by the old key shape. Only
+    /// a store entry records it; every other kind leaves it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_key_shape: Option<String>,
+    /// The identity-aware structural signature a resource member's durable data was accepted
+    /// under: its member kind, plus its key shape if it is a keyed layer and its leaf token if
+    /// it is a leaf. A leaf records `leaf:<token>`, where the token names the member's value
+    /// type by referent identity rather than source spelling — a scalar by name (`int`,
+    /// `string`, ...), an enum by the stable catalog id of the enum it refers to (`enum:<id>`),
+    /// or a store identity by the referenced store's stable catalog id and arity
+    /// (`id:<id>:<arity>`), prefixed by a keyed-leaf layer's key shape. An unkeyed group records
+    /// `group`, and a keyed group records `keyed-group:[<shape>]`. The discharge fails closed
+    /// when a member present in both the accepted snapshot and current source has a signature
+    /// that changed and no explicit obligation already covers it, so any structural transition
+    /// not handled by a targeted classifier cannot silently activate over existing data. A keyed
+    /// layer's key shape lives here rather than in `accepted_key_shape`, which records only store
+    /// identity keys. Only a resource-member entry records it; every other kind leaves it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_struct: Option<String>,
+}
+
+impl CatalogEntry {
+    /// The identity-aware leaf token the member's durable bytes were accepted as, derived from
+    /// the structural signature: a leaf member records `leaf:<token>`, so the token is the
+    /// signature with that prefix stripped. The token records what type the bytes were last
+    /// accepted as by referent identity rather than source spelling, so a later type change is
+    /// detected across leaf kinds even when the new type's decoder would also accept the old
+    /// bytes (an `int` stored as `1` reads as a `bool` `true`, or as an enum member), while a
+    /// pure enum or store rename is correctly not a type change. `None` for any non-leaf
+    /// member — a group, keyed group, or an entry that records no signature — since only a leaf
+    /// position carries a single value cell with a leaf token.
+    pub fn accepted_leaf_token(&self) -> Option<&str> {
+        self.accepted_struct
+            .as_deref()
+            .and_then(|signature| signature.strip_prefix("leaf:"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

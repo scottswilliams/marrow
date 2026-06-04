@@ -50,6 +50,8 @@ fn entry(
         stable_id: stable_id.to_string(),
         aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
         lifecycle: CatalogLifecycle::Active,
+        accepted_key_shape: None,
+        accepted_struct: None,
     }
 }
 
@@ -103,6 +105,63 @@ fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {
             .iter()
             .any(|entry| entry.kind == CatalogEntryKind::Store && entry.path == "books::^books")
     );
+}
+
+/// The accepted catalog is the durable ABI: a torn write would brick the project, so
+/// `write_accepted_catalog` must be all-or-nothing. After a successful write the only
+/// catalog artifact in the directory is the complete target file — no temp staging file
+/// is left behind, and overwriting a prior catalog never exposes a partial file. The
+/// written bytes round-trip back to the same metadata.
+#[test]
+fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
+    let root = temp_project("catalog-atomic", |_| {});
+
+    // A prior, smaller catalog sits at the target. The overwrite with a larger catalog
+    // must replace it wholesale, never leaving a half-written file or a stray temp.
+    let prior = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    write_catalog(&root, &prior);
+
+    let next = catalog(vec![
+        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+        entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+        entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book.title",
+            "member-title",
+            &[],
+        ),
+    ]);
+    marrow_check::write_accepted_catalog(&root, &config(), &next).expect("write accepted catalog");
+
+    let entries: Vec<String> = fs::read_dir(&root)
+        .expect("read project root")
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into()
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![String::from("marrow.catalog.json")],
+        "a successful write leaves only the target file, with no temp staging artifact"
+    );
+
+    let bytes = fs::read_to_string(catalog_path(&root)).expect("read catalog");
+    let round_tripped = CatalogMetadata::from_json(&bytes).expect("complete, parseable catalog");
+    assert_eq!(
+        round_tripped, next,
+        "the written file is the complete catalog, not a truncated prefix"
+    );
+
+    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -175,6 +234,8 @@ fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() 
             stable_id: "enum-member-archived".to_string(),
             aliases: vec!["books::Status::inactive".to_string()],
             lifecycle: CatalogLifecycle::Deprecated,
+            accepted_key_shape: None,
+            accepted_struct: None,
         },
     ]);
 
@@ -440,6 +501,8 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
                 stable_id: "enum-old-status".to_string(),
                 aliases: vec!["books::Status".to_string()],
                 lifecycle: CatalogLifecycle::Deprecated,
+                accepted_key_shape: None,
+                accepted_struct: None,
             },
         ]);
         write_catalog(root, &metadata);
@@ -2355,6 +2418,128 @@ fn committed_ids_are_stable_across_rechecks() {
     assert_eq!(
         bound, frozen,
         "a committed id must survive a re-check unchanged"
+    );
+}
+
+#[test]
+fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
+    // A leaf member's accepted leaf token is the one durable structural signature with its
+    // `leaf:` prefix, never a second persisted field: the committed catalog records the token
+    // only in `accepted_struct`, the serialized JSON carries no `acceptedLeaf` key, and the
+    // token reads back off the signature for retype detection.
+    let root = temp_project("catalog-leaf-token-from-struct", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    marrow_check::commit_pending_identity(&root, &config(), &program)
+        .expect("commit baseline")
+        .expect("baseline written");
+
+    let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        !json.contains("acceptedLeaf"),
+        "the committed catalog must not persist a redundant acceptedLeaf field: {json}"
+    );
+
+    let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
+    let title = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .expect("committed title member entry");
+    assert_eq!(
+        title.accepted_struct.as_deref(),
+        Some("leaf:string"),
+        "the leaf member's signature records its leaf token"
+    );
+    assert_eq!(
+        title.accepted_leaf_token(),
+        Some("string"),
+        "the accepted leaf token is derived from the signature"
+    );
+}
+
+#[test]
+fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
+    // A keyed-leaf `map[K, V]` member is a leaf position whose accepted signature folds its key
+    // shape onto the value type, so a change to its key arity, key type, or value type is caught
+    // as one leaf type change. The committed baseline records `leaf:[<key>]<value>`, proving the
+    // production mint carries the key prefix, not only a hand-built fixture.
+    let root = temp_project("catalog-keyed-leaf-map-token", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\nresource Book at ^books(id: int)\n    tags(pos: int): string\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    marrow_check::commit_pending_identity(&root, &config(), &program)
+        .expect("commit baseline")
+        .expect("baseline written");
+
+    let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
+    fs::remove_dir_all(&root).ok();
+
+    let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
+    let tags = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::tags"
+        })
+        .expect("committed tags member entry");
+    assert_eq!(
+        tags.accepted_struct.as_deref(),
+        Some("leaf:[int]string"),
+        "a keyed-leaf map member folds its [key] shape onto the value in its leaf signature"
+    );
+}
+
+#[test]
+fn member_accepted_before_structural_signatures_were_recorded_is_not_reported_as_changed() {
+    // The accepted catalog predates structural-signature recording, so its member entry carries
+    // no signature and thus no accepted leaf token. Re-checking unchanged source must not read
+    // filling that signature in as a type change: the member's stored bytes are unchanged, so no
+    // proposal is emitted.
+    let root = temp_project("catalog-struct-backfill-no-change", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        program.catalog.proposal.is_none(),
+        "filling a missing accepted leaf for unchanged source must not propose a change: {:#?}",
+        program.catalog.proposal
     );
 }
 

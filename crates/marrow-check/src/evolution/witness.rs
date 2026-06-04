@@ -57,14 +57,16 @@ pub struct DefaultValue {
 /// role the snapshot plays for that obligation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// No durable work: an optional member, or a change that does not touch stored
-    /// data. (no-op)
+    /// No durable work: an optional member, a dependency-free dropped sparse field
+    /// whose data harmlessly lingers, or a change that does not touch stored data.
+    /// (no-op)
     NoOp,
     /// A rename moved a catalog binding with no record data to move. (rename)
     CatalogOnly,
-    /// A source-dropped entry nothing depends on; its data lingers and the entry is
-    /// deprecated rather than retired. (retire, soft)
-    Deprecated,
+    /// A source-dropped store index. Its catalog binding is gone, so apply deletes the
+    /// derived index-cell subtree under its catalog id; no source data moves. (rebuild,
+    /// inverse)
+    IndexDropped,
     /// Every record already carries the member, so its presence claim is proven
     /// against the snapshot. (prove)
     DataProof,
@@ -93,8 +95,20 @@ pub enum Verdict {
 pub enum RepairReason {
     /// A newly-required member is absent from records that carry no default.
     MissingRequiredMember,
+    /// A stored cell carries bytes that are present but not valid under the member's
+    /// current type: they fail to decode, or they name an enum member the current enum
+    /// no longer offers as a value (one removed, made `category`, or given children). The
+    /// value is not missing — it is there and wrong — so it cannot be backfilled away; the
+    /// record must be repaired to a valid value before activation.
+    InvalidStoredValue,
     /// A unique index covers records whose full key tuples collide.
     UniqueIndexCollision,
+    /// A unique index cannot be probed for collisions from the current snapshot: a key
+    /// column resolves to neither an identity-key position nor a top-level plain field, so
+    /// the scan cannot derive the prospective key tuples to check uniqueness. Rather than
+    /// rebuild an unchecked unique index, the change fails closed until the index key shape
+    /// is one the collision scan can probe.
+    UniqueIndexUnprobeable,
     /// A source-dropped member is still read by an active index, so it cannot be
     /// silently deprecated: the change needs an explicit retire intent that also
     /// removes or rebinds the index. The verdict carries the index's catalog
@@ -114,6 +128,37 @@ pub enum RepairReason {
     /// widened); a record whose bytes were written under an incompatible type cannot
     /// be read, so the transform fails closed until that data is repaired.
     UndecodableTransformInput,
+    /// A populated member's declared leaf type changed from the type its durable bytes
+    /// were accepted as. The bytes were written under the old type, so reading them as
+    /// the new type would reinterpret their meaning — silently for an overlapping codec
+    /// (an `int` stored as `1` reads as `bool` `true`), or as a decode failure for a
+    /// disjoint one. v0.1 fails every leaf type change on populated data closed here. An
+    /// in-place transform cannot resolve it, because a transform may not read the member
+    /// it replaces; the supported path is to add a new member of the new type, populate
+    /// it with an `evolve transform` computed from this one, then retire this member.
+    TypeChangeRequiresTransform,
+    /// A store's identity-key shape — its key arity or any key type — changed from the shape
+    /// its durable records were keyed under. Every record is addressed by the old key bytes,
+    /// which sit in the saved path itself, so a record keyed by an `int` cannot be found under
+    /// a `string` key and a single-key record cannot be found under a composite key. v0.1 has
+    /// no graceful store-key migration: re-keying would orphan the existing data, so the change
+    /// fails closed here rather than activating against records the new key shape cannot reach.
+    StoreKeyShapeChange,
+    /// A nested keyed-layer member's key shape — its key arity or any key type — changed, or a
+    /// plain group was reshaped into a keyed layer (or the reverse). Each per-entry value is
+    /// addressed by its entry key bytes in the saved path, one level below the store key, so a
+    /// re-keyed or reshaped layer addresses none of the existing entries. v0.1 has no graceful
+    /// keyed-layer migration, so the change fails closed rather than activating over per-entry
+    /// data the new layer shape cannot reach. This is the store-key-shape rule one level down.
+    KeyedLayerKeyShapeChange,
+    /// A durable member's structural signature changed in a way no targeted classifier handled
+    /// and existing data is present. The signature records the member's kind, its key shape if
+    /// keyed, and its leaf token if a leaf, all identity-aware; a difference the leaf-type,
+    /// reshape, rename, default, transform, and retire classifiers all left unclaimed is a
+    /// transition v0.1 does not know how to apply to stored data. This is the default-deny
+    /// backstop that keeps the fail-closed invariant total: any unhandled structural divergence
+    /// over populated data fails closed here rather than silently activating.
+    StructuralDivergence,
 }
 
 impl Verdict {
@@ -123,11 +168,17 @@ impl Verdict {
     /// destructive approval or a repair blocks activation until a decision or fix
     /// lands.
     pub fn is_activatable(&self) -> bool {
+        // The activatable variants are exactly those whose durable work apply can derive
+        // and perform on its own. `Default` carries a checked constant to backfill and
+        // `Transform` carries a checked pure recompute whose read members all decode, so
+        // both run unattended. The blocking variants need a human input apply cannot
+        // supply: `DestructiveDecisionRequired` needs a scoped approval to drop data, and
+        // `RepairRequired` needs the snapshot fixed before the obligation can hold at all.
         matches!(
             self,
             Verdict::NoOp
                 | Verdict::CatalogOnly
-                | Verdict::Deprecated
+                | Verdict::IndexDropped
                 | Verdict::DataProof
                 | Verdict::Default { .. }
                 | Verdict::DerivedRebuild
