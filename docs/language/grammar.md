@@ -248,7 +248,6 @@ statement       =
     | var_stmt
     | assignment_stmt
     | delete_stmt
-    | assert_stmt
     | if_stmt
     | match_stmt
     | while_stmt
@@ -269,7 +268,6 @@ var_stmt        =
 
 assignment_stmt = assignable "=" expression NEWLINE ;
 delete_stmt     = "delete" path_expr NEWLINE ;
-assert_stmt     = "assert" expression NEWLINE ;
 return_stmt     = "return" expression? NEWLINE ;
 break_stmt      = "break" identifier? NEWLINE ;
 continue_stmt   = "continue" identifier? NEWLINE ;
@@ -279,8 +277,7 @@ expression_stmt = expression NEWLINE ;
 ```
 
 Field and path assignments preserve omitted fields and children at the written
-entry. `assert exists(place)` and `assert not exists(place)` state existence
-preconditions. `if exists(place)` narrows a maybe-present read inside the guarded
+entry. `if exists(place)` narrows a maybe-present read inside the guarded
 block.
 
 ## Conditionals And Loops

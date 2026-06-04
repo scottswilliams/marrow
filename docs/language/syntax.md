@@ -208,8 +208,9 @@ From tightest to loosest precedence:
 | 7 | `<`, `<=`, `>`, `>=` | comparison |
 | 8 | `??` | absence default |
 | 9 | `==`, `!=` | equality, not equal |
-| 10 | `and` | short-circuit and |
-| 11 | `or` | short-circuit or |
+| 10 | `is` | enum-subtree test (non-associative) |
+| 11 | `and` | short-circuit and |
+| 12 | `or` | short-circuit or |
 
 `%` is remainder. Use `std::math::modulo(...)` when code needs modulo
 behavior for negative operands.
@@ -239,8 +240,10 @@ resolution — is a compile error, not a runtime fault; resolve it with `??` or
 an `if exists(...)` branch. Only absence is short-circuited — schema and decoding
 errors still surface.
 
-Ranges use `int` endpoints and yield `int` values when iterated. The checker
-accepts them for `for` loops, not as saved values.
+Range endpoints must be a steppable type — `int`, `decimal`, `date`, or
+`instant` — and both endpoints share that type. The checker accepts ranges for
+`for` loops, not as saved values. See
+[Control Flow And Errors](control-flow-and-effects.md) for step rules.
 
 Use spaces around `_` when it is the concatenation operator; without spaces,
 `_` is part of an identifier.
@@ -365,7 +368,7 @@ Marrow reserves:
 module use pub fn resource at index unique
 required
 enum evolve match is
-const var if else while for in break continue return delete edit assert merge
+const var if else while for in break continue return delete merge
 transaction lock try catch finally throw out inout true false
 not and or
 int decimal bool string bytes date instant duration
@@ -378,6 +381,12 @@ fields, functions, and module segments must not be spelled as a reserved word;
 doing so is a parse error.
 
 `merge` and `lock` are reserved even though they are not v0.1 statements.
+
+An `assert` precondition statement and an `edit` grouped-write form are planned
+write-path surface that v0.1 does not implement: there is no keyword for either,
+and they are not part of the accepted grammar. They are noted here so their
+absence is intentional rather than an oversight; the syntax in this reference is
+what the current implementation accepts.
 
 The `evolve` step words `rename`, `default`, `retire`, and `transform` are
 contextual: they lead a step only inside an `evolve` block, so they remain valid
