@@ -83,8 +83,8 @@ pub(crate) mod test_support {
             !report.has_errors(),
             "serve fixture project must check cleanly: {report:#?}"
         );
-        let accepted = marrow_check::accept_catalog_proposal(&root, &config, &program)
-            .expect("accept fixture catalog");
+        let accepted = marrow_check::commit_pending_identity(&root, &config, &program)
+            .expect("commit fixture catalog");
         fs::remove_dir_all(&root).ok();
         match accepted {
             Some((report, program)) => {

@@ -3,10 +3,10 @@
 //! Each case checks a source-driven fixture through the production pipeline, seeds
 //! a `TreeStore::memory()` at the member catalog ids the checked saved place names,
 //! then runs the read-only discharge/preview entry and asserts the verdicts, the
-//! witness counts, and the composed fingerprints. The data-only cases accept the
-//! catalog proposal first (so the schema is already accepted) and exercise an old
-//! store snapshot that predates a new member or index; the catalog-evolution cases
-//! pin a hand-built accepted catalog the current source has moved away from.
+//! witness counts, and the composed fingerprints. The data-only cases commit the
+//! catalog proposal first (so the schema is already the accepted catalog) and exercise
+//! an old store snapshot that predates a new member or index; the catalog-evolution
+//! cases pin a hand-built accepted catalog the current source has moved away from.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,16 +75,18 @@ fn checked(root: &Path) -> CheckedProgram {
     program
 }
 
-/// Check the source once with no accepted catalog, write its proposal as the
-/// accepted catalog (the accept flow), then re-check. The returned program's schema
-/// is fully accepted, so its bound catalog ids address the store; the data-only
-/// cases then exercise an old snapshot against that accepted schema.
-fn accept_then_check(root: &Path) -> CheckedProgram {
-    let (report, program) = check_project(root, &config()).expect("check for accept");
+/// Check the source once with no committed catalog, freeze its baseline through the
+/// production commit path, then re-check. The returned program's schema is fully
+/// committed, so its bound catalog ids address the store; the data-only cases then
+/// exercise an old snapshot against that committed schema.
+fn commit_then_check(root: &Path) -> CheckedProgram {
+    let (report, program) = check_project(root, &config()).expect("check for commit");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let proposal = program.catalog.proposal.expect("first-check proposal");
-    write_catalog(root, &proposal);
-    checked(root)
+    let (report, program) = marrow_check::commit_pending_identity(root, &config(), &program)
+        .expect("commit catalog")
+        .expect("a catalog proposal to commit");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    program
 }
 
 fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
@@ -270,7 +272,7 @@ fn optional_sparse_add_needs_no_rewrite() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -315,7 +317,7 @@ fn required_with_default_backfills_old_records() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -367,7 +369,7 @@ fn non_constant_default_fails_closed_with_transform_hint() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -415,7 +417,7 @@ fn required_without_default_fails_naming_records() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -455,7 +457,7 @@ fn required_present_member_with_incompatible_bytes_repairs() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -624,7 +626,7 @@ fn new_unique_index_over_clean_data_rebuilds() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -666,7 +668,7 @@ fn new_unique_index_over_colliding_data_fails() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -713,7 +715,7 @@ fn transform_from_decodable_sibling_is_applyable() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -761,7 +763,7 @@ fn transform_undecodable_read_member_fails_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1025,7 +1027,7 @@ fn transform_of_nested_member_is_check_error() {
 /// catalog ids.
 #[test]
 fn witness_composes_catalog_and_store_fingerprints() {
-    // Accept a first schema, then add an optional member so the next check proposes
+    // Commit a first schema, then add an optional member so the next check proposes
     // a changed catalog: the witness must carry both fingerprints.
     let root = temp_project("discharge-witness", |root| {
         write(
@@ -1038,7 +1040,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = accept_then_check(&root);
+    let accepted = commit_then_check(&root);
     let accepted_epoch = accepted.catalog.accepted_epoch.expect("accepted epoch");
     let accepted_digest = accepted.catalog.accepted_digest.clone().expect("digest");
 
@@ -1052,7 +1054,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    // Adding `subtitle` without re-accepting is exactly the "accept the proposal"
+    // Adding `subtitle` without committing the new identity is exactly the pending
     // signal: the check reports a catalog-intent diagnostic, yet the proposal still
     // forms, so the witness must carry both the accepted and proposal fingerprints.
     let (_report, program) = check_project(&root, &config()).expect("re-check with new member");
@@ -1266,7 +1268,7 @@ fn composite_index_project(name: &str) -> PathBuf {
 #[test]
 fn composite_unique_index_distinct_tuples_rebuild() {
     let root = composite_index_project("discharge-composite-clean");
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1298,7 +1300,7 @@ fn composite_unique_index_distinct_tuples_rebuild() {
 #[test]
 fn composite_unique_index_duplicate_tuple_collides() {
     let root = composite_index_project("discharge-composite-collide");
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1344,7 +1346,7 @@ fn new_unique_index_no_cells_clean_rebuilds() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1387,7 +1389,7 @@ fn new_unique_index_no_cells_duplicate_collides() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1433,7 +1435,7 @@ fn required_nested_group_leaf_missing_fails_closed() {
              \x20   return nextId(^people)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "people");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1486,7 +1488,7 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
              \x20   return nextId(^policies)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1546,7 +1548,7 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
              \x20   return nextId(^policies)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1589,25 +1591,36 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
     );
 }
 
-/// The witness source digest for a single-file source, computed against the source's
-/// own accepted catalog so its evolve default and transform targets bind to real
-/// stable ids. The digest binds the durable surface and the evolve decision surface,
-/// so it is the anchor apply re-derives.
-fn source_digest(name: &str, source: &str) -> String {
+/// The shape and evolution digests of a single-file source, computed against the
+/// source's own accepted catalog so its evolve default and transform targets bind to
+/// real stable ids. The shape digest is the one the store stamps and the fence
+/// enforces; the evolution digest is the one the witness records.
+fn digests(name: &str, source: &str) -> (String, String) {
     let root = temp_project(name, |root| write(root, "src/books.mw", source));
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let store = TreeStore::memory();
-    let digest = witness(&program, &store).source_digest;
+    let witness = witness(&program, &store);
     fs::remove_dir_all(&root).ok();
-    digest
+    (witness.source_digest, witness.evolution_digest)
 }
 
-/// The source digest binds the evolve decision surface, not just the catalog
-/// `(kind, path)` shape. A changed default value, a changed transform body, and an
-/// optional/required toggle each drift the digest, so apply can detect a source that
-/// no longer matches what was discharged.
+/// The store-stamp shape digest.
+fn source_digest(name: &str, source: &str) -> String {
+    digests(name, source).0
+}
+
+/// The witness evolution digest.
+fn evolution_digest(name: &str, source: &str) -> String {
+    digests(name, source).1
+}
+
+/// The store-stamp shape digest binds the durable shape, not the transient evolve
+/// block: editing only the evolve decision surface (a default value, a transform body)
+/// leaves the shape digest unchanged, so a consumed block is deletable without reading
+/// as schema drift. A change that touches the shape — a module const a transform reads,
+/// an optional/required toggle — drifts it, because the store must satisfy that shape.
 #[test]
-fn source_digest_binds_the_evolve_decision_surface() {
+fn shape_digest_binds_shape_and_not_the_evolve_block() {
     let base = "module books\n\
          resource Book at ^books(id: int)\n\
          \x20   required title: string\n\
@@ -1649,16 +1662,16 @@ fn source_digest_binds_the_evolve_decision_surface() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
 
-    let base_digest = source_digest("digest-base", base);
-    assert_ne!(
+    let base_digest = source_digest("shape-base", base);
+    assert_eq!(
         base_digest,
-        source_digest("digest-default", changed_default),
-        "a changed default value must drift the digest"
+        source_digest("shape-default", changed_default),
+        "a changed evolve default value must not drift the shape digest"
     );
-    assert_ne!(
+    assert_eq!(
         base_digest,
-        source_digest("digest-transform", changed_transform),
-        "a changed transform body must drift the digest"
+        source_digest("shape-transform", changed_transform),
+        "a changed transform body must not drift the shape digest"
     );
     let const_transform = "module books\n\
          const Scale = 1\n\
@@ -1681,41 +1694,58 @@ fn source_digest_binds_the_evolve_decision_surface() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
     assert_ne!(
-        source_digest("digest-const-base", const_transform),
-        source_digest("digest-const", changed_const),
-        "a changed module const used by a transform must drift the digest"
+        source_digest("shape-const-base", const_transform),
+        source_digest("shape-const", changed_const),
+        "a changed module const is part of the shape and must drift the shape digest"
     );
     assert_ne!(
         base_digest,
-        source_digest("digest-required", required_pages),
-        "an optional->required toggle must drift the digest"
+        source_digest("shape-required", required_pages),
+        "an optional->required toggle must drift the shape digest"
+    );
+
+    // The witness evolution digest, in contrast, binds the evolve decision surface, so a
+    // changed default and a changed transform body each drift it. This is what keeps
+    // apply fencing a transform-body edit between preview and apply.
+    let base_evolution = evolution_digest("evolution-base", base);
+    assert_ne!(
+        base_evolution,
+        evolution_digest("evolution-default", changed_default),
+        "a changed default value must drift the evolution digest"
+    );
+    assert_ne!(
+        base_evolution,
+        evolution_digest("evolution-transform", changed_transform),
+        "a changed transform body must drift the evolution digest"
     );
 }
 
-/// The source digest binds the whole durable surface and the evolve decision
-/// surface, with no enumeration gap. It is computed from the canonical normalized
-/// rendering of every durable and evolution declaration, so any change to a member
-/// type, a required flag, an identity key, an index, a keyed-layer key at any nesting
-/// depth, a top-level keyed-leaf key, an evolve default value, or a transform body
-/// must drift the digest, while a pure whitespace reformat of the same declarations
-/// must leave it unchanged.
+/// The shape digest binds the whole durable shape, with no enumeration gap. It is
+/// computed from the canonical normalized rendering of every shape declaration, so any
+/// change to a member type, a required flag, an identity key, an index, a keyed-layer
+/// key at any nesting depth, or a top-level keyed-leaf key must drift it, while a pure
+/// whitespace reformat of the same declarations must leave it unchanged.
+///
+/// The evolve decision surface — a default value, a transform body — is *not* shape:
+/// editing it leaves the shape digest unchanged but drifts the evolution digest the
+/// witness records. The two are asserted together so the boundary is explicit.
 ///
 /// The single baseline carries every dimension once. Each variant edits exactly one
-/// durable fact at the same catalog path, so a digest that still matched the baseline
-/// would prove that fact is unbound.
+/// fact at the same catalog path, so a digest that still matched the baseline would
+/// prove that fact is unbound.
 #[test]
 fn source_digest_binds_the_durable_shape() {
     let base = durable_fixture(DurableFixture::default());
     let base_digest = source_digest("durable-base", &base);
 
-    let cases: [(&str, DurableFixture, &str); 10] = [
+    let shape_cases: [(&str, DurableFixture, &str); 8] = [
         (
             "member-type",
             DurableFixture {
                 count_type: "string",
                 ..DurableFixture::default()
             },
-            "a member scalar-type change must drift the digest",
+            "a member scalar-type change must drift the shape digest",
         ),
         (
             "identity-type",
@@ -1729,7 +1759,7 @@ fn source_digest_binds_the_durable_shape() {
                        \x20   return ^books(id).isbn",
                 ..DurableFixture::default()
             },
-            "an identity-key scalar-type change must drift the digest",
+            "an identity-key scalar-type change must drift the shape digest",
         ),
         (
             "index-unique",
@@ -1737,7 +1767,7 @@ fn source_digest_binds_the_durable_shape() {
                 index_unique: false,
                 ..DurableFixture::default()
             },
-            "an index uniqueness flip must drift the digest",
+            "an index uniqueness flip must drift the shape digest",
         ),
         (
             "index-columns",
@@ -1745,7 +1775,7 @@ fn source_digest_binds_the_durable_shape() {
                 index_columns: "count, id",
                 ..DurableFixture::default()
             },
-            "an index key-columns change must drift the digest",
+            "an index key-columns change must drift the shape digest",
         ),
         (
             "keyed-group-arity",
@@ -1753,7 +1783,7 @@ fn source_digest_binds_the_durable_shape() {
                 versions_keys: "version: int, draft: int",
                 ..DurableFixture::default()
             },
-            "a keyed-group key arity change must drift the digest",
+            "a keyed-group key arity change must drift the shape digest",
         ),
         (
             "keyed-group-type",
@@ -1761,7 +1791,7 @@ fn source_digest_binds_the_durable_shape() {
                 versions_keys: "version: string",
                 ..DurableFixture::default()
             },
-            "a keyed-group key scalar-type change must drift the digest",
+            "a keyed-group key scalar-type change must drift the shape digest",
         ),
         (
             "keyed-leaf-type",
@@ -1769,23 +1799,7 @@ fn source_digest_binds_the_durable_shape() {
                 tags_keys: "pos: string",
                 ..DurableFixture::default()
             },
-            "a top-level keyed-leaf key scalar-type change must drift the digest",
-        ),
-        (
-            "default-value",
-            DurableFixture {
-                default_value: "1",
-                ..DurableFixture::default()
-            },
-            "an evolve default value change must drift the digest",
-        ),
-        (
-            "transform-body",
-            DurableFixture {
-                transform_body: "return \"y\"",
-                ..DurableFixture::default()
-            },
-            "an evolve transform body change must drift the digest",
+            "a top-level keyed-leaf key scalar-type change must drift the shape digest",
         ),
         (
             "optional-toggle",
@@ -1793,13 +1807,48 @@ fn source_digest_binds_the_durable_shape() {
                 count_required: false,
                 ..DurableFixture::default()
             },
-            "an optional->required toggle must drift the digest",
+            "an optional->required toggle must drift the shape digest",
         ),
     ];
 
-    for (name, fixture, message) in cases {
+    for (name, fixture, message) in shape_cases {
         let digest = source_digest(&format!("durable-{name}"), &durable_fixture(fixture));
         assert_ne!(base_digest, digest, "{message}");
+    }
+
+    // The evolve decision surface does not change the shape, so the shape digest is
+    // stable, but the evolution digest the witness records must drift.
+    let base_evolution = evolution_digest("durable-evolution-base", &base);
+    let evolve_cases: [(&str, DurableFixture, &str); 2] = [
+        (
+            "default-value",
+            DurableFixture {
+                default_value: "1",
+                ..DurableFixture::default()
+            },
+            "an evolve default value change",
+        ),
+        (
+            "transform-body",
+            DurableFixture {
+                transform_body: "return \"y\"",
+                ..DurableFixture::default()
+            },
+            "an evolve transform body change",
+        ),
+    ];
+    for (name, fixture, change) in evolve_cases {
+        let source = durable_fixture(fixture);
+        assert_eq!(
+            base_digest,
+            source_digest(&format!("durable-shape-{name}"), &source),
+            "{change} must not drift the shape digest"
+        );
+        assert_ne!(
+            base_evolution,
+            evolution_digest(&format!("durable-evolution-{name}"), &source),
+            "{change} must drift the evolution digest"
+        );
     }
 
     // A pure whitespace and indentation reformat of the same declarations parses to

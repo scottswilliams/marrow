@@ -5,7 +5,6 @@ database.
 
 ```
 marrow check [--format text|json|jsonl] <file.mw | projectdir>
-marrow catalog <preview|accept> [--format text|json|jsonl] <projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
@@ -95,20 +94,6 @@ $ echo $?
 
 ---
 
-## `marrow catalog`
-
-```
-marrow catalog preview [--format text|json|jsonl] <projectdir>
-marrow catalog accept [--format text|json|jsonl] <projectdir>
-```
-
-`catalog preview` checks the project and reports the accepted catalog proposal
-without writing it. `catalog accept` writes exactly the current proposal to the
-project's `acceptedCatalog` file and re-checks the project before returning
-success.
-
----
-
 ## `marrow evolve`
 
 ```
@@ -123,9 +108,10 @@ witness, then reports the counts and blocking diagnostics.
 
 `evolve apply` recomputes that preview witness over the live project and store,
 requires an exact match, checks the activation window, and commits the data work
-plus metadata stamp in one transaction. Destructive retire needs
-`--maintenance` and an approval whose catalog ID and populated count match the
-preview.
+plus metadata stamp in one transaction. Like `run`, it records a project's
+baseline durable identity first when the project has none yet, then applies the
+evolution against the accepted catalog. Destructive retire needs `--maintenance`
+and an approval whose catalog ID and populated count match the preview.
 
 ---
 
@@ -174,6 +160,12 @@ selects. The store is the configured backend — a `native` redb store on disk, 
 an in-memory store when none is configured (see
 [project-config.md](project-config.md)). A project must check cleanly before it
 runs.
+
+A clean run records the project's baseline durable identity if it has none yet:
+the first run of a project with a durable surface writes the accepted catalog
+file transparently before touching the store. A project already past its
+baseline proposes no change and the file is left untouched. There is no separate
+acceptance step. See [data-evolution.md](data-evolution.md).
 
 The entry is `--entry` if given, otherwise the project's `run.defaultEntry`.
 Qualified entries (`module::function`) resolve exactly. A bare entry name is

@@ -24,9 +24,16 @@ pub fn preview(
     let discharge = discharge(program, store)?;
 
     let commit = store.read_commit_metadata()?;
+    // An empty stamped digest predates digest stamping; treat it as unstamped so the
+    // apply fence adopts the store rather than comparing against a blank.
+    let store_source_digest = commit
+        .as_ref()
+        .map(|commit| commit.source_digest.clone())
+        .filter(|digest| !digest.is_empty());
     let witness =
         EvolutionWitness {
             source_digest: crate::catalog::analyzed_source_digest(program),
+            evolution_digest: crate::catalog::evolution_digest(program),
             accepted_catalog: CatalogFingerprint {
                 epoch: program.catalog.accepted_epoch.unwrap_or(0),
                 digest: program.catalog.accepted_digest.clone().unwrap_or_default(),
@@ -37,6 +44,7 @@ pub fn preview(
                     digest: proposal.digest.clone(),
                 }
             }),
+            store_source_digest,
             engine_profile_digest: store.read_engine_profile_digest()?,
             layout_epoch: store.read_layout_epoch()?,
             store_commit_id: commit.map(|commit| commit.commit_id),

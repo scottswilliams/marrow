@@ -317,10 +317,10 @@ pub fn check_project_with_sources(
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
-/// Writing the accepted catalog file failed, or the project could not be re-discovered
-/// after the write. The CLI surfaces the path and the underlying cause.
+/// Writing the catalog file failed, or the project could not be re-discovered after
+/// the write. The caller surfaces the path and the underlying cause.
 #[derive(Debug)]
-pub enum AcceptError {
+pub enum CommitIdentityError {
     Io {
         path: PathBuf,
         error: std::io::Error,
@@ -328,34 +328,68 @@ pub enum AcceptError {
     Discover(DiscoverError),
 }
 
-/// Accept `program`'s current catalog proposal: write it to the project's accepted
-/// catalog file and re-check the project against it. Returns `Ok(None)` when the program
-/// proposes no change (the accepted catalog is already current). On success the
-/// re-checked report and program reflect the now-accepted catalog. This is the one
-/// catalog-accept path; the CLI `catalog accept` command and project fixtures share it
-/// rather than each re-implementing the write-and-recheck step.
-pub fn accept_catalog_proposal(
+/// Establish a project's baseline durable identity: write its first catalog proposal
+/// to the project's catalog file and re-check the project against it. Returns
+/// `Ok(None)` when there is nothing to establish — the project already has an accepted
+/// catalog, or proposes no catalog at all — so a project past its baseline never
+/// churns the file. On success the re-checked report and program reflect the
+/// now-committed baseline catalog.
+///
+/// This is the one production path that writes the catalog. The authorized
+/// state-establishing flows — running the program and `evolve apply` — call it when
+/// the source checks clean; `check` never does, so it stays read-only.
+///
+/// It deliberately commits only the baseline. Once a catalog is accepted, every later
+/// change to durable identity is an evolution that must flow through `evolve apply`'s
+/// witness — its renames, retires, and backfills are stamped into the store under the
+/// apply transaction, never silently advanced here. Auto-writing an evolution proposal
+/// would mark accepted entries removed before the witness consumed them, dropping the
+/// very entries a retire relies on.
+pub fn commit_pending_identity(
     project_root: &Path,
     config: &ProjectConfig,
     program: &CheckedProgram,
-) -> Result<Option<(CheckReport, CheckedProgram)>, AcceptError> {
+) -> Result<Option<(CheckReport, CheckedProgram)>, CommitIdentityError> {
+    if program.catalog.accepted_epoch.is_some() {
+        return Ok(None);
+    }
     let Some(proposal) = &program.catalog.proposal else {
         return Ok(None);
     };
+    // A project with no durable surface — a plain script, no resources, stores, or
+    // enums — has no identity to freeze. Writing an empty baseline catalog would be
+    // pure noise, so leave the project without one.
+    if proposal.entries.is_empty() {
+        return Ok(None);
+    }
+    write_accepted_catalog(project_root, config, proposal)?;
+    check_project(project_root, config)
+        .map(Some)
+        .map_err(CommitIdentityError::Discover)
+}
+
+/// Write `catalog` to the project's accepted-catalog file, creating its parent
+/// directory. This is the single production catalog writer: [`commit_pending_identity`]
+/// freezes a baseline through it, and an authorized `evolve apply` advances the
+/// accepted file to the activated proposal through it once the store transaction has
+/// committed. The byte form is the same pretty JSON both the baseline and an evolution
+/// proposal already serialize to.
+pub fn write_accepted_catalog(
+    project_root: &Path,
+    config: &ProjectConfig,
+    catalog: &marrow_project::CatalogMetadata,
+) -> Result<(), CommitIdentityError> {
     let path = project_root.join(&config.accepted_catalog);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| AcceptError::Io {
+        std::fs::create_dir_all(parent).map_err(|error| CommitIdentityError::Io {
             path: parent.to_path_buf(),
             error,
         })?;
     }
-    std::fs::write(&path, proposal.to_json_pretty()).map_err(|error| AcceptError::Io {
+    std::fs::write(&path, catalog.to_json_pretty()).map_err(|error| CommitIdentityError::Io {
         path: path.clone(),
         error,
-    })?;
-    check_project(project_root, config)
-        .map(Some)
-        .map_err(AcceptError::Discover)
+    })
 }
 
 /// The schema of the resource stored at saved root `^root`, if any. Saved roots

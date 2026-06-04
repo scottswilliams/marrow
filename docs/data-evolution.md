@@ -1,9 +1,10 @@
 # Data Evolution And Maintenance
 
 Marrow schemas evolve through source changes plus source-native evolution
-intent. Catalog preview/accept records durable identity, data-attached preview
-proves what saved data needs, and evolution apply commits the exact preview
-witness or fails closed.
+intent. Durable identity is recorded automatically the first time a project with
+saved data runs or applies an evolution, data-attached preview proves what saved
+data needs, and evolution apply commits the exact preview witness or fails
+closed.
 
 The saved-data model these changes operate on is defined in
 [`language/resources-and-storage.md`](language/resources-and-storage.md), and
@@ -20,7 +21,7 @@ schema does not fully describe until explicit data-evolution work runs.
 |---|---|
 | Add a sparse field | Source change only. Existing records stay valid; the field reads as absent until written. |
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
-| Rename a field | `evolve rename` plus `catalog accept`; stable identity moves, and stored cells addressed by that identity remain attached. |
+| Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
 | Remove a field | A sparse drop is deprecated when nothing reads it; populated destructive removal needs `evolve retire` plus approval. |
 | Delete a whole root or drop a required field | Explicit maintenance/repair code under `--maintenance`, checked before and after. |
@@ -89,8 +90,9 @@ evolve
 The accepted catalog records the new canonical path, the old path as an alias,
 and the same stable ID. Stored cells addressed by that stable member ID remain
 attached to the renamed field; no best-effort name matching or migration script
-preserves identity. A source rename without accepted catalog intent is a check
-error.
+preserves identity. A source rename without a matching `evolve rename` intent is
+a check error: rename versus delete-and-add is ambiguous without the stated
+intent.
 
 ## Accepted Catalog Metadata
 
@@ -107,15 +109,27 @@ Each entry records:
 - the catalog epoch and digest.
 
 Source-only checks read this file when present. They propose replacement metadata
-when it is missing or stale, but never write it. Checked facts expose
-catalog-backed IDs for resources, stores, store indexes, resource members, enums,
-and enum members. Runtime value encoding remains a separate storage concern; the
-catalog is the durable schema identity exposed to tools, evolution, and checked
-facts.
+when it is missing or stale, but never write it, so `marrow check` stays
+read-only and CI-safe; a project whose durable identity is not yet recorded is
+reported informationally, not as a failure. Checked facts expose catalog-backed
+IDs for resources, stores, store indexes, resource members, enums, and enum
+members. Runtime value encoding remains a separate storage concern; the catalog
+is the durable schema identity exposed to tools, evolution, and checked facts.
 
-Use `marrow catalog preview` to inspect a proposed file and `marrow catalog
-accept` to write exactly the current proposal. `accept` re-checks the project
-after the write.
+The file is written transparently by the flows that establish durable state —
+running the program and `marrow evolve apply`. The first such command on a
+project with a durable surface freezes the proposed identity into the file; once
+a baseline exists, later identity changes flow through `evolve apply` rather than
+being written from a check. There is no separate command to inspect or accept a
+proposal.
+
+A stable ID is a random opaque value in the `cat_<16 lowercase hex>` shape. It is
+allocated independently of the source path, so it never changes when a path
+changes, and it is random rather than a counter so identity minted on two
+branches for different entities cannot collide when they merge. Once committed it
+is frozen and never recomputed. A duplicate ID — from a hand edit, a bad merge,
+or an astronomically unlikely clash — fails closed at check rather than corrupting
+storage.
 
 ## Activation Fencing
 
@@ -142,14 +156,35 @@ can share an epoch, so the source digest is the schema-bearing fence that tells
 them apart. A store stamped before digest fencing carries no recorded digest and
 is adopted by the epoch match alone.
 
-A program with no accepted catalog has no durable activation context: a run's
-durable code is gated by the catalog-acceptance check rather than fenced here, and
-an evolution apply refuses outright because it has no baseline epoch to advance
-from. An in-memory store carries no durable context and is never fenced.
+The source digest binds the durable shape — every `resource`, `store`, `enum`,
+and module constant — and not the `evolve` block. The fence governs the shape a
+stored snapshot must match, not the transition that produced it, so an evolve
+block can be deleted once consumed without reading as schema drift.
+
+A program with no accepted catalog has no durable activation context, so there is
+nothing to fence against. A run records the baseline catalog before it reaches the
+store, so a project with a durable surface is fenced against the identity it just
+froze; a program that declares no saved data has no baseline and an evolution
+apply refuses outright, with no epoch to advance from. An in-memory store carries
+no durable context and is never fenced.
 
 This is the v0.1 compatibility window: a binary supports exactly its own accepted
 epoch and schema. Old and new binaries outside that exact window fail closed
 before writing.
+
+## Evolve Block Lifecycle
+
+An `evolve` block is a one-off transition, not durable schema. It states the
+intent for a single change — a rename, default, retire, or transform — that
+`marrow evolve apply` discharges against saved data. Apply commits the witness
+and advances the store; the block has then done its work.
+
+Because the store fences on the durable shape and not on the evolve block, the
+program runs the same whether the block is kept or deleted. Deleting a block once
+its change has synced to saved data is the expected lifecycle: the recorded
+identity and the migrated data carry the result forward, and a stale block left
+in source only describes work already done. Keep a block only while its apply is
+still pending.
 
 ## Index Rebuilds
 

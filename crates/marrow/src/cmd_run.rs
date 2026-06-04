@@ -6,7 +6,10 @@ use std::process::ExitCode;
 use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
 use crate::trace::TraceHook;
-use crate::{CheckFormat, load_checked_project, report_simple_error, resolve_store_path};
+use crate::{
+    CheckFormat, commit_pending_identity, load_checked_project, report_simple_error,
+    resolve_store_path,
+};
 
 /// How a run observes itself: a plain run, an execution `--trace`, a `--dry-run`
 /// that rolls its writes back, or both composed (trace the run, then discard).
@@ -132,6 +135,14 @@ fn run_project_dir(
 ) -> ExitCode {
     let (config, program) = match load_checked_project(dir) {
         Ok(checked) => checked,
+        Err(code) => return code,
+    };
+    // Running the program is an authorized state-establishing flow, so a clean source
+    // with a pending catalog proposal has its durable identity frozen here before the
+    // run touches the store. A clean accepted catalog proposes no change and is left
+    // untouched.
+    let program = match commit_pending_identity(dir, &config, program) {
+        Ok(program) => program,
         Err(code) => return code,
     };
 

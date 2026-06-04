@@ -192,11 +192,36 @@ pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
     }
 }
 
+/// Report a resume that found the store already activated and only had to bring the
+/// accepted-catalog file forward. No data was re-applied, so every count is zero; the
+/// epoch is the one the store already holds.
+pub(super) fn apply_resumed(catalog_epoch: u64, format: CheckFormat) {
+    match format {
+        CheckFormat::Text => {
+            println!("completed evolution");
+            println!("catalog epoch: {catalog_epoch}");
+            println!("records backfilled: 0");
+            println!("records transformed: 0");
+            println!("records retired: 0");
+            println!("indexes rebuilt: 0");
+        }
+        CheckFormat::Json | CheckFormat::Jsonl => write_json(serde_json::json!({
+            "kind": "evolve_apply",
+            "status": "completed",
+            "catalog_epoch": catalog_epoch,
+            "records_backfilled": 0,
+            "records_transformed": 0,
+            "records_retired": 0,
+            "indexes_rebuilt": 0,
+        })),
+    }
+}
+
 pub(super) fn apply_error(error: ApplyError, format: CheckFormat) {
     match error {
         ApplyError::NoAcceptedCatalog => report_simple_error(
             "evolve.no_accepted_catalog",
-            "this program accepted no catalog, so there is no baseline epoch to apply from; run `marrow catalog accept` first",
+            "this program has no durable catalog to apply from; it declares no saved data, so there is no baseline epoch to advance",
             format,
         ),
         ApplyError::Drift => report_simple_error(

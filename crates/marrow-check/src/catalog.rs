@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
@@ -120,7 +121,7 @@ fn catalog_binding(
             // (deprecate it, or require a retire intent when an index, invariant, or
             // alias still depends on it) is a discharge obligation, not catalog
             // binding's concern.
-            let mut used_stable_ids = stable_ids(&proposal_entries);
+            let mut allocator = StableIdAllocator::over(&proposal_entries);
             let mut changed = false;
             for source in &source_entries {
                 let rename = renames.remove(&source.path);
@@ -139,9 +140,9 @@ fn catalog_binding(
                     apply_rename(&mut proposal_entries, source, &rename.from_path, &mut ids);
                     changed = true;
                 } else {
-                    push_missing_intent(source, diagnostics);
+                    push_pending_identity(source, diagnostics);
                     prepare_proposal_path(&mut proposal_entries, source.kind, &source.path);
-                    proposal_entries.push(proposed_catalog_entry(source, &mut used_stable_ids));
+                    proposal_entries.push(proposed_catalog_entry(source, &mut allocator));
                     changed = true;
                 }
             }
@@ -167,20 +168,21 @@ fn catalog_binding(
             for retire in &evolve.retires {
                 report_unresolved_intent(&retire.file, retire.span, diagnostics);
             }
-            let mut used_stable_ids = HashSet::new();
+            let mut allocator = StableIdAllocator::empty();
             Some(CatalogMetadata::new(
                 1,
                 source_entries
                     .iter()
-                    .map(|source| proposed_catalog_entry(source, &mut used_stable_ids))
+                    .map(|source| proposed_catalog_entry(source, &mut allocator))
                     .collect(),
             ))
         }
     };
 
-    // The proposal is the catalog a future accept commits, so it must satisfy the
-    // same identity invariants. Validating it here makes an identity collision the
-    // binding logic produced fail closed at check time rather than at apply.
+    // The proposal is the catalog the commit path freezes when the program runs or an
+    // evolution applies, so it must satisfy the same identity invariants. Validating it
+    // here makes an identity collision the binding logic produced fail closed at check
+    // time rather than at apply.
     if let Some(proposal) = &proposal
         && let Err(error) = proposal.validate()
     {
@@ -307,6 +309,13 @@ fn resolve_renames(
             report_unresolved_intent(&rename.file, rename.span, diagnostics);
             continue;
         };
+        if rename_already_recorded(accepted, kind, rename) {
+            // The accepted catalog already carries this entity at `to_path` with
+            // `from_path` recorded as an alias, so a prior apply consumed this rename.
+            // The block is a transient transition the author may keep or delete; the
+            // identity is already moved, so there is nothing to relocate and no error.
+            continue;
+        }
         let duplicate_target = resolved.contains_key(&rename.to_path);
         let duplicate_source = !from_paths.insert(rename.from_path.clone());
         if duplicate_target || duplicate_source {
@@ -331,6 +340,26 @@ fn resolve_renames(
         );
     }
     resolved
+}
+
+/// Whether a prior apply already carried this rename into the accepted catalog: the
+/// live entry now sits at `to_path` and records `from_path` among its aliases. A
+/// consumed rename block is a transient transition the author may keep or delete, so
+/// it relocates nothing and is not an unresolved intent.
+fn rename_already_recorded(
+    accepted: &AcceptedCatalog<'_>,
+    kind: CatalogEntryKind,
+    rename: &RenameIntent,
+) -> bool {
+    accepted
+        .active_entry(kind, &rename.to_path)
+        .is_some_and(|binding| {
+            binding
+                .entry
+                .aliases
+                .iter()
+                .any(|alias| alias == &rename.from_path)
+        })
 }
 
 /// Map each current source catalog path to the kind the source declares there.
@@ -395,6 +424,11 @@ fn apply_retires(
             push_retire_source_declared(retire, diagnostics);
             continue;
         }
+        // A prior apply that already marked this path removed leaves a transient retire
+        // block the author may keep or delete: the entry is gone, so there is nothing
+        // left to retire and no error. A path with no entry of any lifecycle names
+        // nothing and stays an unresolved intent.
+        let already_recorded = retire_already_recorded(entries, &retire.path);
         match entries
             .iter_mut()
             .find(|entry| entry.lifecycle == CatalogLifecycle::Active && entry.path == retire.path)
@@ -403,10 +437,19 @@ fn apply_retires(
                 entry.lifecycle = CatalogLifecycle::Removed;
                 changed = true;
             }
+            None if already_recorded => {}
             None => report_unresolved_intent(&retire.file, retire.span, diagnostics),
         }
     }
     changed
+}
+
+/// Whether a prior apply already marked this path removed, so a retire block left in
+/// source is a consumed transition rather than an unresolved intent.
+fn retire_already_recorded(entries: &[CatalogEntry], path: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.lifecycle == CatalogLifecycle::Removed && entry.path == path)
 }
 
 fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
@@ -523,13 +566,17 @@ fn collect_resource_members(
     }
 }
 
-fn push_missing_intent(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
+/// A source entity the accepted catalog does not yet record has no durable
+/// identity until a state-establishing flow commits one. That pending state is
+/// informational, not a failure: `check` stays read-only and exits clean while
+/// telling the author durable identity for the entity is not yet frozen.
+fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
     diagnostics.push(CheckDiagnostic {
         code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
+        severity: Severity::Warning,
         file: source.file.clone(),
         message: format!(
-            "accepted catalog metadata has no active entry for `{}`; accept a catalog proposal before renaming durable identity",
+            "durable identity for `{}` is not yet recorded; running the program or applying an evolution will record it",
             source.path
         ),
         span: source.span,
@@ -597,13 +644,6 @@ fn prepare_proposal_path(entries: &mut Vec<CatalogEntry>, kind: CatalogEntryKind
     }
 }
 
-fn stable_ids(entries: &[CatalogEntry]) -> HashSet<String> {
-    entries
-        .iter()
-        .map(|entry| entry.stable_id.clone())
-        .collect()
-}
-
 pub(crate) fn resource_path(module: &str, resource: &str) -> String {
     qualified(module, resource)
 }
@@ -646,41 +686,65 @@ fn qualified(module: &str, item: &str) -> String {
     }
 }
 
-fn proposal_stable_id(kind: CatalogEntryKind, path: &str) -> String {
-    let payload = format!("{kind:?}:{path}");
-    format!("cat_{:016x}", fnv1a64(payload.as_bytes()))
-}
-
 fn proposed_catalog_entry(
     source: &SourceCatalogEntry,
-    used_stable_ids: &mut HashSet<String>,
+    allocator: &mut StableIdAllocator,
 ) -> CatalogEntry {
-    let stable_id = unique_proposal_stable_id(source.kind, &source.path, used_stable_ids);
     CatalogEntry {
         kind: source.kind,
         path: source.path.clone(),
-        stable_id,
+        stable_id: allocator.allocate(),
         aliases: Vec::new(),
         lifecycle: CatalogLifecycle::Active,
     }
 }
 
-fn unique_proposal_stable_id(
-    kind: CatalogEntryKind,
-    path: &str,
-    used_stable_ids: &mut HashSet<String>,
-) -> String {
-    let base = proposal_stable_id(kind, path);
-    if used_stable_ids.insert(base.clone()) {
-        return base;
-    }
-    for suffix in 1u64.. {
-        let candidate = format!("{base}_{suffix}");
-        if used_stable_ids.insert(candidate.clone()) {
-            return candidate;
+/// Hands out catalog ids in the `cat_<16 lowercase hex>` shape as random opaque
+/// 64-bit values, re-rolling against the ids already in use. Allocation is
+/// independent of the entity's source path, so an id never changes when a path
+/// changes, and it is random rather than a monotonic counter so two project
+/// branches that each allocate identity for different entities cannot collide on
+/// one id when they merge — a monotonic sequence is only safe with a single
+/// coordinator, which branch-parallel work has none of. An id is frozen the moment
+/// the catalog is committed and never recomputed afterward. The vanishingly rare
+/// random clash (or a hand-edited or badly merged catalog) is not silently
+/// tolerated: `CatalogMetadata::validate()` rejects two entries sharing a stable id,
+/// and the proposal is validated at check, so a duplicate fails closed there.
+struct StableIdAllocator {
+    used: HashSet<String>,
+}
+
+impl StableIdAllocator {
+    fn empty() -> Self {
+        Self {
+            used: HashSet::new(),
         }
     }
-    unreachable!("unbounded suffix search always returns")
+
+    /// Seed the in-use set from every recorded entry regardless of lifecycle, so a
+    /// retired or deprecated id is never handed back out to a new entity.
+    fn over(entries: &[CatalogEntry]) -> Self {
+        Self {
+            used: entries
+                .iter()
+                .map(|entry| entry.stable_id.clone())
+                .collect(),
+        }
+    }
+
+    fn allocate(&mut self) -> String {
+        loop {
+            let id = format!(
+                "cat_{:016x}",
+                std::collections::hash_map::RandomState::new()
+                    .build_hasher()
+                    .finish()
+            );
+            if self.used.insert(id.clone()) {
+                return id;
+            }
+        }
+    }
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -692,25 +756,67 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// A stable digest of the analyzed program's durable and evolution surface, in the
-/// same `fnv1a64:<hex>` form the catalog digest uses.
+/// A stable digest of the analyzed program's durable shape, in the same
+/// `fnv1a64:<hex>` form the catalog digest uses. This is the digest the store stamps
+/// at commit and the activation-window fence enforces, so it binds exactly the facts a
+/// stored snapshot must satisfy: each `resource`, `store`, `enum`, and module `const`.
+///
+/// It deliberately excludes the `evolve` block. An evolve block is a transient
+/// transition: once a rename or retire is recorded in the accepted catalog, the block
+/// describes work already done, and the author may keep or delete it. Hashing it here
+/// would fence the store on a transient, so deleting a consumed block would read as
+/// schema drift. The durable shape a stored snapshot must match does not include the
+/// transition that produced it, so the stamp and fence track shape alone.
 ///
 /// The digest is gap-free by construction: rather than enumerate durable facts field
-/// by field, it renders every durable and evolution-visible declaration — each
-/// `resource`, `store`, `enum`, module `const`, and `evolve` block — through the
-/// canonical formatter and hashes the normalized text. Reformatting binds every member
-/// type, required flag, identity key, index uniqueness and columns, keyed-layer key
-/// name and type at any nesting depth, enum member, module constant, evolve default
-/// value, and transform body, so any change to the shape or transform input a stored
-/// snapshot must satisfy drifts the digest while a pure whitespace reformat of the
-/// same declarations leaves it unchanged. The evolution witness records it so apply
-/// can abort if the source it activates no longer matches what was discharged.
+/// by field, it renders every shape declaration through the canonical formatter and
+/// hashes the normalized text. Reformatting binds every member type, required flag,
+/// identity key, index uniqueness and columns, keyed-layer key name and type at any
+/// nesting depth, enum member, and module constant, so any shape change drifts the
+/// digest while a pure whitespace reformat of the same declarations leaves it unchanged.
+pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
+    digest_of(render_declarations(program, DigestScope::Shape))
+}
+
+/// A stable digest of the analyzed shape *and* the evolve decision surface, in the same
+/// `fnv1a64:<hex>` form. It binds everything [`analyzed_source_digest`] binds plus each
+/// `evolve` block, so a changed evolve default value or transform body drifts it.
+///
+/// The evolution witness records this digest, not the shape digest, so apply aborts
+/// when the source it activates no longer matches what was discharged — including a
+/// transform-body edit the shape digest cannot see. The two digests divide the work:
+/// the store fences on shape so a consumed block is deletable, and the witness fences on
+/// shape-plus-intent so the preview-to-apply transition cannot silently change.
+pub(crate) fn evolution_digest(program: &CheckedProgram) -> String {
+    digest_of(render_declarations(program, DigestScope::ShapeAndEvolve))
+}
+
+/// Which declarations a digest binds. The shape digest the store stamps excludes the
+/// evolve block; the evolution digest the witness records includes it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DigestScope {
+    Shape,
+    ShapeAndEvolve,
+}
+
+impl DigestScope {
+    /// Whether a declaration of `kind` contributes to a digest at this scope.
+    fn binds(self, kind: DurableKind) -> bool {
+        match self {
+            DigestScope::Shape => kind != DurableKind::Evolve,
+            DigestScope::ShapeAndEvolve => true,
+        }
+    }
+}
+
+/// Render the digest-bound declarations at `scope` into the deterministically ordered
+/// renderings a digest hashes.
 ///
 /// The rendering reads each module's source file because the formatter operates on the
 /// syntax tree, which the checked program drops. A source file that no longer reads or
 /// parses (a checked-program invariant violation) contributes a path-tagged marker so
 /// the digest stays deterministic and never silently collides with a clean rendering.
-pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
+fn render_declarations(program: &CheckedProgram, scope: DigestScope) -> Vec<DurableRendering> {
     let mut entries: Vec<DurableRendering> = Vec::new();
     for module in &program.modules {
         let source = std::fs::read_to_string(&module.source_file).ok();
@@ -718,7 +824,8 @@ pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
         match (&source, &parsed) {
             (Some(source), Some(parsed)) => {
                 for declaration in &parsed.file.declarations {
-                    let Some(kind) = durable_kind(declaration) else {
+                    let Some(kind) = durable_kind(declaration).filter(|&kind| scope.binds(kind))
+                    else {
                         continue;
                     };
                     entries.push(DurableRendering {
@@ -740,6 +847,11 @@ pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
     entries.sort_by(|a, b| {
         (&a.module, a.kind as u8, &a.name).cmp(&(&b.module, b.kind as u8, &b.name))
     });
+    entries
+}
+
+/// Hash the ordered renderings into the canonical `fnv1a64:<hex>` digest.
+fn digest_of(entries: Vec<DurableRendering>) -> String {
     let payload = entries
         .iter()
         .map(|entry| {

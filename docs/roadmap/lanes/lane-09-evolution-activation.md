@@ -3,9 +3,10 @@
 > For agentic workers: use the lane loop in `/Users/scottwilliams/Dev/AGENTS.md`.
 > This lane is one proof-discharge pipeline with multiple command surfaces.
 
-Goal: implement source-native evolution, catalog preview/accept, data-attached
-checks, exact witnesses, activation gates, and compatibility windows without
-falling back to migration scripts or source-diff identity inference.
+Goal: implement source-native evolution, invisible catalog identity recorded on
+run and `evolve apply`, data-attached checks, exact witnesses, activation gates,
+and compatibility windows without falling back to migration scripts or
+source-diff identity inference.
 
 Worktree: `/Users/scottwilliams/Dev/marrow-lane-09-evolution-activation`
 
@@ -13,8 +14,8 @@ Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-09-evolution-ac
 
 Status: lane complete as of 2026-06-03. The `evolve` block (rename / default /
 transform / retire), one proof-discharge pipeline (`check`, `check --data`,
-`catalog preview`/`accept`, `evolve preview`/`apply`, and repair as a witness
-verdict) over an exact evolution witness, narrow per-record checked transforms,
+`evolve preview`/`apply`, and repair as a witness verdict) over an exact
+evolution witness, narrow per-record checked transforms,
 and stale-writer fencing on catalog epoch + engine profile + schema digest are
 implemented and reviewed. Soundness, idiom/spec, and cleanup review passed;
 formatter, full workspace tests, strict clippy, no `unsafe`, and `git diff
@@ -31,9 +32,10 @@ deliverable is a read-only audit packet.
 Before a lane-complete claim, Lane 9 must prove the whole evolution family is
 handled:
 
-- `check`, data-attached check, catalog preview/accept, evolve preview/apply,
-  repair admission, and compatibility-window checks consume one proof-discharge
-  pipeline;
+- `check`, data-attached check, evolve preview/apply, repair admission, and
+  compatibility-window checks consume one proof-discharge pipeline, with durable
+  identity recorded automatically on run and `evolve apply` rather than through a
+  catalog command;
 - the exact preview witness is the only apply input, and every drift dimension
   has a failing fixture before implementation;
 - migration scripts, source-diff identity inference, best-effort rename,
@@ -122,9 +124,10 @@ Before handing the lane to review:
 
 ## Production Contract
 
-- `marrow check`, data-attached check, `catalog preview`, `catalog accept`,
-  `evolve preview`, `evolve apply`, and repair consume one shared
-  proof-discharge pipeline.
+- `marrow check`, data-attached check, `evolve preview`, `evolve apply`, and
+  repair consume one shared proof-discharge pipeline. Durable identity is
+  recorded automatically by the state-establishing flows — running the program
+  and `evolve apply` — with no catalog command; `check` stays read-only.
 - Preview is read-only and produces an exact witness.
 - Apply consumes only the exact witness and aborts on source, catalog, snapshot,
   engine, affected-ID, or count drift.

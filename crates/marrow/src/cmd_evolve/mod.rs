@@ -3,9 +3,12 @@
 use std::process::ExitCode;
 
 use marrow_check::evolution::preview;
-use marrow_run::evolution::{ApplyError, apply};
+use marrow_run::evolution::{ApplyError, FenceError, apply};
 
-use crate::{CheckFormat, load_checked_project_with_format, report_simple_error};
+use crate::{
+    CheckFormat, commit_pending_identity, load_checked_project_with_format, report_simple_error,
+    write_accepted_catalog,
+};
 
 mod args;
 mod render;
@@ -91,9 +94,31 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format) else {
         return ExitCode::FAILURE;
     };
+    // Applying an evolution is an authorized state-establishing flow, so a clean
+    // source with pending durable identity has it frozen here before the witness is
+    // built. This is a separate transactional step from consuming the preview witness:
+    // once the catalog is committed, preview and apply run against the accepted
+    // identity exactly as they would for an already-accepted project.
+    let program = match commit_pending_identity(&input.dir, &config, program) {
+        Ok(program) => program,
+        Err(code) => return code,
+    };
     let Ok(store) = store::apply_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
+    // The store transaction (data plus epoch stamp) and the accepted-catalog file are
+    // advanced as two steps, with the file written last. A crash between them leaves the
+    // store at the activated epoch while the file still records the prior one. That
+    // window is recoverable: re-running apply finds the store already at the proposal
+    // epoch and completes by writing the file alone, doing no data re-apply and no
+    // second stamp. Detecting it before the fence is essential, because the fence reads
+    // the behind-by-one file as its accepted epoch and would reject the store as
+    // evolved.
+    match resume_completion(&input.dir, &config, &program, &store, input.format) {
+        Ok(Some(code)) => return code,
+        Ok(None) => {}
+        Err(code) => return code,
+    }
     let (witness, diagnostics) = match preview(&program, &store) {
         Ok(result) => result,
         Err(error) => {
@@ -109,6 +134,15 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         input.approval.as_ref(),
     ) {
         Ok(outcome) => {
+            // Advance the accepted-catalog file to the activated proposal as the final
+            // step, after the store transaction has committed. A proposal of `None` is a
+            // change that does not touch durable identity (a pure backfill), so the file
+            // already matches and is left untouched.
+            if let Some(proposal) = &program.catalog.proposal
+                && let Err(code) = write_accepted_catalog(&input.dir, &config, proposal)
+            {
+                return code;
+            }
             render::apply_success(&outcome, input.format);
             ExitCode::SUCCESS
         }
@@ -121,6 +155,61 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Complete a half-applied evolution whose store reached the proposal epoch before the
+/// accepted-catalog file was written. Returns `Ok(Some(code))` when this apply was a
+/// resume that finished by writing the file alone, `Ok(None)` when there is no resume to
+/// perform, and `Err(code)` when reading the store or writing the file failed.
+///
+/// The resume signature is exact: the store is stamped at the proposal epoch while the
+/// accepted file the program loaded is still one epoch behind. Activating the data is
+/// already done, so the only remaining work is to bring the file forward.
+fn resume_completion(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: &marrow_check::CheckedProgram,
+    store: &marrow_store::tree::TreeStore,
+    format: CheckFormat,
+) -> Result<Option<ExitCode>, ExitCode> {
+    let Some(proposal) = &program.catalog.proposal else {
+        return Ok(None);
+    };
+    let store_epoch = match store.read_catalog_epoch() {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), format);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if store_epoch != Some(proposal.epoch) || program.catalog.accepted_epoch >= Some(proposal.epoch)
+    {
+        return Ok(None);
+    }
+    // The epoch signature alone cannot prove the source still describes the evolution the
+    // store committed: a divergent edit during the crash window proposes the same next
+    // epoch. The store stamped the schema-bearing source digest of the evolution it ran,
+    // so requiring the current shape to match that recorded digest is the same fact the
+    // open fence checks at an equal epoch. A mismatch means the file would freeze a
+    // catalog the store never activated, so resume fails closed instead of writing it.
+    let recorded_digest = match store.read_commit_metadata() {
+        Ok(commit) => commit.map(|commit| commit.source_digest),
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), format);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if recorded_digest
+        .as_deref()
+        .is_some_and(|recorded| !recorded.is_empty() && recorded != program.source_digest())
+    {
+        let drift = FenceError::SchemaDrift;
+        report_simple_error(drift.code(), &drift.message(), format);
+        return Err(ExitCode::FAILURE);
+    }
+    write_accepted_catalog(dir, config, proposal)?;
+    render::apply_resumed(proposal.epoch, format);
+    Ok(Some(ExitCode::SUCCESS))
 }
 
 fn print_help() {

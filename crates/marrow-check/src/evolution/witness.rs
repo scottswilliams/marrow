@@ -148,14 +148,25 @@ pub struct ObligationVerdict {
 /// check->run boundary into apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolutionWitness {
-    /// A digest of the analyzed durable surface and the evolve decision surface, in
-    /// the existing `fnv1a64:<hex>` form. Apply re-derives it from the source it
-    /// activates and aborts on drift.
+    /// A digest of the analyzed durable shape, in the existing `fnv1a64:<hex>` form.
+    /// This is the digest apply stamps and the activation-window fence enforces, so it
+    /// excludes the transient evolve block; a consumed block is therefore deletable
+    /// without reading as schema drift.
     pub source_digest: String,
+    /// A digest of the durable shape *and* the evolve decision surface. Apply re-derives
+    /// it from the source it activates and aborts on drift, so a transform-body or
+    /// evolve-default edit between preview and apply fails closed even though the shape
+    /// digest the store stamps does not move.
+    pub evolution_digest: String,
     /// The accepted catalog the snapshot was computed against.
     pub accepted_catalog: CatalogFingerprint,
     /// The catalog proposal to activate, or `None` when source proposed no change.
     pub proposal_catalog: Option<CatalogFingerprint>,
+    /// The store's stamped shape digest at preview time, or `None` for an unstamped
+    /// store. Apply fences the store against this so an evolution that changes shape
+    /// verifies the store still holds the pre-apply shape before stamping the new one,
+    /// rather than fencing the store against the very shape apply is moving it to.
+    pub store_source_digest: Option<String>,
     /// The store's engine-profile digest, or `None` for an empty store.
     pub engine_profile_digest: Option<EngineProfileDigest>,
     /// The store's layout epoch, or `None` for an empty store.

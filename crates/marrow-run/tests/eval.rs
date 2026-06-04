@@ -124,7 +124,7 @@ fn checked_program_files(files: &[(PathBuf, String)]) -> CheckedRuntimeProgram {
         "runtime tests require a clean checked program: {:#?}",
         report.diagnostics
     );
-    let program = accept_catalog(root.path(), &config, program);
+    let program = commit_catalog(root.path(), &config, program);
     program.runtime()
 }
 
@@ -150,14 +150,14 @@ fn test_project_config() -> ProjectConfig {
     }
 }
 
-fn accept_catalog(root: &Path, config: &ProjectConfig, program: CheckedProgram) -> CheckedProgram {
-    match marrow_check::accept_catalog_proposal(root, config, &program)
-        .expect("accept runtime test catalog")
+fn commit_catalog(root: &Path, config: &ProjectConfig, program: CheckedProgram) -> CheckedProgram {
+    match marrow_check::commit_pending_identity(root, config, &program)
+        .expect("commit runtime test catalog")
     {
         Some((report, program)) => {
             assert!(
                 !report.has_errors(),
-                "accepted runtime test catalog must check cleanly: {:#?}",
+                "committed runtime test catalog must check cleanly: {:#?}",
                 report.diagnostics
             );
             program
@@ -7475,8 +7475,12 @@ fn reversed_respects_the_traversed_layer_write_guard() {
 #[test]
 fn reversed_over_a_composite_root_is_a_true_reverse() {
     // A composite identity reverses at every level, so the whole identity stream is
-    // the exact reverse of the ascending one — not just the outermost component.
-    let program = checked_program(ENROLLMENT_PRIMARY);
+    // the exact reverse of the ascending one — not just the outermost component. The
+    // reader and the writer share one committed catalog so their member catalog ids
+    // address the same store cells.
+    let program = checked_program(&format!(
+        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
+    ));
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
         run_entry(
@@ -7496,9 +7500,6 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     enroll("s2", "c1", "active");
 
     // Ascending identity order is (s1,c1),(s1,c2),(s2,c1); reverse is the mirror.
-    let program = checked_program(&format!(
-        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
-    ));
     let outcome = run_entry(&store, checked_entry!(&program, "test::revStatuses")).expect("run");
     assert_eq!(outcome.output, "active\ndropped\nactive\n");
 }

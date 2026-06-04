@@ -90,9 +90,14 @@ pub fn apply(
         return Err(ApplyError::NoAcceptedCatalog);
     };
     validate_witness(witness, program, store)?;
+    // Fence against the shape the store already holds, not the shape apply is about to
+    // stamp: an evolution that changes shape must verify the store still sits at its
+    // pre-apply shape before advancing it, or every shape-changing apply would fence
+    // itself as drift. The new shape is what apply stamps once the fence passes.
+    let expected_digest = witness.store_source_digest.clone().unwrap_or_default();
     fence(
         Some(accepted_epoch),
-        &witness.source_digest,
+        &expected_digest,
         &current_engine_profile(),
         store,
     )?;

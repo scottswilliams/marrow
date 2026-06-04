@@ -31,7 +31,7 @@ fn marrow(args: &[&str]) -> std::process::Output {
     for arg in args {
         let path = Path::new(arg);
         if path.is_dir() {
-            support::accept_catalog_if_clean(path);
+            support::commit_catalog_if_clean(path);
         }
     }
     Command::new(env!("CARGO_BIN_EXE_marrow"))
@@ -151,7 +151,7 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
 }
 
 fn checked_program(project: &Path) -> CheckedProgram {
-    support::accept_catalog_if_clean(project);
+    support::commit_catalog_if_clean(project);
     let config_text = fs::read_to_string(project.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
     let (report, program) = marrow_check::check_project(project, &config).expect("check project");

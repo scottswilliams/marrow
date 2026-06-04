@@ -146,7 +146,7 @@ pub(crate) fn catalog_id(
         origin: None,
         code: RUN_STORE,
         message: format!(
-            "checked {what} catalog identity is missing or malformed; accept the catalog proposal before running durable store code"
+            "checked {what} catalog identity is missing or malformed; durable identity is recorded automatically when the program runs"
         ),
         span,
     })

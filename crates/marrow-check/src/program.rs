@@ -114,14 +114,23 @@ impl CheckedProgram {
         CheckedRuntimeProgram::from_checked(self)
     }
 
-    /// The schema-bearing digest of this program's durable and evolution surface, in
-    /// the `fnv1a64:<hex>` form the evolution witness and the store commit metadata
-    /// record. It binds member types, identity key types, index shape, enum members,
-    /// and evolve decisions, so a structurally different schema produces a different
-    /// digest even at the same catalog epoch. The activation fence compares it against
-    /// the digest the store recorded.
+    /// The schema-bearing digest of this program's durable shape, in the
+    /// `fnv1a64:<hex>` form the store commit metadata records. It binds member types,
+    /// identity key types, index shape, enum members, and module constants, so a
+    /// structurally different schema produces a different digest even at the same
+    /// catalog epoch. It excludes the transient evolve block, so a consumed transition
+    /// is deletable without reading as schema drift. The activation fence compares it
+    /// against the digest the store recorded.
     pub fn source_digest(&self) -> String {
         crate::catalog::analyzed_source_digest(self)
+    }
+
+    /// The digest of this program's durable shape *and* its evolve decision surface, in
+    /// the same `fnv1a64:<hex>` form. The evolution witness records it so apply aborts
+    /// when the source it activates no longer matches what was discharged, including a
+    /// transform-body or evolve-default edit the shape digest cannot see.
+    pub fn evolution_digest(&self) -> String {
+        crate::catalog::evolution_digest(self)
     }
 
     pub(crate) fn lower_runtime_bodies<'a, I>(&mut self, sources: I)

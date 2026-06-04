@@ -51,25 +51,23 @@ fn config() -> ProjectConfig {
     }
 }
 
-fn catalog_path(root: &Path) -> PathBuf {
-    root.join("marrow.catalog.json")
-}
-
 fn checked(root: &Path) -> CheckedProgram {
     let (report, program) = check_project(root, &config()).expect("check project");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     program
 }
 
-/// Check the source with no accepted catalog, write its proposal as the accepted
-/// catalog (the accept flow), then re-check. The returned program's schema is fully
-/// accepted, so its bound catalog ids address the store.
-fn accept_then_check(root: &Path) -> CheckedProgram {
-    let (report, program) = check_project(root, &config()).expect("check for accept");
+/// Check the source with no committed catalog, freeze its proposal through the
+/// production commit path, then re-check. The returned program's schema is fully
+/// committed, so its bound catalog ids address the store.
+fn commit_then_check(root: &Path) -> CheckedProgram {
+    let (report, program) = check_project(root, &config()).expect("check for commit");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let proposal = program.catalog.proposal.expect("first-check proposal");
-    fs::write(catalog_path(root), proposal.to_json_pretty()).expect("write catalog");
-    checked(root)
+    let (report, program) = marrow_check::commit_pending_identity(root, &config(), &program)
+        .expect("commit catalog")
+        .expect("a catalog proposal to commit");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    program
 }
 
 fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
@@ -200,7 +198,7 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -284,7 +282,7 @@ fn optional_add_stamps_epoch_without_data_step() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -334,7 +332,7 @@ fn new_index_rebuild_writes_entries_and_stamps() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -399,7 +397,7 @@ fn new_non_unique_index_rebuild_writes_entries() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -556,7 +554,7 @@ fn destructive_multi_retire_approval_count_is_total() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = accept_then_check(&root);
+    let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
     let notes_id = member_catalog_id(&accepted_place, "notes");
@@ -668,7 +666,7 @@ fn transform_computes_new_member_per_record_and_stamps() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -739,7 +737,7 @@ fn transform_undecodable_read_is_refused() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -787,7 +785,7 @@ fn transform_body_fault_aborts_byte_identical() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -846,7 +844,7 @@ fn activatable_transform_with_total_body_applies() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -892,11 +890,11 @@ fn transform_composes_with_default_and_retire() {
              \x20   return nextId(^books)\n",
         );
     });
-    // Accept the full schema, so every member binds a stable id and current source
+    // Commit the full schema, so every member binds a stable id and current source
     // proposes no new catalog entry: the default backfills records missing `currency`,
-    // the retire drops the accepted `subtitle` source no longer declares, and the
-    // transform recomputes the accepted `priceCents`.
-    let accepted = accept_then_check(&root);
+    // the retire drops the committed `subtitle` source no longer declares, and the
+    // transform recomputes the committed `priceCents`.
+    let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
 
@@ -994,7 +992,7 @@ fn source_digest_drift_aborts() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1036,7 +1034,7 @@ fn transform_constant_drift_aborts_before_apply() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1080,6 +1078,91 @@ fn transform_constant_drift_aborts_before_apply() {
     fs::remove_dir_all(&root).ok();
 }
 
+/// Editing a transform body after building the witness must abort apply with Drift,
+/// even though the durable shape is unchanged. The store-stamp digest binds shape only,
+/// so it does not move when the body changes; the witness records the evolution digest,
+/// which does, so re-running preview produces an unequal witness and apply fails closed
+/// before evaluating the new body. Without the evolution digest the verdict carries only
+/// the read catalog ids, which a body edit leaves identical, so the change would slip
+/// past every other witness field.
+#[test]
+fn transform_body_drift_aborts_before_apply() {
+    let root = temp_project("apply-transform-body-drift", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = commit_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(5));
+    seed.member(1, "priceCents", Scalar::Int(0));
+    let witness = witness(&program, &store);
+
+    // The shape is untouched; only the transform body changes the multiplier. The
+    // shape-only stamp digest is identical, so without the evolution digest this edit
+    // would not drift the witness.
+    assert_eq!(
+        witness.source_digest,
+        program.source_digest(),
+        "the shape digest is unchanged by the body edit"
+    );
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 200\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let changed_program = checked(&root);
+    assert_eq!(
+        changed_program.source_digest(),
+        witness.source_digest,
+        "the body edit leaves the shape digest unchanged"
+    );
+    assert_ne!(
+        changed_program.evolution_digest(),
+        witness.evolution_digest,
+        "the body edit drifts the evolution digest the witness records"
+    );
+    let result = apply(&witness, &changed_program, &store, false, None);
+
+    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let int = marrow_store::value::ScalarType::Int;
+    assert!(
+        matches!(result, Err(ApplyError::Drift)),
+        "expected Drift, got {result:#?}"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, int),
+        Some(Scalar::Int(0)),
+        "the target is unchanged when transform-body drift is rejected"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
 /// Count drift: the witness backfill count no longer matches the live store, so apply
 /// aborts before staging a write. Witness equality catches the count change because a
 /// re-preview produces a different count.
@@ -1099,7 +1182,7 @@ fn count_drift_aborts() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1141,7 +1224,7 @@ fn store_commit_drift_aborts() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1187,7 +1270,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
 
     let store_path = root.join("data.marrow");
@@ -1261,8 +1344,8 @@ fn nested_group_retire_fails_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    // Accept the schema that declares `meta.note`, so the nested leaf binds a stable id.
-    let accepted = accept_then_check(&root);
+    // Commit the schema that declares `meta.note`, so the nested leaf binds a stable id.
+    let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let meta_id = group_member_catalog_id(&accepted_place, "meta");
     let note_id = nested_member_catalog_id(&accepted_place, "meta", "note");
@@ -1366,8 +1449,8 @@ fn dropped_index_id_stamped_as_index_not_root() {
              \x20   return nextId(^books)\n",
         );
     });
-    // Accept the schema that declares the index, so the index binds a stable id.
-    let accepted = accept_then_check(&root);
+    // Commit the schema that declares the index, so the index binds a stable id.
+    let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let index_id = index_catalog_id(&accepted_place, "byIsbn");
 
@@ -1444,8 +1527,8 @@ fn destructive_retire_fixture(
              \x20   return nextId(^books)\n",
         );
     });
-    // Accept the schema that still declares `subtitle`, so the member binds a stable id.
-    let accepted = accept_then_check(&root);
+    // Commit the schema that still declares `subtitle`, so the member binds a stable id.
+    let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
 
@@ -1500,7 +1583,7 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1563,7 +1646,7 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let accepted = program.catalog.accepted_epoch.expect("accepted epoch");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
@@ -1660,9 +1743,9 @@ fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
              \x20   return nextId(^books)\n",
         );
     });
-    // No accept flow: the program proposes a catalog but never accepts one. Without an
-    // accepted catalog the bound store catalog ids are unresolved, so there is nothing
-    // to seed; apply must refuse before reaching any data work.
+    // The program proposes a catalog but none has been committed. Without a committed
+    // catalog the bound store catalog ids are unresolved, so there is nothing to seed;
+    // apply must refuse before reaching any data work.
     let program = checked(&root);
     assert!(program.catalog.accepted_epoch.is_none());
     let store = TreeStore::memory();
@@ -1703,7 +1786,7 @@ fn no_op_apply_does_not_churn_the_commit_id() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = accept_then_check(&root);
+    let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1763,7 +1846,7 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program_a = accept_then_check(&root_a);
+    let program_a = commit_then_check(&root_a);
     let place_a = root_place(&program_a, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1795,7 +1878,7 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program_b = accept_then_check(&root_b);
+    let program_b = commit_then_check(&root_b);
     assert_eq!(
         program_b.catalog.accepted_epoch.expect("accepted epoch"),
         accepted,

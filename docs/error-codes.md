@@ -147,7 +147,7 @@ over every configured source and test file.
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.prototype_only` | Source uses a rejected prototype construct, such as `@id`, source-level `lock` or `merge`, saved-path `inout` call arguments, or old saved traversal method shapers such as `.take(...)`, `.window(...)`, and `.resume(...)`. |
-| `check.catalog_intent` | Accepted catalog metadata is invalid or lacks an accepted durable identity binding for a source declaration. Renames require an accepted entry with the new canonical path and old alias. |
+| `check.catalog_intent` | Accepted catalog metadata is invalid, or an `evolve` intent has no durable identity to act on — a rename without an accepted entry carrying the new canonical path and old alias. A source declaration the accepted catalog does not yet record is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
 | `check.bare_maybe_present_read` | A maybe-present saved read appears in value position without a read-site resolution form such as `??`, `exists(...)`, optional chaining, or an attached-data traversal. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
@@ -331,7 +331,7 @@ Source-native data-evolution preview/apply faults.
 
 | Code | Meaning |
 |---|---|
-| `evolve.no_accepted_catalog` | Apply was run on a project with no accepted catalog. Accept the catalog with `marrow catalog accept` before applying an evolution. |
+| `evolve.no_accepted_catalog` | Apply was run on a project that declares no saved data, so there is no baseline catalog epoch to advance from. |
 | `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then preview again. |
 | `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Preview again. |
 | `evolve.store_commit_drift` | The store commit changed after preview. Preview again against the current store. |

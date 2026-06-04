@@ -2205,3 +2205,190 @@ fn evolve_default_value_type_mismatch_is_diagnosed() {
         report.diagnostics
     );
 }
+
+/// The legacy `cat_<fnv1a64(kind:path)>` derivation. New ids must not be this, so
+/// the identity a member receives never depends on its source path.
+fn legacy_path_hash(kind: CatalogEntryKind, path: &str) -> String {
+    let payload = format!("{kind:?}:{path}");
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in payload.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("cat_{hash:016x}")
+}
+
+fn proposed_id_for_path(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) -> String {
+    proposal
+        .entries
+        .iter()
+        .find(|entry| entry.kind == kind && entry.path == path)
+        .unwrap_or_else(|| panic!("proposal has an entry for {path}: {:#?}", proposal.entries))
+        .stable_id
+        .clone()
+}
+
+#[test]
+fn proposed_ids_are_not_derived_from_the_member_path() {
+    // Two members at different source paths must receive ids that are not a hash of
+    // their path, so changing a path never changes which id a member would derive.
+    let root = temp_project("catalog-id-not-path-derived", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \x20   subtitle: string\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program.catalog.proposal.expect("proposal");
+    for path in ["books::Book::title", "books::Book::subtitle"] {
+        let proposed = proposed_id_for_path(&proposal, CatalogEntryKind::ResourceMember, path);
+        let derived = legacy_path_hash(CatalogEntryKind::ResourceMember, path);
+        assert_ne!(
+            proposed, derived,
+            "id for {path} must not be a hash of its path"
+        );
+    }
+}
+
+#[test]
+fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
+    // A rename carries the accepted entry's id onto the new path unchanged; the id
+    // is read from storage, never re-derived from the new (or old) path.
+    let root = temp_project("catalog-id-stable-across-rename", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   subtitle: string\n\
+             evolve\n\
+             \x20   rename Book.title -> Book.subtitle\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "cat_00000000000000ff",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    let renamed = proposed_id_for_path(
+        &proposal,
+        CatalogEntryKind::ResourceMember,
+        "books::Book::subtitle",
+    );
+    assert_eq!(
+        renamed, "cat_00000000000000ff",
+        "the rename must keep the stored id, not derive a new one for the new path"
+    );
+}
+
+#[test]
+fn committed_ids_are_stable_across_rechecks() {
+    // Random allocation is not reproducible, but a committed baseline is: once the
+    // ids are frozen in the accepted catalog, re-checking unchanged source reads them
+    // back unchanged rather than minting fresh ones.
+    let root = temp_project("catalog-id-stable-after-commit", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \x20   subtitle: string\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    marrow_check::commit_pending_identity(&root, &config(), &program)
+        .expect("commit baseline")
+        .expect("baseline written");
+
+    // The accepted file now carries the frozen ids. Read it directly so the
+    // assertion is against the committed identity, then confirm a re-check binds
+    // exactly that id rather than minting a fresh one.
+    let frozen = {
+        let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
+        let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
+        accepted
+            .entries
+            .iter()
+            .find(|entry| entry.kind == CatalogEntryKind::Resource && entry.path == "books::Book")
+            .expect("committed Book entry")
+            .stable_id
+            .clone()
+    };
+
+    let (recheck, program) = check_project(&root, &config()).expect("recheck");
+    fs::remove_dir_all(&root).ok();
+    assert!(!recheck.has_errors(), "{:#?}", recheck.diagnostics);
+
+    let module = program.facts.module_id("books").expect("books module");
+    let resource = program.facts.resource_id(module, "Book").expect("Book");
+    let bound = program.facts.resource(resource).catalog_id.clone();
+    assert_eq!(
+        bound, frozen,
+        "a committed id must survive a re-check unchanged"
+    );
+}
+
+#[test]
+fn distinct_new_members_receive_distinct_ids() {
+    // Two new members allocated against an empty catalog must not collide on one id.
+    let root = temp_project("catalog-id-distinct", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \x20   subtitle: string\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let proposal = program.catalog.proposal.expect("proposal");
+    let title = proposed_id_for_path(
+        &proposal,
+        CatalogEntryKind::ResourceMember,
+        "books::Book::title",
+    );
+    let subtitle = proposed_id_for_path(
+        &proposal,
+        CatalogEntryKind::ResourceMember,
+        "books::Book::subtitle",
+    );
+    assert_ne!(
+        title, subtitle,
+        "two distinct members must not share a stable id"
+    );
+}

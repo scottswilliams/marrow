@@ -4,7 +4,6 @@ use std::process::ExitCode;
 use marrow_syntax::Diagnose;
 use serde_json::json;
 
-mod cmd_catalog;
 mod cmd_check;
 mod cmd_data;
 mod cmd_evolve;
@@ -22,7 +21,6 @@ Marrow
 
 Usage:
   marrow check [--format text|json|jsonl] <file.mw>
-  marrow catalog <preview|accept> <projectdir>
   marrow evolve <preview|apply> <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run <projectdir>
@@ -43,7 +41,6 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     match command.as_str() {
-        "catalog" => cmd_catalog::catalog(rest),
         "check" => cmd_check::check(rest),
         "evolve" => cmd_evolve::evolve(rest),
         "fmt" => cmd_fmt::fmt(rest),
@@ -293,6 +290,63 @@ pub(crate) fn load_checked_project_with_format(
         return Err(ExitCode::FAILURE);
     }
     Ok((config, program))
+}
+
+/// Freeze a clean project's pending durable identity through the one production
+/// catalog writer, returning the re-checked program. A program with no pending
+/// proposal (a clean accepted catalog, or no durable surface) is returned unchanged
+/// without touching the catalog file. The state-establishing flows — `run` and
+/// `evolve apply` — call this; `check` never does.
+pub(crate) fn commit_pending_identity(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: marrow_check::CheckedProgram,
+) -> Result<marrow_check::CheckedProgram, ExitCode> {
+    match marrow_check::commit_pending_identity(Path::new(dir), config, &program) {
+        Ok(None) => Ok(program),
+        Ok(Some((report, committed))) => {
+            if report.has_errors() {
+                report_project(dir, &report, CheckFormat::Text);
+                return Err(ExitCode::FAILURE);
+            }
+            Ok(committed)
+        }
+        Err(marrow_check::CommitIdentityError::Io { path, error }) => {
+            report_io_error(&path.display().to_string(), &error, CheckFormat::Text);
+            Err(ExitCode::FAILURE)
+        }
+        Err(marrow_check::CommitIdentityError::Discover(error)) => {
+            report_simple_error(
+                error.code,
+                &format!("{}: {}", error.path.display(), error.message),
+                CheckFormat::Text,
+            );
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Advance the accepted-catalog file to `catalog` through the one production catalog
+/// writer. `evolve apply` calls this as its final step, after the store transaction
+/// has committed, so the file moves in lockstep with the store it activates.
+pub(crate) fn write_accepted_catalog(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    catalog: &marrow_project::CatalogMetadata,
+) -> Result<(), ExitCode> {
+    marrow_check::write_accepted_catalog(Path::new(dir), config, catalog).map_err(|error| {
+        match error {
+            marrow_check::CommitIdentityError::Io { path, error } => {
+                report_io_error(&path.display().to_string(), &error, CheckFormat::Text);
+            }
+            marrow_check::CommitIdentityError::Discover(error) => report_simple_error(
+                error.code,
+                &format!("{}: {}", error.path.display(), error.message),
+                CheckFormat::Text,
+            ),
+        }
+        ExitCode::FAILURE
+    })
 }
 
 #[derive(Clone, Copy)]

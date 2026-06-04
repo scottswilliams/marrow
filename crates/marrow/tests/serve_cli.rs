@@ -42,7 +42,7 @@ fn native_project(name: &str) -> PathBuf {
     let root = temp_dir(name);
     write(&root, "marrow.json", CONFIG);
     write(&root, "src/app.mw", SRC);
-    support::accept_catalog_if_clean(&root);
+    support::commit_catalog_if_clean(&root);
     root
 }
 

@@ -216,8 +216,9 @@ verdict into code, docs, tests, or an owning-lane blocker before review:
   resolution, runtime path classifiers, maintenance bypasses, and syntax-body
   execution.
 - Lane 9 owns evolution/activation workflow surfaces: source-native preview and
-  apply, compatibility lenses, checked transforms, repair, catalog acceptance,
-  and rejection of migration-script or source-diff identity workflows.
+  apply, compatibility lenses, checked transforms, repair, invisible catalog
+  identity recorded on run and `evolve apply`, and rejection of migration-script
+  or source-diff identity workflows.
 - Lane 10 owns tool, CLI, LSP, data, serve, backup, restore, and protocol
   surfaces that render those facts.
 - Lane 11 owns final absence scans and file-disjoint cleanup only after the

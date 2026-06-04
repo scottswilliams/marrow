@@ -30,7 +30,7 @@ fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
-    support::accept_catalog_if_clean(&root);
+    support::commit_catalog_if_clean(&root);
     TempProject { root }
 }
 
