@@ -245,7 +245,7 @@ edit the checker/schema identity surface.
 | --- | --- | --- | --- | --- |
 | Catalog/presence corrective | [Lane 6](lanes/lane-06-catalog-presence-ledger.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns checker/schema enum identity and presence classifier cleanup; no runtime/store physical-key edits. |
 | Runtime | [Lane 8](lanes/lane-08-runtime-checked-execution.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns runtime checked execution and enum value/index conversion; no syntax-body compatibility path survives. |
-| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Read-only witness matrix design only | Code after checked runtime facts exist | Owns one proof-discharge pipeline with command-specific surfaces. |
+| Evolution | [Lane 9](lanes/lane-09-evolution-activation.md) | Complete | Integrated; future edits are regressions or Lane 11 cleanup findings | Owns one proof-discharge pipeline with command-specific surfaces. |
 | Tooling/protocols | [Lane 10](lanes/lane-10-tooling-backup-protocols.md) | Read-only feature-surface and stale protocol audit only | Code after shared facts, store/runtime facts, and evolution generation facts exist | Owns the feature-surface verdict matrix, then the typed backup manifest, adapters, and rendering; no unsupported commands, raw public protocols, or tool-local semantic classifiers. |
 | Hardening | [Lane 11](lanes/lane-11-rust-hardening.md) | Read-only scans anytime | Final fixes after owning lanes land, except truly file-disjoint style fixes | Owns deletion proof, not postponed semantic rewrites. |
 
