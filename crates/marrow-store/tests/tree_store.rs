@@ -1,4 +1,4 @@
-use marrow_store::cell::{CatalogId, SequencePosition};
+use marrow_store::cell::{CatalogId, DataCellKind, SequencePosition};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
     CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TreeEnumMember, TreeReference,
@@ -633,6 +633,27 @@ fn visit_backup_cells_streams_data_only_in_encoded_order() {
             .all(|cell| cell.store.as_str() == books.as_str()),
         "backup stream carries only data cells for the seeded store: {cells:?}"
     );
+    assert_eq!(
+        cells
+            .iter()
+            .map(|cell| cell.identity.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            vec![SavedKey::Int(1)],
+            vec![SavedKey::Int(2)],
+            vec![SavedKey::Int(3)],
+        ],
+        "backup traversal follows deterministic encoded identity order"
+    );
+    for cell in &cells {
+        assert_eq!(
+            cell.kind,
+            DataCellKind::Value {
+                path: vec![DataPathSegment::Member(title.clone())],
+            },
+            "backup traversal reports typed value targets, not physical keys"
+        );
+    }
 }
 
 #[test]

@@ -198,7 +198,7 @@ The private substrate conformance suite keeps memory and redb aligned on:
 - prefix delete and absent delete;
 - prefix scan order, bounded scans, and cursor-resumed scans;
 - transaction commit, rollback, nested savepoints, read-your-writes scans,
-  rejection of a pinned snapshot plus open write transaction on one handle, and
+  rejection of overlapping pinned read snapshots and write transactions on one handle, and
   rejection of nested read snapshots on one handle.
 
 Public tree-cell tests assert the production contract: stable catalog-ID

@@ -247,9 +247,7 @@ mod tests {
     use marrow_store::key::{SavedKey, encode_identity_payload};
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
-    use super::{
-        BackupError, CHECKSUM_SEED, RestoreReport, archive, checksum_cell, restore_backup,
-    };
+    use super::{BackupError, CHECKSUM_SEED, RestoreReport, restore_backup};
     use crate::backup::create_backup;
 
     /// Restore that verifies nothing: the restore.* codes under test fail in

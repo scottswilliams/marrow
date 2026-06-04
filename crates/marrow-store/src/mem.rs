@@ -10,8 +10,9 @@ use crate::traversal;
 pub(crate) struct MemStore {
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
     savepoints: Vec<BTreeMap<Vec<u8>, Vec<u8>>>,
-    /// A frozen copy of `entries` while a read snapshot is pinned; reads observe
-    /// it so a multi-call traversal stays coherent against concurrent writes.
+    /// A frozen copy of `entries` while a read snapshot is pinned. Reads observe
+    /// it, and this handle rejects writes and write transactions until the
+    /// snapshot is released.
     snapshot: Option<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 

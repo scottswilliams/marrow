@@ -78,7 +78,7 @@ Keep the LSP diagnostics slice as acceptable v0.1 work. It uses the checker pipe
 
 Refine `data`, `serve`, and `explain` before building more tools on them. They currently render shared facts in many places, but the transport/tool modules still own too much path/query traversal, path rendering, integrity classification shape, and output semantics. This is not bad enough to reverse Lane 10, but it is the next foundation risk.
 
-Reverse only prototype momentum: any future command or endpoint that exists because raw saved paths, raw store bytes, archive replay, or local dispatcher convenience made it easy should be deleted or moved behind explicit debug/admin naming.
+Reverse only prototype momentum: any future command or endpoint that exists because saved-path text, backend bytes, archive-byte replay, or local dispatcher convenience made it easy should be deleted or moved behind explicit debug/admin naming.
 
 ## 6. Long-Term Risks
 

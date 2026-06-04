@@ -128,7 +128,7 @@ Keep `TreeStore` as the production store model and redb as the private native
 engine for v0.1. This is not "building a database engine from scratch"; it is a
 typed semantic layer over an embedded ordered KV engine.
 
-Do not restore public raw backend, raw saved-path, archive replay, or physical
+Do not restore public backend-byte, saved-path, archive-byte replay, or physical
 key APIs as production surfaces.
 
 ### Keep Checked Runtime Execution And Explicit Write Plans
@@ -267,20 +267,11 @@ shape:
 - consumer tests proving runtime, evolution, CLI, LSP, backup, and restore read
   the ledger instead of rediscovering presence.
 
-### Refine Store API Shape
+### Remaining Store API Shape Work
 
-The store boundary is conceptually right, but the Rust/API shape needs
-hardening:
+The store boundary is conceptually right. The remaining open shape work is narrow:
 
-- public payload bytes should become typed wrappers or be consciously frozen as
-  `Vec<u8>` with precise docs;
-- all-child helper APIs should become bounded pages/cursors or be made
-  crate-private test conveniences;
-- `tree.rs` should be split by invariant before the store API freezes;
-- commit metadata docs should include every implemented field, including source
-  digest if it remains in code;
-- add conformance for pinned snapshot plus open write transaction, or forbid
-  that state explicitly;
+- split `tree.rs` by invariant before the store API freezes;
 - reconcile the physical-key ADR namespace with the actual backend contract
   before layout epoch freeze.
 
@@ -294,8 +285,8 @@ helpers:
 - move maintenance/evolution/restore capabilities toward typed tokens or
   typestate-like state;
 - add operation-class fixtures for the minimal-plan guarantee;
-- ensure commit metadata is stamped at the physical durable commit boundary, not
-  per statement or per plan inside a multi-write transaction.
+- preserve the store baseline that records commit metadata at the physical
+  durable boundary for the full source transaction.
 
 ### Refine Evolution Operations
 
@@ -480,7 +471,7 @@ deleted. Passing old tests is not a reason to keep a prototype path alive.
 
 ### Reverse Orphan-Preserving Production Restore
 
-Restore is a compiler-owned data-integrity operation, not raw archive replay.
+Restore is a compiler-owned data-integrity operation, not archive-byte replay.
 Restoring undeclared managed cells under the current source/catalog should fail
 as a data-attached compiler error. `marrow data integrity` should report the
 orphan and the repair/evolve path.
@@ -539,24 +530,21 @@ AGENTS.md.
 
 ### Sequencing
 
-1. Lane 12 starts first because it removes stale ADR/doc authority, but it does
-   not block file-disjoint code lanes that already have settled decisions in this
-   synthesis.
-2. Lanes 14, 15, and 17 can start full TDD implementation immediately. Lane 14
-   owns proposal-only evolution and activation-job shape; Lane 15 owns commit
-   metadata/snapshot/store contract; Lane 17 owns rejected syntax cleanup except
-   unresolved `out`.
-3. Lane 13 owns catalog/presence hardening and settles ID size, digest, and
-   reserved-alias wording before later stack lanes compose on it.
-4. Lane 16 can start full implementation for settled tooling decisions:
+1. Lane 12 runs after the code stack so ADRs and canonical docs reconcile the
+   implemented contract rather than branch-local plans.
+2. Lanes 13, 14, 15, and 17 define baseline contracts later lanes must
+   preserve: catalog identity/presence, evolution soundness, transaction/store
+   durability, and rejected syntax cleanup. They are not open implementation
+   lanes in this synthesis.
+3. Lane 16 can start full implementation for settled tooling decisions:
    restore/orphan rejection, v0.1 debug/admin serve boundaries, shared tooling
    facts, LSP correctness, and raw production surface deletion. It must isolate
    unresolved `explain` and `data dump/get` product choices rather than blocking
    the whole lane.
-5. Lane 19 is a short product-decision closure lane for the remaining product
+4. Lane 19 is a short product-decision closure lane for the remaining product
    questions. It should run early and unblock the `out`, `explain`, `data dump`,
    compatibility-window, default, and re-key pieces.
-6. Lane 18 runs last as final Rust hardening, after semantic owners have landed.
+5. Lane 18 runs last as final Rust hardening, after semantic owners have landed.
 
 ### Lane 12: ADR And Canonical Docs Reconciliation
 
@@ -580,7 +568,7 @@ Work in a fresh isolated sibling worktree from current main. Do not create new A
 
 First inspect git state for the Marrow checkout and `marrow-decisions`, including dirty files. Read every integrated research report in marrow/docs/roadmap/research, the current docs/language set, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/backend-contract.md, docs/data-evolution.md, and the full ADR packet.
 
-Fix doc drift only. Remove or rewrite stale claims about Book::Id, @id, edit, raw inspection without checked source, raw archive replay as production, monotonic entity stable IDs, merge/lock as supported syntax, source-diff identity, migration scripts, query plans, and stale lane status. Keep Id(^store) as the v0.1 store-identity type constructor, random or collision-resistant catalog identity, source-is-access-path, typed backup/restore, checked facts, clean orphan-rejecting restore, unknown-not-any, dangling references as compiler-visible integrity facts, explicit user-mode history, exact whole-resource replacement, activation as a compiler-owned job shape, deferred external adapters, and current serve as debug/admin loopback only while preserving the future local API path.
+Fix doc drift only. Remove or rewrite stale claims about Book::Id, @id, edit, unchecked byte inspection, production byte-level archive replay, monotonic entity stable IDs, merge/lock as supported syntax, source-diff identity, migration scripts, query plans, and stale lane status. Keep Id(^store) as the v0.1 store-identity type constructor, random or collision-resistant catalog identity, source-is-access-path, typed backup/restore, checked facts, clean orphan-rejecting restore, unknown-not-any, dangling references as compiler-visible integrity facts, explicit user-mode history, exact whole-resource replacement, activation as a compiler-owned job shape, deferred external adapters, and current serve as debug/admin loopback only while preserving the future local API path.
 
 Do not preserve completed-history sediment or temp worktree paths. Do not create new roadmap umbrellas. Every changed paragraph must be current product truth.
 
@@ -678,45 +666,22 @@ Focused gates:
 Before claiming done, run soundness review that tries to drift source/catalog/store between preview and apply, and idiom/spec review that rejects oversized discharge code, duplicate classifiers, migration-language residue, and comment sediment.
 ```
 
-### Lane 15: Transaction, Commit Metadata, And Store Contract Hardening
+### Store Contract Baseline For Later Lanes
 
-Goal: make the store/runtime durability boundary precise enough for backup,
-snapshots, and future activation.
+The transaction/store hardening work is no longer an open follow-up lane in this
+synthesis. Later lanes inherit these contracts:
 
-Owned areas:
-
-- `crates/marrow-store/src/**`
-- `crates/marrow-run/src/write_plan.rs`
-- `crates/marrow-run/src/env.rs`
-- `crates/marrow-run/src/transaction.rs`
-- store conformance tests
-- runtime transaction/write-plan tests
-- `docs/backend-contract.md`
-
-Prompt:
-
-```text
-You are Lane 15: Transaction, Commit Metadata, And Store Contract Hardening.
-
-Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, Lane 7 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, backend contract docs, storage ADRs, and transaction ADRs including current unstaged decision edits if still present.
-
-Mission: harden the physical durable boundary without exposing raw engine semantics.
-
-Targets:
-- Move or prove commit metadata stamping at the physical durable commit boundary. Add a transaction test with multiple managed writes and generated index updates, then assert changed roots/indexes and commit id describe the whole transaction, not the last plan.
-- Leave the commit metadata shape ready for future online activation evidence: runtime generation, optional activation job id, source/catalog digest, layout epoch, changed roots/indexes for the whole commit, and adapter/window evidence. Do not implement unused online machinery; preserve the typed metadata seam.
-- Add store conformance for pinned snapshot plus open write transaction, or explicitly reject/prohibit that state so memory and redb cannot diverge.
-- Reconcile backend-contract metadata docs with implementation, including source digest if still present.
-- Replace or quarantine unbounded child-key helpers with bounded pages/cursors or crate-private test conveniences.
-- Decide and implement typed payload wrappers for canonical leaf/index/sequence/identity bytes, or explicitly freeze Vec<u8> as the stable payload contract with tests and docs.
-- Split tree.rs by invariant if touched: facade, metadata, data cells, index cells, child scans, reference values, enum values, commit codec.
-
-Do not restore public backend/path/archive APIs. Do not add compatibility branches for old raw paths. Do not expose physical key bytes as production API.
-
-Use TDD with focused store conformance/runtime transaction tests first. Then run marrow-store tests, marrow-run focused tests, fmt, clippy -D warnings, and workspace tests with explicit CARGO_TARGET_DIR.
-
-Before claiming done, run soundness review for rollback, commit visibility, snapshot isolation, metadata correctness, cursor validity, and read-only opens. Run idiom/spec review for raw leakage, oversized modules, unbounded materialization, low-value comments, and duplicate key classifiers.
-```
+- commit metadata records the physical durable commit boundary, and runtime tests
+  cover multi-write transactions, generated index writes, nested commits, and
+  rollback;
+- memory and redb reject overlapping pinned read snapshots and write
+  transactions on one handle, and native read-only opens have explicit coverage;
+- backup/restore uses typed cell framing plus manifest checks for source,
+  catalog, engine, malformed typed cells, and commit metadata mismatch;
+- canonical payload bytes are an explicit typed `Vec<u8>` contract above the raw
+  backend;
+- production store APIs do not expose backend/path/archive internals or
+  materializing child-key helpers.
 
 ### Lane 16: Tooling Facts, Debug Surface, And Explain Rescope
 
@@ -767,7 +732,7 @@ Specific focus:
 
 Do not patch missing semantic facts locally in tools. Send missing facts back to the owning checker/runtime/store lane.
 
-Before claiming done, run soundness review for raw leakage, stale epoch/snapshot, cursor forgery/replay, unbounded previews, and restore/tool mismatch. Run idiom/spec review for thin adapters, no tool-local classifiers, split protocol modules, no comment sediment, and docs that clearly mark debug/admin boundaries.
+Before claiming done, run soundness review for private-byte leakage, stale epoch/snapshot, cursor forgery/replay, unbounded previews, and restore/tool mismatch. Run idiom/spec review for thin adapters, no tool-local classifiers, split protocol modules, no comment sediment, and docs that clearly mark debug/admin boundaries.
 ```
 
 ### Lane 17: Language Surface Simplification
@@ -896,9 +861,8 @@ Be skeptical. Do not keep a feature because it exists. Default to delete or defe
 ## Recommended Immediate Order
 
 1. Start Lane 12 immediately to reconcile docs/ADRs with the settled decisions.
-2. In parallel, start Lane 14 and Lane 15 with failing tests for the red-team
-   blockers: proposal-only evolution apply, job-shaped activation, commit
-   metadata boundary, and snapshot conformance.
+2. In parallel, start Lane 14 with failing tests for the red-team blockers:
+   proposal-only evolution apply and job-shaped activation.
 3. Start Lane 17 immediately for ready language cleanup: `merge`, `lock`, `@id`,
    saved `inout`, `edit`/patch wording, "What Marrow Is Not", and collection
    wording. Exclude `out` until Lane 19 closes it.
@@ -919,7 +883,8 @@ when:
 - stale ADR/doc authority is removed;
 - every surviving feature surface has a keep/refine/reverse verdict;
 - proposal-only evolution apply is proven sound or rejected;
-- commit metadata describes the durable commit boundary;
+- the store contract baseline is preserved, including durable-boundary commit
+  metadata;
 - activation is represented as a compiler-owned job shape, with v0.1
   single-transaction apply as the simple case;
 - restore rejects orphaned managed cells under the current source/catalog;

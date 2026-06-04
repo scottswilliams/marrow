@@ -523,9 +523,10 @@ impl TreeStore {
         self.with_cell(|cell| cell.for_each_index_entry(index, visit))
     }
 
-    /// Pin a consistent read snapshot for the lifetime of the returned guard, so a
+    /// Pin a consistent read snapshot for the lifetime of the returned guard. A
     /// multi-call traversal — a backup, or a long-lived inspection — reads one
-    /// coherent version of saved data even while a writer commits.
+    /// coherent version of saved data, and this handle rejects writes and write
+    /// transactions until the guard is dropped.
     pub fn read_snapshot(&self) -> Result<ReadSnapshot<'_>, StoreError> {
         self.backend.borrow_mut().begin_snapshot()?;
         Ok(ReadSnapshot { store: self })
@@ -541,7 +542,8 @@ impl TreeStore {
     /// Visit every data-family cell in encoded order. Index-family cells are
     /// derived from data and are rebuilt on restore, so a backup carries data
     /// only. Cells page internally so the whole store streams in bounded chunks;
-    /// wrap the call in a [`read_snapshot`] to read one coherent version.
+    /// wrap the call in a [`read_snapshot`] when every page must observe one
+    /// coherent version.
     ///
     /// [`read_snapshot`]: TreeStore::read_snapshot
     pub fn visit_backup_cells(
@@ -590,8 +592,8 @@ impl TreeStore {
 }
 
 /// A pinned read snapshot over a [`TreeStore`]. While it is held, every read and
-/// scan observes one consistent version of saved data; dropping it resumes
-/// reading the latest committed data.
+/// scan observes one consistent version of saved data, and writes on the same
+/// handle are rejected; dropping it resumes live reads and writes.
 #[must_use = "a read snapshot is released as soon as it is dropped"]
 pub struct ReadSnapshot<'a> {
     store: &'a TreeStore,

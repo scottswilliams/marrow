@@ -60,8 +60,8 @@ model, `backend`, `mem`, `redb`, and `traversal` are implementation modules, and
 (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/roadmap/lanes/lane-07-tree-cell-store-engine.md:19`,
 `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/roadmap/lanes/lane-07-tree-cell-store-engine.md:30`).
 The lane also records the consumer migration contract: there is no replacement
-for public raw saved-path parsing, raw physical key encoding, root/child/sibling
-traversal, raw prefix scans, raw max-int scans, or raw archive replay
+for unchecked saved-path parsing, physical key encoding, root/child/sibling
+traversal, prefix scans, max-int scans, or archive-byte replay
 (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/roadmap/lanes/lane-07-tree-cell-store-engine.md:83`,
 `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/roadmap/lanes/lane-07-tree-cell-store-engine.md:122`).
 
@@ -158,10 +158,9 @@ leaf, sequence, nested-data, record-child, and index operations
 Exact index tuple scans validate opaque cursors against the exact tuple prefix
 and filter by the private key range
 (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:1100`).
-Commit metadata now includes a source digest in code
-(`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:60`),
-although the backend contract's metadata table omits that field and should be
-updated before freeze.
+Commit metadata includes the source digest in code and the backend contract now
+documents that field, so source/schema drift participates in the durable commit
+identity rather than living only in runtime checks.
 
 Runtime consumers have moved to typed store imports. `marrow-run` imports
 `CatalogId`, `SavedKey`, `DataPathSegment`, and `TreeStore`, not removed raw
@@ -175,10 +174,10 @@ plus checks against runtime-local saved-path classification
 
 Implementation shape is improved but not finished. A scan found no `unsafe` and
 no `#[allow(...)]` in `crates/marrow-store/src` or `crates/marrow-store/tests`.
-However, `tree.rs` is 1,924 lines and mixes facade, metadata codecs, data cells,
-index scans, reference/enum codecs, corruption fixtures, and some private
-test-only backend manipulation. That is not a reason to reverse the architecture,
-but it is a Rust-shape risk before v0.1 API freeze.
+Metadata and backup framing now live outside `tree.rs`, but `tree.rs` still owns
+the facade plus data, index, child traversal, reference/enum, and corruption test
+shape. That is not a reason to reverse the architecture, but it remains a
+Rust-shape risk before v0.1 API freeze.
 
 ## 3. External Precedents And Counter-Precedents
 
@@ -245,8 +244,8 @@ but it is a Rust-shape risk before v0.1 API freeze.
   https://www.postgresql.org/docs/16/storage-vm.html
 
 - Postgres logical dump: `pg_dump` is a portable logical/archive mechanism rather
-  than a raw physical byte contract. That strongly supports a typed Marrow backup
-  manifest over raw engine file or raw archive replay. Source:
+  than a physical byte contract. That strongly supports a typed Marrow backup
+  manifest over engine files or archive-byte replay. Source:
   https://www.postgresql.org/docs/16/app-pgdump.html
 
 - Document/object storage: MongoDB's data modeling guidance frames embedding
@@ -259,7 +258,7 @@ but it is a Rust-shape risk before v0.1 API freeze.
 
 ## 4. Alternatives Considered
 
-1. Keep or restore public raw saved-path/backend/archive APIs.
+1. Keep or restore public unchecked saved-path/backend/archive APIs.
    This should be rejected. It creates a second semantic owner, makes physical
    key compatibility look product-supported, and contradicts the accepted
    source/catalog/compiler/runtime/engine layering. There is no evidence in the
@@ -351,31 +350,26 @@ product model.
    does not distinguish leaf payloads from index payloads, identity payloads, or
    arbitrary bytes.
 
-3. Public child-key helpers can become hidden materialization.
-   `data_child_keys`, `record_child_keys`, and `index_child_keys` return `Vec` and
-   internally page until complete
-   (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:327`,
-   `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:401`,
-   `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:539`).
-   That is typed, not raw, but it weakens the language promise that iteration
-   streams lazily and hidden traversal is rejected. `max_int_*` helpers are also
-   typed scans and need explicit planner/runtime justification
-   (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:392`,
-   `/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:467`).
+3. Child traversal materialization remains an absence criterion.
+   The earlier audit found public helpers that materialized child collections and
+   could hide unbounded traversal. The current tree-cell surface uses
+   first/next/last/previous navigation and bounded pages/cursors instead. Keep
+   review scans for new materializing child APIs, because the language promise is
+   that durable iteration streams lazily unless a debug/operator command names a
+   bounded or explicitly unbounded contract.
 
-4. The store Rust shape is too broad for a frozen foundation.
-   `tree.rs` at 1,924 lines is a large module containing facade methods,
-   cell operations, metadata codecs, reference/enum codecs, index cursors,
-   corruption handling, and tests. This is not slop severe enough to reverse the
-   design, but it is below the lane's stated "senior production Rust" target.
+4. The store Rust shape is still broad for a frozen foundation.
+   Metadata codecs and backup framing have been extracted, but `tree.rs` still
+   contains facade methods, data operations, index cursors, child traversal,
+   reference/enum codecs, corruption handling, and tests. This is not slop severe
+   enough to reverse the design, but it remains below the lane's stated "senior
+   production Rust" target.
 
-5. Commit metadata docs trail implementation.
-   The code records `source_digest` in `CommitMetadata`
-   (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/crates/marrow-store/src/tree.rs:64`),
-   while the backend contract metadata table lists commit id, catalog epoch,
-   layout epoch, profile digest, and catalog ID lists but not the source digest
-   (`/Users/scottwilliams/Dev/marrow-lane-07-tree-cell-store-audit/docs/backend-contract.md:103`).
-   This is the kind of small doc drift that later becomes a compatibility dispute.
+5. Commit metadata docs must stay locked to implementation.
+   The backend contract now documents the source digest alongside commit id,
+   catalog epoch, layout epoch, profile digest, and changed catalog ID lists. Keep
+   this exact metadata shape synchronized because small doc drift later becomes a
+   compatibility dispute.
 
 6. Proposed physical encoding and current implementation are not the same
    contract yet.
@@ -388,18 +382,19 @@ product model.
    but that should be an engine-profile addition behind the same tree-cell
    contract, not a reason to expose raw backend APIs now.
 
-8. Backup is the highest remaining semantic edge.
-   The local docs say typed backup/restore is deferred; Lane 10 owns the manifest.
-   Until a typed manifest exists, "no raw archive production API" is a deletion
-   claim, not a complete backup story.
+8. Backup must stay typed and manifest-bound.
+   The current backup path carries typed data-cell targets with source, catalog,
+   engine, codec, commit metadata, and checksum context. It should remain a
+   compiler-owned restore path, not a surface that accepts physical keys.
 
 ## 7. Concrete Follow-Up Recommendations Ordered By Foundation Risk
 
 1. Reconcile storage decisions and docs before any v0.1 freeze.
    Update or supersede the accepted backup/repair ADR language that still blesses
    raw inspection; align Lane 10 status with reality; remove stale Lane 11
-   `archive.rs` references; add `source_digest` to backend contract commit
-   metadata; reconcile the proposed physical-key ADR with the actual key profile.
+   `archive.rs` references; keep backend commit metadata docs synchronized with
+   implementation; reconcile the proposed physical-key ADR with the actual key
+   profile.
 
 2. Make public payload bytes structurally typed.
    Introduce small newtypes or equivalent wrappers for canonical leaf payload,
@@ -408,15 +403,15 @@ product model.
    preferred direction is wrappers: they preserve engine privacy in the type
    system and make misuse harder.
 
-3. Replace materializing child-key APIs with bounded typed pages or cursors.
-   Keep exact index tuple scans as the model. Add paged/cursor forms for record,
-   data, and index children, then either remove the all-keys helpers or make them
-   crate-private test conveniences. This is the highest code-level risk because it
-   can silently undercut the no-hidden-scan language law.
+3. Keep materializing child traversal out of the production store API.
+   First/next/last/previous navigation and bounded pages/cursors are the current
+   contract. Keep absence scans for new whole-child materialization APIs because
+   they can silently undercut the no-hidden-scan language law.
 
 4. Split `tree.rs` by invariant before declaring the store API frozen.
-   Suggested modules: facade, metadata, data_cells, index_cells, child_scans,
-   reference_values, enum_values, and commit_codec. This should be mechanical and
+   Metadata codecs and backup framing have been extracted; remaining candidates
+   are facade, data cells, index cells, child scans, reference values, enum
+   values, and corruption/test fixtures. This should be mechanical and
    semantics-preserving, with no compatibility bridge.
 
 5. Keep raw backend/redb/mem APIs private and add absence tests at the store
@@ -425,10 +420,10 @@ product model.
    production callers cannot import `backend`, `mem`, `redb`, `path`, `archive`,
    or `debug_admin`.
 
-6. Treat typed backup manifest as a blocking Lane 10 foundation, not a nice-to-
-   have tool.
-   The store foundation is correct without raw archive APIs, but the product needs
-   a typed portable manifest before restore/repair claims harden.
+6. Keep typed backup manifest fixtures current.
+   Backup/restore is now typed and manifest-bound; keep fixtures for manifest
+   metadata, typed cell framing, malformed cells, and restore validation aligned
+   with the store contract before layout epoch freeze.
 
 7. Add compatibility fixtures before layout epoch freeze.
    Fixture the current tree-cell key order, exact index tuple exclusion, reference

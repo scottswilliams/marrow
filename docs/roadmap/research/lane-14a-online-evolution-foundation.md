@@ -263,7 +263,8 @@ spelling are never the compatibility contract.
 
 - Keep strict exact-epoch activation.
 - Shape apply as an activation job/receipt even if it executes immediately.
-- Stamp commit metadata at the physical durable commit boundary.
+- Preserve the store baseline that records commit metadata at the physical
+  durable boundary.
 - Preserve source/evolution digests and affected stable IDs in activation
   evidence.
 - Keep transforms pure, deterministic, per-record, and idempotent.
@@ -303,14 +304,15 @@ questions are implementation policy rather than architectural direction:
 - Should re-key ever be identity-preserving, or always a new store plus explicit
   transform/decant?
 
-## 14. Proposed Updates To Lane 14, Lane 15, Lane 16, And Lane 19
+## 14. Proposed Updates To Lane 14, Lane 16, And Lane 19
 
 Lane 14 should treat activation as job-shaped evidence from the start, while
 keeping v0.1 exact and fail-closed. It must reject job state as semantic
 authority and prove no partial catalog/data visibility.
 
-Lane 15 should make commit metadata describe the whole durable commit boundary
-and leave room for runtime generation, activation job ID, and adapter evidence.
+The store baseline already records commit metadata at the durable boundary.
+Activation work should preserve that boundary while adding runtime generation,
+activation job ID, and adapter evidence.
 
 Lane 16 should add activation status, adapter/window rendering, and bounded
 job-progress facts to the shared tooling-facts backlog while preserving raw

@@ -29,8 +29,14 @@ The runtime/write path is much less fake than a prototype. `WritePlan` has expli
 The red-team findings are also concrete:
 
 - Proposal-only evolution identity appears mismatched between checker and runtime. Discharge explicitly handles brand-new proposal IDs (`crates/marrow-check/src/evolution/discharge.rs:518-522`, `1070-1074`), and tests call a brand-new required member with `evolve default` activatable (`crates/marrow-check/tests/evolution_discharge.rs:3915-3919`). But checked executable places fill member catalog IDs from accepted facts and default to empty when no accepted member ID exists (`crates/marrow-check/src/executable/place.rs:203-211`). Runtime default and transform apply locate targets by the `CheckedSavedPlace` member catalog ID (`crates/marrow-run/src/evolution/backfill.rs:36-50`, `crates/marrow-run/src/evolution/transform.rs:64-76`). Existing runtime apply tests avoid the hard case by accepting the expanded schema first (`crates/marrow-run/tests/evolution_apply.rs:218-223`). This is a v0.1 blocker if source-native add-required/default apply is in scope.
-- Commit metadata is stamped per managed plan, not clearly per physical transaction. `Env::apply_plan` calls `stamp_managed_write` for every plan (`crates/marrow-run/src/env.rs:240-264`), while in-transaction plans apply without committing (`crates/marrow-run/src/write_plan.rs:80-83`). A multi-write transaction can therefore risk metadata describing the last plan rather than the whole durable commit. This conflicts with the ADR intent that every committed write be addressable by commit metadata (`/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:55-62`).
-- Snapshot semantics need a conformance law for snapshot plus open write transaction. Memory reads the pinned snapshot whenever one exists (`crates/marrow-store/src/mem.rs:23-29`). Redb says an open write transaction takes precedence over the pinned read view (`crates/marrow-store/src/redb.rs:149-160`, `453-457`). Current conformance checks a snapshot against later writes, but not the combined snapshot/write state (`crates/marrow-store/src/conformance.rs:161-176`).
+- Commit metadata at the physical durable boundary was a confirmed risk before
+  Lane 15. The current runtime aggregates managed writes and generated index
+  writes into the outer durable transaction, and tests assert that commit
+  metadata covers that whole transaction.
+- Snapshot plus write state was a confirmed risk before Lane 15. The current
+  store contract prohibits overlapping read snapshots and write transactions on
+  one handle, rejects same-handle writes while a snapshot is pinned, and covers
+  the rule in memory/redb conformance.
 - The path/query surface is duplicated. `data get` parses source path text, then collapses field, child-layer, and index segments into `SourceMember` (`crates/marrow/src/cmd_data/get.rs:16-30`, `80-96`). Serve has a distinct JSON segment codec with explicit field/layer/key cases (`crates/marrow/src/serve/protocol/codec.rs:25-38`, `80-86`). `data dump` emits human path plus base64 bytes (`crates/marrow/src/cmd_data.rs:221-244`, `315-321`). This is already a semantic split waiting to become compatibility glue.
 - Debug/admin protocols are intentionally demoted, but still tempting. Serve only dispatches `debug_data_*`, and tests reject non-debug `data_*` operations (`crates/marrow/src/serve/protocol.rs:77-100`, `crates/marrow/src/serve/protocol/tests.rs:93-100`). That is good. It also means Marrow does not yet have a production data API.
 - Integrity is schema-aware, but orphan handling is shallow by design. Restore verification counts declared-record integrity only and explicitly does not reject orphan debris (`crates/marrow/src/cmd_data/integrity.rs:80-103`). Orphan classification is catalog-ID membership and does not validate exact nesting (`crates/marrow/src/cmd_data/orphan.rs:81-88`). This may be a faithful-backup choice, but it is a sharp long-term compatibility edge.
@@ -94,10 +100,9 @@ Weak foundations to cut or fix before v0.1:
 1. Proposal-only evolution apply mismatch. If a source proposal can discharge as activatable but runtime apply cannot stage it before accepting the proposal, v0.1's source-native evolution story is unsound.
 2. Production serve/query/API promises. Current `debug_data_*` is a debug protocol, not a product protocol.
 3. Duplicate data path/query/key rendering. CLI path text, serve JSON, explain, trace, and checker durable paths need one semantic owner.
-4. Statement-scoped metadata stamping inside multi-write transactions. Commit metadata must describe the physical durable commit, not the last plan.
-5. Unbounded materialization and shallow orphan classification in storage/evolution/tooling. Record Layer's bounded-resource lesson applies hard here.
-6. Prototype grammar sediment and stale ADR claims such as `Book::Id`, `merge`, `lock`, and old raw archive evidence.
-7. Large multipurpose Rust files in checker/evolution/store. They are not just aesthetic debt; they make soundness review unreliable.
+4. Unbounded materialization and shallow orphan classification in storage/evolution/tooling. Record Layer's bounded-resource lesson applies hard here.
+5. Prototype grammar sediment and stale ADR claims such as `Book::Id`, `merge`, `lock`, and old byte-archive evidence.
+6. Large multipurpose Rust files in checker/evolution/store. They are not just aesthetic debt; they make soundness review unreliable.
 
 ## 6. Long-Term Risks
 
@@ -124,9 +129,9 @@ Ranked by foundation risk:
 1. Fix or explicitly reject proposal-only `evolve default` and `evolve transform` apply before v0.1. Add a runtime/CLI apply fixture where accepted catalog lacks the new required member, current source adds it with `evolve default`, old records exist, and apply must backfill before accepting the proposal. Either executable places must carry proposal data-cell IDs, or preview must mark such changes non-activatable until accepted.
 2. Keep `marrow serve` as debug/admin only until there is a stable semantic API. Do not rename `debug_data_*` to product operations. Do not ship a public query/data protocol on path strings, raw bytes, or tool-local classifiers.
 3. Centralize durable data path/query/key encoding into one shared semantic API. Delete the permissive `SourceMember` collapse or make it a strictly diagnostic parser layered over canonical typed segments. Standardize byte key rendering across dump, trace, serve, and explain.
-4. Move commit metadata stamping to the physical durable commit boundary. Add a transaction test with multiple managed writes and generated index updates, then assert changed roots/indexes and commit ID describe the whole transaction.
-5. Add backend conformance for snapshot plus open write transaction, or prohibit that state explicitly. Memory and redb should not have different behavior for the same `TreeStore` call sequence.
-6. Replace unbounded child/path collection in store traversal and evolution backfill with streaming visitors or paged cursors where the contract is unbounded data. Where full materialization remains, document it as a v0.1 bound with tests.
+4. Keep commit metadata boundary tests in place: multi-write transactions and generated index writes must describe the whole physical commit.
+5. Keep backend conformance for the prohibited snapshot/write overlap so memory and redb cannot diverge.
+6. Keep store traversal and evolution backfill on streaming visitors or paged cursors where the contract is unbounded data. Where full materialization remains, document it as a v0.1 bound with tests.
 7. Strengthen orphan/integrity semantics. Decide whether restore should reject orphan/corrupt extra cells, report them while succeeding, or define faithful restore as preserving invalid debris. Make the CLI wording and tests match that decision.
 8. Decide whether `TreeStore` node/leaf/sequence APIs are production, test/debug, or removable. If runtime production writes use generic data/index paths, old facade shapes should not survive by accident.
 9. Split `crates/marrow-check/src/evolution/discharge.rs` before adding any new evolution semantics. Suggested owners: proposal ID resolution, structural compatibility, data scans, default/transform obligations, index obligations, repair diagnostics, and witness accumulation.
