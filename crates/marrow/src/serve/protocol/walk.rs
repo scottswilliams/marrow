@@ -13,7 +13,7 @@ use super::codec::request_query;
 use super::cursor::{CursorState, query_under_prefix};
 use super::{ProtocolError, bad_request, store_error};
 
-const MAX_WALK: usize = 10_000;
+pub(super) const MAX_WALK: usize = 10_000;
 
 pub(super) fn op_debug_data_walk(
     program: &CheckedProgram,

@@ -2,6 +2,7 @@ use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place,
 };
 use marrow_run::base64;
+use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use serde_json::{Value, json};
 
@@ -9,6 +10,8 @@ use crate::cmd_data::get::{DataQuery, DataQuerySegment, presence_name, read_quer
 use crate::cmd_data::inspect::{checked_catalog_id, data_roots_in_store};
 
 use super::codec::{encode_key, request_path, request_query};
+use super::cursor::CursorState;
+use super::walk::MAX_WALK;
 use super::{ProtocolError, bad_request, store_error};
 
 pub(super) fn op_debug_data_roots(
@@ -36,6 +39,7 @@ pub(super) fn op_debug_data_children(
     program: &CheckedProgram,
     store: &TreeStore,
     request: &Value,
+    cursors: &CursorState,
 ) -> Result<Value, ProtocolError> {
     let segments = request_path(request)?;
     if segments.is_empty() {
@@ -44,46 +48,99 @@ pub(super) fn op_debug_data_children(
             .into_iter()
             .map(|root| json!({ "name": root }))
             .collect();
-        return Ok(json!({ "children": children }));
+        return Ok(json!({ "children": children, "truncated": false, "cursor": Value::Null }));
     }
-    let children = checked_children(program, store, &segments)?;
-    Ok(json!({ "children": children }))
+    let limit = request_children_limit(request)?;
+    checked_children(program, store, request, &segments, limit, cursors)
+}
+
+/// The page size for a key-scanning `debug_data_children` request: a positive
+/// integer `limit`, an oversized one clamped to [`MAX_WALK`] (not rejected), or the
+/// server max when `limit` is omitted.
+fn request_children_limit(request: &Value) -> Result<usize, ProtocolError> {
+    let Some(value) = request.get("limit") else {
+        return Ok(MAX_WALK);
+    };
+    if value.as_i64().is_some_and(|limit| limit <= 0) {
+        return Err(bad_request(
+            "`debug_data_children` `limit` must be a positive integer",
+        ));
+    }
+    let Some(limit) = value.as_u64() else {
+        // A non-integer JSON number, or an integer beyond u64, clamps to the max.
+        if value.is_number() {
+            return Ok(MAX_WALK);
+        }
+        return Err(bad_request(
+            "`debug_data_children` `limit` must be a positive integer",
+        ));
+    };
+    if limit == 0 {
+        return Err(bad_request(
+            "`debug_data_children` `limit` must be a positive integer",
+        ));
+    }
+    Ok(limit.min(MAX_WALK as u64) as usize)
 }
 
 fn checked_children(
     program: &CheckedProgram,
     store: &TreeStore,
+    request: &Value,
     segments: &[DataQuerySegment],
-) -> Result<Vec<Value>, ProtocolError> {
+    limit: usize,
+    cursors: &CursorState,
+) -> Result<Value, ProtocolError> {
     let query =
         crate::cmd_data::get::resolve_data_query(program, segments).map_err(|m| bad_request(&m))?;
+    let resume = request
+        .get("cursor")
+        .map(|value| cursors.decode_children_cursor(value, &query.path))
+        .transpose()?;
     if query.identity.len() < query.identity_arity {
-        return record_children(store, &query);
+        return record_children(store, &query, limit, resume.as_ref(), cursors);
     }
-    let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
-        return Err(bad_request("path must start with a saved root"));
-    };
-    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| bad_request(&format!("unknown saved root `^{root}`")))?;
+    if resume.is_none() {
+        let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
+            return Err(bad_request("path must start with a saved root"));
+        };
+        let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
+            .ok_or_else(|| bad_request(&format!("unknown saved root `^{root}`")))?;
+        if query.data_path.is_empty() {
+            let children = member_children(store, &query, &place.root_members)?;
+            return Ok(json!({ "children": children, "truncated": false, "cursor": Value::Null }));
+        }
+    }
     if query.data_path.is_empty() {
-        return member_children(store, &query, &place.root_members);
+        return Err(bad_request(
+            "declared members are not a paged child scan, so they take no `cursor`",
+        ));
     }
-    data_key_children(store, &query)
+    data_key_children(store, &query, limit, resume.as_ref(), cursors)
 }
 
-fn record_children(store: &TreeStore, query: &DataQuery) -> Result<Vec<Value>, ProtocolError> {
-    let mut children = Vec::new();
-    let mut child = store
-        .record_first_child(&query.store, &query.identity)
-        .map_err(store_error)?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        children.push(json!({ "key": encode_key(&key) }));
-        child = store
-            .record_next_child(&query.store, &query.identity, &anchor)
-            .map_err(store_error)?;
-    }
-    Ok(children)
+/// Page the record-key children under an identity prefix, mirroring how
+/// `debug_data_walk` signs and validates its resume cursor.
+fn record_children(
+    store: &TreeStore,
+    query: &DataQuery,
+    limit: usize,
+    resume: Option<&SavedKey>,
+    cursors: &CursorState,
+) -> Result<Value, ProtocolError> {
+    let first = match resume {
+        Some(anchor) => store
+            .record_next_child(&query.store, &query.identity, anchor)
+            .map_err(store_error)?,
+        None => store
+            .record_first_child(&query.store, &query.identity)
+            .map_err(store_error)?,
+    };
+    page_key_children(query, limit, cursors, first, |anchor| {
+        store
+            .record_next_child(&query.store, &query.identity, anchor)
+            .map_err(store_error)
+    })
 }
 
 fn member_children(
@@ -112,17 +169,52 @@ fn member_children(
     Ok(children)
 }
 
-fn data_key_children(store: &TreeStore, query: &DataQuery) -> Result<Vec<Value>, ProtocolError> {
+/// Page the keyed children under a data path, mirroring how `debug_data_walk` signs
+/// and validates its resume cursor.
+fn data_key_children(
+    store: &TreeStore,
+    query: &DataQuery,
+    limit: usize,
+    resume: Option<&SavedKey>,
+    cursors: &CursorState,
+) -> Result<Value, ProtocolError> {
+    let first = match resume {
+        Some(anchor) => store
+            .data_next_child(&query.store, &query.identity, &query.data_path, anchor)
+            .map_err(store_error)?,
+        None => store
+            .data_first_child(&query.store, &query.identity, &query.data_path)
+            .map_err(store_error)?,
+    };
+    page_key_children(query, limit, cursors, first, |anchor| {
+        store
+            .data_next_child(&query.store, &query.identity, &query.data_path, anchor)
+            .map_err(store_error)
+    })
+}
+
+/// Collect up to `limit` keyed children, walking forward with `next`. When a child
+/// remains past the limit, report `truncated` and a signed resume cursor anchored
+/// at the last returned key, so resuming on the same path returns the rest.
+fn page_key_children(
+    query: &DataQuery,
+    limit: usize,
+    cursors: &CursorState,
+    first: Option<SavedKey>,
+    mut next: impl FnMut(&SavedKey) -> Result<Option<SavedKey>, ProtocolError>,
+) -> Result<Value, ProtocolError> {
     let mut children = Vec::new();
-    let mut child = store
-        .data_first_child(&query.store, &query.identity, &query.data_path)
-        .map_err(store_error)?;
+    let mut last = None;
+    let mut child = first;
     while let Some(key) = child {
-        let anchor = key.clone();
+        if children.len() == limit {
+            let anchor = last.as_ref().expect("a truncated page returned a child");
+            let cursor = cursors.encode_children_cursor(&query.path, anchor);
+            return Ok(json!({ "children": children, "truncated": true, "cursor": cursor }));
+        }
         children.push(json!({ "key": encode_key(&key) }));
-        child = store
-            .data_next_child(&query.store, &query.identity, &query.data_path, &anchor)
-            .map_err(store_error)?;
+        child = next(&key)?;
+        last = Some(key);
     }
-    Ok(children)
+    Ok(json!({ "children": children, "truncated": false, "cursor": Value::Null }))
 }

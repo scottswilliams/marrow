@@ -128,6 +128,39 @@ fn dry_run_plan_matches_a_real_run() {
 }
 
 #[test]
+fn dry_run_renders_a_bool_write_as_its_typed_value() {
+    // The dry-run text report renders a `bool` leaf write as `true`, not the codec
+    // byte `1`, through the same typed-value path the trace uses.
+    let project = temp_project("dryrun-bool", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Flag at ^flags(id: int)\n\
+             \x20\x20\x20\x20on: bool\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^flags(1).on = true\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--dry-run", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("would write ^flags(1).on\ttrue"),
+        "a bool must dry-run as `true`, not `1`: {stderr}"
+    );
+}
+
+#[test]
 fn dry_run_reports_maintenance_whole_root_deletes() {
     let project = temp_project("dryrun-root-delete", |root| {
         write(

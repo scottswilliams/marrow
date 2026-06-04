@@ -19,6 +19,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use marrow_check::CheckedProgram;
+use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 
 use crate::{load_checked_project, open_store_for_inspection};
@@ -56,21 +57,27 @@ pub(crate) mod test_support {
 
     pub(crate) fn state_with_books(books: &[(i64, &str)]) -> ServeState {
         let state = empty_state();
+        for (id, title) in books {
+            write_book(&state, *id, title);
+        }
+        state
+    }
+
+    /// Write one `^books(id).title` record into an existing state's store, for a
+    /// test that commits data into a store a connection is already serving.
+    pub(crate) fn write_book(state: &ServeState, id: i64, title: &str) {
         let place = books_place(&state.program);
         let store_id = catalog_id(&place.store_catalog_id);
         let title_path = field_path(&place, "title");
-        for (id, title) in books {
-            state
-                .store
-                .write_data_value(
-                    &store_id,
-                    &[SavedKey::Int(*id)],
-                    &title_path,
-                    title.as_bytes().to_vec(),
-                )
-                .expect("write checked tree-cell fixture data");
-        }
         state
+            .store
+            .write_data_value(
+                &store_id,
+                &[SavedKey::Int(id)],
+                &title_path,
+                title.as_bytes().to_vec(),
+            )
+            .expect("write checked tree-cell fixture data");
     }
 
     fn checked_program() -> CheckedProgram {
@@ -124,6 +131,10 @@ pub(crate) mod test_support {
     fn books_place(program: &CheckedProgram) -> CheckedSavedPlace {
         checked_saved_root_place(program, "books", marrow_syntax::SourceSpan::default())
             .expect("checked books root")
+    }
+
+    pub(crate) fn books_store_id(program: &CheckedProgram) -> CatalogId {
+        catalog_id(&books_place(program).store_catalog_id)
     }
 
     fn catalog_id(raw: &str) -> CatalogId {
@@ -283,16 +294,37 @@ enum Line {
 
 /// Serve one connection: read newline-delimited request lines, reply to each with
 /// a newline-delimited JSON object, until the client hangs up (clean EOF).
+///
+/// The whole connection reads one pinned store snapshot, so every `debug_data_*`
+/// read it answers observes one coherent version of saved data even while another
+/// process commits. The snapshot also fixes the catalog epoch the connection sees:
+/// if the store has evolved past the schema this serve binary was checked against,
+/// every data op replies `protocol.stale_epoch` rather than rendering evolved data
+/// under the stale schema.
 fn serve_connection(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> io::Result<()> {
-    let session = protocol::ProtocolSession::new();
+    let snapshot = match store.read_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            write_reply(writer, &snapshot_error_reply(&error.to_string()))?;
+            return Ok(());
+        }
+    };
+    let stale = match store_is_stale(program, store) {
+        Ok(stale) => stale,
+        Err(error) => {
+            write_reply(writer, &snapshot_error_reply(&error.to_string()))?;
+            return Ok(());
+        }
+    };
+    let session = protocol::ProtocolSession::new(stale);
     loop {
         let line = match read_line_bounded(reader)? {
-            Line::Eof => return Ok(()),
+            Line::Eof => break,
             Line::Request(line) => line,
             Line::Bad(reason) => {
                 // A non-UTF-8 or oversized line is not JSON, so it earns the same
@@ -310,6 +342,21 @@ fn serve_connection(
         };
         write_reply(writer, &reply)?;
     }
+    drop(snapshot);
+    Ok(())
+}
+
+/// Whether the store has evolved past the schema this serve binary was checked
+/// against: its stamped catalog epoch is newer than the program's accepted epoch.
+/// A matching, older, or absent stamp serves normally.
+fn store_is_stale(program: &CheckedProgram, store: &TreeStore) -> Result<bool, StoreError> {
+    let Some(stored) = store.read_catalog_epoch()? else {
+        return Ok(false);
+    };
+    Ok(match program.catalog.accepted_epoch {
+        Some(accepted) => stored > accepted,
+        None => true,
+    })
 }
 
 /// A `protocol.malformed` reply envelope with a null id (the request could not be
@@ -318,6 +365,16 @@ fn malformed_reply(message: &str) -> serde_json::Value {
     serde_json::json!({
         "id": serde_json::Value::Null,
         "error": { "code": protocol::PROTOCOL_MALFORMED, "message": message },
+    })
+}
+
+/// A `store.*` reply envelope with a null id, sent when the connection cannot pin
+/// a coherent read snapshot. The connection then ends rather than answering reads
+/// against a snapshot it never acquired.
+fn snapshot_error_reply(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": serde_json::Value::Null,
+        "error": { "code": "store.io", "message": message },
     })
 }
 
@@ -366,7 +423,9 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    use crate::serve::test_support::{empty_state, state_with_books};
+    use marrow_store::key::SavedKey;
+
+    use crate::serve::test_support::{self, empty_state, state_with_books, write_book};
 
     #[test]
     fn serves_newline_delimited_requests_over_a_stream() {
@@ -389,6 +448,137 @@ mod tests {
         assert_eq!(
             replies[1]["error"]["code"],
             serde_json::json!(protocol::PROTOCOL_UNKNOWN_OP)
+        );
+    }
+
+    /// One scripted request line, with an optional side effect (a store write that
+    /// commits mid-connection) run just before the line is handed over.
+    type ScriptedLine<'a> = (String, Option<Box<dyn FnOnce() + 'a>>);
+
+    /// A reader that yields scripted request lines, running each line's side effect
+    /// just before handing the line over. It lets a test prove the connection's
+    /// pinned snapshot hides a concurrent commit: the write lands between the two
+    /// reads, yet the second read does not observe it.
+    struct ScriptedReader<'a> {
+        lines: std::collections::VecDeque<ScriptedLine<'a>>,
+        buffer: Vec<u8>,
+        position: usize,
+    }
+
+    impl<'a> ScriptedReader<'a> {
+        fn new(lines: Vec<ScriptedLine<'a>>) -> Self {
+            Self {
+                lines: lines.into(),
+                buffer: Vec::new(),
+                position: 0,
+            }
+        }
+
+        fn refill(&mut self) {
+            if self.position < self.buffer.len() {
+                return;
+            }
+            if let Some((line, effect)) = self.lines.pop_front() {
+                if let Some(effect) = effect {
+                    effect();
+                }
+                self.buffer = line.into_bytes();
+                self.position = 0;
+            }
+        }
+    }
+
+    impl Read for ScriptedReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let available = self.fill_buf()?;
+            let count = available.len().min(buf.len());
+            buf[..count].copy_from_slice(&available[..count]);
+            self.consume(count);
+            Ok(count)
+        }
+    }
+
+    impl BufRead for ScriptedReader<'_> {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            self.refill();
+            Ok(&self.buffer[self.position..])
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.position += amount;
+        }
+    }
+
+    #[test]
+    fn a_connection_pins_one_snapshot_so_a_mid_connection_write_is_invisible() {
+        let state = state_with_books(&[(1, "Mort")]);
+        let children_request =
+            "{\"id\":2,\"op\":\"debug_data_children\",\"path\":[{\"root\":\"books\"}]}\n";
+        let mut reader = ScriptedReader::new(vec![
+            ("{\"id\":1,\"op\":\"debug_data_roots\"}\n".to_string(), None),
+            (
+                children_request.to_string(),
+                Some(Box::new(|| write_book(&state, 2, "Sourcery"))),
+            ),
+        ]);
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection(&mut reader, &mut output, &state.program, &state.store).expect("serve");
+
+        let replies: Vec<serde_json::Value> = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("reply json"))
+            .collect();
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        // The mid-connection write of `^books(2)` committed between the two reads,
+        // but the connection's pinned snapshot hides it: only `^books(1)` is seen.
+        assert_eq!(
+            replies[1]["ok"]["children"],
+            serde_json::json!([{ "key": { "int": 1 } }]),
+            "the second read must not observe the concurrent write: {replies:?}"
+        );
+        // The write did land in the store; a fresh connection would see it.
+        let mut keys = Vec::new();
+        let store_id = test_support::books_store_id(&state.program);
+        let mut child = state
+            .store
+            .record_first_child(&store_id, &[])
+            .expect("record child");
+        while let Some(key) = child {
+            let anchor = key.clone();
+            keys.push(key);
+            child = state
+                .store
+                .record_next_child(&store_id, &[], &anchor)
+                .expect("record child");
+        }
+        assert_eq!(
+            keys,
+            vec![SavedKey::Int(1), SavedKey::Int(2)],
+            "the concurrent write is durable in the store, just not in the snapshot"
+        );
+    }
+
+    #[test]
+    fn a_store_evolved_past_the_checked_schema_refuses_data_ops_with_stale_epoch() {
+        let state = state_with_books(&[(1, "Mort")]);
+        // Stamp the store's catalog epoch far past the schema this serve binary was
+        // checked against, standing in for a store another process has evolved.
+        state
+            .store
+            .write_catalog_epoch(u64::MAX)
+            .expect("stamp a newer catalog epoch");
+        let input = "{\"id\":1,\"op\":\"debug_data_roots\"}\n";
+        let mut reader = Cursor::new(input.as_bytes());
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection(&mut reader, &mut output, &state.program, &state.store).expect("serve");
+
+        let reply: serde_json::Value =
+            serde_json::from_str(String::from_utf8(output).expect("utf8").trim()).expect("reply");
+        assert_eq!(
+            reply["error"]["code"],
+            serde_json::json!(protocol::PROTOCOL_STALE_EPOCH),
+            "an evolved store must refuse data ops: {reply}"
         );
     }
 

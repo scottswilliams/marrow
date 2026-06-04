@@ -69,16 +69,19 @@ whole managed-root delete. Deleting a required field on its own raises
 `write.required_field` outside maintenance.
 
 The `marrow serve` data server reports a `protocol.*` code when a request is bad:
-`protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`, and
+`protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`,
 `protocol.bad_request` (malformed operation arguments, durable places, cursors,
-or encoded payloads). A request that reaches the store carries the store's own
-`store.*` code through unchanged.
+or encoded payloads), and `protocol.stale_epoch` when the served store has
+evolved past the schema the running server was checked against. A request that
+reaches the store carries the store's own `store.*` code through unchanged.
 
 `marrow data integrity` reports `data.*` codes (kind `tooling`) for the findings
 it surfaces while verifying saved data against the project schema:
 `data.decode` for a stored value that is not a canonical form of its declared
-type, and `data.key_type` for a stored key with a scalar type the schema does
-not declare. `marrow evolve` reports `evolve.*` codes when a preview witness
+type, `data.key_type` for a stored key with a scalar type the schema does not
+declare, and `data.orphan` for a stored cell under a root or member the schema
+no longer declares (an undecodable cell key is reported as `store.corruption`).
+`marrow evolve` reports `evolve.*` codes when a preview witness
 cannot be applied exactly. A command run against a project whose `marrow.json`
 is unreadable reports `io.read`; an invalid `marrow.json` reports
 `config.invalid`.
@@ -294,6 +297,7 @@ Request faults from the `marrow serve` data server. A serve error reply is
 | `protocol.malformed` | A request is not a JSON object, or is missing a string `op`. |
 | `protocol.unknown_op` | A request names an operation the server does not support. |
 | `protocol.bad_request` | A known operation's arguments are malformed: bad typed resource arguments, durable places, cursors, or encoded payloads. |
+| `protocol.stale_epoch` | The store has evolved past the schema this `marrow serve` process was checked against (its stamped catalog epoch is newer than the served program's), so a data op refuses rather than render evolved data under the stale schema. Restart `marrow serve` to read the evolved data. |
 
 ### `io.*` — kind `io`
 
@@ -324,6 +328,7 @@ project schema. Read-only; it never modifies the store.
 |---|---|
 | `data.decode` | A stored value is not a canonical form of its declared type. |
 | `data.key_type` | A stored record key, keyed-layer key, or identity payload key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
+| `data.orphan` | A stored data cell is under a saved root or member the schema no longer declares — data a dropped root or field left behind. Derived index cells are never flagged. An actual stored cell whose key does not decode under the tree-cell key grammar is reported as `store.corruption`. |
 
 ### `evolve.*` — kind `tooling`
 

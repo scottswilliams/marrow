@@ -14,7 +14,8 @@ The debug inspection operations are:
 - `debug_data_roots`: stored root names visible through checked facts;
 - `debug_data_get`: presence plus optional base64 canonical payload at a typed data
   query;
-- `debug_data_children`: immediate typed children below a data query;
+- `debug_data_children`: immediate typed children below a data query, paged with
+  an opaque cursor;
 - `debug_data_walk`: paged typed data entries below a query, with an opaque cursor.
 
 Protocol errors use the `protocol.*` family. Store faults that reach the
@@ -48,6 +49,19 @@ connection, not the server).
   stalls has its connection closed (like a hang-up); the accept loop moves on.
 - A request line may be up to 64 MiB; a longer line without a newline earns a
   `protocol.malformed` reply (see below) and the connection stays open.
+
+### Per-connection snapshot
+
+A connection pins one store read snapshot at the moment it is accepted and holds
+it until it closes. Every `debug_data_*` read on that connection — across many
+request lines — observes one coherent version of saved data, even while another
+process commits. A write that commits mid-connection is invisible to that
+connection; a later connection sees it. The snapshot also fixes the catalog epoch
+the connection serves under: if the stamped store epoch is newer than the schema
+this `marrow serve` process was checked against, the store has evolved past the
+running server, and every data op on that connection replies
+`protocol.stale_epoch` rather than rendering evolved data under the stale schema.
+Restart `marrow serve` to read the evolved data.
 
 ## Reply envelope
 
@@ -87,8 +101,8 @@ An empty store replies `{"id":1,"ok":{"roots":[]}}`.
 
 ### `debug_data_children`
 
-The distinct immediate children directly below `path`, in Marrow order. Each
-child is one of:
+The distinct immediate children directly below `path`, in Marrow order, with
+`truncated` and an optional resume `cursor`. Each child is one of:
 
 - `{"key": <key>}` — a record identity key or keyed-layer key (see [Key encoding](#key-encoding));
 - `{"name": "<member>"}` — a field or layer name.
@@ -98,7 +112,7 @@ local member names as `{"name": ...}`.
 
 ```
 REQ   {"id": 2, "op": "debug_data_children", "path": [{"root": "books"}]}
-REPLY {"id":2,"ok":{"children":[{"key":{"int":1}},{"key":{"int":2}}]}}
+REPLY {"id":2,"ok":{"children":[{"key":{"int":1}},{"key":{"int":2}}],"truncated":false,"cursor":null}}
 
 REQ   {"id": 3, "op": "debug_data_children", "path": [{"root": "books"}, {"key": {"int": 1}}]}
 REPLY {"id":3,"ok":{"children":[{"name":"tags"},{"name":"title"}]}}
@@ -106,6 +120,22 @@ REPLY {"id":3,"ok":{"children":[{"name":"tags"},{"name":"title"}]}}
 
 Record and keyed-layer keys sort before named members at one tree level; that
 order is preserved in the reply.
+
+Key listings (record identity keys and keyed-layer keys) are paged so a record
+with many children cannot force an unbounded scan:
+
+- `limit` is optional. When given it must be a positive JSON integer; `0` or a
+  negative integer is a `protocol.bad_request`. Omitting it, or passing a value
+  above the server maximum of 10000, uses that maximum — an oversized limit is
+  clamped, not rejected.
+- `truncated` is `true` when more keys remained past the limit, and the reply
+  then carries an opaque `cursor`. Send it back as `cursor` on the same
+  connection with the same `path` to resume after the last returned key.
+- `cursor` is a signed session token, validated like a `debug_data_walk` cursor:
+  a malformed or forged token, or one replayed under a different `path`, is a
+  `protocol.bad_request`, and cursors are not durable across connections. The
+  declared-member listing (field and layer names) is a fixed small set and takes
+  no `limit` or `cursor`; its reply reports `truncated:false` and a null cursor.
 
 ### `debug_data_get`
 
@@ -242,7 +272,8 @@ of the contract. The protocol-level codes:
 |------------------------|----------------------------------------------------------------------|
 | `protocol.malformed`   | the line is not JSON, the request is not an object, or it has no string `op` |
 | `protocol.unknown_op`  | a known envelope but an `op` the server does not implement           |
-| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive or missing `debug_data_walk` limit, or a malformed/forged/out-of-subtree `debug_data_walk` cursor |
+| `protocol.bad_request` | a known `op` with bad arguments — missing or non-array `path`, an unknown segment kind, a segment that is not a one-field object, an unknown key type, a wide-integer key that is not an integer string, invalid base64, a non-positive `debug_data_children` limit, a non-positive or missing `debug_data_walk` limit, or a malformed/forged/out-of-subtree paging cursor |
+| `protocol.stale_epoch` | the served store has evolved past the schema this `marrow serve` process was checked against; every data op refuses until the server is restarted |
 
 A request that parses but cannot be answered by the store carries the store's
 own `store.*` code through unchanged (for example `store.corruption` on an
@@ -285,8 +316,8 @@ holds for a non-UTF-8 line or one over the 64 MiB size limit.
 The listener binds loopback (`127.0.0.1`) only. The protocol has no
 authentication or transport security, so binding beyond loopback is not
 supported by the server; it would require both. This surface is read-only, but
-it can expose stored payload bytes and unpaged child listings for local
-inspection, so clients must treat it as debug/admin-only.
+it can expose stored payload bytes for local inspection, so clients must treat it
+as debug/admin-only.
 
 ## Status
 

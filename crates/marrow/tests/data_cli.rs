@@ -265,6 +265,98 @@ fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
     assert!(stdout.contains("integrity verified"), "{stdout}");
 }
 
+/// Write one data leaf directly under a fabricated store catalog id and member, by
+/// passing low-level catalog ids the schema never declares. This stands in for data
+/// a dropped root or field left behind in the store.
+fn write_orphan_cell(project: &Path, store_catalog: &str, member_catalog: &str) {
+    let store_dir = project.join(".data");
+    fs::create_dir_all(&store_dir).expect("create store dir");
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let path = vec![DataPathSegment::Member(catalog_id(member_catalog))];
+    store
+        .write_data_value(
+            &catalog_id(store_catalog),
+            &[SavedKey::Int(1)],
+            &path,
+            b"left-behind".to_vec(),
+        )
+        .expect("write orphan tree-cell value");
+}
+
+#[test]
+fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
+    let (project, dir) = seeded_project("data-integrity-orphan");
+    // A data cell under a store catalog id the schema does not declare: a dropped
+    // root left it behind. The declared-cell walk never visits it, so only the
+    // actual-cell orphan scan catches it.
+    write_orphan_cell(&project, "cat_00000000deadbeef", "cat_0000000000000001");
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.orphan"), "{stderr}");
+}
+
+#[test]
+fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
+    let (project, dir) = seeded_project("data-integrity-orphan-member");
+    // The store id is the real one, but the member catalog id is undeclared: a
+    // dropped field left this cell behind.
+    let place = checked_place(&project, "counter");
+    write_orphan_cell(&project, &place.store_catalog_id, "cat_00000000cafef00d");
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("data.orphan"), "{stderr}");
+}
+
+#[test]
+fn data_integrity_reports_an_undecodable_data_cell_key_as_store_corruption() {
+    let (project, dir) = seeded_project("data-integrity-corrupt-key");
+    // A data-family cell key (the `00 01 20` tree-cell data prefix) whose body does
+    // not decode under the key grammar: an unterminated store id. Restore replays
+    // any data/index-family key, so this writes a structurally corrupt cell.
+    {
+        let store_dir = project.join(".data");
+        let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+        store
+            .restore_cell(&[0x00, 0x01, 0x20, b'x'], b"corrupt".to_vec())
+            .expect("write corrupt data-family cell");
+    }
+
+    let output = marrow(&["data", "integrity", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(stderr.contains("store.corruption"), "{stderr}");
+}
+
+#[test]
+fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
+    let (project, dir) = seeded_project("data-integrity-orphan-json");
+    write_orphan_cell(&project, "cat_00000000deadbeef", "cat_0000000000000001");
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let problem = value["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .find(|problem| problem["code"] == serde_json::json!("data.orphan"))
+        .expect("an orphan problem");
+    assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
+}
+
 #[test]
 fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     let project = native_project("data-integrity-decode");

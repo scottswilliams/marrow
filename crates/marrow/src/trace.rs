@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 
 use marrow_check::CheckedRuntimeProgram;
+use marrow_check::StoredValueMeaning;
 use marrow_run::{Frame, RuntimeError, StepHook, WriteDataSegment, WriteOp, WriteTarget};
 use marrow_store::key::SavedKey;
-use marrow_store::value::{SavedValue, encode_value};
+use marrow_store::value::{SavedValue, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
 
@@ -148,7 +149,7 @@ impl StepHook for TraceHook {
                     Some(bytes) => {
                         format!(
                             "{op_name} {rendered_target} = {}",
-                            render_value_bytes(bytes)
+                            self.names.render_leaf_value(target, bytes)
                         )
                     }
                     None => format!("{op_name} {rendered_target}"),
@@ -176,6 +177,7 @@ impl StepHook for TraceHook {
 pub(crate) struct WriteTargetNames {
     stores: HashMap<String, String>,
     members: HashMap<String, String>,
+    member_meanings: HashMap<String, StoredValueMeaning>,
     indexes: HashMap<String, (String, String)>,
 }
 
@@ -192,6 +194,11 @@ impl WriteTargetNames {
             names
                 .members
                 .insert(member.catalog_id.clone(), member.name.clone());
+            if let Some(meaning) = &member.value_meaning {
+                names
+                    .member_meanings
+                    .insert(member.catalog_id.clone(), meaning.clone());
+            }
         }
         for index in facts.store_indexes() {
             let root = facts.store(index.store).root.clone();
@@ -200,6 +207,41 @@ impl WriteTargetNames {
                 .insert(index.catalog_id.clone(), (root, index.name.clone()));
         }
         names
+    }
+
+    /// Render a managed write's leaf value as its declared typed scalar, looked up
+    /// by the write's leaf member: a `bool` reads `true`/`false`, an int/date/etc.
+    /// reads its canonical typed text. A value whose meaning is not a scalar (an
+    /// identity reference or enum member) or that does not decode falls back to the
+    /// raw byte rendering. The JSON `value_b64` field stays the raw bytes.
+    pub(crate) fn render_leaf_value(&self, target: &WriteTarget, value: &[u8]) -> String {
+        if let Some(StoredValueMeaning::Scalar(ty)) = self.leaf_meaning(target)
+            && let Some(scalar) = decode_value(value, *ty)
+        {
+            return render_scalar(&scalar);
+        }
+        render_value_bytes(value)
+    }
+
+    fn leaf_meaning(&self, target: &WriteTarget) -> Option<&StoredValueMeaning> {
+        let WriteTarget::Data { path, .. } = target else {
+            return None;
+        };
+        let member = path.iter().rev().find_map(|segment| match segment {
+            WriteDataSegment::Member(member) => Some(member),
+            WriteDataSegment::Key(_) => None,
+        })?;
+        self.member_meanings.get(member)
+    }
+}
+
+/// Render a decoded scalar as the typed text a developer reads: a `bool` as
+/// `true`/`false`, and every other scalar through its canonical saved bytes (an int
+/// as its digits, a date as `YYYY-MM-DD`, raw bytes as `0x<hex>`).
+fn render_scalar(value: &SavedValue) -> String {
+    match value {
+        SavedValue::Bool(value) => value.to_string(),
+        other => render_value_bytes(&encode_value(other).unwrap_or_default()),
     }
 }
 

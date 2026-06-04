@@ -11,7 +11,8 @@ The v0.1 tooling contract is:
 - render durable places from checked/catalog facts, not by decoding physical
   engine keys into source-shaped paths;
 - page large results with opaque cursors;
-- report typed data findings such as `data.decode` and `data.key_type`;
+- report typed data findings such as `data.decode`, `data.key_type`, and
+  `data.orphan`;
 - surface tree-cell store faults through the `store.*` family;
 - keep repair as explicit maintenance code over modeled data.
 
@@ -28,6 +29,11 @@ store read-only, and if no store file exists yet it reports an empty result
 rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
 `get` against an unseeded project prints `(no saved data)` (or `(absent)` for
 `get`) and leaves the data directory untouched — no `marrow.redb` is written.
+
+A command that traverses the store more than once — `dump`, `stats`, and
+`integrity` each make several passes — pins one store snapshot for the whole
+command, so its output describes a single coherent version of the data even if
+another process commits while it runs.
 
 There is no in-place repair command: repair is operator-authored maintenance code
 run under `marrow run --maintenance`.
@@ -161,8 +167,11 @@ spelling the serve protocol uses. `jsonl` emits the same single object as
 ## `marrow data integrity`
 
 Verifies that each checked, reachable stored value decodes against its declared
-schema type, and that typed store traversal does not report corruption. It is
-read-only and typed: it needs the checked project to know each path's type.
+schema type, that no stored cell is left under a root or member the schema no
+longer declares, and that typed store traversal does not report corruption. It is
+read-only and typed: it needs the checked project to know each path's type. The
+whole verdict reads one stable store snapshot, so it describes a single coherent
+version of the data even while another process commits.
 
 It exits `0` on a clean store and `1` when it finds any problem.
 
@@ -171,7 +180,7 @@ $ marrow data integrity ./project
 ok: ./project integrity verified (1 records)
 ```
 
-It surfaces two data findings plus typed store corruption:
+It surfaces three data findings plus typed store corruption:
 
 - `data.decode` — a stored value is not a canonical form of its declared
   scalar type (e.g. a non-int byte sequence stored under an `int` field).
@@ -187,11 +196,23 @@ It surfaces two data findings plus typed store corruption:
   ^counter("one").value: data.key_type: stored key is a string where the schema declares int
   ```
 
-- `store.corruption` — a tree-cell key or payload cannot be decoded by the typed
-  store contract.
+- `data.orphan` — an actual stored data cell is under a saved root or member the
+  schema no longer declares, left behind by a dropped root or field. Beyond
+  verifying declared cells, integrity enumerates the store's actual data cells
+  and flags any the schema does not account for; derived index cells are never
+  flagged.
 
-Generated index entries are maintained by the runtime and store, but
-`marrow data integrity` currently verifies checked data records.
+  ```
+  ^books(7).blurb: data.orphan: stored data is under a saved member the schema no longer declares
+  ```
+
+- `store.corruption` — a tree-cell key or payload cannot be decoded by the typed
+  store contract; an actual stored data cell whose key does not decode under the
+  tree-cell key grammar is reported here.
+
+Generated index entries are maintained by the runtime and store, so integrity
+verifies declared data cells and flags only undeclared data cells, not derived
+index cells.
 
 Text prints one `path: code: message` line per problem to stderr; a clean store
 prints a single `ok:` line to stdout. `--format json` wraps the findings in an

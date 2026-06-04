@@ -26,6 +26,15 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
         Ok(store) => store,
         Err(code) => return code,
     };
+    // One snapshot spans every traversal — the declared-cell walk, the orphan scan,
+    // and the report pass — so the whole verdict describes one coherent store.
+    let _snapshot = match &store {
+        Some(store) => match store.read_snapshot() {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => return super::report_store_error(error, format),
+        },
+        None => None,
+    };
     let (records, problems) = match &store {
         Some(store) => match count_integrity_problems(store, &program) {
             Ok(counts) => counts,
@@ -53,8 +62,12 @@ pub(crate) fn count_integrity_problems(
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
     let mut problems = 0usize;
-    let records = visit_data_records(program, store, |record| {
-        if check_record(program, &record).is_some() {
+    let mut records = 0usize;
+    visit_integrity_problems(store, program, |outcome| {
+        if let Outcome::Record = outcome.kind {
+            records += 1;
+        }
+        if outcome.problem.is_some() {
             problems = problems.checked_add(1).ok_or(StoreError::LimitExceeded {
                 limit: "data integrity problem count",
             })?;
@@ -62,6 +75,46 @@ pub(crate) fn count_integrity_problems(
         Ok(())
     })?;
     Ok((records, problems))
+}
+
+/// Whether an integrity outcome came from walking a declared record or from
+/// scanning the store's actual cells for orphans. Only declared records are
+/// counted toward the verified record total.
+enum Outcome {
+    Record,
+    StoredCell,
+}
+
+struct IntegrityOutcome {
+    kind: Outcome,
+    problem: Option<IntegrityProblem>,
+}
+
+/// Visit both integrity passes against one snapshot: the declared-cell walk (which
+/// yields decode and key-type findings) and the orphan scan over the store's actual
+/// cells (which yields orphan and corruption findings). Each visited cell is one
+/// `IntegrityOutcome`, carrying a problem when the cell is unhealthy.
+fn visit_integrity_problems(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    mut visit: impl FnMut(IntegrityOutcome) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    visit_data_records(program, store, |record| {
+        visit(IntegrityOutcome {
+            kind: Outcome::Record,
+            problem: check_record(program, &record),
+        })
+    })?;
+    super::orphan::visit_orphans(store, program, |orphan| {
+        visit(IntegrityOutcome {
+            kind: Outcome::StoredCell,
+            problem: Some(IntegrityProblem {
+                code: orphan.code,
+                path: orphan.path,
+                message: orphan.message,
+            }),
+        })
+    })
 }
 
 struct IntegrityProblem {
@@ -212,26 +265,24 @@ fn write_integrity_problems_text(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(), StoreError> {
-    visit_data_records(program, store, |record| {
-        if let Some(problem) = check_record(program, &record) {
+    visit_integrity_problems(store, program, |outcome| {
+        if let Some(problem) = outcome.problem {
             eprintln!("{}: {}: {}", problem.path, problem.code, problem.message);
         }
         Ok(())
-    })?;
-    Ok(())
+    })
 }
 
 fn write_integrity_problems_jsonl(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(), StoreError> {
-    visit_data_records(program, store, |record| {
-        if let Some(problem) = check_record(program, &record) {
+    visit_integrity_problems(store, program, |outcome| {
+        if let Some(problem) = outcome.problem {
             write_json(integrity_record(&problem));
         }
         Ok(())
-    })?;
-    Ok(())
+    })
 }
 
 fn write_integrity_json(
@@ -246,8 +297,8 @@ fn write_integrity_json(
     serde_json::to_writer(&mut out, dir).expect("serialize project path");
     write!(out, ",\"records\":{records},\"problems\":[").expect("write integrity JSON");
     let mut first = true;
-    visit_data_records(program, store, |record| {
-        if let Some(problem) = check_record(program, &record) {
+    visit_integrity_problems(store, program, |outcome| {
+        if let Some(problem) = outcome.problem {
             if !first {
                 write!(out, ",").expect("write integrity JSON separator");
             }

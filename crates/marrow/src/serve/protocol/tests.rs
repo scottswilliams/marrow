@@ -9,7 +9,7 @@ use crate::cmd_data::get::{DataQuerySegment, resolve_data_query};
 use crate::serve::test_support::{ServeState, empty_state, state_with_books};
 
 fn request(state: &ServeState, value: Value) -> Value {
-    let session = ProtocolSession::new();
+    let session = ProtocolSession::new(false);
     request_with_session(&session, state, value)
 }
 
@@ -166,6 +166,153 @@ fn debug_data_children_of_the_empty_path_lists_roots() {
 }
 
 #[test]
+fn debug_data_children_pages_record_keys_and_resumes_with_the_cursor() {
+    let state = state_with_books(&[(1, "Mort"), (2, "Sourcery"), (3, "Reaper")]);
+    let session = ProtocolSession::new(false);
+    let first = request_with_session(
+        &session,
+        &state,
+        json!({ "op": "debug_data_children", "path": [{"root": "books"}], "limit": 2 }),
+    );
+    assert_eq!(
+        first["ok"]["children"],
+        json!([{"key": {"int": 1}}, {"key": {"int": 2}}]),
+        "{first}"
+    );
+    assert_eq!(first["ok"]["truncated"], json!(true), "{first}");
+    let cursor = first["ok"]["cursor"]
+        .as_str()
+        .expect("a truncated children page returns a cursor");
+
+    let second = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}],
+            "limit": 2,
+            "cursor": cursor,
+        }),
+    );
+    assert_eq!(
+        second["ok"]["children"],
+        json!([{"key": {"int": 3}}]),
+        "the cursor resumes after the prior page: {second}"
+    );
+    assert_eq!(second["ok"]["truncated"], json!(false), "{second}");
+    assert_eq!(second["ok"]["cursor"], Value::Null, "{second}");
+}
+
+#[test]
+fn debug_data_children_pages_keyed_layer_keys() {
+    let state = state_with_tags(&[(1, "a"), (2, "b"), (3, "c")]);
+    let session = ProtocolSession::new(false);
+    let first = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 1}}, {"layer": "tags"}],
+            "limit": 1,
+        }),
+    );
+    assert_eq!(
+        first["ok"]["children"],
+        json!([{"key": {"int": 1}}]),
+        "{first}"
+    );
+    assert_eq!(first["ok"]["truncated"], json!(true), "{first}");
+    let cursor = first["ok"]["cursor"].as_str().expect("a cursor");
+
+    let rest = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 1}}, {"layer": "tags"}],
+            "limit": 100,
+            "cursor": cursor,
+        }),
+    );
+    assert_eq!(
+        rest["ok"]["children"],
+        json!([{"key": {"int": 2}}, {"key": {"int": 3}}]),
+        "{rest}"
+    );
+    assert_eq!(rest["ok"]["truncated"], json!(false), "{rest}");
+}
+
+#[test]
+fn debug_data_children_clamps_an_oversized_limit_rather_than_rejecting() {
+    let state = state_with_books(&[(1, "Mort"), (2, "Sourcery")]);
+    // A limit far above the server max returns every child rather than an error: a
+    // small store fits in one page once the limit is clamped to the max.
+    let reply = request(
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}],
+            "limit": 1_000_000_000_000u64,
+        }),
+    );
+    assert_eq!(reply["error"], Value::Null, "{reply}");
+    assert_eq!(
+        reply["ok"]["children"],
+        json!([{"key": {"int": 1}}, {"key": {"int": 2}}]),
+        "{reply}"
+    );
+    assert_eq!(reply["ok"]["truncated"], json!(false), "{reply}");
+}
+
+#[test]
+fn debug_data_children_rejects_a_zero_limit() {
+    let state = state_with_a_book();
+    let reply = request(
+        &state,
+        json!({ "op": "debug_data_children", "path": [{"root": "books"}], "limit": 0 }),
+    );
+    assert_eq!(
+        reply["error"]["code"],
+        json!(PROTOCOL_BAD_REQUEST),
+        "{reply}"
+    );
+}
+
+#[test]
+fn debug_data_children_rejects_a_cursor_replayed_under_a_different_path() {
+    let state = state_with_tags(&[(1, "a"), (2, "b")]);
+    let session = ProtocolSession::new(false);
+    let first = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 1}}, {"layer": "tags"}],
+            "limit": 1,
+        }),
+    );
+    let cursor = first["ok"]["cursor"].as_str().expect("a cursor");
+
+    // Replaying that cursor under a different request path is rejected: the cursor
+    // is bound to the scope that issued it.
+    let replayed = request_with_session(
+        &session,
+        &state,
+        json!({
+            "op": "debug_data_children",
+            "path": [{"root": "books"}, {"key": {"int": 2}}, {"layer": "tags"}],
+            "limit": 1,
+            "cursor": cursor,
+        }),
+    );
+    assert_eq!(
+        replayed["error"]["code"],
+        json!(PROTOCOL_BAD_REQUEST),
+        "{replayed}"
+    );
+}
+
+#[test]
 fn a_bad_path_segment_is_a_bad_request() {
     let state = empty_state();
     let reply = request(
@@ -244,7 +391,7 @@ fn debug_data_walk_truncates_at_the_limit() {
 #[test]
 fn debug_data_walk_cursor_resumes_after_the_previous_page() {
     let state = state_with_two_books();
-    let session = ProtocolSession::new();
+    let session = ProtocolSession::new(false);
     let first = request_with_session(
         &session,
         &state,
@@ -321,7 +468,7 @@ fn debug_data_walk_cursor_into_keyed_layer_resumes_at_the_cursor_key() {
         (4, "older"),
         (10, "target"),
     ]);
-    let session = ProtocolSession::new();
+    let session = ProtocolSession::new(false);
     let first = request_with_session(
         &session,
         &state,
@@ -395,7 +542,7 @@ fn debug_data_walk_rejects_a_forged_keyed_cursor_for_an_absent_entry() {
 #[test]
 fn debug_data_walk_rejects_a_cursor_replayed_under_a_different_path() {
     let state = state_with_tags(&[(1, "older"), (2, "target")]);
-    let session = ProtocolSession::new();
+    let session = ProtocolSession::new(false);
     let first = request_with_session(
         &session,
         &state,

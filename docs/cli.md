@@ -188,6 +188,11 @@ visible locals — and each managed write or delete, in execution order. Under t
 the trace is an indented stream on stderr, leaving the program's stdout alone.
 Under `json`/`jsonl` it emits `step` records and managed-write `write` records.
 
+In the human-readable text of a `--trace` or `--dry-run` write, the leaf value is
+rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
+`true`/`false`, an int/date/duration/instant reads its canonical typed text. The
+machine-readable `value_b64` field in the JSON output stays the raw stored bytes.
+
 `--dry-run` runs the entry, reports the saved-data writes it would commit, then
 rolls them back. The store is left byte-for-byte unchanged: the run rides one
 outer savepoint that is always rolled back, so managed writes inside

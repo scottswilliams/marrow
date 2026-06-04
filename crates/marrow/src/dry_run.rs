@@ -16,7 +16,6 @@ use marrow_syntax::SourceSpan;
 use serde_json::json;
 
 use crate::CheckFormat;
-use crate::cmd_data::render_value_bytes;
 use crate::trace::{TraceHook, WriteTargetNames, render_write_target, write_target_json};
 
 /// One planned managed operation the run would have committed: its kind, the human
@@ -103,7 +102,7 @@ pub(crate) fn report(
                     (WriteOp::Write, Some(value)) => eprintln!(
                         "would write {}\t{}",
                         render_write_target(&step.target, &names),
-                        render_value_bytes(value)
+                        names.render_leaf_value(&step.target, value)
                     ),
                     (WriteOp::Write, None) => {
                         eprintln!("would write {}", render_write_target(&step.target, &names))

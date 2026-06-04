@@ -18,6 +18,8 @@ pub(crate) mod get;
 pub(crate) mod inspect;
 #[path = "cmd_data/integrity.rs"]
 pub(crate) mod integrity;
+#[path = "cmd_data/orphan.rs"]
+mod orphan;
 
 pub(crate) use inspect::render_value_bytes;
 
@@ -186,6 +188,12 @@ fn data_stats(args: &[String]) -> ExitCode {
     };
     let (roots, records) = match &store {
         Some(store) => {
+            // One snapshot spans both passes, so the root count and the record count
+            // describe the same coherent version of the store.
+            let _snapshot = match store.read_snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => return report_store_error(error, format),
+            };
             let roots = match inspect::data_roots_in_store(&program, store) {
                 Ok(roots) => roots.len(),
                 Err(error) => return report_store_error(error, format),
@@ -224,6 +232,15 @@ fn data_dump(args: &[String]) -> ExitCode {
     let store = match open_tree_store(&dir, &config) {
         Ok(store) => store,
         Err(code) => return code,
+    };
+    // One snapshot spans the count and the dump traversal, so the emitted records
+    // and the trailing count describe the same coherent version of the store.
+    let _snapshot = match &store {
+        Some(store) => match store.read_snapshot() {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => return report_store_error(error, format),
+        },
+        None => None,
     };
     let records = match &store {
         Some(store) => match inspect::count_data_records(&program, store) {

@@ -79,6 +79,42 @@ fn run_trace_interleaves_steps_and_writes() {
 }
 
 #[test]
+fn run_trace_renders_a_bool_write_as_its_typed_value() {
+    // A managed write of a `bool` field traces as `true`, not the codec byte `1`:
+    // the trace renders the leaf value through its declared scalar type.
+    let project = temp_project("trace-bool", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Flag at ^flags(id: int)\n\
+             \x20\x20\x20\x20on: bool\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^flags(1).on = true\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--trace", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("write ^flags(1).on = true"),
+        "a bool must trace as `true`, not `1`: {stderr}"
+    );
+    assert!(
+        !stderr.contains("^flags(1).on = 1"),
+        "the bool must not leak the codec byte `1`: {stderr}"
+    );
+}
+
+#[test]
 fn run_trace_reports_non_root_deletes() {
     let project = temp_project("trace-delete", |root| {
         write(

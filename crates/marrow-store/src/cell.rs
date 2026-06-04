@@ -225,6 +225,138 @@ pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()
         .ok_or(())
 }
 
+/// A decoded backup cell key, classified by family. Index-family cells are derived
+/// from data and carry no independent structure to classify, so they decode to
+/// [`BackupCellKey::Index`]; a data-family cell decodes to its store catalog id and
+/// the member/key path below the record identity.
+pub enum BackupCellKey {
+    Data {
+        store: CatalogId,
+        identity: Vec<SavedKey>,
+        path: Vec<DataPathSegment>,
+    },
+    Index,
+}
+
+/// Decode a backup data- or index-family cell key into its structural pieces.
+/// Returns `None` when the bytes are not a well-formed cell key under the v0
+/// tree-cell key grammar — the caller reports that as store corruption. A data
+/// cell decodes to its store catalog id, record identity, and the member/key path
+/// below the identity; an index cell decodes to [`BackupCellKey::Index`].
+pub fn decode_backup_cell_key(bytes: &[u8]) -> Option<BackupCellKey> {
+    let [
+        EMPTY_PLACEMENT_PREFIX,
+        TREE_CELL_PROFILE_V0,
+        family,
+        rest @ ..,
+    ] = bytes
+    else {
+        return None;
+    };
+    match *family {
+        FAMILY_INDEX => Some(BackupCellKey::Index),
+        FAMILY_DATA => decode_data_cell_key(rest),
+        _ => None,
+    }
+}
+
+fn decode_data_cell_key(rest: &[u8]) -> Option<BackupCellKey> {
+    let (store, after_store) = decode_escaped_id(rest)?;
+    let store = CatalogId::new(store).ok()?;
+    let (identity, after_identity) = decode_leading_keys(after_store)?;
+    let after_node = after_identity.strip_prefix(&[NODE_END])?;
+    let path = decode_data_cell_path(after_node)?;
+    Some(BackupCellKey::Data {
+        store,
+        identity,
+        path,
+    })
+}
+
+/// Decode the run of identity key-values that precede the node terminator. A
+/// key-value tag is never `NODE_END`, so the run ends at the first `NODE_END`.
+fn decode_leading_keys(mut bytes: &[u8]) -> Option<(Vec<SavedKey>, &[u8])> {
+    let mut keys = Vec::new();
+    while bytes.first().copied()? != NODE_END {
+        let (key, used) = decode_key_value(bytes)?;
+        keys.push(key);
+        bytes = bytes.get(used..)?;
+    }
+    Some((keys, bytes))
+}
+
+/// Decode the member/key path below a record node from the bytes after the node
+/// terminator. An empty tail is a bare record node (path `[]`). A value cell ends
+/// at the value marker; a leaf or sequence cell carries one member id after its
+/// cell tag. The decoded path keeps only structural member/key segments — a
+/// sequence position is not part of the schema path.
+fn decode_data_cell_path(mut bytes: &[u8]) -> Option<Vec<DataPathSegment>> {
+    let mut path = Vec::new();
+    loop {
+        let Some(tag) = bytes.first().copied() else {
+            return Some(path);
+        };
+        match tag {
+            DATA_VALUE_END => return bytes.get(1..).filter(|rest| rest.is_empty()).map(|_| path),
+            DATA_MEMBER_SEGMENT => {
+                let (id, rest) = decode_escaped_id(bytes.get(1..)?)?;
+                path.push(DataPathSegment::Member(CatalogId::new(id).ok()?));
+                bytes = rest;
+            }
+            DATA_KEY_SEGMENT => {
+                let (key, used) = decode_key_value(bytes.get(1..)?)?;
+                path.push(DataPathSegment::Key(key));
+                bytes = bytes.get(1 + used..)?;
+            }
+            LEAF_CELL => {
+                let (id, rest) = decode_escaped_id(bytes.get(1..)?)?;
+                if !rest.is_empty() {
+                    return None;
+                }
+                path.push(DataPathSegment::Member(CatalogId::new(id).ok()?));
+                return Some(path);
+            }
+            SEQUENCE_CELL => {
+                let (id, rest) = decode_escaped_id(bytes.get(1..)?)?;
+                // The trailing 8-byte sequence position is not a schema path
+                // segment; the member id is enough to classify the cell.
+                if rest.len() != 8 {
+                    return None;
+                }
+                path.push(DataPathSegment::Member(CatalogId::new(id).ok()?));
+                return Some(path);
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Decode one escaped id (the `encode_escaped_bytes` form) and return it with the
+/// bytes after its `0x00 0x00` terminator.
+fn decode_escaped_id(bytes: &[u8]) -> Option<(String, &[u8])> {
+    let mut decoded = Vec::new();
+    let mut index = 0;
+    loop {
+        match *bytes.get(index)? {
+            0x00 => match *bytes.get(index + 1)? {
+                0x00 => {
+                    let id = String::from_utf8(decoded).ok()?;
+                    return Some((id, bytes.get(index + 2..)?));
+                }
+                0x01 => {
+                    decoded.push(0x00);
+                    index += 2;
+                }
+                _ => return None,
+            },
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+}
+
 fn encode_data_path(path: &[DataPathSegment], out: &mut Vec<u8>) {
     for segment in path {
         match segment {
@@ -333,4 +465,104 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
         end.pop();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store_id(suffix: &str) -> CatalogId {
+        CatalogId::new(format!("cat_0123456789abcdef{suffix}")).expect("catalog id")
+    }
+
+    fn member_id() -> CatalogId {
+        CatalogId::new("cat_fedcba9876543210").expect("member id")
+    }
+
+    fn assert_data(key: &CellKey, expected_path: &[DataPathSegment]) {
+        let store = store_id("");
+        match decode_backup_cell_key(key.as_bytes()) {
+            Some(BackupCellKey::Data {
+                store: id, path, ..
+            }) => {
+                assert_eq!(id, store);
+                assert_eq!(path, expected_path);
+            }
+            Some(BackupCellKey::Index) => panic!("expected a data cell, got an index cell"),
+            None => panic!("expected a data cell, got an undecodable key"),
+        }
+    }
+
+    #[test]
+    fn decodes_a_value_cell_into_its_store_identity_and_member_path() {
+        let store = store_id("");
+        let member = member_id();
+        let identity = vec![SavedKey::Int(1)];
+        let path = vec![DataPathSegment::Member(member.clone())];
+        let key = CellKey::data_path_value(&store, &identity, &path);
+        match decode_backup_cell_key(key.as_bytes()).expect("decode") {
+            BackupCellKey::Data {
+                store: decoded_store,
+                identity: decoded_identity,
+                path: decoded_path,
+            } => {
+                assert_eq!(decoded_store, store);
+                assert_eq!(decoded_identity, identity);
+                assert_eq!(decoded_path, path);
+            }
+            BackupCellKey::Index => panic!("a data cell is not an index cell"),
+        }
+    }
+
+    #[test]
+    fn decodes_a_keyed_member_value_cell() {
+        let store = store_id("");
+        let member = member_id();
+        let path = vec![
+            DataPathSegment::Member(member.clone()),
+            DataPathSegment::Key(SavedKey::Int(10)),
+        ];
+        let key = CellKey::data_path_value(&store, &[], &path);
+        assert_data(&key, &path);
+    }
+
+    #[test]
+    fn decodes_a_leaf_cell_and_a_bare_node_cell() {
+        let store = store_id("");
+        let member = member_id();
+        let leaf = CellKey::leaf(&store, &[SavedKey::Int(1)], &member);
+        assert_data(&leaf, &[DataPathSegment::Member(member)]);
+
+        let node = CellKey::node(&store, &[SavedKey::Int(1)]);
+        assert_data(&node, &[]);
+    }
+
+    #[test]
+    fn decodes_a_sequence_cell_to_its_member_without_the_position() {
+        let store = store_id("");
+        let member = member_id();
+        let key = CellKey::sequence(&store, &[], &member, SequencePosition::new(7));
+        assert_data(&key, &[DataPathSegment::Member(member)]);
+    }
+
+    #[test]
+    fn classifies_an_index_cell_and_rejects_a_corrupt_key() {
+        let index = member_id();
+        let key = CellKey::index(&index, &[SavedKey::Int(1)], &[SavedKey::Int(2)]);
+        assert!(matches!(
+            decode_backup_cell_key(key.as_bytes()),
+            Some(BackupCellKey::Index)
+        ));
+
+        // A data-family prefix with a truncated key body does not decode.
+        let mut corrupt = family(FAMILY_DATA);
+        encode_id(store_id("").as_str(), &mut corrupt);
+        corrupt.push(KEY_INT_TAG_PROBE);
+        assert!(decode_backup_cell_key(&corrupt).is_none());
+        // A non-cell key (wrong placement/profile) does not decode.
+        assert!(decode_backup_cell_key(&[0x01, 0x02, 0x03]).is_none());
+    }
+
+    // The int key tag begins a fixed 9-byte key; a tag with no body is truncated.
+    const KEY_INT_TAG_PROBE: u8 = 0x02;
 }
