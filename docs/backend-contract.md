@@ -22,9 +22,17 @@ The public store crate surface is:
 The private engine substrate stores byte keys and byte values in one
 byte-lexicographic order. It provides exact read, exact write, prefix delete,
 bounded prefix scans, cursor-resumed prefix scans, and savepoint transactions.
-The in-memory engine uses `BTreeMap`; the native engine uses redb. Neither
-engine parses `.mw`, resolves schemas, distinguishes fields from indexes, owns
-catalog identity, or constructs Marrow physical keys.
+The in-memory engine uses `BTreeMap`; the native engine uses redb. The supported
+production saved-data backend is the native redb engine. The in-memory engine is
+for tests, development, REPLs, short runs, and conformance. It can exercise the
+same tree-cell contract, but it is not a production `^` durability profile.
+Neither engine parses `.mw`, resolves schemas, distinguishes fields from
+indexes, owns catalog identity, or constructs Marrow physical keys.
+
+Backend profiles may grow future residency, tiering, and durability fields, but
+those facts remain engine-profile facts. Source still declares `^` saved roots;
+a memory-resident or tiered durable backend does not get a separate source
+sigil.
 
 Physical tree-cell keys, prefix ranges, and ordered key byte codecs are private
 store substrate. Public callers provide typed IDs and key values; the store
@@ -61,7 +69,7 @@ excludes longer tuples such as `["a", false]`.
 ## Tree-Cell Operations
 
 `TreeStore` exposes the production storage operations. `TreeStore::memory()`
-uses the in-memory engine; `TreeStore::open(path)` and
+uses the in-memory development/test engine; `TreeStore::open(path)` and
 `TreeStore::open_read_only(path)` use the native redb engine.
 
 - `begin`, `commit`, and `rollback`;

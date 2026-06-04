@@ -35,6 +35,11 @@ process or configured session, but can be discarded without corrupting the
 application. If losing the data would corrupt the application, it belongs under
 `^`.
 
+`~` is not a way to ask for RAM. A future memory-resident durable store remains
+a `^` store. Compound root sigils such as `^~` or `~^` are not part of the
+model because they mix two different axes: semantic lifetime and physical
+residency.
+
 Ephemeral roots reuse resource shapes and ordinary checked reads, writes, and
 iteration, but they do not receive catalog identity, do not appear in portable
 backups, and are not data-evolved. A source, catalog, type, or build change
@@ -46,6 +51,9 @@ parsed-import buffers, precomputed models, analytics cubes, and hot read models.
 Future waves may add manual process-private roots, derived roots with
 `derives from` and `build`, and warm or project-shared caches. Those are future
 features, not v1 gates.
+
+If future ephemeral roots gain identity values, `Id(~root)` is scoped to the
+ephemeral lifetime and must not be storable in `^` data.
 
 ## Nested index arguments
 

@@ -31,7 +31,9 @@ The minimal valid file is just the required field:
 
 With this minimal file there is no default entry (you must pass `--entry` to
 `run`), the store is in-memory (nothing is persisted), and no tests are
-discovered. The accepted catalog path defaults to `marrow.catalog.json`.
+discovered. The accepted catalog path defaults to `marrow.catalog.json`. The
+implicit in-memory store is a development convenience, not a production
+saved-data backend.
 
 ## Fields
 
@@ -93,9 +95,13 @@ value does not print it.
 
 The storage selection. When `store` is omitted entirely, commands use an
 in-memory store: nothing is persisted, and each `run` or `test` starts empty.
+The supported production saved-data backend is the native redb store. The
+in-memory store is for tests, development, REPLs, and short runs where losing
+all data is acceptable.
 
 - `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
-  present (and may be omitted).
+  present (and may be omitted). This backend is not a production `^` durability
+  profile.
 
   ```json
   { "sourceRoots": ["src"], "store": { "backend": "memory" } }

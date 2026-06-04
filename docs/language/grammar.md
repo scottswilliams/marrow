@@ -515,4 +515,6 @@ These rules are part of the grammar contract:
 
 ADR 0209 reserves `~` source forms for future typed ephemeral roots. v0.1 rejects
 top-level `~roots`, `cache ~...`, `ensure ~...`, and identity types such as
-`Id(~scratch)`.
+`Id(~scratch)`. v0.1 also rejects compound root sigils such as `^~` and `~^`.
+Future RAM-resident durable stores remain `^` roots, while `~` is reserved for
+non-durable typed roots.

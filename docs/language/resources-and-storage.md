@@ -5,6 +5,12 @@ same shape can be used for local values, local keyed trees, or saved data.
 
 This page uses "saved data" for data marked with `^`. Saved data persists in
 the project database. Local data has no `^` and exists only while code runs.
+The `^` sigil is a semantic lifetime marker, not a promise that the bytes live
+on disk. The supported production saved-data backend is the native redb backend;
+the in-memory store is for tests, development, REPLs, and short runs. Future
+backends may choose different physical residency while still satisfying the
+backend contract; source remains `^`. Marrow does not use compound root sigils
+such as `^~` or `~^` for memory-resident durable stores.
 
 Ordinary application code declares stores for saved roots. Inspection, import,
 export, data evolution, repair, and restore tools operate through checked
