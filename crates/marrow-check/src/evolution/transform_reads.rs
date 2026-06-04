@@ -31,12 +31,11 @@ pub fn transform_read_members(
     reads
         .iter()
         .filter_map(|raw| {
-            let member = place
-                .root_members
-                .iter()
-                .find(|member| member.is_plain_field() && member.catalog_id == *raw)?;
+            let member = place.root_members.iter().find(|member| {
+                member.is_plain_field() && member.catalog_id.as_deref() == Some(raw.as_str())
+            })?;
             Some(TransformReadMember {
-                catalog_id: CatalogId::new(member.catalog_id.clone()).ok()?,
+                catalog_id: CatalogId::new(raw.clone()).ok()?,
                 name: member.name.clone(),
                 leaf: member.leaf.clone()?,
             })

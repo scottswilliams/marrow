@@ -15,7 +15,7 @@ const BACKUP_SCAN_PAGE: usize = 1024;
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const TREE_VALUE_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
-const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_0000000000000000".len();
+const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_00000000000000000000000000000000".len();
 const MIN_LENGTH_PREFIX_BYTES: usize = 4;
 const CHILD_SCAN_PAGE_LIMIT: usize = 128;
 
@@ -64,7 +64,7 @@ pub struct CommitMetadata {
     pub commit_id: u64,
     pub catalog_epoch: u64,
     pub layout_epoch: u64,
-    /// The analyzed-source digest the commit activated, in the `fnv1a64:<hex>` form the
+    /// The analyzed-source digest the commit activated, in the `sha256:<hex>` form the
     /// evolution witness records. It binds the schema shape (member types, identity key
     /// types, index uniqueness and columns) the store was last written against, so the
     /// activation fence can reject a structurally different schema even at the same
@@ -1846,8 +1846,8 @@ mod tests {
     /// at `begin`, so only a mid-plan fault proves the rollback covers committed writes.
     #[test]
     fn a_mid_transaction_write_fault_rolls_the_whole_bracket_back() {
-        let store_id = catalog("cat_0000000000000001");
-        let member = catalog("cat_0000000000000002");
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
         let path = [DataPathSegment::Member(member)];
         // The fault strikes on the second write, so the first data write lands in the
         // buffer before the bracket aborts.
@@ -1889,7 +1889,7 @@ mod tests {
 
     #[test]
     fn node_exists_reports_a_malformed_node_marker_as_corruption() {
-        let store_id = catalog("cat_0000000000000001");
+        let store_id = catalog("cat_00000000000000000000000000000001");
         let mut backend = MemStore::default();
         Backend::write(
             &mut backend,
@@ -1904,7 +1904,7 @@ mod tests {
 
     #[test]
     fn record_child_scans_report_malformed_child_keys_as_corruption() {
-        let store_id = catalog("cat_0000000000000001");
+        let store_id = catalog("cat_00000000000000000000000000000001");
         let mut backend = MemStore::default();
         let mut key = CellKey::record_prefix(&store_id, &[]).into_bytes();
         key.push(0xff);
@@ -1916,8 +1916,8 @@ mod tests {
 
     #[test]
     fn data_child_scans_report_malformed_key_segments_as_corruption() {
-        let store_id = catalog("cat_0000000000000001");
-        let member = catalog("cat_0000000000000002");
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
         let identity = [SavedKey::Int(1)];
         let path = [DataPathSegment::Member(member)];
         let mut backend = MemStore::default();
@@ -1940,10 +1940,12 @@ mod tests {
             commit_id: 7,
             catalog_epoch: 3,
             layout_epoch: 0,
-            source_digest: "fnv1a64:00000000deadbeef".to_string(),
+            source_digest:
+                "sha256:00000000000000000000000000000000000000000000000000000000deadbeef"
+                    .to_string(),
             engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
-            changed_root_catalog_ids: vec![catalog("cat_0000000000000001")],
-            changed_index_catalog_ids: vec![catalog("cat_0000000000000002")],
+            changed_root_catalog_ids: vec![catalog("cat_00000000000000000000000000000001")],
+            changed_index_catalog_ids: vec![catalog("cat_00000000000000000000000000000002")],
         };
 
         let store = TreeStore::memory();
@@ -1957,7 +1959,9 @@ mod tests {
         assert_eq!(read, metadata);
 
         let other = CommitMetadata {
-            source_digest: "fnv1a64:00000000cafef00d".to_string(),
+            source_digest:
+                "sha256:00000000000000000000000000000000000000000000000000000000cafef00d"
+                    .to_string(),
             ..metadata.clone()
         };
         assert_ne!(other, metadata, "a distinct source digest is not equal");
@@ -1968,7 +1972,7 @@ mod tests {
     /// this primitive, so it must reach each one once and invent none.
     #[test]
     fn for_each_record_visits_every_single_key_identity() {
-        let store_id = catalog("cat_0000000000000001");
+        let store_id = catalog("cat_00000000000000000000000000000001");
         let store = TreeStore::memory();
         for id in [3, 1, 2] {
             store
@@ -1999,7 +2003,7 @@ mod tests {
     /// two records to prove the descent enumerates every second-level child under it.
     #[test]
     fn for_each_record_visits_every_composite_key_identity() {
-        let store_id = catalog("cat_0000000000000001");
+        let store_id = catalog("cat_00000000000000000000000000000001");
         let store = TreeStore::memory();
         let identities = [
             vec![SavedKey::Str("fiction".into()), SavedKey::Int(2)],
@@ -2041,8 +2045,8 @@ mod tests {
 
     #[test]
     fn is_empty_distinguishes_a_fresh_store_from_a_populated_one() {
-        let store_id = catalog("cat_0000000000000001");
-        let member = catalog("cat_0000000000000002");
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
         let store = TreeStore::memory();
         assert!(store.is_empty().expect("is_empty"));
 
@@ -2063,9 +2067,9 @@ mod tests {
     /// because restore restamps them from the manifest.
     #[test]
     fn backup_cells_round_trip_and_exclude_index_and_meta() {
-        let store_id = catalog("cat_0000000000000001");
-        let title = catalog("cat_0000000000000002");
-        let index = catalog("cat_0000000000000003");
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let title = catalog("cat_00000000000000000000000000000002");
+        let index = catalog("cat_00000000000000000000000000000003");
         let path = [DataPathSegment::Member(title.clone())];
 
         let source = TreeStore::memory();
@@ -2144,8 +2148,8 @@ mod tests {
     /// the snapshot opens are invisible until it is released.
     #[test]
     fn read_snapshot_keeps_a_backup_traversal_coherent() {
-        let store_id = catalog("cat_0000000000000001");
-        let member = catalog("cat_0000000000000002");
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
         let path = [DataPathSegment::Member(member)];
         let store = TreeStore::memory();
         store

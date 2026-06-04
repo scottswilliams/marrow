@@ -76,13 +76,21 @@ pub(super) fn stage_index_rebuild(
         let Some(index) = place
             .indexes
             .iter()
-            .find(|index| index.catalog_id == catalog_id.as_str())
+            .find(|index| index.catalog_id.as_deref() == Some(catalog_id.as_str()))
         else {
             continue;
         };
         let index = index.clone();
         let index_id =
-            CatalogId::new(index.catalog_id.clone()).map_err(|_| StoreError::Corruption {
+            CatalogId::new(
+                index
+                    .catalog_id
+                    .clone()
+                    .ok_or_else(|| StoreError::Corruption {
+                        message: "evolution apply saw a missing index catalog id".to_string(),
+                    })?,
+            )
+            .map_err(|_| StoreError::Corruption {
                 message: "evolution apply saw an invalid index catalog id".to_string(),
             })?;
         steps.push(PlanStep::DeleteIndexSubtree {

@@ -6,7 +6,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 
 fn catalog_id(hex: &str) -> CatalogId {
-    CatalogId::new(format!("cat_{hex}")).unwrap()
+    CatalogId::new(format!("cat_{hex:0>32}")).unwrap()
 }
 
 #[test]

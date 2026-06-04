@@ -85,7 +85,8 @@ struct Seed<'a> {
 
 impl Seed<'_> {
     fn store_id(&self) -> CatalogId {
-        CatalogId::new(self.place.store_catalog_id.clone()).expect("store catalog id")
+        CatalogId::new(accepted_catalog_id(&self.place.store_catalog_id, "store"))
+            .expect("store catalog id")
     }
 
     fn record(&self, id: i64) {
@@ -113,25 +114,23 @@ impl Seed<'_> {
 }
 
 fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    place
+    let member = place
         .root_members
         .iter()
         .find(|member| {
             member.name == name && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         })
-        .unwrap_or_else(|| panic!("checked member `{name}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked member `{name}`"));
+    accepted_catalog_id(&member.catalog_id, name)
 }
 
 fn index_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    place
+    let index = place
         .indexes
         .iter()
         .find(|index| index.name == name)
-        .unwrap_or_else(|| panic!("checked index `{name}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked index `{name}`"));
+    accepted_catalog_id(&index.catalog_id, name)
 }
 
 fn group_member<'a>(place: &'a CheckedSavedPlace, group: &str) -> &'a CheckedSavedMember {
@@ -143,17 +142,21 @@ fn group_member<'a>(place: &'a CheckedSavedPlace, group: &str) -> &'a CheckedSav
 }
 
 fn group_member_catalog_id(place: &CheckedSavedPlace, group: &str) -> String {
-    group_member(place, group).catalog_id.clone()
+    accepted_catalog_id(&group_member(place, group).catalog_id, group)
 }
 
 fn nested_member_catalog_id(place: &CheckedSavedPlace, group: &str, leaf: &str) -> String {
-    group_member(place, group)
+    let member = group_member(place, group)
         .group_members
         .iter()
         .find(|member| member.name == leaf)
-        .unwrap_or_else(|| panic!("checked nested member `{group}.{leaf}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked nested member `{group}.{leaf}`"));
+    accepted_catalog_id(&member.catalog_id, leaf)
+}
+
+fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
+    id.clone()
+        .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
 }
 
 fn witness(program: &CheckedProgram, store: &TreeStore) -> EvolutionWitness {
@@ -226,7 +229,7 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
     assert_eq!(outcome.records_backfilled, 2);
     assert_eq!(outcome.catalog_epoch, target_epoch);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let pages_id = member_catalog_id(&place, "pages");
     let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
@@ -297,7 +300,7 @@ fn optional_add_stamps_epoch_without_data_step() {
     let outcome = apply(&witness, &program, &store, false, None).expect("apply");
     assert_eq!(outcome.records_backfilled, 0);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let subtitle_id = member_catalog_id(&place, "subtitle");
     assert_eq!(
         read_scalar(
@@ -462,7 +465,11 @@ fn dropped_index_apply_deletes_index_cells() {
     let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -559,7 +566,11 @@ fn explicit_index_retire_deletes_index_cells() {
     let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -650,7 +661,7 @@ fn destructive_retire_without_approval_aborts() {
         "expected ApprovalRequired, got {result:#?}"
     );
     // The subtitle data is still present: nothing was dropped.
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     assert!(
         store
             .data_subtree_exists(
@@ -680,7 +691,7 @@ fn destructive_retire_with_matching_approval_deletes() {
     let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.records_retired, 2);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     for id in [1, 2] {
         assert!(
             !store
@@ -714,7 +725,7 @@ fn destructive_retire_count_drift_aborts() {
         matches!(result, Err(ApplyError::ApprovalMismatch)),
         "expected ApprovalMismatch, got {result:#?}"
     );
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     assert!(
         store
             .data_subtree_exists(
@@ -797,7 +808,11 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
         "a per-id-wrong approval with a matching sum must be rejected, got {result:#?}"
     );
 
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     for member_id in [&subtitle_id, &notes_id] {
         assert!(
             store
@@ -842,7 +857,7 @@ fn destructive_retire_requires_maintenance() {
         matches!(result, Err(ApplyError::MaintenanceRequired)),
         "expected MaintenanceRequired, got {result:#?}"
     );
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     assert!(
         store
             .data_subtree_exists(
@@ -898,7 +913,7 @@ fn transform_computes_new_member_per_record_and_stamps() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.records_transformed, 2);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
     let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
@@ -1009,7 +1024,7 @@ fn transform_body_fault_aborts_byte_identical() {
     seed.member(1, "price", Scalar::Int(9_000_000_000));
     seed.member(1, "priceCents", Scalar::Int(0));
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
     let int = marrow_store::value::ScalarType::Int;
     let before = read_scalar(&store, &store_id, 1, &cents_id, int);
@@ -1072,7 +1087,7 @@ fn activatable_transform_with_total_body_applies() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.records_transformed, 1);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
     let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
@@ -1155,7 +1170,7 @@ fn transform_composes_with_default_and_retire() {
     assert_eq!(outcome.records_backfilled, 1);
     assert_eq!(outcome.records_retired, 1);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
     let currency_id = member_catalog_id(&place, "currency");
     let int = marrow_store::value::ScalarType::Int;
@@ -1214,7 +1229,8 @@ fn source_digest_drift_aborts() {
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
     let mut witness = witness(&program, &store);
-    witness.source_digest = "fnv1a64:0000000000000000".to_string();
+    witness.source_digest =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string();
     let result = apply(&witness, &program, &store, false, None);
     assert!(
         matches!(result, Err(ApplyError::Drift)),
@@ -1274,7 +1290,7 @@ fn transform_constant_drift_aborts_before_apply() {
     let changed_program = checked(&root);
     let result = apply(&witness, &changed_program, &store, false, None);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
     let int = marrow_store::value::ScalarType::Int;
     assert!(
@@ -1359,7 +1375,7 @@ fn transform_body_drift_aborts_before_apply() {
     );
     let result = apply(&witness, &changed_program, &store, false, None);
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
     let int = marrow_store::value::ScalarType::Int;
     assert!(
@@ -1497,7 +1513,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         seed.member(2, "title", Scalar::Str("Hyperion".into()));
     }
 
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let pages_id = member_catalog_id(&place, "pages");
     let int = marrow_store::value::ScalarType::Int;
 
@@ -1566,13 +1582,21 @@ fn nested_group_retire_fails_closed() {
     for id in [1, 2] {
         store
             .write_node(
-                &CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap(),
+                &CatalogId::new(accepted_catalog_id(
+                    &accepted_place.store_catalog_id,
+                    "store",
+                ))
+                .unwrap(),
                 &[SavedKey::Int(id)],
             )
             .expect("write node");
         store
             .write_data_value(
-                &CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap(),
+                &CatalogId::new(accepted_catalog_id(
+                    &accepted_place.store_catalog_id,
+                    "store",
+                ))
+                .unwrap(),
                 &[SavedKey::Int(id)],
                 &[
                     DataPathSegment::Member(CatalogId::new(meta_id.clone()).unwrap()),
@@ -1617,7 +1641,11 @@ fn nested_group_retire_fails_closed() {
     );
 
     // The nested cells are untouched and no stamp landed.
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     for id in [1, 2] {
         assert!(
             store
@@ -1890,7 +1918,7 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
         store.read_catalog_epoch().expect("epoch"),
         Some(accepted + 1)
     );
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let pages_id = member_catalog_id(&place, "pages");
     let int = marrow_store::value::ScalarType::Int;
     assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, int), None);
@@ -1911,7 +1939,7 @@ fn engine_profile_drift_fences_a_matching_epoch_store() {
         .expect("drifted profile");
     let error = fence(
         Some(2),
-        "fnv1a64:0000000000000002",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000002",
         &current_engine_profile(),
         &store,
     )
@@ -1929,7 +1957,7 @@ fn legacy_layout_epoch_drift_without_profile_digest_is_fenced() {
 
     let error = fence(
         Some(2),
-        "fnv1a64:0000000000000002",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000002",
         &current_engine_profile(),
         &store,
     )

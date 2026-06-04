@@ -199,7 +199,7 @@ pub struct ObligationVerdict {
 /// check->run boundary into apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolutionWitness {
-    /// A digest of the analyzed durable shape, in the existing `fnv1a64:<hex>` form.
+    /// A digest of the analyzed durable shape, in the `sha256:<hex>` form.
     /// This is the digest apply stamps and the activation-window fence enforces, so it
     /// excludes the transient evolve block; a consumed block is therefore deletable
     /// without reading as schema drift.

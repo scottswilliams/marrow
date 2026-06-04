@@ -67,19 +67,27 @@ fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
 }
 
 fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    place
+    let member = place
         .root_members
         .iter()
         .find(|member| {
             member.name == name && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         })
-        .unwrap_or_else(|| panic!("checked member `{name}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked member `{name}`"));
+    accepted_catalog_id(&member.catalog_id, name)
+}
+
+fn store_catalog_id(place: &CheckedSavedPlace) -> CatalogId {
+    CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).expect("store catalog id")
+}
+
+fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
+    id.clone()
+        .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
 }
 
 fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title: &str) {
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    let store_id = store_catalog_id(place);
     store
         .write_node(&store_id, &[SavedKey::Int(id)])
         .expect("write record");
@@ -95,7 +103,7 @@ fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title:
 }
 
 fn seed_member(store: &TreeStore, place: &CheckedSavedPlace, id: i64, member: &str, value: Scalar) {
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    let store_id = store_catalog_id(place);
     let member_id = CatalogId::new(member_catalog_id(place, member)).expect("member id");
     store
         .write_data_value(
@@ -114,7 +122,7 @@ fn read_scalar(
     member: &str,
     ty: ScalarType,
 ) -> Option<Scalar> {
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    let store_id = store_catalog_id(place);
     let member_id = CatalogId::new(member_catalog_id(place, member)).expect("member id");
     store
         .read_data_value(

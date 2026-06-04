@@ -1,9 +1,11 @@
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use marrow_check::{
     CHECK_BARE_MAYBE_PRESENT_READ, CHECK_CATALOG_INTENT, PresenceProofPlace, PresenceProofRead,
-    PresenceProofSource, StoreIndexKeySource, StoredValueMeaning, check_project,
+    PresenceProofSource, PresenceProofStatus, StoreIndexKeySource, StoredValueMeaning,
+    check_project,
 };
 use marrow_project::{
     CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata, parse_config,
@@ -47,12 +49,25 @@ fn entry(
     CatalogEntry {
         kind,
         path: canonical_path.to_string(),
-        stable_id: stable_id.to_string(),
+        stable_id: fixture_id(stable_id),
         aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
         lifecycle: CatalogLifecycle::Active,
         accepted_key_shape: None,
         accepted_struct: None,
     }
+}
+
+fn fixture_id(label: &str) -> String {
+    if label.starts_with("cat_") {
+        return label.to_string();
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    label.hash(&mut hasher);
+    let first = hasher.finish();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (label, "lane-13").hash(&mut hasher);
+    let second = hasher.finish();
+    format!("cat_{first:016x}{second:016x}")
 }
 
 fn write_catalog(root: &Path, metadata: &CatalogMetadata) {
@@ -89,8 +104,9 @@ fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {
     assert_eq!(proposal.epoch, 1);
     let module = program.facts.module_id("books").expect("books module");
     let resource = program.facts.resource_id(module, "Book").expect("Book");
-    assert!(
-        program.facts.resource(resource).catalog_id.is_empty(),
+    assert_eq!(
+        program.facts.resource(resource).catalog_id,
+        None,
         "unaccepted proposal IDs stay proposal-only"
     );
     assert!(
@@ -231,7 +247,7 @@ fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() 
         CatalogEntry {
             kind: CatalogEntryKind::EnumMember,
             path: "books::Status::archived".to_string(),
-            stable_id: "enum-member-archived".to_string(),
+            stable_id: fixture_id("enum-member-archived"),
             aliases: vec!["books::Status::inactive".to_string()],
             lifecycle: CatalogLifecycle::Deprecated,
             accepted_key_shape: None,
@@ -243,8 +259,79 @@ fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() 
     let parsed = CatalogMetadata::from_json(&json).expect("catalog parses");
 
     assert_eq!(parsed.epoch, 7);
+    assert!(
+        parsed.digest.starts_with("sha256:"),
+        "catalog digest must be collision-resistant: {}",
+        parsed.digest
+    );
+    assert_eq!("sha256:".len() + 64, parsed.digest.len());
     assert_eq!(parsed.digest, metadata.digest);
     assert_eq!(parsed.entries, metadata.entries);
+}
+
+#[test]
+fn accepted_catalog_round_trips_reserved_lifecycle() {
+    let metadata = catalog(vec![CatalogEntry {
+        lifecycle: CatalogLifecycle::Reserved,
+        ..entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::oldTitle",
+            "member-old-title",
+            &[],
+        )
+    }]);
+
+    let json = metadata.to_json_pretty();
+    assert!(json.contains("\"lifecycle\": \"reserved\""), "{json}");
+    let parsed = CatalogMetadata::from_json(&json).expect("catalog parses");
+
+    assert_eq!(parsed.entries[0].lifecycle, CatalogLifecycle::Reserved);
+}
+
+#[test]
+fn non_sha_catalog_digest_is_rejected() {
+    let metadata = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    let json = metadata.to_json_pretty().replacen(
+        &format!("\"digest\": \"{}\"", metadata.digest),
+        "\"digest\": \"weak:0000000000000000\"",
+        1,
+    );
+
+    let error = CatalogMetadata::from_json(&json).expect_err("non-SHA digest rejected");
+
+    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+}
+
+#[test]
+fn removed_catalog_lifecycle_is_rejected() {
+    let json = r#"{
+  "epoch": 7,
+  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "entries": [
+    {
+      "kind": "resource",
+      "path": "books::Book",
+      "stableId": "cat_00000000000000000000000000000001",
+      "aliases": [],
+      "lifecycle": "removed",
+      "acceptedKeyShape": null,
+      "acceptedStruct": null
+    }
+  ]
+}"#;
+
+    let error = CatalogMetadata::from_json(json).expect_err("removed lifecycle rejected");
+
+    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+    assert!(
+        error.message.contains("removed"),
+        "wrong rejection: {error:?}"
+    );
 }
 
 #[test]
@@ -257,11 +344,11 @@ fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
         );
         let metadata = catalog(vec![
             CatalogEntry {
-                lifecycle: CatalogLifecycle::Removed,
+                lifecycle: CatalogLifecycle::Reserved,
                 ..entry(
                     CatalogEntryKind::Resource,
-                    "books::Book",
-                    "removed-book",
+                    "books::ReservedBook",
+                    "reserved-book",
                     &["library::Book"],
                 )
             },
@@ -294,14 +381,105 @@ fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
     );
     let module = program.facts.module_id("library").expect("module");
     let resource = program.facts.resource_id(module, "Book").expect("resource");
-    assert!(program.facts.resource(resource).catalog_id.is_empty());
+    assert_eq!(program.facts.resource(resource).catalog_id, None);
     let proposal = program.catalog.proposal.expect("proposal");
     CatalogMetadata::from_json(&proposal.to_json_pretty()).expect("proposal validates");
 }
 
 #[test]
+fn reserved_catalog_path_blocks_source_reuse_without_intent() {
+    let root = temp_project("catalog-reserved-path", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            CatalogEntry {
+                lifecycle: CatalogLifecycle::Reserved,
+                ..entry(
+                    CatalogEntryKind::ResourceMember,
+                    "books::Book::title",
+                    "member-title-old",
+                    &[],
+                )
+            },
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT
+                && diagnostic.message.contains("reserved")),
+        "reserved path reuse must be diagnosed: {:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    let title_entries: Vec<_> = proposal
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .collect();
+    assert_eq!(1, title_entries.len(), "{:#?}", proposal.entries);
+    assert_eq!(CatalogLifecycle::Reserved, title_entries[0].lifecycle);
+}
+
+#[test]
+fn retire_reserves_the_path_spelling_against_future_reuse() {
+    let root = temp_project("catalog-retire-reserves-path", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   subtitle: string\n\
+             evolve\n\
+             \x20   retire Book.title\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program.catalog.proposal.expect("proposal");
+    let title = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .unwrap_or_else(|| panic!("proposal keeps retired title: {:#?}", proposal.entries));
+    assert_eq!(CatalogLifecycle::Reserved, title.lifecycle);
+    assert_eq!(fixture_id("member-title"), title.stable_id);
+}
+
+#[test]
 fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
-    let colliding_id = "cat_0f32222e2032f199";
+    let colliding_id = "cat_00000000000000000f32222e2032f199";
     let root = temp_project("catalog-proposal-id-collision", |root| {
         write(
             root,
@@ -427,7 +605,7 @@ fn accepted_catalog_alias_does_not_authorize_source_rollback() {
     );
     let module = program.facts.module_id("books").expect("module");
     let resource = program.facts.resource_id(module, "Book").expect("resource");
-    assert!(program.facts.resource(resource).catalog_id.is_empty());
+    assert_eq!(program.facts.resource(resource).catalog_id, None);
 }
 
 #[test]
@@ -467,7 +645,10 @@ fn accepted_catalog_rename_preserves_stable_id() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("library").expect("module");
     let resource = program.facts.resource_id(module, "Book").expect("resource");
-    assert_eq!(program.facts.resource(resource).catalog_id, "res-book");
+    assert_eq!(
+        program.facts.resource(resource).catalog_id.as_deref(),
+        Some(fixture_id("res-book").as_str())
+    );
 }
 
 #[test]
@@ -498,7 +679,7 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
             CatalogEntry {
                 kind: CatalogEntryKind::Enum,
                 path: "books::OldStatus".to_string(),
-                stable_id: "enum-old-status".to_string(),
+                stable_id: fixture_id("enum-old-status"),
                 aliases: vec!["books::Status".to_string()],
                 lifecycle: CatalogLifecycle::Deprecated,
                 accepted_key_shape: None,
@@ -529,7 +710,7 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
     let deprecated = proposal
         .entries
         .iter()
-        .find(|entry| entry.stable_id == "enum-old-status")
+        .find(|entry| entry.stable_id == fixture_id("enum-old-status"))
         .expect("deprecated entry");
     assert_eq!(deprecated.lifecycle, CatalogLifecycle::Deprecated);
     assert_eq!(deprecated.aliases, ["books::Status"]);
@@ -582,8 +763,14 @@ fn enum_member_facts_use_catalog_ids_independent_of_source_order() {
         .iter()
         .find(|member| member.enum_id == status && member.name == "archived")
         .expect("archived");
-    assert_eq!(active.catalog_id, "enum-member-active");
-    assert_eq!(archived.catalog_id, "enum-member-archived");
+    assert_eq!(
+        active.catalog_id.as_deref(),
+        Some(fixture_id("enum-member-active").as_str())
+    );
+    assert_eq!(
+        archived.catalog_id.as_deref(),
+        Some(fixture_id("enum-member-archived").as_str())
+    );
 }
 
 #[test]
@@ -652,7 +839,13 @@ fn enum_field_value_meaning_uses_catalog_member_identity_after_source_reorder() 
     };
     assert_eq!(*enum_id, status);
     let catalog_ids = sorted_enum_member_catalog_ids(&program.facts, members);
-    assert_eq!(catalog_ids, ["enum-member-active", "enum-member-archived"]);
+    assert_eq!(
+        catalog_ids,
+        [
+            fixture_id("enum-member-active"),
+            fixture_id("enum-member-archived")
+        ]
+    );
 }
 
 #[test]
@@ -740,7 +933,13 @@ fn enum_index_key_meaning_uses_catalog_member_identity_after_source_reorder() {
     };
     assert_eq!(*enum_id, status);
     let catalog_ids = sorted_enum_member_catalog_ids(&program.facts, members);
-    assert_eq!(catalog_ids, ["enum-member-active", "enum-member-archived"]);
+    assert_eq!(
+        catalog_ids,
+        [
+            fixture_id("enum-member-active"),
+            fixture_id("enum-member-archived")
+        ]
+    );
 }
 
 #[test]
@@ -812,6 +1011,7 @@ fn sorted_enum_member_catalog_ids(
                 .expect("enum member")
                 .catalog_id
                 .clone()
+                .expect("accepted enum member catalog id")
         })
         .collect();
     ids.sort();
@@ -1379,7 +1579,7 @@ fn next_coalesce_records_read_site_resolution() {
     assert!(matches!(next_proof.place, PresenceProofPlace::Saved(_)));
     assert_eq!(next_proof.keys.len(), 3);
     assert!(
-        !proof_sources.contains(&PresenceProofSource::AttachedDataPending),
+        !proof_sources.contains(&PresenceProofSource::AttachedData),
         "{proof_sources:#?}"
     );
 }
@@ -1411,6 +1611,33 @@ fn for_loop_over_saved_layer_narrows_iterated_entry_reads() {
             .any(|proof| proof.source == PresenceProofSource::Narrowing),
         "{:#?}",
         program.facts.presence_proofs()
+    );
+}
+
+#[test]
+fn unknown_cannot_reenter_a_saved_identity_keyspace() {
+    let root = temp_project("identity-unknown-keyspace", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             fn save(raw: unknown)\n\
+             \x20   ^books(raw).title = \"bad\"\n",
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_KEY_TYPE),
+        "unknown must not act as any for saved identity keys: {:#?}",
+        report.diagnostics
     );
 }
 
@@ -1648,7 +1875,7 @@ fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_source
         .map(|proof| proof.source)
         .collect();
     assert!(
-        proof_sources.contains(&PresenceProofSource::AttachedDataPending),
+        proof_sources.contains(&PresenceProofSource::AttachedData),
         "{proof_sources:#?}"
     );
     assert!(
@@ -1659,11 +1886,42 @@ fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_source
         proof_sources.contains(&PresenceProofSource::Narrowing),
         "{proof_sources:#?}"
     );
+    assert!(
+        program
+            .facts
+            .presence_proofs()
+            .iter()
+            .any(|proof| proof.status == PresenceProofStatus::PendingAttachedData),
+        "{:#?}",
+        program.facts.presence_proofs()
+    );
+    assert!(
+        program
+            .facts
+            .presence_proofs()
+            .iter()
+            .any(|proof| proof.status == PresenceProofStatus::Discharged),
+        "{:#?}",
+        program.facts.presence_proofs()
+    );
+    let mut proof_ids: Vec<_> = program
+        .facts
+        .presence_proofs()
+        .iter()
+        .map(|proof| proof.id)
+        .collect();
+    proof_ids.sort_by_key(|id| id.0);
+    proof_ids.dedup();
+    assert_eq!(
+        proof_ids.len(),
+        program.facts.presence_proofs().len(),
+        "presence proof ids must be unique"
+    );
     for proof in program.facts.presence_proofs() {
         match proof.source {
             PresenceProofSource::Declaration
             | PresenceProofSource::Narrowing
-            | PresenceProofSource::AttachedDataPending => {}
+            | PresenceProofSource::AttachedData => {}
         }
     }
 }
@@ -1713,7 +1971,7 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
             entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::subtitle"
         })
         .expect("renamed member entry");
-    assert_eq!(renamed.stable_id, "member-title");
+    assert_eq!(renamed.stable_id, fixture_id("member-title"));
     assert_eq!(renamed.lifecycle, CatalogLifecycle::Active);
     assert!(
         renamed
@@ -1770,10 +2028,10 @@ fn source_member_rename_without_evolve_intent_still_fails_closed() {
 }
 
 #[test]
-fn evolve_retire_marks_the_proposal_entry_removed() {
+fn evolve_retire_marks_the_proposal_entry_reserved() {
     let root = temp_project("evolve-retire", |root| {
         // The source has dropped `subtitle`; the accepted catalog still records it.
-        // `retire` declares the destructive intent that authorizes its removal.
+        // `retire` declares the destructive intent while reserving the old spelling.
         write(
             root,
             "src/books.mw",
@@ -1811,10 +2069,11 @@ fn evolve_retire_marks_the_proposal_entry_removed() {
         .entries
         .iter()
         .find(|entry| {
-            entry.kind == CatalogEntryKind::ResourceMember && entry.stable_id == "member-subtitle"
+            entry.kind == CatalogEntryKind::ResourceMember
+                && entry.stable_id == fixture_id("member-subtitle")
         })
         .expect("retired member entry");
-    assert_eq!(retired.lifecycle, CatalogLifecycle::Removed);
+    assert_eq!(retired.lifecycle, CatalogLifecycle::Reserved);
 }
 
 #[test]
@@ -1822,7 +2081,7 @@ fn evolve_retire_of_a_still_declared_resource_member_fails_closed() {
     // The source still declares `Book.title` while `retire` names it. A retire is a
     // destructive drop of data the running program still reads and writes, so it
     // must be rejected until the source declaration is actually gone; the proposal
-    // entry must stay Active rather than be silently marked Removed.
+    // entry must stay Active rather than be silently reserved.
     let root = temp_project("evolve-retire-member-still-declared", |root| {
         write(
             root,
@@ -1857,7 +2116,7 @@ fn evolve_retire_of_a_still_declared_resource_member_fails_closed() {
         "retiring a still-declared resource member must fail closed: {:#?}",
         report.diagnostics
     );
-    assert_entry_not_removed(&program, "member-title");
+    assert_entry_stays_active(&program, "member-title");
 }
 
 #[test]
@@ -1899,7 +2158,7 @@ fn evolve_retire_of_a_still_declared_saved_root_fails_closed() {
         "retiring a still-declared saved root must fail closed: {:#?}",
         report.diagnostics
     );
-    assert_entry_not_removed(&program, "store-books");
+    assert_entry_stays_active(&program, "store-books");
 }
 
 #[test]
@@ -1948,26 +2207,26 @@ fn evolve_retire_of_a_still_declared_store_index_fails_closed() {
         "retiring a still-declared store index must fail closed: {:#?}",
         report.diagnostics
     );
-    assert_entry_not_removed(&program, "index-by-title");
+    assert_entry_stays_active(&program, "index-by-title");
 }
 
-/// A rejected retire must never mark its target Removed. The target keeps its
+/// A rejected retire must never reserve its target. The target keeps its
 /// accepted lifecycle: when the binding produced a proposal the entry is Active
 /// there, and when nothing else changed no proposal is emitted at all, so the
 /// accepted catalog (which had the entry Active) stands unchanged.
-fn assert_entry_not_removed(program: &marrow_check::CheckedProgram, stable_id: &str) {
+fn assert_entry_stays_active(program: &marrow_check::CheckedProgram, stable_id: &str) {
     let Some(proposal) = &program.catalog.proposal else {
         return;
     };
     let entry = proposal
         .entries
         .iter()
-        .find(|entry| entry.stable_id == stable_id)
+        .find(|entry| entry.stable_id == fixture_id(stable_id))
         .expect("proposal must keep the retire target entry");
     assert_eq!(
         entry.lifecycle,
         CatalogLifecycle::Active,
-        "a retire the source still declares must not mark the entry Removed: {entry:#?}"
+        "a retire the source still declares must not reserve the entry: {entry:#?}"
     );
 }
 
@@ -2097,7 +2356,10 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
         .facts
         .resource_members()
         .iter()
-        .filter(|member| member.resource == resource && member.catalog_id == "member-a")
+        .filter(|member| {
+            member.resource == resource
+                && member.catalog_id.as_deref() == Some(fixture_id("member-a").as_str())
+        })
         .map(|member| member.name.as_str())
         .collect();
     assert!(
@@ -2269,16 +2531,16 @@ fn evolve_default_value_type_mismatch_is_diagnosed() {
     );
 }
 
-/// The legacy `cat_<fnv1a64(kind:path)>` derivation. New ids must not be this, so
-/// the identity a member receives never depends on its source path.
-fn legacy_path_hash(kind: CatalogEntryKind, path: &str) -> String {
-    let payload = format!("{kind:?}:{path}");
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in payload.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("cat_{hash:016x}")
+/// A plausible deterministic 128-bit path-derived id. Proposed ids must not match
+/// this shape-derived value; source spelling is not durable identity.
+fn path_derived_128_id(kind: CatalogEntryKind, path: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (kind, path, "path-derived-a").hash(&mut hasher);
+    let first = hasher.finish();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (kind, path, "path-derived-b").hash(&mut hasher);
+    let second = hasher.finish();
+    format!("cat_{first:016x}{second:016x}")
 }
 
 fn proposed_id_for_path(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) -> String {
@@ -2313,12 +2575,77 @@ fn proposed_ids_are_not_derived_from_the_member_path() {
     let proposal = program.catalog.proposal.expect("proposal");
     for path in ["books::Book::title", "books::Book::subtitle"] {
         let proposed = proposed_id_for_path(&proposal, CatalogEntryKind::ResourceMember, path);
-        let derived = legacy_path_hash(CatalogEntryKind::ResourceMember, path);
+        let derived = path_derived_128_id(CatalogEntryKind::ResourceMember, path);
         assert_ne!(
             proposed, derived,
             "id for {path} must not be a hash of its path"
         );
     }
+}
+
+#[test]
+fn proposed_ids_use_128_bit_random_shape() {
+    let root = temp_project("catalog-id-128-bit", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program.catalog.proposal.expect("proposal");
+    for entry in &proposal.entries {
+        let Some(hex) = entry.stable_id.strip_prefix("cat_") else {
+            panic!("stable id must use cat_ prefix: {}", entry.stable_id);
+        };
+        assert_eq!(
+            32,
+            hex.len(),
+            "catalog stable ids must carry 128 random bits: {}",
+            entry.stable_id
+        );
+        assert!(
+            hex.bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "catalog stable ids must be lowercase hex: {}",
+            entry.stable_id
+        );
+    }
+}
+
+#[test]
+fn parallel_catalog_additions_merge_without_regenerating_ids() {
+    let branch_a_id = "cat_11111111111111111111111111111111";
+    let branch_b_id = "cat_22222222222222222222222222222222";
+    let metadata = CatalogMetadata::new(
+        9,
+        vec![
+            entry(
+                CatalogEntryKind::Resource,
+                "branch_a::Book",
+                branch_a_id,
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::Resource,
+                "branch_b::Magazine",
+                branch_b_id,
+                &[],
+            ),
+        ],
+    );
+
+    let parsed = CatalogMetadata::from_json(&metadata.to_json_pretty()).expect("catalog parses");
+
+    assert_eq!(parsed.entries[0].stable_id, branch_a_id);
+    assert_eq!(parsed.entries[1].stable_id, branch_b_id);
+    assert!(parsed.digest.starts_with("sha256:"));
 }
 
 #[test]
@@ -2341,7 +2668,7 @@ fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
             entry(
                 CatalogEntryKind::ResourceMember,
                 "books::Book::title",
-                "cat_00000000000000ff",
+                "cat_000000000000000000000000000000ff",
                 &[],
             ),
         ]);
@@ -2366,7 +2693,7 @@ fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
         "books::Book::subtitle",
     );
     assert_eq!(
-        renamed, "cat_00000000000000ff",
+        renamed, "cat_000000000000000000000000000000ff",
         "the rename must keep the stored id, not derive a new one for the new path"
     );
 }
@@ -2416,7 +2743,8 @@ fn committed_ids_are_stable_across_rechecks() {
     let resource = program.facts.resource_id(module, "Book").expect("Book");
     let bound = program.facts.resource(resource).catalog_id.clone();
     assert_eq!(
-        bound, frozen,
+        bound.as_deref(),
+        Some(frozen.as_str()),
         "a committed id must survive a re-check unchanged"
     );
 }

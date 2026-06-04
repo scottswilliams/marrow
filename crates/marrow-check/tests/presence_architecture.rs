@@ -65,3 +65,70 @@ fn presence_walkers_delegate_proof_and_write_effect_owners() {
         );
     }
 }
+
+#[test]
+fn presence_facts_expose_proof_id_and_status() {
+    let facts = include_str!("../src/facts.rs");
+    let proofs = include_str!("../src/presence/proofs.rs");
+
+    assert!(
+        facts.contains("pub struct PresenceProofId"),
+        "presence ledger facts must expose a typed proof id"
+    );
+    assert!(
+        facts.contains("pub status: PresenceProofStatus"),
+        "presence ledger facts must expose discharged/pending status separately from source"
+    );
+    assert!(
+        facts.contains("PendingAttachedData") && facts.contains("Discharged"),
+        "presence proof status must distinguish pending attached-data obligations"
+    );
+    assert!(
+        !facts.contains("AttachedDataPending"),
+        "pending status must not be encoded as a proof source variant"
+    );
+    assert!(
+        proofs.contains("PresenceProofStatus::PendingAttachedData")
+            && proofs.contains("PresenceProofStatus::Discharged"),
+        "presence::proofs must assign proof status at the ledger owner"
+    );
+}
+
+#[test]
+fn catalog_ids_are_typed_optional_facts_not_empty_sentinels() {
+    let facts = include_str!("../src/facts.rs");
+    let place = include_str!("../src/executable/place.rs");
+
+    assert!(
+        facts.contains("pub catalog_id: Option<String>"),
+        "checked facts must use typed optional catalog ids for proposal-only identities"
+    );
+    let catalog_id_helper = facts
+        .split("fn catalog_id(")
+        .nth(1)
+        .and_then(|rest| rest.split("fn resource_member_name_path").next())
+        .expect("catalog_id helper");
+    assert!(
+        !catalog_id_helper.contains("unwrap_or_default()"),
+        "catalog id binding must not encode missing ids as empty strings"
+    );
+    assert!(
+        !place.contains("catalog_id: String::new()"),
+        "saved-place construction must not use an empty catalog-id sentinel"
+    );
+}
+
+#[test]
+fn enum_source_order_helpers_are_private_and_non_durable() {
+    let facts = include_str!("../src/facts.rs");
+
+    assert!(
+        !facts.contains("pub fn enum_member_by_ordinal")
+            && !facts.contains("pub fn enum_member_ordinal"),
+        "enum source-order helpers must not be public durable APIs"
+    );
+    assert!(
+        facts.contains("pub(crate) fn enum_member_by_source_order"),
+        "internal enum helper names must say source order, not durable ordinal"
+    );
+}

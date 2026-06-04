@@ -830,21 +830,6 @@ fn split_store_applies_saved_field_schema_rules() {
 }
 
 #[test]
-fn legacy_resource_identity_type_is_rejected_as_a_saved_field() {
-    let errors = check_module(
-        "legacy-id-saved-field",
-        "module m\n\
-         resource Book\n\
-         \x20   title: string\n\
-         \x20   legacy: Book::Id\n\
-         store ^books(id: int): Book\n",
-        "schema.non_enum_named_field",
-    );
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("legacy"));
-}
-
-#[test]
 fn rejects_an_enum_typed_identity_key() {
     // A key must be an orderable scalar. An enum names no scalar, so accepting it
     // as an identity key lets a raw string or int settle silently into the
@@ -2739,20 +2724,6 @@ fn a_resource_constructor_is_not_an_unresolved_call() {
 }
 
 #[test]
-fn legacy_identity_constructor_is_an_unresolved_call() {
-    // `Book::Id(1)` is legacy syntax. Store identity values come from saved-root
-    // operations such as `nextId(^books)`.
-    let found = check_module(
-        "ctor-identity",
-        "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn caller()\n    const id = Book::Id(1)\n",
-        "check.unresolved_call",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
 fn a_resource_constructor_checks_field_arguments() {
     let found = check_module(
         "ctor-field-type",
@@ -3975,8 +3946,8 @@ fn an_unannotated_module_const_is_inferred_and_a_matching_use_is_not_flagged() {
 
 #[test]
 fn an_unannotated_module_const_mismatch_is_caught() {
-    // `const M = 5` is `int`; storing it into a `string` place is a real mismatch
-    // that was previously missed because the const typed to Unknown.
+    // `const M = 5` is `int`; storing it into a `string` place is a real
+    // mismatch.
     let found = check_module(
         "module-const-mismatch",
         "module m\nconst M = 5\nfn f()\n    var x: string = M\n",
@@ -4035,10 +4006,7 @@ fn an_in_range_decimal_literal_is_not_flagged() {
 
 #[test]
 fn an_over_range_module_const_literal_is_flagged_at_check_time() {
-    // A module-level `const` initializer is range-checked like a local one. The
-    // diagnostic previously fired only during scope-building type inference, whose
-    // diagnostics are discarded, so an out-of-range module constant slipped past
-    // `marrow check` and was caught only at runtime.
+    // A module-level `const` initializer is range-checked like a local one.
     let found = check_module(
         "module-const-literal-overflow",
         "module m\nconst BIG: int = 99999999999999999999999999\n",
@@ -4249,31 +4217,6 @@ fn multiple_stores_over_one_resource_keep_distinct_identities() {
     assert!(
         with_code(&report, "check.untyped_value").is_empty(),
         "`nextId` over each declared store must be typed: {:#?}",
-        report.diagnostics
-    );
-}
-
-#[test]
-fn legacy_resource_id_is_not_a_common_identity_for_multiple_stores() {
-    let report = check_module_report(
-        "two-stores-one-resource-legacy-id",
-        "module m\n\
-         resource Book\n    title: string\n\
-         store ^books(id: int): Book\n\
-         store ^archivedBooks(id: int): Book\n\n\
-         fn read(id: Book::Id): string\n    return ^books(id).title\n\
-         fn archive()\n    ^archivedBooks(Book::Id(1)).title = \"archived\"\n",
-    );
-    assert_eq!(
-        with_code(&report, "check.unknown_type").len(),
-        1,
-        "{:#?}",
-        report.diagnostics
-    );
-    assert_eq!(
-        with_code(&report, "check.unresolved_call").len(),
-        1,
-        "{:#?}",
         report.diagnostics
     );
 }

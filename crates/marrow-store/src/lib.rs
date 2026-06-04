@@ -2,7 +2,7 @@
 //!
 //! This crate defines Marrow's typed tree-cell storage contract and the private
 //! ordered-byte engines that back it. It sits below language facts: it does not
-//! parse `.mw`, resolve schemas, or decide source-name identity.
+//! parse `.mw`, resolve schemas, or assign language identity.
 //!
 //! Tree-cell keys ([`cell`]) derive from stable catalog IDs and typed key values.
 

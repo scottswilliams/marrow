@@ -339,13 +339,12 @@ store is a `check.key_type`, as is a wrong-typed key of a composite identity.
 At run time the key scalar type and arity are enforced before any store write: a
 key whose scalar kind or count does not match the declared keyspace faults
 (`run.type`) rather than reaching the store, and `marrow data integrity` reports
-an already-stored key of the wrong scalar type as `data.key_type`. One case is
-not distinguished at run time: an identity reused through a dynamically typed
-(`unknown`) value that has the same scalar shape as the target keyspace — for
-example an `Id(^magazines)` whose key is a single `int`, the same shape `^books`
-uses. The value level does not carry the store root an identity belongs to, so a
-same-shape foreign identity passes the runtime scalar check. This is caught
-statically whenever the identity is statically typed.
+an already-stored key of the wrong scalar type as `data.key_type`. Composite
+identity values carry their checked store root at run time, including
+single-key identities, so a same-shaped foreign identity cannot be spliced into
+another root or stored in an identity field. Raw scalar keys are accepted only as
+explicit key arguments to a saved path; they are not `Id(^store)` values at
+dynamic, host, or unknown boundaries.
 
 Marrow provides default `nextId` allocation for a single `int` identity key.
 Other identity shapes are application-provided.

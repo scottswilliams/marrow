@@ -937,27 +937,6 @@ resource Book at ^books(id: int)
 }
 
 #[test]
-fn rejects_source_identity_annotations() {
-    let parsed = parse_source(
-        r#"module shelf::books
-
-resource Book at ^books(id: int)
-    @id("book.title")
-    required title: string
-"#,
-    );
-
-    assert!(parsed.has_errors());
-    assert!(
-        parsed.diagnostics.iter().any(|d| {
-            d.code == "parse.syntax" && d.message.contains("expected resource member name")
-        }),
-        "{:#?}",
-        parsed.diagnostics
-    );
-}
-
-#[test]
 fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     let parsed = parse_source("module app\n\tpub fn main()\n");
 

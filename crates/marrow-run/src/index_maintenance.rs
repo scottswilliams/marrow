@@ -292,7 +292,7 @@ fn index_address(
     keys: Vec<SavedKey>,
     span: SourceSpan,
 ) -> Result<IndexAddress, WriteError> {
-    IndexAddress::new(&index.catalog_id, keys, span).map_err(runtime_store_error)
+    IndexAddress::from_checked(&index.catalog_id, keys, span).map_err(runtime_store_error)
 }
 
 fn index_entry_value(unique: bool, identity: &[SavedKey]) -> Vec<u8> {
@@ -313,7 +313,7 @@ fn check_unique_conflict(
     let Some(new_keys) = new_keys else {
         return Ok(());
     };
-    let address = IndexAddress::new(&index.catalog_id, new_keys.to_vec(), span)
+    let address = IndexAddress::from_checked(&index.catalog_id, new_keys.to_vec(), span)
         .map_err(runtime_store_error)?;
     let page = store
         .scan_index_tuple(&address.index, &address.keys, 2)

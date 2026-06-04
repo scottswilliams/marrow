@@ -95,7 +95,7 @@ fn write_layer_leaf(input: LayerLeafWrite<'_>, env: &mut Env<'_>) -> Result<(), 
         .layers
         .last()
         .map_or(&[][..], |layer| layer.key_params.as_slice());
-    let layer_keys = lower_keys(keys, span, false, expected, env)?;
+    let layer_keys = lower_keys(keys, span, false, None, expected, env)?;
     let mut layers = parent_addresses.to_vec();
     let Some(layer_facts) = place.layers.last() else {
         return Err(unsupported("assigning this saved path", span));
@@ -125,17 +125,20 @@ struct LeafPlanInput<'a> {
 fn layer_leaf_plan(
     input: LeafPlanInput<'_>,
 ) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
-    match input.leaf {
-        StoreLeafKind::Identity { arity, .. } => identity_layer_leaf_plan(input, arity),
+    match input.leaf.clone() {
+        StoreLeafKind::Identity { store_root, arity } => {
+            identity_layer_leaf_plan(input, &store_root, arity)
+        }
         StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => scalar_layer_leaf_plan(input),
     }
 }
 
 fn identity_layer_leaf_plan(
     input: LeafPlanInput<'_>,
+    store_root: &str,
     arity: usize,
 ) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
-    let identity_keys = identity_keys_of(input.value, input.span)?;
+    let identity_keys = identity_keys_of(input.value, store_root, input.span)?;
     if input.layers.len() == 1 {
         return Ok(plan_layer_identity_leaf_write(
             input.place,
@@ -200,7 +203,7 @@ fn write_direct_group_entry(
         return Err(unsupported("assigning this saved path", span));
     };
     let expected = layer_facts.key_params.as_slice();
-    let layer_keys = lower_keys(keys, span, false, expected, env)?;
+    let layer_keys = lower_keys(keys, span, false, None, expected, env)?;
     let value = resource_value_of(&layer_facts.members, fields, span)?;
     let layer_address = LayerAddress::from_checked(layer_facts, layer_keys.clone());
     let created_required_paths = created_required_paths_for_value(

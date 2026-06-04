@@ -9,9 +9,14 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{SavedValue, encode_value};
 
 pub(crate) fn checked_catalog_id(
-    raw: &str,
+    raw: &Option<String>,
     context: &'static str,
 ) -> Result<CatalogId, StoreError> {
+    let Some(raw) = raw.as_deref() else {
+        return Err(StoreError::Corruption {
+            message: format!("checked {context} catalog id is missing"),
+        });
+    };
     CatalogId::new(raw.to_string()).map_err(|_| StoreError::Corruption {
         message: format!("checked {context} catalog id is malformed"),
     })

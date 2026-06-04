@@ -77,7 +77,7 @@ pub(crate) fn discharge(
             .catalog
             .evolve_transforms
             .iter()
-            .map(|transform| transform.catalog_id.clone())
+            .filter_map(|transform| transform.catalog_id.clone())
             .collect(),
         renamed_member_ids(program),
         accepted_member_leaves(program),
@@ -100,7 +100,7 @@ pub(crate) fn discharge(
         // A store whose catalog id is unbound has not been accepted, so it addresses
         // no durable snapshot to discharge against. Its members carry no obligation
         // until the proposal is accepted and their ids are minted.
-        if place.store_catalog_id.is_empty() {
+        if place.store_catalog_id.is_none() {
             continue;
         }
         // An identity-key shape change orphans every record addressed by the old key
@@ -125,7 +125,7 @@ pub(crate) fn discharge(
         let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
             continue;
         };
-        if place.store_catalog_id.is_empty() {
+        if place.store_catalog_id.is_none() {
             continue;
         }
         classify_structural_backstop(program, store, &place, &mut acc)?;
@@ -151,16 +151,16 @@ fn discharge_transforms(
     for transform in &program.catalog.evolve_transforms {
         // An unbound transform (no accepted catalog yet) addresses no snapshot, the
         // same way an unaccepted store does; its purity was still checked at lowering.
-        if transform.catalog_id.is_empty() {
+        let Some(target_raw_id) = transform.catalog_id.as_deref() else {
             continue;
-        }
+        };
         let Some(place) = transform_place(program, transform) else {
             continue;
         };
-        if place.store_catalog_id.is_empty() {
+        if place.store_catalog_id.is_none() {
             continue;
         }
-        let target_id = catalog_id(&transform.catalog_id)?;
+        let target_id = catalog_id(target_raw_id)?;
         let reads = transform_read_members(&place, &transform.reads);
         let read_ids: Vec<CatalogId> = reads.iter().map(|read| read.catalog_id.clone()).collect();
         // One pass over the place proves decodability and counts the records, the way
@@ -232,7 +232,7 @@ fn scan_transform_records(
     reads: &[TransformReadMember],
     enum_members: &EnumMembers,
 ) -> Result<TransformScan, StoreError> {
-    let store_id = catalog_id(&place.store_catalog_id)?;
+    let store_id = required_catalog_id(&place.store_catalog_id)?;
     let mut records = 0usize;
     let mut undecodable = None;
     store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
@@ -271,13 +271,16 @@ impl EnumMembers {
     fn collect(program: &CheckedProgram) -> Self {
         let mut by_enum: HashMap<crate::facts::EnumId, HashSet<String>> = HashMap::new();
         for member in program.facts.enum_members() {
-            if member.catalog_id.is_empty() || !program.facts.enum_member_is_selectable(member.id) {
+            let Some(catalog_id) = member.catalog_id.as_deref() else {
+                continue;
+            };
+            if !program.facts.enum_member_is_selectable(member.id) {
                 continue;
             }
             by_enum
                 .entry(member.enum_id)
                 .or_default()
-                .insert(member.catalog_id.clone());
+                .insert(catalog_id.to_string());
         }
         Self { by_enum }
     }
@@ -321,8 +324,12 @@ impl ShrunkEnums {
             .facts
             .enums()
             .iter()
-            .filter(|enum_fact| !enum_fact.catalog_id.is_empty())
-            .map(|enum_fact| (enum_fact.catalog_id.as_str(), enum_fact.id))
+            .filter_map(|enum_fact| {
+                enum_fact
+                    .catalog_id
+                    .as_deref()
+                    .map(|catalog_id| (catalog_id, enum_fact.id))
+            })
             .collect();
         let mut enums = HashSet::new();
         for (enum_catalog_id, accepted_ids) in accepted_selectable_enum_members(program) {
@@ -517,8 +524,8 @@ fn accepted_member_structs(program: &CheckedProgram) -> HashMap<String, String> 
 
 /// The proposal-minted stable id of each brand-new resource member, keyed by its
 /// module-qualified catalog path. A member current source adds but the accepted catalog does
-/// not yet carry has no bound facts id, so its checked place carries an empty `catalog_id` and
-/// the presence scan cannot reach it by id alone. Its identity lives only in the proposal, so
+/// not yet carry has no bound facts id, so its checked place carries no catalog id and the
+/// presence scan cannot reach it by id alone. Its identity lives only in the proposal, so
 /// discharge resolves it here by source path: a brand-new required member is then presence-
 /// scanned against existing records, failing closed when they lack it and no default covers it
 /// (the add-required-field obligation). A member whose stable id is already in the accepted
@@ -577,20 +584,19 @@ fn classify_store_key_shape(
     accepted_key_shapes: &HashMap<String, String>,
     acc: &mut Accumulator,
 ) -> Result<bool, StoreError> {
-    let Some(accepted) = accepted_key_shapes.get(&place.store_catalog_id) else {
+    let Some(store_raw_id) = place.store_catalog_id.as_deref() else {
         return Ok(false);
     };
-    let Some(declared) = program
-        .catalog
-        .declared_store_key_shapes
-        .get(&place.store_catalog_id)
-    else {
+    let Some(accepted) = accepted_key_shapes.get(store_raw_id) else {
+        return Ok(false);
+    };
+    let Some(declared) = program.catalog.declared_store_key_shapes.get(store_raw_id) else {
         return Ok(false);
     };
     if accepted == declared {
         return Ok(false);
     }
-    let store_id = catalog_id(&place.store_catalog_id)?;
+    let store_id = catalog_id(store_raw_id)?;
     acc.diagnostic(
         store_id.clone(),
         format!(
@@ -661,7 +667,7 @@ fn classify_structural_backstop(
     if candidates.is_empty() {
         return Ok(());
     }
-    let store_id = catalog_id(&place.store_catalog_id)?;
+    let store_id = required_catalog_id(&place.store_catalog_id)?;
     let mut populated = vec![false; candidates.len()];
     store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
         for (candidate, present) in candidates.iter().zip(populated.iter_mut()) {
@@ -861,7 +867,7 @@ fn discharge_root(
     enum_members: &EnumMembers,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
-    let store_id = catalog_id(&place.store_catalog_id)?;
+    let store_id = required_catalog_id(&place.store_catalog_id)?;
     let leaves = required_leaf_obligations(place, resource_path, acc)?;
     let UniqueIndexPlan {
         probes: unique_indexes,
@@ -994,7 +1000,7 @@ fn collect_required_leaves(
         let mut member_names = names.to_vec();
         member_names.push(member.name.as_str());
         // A brand-new member current source adds has no bound facts id, so its checked
-        // `catalog_id` is empty; resolve its proposal-minted id by source path so a new
+        // catalog id is absent; resolve its proposal-minted id by source path so a new
         // required member is still presence-scanned against existing records. A member with
         // neither a bound id nor a proposal id (a pending first-run identity with no proposal)
         // anchors no obligation.
@@ -1076,8 +1082,8 @@ fn resolved_member_id(
     names: &[&str],
     new_members: &HashMap<String, String>,
 ) -> Option<String> {
-    if !member.catalog_id.is_empty() {
-        return Some(member.catalog_id.clone());
+    if let Some(catalog_id) = &member.catalog_id {
+        return Some(catalog_id.clone());
     }
     let source_path = format!("{resource_path}::{}", names.join("::"));
     new_members.get(&source_path).cloned()
@@ -1272,7 +1278,7 @@ fn discharge_keyed_layers(
     let (flat_retyped, per_entry): (Vec<_>, Vec<_>) = obligations
         .into_iter()
         .partition(|leaf| leaf.retyped && !leaf.path.is_empty());
-    let store_id = catalog_id(&place.store_catalog_id)?;
+    let store_id = required_catalog_id(&place.store_catalog_id)?;
     let mut scan = KeyedScan {
         store,
         store_id: &store_id,
@@ -1739,10 +1745,10 @@ fn unique_index_plan(place: &CheckedSavedPlace) -> Result<UniqueIndexPlan, Store
         }
         match index_key_columns(place, index)? {
             Some(columns) => probes.push(UniqueIndexProbe {
-                catalog_id: catalog_id(&index.catalog_id)?,
+                catalog_id: required_catalog_id(&index.catalog_id)?,
                 columns,
             }),
-            None => unprobeable.push(catalog_id(&index.catalog_id)?),
+            None => unprobeable.push(required_catalog_id(&index.catalog_id)?),
         }
     }
     Ok(UniqueIndexPlan {
@@ -1783,7 +1789,7 @@ fn index_key_columns(
                     return Ok(None);
                 };
                 columns.push(IndexKeyColumn::Member {
-                    path: DataPathSegment::Member(catalog_id(&member.catalog_id)?),
+                    path: DataPathSegment::Member(required_catalog_id(&member.catalog_id)?),
                     meaning: key.value_meaning.clone(),
                 });
             }
@@ -1860,7 +1866,7 @@ fn classify_indexes(
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     for index in &place.indexes {
-        let index_id = catalog_id(&index.catalog_id)?;
+        let index_id = required_catalog_id(&index.catalog_id)?;
         let colliding = collisions
             .get(&index_id)
             .map(|state| state.collisions.len())
@@ -1896,14 +1902,14 @@ fn classify_indexes(
     Ok(())
 }
 
-/// Classify the accepted catalog entries current source no longer declares. A retire
-/// intent marks the proposal entry `Removed`: dropping populated data is a
-/// destructive decision that names the exact catalog id and count. A source-dropped
-/// index deletes its derived cell subtree on apply. A member source merely stopped
-/// declaring, with no retire and no dependent, is a dependency-free sparse-field drop:
-/// a legal no-op whose data lingers. A dropped member an active index still reads
-/// cannot be silently dropped; it needs an explicit retire intent that also removes or
-/// rebinds the index.
+/// Classify accepted catalog entries current source no longer declares. A retire
+/// intent reserves the proposal entry's spelling and is still a destructive decision
+/// when it transitions from an accepted active entry: the witness names the exact
+/// catalog id and count. A source-dropped index deletes its derived cell subtree on
+/// apply. A member source merely stopped declaring, with no retire and no dependent,
+/// is a dependency-free sparse-field drop: a legal no-op whose data lingers. A
+/// dropped member an active index still reads cannot be silently dropped; it needs an
+/// explicit retire intent that also removes or rebinds the index.
 fn classify_absent_source_entries(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -1915,21 +1921,22 @@ fn classify_absent_source_entries(
         .map(|entry| (entry.kind, entry.path.as_str()))
         .collect();
 
-    for entry in dropped_or_removed_entries(program) {
+    for entry in catalog_entries_for_drop_discharge(program) {
         if declared.contains(&(entry.kind, entry.path.as_str())) {
             continue;
         }
         let entry_id = catalog_id(&entry.stable_id)?;
         let is_index = entry.kind == CatalogEntryKind::StoreIndex;
-        match entry.lifecycle {
-            CatalogLifecycle::Removed if is_index => {
+        let state = absent_entry_state(program, entry);
+        match state {
+            AbsentEntryState::RetiredThisProposal if is_index => {
                 // An index holds no per-record source data, so an explicit retire of one
                 // is the same durable operation as a bare source-drop: delete the derived
                 // index-cell subtree. Routing it through the per-record member-deletion
                 // path would clear nothing and orphan the real index cells.
                 acc.record(entry_id, Verdict::IndexDropped, true);
             }
-            CatalogLifecycle::Removed => {
+            AbsentEntryState::RetiredThisProposal => {
                 if retired_member_is_nested(program, entry) {
                     acc.diagnostic(
                         entry_id.clone(),
@@ -1954,7 +1961,8 @@ fn classify_absent_source_entries(
                     );
                 }
             }
-            CatalogLifecycle::Active | CatalogLifecycle::Deprecated => {
+            AbsentEntryState::Reserved => {}
+            AbsentEntryState::Active | AbsentEntryState::Deprecated => {
                 if is_index {
                     // A source-dropped index is a derived structure whose cells outlive
                     // their binding. Apply deletes the index-cell subtree under this id
@@ -1986,12 +1994,36 @@ fn classify_absent_source_entries(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum AbsentEntryState {
+    Active,
+    Deprecated,
+    Reserved,
+    RetiredThisProposal,
+}
+
+fn absent_entry_state(program: &CheckedProgram, entry: &CatalogEntry) -> AbsentEntryState {
+    if entry.lifecycle == CatalogLifecycle::Reserved
+        && program.catalog.proposal.is_some()
+        && program.catalog.accepted_entries.iter().any(|accepted| {
+            accepted.stable_id == entry.stable_id && accepted.lifecycle == CatalogLifecycle::Active
+        })
+    {
+        return AbsentEntryState::RetiredThisProposal;
+    }
+    match entry.lifecycle {
+        CatalogLifecycle::Active => AbsentEntryState::Active,
+        CatalogLifecycle::Deprecated => AbsentEntryState::Deprecated,
+        CatalogLifecycle::Reserved => AbsentEntryState::Reserved,
+    }
+}
+
 /// The catalog entries discharge must consider for a source drop: the proposal
 /// entries when source proposed a change, else the accepted entries. The proposal
-/// already carries any `Removed` lifecycle and the lingering still-active entries, so
-/// it supersedes the accepted snapshot; when source proposed nothing, the accepted
-/// entries are the snapshot to diff against.
-fn dropped_or_removed_entries(program: &CheckedProgram) -> &[CatalogEntry] {
+/// already carries consumed retire reservations and the lingering still-active
+/// entries, so it supersedes the accepted snapshot; when source proposed nothing,
+/// the accepted entries are the snapshot to diff against.
+fn catalog_entries_for_drop_discharge(program: &CheckedProgram) -> &[CatalogEntry] {
     match &program.catalog.proposal {
         Some(proposal) => &proposal.entries,
         None => &program.catalog.accepted_entries,
@@ -2040,7 +2072,7 @@ fn dropped_member_addresses(
     let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
         return Ok(None);
     };
-    let store_id = catalog_id(&place.store_catalog_id)?;
+    let store_id = required_catalog_id(&place.store_catalog_id)?;
     let member_id = catalog_id(&entry.stable_id)?;
     Ok(Some((store_id, member_id)))
 }
@@ -2133,7 +2165,7 @@ fn index_depends_on(
 /// the proposal supersedes the accepted snapshot the same way the dropped-entry scan
 /// chooses its source.
 fn index_stable_id(program: &CheckedProgram, path: &str) -> Option<String> {
-    dropped_or_removed_entries(program)
+    catalog_entries_for_drop_discharge(program)
         .iter()
         .find(|entry| entry.kind == CatalogEntryKind::StoreIndex && entry.path == path)
         .map(|entry| entry.stable_id.clone())
@@ -2143,6 +2175,15 @@ fn catalog_id(raw: &str) -> Result<CatalogId, StoreError> {
     CatalogId::new(raw).map_err(|_| StoreError::Corruption {
         message: format!("evolution discharge saw an invalid catalog id `{raw}`"),
     })
+}
+
+fn required_catalog_id(raw: &Option<String>) -> Result<CatalogId, StoreError> {
+    match raw.as_deref() {
+        Some(raw) => catalog_id(raw),
+        None => Err(StoreError::Corruption {
+            message: "evolution discharge required an accepted catalog id".to_string(),
+        }),
+    }
 }
 
 /// A human label for a member obligation: the resource-qualified member name.
@@ -2457,7 +2498,7 @@ mod tests {
         CheckedSavedIndex {
             id: StoreIndexId(0),
             name: name.to_string(),
-            catalog_id: catalog_id.to_string(),
+            catalog_id: Some(catalog_id.to_string()),
             unique: true,
             keys: vec![CheckedSavedIndexKey {
                 name: key_name.to_string(),
@@ -2472,14 +2513,14 @@ mod tests {
             root: "books".to_string(),
             store_id: StoreId(0),
             resource_id: ResourceId(0),
-            store_catalog_id: "cat_00000000000000aa".to_string(),
+            store_catalog_id: Some("cat_000000000000000000000000000000aa".to_string()),
             resource_name: "Book".to_string(),
             root_members: vec![CheckedSavedMember {
                 id: Some(ResourceMemberId(0)),
                 name: "isbn".to_string(),
                 key_params: Vec::new(),
                 kind: CheckedSavedMemberKind::Field { required: true },
-                catalog_id: "cat_00000000000000bb".to_string(),
+                catalog_id: Some("cat_000000000000000000000000000000bb".to_string()),
                 leaf: Some(StoreLeafKind::Scalar(ScalarType::Str)),
                 group_members: Vec::new(),
             }],
@@ -2514,8 +2555,8 @@ mod tests {
     #[test]
     fn unique_index_with_unresolvable_key_is_unprobeable() {
         let place = place_with_indexes(vec![
-            unique_index("byIsbn", "cat_00000000000000c1", "isbn"),
-            unique_index("byGhost", "cat_00000000000000c2", "ghost"),
+            unique_index("byIsbn", "cat_000000000000000000000000000000c1", "isbn"),
+            unique_index("byGhost", "cat_000000000000000000000000000000c2", "ghost"),
         ]);
 
         let plan = unique_index_plan(&place).expect("plan");
@@ -2528,12 +2569,12 @@ mod tests {
         let unprobeable: Vec<&str> = plan.unprobeable.iter().map(CatalogId::as_str).collect();
         assert_eq!(
             probed,
-            ["cat_00000000000000c1"],
+            ["cat_000000000000000000000000000000c1"],
             "probed {probed:?} unprobeable {unprobeable:?}"
         );
         assert_eq!(
             unprobeable,
-            ["cat_00000000000000c2"],
+            ["cat_000000000000000000000000000000c2"],
             "probed {probed:?} unprobeable {unprobeable:?}"
         );
     }
@@ -2544,12 +2585,13 @@ mod tests {
     #[test]
     fn unprobeable_unique_index_fails_closed() {
         let place = place_with_indexes(vec![
-            unique_index("byIsbn", "cat_00000000000000c1", "isbn"),
-            unique_index("byGhost", "cat_00000000000000c2", "ghost"),
+            unique_index("byIsbn", "cat_000000000000000000000000000000c1", "isbn"),
+            unique_index("byGhost", "cat_000000000000000000000000000000c2", "ghost"),
         ]);
-        let unprobeable: HashSet<CatalogId> = [catalog_id("cat_00000000000000c2").unwrap()]
-            .into_iter()
-            .collect();
+        let unprobeable: HashSet<CatalogId> =
+            [catalog_id("cat_000000000000000000000000000000c2").unwrap()]
+                .into_iter()
+                .collect();
         let mut acc = empty_accumulator();
 
         classify_indexes(&place, &HashMap::new(), &unprobeable, &mut acc).expect("classify");
@@ -2557,7 +2599,7 @@ mod tests {
         let ghost = acc
             .verdicts
             .iter()
-            .find(|v| v.catalog_id.as_str() == "cat_00000000000000c2")
+            .find(|v| v.catalog_id.as_str() == "cat_000000000000000000000000000000c2")
             .expect("ghost verdict");
         assert!(
             matches!(
@@ -2572,7 +2614,7 @@ mod tests {
         let isbn = acc
             .verdicts
             .iter()
-            .find(|v| v.catalog_id.as_str() == "cat_00000000000000c1")
+            .find(|v| v.catalog_id.as_str() == "cat_000000000000000000000000000000c1")
             .expect("isbn verdict");
         assert!(
             matches!(isbn.verdict, Verdict::DerivedRebuild),

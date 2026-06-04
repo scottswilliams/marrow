@@ -4,7 +4,10 @@ use super::scope::NameScope;
 use super::target::{
     ReadTarget, declaration_proves_presence, proof_place, read_file, read_target_with_scope,
 };
-use crate::facts::{PresenceProofFact, PresenceProofPlace, PresenceProofRead, PresenceProofSource};
+use crate::facts::{
+    PresenceProofDraft, PresenceProofPlace, PresenceProofRead, PresenceProofSource,
+    PresenceProofStatus,
+};
 use crate::{CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedExpr, CheckedProgram};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,20 +26,34 @@ pub(super) fn read_proof(
 ) -> Option<ReadProof> {
     let target = read_target_with_scope(program, expr, scope)?;
     let place = proof_place(program, &target)?;
-    let source = match context {
-        ReadContext::Resolved => PresenceProofSource::Narrowing,
-        ReadContext::AttachedData => PresenceProofSource::AttachedDataPending,
-        ReadContext::Bare if narrowed.contains(&target) => PresenceProofSource::Narrowing,
-        ReadContext::Bare if declaration_proves_presence(program, &target) => {
-            PresenceProofSource::Declaration
-        }
-        ReadContext::Bare => PresenceProofSource::AttachedDataPending,
+    let (source, status) = match context {
+        ReadContext::Resolved => (
+            PresenceProofSource::Narrowing,
+            PresenceProofStatus::Discharged,
+        ),
+        ReadContext::AttachedData => (
+            PresenceProofSource::AttachedData,
+            PresenceProofStatus::PendingAttachedData,
+        ),
+        ReadContext::Bare if narrowed.contains(&target) => (
+            PresenceProofSource::Narrowing,
+            PresenceProofStatus::Discharged,
+        ),
+        ReadContext::Bare if declaration_proves_presence(program, &target) => (
+            PresenceProofSource::Declaration,
+            PresenceProofStatus::Discharged,
+        ),
+        ReadContext::Bare => (
+            PresenceProofSource::AttachedData,
+            PresenceProofStatus::PendingAttachedData,
+        ),
     };
     Some(ReadProof {
         place,
         keys: target.keys,
         read: target.read,
         source,
+        status,
     })
 }
 
@@ -47,7 +64,7 @@ pub(super) fn record_read(
     context: ReadContext,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if proof.source == PresenceProofSource::AttachedDataPending && context == ReadContext::Bare {
+    if proof.status == PresenceProofStatus::PendingAttachedData && context == ReadContext::Bare {
         diagnostics.push(CheckDiagnostic {
             code: CHECK_BARE_MAYBE_PRESENT_READ,
             severity: Severity::Error,
@@ -56,11 +73,12 @@ pub(super) fn record_read(
             span: expr.span(),
         });
     }
-    program.facts.record_presence_proof(PresenceProofFact {
+    program.facts.record_presence_proof(PresenceProofDraft {
         place: proof.place,
         keys: proof.keys,
         read: proof.read,
         source: proof.source,
+        status: proof.status,
         span: expr.span(),
     });
 }
@@ -70,4 +88,5 @@ pub(super) struct ReadProof {
     keys: Vec<String>,
     read: PresenceProofRead,
     source: PresenceProofSource,
+    status: PresenceProofStatus,
 }

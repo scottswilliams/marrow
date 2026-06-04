@@ -127,7 +127,7 @@ pub(super) fn checked_field_place(
     let Some(member) = checked_layer_member(&place.members, name) else {
         place.terminal = CheckedSavedTerminal::Field {
             name: name.to_string(),
-            catalog_id: String::new(),
+            catalog_id: None,
             leaf: None,
         };
         place.span = span;
@@ -206,9 +206,7 @@ fn checked_saved_members(
                 name: node.name.clone(),
                 key_params: checked_key_params(&node.key_params),
                 kind: checked_saved_member_kind(node),
-                catalog_id: member_id
-                    .and_then(|id| resource_member_catalog_id(program, id))
-                    .unwrap_or_default(),
+                catalog_id: member_id.and_then(|id| resource_member_catalog_id(program, id)),
                 leaf: match &node.kind {
                     NodeKind::Slot { ty, .. } => checked_store_leaf_kind(program, module, ty),
                     NodeKind::Group => None,
@@ -247,7 +245,7 @@ fn resource_member_catalog_id(program: &CheckedProgram, id: ResourceMemberId) ->
         .resource_members()
         .iter()
         .find(|member| member.id == id)
-        .map(|member| member.catalog_id.clone())
+        .and_then(|member| member.catalog_id.clone())
 }
 
 fn checked_plain_field_member<'a>(

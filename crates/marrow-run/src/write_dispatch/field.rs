@@ -39,8 +39,8 @@ pub(crate) fn write_saved_field(
     let identity = path.identity.as_slice();
     let created_required_path =
         created_required_field_path(&path.place, identity, &[], &path.members, field, span, env)?;
-    if let Some(arity) = saved_field_identity_arity(&path) {
-        write_identity_saved_field(&path, field, value, arity, span, env)?;
+    if let Some((store_root, arity)) = saved_field_identity_info(&path) {
+        write_identity_saved_field(&path, field, value, store_root, arity, span, env)?;
         finish_saved_field_write(&path, created_required_path, env);
         return Ok(());
     }
@@ -49,12 +49,12 @@ pub(crate) fn write_saved_field(
     Ok(())
 }
 
-fn saved_field_identity_arity(path: &SavedPath) -> Option<usize> {
+fn saved_field_identity_info(path: &SavedPath) -> Option<(&str, usize)> {
     match &path.terminal {
         Terminal::Field {
-            leaf: Some(StoreLeafKind::Identity { arity, .. }),
+            leaf: Some(StoreLeafKind::Identity { store_root, arity }),
             ..
-        } => Some(*arity),
+        } => Some((store_root, *arity)),
         _ => None,
     }
 }
@@ -63,11 +63,12 @@ fn write_identity_saved_field(
     path: &SavedPath,
     field: &str,
     value: Value,
+    store_root: &str,
     arity: usize,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let keys = identity_keys_of(value, span)?;
+    let keys = identity_keys_of(value, store_root, span)?;
     let plan = plan_identity_field_write(&path.place, &path.identity, field, &keys, arity, span);
     let plan = validate_top_level_field_plan(path, field, plan, env);
     env.apply_plan(plan, span)
@@ -154,11 +155,11 @@ pub(crate) fn write_nested_field(
         env,
     )?;
     let plan = if let Terminal::Field {
-        leaf: Some(StoreLeafKind::Identity { arity, .. }),
+        leaf: Some(StoreLeafKind::Identity { store_root, arity }),
         ..
     } = &path.terminal
     {
-        let keys = identity_keys_of(value, span)?;
+        let keys = identity_keys_of(value, store_root, span)?;
         plan_nested_identity_field_write(
             &path.place,
             identity,

@@ -1644,39 +1644,6 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
-#[test]
-fn legacy_qualified_identity_constructor_is_unresolved() {
-    let root = temp_project("program-id-qualified-ctor", |root| {
-        write(
-            root,
-            "src/inventory.mw",
-            "module inventory\n\
-             resource Book at ^books(id: int)\n\
-             \x20   required name: string\n",
-        );
-        write(
-            root,
-            "src/caller.mw",
-            "module caller\n\
-             use inventory\n\
-             pub fn fromKey(): Id(^books)\n\
-             \x20   return inventory::Book::Id(1)\n",
-        );
-    });
-    let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.unresolved_call"
-                && diagnostic.message.contains("inventory::Book::Id")),
-        "{:#?}",
-        report.diagnostics
-    );
-}
-
 // --- Equality, coalesce, and unary over concrete non-scalar types ---
 
 /// Two resources and a sequence-yielding helper, for the operator-soundness tests
@@ -2337,12 +2304,10 @@ fn same_store_key_identity_checks_clean() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
-/// A cross-module identity the resolving module cannot place defers rather than
-/// false-positives: an `unknown`-typed value addressing a keyed root is left to
-/// the runtime. Cross-module identities type to `Unknown`, so nominal comparison is
-/// permissive across module boundaries until the type IR is unified.
+/// `unknown` is not `any` at saved identity boundaries: a dynamic value cannot
+/// reenter a keyed root until it has been converted to the declared key type.
 #[test]
-fn cross_module_unknown_key_defers() {
+fn unknown_key_reentry_is_rejected() {
     let root = temp_project("program-key-cross-module", |root| {
         write(
             root,
@@ -2358,7 +2323,7 @@ fn cross_module_unknown_key_defers() {
     fs::remove_dir_all(&root).ok();
 
     assert!(
-        !report
+        report
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "check.key_type"),

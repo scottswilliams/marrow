@@ -46,7 +46,7 @@ impl DataAddress {
         place: &CheckedSavedPlace,
         identity: &[SavedKey],
         layers: &[LayerAddress],
-        member_catalog_id: &str,
+        member_catalog_id: &Option<String>,
         span: SourceSpan,
     ) -> Result<Self, RuntimeError> {
         let mut address = Self::record(place, identity, span)?;
@@ -85,7 +85,7 @@ impl DataAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerAddress {
     pub(crate) name: String,
-    pub(crate) catalog_id: String,
+    pub(crate) catalog_id: Option<String>,
     pub(crate) keys: Vec<SavedKey>,
 }
 
@@ -112,9 +112,20 @@ impl IndexAddress {
         span: SourceSpan,
     ) -> Result<Self, RuntimeError> {
         Ok(Self {
-            index: self::catalog_id(catalog_id, "store index", span)?,
+            index: raw_catalog_id(catalog_id, "store index", span)?,
             keys,
         })
+    }
+
+    pub(crate) fn from_checked(
+        catalog_id: &Option<String>,
+        keys: Vec<SavedKey>,
+        span: SourceSpan,
+    ) -> Result<Self, RuntimeError> {
+        let Some(catalog_id) = catalog_id.as_deref() else {
+            return Err(missing_catalog_id("store index", span));
+        };
+        Self::new(catalog_id, keys, span)
     }
 
     pub(crate) fn from_place(
@@ -132,11 +143,22 @@ impl IndexAddress {
                 span,
             });
         };
-        Self::new(&index.catalog_id, keys, span)
+        Self::from_checked(&index.catalog_id, keys, span)
     }
 }
 
 pub(crate) fn catalog_id(
+    raw: &Option<String>,
+    what: &'static str,
+    span: SourceSpan,
+) -> Result<CatalogId, RuntimeError> {
+    let Some(raw) = raw.as_deref() else {
+        return Err(missing_catalog_id(what, span));
+    };
+    raw_catalog_id(raw, what, span)
+}
+
+pub(crate) fn raw_catalog_id(
     raw: &str,
     what: &'static str,
     span: SourceSpan,
@@ -150,6 +172,18 @@ pub(crate) fn catalog_id(
         ),
         span,
     })
+}
+
+fn missing_catalog_id(what: &'static str, span: SourceSpan) -> RuntimeError {
+    RuntimeError {
+        throw: None,
+        origin: None,
+        code: RUN_STORE,
+        message: format!(
+            "checked {what} catalog identity is missing; durable identity is recorded automatically when the program runs"
+        ),
+        span,
+    }
 }
 
 pub(crate) fn read_data(
@@ -206,7 +240,7 @@ pub(crate) fn max_int_record_child(
 
 fn data_path(
     layers: &[LayerAddress],
-    terminal_member: Option<&str>,
+    terminal_member: Option<&Option<String>>,
     span: SourceSpan,
 ) -> Result<Vec<DataPathSegment>, RuntimeError> {
     let mut path = Vec::new();

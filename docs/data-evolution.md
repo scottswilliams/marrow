@@ -160,6 +160,12 @@ Each entry records:
 - lifecycle state;
 - the catalog epoch and digest.
 
+`active` entries bind current source to stable IDs. `deprecated` entries are old
+aliases kept for identity continuity. `reserved` entries remember spellings that
+must not be reused after a retire; a later source declaration at the same catalog
+path is rejected rather than minted as a fresh identity. `reserved` is the
+durable inactive spelling for a retired catalog path.
+
 Source-only checks read this file when present. They propose replacement metadata
 when it is missing or stale, but never write it, so `marrow check` stays
 read-only and CI-safe; a project whose durable identity is not yet recorded is
@@ -175,13 +181,19 @@ a baseline exists, later identity changes flow through `evolve apply` rather tha
 being written from a check. There is no separate command to inspect or accept a
 proposal.
 
-A stable ID is a random opaque value in the `cat_<16 lowercase hex>` shape. It is
+A stable ID is a random opaque 128-bit value in the `cat_<32 lowercase hex>` shape. It is
 allocated independently of the source path, so it never changes when a path
 changes, and it is random rather than a counter so identity minted on two
 branches for different entities cannot collide when they merge. Once committed it
 is frozen and never recomputed. A duplicate ID — from a manual catalog change,
 bad branch integration, or an astronomically unlikely clash — fails closed at
 check rather than corrupting storage.
+
+The catalog digest is `sha256:<64 lowercase hex>` over the canonical JSON object
+`{"epoch": <u64>, "entries": <entries in file order>}` serialized by the
+metadata writer. The digest covers stable IDs, paths, aliases, lifecycle states,
+and accepted structural tokens, and is recomputed when catalog metadata is read;
+an edited file whose digest no longer matches is rejected before its IDs bind.
 
 ## Activation Fencing
 
@@ -212,6 +224,12 @@ The source digest binds the durable shape — every `resource`, `store`, `enum`,
 and module constant — and not the `evolve` block. The fence governs the shape a
 stored snapshot must match, not the transition that produced it, so an evolve
 block can be deleted once consumed without reading as schema drift.
+
+The source digest also uses `sha256:<64 lowercase hex>`. Its payload is the
+compiler's canonical durable-shape summary: module constants, resources,
+stores, enum trees, store identity-key shapes, and resource-member structural
+tokens after catalog IDs have bound the durable identities those shapes refer
+to. It intentionally excludes transition text such as `evolve` blocks.
 
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the

@@ -76,7 +76,7 @@ impl RootScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        let key = collected_identity_value(&identity, self.span)?;
+        let key = collected_identity_value(&identity, Some(&self.place.root), self.span)?;
         match self.shape {
             LoopShape::Keys => visit(SavedLoopRow::Single(key), env),
             LoopShape::Values => {

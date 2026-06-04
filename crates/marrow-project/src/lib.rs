@@ -12,6 +12,9 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod digest;
+pub use digest::sha256_digest;
+
 /// Stable error code for an invalid `marrow.json`.
 pub const CONFIG_INVALID: &str = "config.invalid";
 
@@ -116,8 +119,10 @@ impl CatalogMetadata {
             if entry.path.is_empty() {
                 return Err(CatalogError::new("catalog entry path must not be empty"));
             }
-            if entry.stable_id.is_empty() {
-                return Err(CatalogError::new("catalog stable ID must not be empty"));
+            if !is_catalog_stable_id(&entry.stable_id) {
+                return Err(CatalogError::new(
+                    "catalog stable ID must match cat_<32 lowercase hex>",
+                ));
             }
             if let Some(first) = stable_ids.insert(entry.stable_id.as_str(), index) {
                 return Err(CatalogError::new(format!(
@@ -209,7 +214,7 @@ pub enum CatalogEntryKind {
 pub enum CatalogLifecycle {
     Active,
     Deprecated,
-    Removed,
+    Reserved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,7 +595,17 @@ struct DigestPayload<'a> {
 fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
     let json = serde_json::to_string(&DigestPayload { epoch, entries })
         .expect("catalog digest payload serializes");
-    format!("fnv1a64:{:016x}", fnv1a64(json.as_bytes()))
+    sha256_digest(json.as_bytes())
+}
+
+fn is_catalog_stable_id(id: &str) -> bool {
+    let Some(hex) = id.strip_prefix("cat_") else {
+        return false;
+    };
+    hex.len() == 32
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn insert_catalog_path<'a>(
@@ -605,13 +620,4 @@ fn insert_catalog_path<'a>(
         )));
     }
     Ok(())
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }

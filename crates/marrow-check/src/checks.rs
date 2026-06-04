@@ -2207,7 +2207,7 @@ fn check_index_args_against(
 
     for (component, arg_type) in index.args.iter().zip(arg_types) {
         let expected = index_component_type(program, store, resource, module, component);
-        if type_compatible(&expected, arg_type) == Some(false) {
+        if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,
                 span,
@@ -2224,7 +2224,9 @@ fn check_index_args_against(
 /// Compare a saved access's argument types against the declared key parameters
 /// they fill. A count mismatch is reported once (the per-key mapping is then
 /// undefined); otherwise each argument is checked nominally against its key's
-/// type, with an `unknown` argument deferred to the runtime.
+/// type. An `unknown` argument is rejected here: saved keyspaces are nominal
+/// identity boundaries, so dynamic reentry must first convert to the declared key
+/// type instead of acting as `any`.
 pub(crate) fn check_keys_against(
     keys: &[marrow_schema::KeyDef],
     arg_types: &[MarrowType],
@@ -2246,7 +2248,7 @@ pub(crate) fn check_keys_against(
     }
     for (key, arg_type) in keys.iter().zip(arg_types) {
         let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
-        if type_compatible(&expected, arg_type) == Some(false) {
+        if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,
                 span,
@@ -2259,6 +2261,13 @@ pub(crate) fn check_keys_against(
             ));
         }
     }
+}
+
+fn saved_key_arg_matches(expected: &MarrowType, actual: &MarrowType) -> bool {
+    if matches!(actual, MarrowType::Unknown) {
+        return false;
+    }
+    type_compatible(expected, actual) != Some(false)
 }
 
 /// A `check.key_type` diagnostic located at a saved access's span.

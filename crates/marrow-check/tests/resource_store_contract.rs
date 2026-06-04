@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use marrow_check::{CheckDiagnostic, check_project, resolve::resolve_store_by_root};
+use marrow_check::{check_project, resolve::resolve_store_by_root};
 use marrow_project::parse_config;
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -23,13 +23,6 @@ fn write(root: &Path, relative: &str, contents: &str) {
 
 fn config() -> marrow_project::ProjectConfig {
     parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
-
-fn with_code<'a>(diagnostics: &'a [CheckDiagnostic], code: &str) -> Vec<&'a CheckDiagnostic> {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == code)
-        .collect()
 }
 
 #[test]
@@ -102,29 +95,4 @@ fn store_indexes_are_checked_facts_not_resource_members() {
         "{:#?}",
         program.facts.resource_members()
     );
-}
-
-#[test]
-fn resource_named_identity_is_rejection_only() {
-    let root = temp_project("resource-named-identity-rejected", |root| {
-        write(
-            root,
-            "src/shelf.mw",
-            "module shelf\n\
-             resource Book\n\
-             \x20   title: string\n\
-             store ^books(id: int): Book\n\
-             fn read(id: Book::Id): string\n\
-             \x20   return ^books(id).title\n\
-             fn make()\n\
-             \x20   const id = Book::Id(1)\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
-
-    let unknown_types = with_code(&report.diagnostics, "check.unknown_type");
-    let unresolved_calls = with_code(&report.diagnostics, "check.unresolved_call");
-    assert_eq!(unknown_types.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(unresolved_calls.len(), 1, "{:#?}", report.diagnostics);
 }

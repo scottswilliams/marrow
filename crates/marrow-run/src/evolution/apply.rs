@@ -271,7 +271,7 @@ fn source_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
     for module in &program.modules {
         for store in &module.stores {
             if let Some(place) = checked_saved_root_place(program, &store.root, Default::default())
-                && !place.store_catalog_id.is_empty()
+                && place.store_catalog_id.is_some()
             {
                 places.push(place);
             }
@@ -282,7 +282,12 @@ fn source_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
 
 /// The store catalog id of a place, validated once.
 pub(super) fn store_id(place: &CheckedSavedPlace) -> Result<CatalogId, ApplyError> {
-    CatalogId::new(place.store_catalog_id.clone()).map_err(|_| {
+    let Some(raw) = &place.store_catalog_id else {
+        return Err(ApplyError::Store(StoreError::Corruption {
+            message: "evolution apply saw a missing store catalog id".to_string(),
+        }));
+    };
+    CatalogId::new(raw.clone()).map_err(|_| {
         ApplyError::Store(StoreError::Corruption {
             message: "evolution apply saw an invalid store catalog id".to_string(),
         })
@@ -312,10 +317,10 @@ fn locate_in(
     target: &CatalogId,
 ) -> bool {
     for member in members {
-        if member.catalog_id.is_empty() {
+        let Some(raw_id) = &member.catalog_id else {
             continue;
-        }
-        let Ok(member_id) = CatalogId::new(member.catalog_id.clone()) else {
+        };
+        let Ok(member_id) = CatalogId::new(raw_id.clone()) else {
             continue;
         };
         let keyed = !member.key_params.is_empty();

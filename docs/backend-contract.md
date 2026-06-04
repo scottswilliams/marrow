@@ -54,7 +54,7 @@ names, member names, index names, enum member spelling, or declaration order.
 | Placement prefix | `00` | Reserved empty/default placement prefix for v0. |
 | Profile byte | `01` | Tree-cell key profile v0. |
 | Family tags | `10`, `20`, `30` | Meta, data, and index families. Other family tags are reserved. |
-| Catalog IDs | `cat_` + 16 lowercase hex + optional `_<n>` | Opaque storage ID shape. `n` is positive decimal with no leading zero. |
+| Catalog IDs | `cat_` + 32 lowercase hex | Opaque 128-bit storage ID shape. |
 | ID bytes | escaped bytes + `00 00` | IDs use the same escaped byte-run terminator as typed string keys. |
 | Node cell | data family + store ID + record-key tuple + `00` | Node marker and prefix for the record's leaf and sequence cells. |
 | Leaf cell | node prefix + `10` + member ID | A typed leaf under a node. |

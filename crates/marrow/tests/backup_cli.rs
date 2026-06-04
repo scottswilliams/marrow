@@ -251,7 +251,8 @@ fn store_catalog_id(root: &Path) -> CatalogId {
     assert!(!report.has_errors(), "fixture checks cleanly: {report:#?}");
     let place = checked_saved_root_place(&program, "books", marrow_syntax::SourceSpan::default())
         .expect("checked saved root place");
-    CatalogId::new(place.store_catalog_id).expect("store catalog id")
+    CatalogId::new(place.store_catalog_id.expect("accepted store catalog id"))
+        .expect("store catalog id")
 }
 
 /// A backup carrying an orphan cell — data under a dropped field the schema no
@@ -276,7 +277,8 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
                 &store_catalog,
                 &[SavedKey::Int(1)],
                 &[DataPathSegment::Member(
-                    CatalogId::new("cat_00000000cafef00d".to_string()).expect("orphan member id"),
+                    CatalogId::new("cat_000000000000000000000000cafef00d".to_string())
+                        .expect("orphan member id"),
                 )],
                 b"left-behind".to_vec(),
             )

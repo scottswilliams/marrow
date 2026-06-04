@@ -55,7 +55,10 @@ pub use facts::{
     StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource,
     StoredValueMeaning,
 };
-pub use facts::{PresenceProofFact, PresenceProofPlace, PresenceProofSource};
+pub use facts::{
+    PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,
+    PresenceProofStatus,
+};
 pub use marrow_project::ProjectConfig;
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 use program::TypeNames;
@@ -343,7 +346,7 @@ pub enum CommitIdentityError {
 /// change to durable identity is an evolution that must flow through `evolve apply`'s
 /// witness — its renames, retires, and backfills are stamped into the store under the
 /// apply transaction, never silently advanced here. Auto-writing an evolution proposal
-/// would mark accepted entries removed before the witness consumed them, dropping the
+/// would reserve retired entries before the witness consumed them, dropping the
 /// very entries a retire relies on.
 pub fn commit_pending_identity(
     project_root: &Path,

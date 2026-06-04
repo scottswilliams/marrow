@@ -165,7 +165,7 @@ mod tests {
     use crate::write_plan::PlanStep;
     use marrow_store::tree::{EngineProfile, TreeStore};
 
-    const DIGEST: &str = "fnv1a64:0000000000000001";
+    const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000001";
 
     fn stamp(store: &TreeStore, epoch: u64) {
         store.write_catalog_epoch(epoch).expect("write epoch");
@@ -234,7 +234,7 @@ mod tests {
         stamp_with_digest(&store, 7, DIGEST);
         let error = fence(
             Some(7),
-            "fnv1a64:00000000deadbeef",
+            "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
             &current_engine_profile(),
             &store,
         )
@@ -274,7 +274,11 @@ mod tests {
     #[test]
     fn no_accepted_catalog_does_not_fence() {
         let store = TreeStore::memory();
-        stamp_with_digest(&store, 5, "fnv1a64:00000000deadbeef");
+        stamp_with_digest(
+            &store,
+            5,
+            "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
+        );
         fence(None, DIGEST, &current_engine_profile(), &store).expect("no catalog, no fence");
     }
 }

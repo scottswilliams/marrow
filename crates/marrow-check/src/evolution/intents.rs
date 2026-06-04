@@ -72,7 +72,7 @@ pub(crate) struct TransformIntent {
 
 /// The rename, retire, default, and transform intents an evolve block declares. The
 /// catalog binding consults the renames and retires to carry stable identity forward
-/// and to mark a retired entity removed; the default and transform intents flow to
+/// and to reserve a retired entity; the default and transform intents flow to
 /// discharge. A rename or retire path that matches neither side is a target
 /// diagnostic.
 #[derive(Debug, Default, Clone)]

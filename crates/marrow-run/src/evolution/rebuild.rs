@@ -45,7 +45,7 @@ fn indexed_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
     for module in &program.modules {
         for store in &module.stores {
             if let Some(place) = checked_saved_root_place(program, &store.root, Default::default())
-                && !place.store_catalog_id.is_empty()
+                && place.store_catalog_id.is_some()
                 && !place.indexes.is_empty()
             {
                 places.push(place);
@@ -63,8 +63,13 @@ fn stage_place_indexes(
     steps: &mut Vec<PlanStep>,
 ) -> Result<(), ApplyError> {
     for index in &place.indexes {
-        let index_id = CatalogId::new(index.catalog_id.clone())
-            .map_err(|_| ApplyError::Store(corruption()))?;
+        let index_id = index
+            .catalog_id
+            .as_ref()
+            .ok_or_else(|| ApplyError::Store(corruption()))
+            .and_then(|raw| {
+                CatalogId::new(raw.clone()).map_err(|_| ApplyError::Store(corruption()))
+            })?;
         steps.push(PlanStep::DeleteIndexSubtree {
             address: IndexAddress {
                 index: index_id,

@@ -50,7 +50,7 @@ pub(crate) enum Terminal {
     /// resolution peels the trailing `.field` onto an otherwise-`Record` path.
     Field {
         name: String,
-        catalog_id: String,
+        catalog_id: Option<String>,
         leaf: Option<StoreLeafKind>,
     },
     /// A declared index branch `^root.index(args…)`. It hangs directly off the root
@@ -169,6 +169,7 @@ fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPa
             &place.identity_args,
             place.span,
             true,
+            Some(&place.root),
             &place.identity_keys,
             env,
         )?
@@ -176,7 +177,7 @@ fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPa
     let mut layers = Vec::with_capacity(place.layers.len());
     let mut layer_addresses = Vec::with_capacity(place.layers.len());
     for layer in &place.layers {
-        let keys = lower_keys(&layer.args, layer.span, false, &layer.key_params, env)?;
+        let keys = lower_keys(&layer.args, layer.span, false, None, &layer.key_params, env)?;
         layer_addresses.push(LayerAddress::from_checked(layer, keys.clone()));
         layers.push((layer.name.clone(), keys));
     }
@@ -265,6 +266,7 @@ pub(crate) fn lower_keys(
     args: &[ExecArg],
     span: SourceSpan,
     allow_identity_splice: bool,
+    expected_root: Option<&str>,
     expected: &[CheckedSavedKeyParam],
     env: &mut Env<'_>,
 ) -> Result<Vec<SavedKey>, RuntimeError> {
@@ -281,14 +283,15 @@ pub(crate) fn lower_keys(
     for (position, arg) in args.iter().enumerate() {
         match eval_expr(&arg.value, env)? {
             // An identity is the whole lookup key only as the sole argument of a
-            // record lookup; it cannot be one component among raw keys. The
-            // identity carries no store root, so a foreign one laundered through
-            // a dynamic value can reach here; its key scalars are guarded against
-            // the declared key types just like raw keys, so a wrong-scalar splice
-            // faults before any store write rather than corrupting the keyspace.
+            // record lookup; it cannot be one component among raw keys. Its root
+            // provenance must match the checked root before its keys are spliced.
             Value::Identity(identity) if allow_identity_splice && args.len() == 1 => {
-                check_spliced_identity(&identity, expected, span)?;
-                return Ok(identity);
+                let Some(expected_root) = expected_root else {
+                    return Err(unsupported("an identity splice without a saved root", span));
+                };
+                let keys = identity.into_keys_for_root(expected_root, span)?;
+                check_spliced_identity(&keys, expected, span)?;
+                return Ok(keys);
             }
             Value::Identity(_) if allow_identity_splice => {
                 return Err(unsupported("an identity mixed with other keys", span));

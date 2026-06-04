@@ -197,12 +197,12 @@ fn check_enum_leaf(
     let Some(stored) = stored else {
         return Some(enum_decode_problem(record, &enum_fact.name));
     };
-    if stored.enum_id().as_str() != enum_fact.catalog_id {
+    if enum_fact.catalog_id.as_deref() != Some(stored.enum_id().as_str()) {
         return Some(enum_decode_problem(record, &enum_fact.name));
     }
     let valid_member = program.facts.enum_members().iter().any(|member| {
         member.enum_id == enum_id
-            && member.catalog_id == stored.member_id().as_str()
+            && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
             && program.facts.enum_member_is_selectable(member.id)
     });
     (!valid_member).then(|| enum_decode_problem(record, &enum_fact.name))

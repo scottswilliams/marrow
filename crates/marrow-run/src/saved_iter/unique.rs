@@ -87,7 +87,7 @@ impl UniqueIndexScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        let key = identity_value(identity.clone());
+        let key = identity_value(&self.place.root, identity.clone());
         match self.shape {
             LoopShape::Keys => visit(SavedLoopRow::Single(key), env),
             LoopShape::Values => Err(unsupported("values over a unique index lookup", self.span)),

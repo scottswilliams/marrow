@@ -7,7 +7,7 @@ use marrow_store::tree::{
 };
 
 fn catalog_id(hex: &str) -> CatalogId {
-    CatalogId::new(format!("cat_{hex}")).unwrap()
+    CatalogId::new(format!("cat_{hex:0>32}")).unwrap()
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
@@ -119,7 +119,9 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
             commit_id: 55,
             catalog_epoch: 44,
             layout_epoch: profile.layout_epoch(),
-            source_digest: "fnv1a64:0000000000000044".to_string(),
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000044"
+                    .to_string(),
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: vec![root.clone()],
             changed_index_catalog_ids: vec![index.clone()],
@@ -146,7 +148,9 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
             commit_id: 55,
             catalog_epoch: 44,
             layout_epoch: profile.layout_epoch(),
-            source_digest: "fnv1a64:0000000000000044".to_string(),
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000044"
+                    .to_string(),
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: vec![root],
             changed_index_catalog_ids: vec![index],
@@ -671,7 +675,9 @@ fn metadata_survives_native_redb_reopen() {
                 commit_id: 9,
                 catalog_epoch: 8,
                 layout_epoch: profile.layout_epoch(),
-                source_digest: "fnv1a64:0000000000000008".to_string(),
+                source_digest:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+                        .to_string(),
                 engine_profile_digest: profile.digest_bytes(),
                 changed_root_catalog_ids: vec![root.clone()],
                 changed_index_catalog_ids: vec![index.clone()],
@@ -696,7 +702,9 @@ fn metadata_survives_native_redb_reopen() {
             commit_id: 9,
             catalog_epoch: 8,
             layout_epoch: profile.layout_epoch(),
-            source_digest: "fnv1a64:0000000000000008".to_string(),
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+                    .to_string(),
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: vec![root],
             changed_index_catalog_ids: vec![index],

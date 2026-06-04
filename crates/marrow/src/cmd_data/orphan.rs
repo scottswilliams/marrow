@@ -67,13 +67,16 @@ impl DeclaredSchema {
             ) else {
                 continue;
             };
-            roots.insert(place.store_catalog_id.clone(), place.root.clone());
+            let Some(store_catalog_id) = place.store_catalog_id.clone() else {
+                continue;
+            };
+            roots.insert(store_catalog_id.clone(), place.root.clone());
             let mut set = MemberSet {
                 ids: HashSet::new(),
                 names: HashMap::new(),
             };
             collect_members(&place.root_members, &mut set);
-            members.insert(place.store_catalog_id, set);
+            members.insert(store_catalog_id, set);
         }
         Self { roots, members }
     }
@@ -177,9 +180,10 @@ impl DeclaredSchema {
 
 fn collect_members(members: &[CheckedSavedMember], set: &mut MemberSet) {
     for member in members {
-        set.ids.insert(member.catalog_id.clone());
-        set.names
-            .insert(member.catalog_id.clone(), member.name.clone());
+        if let Some(catalog_id) = &member.catalog_id {
+            set.ids.insert(catalog_id.clone());
+            set.names.insert(catalog_id.clone(), member.name.clone());
+        }
         collect_members(&member.group_members, set);
     }
 }

@@ -43,7 +43,7 @@ pub struct CellIdError;
 
 impl std::fmt::Display for CellIdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("tree-cell IDs must match cat_<16 lowercase hex>[_suffix]")
+        f.write_str("tree-cell IDs must match cat_<32 lowercase hex>")
     }
 }
 
@@ -394,31 +394,13 @@ fn validate_opaque_id(id: String) -> Result<String, CellIdError> {
 }
 
 fn is_valid_opaque_id(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("cat_") else {
+    let Some(hex) = id.strip_prefix("cat_") else {
         return false;
     };
-    let (hex, suffix) = match rest.split_once('_') {
-        Some((hex, suffix)) => (hex, Some(suffix)),
-        None => (rest, None),
-    };
-    if hex.len() != 16
-        || !hex
+    hex.len() == 32
+        && hex
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return false;
-    }
-    suffix.is_none_or(is_valid_suffix)
-}
-
-fn is_valid_suffix(suffix: &str) -> bool {
-    if suffix.is_empty() || suffix == "0" {
-        return false;
-    }
-    if suffix.len() > 1 && suffix.starts_with('0') {
-        return false;
-    }
-    suffix.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn family(tag: u8) -> Vec<u8> {
@@ -463,11 +445,19 @@ mod tests {
     use crate::key::SavedKey;
 
     fn store_id(suffix: &str) -> CatalogId {
-        CatalogId::new(format!("cat_0123456789abcdef{suffix}")).expect("catalog id")
+        CatalogId::new(format!("cat_0123456789abcdef0123456789abcdef{suffix}")).expect("catalog id")
     }
 
     fn member_id() -> CatalogId {
-        CatalogId::new("cat_fedcba9876543210").expect("member id")
+        CatalogId::new("cat_fedcba9876543210fedcba9876543210").expect("member id")
+    }
+
+    #[test]
+    fn catalog_ids_use_128_bit_lowercase_hex() {
+        assert!(CatalogId::new("cat_0123456789abcdef0123456789abcdef").is_ok());
+        assert!(CatalogId::new("cat_0123456789abcdef").is_err());
+        assert!(CatalogId::new("cat_0123456789abcdef0123456789abcdeF").is_err());
+        assert!(CatalogId::new("cat_0123456789abcdef0123456789abcdef_1").is_err());
     }
 
     fn assert_data(key: &CellKey, expected_path: &[DataPathSegment]) {

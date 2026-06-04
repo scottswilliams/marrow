@@ -21,7 +21,7 @@ pub struct CheckedSavedPlace {
     pub root: String,
     pub store_id: StoreId,
     pub resource_id: ResourceId,
-    pub store_catalog_id: String,
+    pub store_catalog_id: Option<String>,
     pub resource_name: String,
     pub root_members: Vec<CheckedSavedMember>,
     pub members: Vec<CheckedSavedMember>,
@@ -39,7 +39,7 @@ pub struct CheckedSavedPlace {
 pub struct CheckedSavedIndex {
     pub id: StoreIndexId,
     pub name: String,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub unique: bool,
     pub keys: Vec<CheckedSavedIndexKey>,
 }
@@ -60,7 +60,7 @@ pub struct CheckedSavedKeyParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedSavedLayer {
     pub name: String,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub args: Vec<CheckedArg>,
     pub key_params: Vec<CheckedSavedKeyParam>,
     pub leaf: Option<crate::StoreLeafKind>,
@@ -74,7 +74,7 @@ pub struct CheckedSavedMember {
     pub name: String,
     pub key_params: Vec<CheckedSavedKeyParam>,
     pub kind: CheckedSavedMemberKind,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub leaf: Option<crate::StoreLeafKind>,
     pub group_members: Vec<CheckedSavedMember>,
 }
@@ -122,12 +122,12 @@ pub enum CheckedSavedTerminal {
     Record,
     Field {
         name: String,
-        catalog_id: String,
+        catalog_id: Option<String>,
         leaf: Option<crate::StoreLeafKind>,
     },
     Index {
         name: String,
-        catalog_id: String,
+        catalog_id: Option<String>,
         args: Vec<CheckedArg>,
         unique: bool,
         arg_count: usize,
@@ -381,7 +381,7 @@ pub(super) fn checked_enum_member_ref_in(
     };
     let member_id = program
         .facts
-        .enum_member_by_ordinal(enum_ref.enum_id, ordinal as u32)?
+        .enum_member_by_source_order(enum_ref.enum_id, ordinal as u32)?
         .id;
     Some(CheckedEnumMemberRef {
         enum_ref,
@@ -406,7 +406,7 @@ fn checked_enum_member_ref(
     let member_id = context
         .program
         .facts
-        .enum_member_by_ordinal(enum_ref.enum_id, ordinal as u32)?
+        .enum_member_by_source_order(enum_ref.enum_id, ordinal as u32)?
         .id;
     Some(CheckedEnumMemberRef {
         enum_ref,

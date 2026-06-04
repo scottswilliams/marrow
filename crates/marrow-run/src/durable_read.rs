@@ -72,7 +72,7 @@ pub(crate) fn eval_index_lookup(
         ));
     };
     decode_identity_payload_arity(&entry.value, place.identity_keys.len())
-        .map(identity_value)
+        .map(|keys| identity_value(&place.root, keys))
         .ok_or_else(|| RuntimeError {
             throw: None,
             origin: None,
@@ -263,7 +263,14 @@ pub(crate) fn eval_resource_read(
     if !matches!(place.terminal, CheckedSavedTerminal::Record) || !place.layers.is_empty() {
         return Err(unsupported("this read", span));
     }
-    let identity = lower_keys(&place.identity_args, span, true, &place.identity_keys, env)?;
+    let identity = lower_keys(
+        &place.identity_args,
+        span,
+        true,
+        Some(&place.root),
+        &place.identity_keys,
+        env,
+    )?;
     read_resource(place, &identity, span, env)
 }
 

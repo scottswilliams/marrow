@@ -61,7 +61,7 @@ pub(super) fn stage_transform(
         .catalog
         .evolve_transforms
         .iter()
-        .find(|transform| transform.catalog_id == target_id.as_str())
+        .find(|transform| transform.catalog_id.as_deref() == Some(target_id.as_str()))
         .ok_or_else(|| diverged("no bound transform for the target the witness names"))?;
     let body = transform
         .runtime_body()
@@ -219,7 +219,7 @@ fn locate_target<'a>(
         place
             .root_members
             .iter()
-            .find(|member| member.catalog_id == target_id.as_str())
+            .find(|member| member.catalog_id.as_deref() == Some(target_id.as_str()))
             .and_then(target_leaf)
             .map(|leaf| (place, leaf))
     })

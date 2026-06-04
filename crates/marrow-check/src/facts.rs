@@ -161,20 +161,15 @@ impl CheckedFacts {
         self.enum_members.get(id.0 as usize)
     }
 
-    pub fn enum_member_by_ordinal(&self, enum_id: EnumId, ordinal: u32) -> Option<&EnumMemberFact> {
+    pub(crate) fn enum_member_by_source_order(
+        &self,
+        enum_id: EnumId,
+        ordinal: u32,
+    ) -> Option<&EnumMemberFact> {
         self.enum_members
             .iter()
             .filter(|member| member.enum_id == enum_id)
             .nth(ordinal as usize)
-    }
-
-    pub fn enum_member_ordinal(&self, member_id: EnumMemberId) -> Option<u32> {
-        let member = self.enum_member(member_id)?;
-        self.enum_members
-            .iter()
-            .filter(|candidate| candidate.enum_id == member.enum_id)
-            .position(|candidate| candidate.id == member_id)
-            .and_then(|ordinal| u32::try_from(ordinal).ok())
     }
 
     pub fn enum_member_is_selectable(&self, id: EnumMemberId) -> bool {
@@ -344,10 +339,27 @@ impl CheckedFacts {
         }
     }
 
-    pub(crate) fn record_presence_proof(&mut self, proof: PresenceProofFact) {
-        if !self.presence_proofs.contains(&proof) {
-            self.presence_proofs.push(proof);
+    pub(crate) fn record_presence_proof(&mut self, proof: PresenceProofDraft) {
+        if self.presence_proofs.iter().any(|existing| {
+            existing.place == proof.place
+                && existing.keys == proof.keys
+                && existing.read == proof.read
+                && existing.source == proof.source
+                && existing.status == proof.status
+                && existing.span == proof.span
+        }) {
+            return;
         }
+        let id = PresenceProofId(self.presence_proofs.len() as u32);
+        self.presence_proofs.push(PresenceProofFact {
+            id,
+            place: proof.place,
+            keys: proof.keys,
+            read: proof.read,
+            source: proof.source,
+            status: proof.status,
+            span: proof.span,
+        });
     }
 
     pub(crate) fn refresh_direct_effects(&mut self, modules: &[CheckedModule]) {
@@ -528,7 +540,7 @@ impl CheckedFacts {
                 id: resource_id,
                 module: module_id,
                 name: resource.name.clone(),
-                catalog_id: String::new(),
+                catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
             });
             let aliases = build_alias_map(&module.imports);
@@ -584,7 +596,7 @@ impl CheckedFacts {
                 resource,
                 identity_keys,
                 next_id_shape: store.next_id_shape(),
-                catalog_id: String::new(),
+                catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
             for index in &store.indexes {
@@ -612,14 +624,14 @@ impl CheckedFacts {
                             &aliases,
                         )
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 self.store_indexes.push(StoreIndexFact {
                     id,
                     store: store_id,
                     name: index.name.clone(),
                     unique: index.unique,
                     keys,
-                    catalog_id: String::new(),
+                    catalog_id: None,
                     span,
                 });
             }
@@ -664,7 +676,7 @@ impl CheckedFacts {
                 name: node.name.clone(),
                 kind,
                 value_meaning,
-                catalog_id: String::new(),
+                catalog_id: None,
                 span,
             });
             let nested = declaration.and_then(|member| match member {
@@ -708,7 +720,7 @@ impl CheckedFacts {
                 id: enum_id,
                 module: module_id,
                 name: enum_schema.name.clone(),
-                catalog_id: String::new(),
+                catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |decl| decl.span),
             });
 
@@ -726,8 +738,11 @@ impl CheckedFacts {
                         .map(|parent| EnumMemberId(member_start + parent as u32)),
                     name: member.name.clone(),
                     category: member.category,
-                    catalog_id: String::new(),
-                    span: member_spans.get(index).copied().unwrap_or_default(),
+                    catalog_id: None,
+                    span: member_spans
+                        .get(index)
+                        .copied()
+                        .unwrap_or_else(SourceSpan::default),
                 });
             }
         }
@@ -977,7 +992,7 @@ pub struct ResourceFact {
     pub id: ResourceId,
     pub module: ModuleId,
     pub name: String,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -989,7 +1004,7 @@ pub struct StoreFact {
     pub resource: ResourceId,
     pub identity_keys: Vec<StoreIdentityKeyFact>,
     pub next_id_shape: String,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -1006,7 +1021,7 @@ pub struct StoreIndexFact {
     pub name: String,
     pub unique: bool,
     pub keys: Vec<StoreIndexKeyFact>,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -1031,7 +1046,7 @@ pub struct ResourceMemberFact {
     pub name: String,
     pub kind: ResourceMemberKind,
     pub value_meaning: Option<StoredValueMeaning>,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -1046,7 +1061,7 @@ pub struct EnumFact {
     pub id: EnumId,
     pub module: ModuleId,
     pub name: String,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -1057,7 +1072,7 @@ pub struct EnumMemberFact {
     pub parent: Option<EnumMemberId>,
     pub name: String,
     pub category: bool,
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -1159,12 +1174,26 @@ pub struct SavedPlaceEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresenceProofFact {
+    pub id: PresenceProofId,
     pub place: PresenceProofPlace,
     pub keys: Vec<String>,
     pub read: PresenceProofRead,
     pub source: PresenceProofSource,
+    pub status: PresenceProofStatus,
     pub span: SourceSpan,
 }
+
+pub(crate) struct PresenceProofDraft {
+    pub(crate) place: PresenceProofPlace,
+    pub(crate) keys: Vec<String>,
+    pub(crate) read: PresenceProofRead,
+    pub(crate) source: PresenceProofSource,
+    pub(crate) status: PresenceProofStatus,
+    pub(crate) span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PresenceProofId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PresenceProofPlace {
@@ -1183,7 +1212,13 @@ pub enum PresenceProofRead {
 pub enum PresenceProofSource {
     Declaration,
     Narrowing,
-    AttachedDataPending,
+    AttachedData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceProofStatus {
+    Discharged,
+    PendingAttachedData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1207,10 +1242,8 @@ fn catalog_id(
     ids: &HashMap<CatalogKey, String>,
     kind: marrow_project::CatalogEntryKind,
     path: String,
-) -> String {
-    ids.get(&CatalogKey::new(kind, path))
-        .cloned()
-        .unwrap_or_default()
+) -> Option<String> {
+    ids.get(&CatalogKey::new(kind, path)).cloned()
 }
 
 fn resource_member_name_path(members: &[ResourceMemberFact], id: ResourceMemberId) -> Vec<String> {

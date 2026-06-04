@@ -91,14 +91,17 @@ fn collect_resource_value(
         }
         let field = flattened_field_name(prefix, &name);
         match value {
-            Value::Identity(keys) => {
-                // Single-key identities collapse to scalars, so explicit identity
-                // values keep their arity until the planner checks the field type.
-                let referenced_arity = identity_field_arity(members, &name).unwrap_or(keys.len());
+            Value::Identity(identity) => {
+                let Some(StoreLeafKind::Identity { store_root, arity }) =
+                    plain_field_leaf(members, &name)
+                else {
+                    return Err(unsupported("a nested resource field", span));
+                };
+                let keys = identity.into_keys_for_root(store_root, span)?;
                 out.identities.push(SuppliedIdentity {
                     field,
                     keys,
-                    referenced_arity,
+                    referenced_arity: *arity,
                 });
             }
             other => {
@@ -125,16 +128,6 @@ fn flattened_field_name(prefix: &[String], name: &str) -> String {
     field.push('.');
     field.push_str(name);
     field
-}
-
-fn identity_field_arity(members: &[CheckedSavedMember], field: &str) -> Option<usize> {
-    let member = members
-        .iter()
-        .find(|member| member.name == field && member.is_plain_field())?;
-    match member.leaf.as_ref()? {
-        StoreLeafKind::Identity { arity, .. } => Some(*arity),
-        StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => None,
-    }
 }
 
 fn plain_field_leaf<'a>(

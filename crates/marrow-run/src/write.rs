@@ -145,7 +145,8 @@ pub fn plan_store_root_delete(
     }];
     for index in &place.indexes {
         steps.push(PlanStep::DeleteIndexSubtree {
-            address: IndexAddress::new(&index.catalog_id, Vec::new(), span).map_err(store_error)?,
+            address: IndexAddress::from_checked(&index.catalog_id, Vec::new(), span)
+                .map_err(store_error)?,
         });
     }
     Ok(WritePlan { steps })

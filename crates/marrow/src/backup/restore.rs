@@ -230,12 +230,16 @@ mod tests {
             marrow_syntax::SourceSpan::default(),
         )
         .expect("checked saved place");
-        let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store id");
+        let store_id = CatalogId::new(place.store_catalog_id.clone().expect("accepted store id"))
+            .expect("store id");
         let title = place
             .root_members
             .iter()
             .find(|member| member.name == "title")
-            .map(|member| CatalogId::new(member.catalog_id.clone()).expect("title id"))
+            .map(|member| {
+                CatalogId::new(member.catalog_id.clone().expect("accepted title id"))
+                    .expect("title id")
+            })
             .expect("title member");
         store
             .write_data_value(

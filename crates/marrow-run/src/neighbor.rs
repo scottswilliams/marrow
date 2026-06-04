@@ -7,7 +7,7 @@ use crate::env::Env;
 use crate::error::{Located, RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::path::{Terminal, direct_root_place, lower};
 use crate::store::{DataAddress, catalog_id};
-use crate::value::{Value, saved_key_to_value};
+use crate::value::{Value, identity_value, saved_key_to_value};
 
 pub(crate) fn eval_neighbor(
     dir: Direction,
@@ -30,11 +30,17 @@ pub(crate) fn eval_neighbor(
         });
     };
     let target = neighbor_target(&arg.value, env)?;
+    let identity_root = match &target {
+        NeighborTarget::Record { place, .. } => Some(place.root.clone()),
+        NeighborTarget::Data { .. } => None,
+    };
     let neighbor = seek_neighbor(target, dir, span, env)?;
     match neighbor {
-        Some(key) => {
-            saved_key_to_value(key).ok_or_else(|| unsupported("a neighbor key of this type", span))
-        }
+        Some(key) => match identity_root {
+            Some(root) => Ok(identity_value(&root, vec![key])),
+            None => saved_key_to_value(key)
+                .ok_or_else(|| unsupported("a neighbor key of this type", span)),
+        },
         None => {
             let edge = if dir == Direction::Ascending {
                 "after"

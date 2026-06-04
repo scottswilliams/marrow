@@ -1136,8 +1136,10 @@ fn run_rejects_populated_unstamped_accepted_store() {
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
         let store = marrow_store::tree::TreeStore::open(&store_path).expect("open native store");
-        let store_id = marrow_store::cell::CatalogId::new(place.store_catalog_id.clone())
-            .expect("store catalog id");
+        let store_id = marrow_store::cell::CatalogId::new(
+            place.store_catalog_id.clone().expect("accepted store id"),
+        )
+        .expect("store catalog id");
         let value_id = marrow_store::cell::CatalogId::new(
             place
                 .root_members
@@ -1145,7 +1147,8 @@ fn run_rejects_populated_unstamped_accepted_store() {
                 .find(|member| member.name == "value")
                 .expect("value member")
                 .catalog_id
-                .clone(),
+                .clone()
+                .expect("accepted value member id"),
         )
         .expect("value catalog id");
         store

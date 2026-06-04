@@ -115,7 +115,7 @@ impl CheckedProgram {
     }
 
     /// The schema-bearing digest of this program's durable shape, in the
-    /// `fnv1a64:<hex>` form the store commit metadata records. It binds member types,
+    /// `sha256:<hex>` form the store commit metadata records. It binds member types,
     /// identity key types, index shape, enum members, and module constants, so a
     /// structurally different schema produces a different digest even at the same
     /// catalog epoch. It excludes the transient evolve block, so a consumed transition
@@ -126,7 +126,7 @@ impl CheckedProgram {
     }
 
     /// The digest of this program's durable shape *and* its evolve decision surface, in
-    /// the same `fnv1a64:<hex>` form. The evolution witness records it so apply aborts
+    /// the same `sha256:<hex>` form. The evolution witness records it so apply aborts
     /// when the source it activates no longer matches what was discharged, including a
     /// transform-body or evolve-default edit the shape digest cannot see.
     pub fn evolution_digest(&self) -> String {
@@ -295,7 +295,7 @@ pub struct EvolveDefault {
 /// [`EvolveTransform::runtime_body`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveTransform {
-    pub catalog_id: String,
+    pub catalog_id: Option<String>,
     pub reads: Vec<String>,
     pub resource: String,
     pub file: PathBuf,

@@ -15,17 +15,14 @@ new ADR, or bless any incomplete lane as complete.
 
 Local state inspected before synthesis:
 
-- `/Users/scottwilliams/Dev/marrow` is on
-  `research/lane-09-source-native-evolution-audit` at `f0623c9`, with untracked
-  `docs/roadmap/research/`.
-- Local `main` and `origin/main` are at `3f7178a`.
-- `/Users/scottwilliams/Dev/marrow-decisions` is on `main` at `7ce51f1`, with
-  unstaged edits in:
-  - `adr/foundations/01-architecture-laws-and-five-layers.md`
-  - `adr/storage-engine/02-transactions-commits-and-recovery.md`
+- the Marrow repository was on the source-native evolution research branch, with
+  untracked research output under `docs/roadmap/research/`;
+- local `main` and `origin/main` were at `3f7178a`;
+- `marrow-decisions` had then-current edits in the foundations and
+  storage-engine ADRs.
 
 Unique finalized reports read and integrated into
-`/Users/scottwilliams/Dev/marrow/docs/roadmap/research/`:
+`marrow/docs/roadmap/research/`:
 
 - Lane 5 resource/store surface:
   `lane-05-resource-store-surface.md`
@@ -51,11 +48,11 @@ integrated once.
 
 Current docs and ADRs reviewed:
 
-- Canonical Marrow docs under `/Users/scottwilliams/Dev/marrow/docs`, with
+- Canonical Marrow docs under `marrow/docs`, with
   particular attention to language, cost model, CLI, data tools, serve protocol,
   backend contract, implementation, data evolution, and roadmap lane docs.
 - Accepted and proposed ADRs under
-  `/Users/scottwilliams/Dev/marrow-decisions/adr`.
+  `marrow-decisions/adr`.
 
 ## First Principles
 
@@ -249,15 +246,15 @@ and commit IDs can be monotonic.
 
 Refine the catalog implementation and docs:
 
-- prefer a collision-resistant digest contract for catalog/source/evolution
-  fences, likely canonical JSON plus SHA-256, or explicitly narrow FNV's role;
-- implement the `reserved` alias lifecycle or amend the accepted lifecycle text;
+- use the collision-resistant SHA-256 digest contract for catalog/source/evolution
+  fences;
+- keep `reserved` as the alias lifecycle state that blocks silent reuse;
 - avoid sentinel empty strings for proposal-only catalog IDs;
 - make source-order enum helpers private or visibly non-durable;
 - add branch-merge fixtures for parallel catalog additions, aliases, enum
   members, indexes, and conflict diagnostics;
-- consider a larger random ID space if the current `cat_<16 hex>` shape is too
-  narrow for long-lived projects.
+- keep the `cat_<32 lowercase hex>` random ID shape unless a future catalog
+  format decision deliberately replaces it.
 
 ### Refine Presence Ledger Shape
 
@@ -530,19 +527,15 @@ These still need explicit product decisions before v0.1 freeze:
    namespace or flag?
 4. Should `data dump` be allowed as an explicitly unbounded operator command, or
    must every durable-data preview be cursor/paging based?
-5. Should catalog stable IDs remain 64-bit random (`cat_<16 hex>`) for v0.1, or
-   move now to a larger random/UUID-like space?
-6. Should catalog/source/evolution digests become SHA-256 now, or should FNV be
-   explicitly scoped as an accidental-change stamp?
-7. Should the catalog implement `reserved` alias lifecycle now, or should the ADR
-   remove it?
+5. Should any remaining non-cryptographic checksum wording be narrowed to
+   accidental-corruption detection?
 
 ## Proposed Follow-Up Lane Plan
 
 The lanes below are designed to be safer than another broad "cleanup" wave. Each
 lane has an owner area, blockers, and a prompt. The lanes should use isolated
-worktrees under `/Users/scottwilliams/Dev`, explicit isolated
-`CARGO_TARGET_DIR`s, and the lane loop in `/Users/scottwilliams/Dev/AGENTS.md`.
+sibling worktrees, explicit isolated `CARGO_TARGET_DIR`s, and the lane loop in
+AGENTS.md.
 
 ### Sequencing
 
@@ -553,18 +546,16 @@ worktrees under `/Users/scottwilliams/Dev`, explicit isolated
    owns proposal-only evolution and activation-job shape; Lane 15 owns commit
    metadata/snapshot/store contract; Lane 17 owns rejected syntax cleanup except
    unresolved `out`.
-3. Lane 16 can start full implementation for settled tooling decisions:
+3. Lane 13 owns catalog/presence hardening and settles ID size, digest, and
+   reserved-alias wording before later stack lanes compose on it.
+4. Lane 16 can start full implementation for settled tooling decisions:
    restore/orphan rejection, v0.1 debug/admin serve boundaries, shared tooling
    facts, LSP correctness, and raw production surface deletion. It must isolate
    unresolved `explain` and `data dump/get` product choices rather than blocking
    the whole lane.
-4. Lane 13 can start in parallel on catalog/presence hardening. If Lane 12
-   changes ADR wording for ID size, digest, or reserved aliases, Lane 13 rebases
-   and aligns; it should not wait on unrelated docs.
 5. Lane 19 is a short product-decision closure lane for the remaining product
    questions. It should run early and unblock the `out`, `explain`, `data dump`,
-   catalog ID, digest, reserved-alias, compatibility-window, default, and re-key
-   pieces.
+   compatibility-window, default, and re-key pieces.
 6. Lane 18 runs last as final Rust hardening, after semantic owners have landed.
 
 ### Lane 12: ADR And Canonical Docs Reconciliation
@@ -574,9 +565,9 @@ without creating new ADRs.
 
 Owned files:
 
-- `/Users/scottwilliams/Dev/marrow-decisions/adr/**`
-- `/Users/scottwilliams/Dev/marrow/docs/**`
-- `/Users/scottwilliams/Dev/marrow/docs/roadmap/**`
+- `marrow-decisions/adr/**`
+- `marrow/docs/**`
+- `marrow/docs/roadmap/**`
 
 Do not edit Rust except for absence scans if needed.
 
@@ -585,9 +576,9 @@ Prompt:
 ```text
 You are Lane 12: ADR And Canonical Docs Reconciliation.
 
-Work in a fresh worktree under /Users/scottwilliams/Dev from current main. Do not create new ADRs. Update accepted ADRs and canonical docs in place so they match the implemented v0.1 vision and the finalized research synthesis at /Users/scottwilliams/Dev/marrow/docs/roadmap/research/synthesis.md.
+Work in a fresh isolated sibling worktree from current main. Do not create new ADRs. Update accepted ADRs and canonical docs in place so they match the implemented v0.1 vision and the finalized research synthesis at marrow/docs/roadmap/research/synthesis.md.
 
-First inspect git state for /Users/scottwilliams/Dev/marrow and /Users/scottwilliams/Dev/marrow-decisions, including dirty files. Read every integrated research report in /Users/scottwilliams/Dev/marrow/docs/roadmap/research, the current docs/language set, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/backend-contract.md, docs/data-evolution.md, and the full ADR packet.
+First inspect git state for the Marrow checkout and `marrow-decisions`, including dirty files. Read every integrated research report in marrow/docs/roadmap/research, the current docs/language set, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/backend-contract.md, docs/data-evolution.md, and the full ADR packet.
 
 Fix doc drift only. Remove or rewrite stale claims about Book::Id, @id, edit, raw inspection without checked source, raw archive replay as production, monotonic entity stable IDs, merge/lock as supported syntax, source-diff identity, migration scripts, query plans, and stale lane status. Keep Id(^store) as the v0.1 store-identity type constructor, random or collision-resistant catalog identity, source-is-access-path, typed backup/restore, checked facts, clean orphan-rejecting restore, unknown-not-any, dangling references as compiler-visible integrity facts, explicit user-mode history, exact whole-resource replacement, activation as a compiler-owned job shape, deferred external adapters, and current serve as debug/admin loopback only while preserving the future local API path.
 
@@ -618,17 +609,20 @@ Prompt:
 ```text
 You are Lane 13: Catalog Identity And Presence Hardening.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 6 report, Lane 5 report, language docs, and catalog/model ADRs before editing.
+Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, Lane 6 report, Lane 5 report, language docs, and catalog/model ADRs before editing.
 
 Mission: harden catalog identity and presence proofs without changing language semantics. Refresh all evidence from current HEAD before acting.
 
 Targets:
 - Resolve random-vs-monotonic stable ID law in implementation/docs using the synthesis as current product truth; rebase and align if Lane 12 lands ADR wording while you work.
-- Implement or remove the reserved alias lifecycle according to the reconciled ADR if Lane 12 has settled it; otherwise make the smallest decision packet for Scott and continue other file-disjoint catalog/presence work.
-- Replace empty-string catalog IDs or sentinel identity fields with typed optionality or distinct accepted/proposal facts.
+- Preserve the reserved alias lifecycle and prove retired/reserved spellings cannot
+  be silently reused.
+- Preserve typed optional catalog IDs; do not regress proposal-only identity into
+  empty-string sentinels.
 - Make enum source-order helpers private to lowering/traversal or clearly typed as non-durable.
 - Strengthen catalog branch-merge fixtures for parallel additions, aliases, enum members, indexes, and conflict diagnostics.
-- Extend presence proofs toward explicit proof identity and Discharged/PendingAttachedData status where current facts are too implicit.
+- Preserve explicit proof identity and Discharged/PendingAttachedData status in
+  presence proofs.
 - Prove runtime/tooling/evolution consumers cannot rediscover maybe-present semantics outside the presence owner.
 - Ensure dynamic identity reentry cannot treat unknown as any or accept same-shaped foreign identities without a typed store-root check.
 
@@ -657,7 +651,7 @@ Prompt:
 ```text
 You are Lane 14: Evolution Soundness And Activation Receipts.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 9 report, Lane 14A online evolution foundation report, architecture red-team report, catalog ADRs, evolution ADRs, docs/data-evolution.md, and docs/language/resources-and-storage.md.
+Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, Lane 9 report, Lane 14A online evolution foundation report, architecture red-team report, catalog ADRs, evolution ADRs, docs/data-evolution.md, and docs/language/resources-and-storage.md.
 
 Mission: make source-native evolution sound before v0.1 freeze. Compiler equals data integrity: preview/apply must prove source, catalog, attached data, and engine facts together. Do not add migration scripts, source-diff identity, hidden ledgers, host migration shims, or compatibility glue.
 
@@ -704,7 +698,7 @@ Prompt:
 ```text
 You are Lane 15: Transaction, Commit Metadata, And Store Contract Hardening.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 7 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, backend contract docs, storage ADRs, and transaction ADRs including current unstaged decision edits if still present.
+Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, Lane 7 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, backend contract docs, storage ADRs, and transaction ADRs including current unstaged decision edits if still present.
 
 Mission: harden the physical durable boundary without exposing raw engine semantics.
 
@@ -744,7 +738,7 @@ Prompt:
 ```text
 You are Lane 16: Tooling Facts, Debug Surface, And Explain Rescope.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, Lane 10 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/lsp.md, tooling ADRs, and storage backup ADRs.
+Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, Lane 10 report, Lane 8 report, Lane 14A online evolution foundation report, architecture red-team report, docs/cli.md, docs/data-tools.md, docs/serve-protocol.md, docs/lsp.md, tooling ADRs, and storage backup ADRs.
 
 Mission: make tools render shared facts and stop raw/path/debug surfaces from becoming production semantics. Compiler equals data integrity: tools report compiler/store facts; they do not become a second database model.
 
@@ -793,7 +787,7 @@ Prompt:
 ```text
 You are Lane 17: Language Surface Simplification.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md. Read the synthesis, holistic language audit, architecture red-team report, docs/language, and language ADRs.
+Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md. Read the synthesis, holistic language audit, architecture red-team report, docs/language, and language ADRs.
 
 Mission: make the v0.1 language surface match the vision. Do not implement new features. Delete or make rejection-only any prototype syntax that is not v0.1.
 
@@ -827,7 +821,7 @@ Prompt:
 ```text
 You are Lane 18: Final Rust De-Slopification And Release Hardening.
 
-Work from current main in a fresh worktree under /Users/scottwilliams/Dev with an isolated CARGO_TARGET_DIR. Follow /Users/scottwilliams/Dev/AGENTS.md and the synthesis. This lane verifies cleanup happened; it is not where active semantic lanes dump unresolved design work.
+Work from current main in a fresh isolated sibling worktree with an isolated CARGO_TARGET_DIR. Follow AGENTS.md and the synthesis. This lane verifies cleanup happened; it is not where active semantic lanes dump unresolved design work.
 
 Start read-only. Inspect current main, worktrees, branches, dirty files, and unresolved conflicts. Refresh every scan from current HEAD; stale synthesis line numbers or chat memory are not evidence.
 
@@ -859,8 +853,8 @@ Completion requires a clean status, exact base/head, changed-file list, focused 
 
 ### Lane 19: Remaining Product Decision Closure
 
-Goal: close the remaining product decisions that block small parts of Lanes 13,
-16, and 17.
+Goal: close the remaining product decisions that block small parts of Lanes 16
+and 17.
 
 Owned areas:
 
@@ -887,9 +881,6 @@ The remaining questions are:
 - marrow explain;
 - marrow data dump/get debug/admin scope;
 - unbounded data dump versus cursor/page contract;
-- catalog ID size;
-- catalog/source/evolution digest algorithm;
-- reserved alias lifecycle.
 - compatibility-window defaults for future server mode: one-old-epoch rule and
   old-write admission policy;
 - required-field `default` meaning: temporary activation fill only versus a
@@ -915,11 +906,9 @@ Be skeptical. Do not keep a feature because it exists. Default to delete or defe
    data-integrity guidance, debug/admin serve boundary, shared tooling facts,
    LSP position correctness, and raw production surface deletion. Isolate
    unresolved `explain` and `data dump/get` choices.
-5. Start Lane 13 in parallel on catalog/presence hardening. Coordinate with Lane
-   12 and Lane 19 only for ID size, digest, and reserved-alias wording.
-6. Run Lane 19 early as the short decision closure lane for the remaining
+5. Run Lane 19 early as the short decision closure lane for the remaining
    product choices.
-7. Run Lane 18 last as final hardening, not as a substitute for lane-local
+6. Run Lane 18 last as final hardening, not as a substitute for lane-local
    cleanup.
 
 ## Completion Bar For The Follow-Up Program

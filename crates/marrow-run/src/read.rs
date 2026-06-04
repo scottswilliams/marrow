@@ -436,13 +436,16 @@ pub(crate) fn next_data_child(
 
 pub(crate) fn collected_identity_value(
     keys: &[SavedKey],
+    root: Option<&str>,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
-    if let [key] = keys {
-        return saved_key_to_value(key.clone())
-            .ok_or_else(|| unsupported("iterating keys of this type", span));
+    if let Some(root) = root {
+        return Ok(crate::value::identity_value(root, keys.to_vec()));
     }
-    Ok(Value::Identity(keys.to_vec()))
+    let [key] = keys else {
+        return Err(unsupported("iterating a composite non-identity key", span));
+    };
+    saved_key_to_value(key.clone()).ok_or_else(|| unsupported("iterating keys of this type", span))
 }
 
 /// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated

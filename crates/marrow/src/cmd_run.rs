@@ -219,7 +219,10 @@ fn populated_unstamped_store(
             ) else {
                 continue;
             };
-            let Ok(store_id) = marrow_store::cell::CatalogId::new(place.store_catalog_id) else {
+            let Some(raw_store_id) = place.store_catalog_id else {
+                continue;
+            };
+            let Ok(store_id) = marrow_store::cell::CatalogId::new(raw_store_id) else {
                 continue;
             };
             if store.record_child_count(&store_id, &[])? > 0 {

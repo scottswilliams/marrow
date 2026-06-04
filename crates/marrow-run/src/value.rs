@@ -44,10 +44,45 @@ pub enum Value {
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write.
     Resource(Vec<(String, Value)>),
-    /// A composite store identity: its lowered key segments in declared order.
-    /// The checked call graph owns the nominal store type; host entry calls reject
-    /// raw identity values so untyped callers cannot supply same-shape keys.
-    Identity(Vec<SavedKey>),
+    /// A store identity: its checked root plus lowered key segments in declared order.
+    Identity(IdentityValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityValue {
+    root: String,
+    keys: Vec<SavedKey>,
+}
+
+impl IdentityValue {
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    pub fn keys(&self) -> &[SavedKey] {
+        &self.keys
+    }
+
+    pub(crate) fn for_root(root: impl Into<String>, keys: Vec<SavedKey>) -> Self {
+        Self {
+            root: root.into(),
+            keys,
+        }
+    }
+
+    pub(crate) fn into_keys_for_root(
+        self,
+        expected_root: &str,
+        span: SourceSpan,
+    ) -> Result<Vec<SavedKey>, RuntimeError> {
+        if self.root != expected_root {
+            return Err(type_error(
+                &format!("this identity belongs to a different store than `^{expected_root}`"),
+                span,
+            ));
+        }
+        Ok(self.keys)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,8 +156,8 @@ impl Value {
                 format!("resource{{{}}}", names.join(", "))
             }
             // Preview the identity's lowered key segments.
-            Value::Identity(keys) => {
-                let rendered: Vec<String> = keys.iter().map(saved_key_preview).collect();
+            Value::Identity(identity) => {
+                let rendered: Vec<String> = identity.keys.iter().map(saved_key_preview).collect();
                 format!("identity({})", rendered.join(", "))
             }
         }
@@ -162,20 +197,11 @@ pub(crate) fn saved_key_to_value(key: SavedKey) -> Option<Value> {
     }
 }
 
-/// The runtime value for an identity's lowered keys. Single-key identities use
-/// the key's scalar shape, matching `nextId` and root traversal; composite
-/// identities need the opaque wrapper so they can splice all key segments later.
-pub(crate) fn identity_value(keys: Vec<SavedKey>) -> Value {
-    match keys.as_slice() {
-        [SavedKey::Int(n)] => Value::Int(*n),
-        [SavedKey::Bool(b)] => Value::Bool(*b),
-        [SavedKey::Str(s)] => Value::Str(s.clone()),
-        [SavedKey::Bytes(bytes)] => Value::Bytes(bytes.clone()),
-        [SavedKey::Instant(n)] => Value::Instant(*n),
-        [SavedKey::Date(d)] => Value::Date(*d),
-        [SavedKey::Duration(n)] => Value::Duration(*n),
-        _ => Value::Identity(keys),
-    }
+/// The runtime value for an identity's lowered keys. Every identity carries its
+/// checked store root, including single-key identities, so dynamic and host
+/// boundaries cannot confuse a raw scalar key with an `Id(^store)`.
+pub(crate) fn identity_value(root: &str, keys: Vec<SavedKey>) -> Value {
+    Value::Identity(IdentityValue::for_root(root, keys))
 }
 
 /// Convert a runtime value to the saved scalar a managed write stores. Enum
@@ -198,28 +224,20 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
     })
 }
 
-/// The identity key segments a typed-reference field stores. A composite identity
-/// arrives as a [`Value::Identity`]; a single-key identity collapses to its bare key
-/// value at runtime — the same way `nextId` and a single-key record lookup do — so a
-/// scalar value is taken as that one key. A non-key value is a type fault.
-///
-/// The checker's nominal rule already rejects a wrong-store or scalar value
-/// statically; this guards the well-typed path and gives a catchable `run.type`
-/// fault for a value that lost its nominal type through dynamic code, and the write
-/// planner's arity check rejects a single key written to a composite reference.
+/// The identity key segments a typed-reference field stores. Every identity
+/// arrives as a [`Value::Identity`] carrying checked root provenance; raw scalar
+/// keys are not accepted as identity values at dynamic runtime boundaries.
 pub(crate) fn identity_keys_of(
     value: Value,
+    expected_root: &str,
     span: SourceSpan,
 ) -> Result<Vec<SavedKey>, RuntimeError> {
     match value {
-        Value::Identity(keys) => Ok(keys),
-        other => match value_to_key(other) {
-            Some(key) => Ok(vec![key]),
-            None => Err(type_error(
-                "an identity-typed field takes an Id(^store) value",
-                span,
-            )),
-        },
+        Value::Identity(identity) => identity.into_keys_for_root(expected_root, span),
+        _ => Err(type_error(
+            "an identity-typed field takes an Id(^store) value",
+            span,
+        )),
     }
 }
 
@@ -303,8 +321,9 @@ pub(crate) fn decode_leaf(
     match leaf {
         StoreLeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
         StoreLeafKind::Enum { enum_id } => decode_enum(program, bytes, *enum_id).map(Value::Enum),
-        StoreLeafKind::Identity { arity, .. } => {
-            decode_identity_payload_arity(bytes, *arity).map(identity_value)
+        StoreLeafKind::Identity { store_root, arity } => {
+            decode_identity_payload_arity(bytes, *arity)
+                .map(|keys| identity_value(store_root, keys))
         }
     }
 }
@@ -316,11 +335,12 @@ fn decode_enum(
 ) -> Option<EnumValue> {
     let stored = decode_tree_enum_member(bytes).ok()?;
     let enum_fact = program.facts().enum_(enum_id)?;
-    if stored.enum_id().as_str() != enum_fact.catalog_id {
+    if enum_fact.catalog_id.as_deref() != Some(stored.enum_id().as_str()) {
         return None;
     }
     let member = program.facts().enum_members().iter().find(|member| {
-        member.enum_id == enum_id && member.catalog_id == stored.member_id().as_str()
+        member.enum_id == enum_id
+            && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
     })?;
     enum_value_from_member(program.facts(), member.id)
 }
@@ -331,14 +351,15 @@ pub(crate) fn enum_value_from_member(
 ) -> Option<EnumValue> {
     let member = facts.enum_member(member_id)?;
     let enum_fact = facts.enum_(member.enum_id)?;
-    facts
-        .enum_member_is_selectable(member_id)
-        .then(|| EnumValue {
-            enum_id: member.enum_id,
-            member_id,
-            enum_catalog_id: enum_fact.catalog_id.clone(),
-            member_catalog_id: member.catalog_id.clone(),
-        })
+    if !facts.enum_member_is_selectable(member_id) {
+        return None;
+    }
+    Some(EnumValue {
+        enum_id: member.enum_id,
+        member_id,
+        enum_catalog_id: enum_fact.catalog_id.clone()?,
+        member_catalog_id: member.catalog_id.clone()?,
+    })
 }
 
 pub(crate) fn enum_id_from_ref(enum_ref: CheckedEnumRef) -> EnumId {
@@ -376,7 +397,15 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Date(_) => return Err(unsupported("rendering a date value", span)),
         Value::Duration(_) => return Err(unsupported("rendering a duration value", span)),
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
-        Value::Identity(_) => return Err(unsupported("rendering an identity value", span)),
+        Value::Identity(identity) => render_identity(&identity),
         Value::Enum(_) => return Err(unsupported("rendering an enum value", span)),
     })
+}
+
+fn render_identity(identity: &IdentityValue) -> String {
+    let rendered: Vec<String> = identity.keys.iter().map(saved_key_preview).collect();
+    match rendered.as_slice() {
+        [key] => key.clone(),
+        _ => format!("identity({})", rendered.join(", ")),
+    }
 }

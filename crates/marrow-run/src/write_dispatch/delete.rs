@@ -294,7 +294,7 @@ pub(crate) fn eval_layer_entry_delete(
     let record_path = lower(record, env)?;
     let identity = record_path.identity.clone();
     let expected = layer_facts.key_params.as_slice();
-    let entry_keys = lower_keys(keys, span, false, expected, env)?;
+    let entry_keys = lower_keys(keys, span, false, None, expected, env)?;
     let mut layer_addresses = record_path.layer_addresses;
     layer_addresses.push(LayerAddress::from_checked(layer_facts, Vec::new()));
     let traversed = DataAddress::layer_prefix(

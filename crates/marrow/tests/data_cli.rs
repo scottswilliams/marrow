@@ -175,12 +175,16 @@ fn catalog_id(raw: &str) -> CatalogId {
     CatalogId::new(raw.to_string()).expect("catalog id")
 }
 
+fn checked_catalog_id(raw: &Option<String>) -> CatalogId {
+    CatalogId::new(raw.clone().expect("accepted catalog id")).expect("catalog id")
+}
+
 fn member_catalog_id(members: &[CheckedSavedMember], name: &str) -> CatalogId {
     let member = members
         .iter()
         .find(|member| member.name == name)
         .expect("checked member");
-    catalog_id(&member.catalog_id)
+    checked_catalog_id(&member.catalog_id)
 }
 
 fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathSegment> {
@@ -209,7 +213,12 @@ fn write_tree_value(
     fs::create_dir_all(&store_dir).expect("create store dir");
     let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     store
-        .write_data_value(&catalog_id(&place.store_catalog_id), identity, path, value)
+        .write_data_value(
+            &checked_catalog_id(&place.store_catalog_id),
+            identity,
+            path,
+            value,
+        )
         .expect("write tree-cell value");
 }
 
@@ -289,7 +298,11 @@ fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
     // A data cell under a store catalog id the schema does not declare: a dropped
     // root left it behind. The declared-cell walk never visits it, so only the
     // actual-cell orphan scan catches it.
-    write_orphan_cell(&project, "cat_00000000deadbeef", "cat_0000000000000001");
+    write_orphan_cell(
+        &project,
+        "cat_000000000000000000000000deadbeef",
+        "cat_00000000000000000000000000000001",
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -305,7 +318,12 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
     // The store id is the real one, but the member catalog id is undeclared: a
     // dropped field left this cell behind.
     let place = checked_place(&project, "counter");
-    write_orphan_cell(&project, &place.store_catalog_id, "cat_00000000cafef00d");
+    let store_catalog_id = place.store_catalog_id.expect("accepted store id");
+    write_orphan_cell(
+        &project,
+        &store_catalog_id,
+        "cat_000000000000000000000000cafef00d",
+    );
 
     let output = marrow(&["data", "integrity", &dir]);
     fs::remove_dir_all(&project).ok();
@@ -340,7 +358,11 @@ fn data_integrity_reports_an_undecodable_data_cell_key_as_store_corruption() {
 #[test]
 fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
     let (project, dir) = seeded_project("data-integrity-orphan-json");
-    write_orphan_cell(&project, "cat_00000000deadbeef", "cat_0000000000000001");
+    write_orphan_cell(
+        &project,
+        "cat_000000000000000000000000deadbeef",
+        "cat_00000000000000000000000000000001",
+    );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();

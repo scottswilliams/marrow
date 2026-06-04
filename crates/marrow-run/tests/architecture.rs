@@ -800,6 +800,18 @@ fn production_runtime_resource_constructors_use_checked_contract_facts() {
 }
 
 #[test]
+fn runtime_identity_values_have_no_public_rootless_constructor() {
+    let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let value = runtime_src.join("value.rs");
+    let text = fs::read_to_string(&value).expect("value source");
+
+    assert!(
+        !text.contains("pub fn untrusted") && !text.contains("root: Option<String>"),
+        "runtime identity values still expose rootless construction or optional root provenance"
+    );
+}
+
+#[test]
 fn canonical_language_docs_do_not_advertise_unsupported_edit_blocks() {
     let crate_parent = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

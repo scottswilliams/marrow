@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasher, Hasher};
+use std::io::Read;
 use std::path::Path;
 
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
@@ -210,6 +210,11 @@ fn catalog_binding(
                     }
                     let stable_id = binding.entry.stable_id.clone();
                     ids.insert(CatalogKey::new(source.kind, source.path.clone()), stable_id);
+                } else if let Some(reserved) =
+                    accepted_index.reserved_entry(source.kind, &source.path)
+                {
+                    push_reserved_reuse(source, reserved.entry, diagnostics);
+                    changed = true;
                 } else if let Some(rename) = rename {
                     apply_rename(&mut proposal_entries, source, &rename.from_path, &mut ids);
                     changed = true;
@@ -359,10 +364,10 @@ fn bound_defaults(
 
 /// Record every `evolve transform` with the owning resource type name and the body
 /// apply executes. The target's stable id and the read members' stable ids bind only
-/// once a catalog is accepted; before that they are empty, so the transform's body is
-/// still lowered and its purity still checked, but discharge skips it (it addresses no
-/// accepted snapshot). A transform whose target names no resource member is dropped: the
-/// type pass already reports it, and it anchors no obligation.
+/// once a catalog is accepted; before that the target is absent, so the transform's
+/// body is still lowered and its purity still checked, but discharge skips it because
+/// it addresses no accepted snapshot. A transform whose target names no resource
+/// member is dropped: the type pass already reports it, and it anchors no obligation.
 fn bound_transforms(
     transforms: &[TransformIntent],
     ids: &HashMap<CatalogKey, String>,
@@ -380,7 +385,7 @@ fn bound_transforms(
                 .filter_map(|path| member_target_id(path, ids))
                 .collect();
             Some(EvolveTransform {
-                catalog_id: member_target_id(&transform.path, ids).unwrap_or_default(),
+                catalog_id: member_target_id(&transform.path, ids),
                 reads,
                 resource,
                 file: transform.file.clone(),
@@ -638,11 +643,11 @@ fn record_member_structs(
     changed
 }
 
-/// Mark each retired entity removed in the proposal. A retire names a destructive
+/// Mark each retired entity reserved in the proposal. A retire names a destructive
 /// intent over an accepted entry whose source declaration is gone; a path that
 /// matches no active accepted entry is a target diagnostic. A retire of an entry
-/// the source still declares is rejected: marking it removed would silently drop
-/// data the running program still reads and writes, so the destructive intent only
+/// the source still declares is rejected: reserving it would silently drop data
+/// the running program still reads and writes, so the destructive intent only
 /// applies once the source declaration is actually gone. Returns whether any entry
 /// changed.
 fn apply_retires(
@@ -656,15 +661,15 @@ fn apply_retires(
         // A retire carries no kind; its path names destructive intent over an
         // accepted entry whose source declaration is gone. Fail closed whenever the
         // path is still declared by source under any kind, rather than comparing
-        // against whichever same-path entry was found first: marking a still-declared
-        // entry removed would drop data the running program still reads and writes.
+        // against whichever same-path entry was found first: reserving a still-declared
+        // entry would drop data the running program still reads and writes.
         // Once no source entry declares the path, the lone active accepted entry
         // there is genuinely orphaned and safe to remove.
         if source_kinds.contains_key(retire.path.as_str()) {
             push_retire_source_declared(retire, diagnostics);
             continue;
         }
-        // A prior apply that already marked this path removed leaves a transient retire
+        // A prior apply that already reserved this path leaves a transient retire
         // block the author may keep or delete: the entry is gone, so there is nothing
         // left to retire and no error. A path with no entry of any lifecycle names
         // nothing and stays an unresolved intent.
@@ -674,7 +679,7 @@ fn apply_retires(
             .find(|entry| entry.lifecycle == CatalogLifecycle::Active && entry.path == retire.path)
         {
             Some(entry) => {
-                entry.lifecycle = CatalogLifecycle::Removed;
+                entry.lifecycle = CatalogLifecycle::Reserved;
                 changed = true;
             }
             None if already_recorded => {}
@@ -684,12 +689,12 @@ fn apply_retires(
     changed
 }
 
-/// Whether a prior apply already marked this path removed, so a retire block left in
+/// Whether a prior apply already reserved this path, so a retire block left in
 /// source is a consumed transition rather than an unresolved intent.
 fn retire_already_recorded(entries: &[CatalogEntry], path: &str) -> bool {
     entries
         .iter()
-        .any(|entry| entry.lifecycle == CatalogLifecycle::Removed && entry.path == path)
+        .any(|entry| entry.lifecycle == CatalogLifecycle::Reserved && entry.path == path)
 }
 
 fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
@@ -705,6 +710,7 @@ fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec
 
 struct AcceptedCatalog<'a> {
     entries: HashMap<(CatalogEntryKind, &'a str), AcceptedEntry<'a>>,
+    reserved: HashMap<(CatalogEntryKind, &'a str), AcceptedEntry<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -715,18 +721,31 @@ struct AcceptedEntry<'a> {
 impl<'a> AcceptedCatalog<'a> {
     fn new(catalog: &'a CatalogMetadata) -> Self {
         let mut entries = HashMap::new();
+        let mut reserved = HashMap::new();
         for entry in &catalog.entries {
-            if entry.lifecycle != CatalogLifecycle::Active {
-                continue;
-            }
             let binding = AcceptedEntry { entry };
-            entries.insert((entry.kind, entry.path.as_str()), binding);
+            match entry.lifecycle {
+                CatalogLifecycle::Active => {
+                    entries.insert((entry.kind, entry.path.as_str()), binding);
+                }
+                CatalogLifecycle::Reserved => {
+                    reserved.insert((entry.kind, entry.path.as_str()), binding);
+                    for alias in &entry.aliases {
+                        reserved.insert((entry.kind, alias.as_str()), binding);
+                    }
+                }
+                CatalogLifecycle::Deprecated => {}
+            }
         }
-        Self { entries }
+        Self { entries, reserved }
     }
 
     fn active_entry(&self, kind: CatalogEntryKind, path: &str) -> Option<AcceptedEntry<'a>> {
         self.entries.get(&(kind, path)).copied()
+    }
+
+    fn reserved_entry(&self, kind: CatalogEntryKind, path: &str) -> Option<AcceptedEntry<'a>> {
+        self.reserved.get(&(kind, path)).copied()
     }
 }
 
@@ -928,12 +947,34 @@ fn push_rename_target_live(source: &SourceCatalogEntry, diagnostics: &mut Vec<Ch
     });
 }
 
+fn push_reserved_reuse(
+    source: &SourceCatalogEntry,
+    reserved: &CatalogEntry,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_CATALOG_INTENT,
+        severity: Severity::Error,
+        file: source.file.clone(),
+        message: format!(
+            "`{}` is reserved by catalog id `{}` and cannot be reused",
+            source.path, reserved.stable_id
+        ),
+        span: source.span,
+    });
+}
+
 fn prepare_proposal_path(entries: &mut Vec<CatalogEntry>, kind: CatalogEntryKind, path: &str) {
     entries.retain(|entry| {
-        !(entry.kind == kind && entry.path == path && entry.lifecycle != CatalogLifecycle::Active)
+        !(entry.kind == kind
+            && entry.path == path
+            && entry.lifecycle != CatalogLifecycle::Active
+            && entry.lifecycle != CatalogLifecycle::Reserved)
     });
     for entry in entries.iter_mut().filter(|entry| entry.kind == kind) {
-        entry.aliases.retain(|alias| alias != path);
+        if entry.lifecycle != CatalogLifecycle::Reserved {
+            entry.aliases.retain(|alias| alias != path);
+        }
     }
 }
 
@@ -997,8 +1038,8 @@ fn proposed_catalog_entry(
     }
 }
 
-/// Hands out catalog ids in the `cat_<16 lowercase hex>` shape as random opaque
-/// 64-bit values, re-rolling against the ids already in use. Allocation is
+/// Hands out catalog ids in the `cat_<32 lowercase hex>` shape as random opaque
+/// 128-bit values, re-rolling against the ids already in use. Allocation is
 /// independent of the entity's source path, so an id never changes when a path
 /// changes, and it is random rather than a monotonic counter so two project
 /// branches that each allocate identity for different entities cannot collide on
@@ -1008,14 +1049,16 @@ fn proposed_catalog_entry(
 /// random clash (or a hand-edited or badly merged catalog) is not silently
 /// tolerated: `CatalogMetadata::validate()` rejects two entries sharing a stable id,
 /// and the proposal is validated at check, so a duplicate fails closed there.
-struct StableIdAllocator {
+struct StableIdAllocator<E = OsCatalogIdEntropy> {
     used: HashSet<String>,
+    entropy: E,
 }
 
-impl StableIdAllocator {
+impl StableIdAllocator<OsCatalogIdEntropy> {
     fn empty() -> Self {
         Self {
             used: HashSet::new(),
+            entropy: OsCatalogIdEntropy,
         }
     }
 
@@ -1027,17 +1070,20 @@ impl StableIdAllocator {
                 .iter()
                 .map(|entry| entry.stable_id.clone())
                 .collect(),
+            entropy: OsCatalogIdEntropy,
         }
+    }
+}
+
+impl<E: CatalogIdEntropy> StableIdAllocator<E> {
+    #[cfg(test)]
+    fn with_entropy(used: HashSet<String>, entropy: E) -> Self {
+        Self { used, entropy }
     }
 
     fn allocate(&mut self) -> String {
         loop {
-            let id = format!(
-                "cat_{:016x}",
-                std::collections::hash_map::RandomState::new()
-                    .build_hasher()
-                    .finish()
-            );
+            let id = catalog_id_from_bytes(self.entropy.next_id_bytes());
             if self.used.insert(id.clone()) {
                 return id;
             }
@@ -1045,17 +1091,81 @@ impl StableIdAllocator {
     }
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+trait CatalogIdEntropy {
+    fn next_id_bytes(&mut self) -> [u8; 16];
+}
+
+struct OsCatalogIdEntropy;
+
+impl CatalogIdEntropy for OsCatalogIdEntropy {
+    fn next_id_bytes(&mut self) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        fill_os_entropy(&mut bytes);
+        bytes
     }
-    hash
+}
+
+#[cfg(unix)]
+fn fill_os_entropy(bytes: &mut [u8; 16]) {
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(bytes))
+        .expect("catalog id allocation requires OS entropy");
+}
+
+#[cfg(not(unix))]
+fn fill_os_entropy(_bytes: &mut [u8; 16]) {
+    panic!("catalog id allocation requires an approved OS entropy source on this platform");
+}
+
+fn catalog_id_from_bytes(bytes: [u8; 16]) -> String {
+    let mut id = String::with_capacity("cat_".len() + 32);
+    id.push_str("cat_");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut id, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    id
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashSet, VecDeque};
+
+    use super::{CatalogIdEntropy, StableIdAllocator, catalog_id_from_bytes};
+
+    struct ScriptedEntropy {
+        ids: VecDeque<[u8; 16]>,
+    }
+
+    impl ScriptedEntropy {
+        fn new(ids: impl IntoIterator<Item = [u8; 16]>) -> Self {
+            Self {
+                ids: ids.into_iter().collect(),
+            }
+        }
+    }
+
+    impl CatalogIdEntropy for ScriptedEntropy {
+        fn next_id_bytes(&mut self) -> [u8; 16] {
+            self.ids.pop_front().expect("scripted entropy exhausted")
+        }
+    }
+
+    #[test]
+    fn stable_id_allocator_retries_forced_entropy_collisions() {
+        let collision = [0x11; 16];
+        let unique = [0x22; 16];
+        let mut used = HashSet::new();
+        used.insert(catalog_id_from_bytes(collision));
+        let mut allocator =
+            StableIdAllocator::with_entropy(used, ScriptedEntropy::new([collision, unique]));
+
+        assert_eq!(catalog_id_from_bytes(unique), allocator.allocate());
+    }
 }
 
 /// A stable digest of the analyzed program's durable shape, in the same
-/// `fnv1a64:<hex>` form the catalog digest uses. This is the digest the store stamps
+/// `sha256:<hex>` form the catalog digest uses. This is the digest the store stamps
 /// at commit and the activation-window fence enforces, so it binds exactly the facts a
 /// stored snapshot must satisfy: each `resource`, `store`, `enum`, and module `const`.
 ///
@@ -1073,7 +1183,7 @@ pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
 }
 
 /// A stable digest of the analyzed shape *and* the evolve decision surface, in the same
-/// `fnv1a64:<hex>` form. It binds everything [`analyzed_source_digest`] binds plus each
+/// `sha256:<hex>` form. It binds everything [`analyzed_source_digest`] binds plus each
 /// `evolve` block, so a changed evolve default value or transform body drifts it.
 ///
 /// The evolution witness records this digest, not the shape digest, so apply aborts
@@ -1144,7 +1254,7 @@ fn render_declarations(program: &CheckedProgram, scope: DigestScope) -> Vec<Dura
     entries
 }
 
-/// Hash the ordered renderings into the canonical `fnv1a64:<hex>` digest.
+/// Hash the ordered renderings into the canonical `sha256:<hex>` digest.
 fn digest_of(entries: Vec<DurableRendering>) -> String {
     let payload = entries
         .iter()
@@ -1156,7 +1266,7 @@ fn digest_of(entries: Vec<DurableRendering>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\0\n");
-    format!("fnv1a64:{:016x}", fnv1a64(payload.as_bytes()))
+    marrow_project::sha256_digest(payload.as_bytes())
 }
 
 /// One digest-bound declaration's normalized rendering, with the keys that order it

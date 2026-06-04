@@ -12,7 +12,7 @@ use crate::env::Env;
 use crate::error::{RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::read::read_local_field;
-use crate::value::{Value, value_to_key};
+use crate::value::Value;
 use crate::write_dispatch::write_local_field;
 
 pub(crate) fn bind_arguments(
@@ -204,14 +204,15 @@ pub(crate) fn eval_resource_constructor(
 pub(crate) fn checked_value_accepts(expected: &CheckedRuntimeValueType, value: &Value) -> bool {
     match expected {
         CheckedRuntimeValueType::Primitive(scalar) => value_scalar_type(value) == Some(*scalar),
-        CheckedRuntimeValueType::Identity { keys, .. } => {
+        CheckedRuntimeValueType::Identity { root, keys } => {
             let Some(identity_keys) = keys.as_deref() else {
                 return false;
             };
             match value {
-                Value::Identity(keys) => identity_keys_match(identity_keys, keys),
-                other if identity_keys.len() == 1 => value_to_key(other.clone())
-                    .is_some_and(|key| identity_keys_match(identity_keys, &[key])),
+                Value::Identity(identity) => {
+                    identity.root() == root.as_str()
+                        && identity_keys_match(identity_keys, identity.keys())
+                }
                 _ => false,
             }
         }
@@ -374,12 +375,14 @@ pub(crate) fn default_value(ty: &Type) -> Option<Value> {
 
 #[cfg(test)]
 mod default_value_tests {
-    use marrow_schema::Type;
+    use marrow_check::CheckedRuntimeValueType;
+    use marrow_schema::{KeyDef, Type};
     use marrow_store::Decimal;
+    use marrow_store::key::SavedKey;
     use marrow_store::value::ScalarType;
 
-    use crate::call_args::default_value;
-    use crate::value::Value;
+    use crate::call_args::{checked_value_accepts, default_value};
+    use crate::value::{Value, identity_value};
 
     #[test]
     fn var_default_matches_the_runtime_contract() {
@@ -422,5 +425,49 @@ mod default_value_tests {
         assert_eq!(default_value(&Type::Identity("books".into())), None);
         assert_eq!(default_value(&Type::Named("Book".into())), None);
         assert_eq!(default_value(&Type::Unknown), None);
+    }
+
+    #[test]
+    fn composite_identity_value_requires_matching_store_root() {
+        let expected = CheckedRuntimeValueType::Identity {
+            root: "books".into(),
+            keys: Some(vec![
+                KeyDef {
+                    name: "tenant".into(),
+                    ty: Type::Scalar(ScalarType::Int),
+                },
+                KeyDef {
+                    name: "book".into(),
+                    ty: Type::Scalar(ScalarType::Int),
+                },
+            ]),
+        };
+        let other_root = Value::Identity(crate::value::IdentityValue::for_root(
+            "authors",
+            vec![SavedKey::Int(7), SavedKey::Int(11)],
+        ));
+
+        assert!(!checked_value_accepts(&expected, &other_root));
+    }
+
+    #[test]
+    fn single_key_identity_requires_store_root_provenance() {
+        let expected = CheckedRuntimeValueType::Identity {
+            root: "books".into(),
+            keys: Some(vec![KeyDef {
+                name: "id".into(),
+                ty: Type::Scalar(ScalarType::Int),
+            }]),
+        };
+
+        assert!(!checked_value_accepts(&expected, &Value::Int(7)));
+        assert!(checked_value_accepts(
+            &expected,
+            &identity_value("books", vec![SavedKey::Int(7)])
+        ));
+        assert!(!checked_value_accepts(
+            &expected,
+            &identity_value("authors", vec![SavedKey::Int(7)])
+        ));
     }
 }

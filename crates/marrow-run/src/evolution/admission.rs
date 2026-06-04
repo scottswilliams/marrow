@@ -81,7 +81,7 @@ mod tests {
     use marrow_store::cell::CatalogId;
 
     fn id(hex: &str) -> CatalogId {
-        CatalogId::new(format!("cat_{hex}")).expect("valid catalog id")
+        CatalogId::new(format!("cat_{hex:0>32}")).expect("valid catalog id")
     }
 
     #[test]

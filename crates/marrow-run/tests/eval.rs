@@ -238,8 +238,12 @@ fn rejected_entry_call(
     CheckedEntryCall::new(program, entry, args).expect_err("entry call is rejected")
 }
 
-fn catalog_id(raw: &str) -> CatalogId {
-    CatalogId::new(raw.to_string()).expect("checked catalog id is usable in tests")
+fn catalog_id(raw: &Option<String>) -> CatalogId {
+    CatalogId::new(
+        raw.clone()
+            .expect("accepted catalog id is present in checked facts"),
+    )
+    .expect("checked catalog id is usable in tests")
 }
 
 fn store_catalog_id(program: &CheckedRuntimeProgram, root: &str) -> CatalogId {
@@ -436,6 +440,14 @@ fn run_entry(
     call: CheckedEntryCall<'_>,
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
     marrow_run::run_entry(store, &call)
+}
+
+fn assert_identity_value(value: Option<Value>, root: &str, keys: &[SavedKey]) {
+    let Some(Value::Identity(identity)) = value else {
+        panic!("expected identity value for {root}: {value:?}");
+    };
+    assert_eq!(identity.root(), root);
+    assert_eq!(identity.keys(), keys);
 }
 
 fn run_entry_with_host(
@@ -3116,7 +3128,7 @@ fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
     )
     .expect("checked saved place for ^books");
     for index in &place.indexes {
-        let index_id = CatalogId::new(index.catalog_id.clone()).expect("index catalog id");
+        let index_id = catalog_id(&index.catalog_id);
         store
             .delete_index_subtree(&index_id, &[])
             .expect("clear index subtree");
@@ -3653,11 +3665,12 @@ fn next_id_allocates_past_the_highest_record() {
     );
     let store = empty_store();
     // Empty root: the next id is 1.
-    assert_eq!(
+    assert_identity_value(
         run_entry(&store, checked_entry!(&program, "test::fresh"))
             .expect("run")
             .value,
-        Some(Value::Int(1))
+        "books",
+        &[SavedKey::Int(1)],
     );
     // Seed records 1 and 4; the next id is one past the highest.
     for id in [1, 4] {
@@ -3670,11 +3683,12 @@ fn next_id_allocates_past_the_highest_record() {
             SavedValue::Str("t".into()),
         );
     }
-    assert_eq!(
+    assert_identity_value(
         run_entry(&store, checked_entry!(&program, "test::fresh"))
             .expect("run")
             .value,
-        Some(Value::Int(5))
+        "books",
+        &[SavedKey::Int(5)],
     );
 }
 
@@ -3694,11 +3708,12 @@ fn next_id_skips_ahead_after_restore() {
         &data_path(&program, "books", &["title"]),
         SavedValue::Str("t".into()),
     );
-    assert_eq!(
+    assert_identity_value(
         run_entry(&store, checked_entry!(&program, "test::fresh"))
             .expect("run")
             .value,
-        Some(Value::Int(901))
+        "books",
+        &[SavedKey::Int(901)],
     );
 }
 
@@ -4191,15 +4206,15 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
         Some(Value::Str("978-9".into())),
         "book 2's isbn was not overwritten",
     );
-    assert_eq!(
+    assert_identity_value(
         run_entry(
             &store,
-            checked_entry!(&program, "test::ownerOf", Value::Str("978-0".into()))
+            checked_entry!(&program, "test::ownerOf", Value::Str("978-0".into())),
         )
         .expect("read")
         .value,
-        Some(Value::Int(1)),
-        "the unique index still points at book 1",
+        "books",
+        &[SavedKey::Int(1)],
     );
 }
 
@@ -5086,7 +5101,7 @@ fn builds_a_local_resource_and_saves_it() {
     )
     .expect("add")
     .value;
-    assert_eq!(id, Some(Value::Int(1)));
+    assert_identity_value(id, "books", &[SavedKey::Int(1)]);
     let read = |entry: &str| {
         run_entry(&store, checked_entry!(&program, entry, Value::Int(1)))
             .expect("run")
@@ -7069,19 +7084,10 @@ fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
 }
 
 #[test]
-fn collecting_saved_keys_as_a_local_snapshot_is_rejected() {
-    let program = checked_program(
+fn collecting_saved_keys_as_a_local_snapshot_is_checker_rejected() {
+    checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\nfn remaining(): int\n    return count(^books)\n",
-    );
-    let store = TreeStore::memory();
-    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
-    let error = run_entry(&store, checked_entry!(&program, "test::clear")).unwrap_err();
-    assert_eq!(error.code, RUN_UNSUPPORTED, "{error:?}");
-    assert_eq!(
-        run_entry(&store, checked_entry!(&program, "test::remaining"))
-            .expect("count")
-            .value,
-        Some(Value::Int(2))
+        "check.key_type",
     );
 }
 
@@ -7888,9 +7894,9 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
         Some(Value::Int(0))
     );
 
-    // The previously-correct count shapes stay byte-identical: a keyed/sequence
-    // layer counts its entries, a scalar counts as 1, and a whole record counts
-    // its populated immediate children. These all keep the read/child-keys path.
+    // Count shapes stay byte-identical: a keyed/sequence layer counts its
+    // entries, a scalar counts as 1, and a whole record counts its populated
+    // immediate children. These all keep the read/child-keys path.
     assert_eq!(
         call(checked_entry!(&program, "test::countLayer", Value::Int(1))),
         Some(Value::Int(2))
@@ -10147,9 +10153,19 @@ fn display_debug_renders_scalars_and_structured_previews() {
         .display_debug(),
         "resource{title, pages}"
     );
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20title: string\n\
+         \n\
+         fn nextBookId(): Id(^books)\n\
+         \x20\x20\x20\x20return nextId(^books)\n",
+    );
+    let store = TreeStore::memory();
+    let output =
+        run_entry(&store, checked_entry!(&program, "test::nextBookId")).expect("next identity");
     assert_eq!(
-        Value::Identity(vec![SavedKey::Int(17)]).display_debug(),
-        "identity(17)"
+        output.value.expect("identity").display_debug(),
+        "identity(1)"
     );
 }
 
@@ -10863,9 +10879,10 @@ fn single_key_store_identity_behaves_like_other_identity_origins() {
          \x20       return id == doc\n\
          \x20   return false\n",
     );
-    assert_eq!(
+    assert_identity_value(
         run(checked_entry!(&program, "test::idValue")).unwrap(),
-        Some(Value::Int(1))
+        "docs",
+        &[SavedKey::Int(1)],
     );
     assert_eq!(
         run(checked_entry!(&program, "test::mixedEq")).unwrap(),

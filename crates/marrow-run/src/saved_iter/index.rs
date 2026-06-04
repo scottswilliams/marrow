@@ -79,7 +79,8 @@ impl IndexScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        let key = collected_identity_value(&keys, self.span)?;
+        let identity_root = self.yields_identity.then_some(self.place.root.as_str());
+        let key = collected_identity_value(&keys, identity_root, self.span)?;
         match self.shape {
             LoopShape::Keys => visit(SavedLoopRow::Single(key), env),
             LoopShape::Values if self.yields_identity => {

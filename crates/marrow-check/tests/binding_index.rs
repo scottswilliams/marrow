@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_check::binding::{RenameSafety, SymbolKind};
 use marrow_check::{
-    AnalysisSnapshot, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CheckedStmt, ProjectSources,
-    analyze_project, build_binding_index,
+    AnalysisSnapshot, CheckedStmt, ProjectSources, analyze_project, build_binding_index,
 };
 
 fn temp_root(name: &str) -> PathBuf {
@@ -992,35 +991,6 @@ fn qualified_resource_constructor_uses_qualified_module_resource() {
 }
 
 #[test]
-fn legacy_qualified_resource_identity_constructor_is_unresolved() {
-    let state = "module shelf::state\n\
-        resource Book at ^state_books(id: int)\n    \
-        required title: string\n";
-    let app = "module shelf::app\n\
-        use shelf::state\n\
-        resource Book at ^app_books(code: string)\n    \
-        required subtitle: string\n\
-        fn make()\n    \
-        const id = state::Book::Id(1)\n";
-    let (snapshot, _paths) = analyze_snapshot(
-        "legacy-qualified-resource-identity-constructor",
-        &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
-    );
-    let unresolved: Vec<_> = snapshot
-        .report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_CALL)
-        .collect();
-    assert_eq!(unresolved.len(), 1, "{:#?}", snapshot.report.diagnostics);
-    assert!(
-        unresolved[0].message.contains("state::Book::Id"),
-        "{:#?}",
-        unresolved
-    );
-}
-
-#[test]
 fn bare_resource_constructor_prefers_current_module_resource() {
     let state = "module shelf::state\n\
         resource Book at ^state_books(id: int)\n    \
@@ -1049,35 +1019,6 @@ fn bare_resource_constructor_prefers_current_module_resource() {
         .expect("bare resource constructor resolves");
     assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
     assert_eq!(def.file, *app_file, "{def:?}");
-}
-
-#[test]
-fn legacy_qualified_resource_identity_type_ref_is_unknown() {
-    let state = "module shelf::state\n\
-        resource Book at ^state_books(id: int)\n    \
-        required title: string\n";
-    let app = "module shelf::app\n\
-        use shelf::state\n\
-        resource Book at ^app_books(code: string)\n    \
-        required subtitle: string\n\
-        fn load(ids: sequence[state::Book::Id])\n    \
-        return\n";
-    let (snapshot, _paths) = analyze_snapshot(
-        "legacy-qualified-resource-identity-type-ref",
-        &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
-    );
-    let unknown_types: Vec<_> = snapshot
-        .report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == CHECK_UNKNOWN_TYPE)
-        .collect();
-    assert_eq!(unknown_types.len(), 1, "{:#?}", snapshot.report.diagnostics);
-    assert!(
-        unknown_types[0].message.contains("state::Book::Id"),
-        "{:#?}",
-        unknown_types
-    );
 }
 
 #[test]

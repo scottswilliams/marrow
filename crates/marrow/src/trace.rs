@@ -186,25 +186,31 @@ impl WriteTargetNames {
         let facts = program.facts();
         let mut names = Self::default();
         for store in facts.stores() {
-            names
-                .stores
-                .insert(store.catalog_id.clone(), store.root.clone());
+            if let Some(catalog_id) = &store.catalog_id {
+                names.stores.insert(catalog_id.clone(), store.root.clone());
+            }
         }
         for member in facts.resource_members() {
+            let Some(catalog_id) = &member.catalog_id else {
+                continue;
+            };
             names
                 .members
-                .insert(member.catalog_id.clone(), member.name.clone());
+                .insert(catalog_id.clone(), member.name.clone());
             if let Some(meaning) = &member.value_meaning {
                 names
                     .member_meanings
-                    .insert(member.catalog_id.clone(), meaning.clone());
+                    .insert(catalog_id.clone(), meaning.clone());
             }
         }
         for index in facts.store_indexes() {
+            let Some(catalog_id) = &index.catalog_id else {
+                continue;
+            };
             let root = facts.store(index.store).root.clone();
             names
                 .indexes
-                .insert(index.catalog_id.clone(), (root, index.name.clone()));
+                .insert(catalog_id.clone(), (root, index.name.clone()));
         }
         names
     }

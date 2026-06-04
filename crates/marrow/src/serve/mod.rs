@@ -137,8 +137,8 @@ pub(crate) mod test_support {
         catalog_id(&books_place(program).store_catalog_id)
     }
 
-    fn catalog_id(raw: &str) -> CatalogId {
-        CatalogId::new(raw.to_string()).expect("catalog id")
+    fn catalog_id(raw: &Option<String>) -> CatalogId {
+        CatalogId::new(raw.clone().expect("accepted catalog id")).expect("catalog id")
     }
 
     fn member_catalog_id(members: &[CheckedSavedMember], name: &str) -> CatalogId {

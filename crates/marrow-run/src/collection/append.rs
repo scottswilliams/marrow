@@ -9,7 +9,7 @@ use crate::error::{RUN_TYPE, RuntimeError, assign_error, overflow, unsupported, 
 use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
 use crate::store::{DataAddress, LayerAddress};
-use crate::value::{LeafValue, Value, value_to_leaf};
+use crate::value::{LeafValue, Value, identity_value, value_to_leaf};
 use crate::write::{
     WriteError, next_id, next_layer_pos, next_nested_layer_pos, plan_layer_leaf_write,
     plan_nested_layer_leaf_write,
@@ -35,7 +35,7 @@ pub(crate) fn eval_next_id(
     };
     let next = next_id(place, env.store, span);
     let next = next.map_err(|error| write_fault(error, span))?;
-    Ok(Value::Int(next))
+    Ok(identity_value(&place.root, vec![SavedKey::Int(next)]))
 }
 
 pub(crate) fn eval_append(

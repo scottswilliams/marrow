@@ -40,6 +40,7 @@ pub(crate) struct UniqueIndexLookup {
     pub(crate) address: IndexAddress,
     pub(crate) identity_arity: usize,
     pub(crate) index_name: String,
+    pub(crate) root: String,
     pub(crate) remaining_key_depth: usize,
 }
 
@@ -75,9 +76,10 @@ pub(crate) fn unique_index_lookup(
         );
     }
     Ok(Some(UniqueIndexLookup {
-        address: IndexAddress::new(catalog_id, keys, place.span)?,
+        address: IndexAddress::from_checked(catalog_id, keys, place.span)?,
         identity_arity: place.identity_keys.len(),
         index_name: index_name.clone(),
+        root: place.root.clone(),
         remaining_key_depth: index_arg_count.saturating_sub(args.len()),
     }))
 }
@@ -129,5 +131,5 @@ fn read_unique_index_value(
                 span,
             }
         })?;
-    Ok(Some(identity_value(identity)))
+    Ok(Some(identity_value(&lookup.root, identity)))
 }

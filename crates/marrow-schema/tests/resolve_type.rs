@@ -72,8 +72,11 @@ fn canonical_store_id_resolves_to_an_identity() {
 }
 
 #[test]
-fn resource_id_suffix_stays_named() {
-    assert_eq!(resolve("Book::Id"), Type::Named("Book::Id".to_string()));
+fn qualified_type_stays_named_for_the_checker() {
+    assert_eq!(
+        resolve("Catalog::Key"),
+        Type::Named("Catalog::Key".to_string())
+    );
 }
 
 #[test]

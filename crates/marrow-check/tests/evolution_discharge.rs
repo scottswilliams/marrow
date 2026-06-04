@@ -49,10 +49,10 @@ fn catalog_path(root: &Path) -> PathBuf {
     root.join("marrow.catalog.json")
 }
 
-/// A valid `cat_<16 lowercase hex>` stable id keyed by a small ordinal, so a
+/// A valid `cat_<32 lowercase hex>` stable id keyed by a small fixture number, so a
 /// hand-built accepted catalog uses ids the store can address.
 fn hex_id(n: u8) -> String {
-    format!("cat_{n:016x}")
+    format!("cat_{n:032x}")
 }
 
 fn entry(kind: CatalogEntryKind, path: &str, stable_id: &str) -> CatalogEntry {
@@ -151,7 +151,8 @@ struct Seed<'a> {
 
 impl Seed<'_> {
     fn store_id(&self) -> CatalogId {
-        CatalogId::new(self.place.store_catalog_id.clone()).expect("store catalog id")
+        CatalogId::new(accepted_catalog_id(&self.place.store_catalog_id, "store"))
+            .expect("store catalog id")
     }
 
     fn record(&self, id: i64) {
@@ -349,25 +350,23 @@ fn verdict_for<'a>(witness: &'a EvolutionWitness, catalog_id: &str) -> &'a Verdi
 }
 
 fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    place
+    let member = place
         .root_members
         .iter()
         .find(|member| {
             member.name == name && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         })
-        .unwrap_or_else(|| panic!("checked member `{name}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked member `{name}`"));
+    accepted_catalog_id(&member.catalog_id, name)
 }
 
 fn index_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    place
+    let index = place
         .indexes
         .iter()
         .find(|index| index.name == name)
-        .unwrap_or_else(|| panic!("checked index `{name}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked index `{name}`"));
+    accepted_catalog_id(&index.catalog_id, name)
 }
 
 fn group_member<'a>(place: &'a CheckedSavedPlace, group: &str) -> &'a CheckedSavedMember {
@@ -379,13 +378,13 @@ fn group_member<'a>(place: &'a CheckedSavedPlace, group: &str) -> &'a CheckedSav
 }
 
 fn group_member_catalog_id(place: &CheckedSavedPlace, group: &str) -> String {
-    group_member(place, group).catalog_id.clone()
+    accepted_catalog_id(&group_member(place, group).catalog_id, group)
 }
 
 /// The catalog id of a top-level keyed-leaf-layer (`map[K, V]`) member: a `Field` that
 /// carries key params, so it is the leaf its entries' values are stored under.
 fn keyed_leaf_catalog_id(place: &CheckedSavedPlace, map: &str) -> String {
-    place
+    let member = place
         .root_members
         .iter()
         .find(|member| {
@@ -393,19 +392,17 @@ fn keyed_leaf_catalog_id(place: &CheckedSavedPlace, map: &str) -> String {
                 && !member.key_params.is_empty()
                 && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         })
-        .unwrap_or_else(|| panic!("checked keyed-leaf member `{map}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked keyed-leaf member `{map}`"));
+    accepted_catalog_id(&member.catalog_id, map)
 }
 
 fn nested_member_catalog_id(place: &CheckedSavedPlace, group: &str, leaf: &str) -> String {
-    group_member(place, group)
+    let member = group_member(place, group)
         .group_members
         .iter()
         .find(|member| member.name == leaf)
-        .unwrap_or_else(|| panic!("checked nested member `{group}.{leaf}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked nested member `{group}.{leaf}`"));
+    accepted_catalog_id(&member.catalog_id, leaf)
 }
 
 /// The catalog id of a member reached by an arbitrary name chain from the record root, each
@@ -422,10 +419,8 @@ fn deep_member_catalog_id(place: &CheckedSavedPlace, chain: &[&str]) -> String {
         found = Some(member);
         members = &member.group_members;
     }
-    found
-        .unwrap_or_else(|| panic!("empty member chain"))
-        .catalog_id
-        .clone()
+    let member = found.unwrap_or_else(|| panic!("empty member chain"));
+    accepted_catalog_id(&member.catalog_id, &chain.join("."))
 }
 
 /// The proposal-minted stable id of a brand-new resource member at the given module-qualified
@@ -450,14 +445,13 @@ fn new_member_proposal_id(program: &CheckedProgram, path: &str) -> String {
 /// hand-built accepted catalog records the identity-aware leaf token (`enum:<id>`) the
 /// discharge compares against, not a source spelling.
 fn enum_catalog_id(program: &CheckedProgram, name: &str) -> String {
-    program
+    let enum_fact = program
         .facts
         .enums()
         .iter()
         .find(|enum_fact| enum_fact.name == name)
-        .unwrap_or_else(|| panic!("checked enum `{name}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked enum `{name}`"));
+    accepted_catalog_id(&enum_fact.catalog_id, name)
 }
 
 /// The stable catalog ids of the enum's members, keyed by member name, so a test can
@@ -471,14 +465,18 @@ fn enum_member_catalog_id(program: &CheckedProgram, enum_name: &str, member: &st
         .find(|enum_fact| enum_fact.name == enum_name)
         .unwrap_or_else(|| panic!("checked enum `{enum_name}`"))
         .id;
-    program
+    let member_fact = program
         .facts
         .enum_members()
         .iter()
         .find(|member_fact| member_fact.enum_id == enum_id && member_fact.name == member)
-        .unwrap_or_else(|| panic!("checked enum member `{enum_name}::{member}`"))
-        .catalog_id
-        .clone()
+        .unwrap_or_else(|| panic!("checked enum member `{enum_name}::{member}`"));
+    accepted_catalog_id(&member_fact.catalog_id, member)
+}
+
+fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
+    id.clone()
+        .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
 }
 
 /// Encode a stored enum value as the runtime does: the enum's stable catalog id paired
@@ -1033,7 +1031,8 @@ fn store_identity_key_type_change_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     assert_eq!(
-        place.store_catalog_id, store_id,
+        place.store_catalog_id.as_deref(),
+        Some(store_id.as_str()),
         "store keeps its stable id"
     );
     let store = TreeStore::memory();
@@ -1096,7 +1095,8 @@ fn store_identity_key_arity_change_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     assert_eq!(
-        place.store_catalog_id, store_id,
+        place.store_catalog_id.as_deref(),
+        Some(store_id.as_str()),
         "store keeps its stable id"
     );
     let store = TreeStore::memory();
@@ -1726,7 +1726,7 @@ fn retire_of_populated_member_requires_scoped_approval() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let subtitle = CatalogId::new(subtitle_id.clone()).unwrap();
     for (id, value) in [(1, "A"), (2, "B")] {
         store.write_node(&store_id, &[SavedKey::Int(id)]).unwrap();
@@ -3206,7 +3206,7 @@ fn shape_digest_is_a_frozen_golden() {
          \x20   return true\n";
     assert_eq!(
         source_digest("golden-shape", source),
-        "fnv1a64:a1b6a9d307a464cd",
+        "sha256:531be928b3fe8d46135633888c6ec346e4cb219928a57777cb60bc16d9d88eb9",
         "the canonical shape rendering moved; update the golden only with a reviewed \
          change to the durable rendering"
     );
@@ -3367,11 +3367,10 @@ fn enum_rename_is_not_a_retype() {
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
-/// Redefining an enum under the same source spelling so a previously stored member is no
-/// longer a member of the current enum fails closed. The enum keeps its stable identity
-/// (so the leaf token is unchanged and this is not a retype), but a stored value whose
-/// decoded member identity is gone from the CURRENT enum cannot be reread, so the leaf is
-/// steered to a fail-closed repair rather than silently activated.
+/// Redefining an enum under the same source spelling fails closed when a stored
+/// member is no longer a member of the current enum. The enum keeps its stable
+/// identity, so the leaf token is unchanged and this is not a retype, but the
+/// stored value cannot be reread as the current enum.
 #[test]
 fn enum_member_removed_fails_closed() {
     let value_id = hex_id(3);
@@ -3500,9 +3499,8 @@ fn required_enum_leaf_missing_fails_closed() {
     assert!(!diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
-/// A REQUIRED identity leaf is presence- and decode-scanned like a required scalar: a
-/// record missing its identity cell fails closed. The non-scalar short-circuit previously
-/// left a required `Id(^store)` leaf unscanned.
+/// A REQUIRED identity leaf is presence- and decode-scanned like a required
+/// scalar: a record missing its identity cell fails closed.
 #[test]
 fn required_identity_leaf_missing_fails_closed() {
     let root = temp_project("discharge-required-identity-missing", |root| {
@@ -3691,7 +3689,8 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
     let program = checked(&root);
     let place = root_place(&program, "library");
     assert_eq!(
-        place.store_catalog_id, store_stable,
+        place.store_catalog_id.as_deref(),
+        Some(store_stable.as_str()),
         "store rename preserves the store stable id"
     );
     let store = TreeStore::memory();
