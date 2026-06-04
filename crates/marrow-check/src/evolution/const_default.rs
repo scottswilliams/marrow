@@ -9,7 +9,7 @@
 
 use marrow_store::Decimal;
 use marrow_store::value::{Scalar, ScalarType, encode_value};
-use marrow_syntax::{Expression, LiteralKind, UnaryOp};
+use marrow_syntax::{Expression, LiteralKind, UnaryOp, decode_string_literal};
 
 use super::witness::DefaultValue;
 
@@ -86,7 +86,9 @@ fn literal_scalar(kind: LiteralKind, text: &str) -> Result<Scalar, ConstDefaultE
         LiteralKind::Decimal => Decimal::parse(text)
             .map(Scalar::Decimal)
             .ok_or(ConstDefaultError::NotEncodable),
-        LiteralKind::String => decode_string_literal(text).map(Scalar::Str),
+        LiteralKind::String => decode_string_literal(text)
+            .map(Scalar::Str)
+            .map_err(|_| ConstDefaultError::NotConstant),
         // A duration or bytes literal's value needs the runtime codec, and the
         // checker does not evaluate it; treat it as a non-constant default.
         LiteralKind::Duration | LiteralKind::Bytes => Err(ConstDefaultError::NotConstant),
@@ -107,31 +109,4 @@ fn negate(scalar: Scalar) -> Result<Scalar, ConstDefaultError> {
             .ok_or(ConstDefaultError::NotEncodable),
         _ => Err(ConstDefaultError::NotConstant),
     }
-}
-
-/// Decode a string literal's value: strip the surrounding quotes and resolve the
-/// escape set Marrow recognizes. This is the only interpreter of a default string,
-/// so apply never re-reads the source text.
-fn decode_string_literal(text: &str) -> Result<String, ConstDefaultError> {
-    let inner = text
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .ok_or(ConstDefaultError::NotConstant)?;
-    let mut decoded = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            decoded.push(ch);
-            continue;
-        }
-        match chars.next() {
-            Some('\\') => decoded.push('\\'),
-            Some('"') => decoded.push('"'),
-            Some('n') => decoded.push('\n'),
-            Some('r') => decoded.push('\r'),
-            Some('t') => decoded.push('\t'),
-            _ => return Err(ConstDefaultError::NotConstant),
-        }
-    }
-    Ok(decoded)
 }

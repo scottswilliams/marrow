@@ -8,7 +8,10 @@ use marrow_check::{
     CheckedUnaryOp as UnaryOp,
 };
 use marrow_store::Decimal;
-use marrow_syntax::{SourceSpan, duration_unit_seconds};
+use marrow_syntax::{
+    SourceSpan, StringLiteralError, decode_string_escapes, decode_string_literal,
+    duration_unit_seconds,
+};
 
 use crate::call::eval_call;
 use crate::durable_read::{eval_optional_field, eval_saved_field, read_resource};
@@ -163,7 +166,8 @@ pub(crate) fn eval_interpolation(
     let mut decoded_text = Vec::new();
     for part in parts {
         if let InterpolationPart::Text { text, .. } = part {
-            let text = decode_string_escapes(text, span)?;
+            let text =
+                decode_string_escapes(text).map_err(|error| string_literal_fault(error, span))?;
             // Literal text is validated before expression holes run, so malformed
             // escapes cannot be hidden behind side effects or expression faults.
             decoded_text.push(if text.contains(['{', '}']) {
@@ -244,34 +248,16 @@ fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeE
 /// Decode a string literal's value. The literal `text` is the raw source,
 /// including the surrounding quotes.
 pub(crate) fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
-    let inner = text
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .ok_or_else(|| unsupported("this string literal", span))?;
-    Ok(Value::Str(decode_string_escapes(inner, span)?))
+    decode_string_literal(text)
+        .map(Value::Str)
+        .map_err(|error| string_literal_fault(error, span))
 }
 
-fn decode_string_escapes(text: &str, span: SourceSpan) -> Result<String, RuntimeError> {
-    let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            result.push(ch);
-            continue;
-        }
-        let Some(escaped) = chars.next() else {
-            return Err(unsupported("string escape sequences", span));
-        };
-        result.push(match escaped {
-            '\\' => '\\',
-            '"' => '"',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            _ => return Err(unsupported("string escape sequences", span)),
-        });
+fn string_literal_fault(error: StringLiteralError, span: SourceSpan) -> RuntimeError {
+    match error {
+        StringLiteralError::Unquoted => unsupported("this string literal", span),
+        StringLiteralError::BadEscape => unsupported("string escape sequences", span),
     }
-    Ok(result)
 }
 
 /// Decode a bytes literal `b"..."` to its raw bytes. Ordinary text contributes
