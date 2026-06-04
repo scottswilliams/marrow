@@ -53,6 +53,16 @@ pub(super) struct TransformStage<'a> {
     pub(super) staged: &'a mut StagedWork,
 }
 
+pub(super) struct TransformVisit<'a> {
+    pub(super) target_id: &'a CatalogId,
+    pub(super) witness_reads: &'a [CatalogId],
+    pub(super) program: &'a CheckedProgram,
+    pub(super) runtime: &'a CheckedRuntimeProgram,
+    pub(super) places: &'a [CheckedSavedPlace],
+    pub(super) store: &'a TreeStore,
+    pub(super) visit: &'a mut dyn FnMut(DataAddress, Vec<u8>) -> Result<(), ApplyError>,
+}
+
 /// Stage one `WriteData` of the recomputed value at the transform target cell for every
 /// record. For each record the read members' decoded values bind `old`, the pure body
 /// runs through the runtime evaluator, and the returned value encodes to the target's
@@ -60,6 +70,26 @@ pub(super) struct TransformStage<'a> {
 /// write; a body that raises, returns no value, or yields a value the target cannot
 /// encode aborts apply with a typed body fault.
 pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError> {
+    let mut count = 0usize;
+    let mut visit = |address, value| {
+        ctx.steps.push(PlanStep::WriteData { address, value });
+        count += 1;
+        Ok(())
+    };
+    visit_transform_writes(TransformVisit {
+        target_id: ctx.target_id,
+        witness_reads: ctx.witness_reads,
+        program: ctx.program,
+        runtime: ctx.runtime,
+        places: ctx.places,
+        store: ctx.store,
+        visit: &mut visit,
+    })?;
+    ctx.staged.records_transformed += count;
+    Ok(())
+}
+
+pub(super) fn visit_transform_writes(ctx: TransformVisit<'_>) -> Result<(), ApplyError> {
     let transform = ctx
         .program
         .catalog
@@ -79,7 +109,6 @@ pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError>
     let module = owning_module(ctx.program, ctx.runtime, transform)
         .ok_or_else(|| diverged("the transform owning module is not in the runtime program"))?;
 
-    let mut count = 0usize;
     // A body fault is a per-record `ApplyError`, but the shared record scan threads only
     // `StoreError`. The fault is captured here and the scan stops staging further writes
     // once it is set; apply returns it before any write commits, so the staged steps are
@@ -87,11 +116,12 @@ pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError>
     let mut body_fault: Option<ApplyError> = None;
     for (place, target_leaf) in targets {
         let reads = transform_read_members(place, &transform.reads);
-        let read_ids = reads
-            .iter()
-            .map(|read| read.catalog_id.clone())
-            .collect::<Vec<_>>();
-        if read_ids != ctx.witness_reads {
+        if reads.len() != ctx.witness_reads.len()
+            || reads
+                .iter()
+                .zip(ctx.witness_reads)
+                .any(|(read, expected)| read.catalog_id != *expected)
+        {
             return Err(diverged(
                 "the transform read members no longer match the witness proof",
             ));
@@ -105,15 +135,11 @@ pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError>
             let old = bind_old(ctx.runtime, ctx.store, &sid, identity, &reads)?;
             match recompute(ctx.runtime, ctx.store, module, body, old, &target_leaf) {
                 Ok(bytes) => {
-                    ctx.steps.push(PlanStep::WriteData {
-                        address: DataAddress::raw(
-                            sid.clone(),
-                            identity.to_vec(),
-                            target_path.to_vec(),
-                        ),
-                        value: bytes,
-                    });
-                    count += 1;
+                    let address =
+                        DataAddress::raw(sid.clone(), identity.to_vec(), target_path.to_vec());
+                    if let Err(error) = (ctx.visit)(address, bytes) {
+                        body_fault = Some(error);
+                    }
                 }
                 Err(reason) => {
                     body_fault = Some(ApplyError::TransformBodyFaulted {
@@ -131,7 +157,6 @@ pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError>
     if let Some(fault) = body_fault {
         return Err(fault);
     }
-    ctx.staged.records_transformed += count;
     Ok(())
 }
 

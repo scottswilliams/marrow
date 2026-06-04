@@ -8,7 +8,7 @@ use marrow_check::{
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{ActivationDefaultBackfillCell, ActivationDefaultRecordCount, TreeStore};
+use marrow_store::tree::{ActivationDefaultRecordCount, TreeStore};
 
 use crate::write_plan::{PlanStep, WritePlan};
 
@@ -58,7 +58,6 @@ pub struct ActivationReceipt {
     pub changed_index_catalog_ids: Vec<CatalogId>,
     pub records_backfilled: usize,
     pub default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
     pub indexes_rebuilt: usize,
     pub records_retired: usize,
     pub records_retired_by_id: Vec<(CatalogId, usize)>,
@@ -231,14 +230,8 @@ pub fn apply(
                 .proposal_catalog
                 .as_ref()
                 .map(|catalog| catalog.digest.clone()),
-            proposal_catalog_json: program
-                .catalog
-                .proposal
-                .as_ref()
-                .map(|proposal| proposal.to_json_pretty()),
             records_backfilled: staged.records_backfilled as u64,
             default_records_by_id: staged.default_records_by_id.clone(),
-            default_backfill_cells: staged.default_backfill_cells.clone(),
             indexes_rebuilt: staged.indexes_rebuilt as u64,
             records_retired: staged.records_retired as u64,
             records_retired_by_id: retire_receipt_counts
@@ -366,7 +359,6 @@ fn activation_receipt(
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
         records_backfilled: staged.records_backfilled,
         default_records_by_id: staged.default_records_by_id.clone(),
-        default_backfill_cells: staged.default_backfill_cells.clone(),
         indexes_rebuilt: staged.indexes_rebuilt,
         records_retired: staged.records_retired,
         records_retired_by_id: retire_counts.to_vec(),
@@ -404,7 +396,6 @@ fn commit_apply_plan(
 pub(super) struct StagedWork {
     pub(super) records_backfilled: usize,
     pub(super) default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub(super) default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
     pub(super) indexes_rebuilt: usize,
     pub(super) records_retired: usize,
     pub(super) records_transformed: usize,

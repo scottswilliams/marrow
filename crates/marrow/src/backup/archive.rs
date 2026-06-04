@@ -7,9 +7,8 @@ use std::io::{Read, Write};
 use serde_json::{Value, json};
 
 use super::{
-    BackupError, BackupManifest, CommitDescriptor, DefaultBackfillCellDescriptor,
-    DefaultCountDescriptor, EngineDescriptor, FORMAT_VERSION, KeyDescriptor, KeyKind,
-    PathSegmentDescriptor, PathSegmentKind, RetireCountDescriptor,
+    BackupError, BackupManifest, CommitDescriptor, DefaultCountDescriptor, EngineDescriptor,
+    FORMAT_VERSION, RetireCountDescriptor,
 };
 use marrow_store::tree::EngineProfileDigest;
 
@@ -150,19 +149,12 @@ fn commit_to_json(commit: &CommitDescriptor) -> Value {
         "changed_index_catalog_ids": commit.changed_index_catalog_ids,
         "activation_evolution_digest": commit.activation_evolution_digest,
         "activation_proposal_catalog_digest": commit.activation_proposal_catalog_digest,
-        "activation_proposal_catalog_json": commit.activation_proposal_catalog_json,
         "activation_records_backfilled": commit.activation_records_backfilled,
         "activation_default_records_by_id": commit.activation_default_records_by_id.iter().map(|count| json!({
             "catalog_id": &count.catalog_id,
             "records_backfilled": count.records_backfilled,
             "target_records": count.target_records,
-        })).collect::<Vec<_>>(),
-        "activation_default_backfill_cells": commit.activation_default_backfill_cells.iter().map(|cell| json!({
-            "catalog_id": &cell.catalog_id,
-            "store_id": &cell.store_id,
-            "identity": cell.identity.iter().map(key_to_json).collect::<Vec<_>>(),
-            "path": cell.path.iter().map(path_segment_to_json).collect::<Vec<_>>(),
-            "backfilled": cell.backfilled,
+            "evidence_digest": &count.evidence_digest,
         })).collect::<Vec<_>>(),
         "activation_indexes_rebuilt": commit.activation_indexes_rebuilt,
         "activation_records_retired": commit.activation_records_retired,
@@ -211,16 +203,10 @@ fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
             "activation_proposal_catalog_digest",
         )?
         .filter(|digest| !digest.is_empty()),
-        activation_proposal_catalog_json: opt_str_field(value, "activation_proposal_catalog_json")?
-            .filter(|catalog| !catalog.is_empty()),
         activation_records_backfilled: u64_field(value, "activation_records_backfilled")?,
         activation_default_records_by_id: default_counts_field(
             value,
             "activation_default_records_by_id",
-        )?,
-        activation_default_backfill_cells: default_backfill_cells_field(
-            value,
-            "activation_default_backfill_cells",
         )?,
         activation_indexes_rebuilt: u64_field(value, "activation_indexes_rebuilt")?,
         activation_records_retired: u64_field(value, "activation_records_retired")?,
@@ -270,13 +256,6 @@ fn str_field<'a>(value: &'a Value, field: &'static str) -> Result<&'a str, Backu
         .ok_or_else(missing(field))
 }
 
-fn bool_field(value: &Value, field: &'static str) -> Result<bool, BackupError> {
-    value
-        .get(field)
-        .and_then(Value::as_bool)
-        .ok_or_else(missing(field))
-}
-
 fn opt_str_field(value: &Value, field: &'static str) -> Result<Option<String>, BackupError> {
     match value.get(field) {
         None | Some(Value::Null) => Ok(None),
@@ -312,27 +291,7 @@ fn default_counts_field(
                     catalog_id: str_field(entry, "catalog_id")?.to_string(),
                     records_backfilled: u64_field(entry, "records_backfilled")?,
                     target_records: u64_field(entry, "target_records")?,
-                })
-            })
-            .collect(),
-        _ => Err(missing(field)()),
-    }
-}
-
-fn default_backfill_cells_field(
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<DefaultBackfillCellDescriptor>, BackupError> {
-    match value.get(field).ok_or_else(missing(field))? {
-        Value::Array(entries) => entries
-            .iter()
-            .map(|entry| {
-                Ok(DefaultBackfillCellDescriptor {
-                    catalog_id: str_field(entry, "catalog_id")?.to_string(),
-                    store_id: str_field(entry, "store_id")?.to_string(),
-                    identity: key_array_field(entry, "identity")?,
-                    path: path_array_field(entry, "path")?,
-                    backfilled: bool_field(entry, "backfilled")?,
+                    evidence_digest: str_field(entry, "evidence_digest")?.to_string(),
                 })
             })
             .collect(),
@@ -355,97 +314,6 @@ fn retire_counts_field(
             })
             .collect(),
         _ => Err(missing(field)()),
-    }
-}
-
-fn key_array_field(value: &Value, field: &'static str) -> Result<Vec<KeyDescriptor>, BackupError> {
-    value
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or_else(missing(field))?
-        .iter()
-        .map(key_from_json)
-        .collect()
-}
-
-fn path_array_field(
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<PathSegmentDescriptor>, BackupError> {
-    value
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or_else(missing(field))?
-        .iter()
-        .map(path_segment_from_json)
-        .collect()
-}
-
-fn key_to_json(key: &KeyDescriptor) -> Value {
-    json!({
-        "kind": key_kind_text(key.kind),
-        "value": &key.value,
-    })
-}
-
-fn key_from_json(value: &Value) -> Result<KeyDescriptor, BackupError> {
-    Ok(KeyDescriptor {
-        kind: key_kind(str_field(value, "kind")?)?,
-        value: str_field(value, "value")?.to_string(),
-    })
-}
-
-fn path_segment_to_json(segment: &PathSegmentDescriptor) -> Value {
-    match segment.kind {
-        PathSegmentKind::Member => json!({
-            "kind": "member",
-            "catalog_id": &segment.catalog_id,
-        }),
-        PathSegmentKind::Key => json!({
-            "kind": "key",
-            "key": segment.key.as_ref().map(key_to_json),
-        }),
-    }
-}
-
-fn path_segment_from_json(value: &Value) -> Result<PathSegmentDescriptor, BackupError> {
-    match str_field(value, "kind")? {
-        "member" => Ok(PathSegmentDescriptor {
-            kind: PathSegmentKind::Member,
-            catalog_id: Some(str_field(value, "catalog_id")?.to_string()),
-            key: None,
-        }),
-        "key" => Ok(PathSegmentDescriptor {
-            kind: PathSegmentKind::Key,
-            catalog_id: None,
-            key: Some(key_from_json(value.get("key").ok_or_else(missing("key"))?)?),
-        }),
-        _ => Err(missing("kind")()),
-    }
-}
-
-fn key_kind_text(kind: KeyKind) -> &'static str {
-    match kind {
-        KeyKind::Int => "int",
-        KeyKind::Bool => "bool",
-        KeyKind::Str => "str",
-        KeyKind::Date => "date",
-        KeyKind::Duration => "duration",
-        KeyKind::Instant => "instant",
-        KeyKind::Bytes => "bytes",
-    }
-}
-
-fn key_kind(text: &str) -> Result<KeyKind, BackupError> {
-    match text {
-        "int" => Ok(KeyKind::Int),
-        "bool" => Ok(KeyKind::Bool),
-        "str" => Ok(KeyKind::Str),
-        "date" => Ok(KeyKind::Date),
-        "duration" => Ok(KeyKind::Duration),
-        "instant" => Ok(KeyKind::Instant),
-        "bytes" => Ok(KeyKind::Bytes),
-        _ => Err(missing("kind")()),
     }
 }
 
@@ -475,10 +343,11 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::commit_from_json;
+    use super::super::{CommitDescriptor, DefaultCountDescriptor};
+    use super::{commit_from_json, commit_to_json};
 
     #[test]
-    fn commit_manifest_requires_default_backfill_cell_evidence_field() {
+    fn commit_manifest_requires_default_count_evidence_digest() {
         let commit = json!({
             "commit_id": 1,
             "catalog_epoch": 2,
@@ -489,9 +358,12 @@ mod tests {
             "changed_index_catalog_ids": [],
             "activation_evolution_digest": "fnv1a64:0000000000000002",
             "activation_proposal_catalog_digest": null,
-            "activation_proposal_catalog_json": null,
             "activation_records_backfilled": 0,
-            "activation_default_records_by_id": [],
+            "activation_default_records_by_id": [{
+                "catalog_id": "cat_0000000000000001",
+                "records_backfilled": 1,
+                "target_records": 1
+            }],
             "activation_indexes_rebuilt": 0,
             "activation_records_retired": 0,
             "activation_records_retired_by_id": [],
@@ -501,11 +373,54 @@ mod tests {
         let error = commit_from_json(&commit).expect_err("missing evidence is corrupt");
 
         assert_eq!(error.code(), "restore.format_version");
-        assert!(
-            error
-                .to_string()
-                .contains("activation_default_backfill_cells"),
-            "{error}"
+        assert!(error.to_string().contains("evidence_digest"), "{error}");
+    }
+
+    #[test]
+    fn commit_manifest_serializes_activation_evidence_only() {
+        let proposal_body_field = ["activation", "_proposal", "_catalog", "_json"].concat();
+        let default_detail_field = ["activation", "_default", "_backfill", "_cells"].concat();
+        let commit = CommitDescriptor {
+            commit_id: 9,
+            catalog_epoch: 7,
+            layout_epoch: 1,
+            source_digest: "fnv1a64:0000000000000001".to_string(),
+            engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
+            changed_root_catalog_ids: vec!["cat_0000000000000001".to_string()],
+            changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: "fnv1a64:0000000000000002".to_string(),
+            activation_proposal_catalog_digest: Some("fnv1a64:0000000000000003".to_string()),
+            activation_records_backfilled: 128,
+            activation_default_records_by_id: vec![DefaultCountDescriptor {
+                catalog_id: "cat_0000000000000004".to_string(),
+                records_backfilled: 128,
+                target_records: 128,
+                evidence_digest: "fnv1a64:0000000000000005".to_string(),
+            }],
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        };
+
+        let value = commit_to_json(&commit);
+        let text = serde_json::to_string(&value).expect("serialize manifest commit");
+        let counts = value["activation_default_records_by_id"]
+            .as_array()
+            .expect("default counts array");
+
+        assert!(value.get(&proposal_body_field).is_none());
+        assert!(value.get(&default_detail_field).is_none());
+        assert!(!text.contains(&proposal_body_field));
+        assert!(!text.contains(&default_detail_field));
+        assert_eq!(counts.len(), 1);
+        assert_eq!(
+            counts[0]["evidence_digest"],
+            json!("fnv1a64:0000000000000005")
+        );
+        assert_eq!(
+            commit_from_json(&value).expect("parse evidence-only commit"),
+            commit
         );
     }
 }

@@ -12,6 +12,7 @@ mod admission;
 mod apply;
 mod backfill;
 mod completion;
+mod evidence;
 mod rebuild;
 mod transform;
 mod validate;

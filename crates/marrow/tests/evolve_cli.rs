@@ -8,7 +8,7 @@ use marrow_check::{
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{ActivationDefaultBackfillCell, DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
@@ -632,8 +632,7 @@ fn evolve_apply_resume_fails_closed_when_default_receipt_evidence_is_erased() {
             .expect("read commit")
             .expect("commit metadata");
         commit.activation_records_backfilled = 0;
-        commit.activation_default_records_by_id[0].records_backfilled = 0;
-        commit.activation_default_backfill_cells.clear();
+        commit.activation_default_records_by_id.clear();
         store
             .write_commit_metadata(&commit)
             .expect("erase default receipt evidence");
@@ -650,9 +649,9 @@ fn evolve_apply_resume_fails_closed_when_default_receipt_evidence_is_erased() {
 }
 
 #[test]
-fn evolve_apply_resume_fails_closed_when_default_receipt_cell_is_outside_target_path() {
+fn evolve_apply_resume_fails_closed_when_default_receipt_digest_is_forged() {
     let root = native_books_project(
-        "evolve-apply-existing-optional-default-cell-path-drift",
+        "evolve-apply-existing-optional-default-digest-forged",
         OPTIONAL_PAGES_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
@@ -670,41 +669,18 @@ fn evolve_apply_resume_fails_closed_when_default_receipt_cell_is_outside_target_
 
     let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
-    let pages_id = CatalogId::new(accepted_catalog_id(&root, "books::Book::pages")).unwrap();
     fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
     {
         let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
-        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
-        let forged_path = vec![
-            DataPathSegment::Member(pages_id.clone()),
-            DataPathSegment::Key(SavedKey::Str("forged".to_string())),
-        ];
-        store
-            .write_data_value(
-                &store_id,
-                &[SavedKey::Int(1)],
-                &forged_path,
-                encode_value(&Scalar::Int(0)).expect("encode forged default"),
-            )
-            .expect("write forged default receipt cell");
         let mut commit = store
             .read_commit_metadata()
             .expect("read commit")
             .expect("commit metadata");
-        commit.activation_records_backfilled += 1;
-        commit.activation_default_records_by_id[0].records_backfilled += 1;
-        commit
-            .activation_default_backfill_cells
-            .push(ActivationDefaultBackfillCell {
-                catalog_id: pages_id,
-                store_id,
-                identity: vec![SavedKey::Int(1)],
-                path: forged_path,
-                backfilled: true,
-            });
+        commit.activation_default_records_by_id[0].evidence_digest =
+            "fnv1a64:ffffffffffffffff".to_string();
         store
             .write_commit_metadata(&commit)
-            .expect("corrupt backfill cell evidence");
+            .expect("forge default receipt digest");
     }
 
     let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
@@ -767,22 +743,19 @@ fn evolve_apply_resume_fails_closed_when_preserved_default_cell_does_not_decode(
 }
 
 #[test]
-fn evolve_apply_resume_fails_closed_when_default_receipt_cell_uses_non_target_identity() {
+fn evolve_apply_records_bounded_default_receipt_for_many_records() {
     let root = native_books_project(
-        "evolve-apply-existing-optional-default-forged-identity",
+        "evolve-apply-default-receipt-bounded-many-records",
         OPTIONAL_PAGES_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
     let accepted_place = root_place(&accepted, "books");
     {
         let store = open_native_store(&root);
-        seed_title_only(&store, &accepted_place, 1, "Dune");
-        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(7));
-        seed_title_only(&store, &accepted_place, 2, "Hyperion");
+        for id in 1..=128 {
+            seed_title_only(&store, &accepted_place, id, &format!("Book {id}"));
+        }
     }
-    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
-    let baseline_catalog_json =
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
     write(
         &root,
         "src/books.mw",
@@ -791,51 +764,20 @@ fn evolve_apply_resume_fails_closed_when_default_receipt_cell_uses_non_target_id
 
     let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
-    let pages_id = CatalogId::new(accepted_catalog_id(&root, "books::Book::pages")).unwrap();
-
-    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
-    {
-        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
-        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
-        let forged_identity = vec![SavedKey::Int(1), SavedKey::Str("ghost".to_string())];
-        let pages_path = vec![DataPathSegment::Member(pages_id.clone())];
-        store
-            .write_node(&store_id, &forged_identity)
-            .expect("write forged record node");
-        store
-            .write_data_value(
-                &store_id,
-                &forged_identity,
-                &pages_path,
-                encode_value(&Scalar::Int(0)).expect("encode forged default"),
-            )
-            .expect("write forged default cell");
-        let mut commit = store
-            .read_commit_metadata()
-            .expect("read commit")
-            .expect("commit metadata");
-        let target = commit
-            .activation_default_backfill_cells
-            .iter_mut()
-            .find(|cell| cell.identity == vec![SavedKey::Int(2)])
-            .expect("record 2 backfill receipt");
-        target.store_id = store_id;
-        target.identity = forged_identity;
-        target.path = pages_path;
-        target.backfilled = true;
-        store
-            .write_commit_metadata(&commit)
-            .expect("write forged receipt identity");
-    }
-
-    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
-    let catalog_epoch = accepted_catalog(&root).epoch;
-    let store_epoch = store_epoch(&root);
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("commit metadata");
     fs::remove_dir_all(&root).ok();
 
-    assert_eq!(resume.status.code(), Some(1), "{resume:?}");
-    assert_eq!(catalog_epoch, baseline_epoch);
-    assert_eq!(store_epoch, Some(baseline_epoch + 1));
+    assert_eq!(commit.activation_records_backfilled, 128);
+    assert_eq!(commit.activation_default_records_by_id.len(), 1);
+    let receipt = &commit.activation_default_records_by_id[0];
+    assert_eq!(receipt.records_backfilled, 128);
+    assert_eq!(receipt.target_records, 128);
+    assert!(receipt.evidence_digest.starts_with("fnv1a64:"));
+    assert!(receipt.evidence_digest.len() <= "fnv1a64:ffffffffffffffff".len());
 }
 
 #[test]
@@ -1508,6 +1450,20 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename() {
         "file advanced in lockstep"
     );
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
+    let commit = TreeStore::open(&native_store_path(&root))
+        .expect("reopen native store")
+        .read_commit_metadata()
+        .expect("read commit metadata")
+        .expect("commit metadata");
+    assert_eq!(commit.activation_records_backfilled, 0);
+    assert!(commit.activation_default_records_by_id.is_empty());
+    assert_eq!(commit.activation_indexes_rebuilt, 0);
+    assert_eq!(commit.activation_records_retired, 0);
+    assert_eq!(commit.activation_records_transformed, 0);
+    assert!(
+        commit.activation_proposal_catalog_digest.is_some(),
+        "proposal-only apply still records the proposal digest as evidence"
+    );
 
     // The renamed member keeps its stable id and now records the new path; the old
     // spelling survives only as an alias, never as the live path.

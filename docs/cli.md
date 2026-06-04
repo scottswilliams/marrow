@@ -114,7 +114,10 @@ plus metadata stamp in one transaction. Like `run`, it records a project's
 baseline durable identity first when the project has none yet, then applies the
 evolution against the accepted catalog. The accepted catalog file is published
 only after the store commit carries verifiable activation evidence for defaults,
-transforms, retires, and rebuilt indexes. Destructive retire needs
+transforms, retires, and rebuilt indexes. That evidence is bounded receipt data:
+digests, affected IDs, counts, approvals, commit IDs, and source/catalog/engine
+facts, not proposal catalog bodies or executable migration history. Destructive
+retire needs
 `--maintenance` and an approval whose catalog ID and populated count match the
 preview.
 
@@ -414,6 +417,10 @@ profile, value-codec version, and a checksum over the cell stream — so a later
 restore can refuse data it cannot faithfully reproduce. The backup carries the
 store's data cells only; the generated indexes are derived, so a restore rebuilds
 them rather than replaying them.
+When the store has activation receipts, the manifest carries the receipt facts as
+evidence only. It records proposal/catalog digests, affected IDs, counts, and
+bounded effect digests, never proposal catalog bodies or per-record default
+ledgers.
 
 Tree-cell keys derive from catalog stable IDs, so for a given committed catalog
 and equal stored data the backup is deterministic and byte-identical, and it

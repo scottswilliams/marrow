@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use marrow_check::{evolution::preview, program_with_activation_proposal};
+use marrow_check::evolution::preview;
 use marrow_run::evolution::{
     ApplyError, Approval, FenceError, apply, verify_activation_completion,
 };
@@ -196,12 +196,11 @@ fn resume_completion(
     {
         return Ok(None);
     }
-    // The epoch signature alone cannot prove the source still describes the evolution the
-    // store committed: a divergent edit during the crash window proposes the same next
-    // epoch. The store stamped the schema-bearing source digest of the evolution it ran,
-    // so requiring the current shape to match that recorded digest is the same fact the
-    // open fence checks at an equal epoch. A mismatch means the file would freeze a
-    // catalog the store never activated, so resume fails closed instead of writing it.
+    // The epoch signature alone cannot prove the source still describes the evolution
+    // the store committed: a divergent edit during the crash window can propose the
+    // same next epoch. The completion verifier below recomputes the current witness
+    // from source plus the accepted catalog and compares its digest/effects against
+    // this stamped commit before the file can publish.
     let commit = match store.read_commit_metadata() {
         Ok(commit) => commit,
         Err(error) => {
@@ -213,31 +212,15 @@ fn resume_completion(
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     };
-    if commit.source_digest.is_empty() || commit.source_digest != program.source_digest() {
+    if commit.activation_proposal_catalog_digest.as_deref() != Some(proposal.digest.as_str()) {
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }
-    let Some(stored_proposal_json) = commit.activation_proposal_catalog_json.as_deref() else {
-        report_resume_drift(format);
-        return Err(ExitCode::FAILURE);
-    };
-    let stored_proposal = match marrow_project::CatalogMetadata::from_json(stored_proposal_json) {
-        Ok(catalog) => catalog,
-        Err(error) => {
-            report_simple_error(error.code, &error.message, format);
-            return Err(ExitCode::FAILURE);
-        }
-    };
-    if stored_proposal.epoch != proposal.epoch {
+    if verify_activation_completion(program, store, &commit, approval).is_err() {
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }
-    let activation_program = program_with_activation_proposal(program, stored_proposal.clone());
-    if verify_activation_completion(&activation_program, store, &commit, approval).is_err() {
-        report_resume_drift(format);
-        return Err(ExitCode::FAILURE);
-    }
-    write_accepted_catalog(dir, config, &stored_proposal)?;
+    write_accepted_catalog(dir, config, proposal)?;
     render::apply_resumed(proposal.epoch, format);
     Ok(Some(ExitCode::SUCCESS))
 }

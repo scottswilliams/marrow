@@ -11,10 +11,7 @@
 
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
-use marrow_store::tree::{
-    ActivationDefaultBackfillCell, ActivationDefaultRecordCount, CommitMetadata, EngineProfile,
-    TreeStore,
-};
+use marrow_store::tree::{ActivationDefaultRecordCount, CommitMetadata, EngineProfile, TreeStore};
 
 use crate::write_plan::PlanStep;
 
@@ -42,10 +39,8 @@ pub(crate) struct StampFacts {
 pub(crate) struct ActivationStampFacts {
     pub(crate) evolution_digest: String,
     pub(crate) proposal_catalog_digest: Option<String>,
-    pub(crate) proposal_catalog_json: Option<String>,
     pub(crate) records_backfilled: u64,
     pub(crate) default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub(crate) default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
     pub(crate) indexes_rebuilt: u64,
     pub(crate) records_retired: u64,
     pub(crate) records_retired_by_id: Vec<(CatalogId, u64)>,
@@ -74,9 +69,6 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         activation_proposal_catalog_digest: activation
             .as_ref()
             .and_then(|activation| activation.proposal_catalog_digest.clone()),
-        activation_proposal_catalog_json: activation
-            .as_ref()
-            .and_then(|activation| activation.proposal_catalog_json.clone()),
         activation_records_backfilled: activation
             .as_ref()
             .map(|activation| activation.records_backfilled)
@@ -84,10 +76,6 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         activation_default_records_by_id: activation
             .as_ref()
             .map(|activation| activation.default_records_by_id.clone())
-            .unwrap_or_default(),
-        activation_default_backfill_cells: activation
-            .as_ref()
-            .map(|activation| activation.default_backfill_cells.clone())
             .unwrap_or_default(),
         activation_indexes_rebuilt: activation
             .as_ref()

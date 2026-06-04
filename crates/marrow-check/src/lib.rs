@@ -32,7 +32,6 @@ mod typerules;
 
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
-pub use catalog::program_with_activation_proposal;
 pub use durable_path::{
     PathParseError, PathSegment, StoreLeafKind, StorePathClass, classify_store_path, display_path,
     identity_leaf_key_mismatch, parse_path,

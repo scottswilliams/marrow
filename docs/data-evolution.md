@@ -181,13 +181,13 @@ a baseline exists, later identity changes flow through `evolve apply` rather tha
 being written from a check. There is no separate command to inspect or accept a
 proposal.
 
-A stable ID is a random opaque 128-bit value in the `cat_<32 lowercase hex>` shape. It is
-allocated independently of the source path, so it never changes when a path
-changes, and it is random rather than a counter so identity minted on two
-branches for different entities cannot collide when they merge. Once committed it
-is frozen and never recomputed. A duplicate ID — from a manual catalog change,
-bad branch integration, or an astronomically unlikely clash — fails closed at
-check rather than corrupting storage.
+A stable ID is a random opaque 128-bit value in the `cat_<32 lowercase hex>`
+shape. It is allocated independently of the source path, so it never changes
+when a path changes, and it is random rather than a counter so identity minted
+on two branches for different entities cannot collide when they merge. Once
+committed it is frozen and never recomputed. A duplicate ID — from a manual
+catalog change, bad branch integration, or an astronomically unlikely clash —
+fails closed at check rather than corrupting storage.
 
 The catalog digest is `sha256:<64 lowercase hex>` over the canonical JSON object
 `{"epoch": <u64>, "entries": <entries in file order>}` serialized by the
@@ -233,10 +233,12 @@ to. It intentionally excludes transition text such as `evolve` blocks.
 
 An evolution apply stamps activation evidence in the same transaction as its
 data effects: proposal/evolution digests, changed catalog IDs, default
-backfill counts and target-cell evidence that marks the backfilled subset,
-transform counts, exact per-id retire counts, and rebuilt-index counts. The
-accepted catalog file publishes only after those effects are verifiable; crash
-resume rechecks the evidence before writing the file.
+backfill counts and bounded effect digests, transform counts, exact per-id
+retire counts, and rebuilt-index counts. Receipts do not store proposal catalog
+bodies or executable migration steps. The accepted catalog file publishes only
+after those effects are verifiable; crash resume recomputes the current proposal
+from source plus the accepted catalog, checks the evidence against the current
+store effects, and then writes that generated proposal.
 
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the

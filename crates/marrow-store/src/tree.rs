@@ -75,10 +75,8 @@ pub struct CommitMetadata {
     pub changed_index_catalog_ids: Vec<CatalogId>,
     pub activation_evolution_digest: String,
     pub activation_proposal_catalog_digest: Option<String>,
-    pub activation_proposal_catalog_json: Option<String>,
     pub activation_records_backfilled: u64,
     pub activation_default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub activation_default_backfill_cells: Vec<ActivationDefaultBackfillCell>,
     pub activation_indexes_rebuilt: u64,
     pub activation_records_retired: u64,
     pub activation_records_retired_by_id: Vec<(CatalogId, u64)>,
@@ -90,17 +88,7 @@ pub struct ActivationDefaultRecordCount {
     pub catalog_id: CatalogId,
     pub records_backfilled: u64,
     pub target_records: u64,
-}
-
-/// Evidence for one target cell of a default obligation. `backfilled` distinguishes
-/// cells written by activation from cells that were already present and preserved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActivationDefaultBackfillCell {
-    pub catalog_id: CatalogId,
-    pub store_id: CatalogId,
-    pub identity: Vec<SavedKey>,
-    pub path: Vec<DataPathSegment>,
-    pub backfilled: bool,
+    pub evidence_digest: String,
 }
 
 /// One index row from an exact index tuple scan.
@@ -1598,21 +1586,12 @@ fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreErr
             .as_bytes(),
         &mut bytes,
     )?;
-    put_bytes(
-        metadata
-            .activation_proposal_catalog_json
-            .as_deref()
-            .unwrap_or("")
-            .as_bytes(),
-        &mut bytes,
-    )?;
     bytes.extend_from_slice(&metadata.activation_records_backfilled.to_be_bytes());
     bytes.extend_from_slice(&metadata.activation_indexes_rebuilt.to_be_bytes());
     bytes.extend_from_slice(&metadata.activation_records_retired.to_be_bytes());
     bytes.extend_from_slice(&metadata.activation_records_transformed.to_be_bytes());
     put_retire_counts(&metadata.activation_records_retired_by_id, &mut bytes)?;
     put_default_counts(&metadata.activation_default_records_by_id, &mut bytes)?;
-    put_default_backfill_cells(&metadata.activation_default_backfill_cells, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -1628,31 +1607,17 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
     let (
         activation_evolution_digest,
         activation_proposal_catalog_digest,
-        activation_proposal_catalog_json,
         activation_records_backfilled,
         activation_default_records_by_id,
-        activation_default_backfill_cells,
         activation_indexes_rebuilt,
         activation_records_retired,
         activation_records_transformed,
         activation_records_retired_by_id,
     ) = if cursor.is_empty() {
-        (
-            String::new(),
-            None,
-            None,
-            0,
-            Vec::new(),
-            Vec::new(),
-            0,
-            0,
-            0,
-            Vec::new(),
-        )
+        (String::new(), None, 0, Vec::new(), 0, 0, 0, Vec::new())
     } else {
         let evolution_digest = cursor.take_string()?;
         let proposal_digest = cursor.take_string()?;
-        let proposal_json = cursor.take_string()?;
         let activation_records_backfilled = cursor.take_u64()?;
         let activation_indexes_rebuilt = cursor.take_u64()?;
         let activation_records_retired = cursor.take_u64()?;
@@ -1667,18 +1632,11 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         } else {
             cursor.take_default_counts()?
         };
-        let activation_default_backfill_cells = if cursor.is_empty() {
-            Vec::new()
-        } else {
-            cursor.take_default_backfill_cells()?
-        };
         (
             evolution_digest,
             (!proposal_digest.is_empty()).then_some(proposal_digest),
-            (!proposal_json.is_empty()).then_some(proposal_json),
             activation_records_backfilled,
             activation_default_records_by_id,
-            activation_default_backfill_cells,
             activation_indexes_rebuilt,
             activation_records_retired,
             activation_records_transformed,
@@ -1698,10 +1656,8 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         changed_index_catalog_ids,
         activation_evolution_digest,
         activation_proposal_catalog_digest,
-        activation_proposal_catalog_json,
         activation_records_backfilled,
         activation_default_records_by_id,
-        activation_default_backfill_cells,
         activation_indexes_rebuilt,
         activation_records_retired,
         activation_records_retired_by_id,
@@ -1757,44 +1713,7 @@ fn put_default_counts(
         put_catalog_id(&count.catalog_id, out)?;
         out.extend_from_slice(&count.records_backfilled.to_be_bytes());
         out.extend_from_slice(&count.target_records.to_be_bytes());
-    }
-    Ok(())
-}
-
-fn put_default_backfill_cells(
-    cells: &[ActivationDefaultBackfillCell],
-    out: &mut Vec<u8>,
-) -> Result<(), StoreError> {
-    let len = u32::try_from(cells.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for cell in cells {
-        put_catalog_id(&cell.catalog_id, out)?;
-        put_catalog_id(&cell.store_id, out)?;
-        put_saved_keys(&cell.identity, out)?;
-        put_data_path(&cell.path, out)?;
-        out.push(u8::from(cell.backfilled));
-    }
-    Ok(())
-}
-
-fn put_data_path(path: &[DataPathSegment], out: &mut Vec<u8>) -> Result<(), StoreError> {
-    let len = u32::try_from(path.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for segment in path {
-        match segment {
-            DataPathSegment::Member(id) => {
-                out.push(0);
-                put_catalog_id(id, out)?;
-            }
-            DataPathSegment::Key(key) => {
-                out.push(1);
-                put_saved_key(key, out)?;
-            }
-        }
+        put_bytes(count.evidence_digest.as_bytes(), out)?;
     }
     Ok(())
 }
@@ -1808,10 +1727,6 @@ fn put_saved_keys(keys: &[SavedKey], out: &mut Vec<u8>) -> Result<(), StoreError
         put_bytes(&crate::key::encode_key_value(key), out)?;
     }
     Ok(())
-}
-
-fn put_saved_key(key: &SavedKey, out: &mut Vec<u8>) -> Result<(), StoreError> {
-    put_bytes(&crate::key::encode_key_value(key), out)
 }
 
 fn decode_u64(bytes: &[u8]) -> Result<u64, StoreError> {
@@ -1921,7 +1836,7 @@ impl<'a> Cursor<'a> {
 
     fn take_default_counts(&mut self) -> Result<Vec<ActivationDefaultRecordCount>, StoreError> {
         let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 16) {
+        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 16 + MIN_LENGTH_PREFIX_BYTES) {
             return Err(corrupt_cell(self.bytes));
         }
         let mut counts = Vec::new();
@@ -1930,47 +1845,10 @@ impl<'a> Cursor<'a> {
                 catalog_id: self.take_catalog_id()?,
                 records_backfilled: self.take_u64()?,
                 target_records: self.take_u64()?,
+                evidence_digest: self.take_string()?,
             });
         }
         Ok(counts)
-    }
-
-    fn take_default_backfill_cells(
-        &mut self,
-    ) -> Result<Vec<ActivationDefaultBackfillCell>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES * 2 + MIN_LENGTH_PREFIX_BYTES * 2)
-        {
-            return Err(corrupt_cell(self.bytes));
-        }
-        let mut cells = Vec::new();
-        for _ in 0..len {
-            cells.push(ActivationDefaultBackfillCell {
-                catalog_id: self.take_catalog_id()?,
-                store_id: self.take_catalog_id()?,
-                identity: self.take_saved_keys()?,
-                path: self.take_data_path()?,
-                backfilled: self.take_bool()?,
-            });
-        }
-        Ok(cells)
-    }
-
-    fn take_data_path(&mut self) -> Result<Vec<DataPathSegment>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / MIN_LENGTH_PREFIX_BYTES {
-            return Err(corrupt_cell(self.bytes));
-        }
-        let mut path = Vec::new();
-        for _ in 0..len {
-            let tag = self.take(1)?[0];
-            match tag {
-                0 => path.push(DataPathSegment::Member(self.take_catalog_id()?)),
-                1 => path.push(DataPathSegment::Key(self.take_saved_key()?)),
-                _ => return Err(corrupt_cell(&[tag])),
-            }
-        }
-        Ok(path)
     }
 
     fn take_saved_keys(&mut self) -> Result<Vec<SavedKey>, StoreError> {
@@ -1990,28 +1868,10 @@ impl<'a> Cursor<'a> {
         Ok(keys)
     }
 
-    fn take_saved_key(&mut self) -> Result<SavedKey, StoreError> {
-        let raw = self.take_bytes()?;
-        let (key, consumed) = decode_key_value(raw).ok_or_else(|| corrupt_cell(raw))?;
-        if consumed != raw.len() {
-            return Err(corrupt_cell(raw));
-        }
-        Ok(key)
-    }
-
     fn take_u32(&mut self) -> Result<u32, StoreError> {
         let bytes = self.take(4)?;
         let raw: [u8; 4] = bytes.try_into().map_err(|_| corrupt_cell(bytes))?;
         Ok(u32::from_be_bytes(raw))
-    }
-
-    fn take_bool(&mut self) -> Result<bool, StoreError> {
-        let byte = self.take(1)?[0];
-        match byte {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(corrupt_cell(&[byte])),
-        }
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8], StoreError> {
@@ -2034,8 +1894,8 @@ mod tests {
     use std::cell::Cell;
 
     use super::{
-        ActivationDefaultBackfillCell, ActivationDefaultRecordCount, CellKey, CommitMetadata,
-        DataPathSegment, NODE_MARKER, TreeStore, is_data_cell_key,
+        ActivationDefaultRecordCount, CellKey, CommitMetadata, DataPathSegment, NODE_MARKER,
+        TreeStore, is_data_cell_key,
     };
     use crate::StoreError;
     use crate::backend::{Backend, ScanPage};
@@ -2230,23 +2090,12 @@ mod tests {
                 "sha256:00000000000000000000000000000000000000000000000000000000c001d00d"
                     .to_string(),
             ),
-            activation_proposal_catalog_json: Some(
-                r#"{"epoch":2,"digest":"sha256:00000000000000000000000000000000000000000000000000000000c001d00d","entries":[]}"#.to_string(),
-            ),
             activation_records_backfilled: 2,
             activation_default_records_by_id: vec![ActivationDefaultRecordCount {
                 catalog_id: catalog("cat_00000000000000000000000000000005"),
                 records_backfilled: 2,
                 target_records: 3,
-            }],
-            activation_default_backfill_cells: vec![ActivationDefaultBackfillCell {
-                catalog_id: catalog("cat_00000000000000000000000000000005"),
-                store_id: catalog("cat_00000000000000000000000000000001"),
-                identity: vec![SavedKey::Int(7)],
-                path: vec![DataPathSegment::Member(catalog(
-                    "cat_00000000000000000000000000000005",
-                ))],
-                backfilled: true,
+                evidence_digest: "fnv1a64:0000000000000005".to_string(),
             }],
             activation_indexes_rebuilt: 1,
             activation_records_retired: 4,

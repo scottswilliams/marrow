@@ -19,7 +19,7 @@ use marrow_check::evolution::DefaultValue;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{ActivationDefaultBackfillCell, ActivationDefaultRecordCount};
+use marrow_store::tree::ActivationDefaultRecordCount;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::index_maintenance::{PlanStepStagedData, index_rebuild_entry_with_staged};
@@ -30,6 +30,7 @@ use super::apply::{
     ApplyError, MemberLocation, PathStep, StagedWork, for_each_place_record, locate_member,
     store_id,
 };
+use super::evidence::EvidenceDigest;
 
 /// Stage a `WriteData` of the encoded default at every record (or keyed entry) that
 /// lacks the defaulted member. Existing cells on accepted optional members are
@@ -46,11 +47,16 @@ pub(super) fn stage_default_backfill(
 ) -> Result<(), ApplyError> {
     let mut count = 0usize;
     let mut target_count = 0usize;
+    let mut digest = EvidenceDigest::new("marrow-activation-default-v1");
+    digest.catalog_id(catalog_id);
     for (place, location) in locations(places, catalog_id) {
         let sid = store_id(place)?;
         for_each_place_record(store, place, &mut |identity| {
             visit_member_cell_paths(store, &sid, identity, &location.steps, &mut |path| {
                 target_count += 1;
+                digest.catalog_id(&sid);
+                digest.saved_keys(identity);
+                digest.data_path(path);
                 if store.data_subtree_exists(&sid, identity, path)? {
                     if fail_on_existing {
                         return Err(StoreError::Corruption {
@@ -58,29 +64,20 @@ pub(super) fn stage_default_backfill(
                                 .to_string(),
                         });
                     }
-                    staged
-                        .default_backfill_cells
-                        .push(ActivationDefaultBackfillCell {
-                            catalog_id: catalog_id.clone(),
-                            store_id: sid.clone(),
-                            identity: identity.to_vec(),
-                            path: path.to_vec(),
-                            backfilled: false,
-                        });
+                    let current =
+                        store
+                            .read_data_value(&sid, identity, path)?
+                            .ok_or_else(|| StoreError::Corruption {
+                                message: "default target presence changed during staging"
+                                    .to_string(),
+                            })?;
+                    digest.bytes(&current);
                 } else {
                     steps.push(PlanStep::WriteData {
                         address: DataAddress::raw(sid.clone(), identity.to_vec(), path.to_vec()),
                         value: value.encoded.clone(),
                     });
-                    staged
-                        .default_backfill_cells
-                        .push(ActivationDefaultBackfillCell {
-                            catalog_id: catalog_id.clone(),
-                            store_id: sid.clone(),
-                            identity: identity.to_vec(),
-                            path: path.to_vec(),
-                            backfilled: true,
-                        });
+                    digest.bytes(&value.encoded);
                     count += 1;
                 }
                 Ok(())
@@ -89,12 +86,15 @@ pub(super) fn stage_default_backfill(
         })?;
     }
     staged.records_backfilled += count;
+    digest.u64(count as u64);
+    digest.u64(target_count as u64);
     staged
         .default_records_by_id
         .push(ActivationDefaultRecordCount {
             catalog_id: catalog_id.clone(),
             records_backfilled: count as u64,
             target_records: target_count as u64,
+            evidence_digest: digest.finish(),
         });
     Ok(())
 }
@@ -106,36 +106,36 @@ pub(super) fn stage_default_presence_receipt(
     staged: &mut StagedWork,
 ) -> Result<(), ApplyError> {
     let mut target_count = 0usize;
+    let mut digest = EvidenceDigest::new("marrow-activation-default-v1");
+    digest.catalog_id(catalog_id);
     for (place, location) in locations(places, catalog_id) {
         let sid = store_id(place)?;
         for_each_place_record(store, place, &mut |identity| {
             visit_member_cell_paths(store, &sid, identity, &location.steps, &mut |path| {
                 target_count += 1;
-                if !store.data_subtree_exists(&sid, identity, path)? {
+                let Some(current) = store.read_data_value(&sid, identity, path)? else {
                     return Err(StoreError::Corruption {
                         message: "default receipt target is missing before activation".to_string(),
                     });
-                }
-                staged
-                    .default_backfill_cells
-                    .push(ActivationDefaultBackfillCell {
-                        catalog_id: catalog_id.clone(),
-                        store_id: sid.clone(),
-                        identity: identity.to_vec(),
-                        path: path.to_vec(),
-                        backfilled: false,
-                    });
+                };
+                digest.catalog_id(&sid);
+                digest.saved_keys(identity);
+                digest.data_path(path);
+                digest.bytes(&current);
                 Ok(())
             })?;
             Ok(())
         })?;
     }
+    digest.u64(0);
+    digest.u64(target_count as u64);
     staged
         .default_records_by_id
         .push(ActivationDefaultRecordCount {
             catalog_id: catalog_id.clone(),
             records_backfilled: 0,
             target_records: target_count as u64,
+            evidence_digest: digest.finish(),
         });
     Ok(())
 }

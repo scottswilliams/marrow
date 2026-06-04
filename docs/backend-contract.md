@@ -115,12 +115,13 @@ approval counts are length-prefixed with big-endian `u32` counts or byte
 lengths. Catalog IDs remain opaque storage IDs inside metadata values.
 
 Activation evidence binds the durable commit boundary: source digest, evolution
-digest, proposal catalog digest and JSON, changed root/index IDs, default
-backfill counts and target-cell evidence that marks the backfilled subset,
-rebuilt-index count, per-id retire counts, and transform count. These fields are
-receipts over the committed activation, not executable migration history. Crash
-resume may publish the accepted catalog only after it verifies this evidence
-against the current store effects.
+digest, proposal catalog digest, changed root/index IDs, per-default bounded
+effect digests plus counts, rebuilt-index count, per-id retire counts, and
+transform count. These fields are receipts over the committed activation, not
+executable migration history and not proposal catalog bodies. Crash resume
+recomputes the current proposal from source plus the accepted catalog, verifies
+the receipt evidence against the current store effects, and only then publishes
+that current generated proposal.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, and malformed index identity suffixes report
