@@ -167,9 +167,8 @@ Current remaining queue:
 
 | Order | Lane | Why It Is Next | Must Prove |
 | --- | --- | --- | --- |
-| 1 | [Lane 9: Source-Native Evolution And Activation](lanes/lane-09-evolution-activation.md) | Activation and evolution can now consume the checked runtime and tree-cell store facts before proving saved data changes. | Catalog, source, and saved data evolve through one proof-discharge pipeline. |
-| 2 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces once runtime and evolution expose shared facts; its first deliverable is a feature-surface audit that deletes, demotes, or rebuilds prototype-only commands and protocols. | Raw bytes, raw paths, unsupported commands, broad server/query promises, and local semantic rediscovery disappear from production protocols. |
-| 3 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
+| 1 | [Lane 10: Tooling, Backup, Restore, And Protocols](lanes/lane-10-tooling-backup-protocols.md) | Tools and backup can move to typed surfaces now that runtime and evolution expose shared facts; its first deliverable is a feature-surface audit that deletes, demotes, or rebuilds prototype-only commands and protocols. | Raw bytes, raw paths, unsupported commands, broad server/query promises, and local semantic rediscovery disappear from production protocols. |
+| 2 | [Lane 11: Rust De-Slopification And Hardening](lanes/lane-11-rust-hardening.md) | Final absence scans run after the owning semantic lanes delete their legacy paths. | No duplicate production semantic paths, unsafe, stale docs, or compatibility glue remain. |
 
 Completed foundations:
 
@@ -179,6 +178,11 @@ Completed foundations:
   execution, checked durable traversal, write planning, and enum/index runtime
   value handling. Runtime no longer has a syntax-body production path or a
   string-backed checked entry call.
+- [Lane 9](lanes/lane-09-evolution-activation.md) supplies source-native
+  evolution and an invisible, content-independent catalog identity: one
+  fail-closed, identity-aware proof-discharge pipeline (`check`, `check --data`,
+  `evolve preview`/`apply`) over an exact witness, with stale-writer fencing on
+  catalog epoch, engine profile, and schema digest.
 
 ## Active Quality Intervention
 
