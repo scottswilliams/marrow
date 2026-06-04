@@ -223,7 +223,7 @@ fn reject_entry_mode(
         return Ok(());
     }
     Err(type_error(
-        &format!("entry parameter `{name}` is out/inout and must be called from checked source"),
+        &format!("entry parameter `{name}` is inout and must be called from checked source"),
         SourceSpan::default(),
     ))
 }

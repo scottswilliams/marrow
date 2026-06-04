@@ -153,7 +153,7 @@ mod decl_parser_corpus {
             "fn f(x: int = 5)\n    return\n",
             "fn main(value:)\n    return\n",
             "pub fn empty()\n",
-            "fn weird(out a: int, inout b: string)\n    return\n",
+            "fn weird(inout b: string)\n    return\n",
             // top-level dispatch errors and stray indentation
             "type Foo = int\n",
             "wat\n",

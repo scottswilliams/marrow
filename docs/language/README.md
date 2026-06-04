@@ -33,7 +33,15 @@ Saved data:
 ```
 
 The difference is the `^`. Without it, data is local to the running program.
-With it, data is saved in the project database.
+With it, data is saved in the project's typed tree store.
+
+## What Marrow Is Not
+
+Marrow is not a SQL dialect, ORM, query optimizer, migration DSL, or general
+database server. It has one source language and one typed tree data model. Saved
+data uses the same resource shapes as local data; indexes are declared lookup
+trees owned by stores; exact whole-resource assignment is ordinary assignment,
+not a warning-producing operation.
 
 ## First Look
 
@@ -79,10 +87,11 @@ This shows the main shape:
 - `index byShelf(shelf, id)` declares an alternate lookup tree owned by the store.
 - `var book: Book` uses the same resource shape locally.
 - `^books(id) = book` saves the local resource and creates index entries.
-- Assignment to an indexed field updates the field and its index entries
+- Assignment to an indexed field writes the field and maintains its index entries
   together.
 - A single managed write does not need a user-written transaction.
-- Plain collection loops walk elements; `keys(...)` walks addresses only.
+- Single-variable durable loops walk addresses. Use two variables or
+  `values(...)` when code needs stored values.
 
 ## Reference Map
 

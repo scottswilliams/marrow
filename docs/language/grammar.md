@@ -141,9 +141,10 @@ the indented block beneath a member is its nested members, so a member path
 `Enum "::" member ("::" member)*` walks the tree. The optional `category` lead
 marks a member a grouping node, not selectable as a value. A member is a category
 exactly when it has nested members: a category must have nested members, and a
-member with nested members must be a category. `category` is contextual — recognized only as the lead of an
-enum-member line — so it is a valid identifier elsewhere. A member reference walks
-the member path after the enum: `Enum "::" member ("::" member)*` resolves
+member with nested members must be a category. `category` is contextual —
+recognized only as the lead of an enum-member line — so it is a valid identifier
+elsewhere. A member reference walks the member path after the enum:
+`Enum "::" member ("::" member)*` resolves
 nominally to the enclosing module's enum, and the qualified `module "::" Enum "::"
 member ...` names another module's enum exactly (see the `qualified_name` rule
 under Primary Expressions). A bare `Enum "::" leaf` resolves only when that leaf
@@ -166,7 +167,7 @@ visibility      = "pub" ;
 
 param_list      = param_decl ("," param_decl)* ","? ;
 param_decl      = param_mode? identifier type_annotation ;
-param_mode      = "out" | "inout" ;
+param_mode      = "inout" ;
 
 return_type     = ":" type ;
 
@@ -464,7 +465,7 @@ argument            =
     ;
 
 named_argument      = identifier ":" expression ;
-arg_mode            = "out" | "inout" ;
+arg_mode            = "inout" ;
 ```
 
 After the first named argument, remaining arguments must be named.
@@ -503,11 +504,11 @@ These rules are part of the grammar contract:
   the resource block desugar onto the generated store.
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
-- `out` and local `inout` arguments must be assignable places. Saved paths are
-  not valid `inout` arguments.
-- Direct collection iteration yields elements. For a managed store root, that
-  means resource values; for a non-unique index branch, that means the identities
-  in the branch.
+- Local `inout` arguments must be assignable places. Saved paths are not valid
+  `inout` arguments.
+- Direct durable collection iteration yields addresses. For a managed store root,
+  that means store identities; for a sequence or keyed layer, that means child
+  keys; for a non-unique index branch, that means the identities in the branch.
 - `keys`, `values`, and `entries` expose address-only, element-only, and
   address-plus-element traversal as expression forms.
 - Documentation comments attach to the next const, resource, store, function, or

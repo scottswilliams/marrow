@@ -202,7 +202,7 @@ A managed saved write is planned above the store engine:
 3. read old values needed by indexes or required-field checks;
 4. check unique indexes;
 5. write the resource value or field;
-6. update generated index entries;
+6. maintain generated index entries;
 7. commit the plan or roll it back.
 
 Single-record writes do not require user-written transactions. If the selected
@@ -214,11 +214,11 @@ such as a record plus an audit entry, several related resources, or a delete
 plus cleanup work.
 
 Whole-resource assignment replaces the managed resource tree for one identity.
-Field writes update existing resources. `delete` removes a value or subtree and
-updates generated indexes. Source-level `merge` is not part of v0.1; use
+Field writes change existing resources. `delete` removes a value or subtree and
+maintains generated indexes. Source-level `merge` is not part of v0.1; use
 explicit checked writes or a future checked transform.
 
-Managed writes are planned before they commit, and generated index updates are
+Managed writes are planned before they commit, and generated index maintenance is
 part of the same plan. This protects indexes, history layers, and required
 fields from accidental corruption.
 
@@ -362,9 +362,9 @@ required field, rebuilds an index, or changes identity, that work is explicit,
 inspectable, and recoverable.
 
 Data-evolution work is source-native preview/apply over checked catalog and
-store facts. Explicit repair code may run in maintenance mode when it needs
-maintenance capabilities. There is no separate migration DSL and no hidden
-history ledger in the database kernel.
+store facts. Tool/admin maintenance runs may grant repair code the capabilities
+ordinary source syntax cannot request. There is no separate migration DSL and no
+hidden history ledger in the database kernel.
 
 Maintenance mode is selected by tools, not ordinary application code. A
 maintenance run names the roots it may change. It can rebuild indexes, delete

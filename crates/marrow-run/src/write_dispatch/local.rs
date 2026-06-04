@@ -25,7 +25,7 @@ pub(crate) fn eval_local_field_set(
 
 /// Update (or insert) `field` of the local resource bound to `base` with an
 /// already-evaluated value, rebinding the variable. Shared by
-/// [`eval_local_field_set`] and `out`/`inout` write-back.
+/// [`eval_local_field_set`] and `inout` write-back.
 pub(crate) fn write_local_field(
     base: &str,
     field: &str,

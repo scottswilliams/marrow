@@ -1549,26 +1549,17 @@ fn id_of_store_is_the_canonical_reference_type() {
 }
 
 #[test]
-fn prototype_only_constructs_are_rejected_after_parsing() {
+fn saved_inout_through_resource_reference_is_rejected() {
     let report = check_module_report(
-        "prototype-only",
+        "saved-inout-resource-reference",
         "module m\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
          fn normalize(inout book: Book)\n    return\n\
-         fn save(out book: Book)\n    book = Book(title: \"saved\")\n\n\
-         fn f(id: int)\n    var local = Book(title: \"local\")\n    normalize(inout local)\n    save(out ^books(id))\n    lock ^books(id)\n        print(\"locked\")\n    merge ^books(id) = ^books(id)\n    normalize(inout ^books(id))\n",
+         fn f(id: int)\n    var local = Book(title: \"local\")\n    normalize(inout local)\n    normalize(inout ^books(id))\n",
     );
 
-    let found = with_code(&report, "check.prototype_only");
-    assert_eq!(found.len(), 3, "{:#?}", report.diagnostics);
-    assert!(
-        found.iter().any(|d| d.message.contains("lock")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("merge")),
-        "{found:#?}"
-    );
+    let found = with_code(&report, "check.rejected_surface");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(
         found.iter().any(|d| d.message.contains("saved `inout`")),
         "{found:#?}"
@@ -1576,24 +1567,54 @@ fn prototype_only_constructs_are_rejected_after_parsing() {
 }
 
 #[test]
-fn saved_inout_through_index_entry_is_prototype_only() {
+fn saved_inout_through_index_entry_is_rejected_surface() {
     let report = check_module_report(
-        "prototype-index-inout",
+        "rejected-index-inout",
         "module m\n\
          resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
          fn touch(inout id: Id(^books))\n    return\n\
          fn f(id: int)\n    touch(inout ^books.byShelf(\"fiction\")(id))\n",
     );
 
-    let found = with_code(&report, "check.prototype_only");
+    let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
-fn old_saved_traversal_method_shapers_are_prototype_only() {
+fn malformed_saved_inout_through_keyed_root_field_is_rejected() {
     let report = check_module_report(
-        "prototype-saved-traversal-shapers",
+        "malformed-saved-inout-keyed-root-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn touch(inout value: unknown)\n    value = \"x\"\n\
+         fn f()\n    touch(inout ^books.title)\n",
+    );
+
+    let found = with_code(&report, "check.rejected_surface");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
+}
+
+#[test]
+fn malformed_saved_inout_through_index_branch_is_rejected() {
+    let report = check_module_report(
+        "malformed-saved-inout-index-branch",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn touch(inout value: unknown)\n    value = \"x\"\n\
+         fn f()\n    touch(inout ^books.byShelf)\n",
+    );
+
+    let found = with_code(&report, "check.rejected_surface");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
+}
+
+#[test]
+fn old_saved_traversal_method_shapers_are_rejected() {
+    let report = check_module_report(
+        "rejected-saved-traversal-shapers",
         "module m\n\
          resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
          fn f(token: string)\n    \
@@ -1606,7 +1627,7 @@ fn old_saved_traversal_method_shapers_are_prototype_only() {
          for id in ^books.byShelf(\"fiction\").reverse()\n        print($\"{id}\")\n",
     );
 
-    let found = with_code(&report, "check.prototype_only");
+    let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
     for name in [
         "take", "window", "after", "from", "until", "resume", "reverse",
@@ -1621,7 +1642,7 @@ fn old_saved_traversal_method_shapers_are_prototype_only() {
 }
 
 #[test]
-fn declared_saved_members_named_like_traversal_shapers_are_not_prototype_only() {
+fn declared_saved_members_named_like_traversal_shapers_are_not_rejected() {
     let report = check_module_report(
         "declared-traversal-shaped-names",
         "module m\n\
@@ -1631,7 +1652,7 @@ fn declared_saved_members_named_like_traversal_shapers_are_not_prototype_only() 
          for found in ^books.take(\"fiction\")\n        var typed: Id(^books) = found\n",
     );
 
-    let found = with_code(&report, "check.prototype_only");
+    let found = with_code(&report, "check.rejected_surface");
     assert!(found.is_empty(), "{:#?}", report.diagnostics);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2525,26 +2546,15 @@ fn correct_calls_are_not_flagged() {
 }
 
 #[test]
-fn out_and_inout_calls_keep_their_declared_return_types() {
+fn inout_calls_keep_their_declared_return_types() {
     let report = check_module_report(
-        "out-inout-return-types",
+        "inout-return-types",
         "module m\n\
-         fn parse(out value: int): bool\n    value = 7\n    return true\n\
+         fn parse(inout value: int): bool\n    value = 7\n    return true\n\
          fn take(inout remaining: int, unit: int): string\n    remaining = remaining - unit\n    return \"ok\"\n\n\
-         fn caller(): string\n    var n: int = 0\n    if parse(out n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
+         fn caller(): string\n    var n: int = 0\n    if parse(inout n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-}
-
-#[test]
-fn out_parameters_must_be_assigned_before_returning() {
-    let found = check_module(
-        "out-assignment",
-        "module m\n\
-         fn never_set(out value: int)\n    const ignore: int = 1\n",
-        "check.out_parameter_assignment",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -2563,64 +2573,41 @@ fn read_only_parameter_checks_respect_local_shadowing() {
     let report = check_module_report(
         "readonly-param-shadow",
         "module m\n\
-         fn set_to(out value: int)\n    value = 1\n\
-         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(out value)\n        return value\n    return value\n",
+         fn set_to(inout value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(inout value)\n        return value\n    return value\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
-fn read_only_parameters_are_not_out_or_inout_arguments() {
+fn read_only_parameters_are_not_inout_arguments() {
     let found = check_module(
-        "readonly-param-out-arg",
+        "readonly-param-inout-arg",
         "module m\n\
-         fn set_to(out value: int)\n    value = 1\n\
-         fn caller(value: int): int\n    set_to(out value)\n    return value\n",
+         fn set_to(inout value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    set_to(inout value)\n    return value\n",
         "check.invalid_assign_target",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
-fn out_parameters_can_be_assigned_by_out_calls() {
+fn inout_parameters_can_be_relayed_by_inout_calls() {
     let report = check_module_report(
-        "out-call-assigns-out-param",
+        "inout-call-relay",
         "module m\n\
-         fn set_to(out value: int)\n    value = 1\n\
-         fn relay(out value: int)\n    set_to(out value)\n",
+         fn set_to(inout value: int)\n    value = 1\n\
+         fn relay(inout value: int)\n    set_to(inout value)\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
-fn short_circuit_rhs_out_calls_do_not_assign_out_parameters() {
-    let found = check_module(
-        "out-call-short-circuit-rhs",
-        "module m\n\
-         fn set_to(out value: int): bool\n    value = 1\n    return true\n\
-         fn relay_and(out value: int)\n    if false and set_to(out value)\n        return\n\
-         fn relay_or(out value: int)\n    if true or set_to(out value)\n        return\n",
-        "check.out_parameter_assignment",
-    );
-    assert_eq!(found.len(), 2, "{found:#?}");
-}
-
-#[test]
-fn finally_assignment_counts_before_try_return_completes() {
-    let report = check_module_report(
-        "out-finally-assigns-before-return",
-        "module m\n\
-         fn relay(out value: int)\n    try\n        return\n    finally\n        value = 1\n",
-    );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-}
-
-#[test]
-fn out_and_inout_call_markers_must_match_parameters() {
+fn inout_call_markers_must_match_parameters() {
     let missing = check_module(
-        "out-marker-missing",
+        "inout-marker-missing",
         "module m\n\
-         fn set_to(out value: int, src: int)\n    value = src\n\
+         fn set_to(inout value: int, src: int)\n    value = src\n\
          fn caller(src: int): int\n    var n: int = 0\n    set_to(n, src)\n    return n\n",
         "check.call_argument",
     );
@@ -2629,31 +2616,31 @@ fn out_and_inout_call_markers_must_match_parameters() {
     let wrong = check_module(
         "inout-marker-wrong",
         "module m\n\
-         fn add(inout value: int, src: int)\n    value = value + src\n\
-         fn caller(src: int): int\n    var n: int = 0\n    add(out n, src)\n    return n\n",
+         fn add(value: int, src: int): int\n    return value + src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    n = add(inout n, src)\n    return n\n",
         "check.call_argument",
     );
     assert_eq!(wrong.len(), 1, "{wrong:#?}");
 }
 
 #[test]
-fn out_and_inout_arguments_must_be_writable_places() {
+fn inout_arguments_must_be_writable_places() {
     let found = check_module(
-        "out-literal",
+        "inout-literal",
         "module m\n\
-         fn set_to(out value: int, src: int)\n    value = src\n\
-         fn caller(src: int): int\n    set_to(out 5, src)\n    return src\n",
+         fn set_to(inout value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    set_to(inout 5, src)\n    return src\n",
         "check.invalid_assign_target",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
-fn out_and_inout_markers_are_rejected_on_plain_call_targets() {
+fn inout_markers_are_rejected_on_plain_call_targets() {
     let found = check_module(
-        "out-marker-plain-calls",
+        "inout-marker-plain-calls",
         "module m\n\
-         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(out 5)\n    const len: int = std::text::length(out s)\n    const converted: int = int(out id)\n",
+         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(inout 5)\n    const len: int = std::text::length(inout s)\n    const converted: int = int(inout id)\n",
         "check.call_argument",
     );
     assert_eq!(found.len(), 3, "{found:#?}");
@@ -3019,6 +3006,54 @@ fn unique_index_lookup_arguments_are_checked() {
         "check.key_type",
     );
     assert_eq!(found.len(), 3, "{found:#?}");
+}
+
+#[test]
+fn named_saved_root_key_arguments_are_rejected() {
+    let found = check_module(
+        "named-saved-root-key-args",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    var book = Book(title: \"x\")\n    ^books(id: 1) = book\n    const title = ^books(id: 1).title\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn inout_saved_root_key_arguments_are_rejected() {
+    let found = check_module(
+        "inout-saved-root-key-args",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    var id = 1\n    const title = ^books(inout id).title\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn named_saved_layer_key_arguments_are_rejected() {
+    let found = check_module(
+        "named-saved-layer-key-args",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         fn f()\n    ^books(1).tags(pos: 1) = \"x\"\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn named_saved_index_key_arguments_are_rejected() {
+    let found = check_module(
+        "named-saved-index-key-args",
+        "module m\n\
+         resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         fn f()\n    const found = exists(^books.byIsbn(isbn: \"x\"))\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -4936,6 +4971,90 @@ fn saved_path_assignment_targets_are_allowed() {
 }
 
 #[test]
+fn bare_keyed_root_field_assignment_paths_are_rejected() {
+    let found = check_module(
+        "assign-bare-keyed-root-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    ^books.title = \"x\"\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn generated_index_branches_are_not_assignment_targets() {
+    let found = check_module(
+        "assign-generated-index-branches",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn f()\n    ^books.byShelf = \"x\"\n    ^books.byShelf(\"fiction\") = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn bare_keyed_root_field_paths_are_rejected_across_expression_contexts() {
+    let found = check_module(
+        "bare-keyed-root-field-path-contexts",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f()\n    const title = ^books.title\n    if exists(^books.title)\n        print(\"hit\")\n    delete ^books.title\n    for title in ^books.title\n        print(title)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 4, "{found:#?}");
+}
+
+#[test]
+fn generated_index_branches_are_not_delete_targets() {
+    let found = check_module(
+        "delete-generated-index-branches",
+        "module m\n\
+         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn f()\n    delete ^books.byShelf\n    delete ^books.byShelf(\"fiction\")\n",
+        "check.collection_unsupported",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn generated_index_branch_member_paths_are_rejected() {
+    let found = check_module(
+        "generated-index-branch-member-paths",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn f()\n    const a = ^books.byShelf.title\n    const b = ^books.byShelf(\"fiction\").title\n    if exists(^books.byShelf.title)\n        print(\"hit\")\n",
+        "check.collection_unsupported",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+}
+
+#[test]
+fn generated_index_branch_call_chains_are_rejected() {
+    let found = check_module(
+        "generated-index-branch-call-chains",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    author: string\n    shelf: string\n    index byShelf(shelf, id)\n    index byAuthorShelf(author, shelf, id)\n\n\
+         fn f()\n    const bad = ^books.byShelf(\"fiction\")(1).title\n    if exists(^books.byShelf(\"fiction\")(1).title)\n        print(\"hit\")\n    ^books.byShelf(\"fiction\")(1).title = \"x\"\n    delete ^books.byShelf(\"fiction\")(1).title\n    for id in ^books.byAuthorShelf(\"ann\")(\"fiction\")\n        print($\"{id}\")\n",
+        "check.collection_unsupported",
+    );
+    assert_eq!(found.len(), 5, "{found:#?}");
+}
+
+#[test]
+fn optional_generated_index_branch_syntax_is_rejected() {
+    let found = check_module(
+        "optional-generated-index-branch",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         fn f()\n    const n = count(^books?.byShelf(\"fiction\"))\n    if exists(^books?.byShelf(\"fiction\"))\n        print(\"hit\")\n    const title = ^books?.byShelf(\"fiction\").title\n    ^books?.byShelf(\"fiction\") = \"x\"\n    delete ^books?.byShelf(\"fiction\")\n    for id in ^books?.byShelf(\"fiction\")\n        print($\"{id}\")\n",
+        "check.collection_unsupported",
+    );
+    assert_eq!(found.len(), 6, "{found:#?}");
+}
+
+#[test]
 fn local_field_and_name_assignment_targets_are_allowed() {
     let found = check_script(
         "assign-local",
@@ -4946,7 +5065,7 @@ fn local_field_and_name_assignment_targets_are_allowed() {
 }
 
 #[test]
-fn merge_reports_only_prototype_rejection() {
+fn merge_is_rejected_by_the_parser() {
     let report = check_module_report("merge-bad", "module m\nfn f()\n    merge f(x) = y\n");
     assert!(
         with_code(&report, "check.invalid_assign_target").is_empty(),
@@ -4954,8 +5073,13 @@ fn merge_reports_only_prototype_rejection() {
         report.diagnostics
     );
     assert_eq!(
-        with_code(&report, "check.prototype_only").len(),
+        with_code(&report, "parse.syntax").len(),
         1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.rejected_surface").is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -5128,62 +5252,21 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
 }
 
 #[test]
-fn invalid_lock_targets_report_only_prototype_rejections() {
+fn lock_is_rejected_by_the_parser() {
     let report = check_module_report(
-        "lock-targets",
+        "lock-reserved",
         "module m\n\
          resource Cell at ^cells(id: int)\n    required v: int\n\
-         fn lockLocal()\n    var x: int = 1\n    lock x\n        x = 2\n\
-         fn lockField(id: int)\n    lock ^cells(id).v\n        ^cells(id).v = 2\n\
-         fn lockLiteral()\n    lock 5\n        print(\"nope\")\n",
+         fn f(id: int)\n    lock ^cells(id)\n        ^cells(id).v = 2\n",
     );
     assert_eq!(
-        with_code(&report, "check.prototype_only").len(),
-        3,
-        "{:#?}",
-        report.diagnostics
-    );
-}
-
-#[test]
-fn lock_target_out_calls_do_not_affect_production_out_flow() {
-    let report = check_module_report(
-        "lock-target-out-flow",
-        "module m\n\
-         fn assign(out value: int)\n    value = 1\n\
-         fn f(out value: int)\n    lock assign(out value)\n        return\n",
-    );
-
-    assert_eq!(
-        with_code(&report, "check.prototype_only").len(),
-        1,
-        "{:#?}",
-        report.diagnostics
-    );
-    assert_eq!(
-        with_code(&report, "check.out_parameter_assignment").len(),
+        with_code(&report, "parse.syntax").len(),
         1,
         "{:#?}",
         report.diagnostics
     );
     assert!(
-        with_code(&report, "check.invalid_assign_target").is_empty(),
-        "{:#?}",
-        report.diagnostics
-    );
-}
-
-#[test]
-fn lock_statements_are_prototype_only_regardless_of_target_shape() {
-    let report = check_module_report(
-        "lock-targets-ok",
-        "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    notes(pos: int)\n        body: string\n\
-         fn ok(id: int, pos: int)\n    lock ^books\n        print(\"root\")\n    lock ^books(id)\n        print(\"record\")\n    lock ^books(id).notes\n        print(\"layer\")\n    lock ^books(id).notes(pos)\n        ^books(id).notes(pos).body = \"x\"\n",
-    );
-    assert_eq!(
-        with_code(&report, "check.prototype_only").len(),
-        4,
+        with_code(&report, "check.rejected_surface").is_empty(),
         "{:#?}",
         report.diagnostics
     );

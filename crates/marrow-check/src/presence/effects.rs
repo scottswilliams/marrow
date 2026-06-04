@@ -198,7 +198,7 @@ fn related_prefix<T: PartialEq>(left: &[T], right: &[T]) -> bool {
 pub(super) fn mutating_arg_bindings(args: &[CheckedArg], scope: &NameScope) -> Vec<u32> {
     let mut bindings = Vec::new();
     for arg in args {
-        if matches!(arg.mode, Some(CheckedArgMode::Out | CheckedArgMode::InOut)) {
+        if matches!(arg.mode, Some(CheckedArgMode::InOut)) {
             extend_unique(&mut bindings, assigned_bindings(&arg.value, scope));
         }
     }

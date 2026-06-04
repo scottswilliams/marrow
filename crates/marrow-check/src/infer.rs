@@ -9,7 +9,7 @@ use marrow_syntax::{Severity, SourceSpan};
 
 use crate::checks::{
     CallCheck, check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
-    key_type_diagnostic, operator_diagnostic,
+    is_saved_index_branch_path, key_type_diagnostic, operator_diagnostic,
 };
 use crate::enums::{
     IsCheck, check_is, enum_schema_in, join_or, resolve_enum_member_path, resolve_type,
@@ -18,10 +18,10 @@ use crate::program::TypeNames;
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
 use crate::{
-    CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_PRIVATE_ENUM,
-    CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, MarrowType,
-    build_alias_map, expand_module_alias, identity_type_for_store, resolve_resource_schema_type,
-    resolve_resource_type, resource_type_name,
+    CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
+    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
+    CheckedProgram, MarrowType, build_alias_map, expand_module_alias, identity_type_for_store,
+    resolve_resource_schema_type, resolve_resource_type, resource_type_name,
 };
 
 /// Infer an expression's type without recording diagnostics. Resolution runs after
@@ -127,6 +127,28 @@ pub(crate) fn infer_type(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
+    if let Some(rejection) = saved_access_rejection(program, expr) {
+        match rejection {
+            SavedAccessRejection::GeneratedIndexBranch => diagnostics.push(CheckDiagnostic {
+                code: CHECK_COLLECTION_UNSUPPORTED,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: "generated index branches do not expose resource members or chained calls"
+                    .to_string(),
+                span: expr.span(),
+            }),
+            SavedAccessRejection::KeyedRootMemberWithoutIdentity(root) => {
+                diagnostics.push(key_type_diagnostic(
+                    file,
+                    expr.span(),
+                    format!(
+                        "`^{root}` must be addressed with an identity before using its members"
+                    ),
+                ))
+            }
+        }
+        return MarrowType::Unknown;
+    }
     match expr {
         Expression::Literal { kind, text, span } => {
             check_literal_range(*kind, text, *span, file, diagnostics);
@@ -250,7 +272,7 @@ pub(crate) fn infer_type(
             // arguments the function-call path does not type. Check them against the
             // root's identity keys or the layer's key parameters here, where the
             // saved-path helpers live.
-            check_saved_key_args(program, callee, &arg_types, *span, file, diagnostics);
+            check_saved_key_args(program, callee, args, &arg_types, *span, file, diagnostics);
             // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
@@ -892,7 +914,10 @@ fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expres
     }
 }
 
-fn starts_from_bare_keyed_root(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+pub(crate) fn starts_from_bare_keyed_root(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+) -> bool {
     starts_from_bare_saved_root(expr)
         .and_then(|root| resolve_store_by_root(program, root))
         .is_some_and(|store| !store.store.identity_keys.is_empty())
@@ -905,8 +930,82 @@ fn starts_from_bare_saved_root(expr: &marrow_syntax::Expression) -> Option<&str>
         Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
             starts_from_bare_saved_root(base)
         }
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            Expression::SavedRoot { .. } => None,
+            _ => starts_from_bare_saved_root(callee),
+        },
         _ => None,
     }
+}
+
+enum SavedAccessRejection<'a> {
+    GeneratedIndexBranch,
+    KeyedRootMemberWithoutIdentity(&'a str),
+}
+
+fn saved_access_rejection<'a>(
+    program: &CheckedProgram,
+    expr: &'a marrow_syntax::Expression,
+) -> Option<SavedAccessRejection<'a>> {
+    use marrow_syntax::Expression;
+    match expr {
+        Expression::OptionalField { base, name, .. }
+            if saved_root_has_index(program, base, name) =>
+        {
+            Some(SavedAccessRejection::GeneratedIndexBranch)
+        }
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            if is_saved_index_branch_path(program, base) {
+                return Some(SavedAccessRejection::GeneratedIndexBranch);
+            }
+            match base.as_ref() {
+                Expression::SavedRoot { name: root, .. } => {
+                    let store = resolve_store_by_root(program, root)?;
+                    if store.store.identity_keys.is_empty()
+                        || store
+                            .store
+                            .indexes
+                            .iter()
+                            .any(|index| index.name.as_str() == name)
+                    {
+                        None
+                    } else {
+                        Some(SavedAccessRejection::KeyedRootMemberWithoutIdentity(root))
+                    }
+                }
+                _ => saved_access_rejection(program, base),
+            }
+        }
+        Expression::Call { callee, .. } => {
+            if matches!(callee.as_ref(), Expression::Call { .. })
+                && is_saved_index_branch_path(program, callee)
+            {
+                return Some(SavedAccessRejection::GeneratedIndexBranch);
+            }
+            match callee.as_ref() {
+                Expression::SavedRoot { .. } => None,
+                _ => saved_access_rejection(program, callee),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn saved_root_has_index(
+    program: &CheckedProgram,
+    base: &marrow_syntax::Expression,
+    index_name: &str,
+) -> bool {
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base else {
+        return false;
+    };
+    resolve_store_by_root(program, root).is_some_and(|store| {
+        store
+            .store
+            .indexes
+            .iter()
+            .any(|index| index.name.as_str() == index_name)
+    })
 }
 
 /// The `Id(^root)` identity type of the store at saved root `root`, or

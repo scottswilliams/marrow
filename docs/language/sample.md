@@ -95,4 +95,4 @@ The sample covers:
 - transaction-built history entries with required fields;
 - managed assignment and `delete`;
 - declared index traversal through `^books.byShelf(...)`;
-- a transaction that updates primary data and generated index entries.
+- a transaction that changes primary data and generated index entries.

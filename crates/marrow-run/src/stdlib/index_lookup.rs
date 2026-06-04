@@ -65,7 +65,7 @@ pub(crate) fn unique_index_lookup(
     for arg in args {
         if arg.mode.is_some() || arg.name.is_some() {
             return Err(unsupported(
-                "an index lookup with named or out arguments",
+                "an index lookup with named or inout arguments",
                 place.span,
             ));
         }

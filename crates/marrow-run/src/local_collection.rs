@@ -184,7 +184,7 @@ fn eval_local_sequence_index(
     };
     if arg.mode.is_some() || arg.name.is_some() {
         return Err(unsupported(
-            "named or out arguments in a local collection lookup",
+            "named or inout arguments in a local collection lookup",
             span,
         ));
     }
@@ -206,7 +206,7 @@ fn eval_local_keys(
         .map(|arg| {
             if arg.mode.is_some() || arg.name.is_some() {
                 return Err(unsupported(
-                    "named or out arguments in a local collection lookup",
+                    "named or inout arguments in a local collection lookup",
                     span,
                 ));
             }

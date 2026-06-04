@@ -9,7 +9,7 @@ patterns they enable.
 to put them together.
 
 A resource is a typed tree shape. The same shape can be a local value or saved
-data. Saved data is marked with `^` and persists in the project database; local
+data. Saved data is marked with `^` and persists in the project's typed tree store; local
 data has no `^` and exists only while code runs.
 
 ## Saved Roots
@@ -200,11 +200,11 @@ transaction
 
 Whole-resource assignment replaces the record for that identity: fields and
 child entries absent from the assigned value are removed. Use single field
-writes to update an existing record without disturbing its other fields or its
+writes to change an existing record without disturbing its other fields or its
 keyed child layers:
 
 ```mw
-^books(id).shelf = "favorites"     ; current-only update
+^books(id).shelf = "favorites"     ; current-only write
 ```
 
 ## Relationships
@@ -280,7 +280,7 @@ History entries live under the keyed layer:
 ```
 
 Writing a current field does not automatically create a new version; code writes
-history entries deliberately, usually together with the current update in a
+history entries deliberately, usually together with the current write in a
 transaction:
 
 ```mw
@@ -420,7 +420,7 @@ Some maintenance operations are not yet implemented:
 - `marrow data diff` and `marrow data load` are deferred — see
   [future/data-tools.md](future/data-tools.md). (Typed backup/restore is
   implemented: `marrow backup` and `marrow restore`.)
-- Non-empty restore (replace/merge) and cross-engine restore are deferred — see
+- Non-empty restore modes and cross-engine restore are deferred — see
   [future/cli.md](future/cli.md).
 - Store-aware identity fields are canonical; relationship behavior remains
   explicit application logic, not implicit foreign-key enforcement.

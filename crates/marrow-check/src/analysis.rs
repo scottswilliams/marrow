@@ -613,9 +613,9 @@ pub(crate) fn descend_target<'b>(
                 .as_ref()
                 .filter(|block| span_covers(block.span, offset))
         }
-        Statement::While { body, .. }
-        | Statement::Transaction { body, .. }
-        | Statement::Lock { body, .. } => span_covers(body.span, offset).then_some(body),
+        Statement::While { body, .. } | Statement::Transaction { body, .. } => {
+            span_covers(body.span, offset).then_some(body)
+        }
         Statement::For {
             binding,
             iterable,
@@ -691,7 +691,7 @@ pub(crate) fn collect_block_expression<'b>(
                     collect_expression(value, offset, best);
                 }
             }
-            Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            Statement::Assign { target, value, .. } => {
                 collect_expression(target, offset, best);
                 collect_expression(value, offset, best);
             }
@@ -735,12 +735,6 @@ pub(crate) fn collect_block_expression<'b>(
                 collect_block_expression(body, offset, best);
             }
             Statement::Transaction { body, .. } => collect_block_expression(body, offset, best),
-            Statement::Lock { path, body, .. } => {
-                if let Some(path) = path {
-                    collect_expression(path, offset, best);
-                }
-                collect_block_expression(body, offset, best);
-            }
             Statement::Try {
                 body,
                 catch,

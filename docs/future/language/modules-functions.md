@@ -39,7 +39,7 @@ A single-line parameter list is comma-separated. In a multi-line list a line
 break separates one parameter from the next, so the comma is optional and a
 parameter is documented by placing its `;;` comment on the line above it; the
 formatter writes a comma after every parameter, including the last, so adding,
-removing, or reordering a parameter never edits the line before it. A parameter
+removing, or reordering a parameter never changes the line before it. A parameter
 occupies one logical line.
 Its type may span several physical lines only inside brackets — a wrapped
 `sequence[...]`, for example — where the brackets hold the type together; a bare

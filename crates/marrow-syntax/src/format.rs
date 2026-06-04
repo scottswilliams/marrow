@@ -436,7 +436,6 @@ fn format_params(params: &[ParamDecl]) -> String {
 
 fn format_param(param: &ParamDecl) -> String {
     let mode = match param.mode {
-        Some(ParamMode::Out) => "out ",
         Some(ParamMode::InOut) => "inout ",
         None => "",
     };
@@ -572,11 +571,6 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
         Statement::Delete { path, .. } => {
             format!("{pad}delete {}", format_expression_at(path, level))
         }
-        Statement::Merge { target, value, .. } => format!(
-            "{pad}merge {} = {}",
-            format_expression_at(target, level),
-            format_expression_at(value, level)
-        ),
         Statement::Return { value, .. } => match value {
             Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
             None => format!("{pad}return"),
@@ -654,11 +648,6 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
                 format_block(source, body, level + 1)
             )
         }
-        Statement::Lock { path, body, .. } => format!(
-            "{pad}lock {}\n{}",
-            format_opt_expression_at(path.as_ref(), level),
-            format_block(source, body, level + 1)
-        ),
         Statement::Try {
             body,
             catch,
@@ -856,7 +845,6 @@ fn format_argument(argument: &Argument) -> String {
 fn format_argument_at(argument: &Argument, level: usize) -> String {
     let mut out = String::new();
     match argument.mode {
-        Some(ArgMode::Out) => out.push_str("out "),
         Some(ArgMode::InOut) => out.push_str("inout "),
         None => {}
     }

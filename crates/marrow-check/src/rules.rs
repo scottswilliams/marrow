@@ -10,8 +10,8 @@ use std::path::Path;
 
 use marrow_schema::Type;
 use marrow_syntax::{
-    BinaryOp, Block, CatchClause, Expression, FunctionDecl, InterpolationPart, ParamMode, Severity,
-    SourceSpan, Statement, format_expression,
+    Block, CatchClause, Expression, FunctionDecl, InterpolationPart, Severity, Statement,
+    format_expression,
 };
 
 use crate::checks::check_range_value;
@@ -28,8 +28,6 @@ pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
 pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
 /// An assignment target is not a writable place.
 pub const CHECK_INVALID_ASSIGN_TARGET: &str = "check.invalid_assign_target";
-/// An `out` parameter can return normally without being assigned.
-pub const CHECK_OUT_PARAMETER_ASSIGNMENT: &str = "check.out_parameter_assignment";
 /// A `const` value is not a constant expression.
 pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 /// A loop over a saved layer mutates that same layer. Collect the keys into a
@@ -55,7 +53,6 @@ pub(crate) fn check_function_body(
         &HashSet::new(),
         out,
     );
-    check_out_parameters_assigned(file, function, out);
     walk_loop_control_flow(file, &function.body, 0, &mut Vec::new(), out);
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
 }
@@ -144,7 +141,7 @@ fn walk_statement(
     local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    check_statement_out_argument_targets(file, statement, read_only_params, out);
+    check_statement_inout_argument_targets(file, statement, read_only_params, out);
     match statement {
         Statement::Assign { target, .. } => {
             check_assignment_target(file, target, read_only_params, local_collections, out);
@@ -171,8 +168,7 @@ fn walk_statement(
         }
         Statement::While { body, .. }
         | Statement::For { body, .. }
-        | Statement::Transaction { body, .. }
-        | Statement::Lock { body, .. } => {
+        | Statement::Transaction { body, .. } => {
             walk_block(file, body, read_only_params, local_collections, out)
         }
         Statement::Try {
@@ -206,11 +202,18 @@ fn walk_statement(
                 walk_block(file, &arm.block, read_only_params, local_collections, out);
             }
         }
-        _ => {}
+        Statement::Const { .. }
+        | Statement::Var { .. }
+        | Statement::Delete { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::Expr { .. } => {}
     }
 }
 
-fn check_statement_out_argument_targets(
+fn check_statement_inout_argument_targets(
     file: &Path,
     statement: &Statement,
     read_only_params: &HashSet<String>,
@@ -220,24 +223,23 @@ fn check_statement_out_argument_targets(
         Statement::Const { value, .. }
         | Statement::Throw { value, .. }
         | Statement::Expr { value, .. } => {
-            check_expr_out_argument_targets(file, value, read_only_params, out);
+            check_expr_inout_argument_targets(file, value, read_only_params, out);
         }
         Statement::Assign { target, value, .. } => {
-            check_expr_out_argument_targets(file, target, read_only_params, out);
-            check_expr_out_argument_targets(file, value, read_only_params, out);
+            check_expr_inout_argument_targets(file, target, read_only_params, out);
+            check_expr_inout_argument_targets(file, value, read_only_params, out);
         }
         Statement::Var { value, .. } => {
             if let Some(value) = value {
-                check_expr_out_argument_targets(file, value, read_only_params, out);
+                check_expr_inout_argument_targets(file, value, read_only_params, out);
             }
         }
         Statement::Delete { path, .. } => {
-            check_expr_out_argument_targets(file, path, read_only_params, out);
+            check_expr_inout_argument_targets(file, path, read_only_params, out);
         }
-        Statement::Merge { .. } => {}
         Statement::Return { value, .. } => {
             if let Some(value) = value {
-                check_expr_out_argument_targets(file, value, read_only_params, out);
+                check_expr_inout_argument_targets(file, value, read_only_params, out);
             }
         }
         Statement::If {
@@ -246,39 +248,38 @@ fn check_statement_out_argument_targets(
             ..
         } => {
             if let Some(condition) = condition {
-                check_expr_out_argument_targets(file, condition, read_only_params, out);
+                check_expr_inout_argument_targets(file, condition, read_only_params, out);
             }
             for else_if in else_ifs {
                 if let Some(condition) = &else_if.condition {
-                    check_expr_out_argument_targets(file, condition, read_only_params, out);
+                    check_expr_inout_argument_targets(file, condition, read_only_params, out);
                 }
             }
         }
         Statement::While { condition, .. } => {
             if let Some(condition) = condition {
-                check_expr_out_argument_targets(file, condition, read_only_params, out);
+                check_expr_inout_argument_targets(file, condition, read_only_params, out);
             }
         }
         Statement::For { iterable, step, .. } => {
-            check_expr_out_argument_targets(file, iterable, read_only_params, out);
+            check_expr_inout_argument_targets(file, iterable, read_only_params, out);
             if let Some(step) = step {
-                check_expr_out_argument_targets(file, step, read_only_params, out);
+                check_expr_inout_argument_targets(file, step, read_only_params, out);
             }
         }
         Statement::Match { scrutinee, .. } => {
             if let Some(scrutinee) = scrutinee {
-                check_expr_out_argument_targets(file, scrutinee, read_only_params, out);
+                check_expr_inout_argument_targets(file, scrutinee, read_only_params, out);
             }
         }
         Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Transaction { .. }
-        | Statement::Lock { .. }
         | Statement::Try { .. } => {}
     }
 }
 
-fn check_expr_out_argument_targets(
+fn check_expr_inout_argument_targets(
     file: &Path,
     expr: &Expression,
     read_only_params: &HashSet<String>,
@@ -286,28 +287,28 @@ fn check_expr_out_argument_targets(
 ) {
     match expr {
         Expression::Call { callee, args, .. } => {
-            check_expr_out_argument_targets(file, callee, read_only_params, out);
+            check_expr_inout_argument_targets(file, callee, read_only_params, out);
             for arg in args {
                 if arg.mode.is_some() {
-                    check_read_only_out_argument(file, &arg.value, read_only_params, out);
+                    check_read_only_inout_argument(file, &arg.value, read_only_params, out);
                 }
-                check_expr_out_argument_targets(file, &arg.value, read_only_params, out);
+                check_expr_inout_argument_targets(file, &arg.value, read_only_params, out);
             }
         }
         Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            check_expr_out_argument_targets(file, base, read_only_params, out);
+            check_expr_inout_argument_targets(file, base, read_only_params, out);
         }
         Expression::Unary { operand, .. } => {
-            check_expr_out_argument_targets(file, operand, read_only_params, out);
+            check_expr_inout_argument_targets(file, operand, read_only_params, out);
         }
         Expression::Binary { left, right, .. } => {
-            check_expr_out_argument_targets(file, left, read_only_params, out);
-            check_expr_out_argument_targets(file, right, read_only_params, out);
+            check_expr_inout_argument_targets(file, left, read_only_params, out);
+            check_expr_inout_argument_targets(file, right, read_only_params, out);
         }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let InterpolationPart::Expr(expr) = part {
-                    check_expr_out_argument_targets(file, expr, read_only_params, out);
+                    check_expr_inout_argument_targets(file, expr, read_only_params, out);
                 }
             }
         }
@@ -315,7 +316,7 @@ fn check_expr_out_argument_targets(
     }
 }
 
-fn check_read_only_out_argument(
+fn check_read_only_inout_argument(
     file: &Path,
     value: &Expression,
     read_only_params: &HashSet<String>,
@@ -391,330 +392,22 @@ fn is_local_collection_lookup(target: &Expression, local_collections: &HashSet<S
     local_collections.contains(name)
 }
 
-fn check_out_parameters_assigned(
-    file: &Path,
-    function: &FunctionDecl,
-    out: &mut Vec<CheckDiagnostic>,
-) {
-    let out_params: HashSet<String> = function
-        .params
-        .iter()
-        .filter(|param| matches!(param.mode, Some(ParamMode::Out)))
-        .map(|param| param.name.clone())
-        .collect();
-    if out_params.is_empty() {
-        return;
-    }
-
-    let initial = OutState {
-        assigned: HashSet::new(),
-        visible: out_params.clone(),
-    };
-    let flow = walk_out_block(file, &function.body, &out_params, vec![initial], out);
-    let mut reported = HashSet::new();
-    for state in flow.fallthrough.into_iter().chain(flow.returns) {
-        for name in &out_params {
-            if !state.assigned.contains(name) && reported.insert(name.clone()) {
-                out.push(out_assignment_diagnostic(file, function.span, name));
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-struct OutState {
-    assigned: HashSet<String>,
-    visible: HashSet<String>,
-}
-
-#[derive(Default)]
-struct OutFlow {
-    fallthrough: Vec<OutState>,
-    returns: Vec<OutState>,
-}
-
-impl OutFlow {
-    fn append(&mut self, other: OutFlow) {
-        self.fallthrough.extend(other.fallthrough);
-        self.returns.extend(other.returns);
-    }
-}
-
-fn walk_out_block(
-    file: &Path,
-    block: &Block,
-    out_params: &HashSet<String>,
-    mut states: Vec<OutState>,
-    out: &mut Vec<CheckDiagnostic>,
-) -> OutFlow {
-    let mut returns = Vec::new();
-    for statement in &block.statements {
-        let mut next = Vec::new();
-        for state in states {
-            let flow = walk_out_statement(file, statement, out_params, state, out);
-            next.extend(flow.fallthrough);
-            returns.extend(flow.returns);
-        }
-        if let Some(name) = statement_binding_name(statement) {
-            for state in &mut next {
-                state.visible.remove(name);
-            }
-        }
-        states = next;
-        if states.is_empty() {
-            break;
-        }
-    }
-    OutFlow {
-        fallthrough: states,
-        returns,
-    }
-}
-
-fn walk_out_statement(
-    file: &Path,
-    statement: &Statement,
-    out_params: &HashSet<String>,
-    mut state: OutState,
-    out: &mut Vec<CheckDiagnostic>,
-) -> OutFlow {
-    match statement {
-        Statement::Const { value, .. } | Statement::Throw { value, .. } => {
-            mark_expr_out_assignments(value, &mut state);
-            if matches!(statement, Statement::Throw { .. }) {
-                OutFlow::default()
-            } else {
-                OutFlow {
-                    fallthrough: vec![state],
-                    returns: Vec::new(),
-                }
-            }
-        }
-        Statement::Var { value, .. } => {
-            if let Some(value) = value {
-                mark_expr_out_assignments(value, &mut state);
-            }
-            OutFlow {
-                fallthrough: vec![state],
-                returns: Vec::new(),
-            }
-        }
-        Statement::Assign { target, value, .. } => {
-            mark_expr_out_assignments(target, &mut state);
-            mark_expr_out_assignments(value, &mut state);
-            mark_place_assignment(target, &mut state);
-            OutFlow {
-                fallthrough: vec![state],
-                returns: Vec::new(),
-            }
-        }
-        Statement::Delete { path, .. } => {
-            mark_expr_out_assignments(path, &mut state);
-            OutFlow {
-                fallthrough: vec![state],
-                returns: Vec::new(),
-            }
-        }
-        Statement::Merge { .. } => OutFlow {
-            fallthrough: vec![state],
-            returns: Vec::new(),
-        },
-        Statement::Return { value, .. } => {
-            if let Some(value) = value {
-                mark_expr_out_assignments(value, &mut state);
-            }
-            OutFlow {
-                fallthrough: Vec::new(),
-                returns: vec![state],
-            }
-        }
-        Statement::Break { .. } | Statement::Continue { .. } => OutFlow::default(),
-        Statement::Expr { value, .. } => {
-            mark_expr_out_assignments(value, &mut state);
-            OutFlow {
-                fallthrough: vec![state],
-                returns: Vec::new(),
-            }
-        }
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            if let Some(condition) = condition {
-                mark_expr_out_assignments(condition, &mut state);
-            }
-            let mut flow = walk_out_block(file, then_block, out_params, vec![state.clone()], out);
-            for else_if in else_ifs {
-                let mut else_if_state = state.clone();
-                if let Some(condition) = &else_if.condition {
-                    mark_expr_out_assignments(condition, &mut else_if_state);
-                }
-                flow.append(walk_out_block(
-                    file,
-                    &else_if.block,
-                    out_params,
-                    vec![else_if_state],
-                    out,
-                ));
-            }
-            if let Some(block) = else_block {
-                flow.append(walk_out_block(file, block, out_params, vec![state], out));
-            } else {
-                flow.fallthrough.push(state);
-            }
-            flow
-        }
-        Statement::While {
-            condition, body, ..
-        } => {
-            if let Some(condition) = condition {
-                mark_expr_out_assignments(condition, &mut state);
-            }
-            let mut flow = walk_out_block(file, body, out_params, vec![state.clone()], out);
-            flow.fallthrough.push(state);
-            flow
-        }
-        Statement::For {
-            iterable,
-            step,
-            body,
-            ..
-        } => {
-            mark_expr_out_assignments(iterable, &mut state);
-            if let Some(step) = step {
-                mark_expr_out_assignments(step, &mut state);
-            }
-            let mut flow = walk_out_block(file, body, out_params, vec![state.clone()], out);
-            flow.fallthrough.push(state);
-            flow
-        }
-        Statement::Transaction { body, .. } => {
-            walk_out_block(file, body, out_params, vec![state], out)
-        }
-        Statement::Lock { body, .. } => walk_out_block(file, body, out_params, vec![state], out),
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            let mut flow = walk_out_block(file, body, out_params, vec![state.clone()], out);
-            if let Some(catch) = catch {
-                flow.append(walk_out_block(
-                    file,
-                    &catch.block,
-                    out_params,
-                    vec![state],
-                    out,
-                ));
-            }
-            if let Some(finally) = finally {
-                apply_finally(file, finally, out_params, flow, out)
-            } else {
-                flow
-            }
-        }
-        Statement::Match {
-            scrutinee, arms, ..
-        } => {
-            if let Some(scrutinee) = scrutinee {
-                mark_expr_out_assignments(scrutinee, &mut state);
-            }
-            let mut flow = OutFlow::default();
-            for arm in arms {
-                flow.append(walk_out_block(
-                    file,
-                    &arm.block,
-                    out_params,
-                    vec![state.clone()],
-                    out,
-                ));
-            }
-            flow
-        }
-    }
-}
-
-fn apply_finally(
-    file: &Path,
-    finally: &Block,
-    out_params: &HashSet<String>,
-    flow: OutFlow,
-    out: &mut Vec<CheckDiagnostic>,
-) -> OutFlow {
-    let fallthrough = walk_out_block(file, finally, out_params, flow.fallthrough, out);
-    let returns = walk_out_block(file, finally, out_params, flow.returns, out);
-    OutFlow {
-        fallthrough: fallthrough.fallthrough,
-        returns: fallthrough
-            .returns
-            .into_iter()
-            .chain(returns.fallthrough)
-            .chain(returns.returns)
-            .collect(),
-    }
-}
-
-fn mark_expr_out_assignments(expr: &Expression, state: &mut OutState) {
-    match expr {
-        Expression::Call { callee, args, .. } => {
-            mark_expr_out_assignments(callee, state);
-            for arg in args {
-                mark_expr_out_assignments(&arg.value, state);
-                if arg.mode.is_some() {
-                    mark_place_assignment(&arg.value, state);
-                }
-            }
-        }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            mark_expr_out_assignments(base, state);
-        }
-        Expression::Unary { operand, .. } => mark_expr_out_assignments(operand, state),
-        Expression::Binary {
-            op, left, right, ..
-        } => {
-            mark_expr_out_assignments(left, state);
-            if !matches!(op, BinaryOp::And | BinaryOp::Or) {
-                mark_expr_out_assignments(right, state);
-            }
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    mark_expr_out_assignments(expr, state);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
-    }
-}
-
-fn mark_place_assignment(target: &Expression, state: &mut OutState) {
-    if is_assignable(target)
-        && let Some(name) = place_root_name(target)
-        && state.visible.contains(name)
-    {
-        state.assigned.insert(name.to_string());
-    }
-}
-
-fn out_assignment_diagnostic(file: &Path, span: SourceSpan, name: &str) -> CheckDiagnostic {
-    CheckDiagnostic {
-        code: CHECK_OUT_PARAMETER_ASSIGNMENT,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: format!("out parameter `{name}` must be assigned before returning"),
-        span,
-    }
-}
-
 fn statement_binding_name(statement: &Statement) -> Option<&str> {
     match statement {
         Statement::Const { name, .. } | Statement::Var { name, .. } => Some(name),
-        _ => None,
+        Statement::Assign { .. }
+        | Statement::Delete { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::Expr { .. }
+        | Statement::If { .. }
+        | Statement::While { .. }
+        | Statement::For { .. }
+        | Statement::Transaction { .. }
+        | Statement::Try { .. }
+        | Statement::Match { .. } => None,
     }
 }
 
@@ -789,7 +482,7 @@ fn walk_finally(
                     loop_labels.pop();
                 }
             }
-            Statement::Transaction { body, .. } | Statement::Lock { body, .. } => {
+            Statement::Transaction { body, .. } => {
                 walk_finally(file, body, loop_depth, loop_labels, out);
             }
             Statement::Try {
@@ -814,7 +507,14 @@ fn walk_finally(
                     walk_finally(file, &arm.block, loop_depth, loop_labels, out);
                 }
             }
-            _ => {}
+            Statement::Const { .. }
+            | Statement::Var { .. }
+            | Statement::Assign { .. }
+            | Statement::Delete { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Throw { .. }
+            | Statement::Expr { .. } => {}
         }
     }
 }
@@ -884,7 +584,7 @@ fn walk_loop_control_flow(
                     loop_labels.pop();
                 }
             }
-            Statement::Transaction { body, .. } | Statement::Lock { body, .. } => {
+            Statement::Transaction { body, .. } => {
                 walk_loop_control_flow(file, body, loop_depth, loop_labels, out);
             }
             Statement::Try {
@@ -906,7 +606,15 @@ fn walk_loop_control_flow(
                     walk_loop_control_flow(file, &arm.block, loop_depth, loop_labels, out);
                 }
             }
-            _ => {}
+            Statement::Const { .. }
+            | Statement::Var { .. }
+            | Statement::Assign { .. }
+            | Statement::Delete { .. }
+            | Statement::Return { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Throw { .. }
+            | Statement::Expr { .. } => {}
         }
     }
 }
@@ -970,9 +678,7 @@ fn walk_loop_layer_mutations(
                     traversed.pop();
                 }
             }
-            Statement::While { body, .. }
-            | Statement::Transaction { body, .. }
-            | Statement::Lock { body, .. } => {
+            Statement::While { body, .. } | Statement::Transaction { body, .. } => {
                 walk_loop_layer_mutations(file, body, traversed, out);
             }
             Statement::Try {
@@ -994,7 +700,15 @@ fn walk_loop_layer_mutations(
                     walk_loop_layer_mutations(file, &arm.block, traversed, out);
                 }
             }
-            _ => {}
+            Statement::Const { .. }
+            | Statement::Var { .. }
+            | Statement::Assign { .. }
+            | Statement::Delete { .. }
+            | Statement::Return { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Throw { .. }
+            | Statement::Expr { .. } => {}
         }
     }
 }
@@ -1056,7 +770,19 @@ fn mutated_layer(statement: &Statement) -> Option<String> {
             value: Expression::Call { callee, args, .. },
             ..
         } => append_target(callee, args).map(format_expression),
-        _ => None,
+        Statement::Expr { .. }
+        | Statement::Const { .. }
+        | Statement::Var { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::If { .. }
+        | Statement::While { .. }
+        | Statement::For { .. }
+        | Statement::Transaction { .. }
+        | Statement::Try { .. }
+        | Statement::Match { .. } => None,
     }
 }
 

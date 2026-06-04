@@ -84,7 +84,7 @@ What this declares:
 - `required` fields must be present; sparse fields like `loanedTo` may be
   absent.
 - `index byShelf(shelf, id)` belongs to the store and declares an alternate
-  lookup tree. Assigning a `Book` updates the index in the same managed write.
+  lookup tree. Assigning a `Book` maintains the index in the same managed write.
 - `nextId(^books)` allocates the next identity for the root.
 - `^books(id) = book` saves the local `book` value under that identity. The `^`
   is what makes data saved rather than local to the run.

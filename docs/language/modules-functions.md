@@ -154,26 +154,7 @@ fn format(book: Book): string
     return $"{book.title} by {book.author}"
 ```
 
-Use `out` for values written by the callee:
-
-```mw
-fn parseInt(text: string, out value: int): bool
-```
-
-Callers must mark the argument:
-
-```mw
-var n: int
-if parseInt(input, out n)
-    write($"parsed {n}")
-```
-
-The marked `out` argument must be a writable place: a local variable, a field of
-a local value, or a saved path. It cannot be an arbitrary expression.
-The checker requires every `out` parameter to be assigned before every normal
-return.
-
-Use `inout` when the callee reads and mutates the caller's value:
+Use `inout` when the callee reads and mutates the caller's local value:
 
 ```mw
 fn normalize(inout book: Book)
@@ -184,7 +165,7 @@ normalize(inout draft)
 The `inout` marker at the call site makes caller-visible writes explicit.
 An `inout` argument is a writable local place, not a hidden reference value.
 Saved paths are not valid `inout` arguments. Use explicit saved assignments at
-the call site when saved data must be updated.
+the call site when saved data must change.
 
 ## Passing Resources
 

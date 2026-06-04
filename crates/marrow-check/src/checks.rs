@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 use marrow_store::Decimal;
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::{Argument, Severity, SourceSpan};
 
 use crate::enums::{MatchCheck, check_match, private_enum_type_reference, resolve_type};
 use crate::infer::{
@@ -29,7 +29,7 @@ use crate::{
     CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
     CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram, Def, DefItem, MarrowType,
     Resolution, ResolvableKind, TypeNames, build_alias_map, builtin_return_type,
-    check_prototype_only, conversion_return_type, expand_alias, identity_type_for_store,
+    check_rejected_surface, conversion_return_type, expand_alias, identity_type_for_store,
     is_builtin_call, is_resolved_import, module_of_file, push_schema_error, resolve,
     resolve_resource_schema_type, resource_type_name, std_call_params, std_call_return_type,
 };
@@ -252,7 +252,7 @@ pub(crate) fn check_file_types(
         aliases,
         module_constants,
     } = file_prelude(program, file, parsed);
-    check_prototype_only(program, file, parsed, diagnostics);
+    check_rejected_surface(program, file, parsed, diagnostics);
     let annotation_context = TypeAnnotationContext {
         program,
         aliases: &aliases,
@@ -551,8 +551,7 @@ fn check_statement_type_annotations(
         }
         Statement::While { body, .. }
         | Statement::For { body, .. }
-        | Statement::Transaction { body, .. }
-        | Statement::Lock { body, .. } => {
+        | Statement::Transaction { body, .. } => {
             check_block_type_annotations(body, context, diagnostics);
         }
         Statement::Try {
@@ -577,7 +576,14 @@ fn check_statement_type_annotations(
                 check_block_type_annotations(&arm.block, context, diagnostics);
             }
         }
-        _ => {}
+        Statement::Const { ty: None, .. }
+        | Statement::Assign { .. }
+        | Statement::Delete { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::Expr { .. } => {}
     }
 }
 
@@ -624,8 +630,7 @@ pub(crate) fn check_return_values(
             }
             Statement::While { body, .. }
             | Statement::For { body, .. }
-            | Statement::Transaction { body, .. }
-            | Statement::Lock { body, .. } => {
+            | Statement::Transaction { body, .. } => {
                 check_return_values(file, body, returns_value, diagnostics);
             }
             Statement::Try { body, catch, .. } => {
@@ -640,7 +645,14 @@ pub(crate) fn check_return_values(
                     check_return_values(file, &arm.block, returns_value, diagnostics);
                 }
             }
-            _ => {}
+            Statement::Const { .. }
+            | Statement::Var { .. }
+            | Statement::Assign { .. }
+            | Statement::Delete { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Throw { .. }
+            | Statement::Expr { .. } => {}
         }
     }
 }
@@ -670,7 +682,7 @@ pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
                 && else_ifs.iter().all(|else_if| block_returns(&else_if.block))
                 && block_returns(else_block)
         }),
-        Statement::Transaction { body, .. } | Statement::Lock { body, .. } => block_returns(body),
+        Statement::Transaction { body, .. } => block_returns(body),
         Statement::Try { body, catch, .. } => {
             block_returns(body)
                 && catch
@@ -686,7 +698,12 @@ pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
         // A loop may not run or may run forever; conservatively treat a function
         // ending in one as diverging rather than risk a false positive.
         Statement::While { .. } | Statement::For { .. } => true,
-        _ => false,
+        Statement::Const { .. }
+        | Statement::Var { .. }
+        | Statement::Assign { .. }
+        | Statement::Delete { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. } => false,
     }
 }
 
@@ -810,9 +827,7 @@ impl StatementCheck<'_> {
                 value,
                 span,
             } => self.check_assignment_statement(target, value, *span),
-            Statement::Delete { path, .. } => {
-                self.infer(path);
-            }
+            Statement::Delete { path, .. } => self.check_delete_statement(path),
             Statement::Return { value, span } => self.check_return(value.as_ref(), *span),
             Statement::Throw { value, span } => self.check_throw(value, *span),
             Statement::Expr { value, .. } => {
@@ -841,7 +856,7 @@ impl StatementCheck<'_> {
                 body,
                 ..
             } => self.check_for(binding, iterable, step.as_ref(), body),
-            Statement::Transaction { body, .. } | Statement::Lock { body, .. } => {
+            Statement::Transaction { body, .. } => {
                 self.check_block(body);
             }
             Statement::Try {
@@ -856,7 +871,7 @@ impl StatementCheck<'_> {
                 span,
                 ..
             } => self.check_match_statement(scrutinee.as_ref(), arms, *span),
-            Statement::Merge { .. } | Statement::Break { .. } | Statement::Continue { .. } => {}
+            Statement::Break { .. } | Statement::Continue { .. } => {}
         }
     }
 
@@ -927,7 +942,29 @@ impl StatementCheck<'_> {
         let target_type = self.infer(target);
         let value_type = self.infer(value);
         check_range_value(self.file, value, self.diagnostics);
+        if is_saved_index_branch_path(self.program, target) {
+            self.diagnostics.push(CheckDiagnostic {
+                code: crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                severity: Severity::Error,
+                file: self.file.to_path_buf(),
+                message: "generated index branches cannot be assigned".to_string(),
+                span: target.span(),
+            });
+        }
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+    }
+
+    fn check_delete_statement(&mut self, path: &marrow_syntax::Expression) {
+        self.infer(path);
+        if is_saved_index_branch_path(self.program, path) {
+            self.diagnostics.push(CheckDiagnostic {
+                code: CHECK_COLLECTION_UNSUPPORTED,
+                severity: Severity::Error,
+                file: self.file.to_path_buf(),
+                message: "generated index branches cannot be deleted".to_string(),
+                span: path.span(),
+            });
+        }
     }
 
     fn check_return(&mut self, value: Option<&marrow_syntax::Expression>, span: SourceSpan) {
@@ -1370,7 +1407,20 @@ fn saved_index_schema<'p>(
     let marrow_syntax::Expression::Field { base, name, .. } = callee else {
         return None;
     };
-    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base.as_ref() else {
+    saved_index_schema_from_parts(program, base, name)
+}
+
+fn saved_index_schema_from_parts<'p>(
+    program: &'p CheckedProgram,
+    base: &marrow_syntax::Expression,
+    name: &str,
+) -> Option<(
+    &'p StoreSchema,
+    &'p ResourceSchema,
+    &'p IndexSchema,
+    &'p str,
+)> {
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base else {
         return None;
     };
     let store = resolve_store_by_root(program, root)?;
@@ -1378,11 +1428,14 @@ fn saved_index_schema<'p>(
         .store
         .indexes
         .iter()
-        .find(|index| &index.name == name)?;
+        .find(|index| index.name == name)?;
     Some((store.store, store.resource, index, &store.module.name))
 }
 
-fn is_saved_index_branch_path(program: &CheckedProgram, path: &marrow_syntax::Expression) -> bool {
+pub(crate) fn is_saved_index_branch_path(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> bool {
     saved_index_branch(program, path).is_some()
 }
 
@@ -2015,6 +2068,7 @@ pub(crate) fn check_assignment(
 pub(crate) fn check_saved_key_args(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
+    args: &[Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
@@ -2028,6 +2082,7 @@ pub(crate) fn check_saved_key_args(
         let Some(store) = resolve_store_by_root(program, root) else {
             return;
         };
+        check_saved_key_argument_names(args, file, diagnostics);
         if let [MarrowType::Identity(_)] = arg_types {
             let expected = identity_type_for_store(store.store);
             if type_compatible(&expected, &arg_types[0]) == Some(false) {
@@ -2056,6 +2111,7 @@ pub(crate) fn check_saved_key_args(
     // single identity only at a complete lookup key, while non-unique branches
     // accept typed prefixes for traversal.
     if let Some((store, resource, index, module)) = saved_index_schema(program, callee) {
+        check_saved_key_argument_names(args, file, diagnostics);
         check_index_args_against(
             IndexArgTarget {
                 program,
@@ -2077,7 +2133,24 @@ pub(crate) fn check_saved_key_args(
         && let Some(store) = resolve_store_by_root(program, root)
         && let Some(node) = store.resource.descend_layers(&layers)
     {
+        check_saved_key_argument_names(args, file, diagnostics);
         check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
+    }
+}
+
+fn check_saved_key_argument_names(
+    args: &[Argument],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for arg in args {
+        if arg.name.is_some() {
+            diagnostics.push(call_diagnostic(
+                file,
+                arg.value.span(),
+                "saved key arguments must be positional".to_string(),
+            ));
+        }
     }
 }
 
@@ -3069,7 +3142,7 @@ fn check_call_mode(
             code: crate::rules::CHECK_INVALID_ASSIGN_TARGET,
             severity: Severity::Error,
             file: file.to_path_buf(),
-            message: "out/inout argument is not a writable place".to_string(),
+            message: "inout argument is not a writable place".to_string(),
             span: arg.value.span(),
         });
     }
@@ -3077,7 +3150,6 @@ fn check_call_mode(
 
 fn arg_mode_name(mode: marrow_syntax::ArgMode) -> &'static str {
     match mode {
-        marrow_syntax::ArgMode::Out => "`out`",
         marrow_syntax::ArgMode::InOut => "`inout`",
     }
 }
@@ -3090,10 +3162,6 @@ fn call_modes_match(
         (arg, param),
         (None, None)
             | (
-                Some(marrow_syntax::ArgMode::Out),
-                Some(crate::CheckedParamMode::Out)
-            )
-            | (
                 Some(marrow_syntax::ArgMode::InOut),
                 Some(crate::CheckedParamMode::InOut)
             )
@@ -3102,7 +3170,6 @@ fn call_modes_match(
 
 fn call_mode_expectation(mode: Option<crate::CheckedParamMode>) -> &'static str {
     match mode {
-        Some(crate::CheckedParamMode::Out) => "`out`",
         Some(crate::CheckedParamMode::InOut) => "`inout`",
         None => "a plain argument",
     }

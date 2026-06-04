@@ -105,7 +105,7 @@ pub(crate) fn iterable_index_branch(
     for arg in args {
         if arg.mode.is_some() || arg.name.is_some() {
             return Err(unsupported(
-                "an index lookup with named or out arguments",
+                "an index lookup with named or inout arguments",
                 span,
             ));
         }
@@ -467,7 +467,7 @@ pub(crate) fn eval_local_field_get(
 }
 
 /// Read a field of the local resource bound to `base`, from a pre-resolved base
-/// name. Shared by `out`/`inout` place reads.
+/// name. Shared by `inout` place reads.
 pub(crate) fn read_local_field(
     base: &str,
     field: &str,

@@ -530,7 +530,7 @@ fn parses_if_else_if_else_chain() {
 }
 
 #[test]
-fn parses_transaction_and_lock_blocks() {
+fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
     let parsed = parse_source(
         "module app\n\
          fn commit(id: Id(^books))\n\
@@ -538,31 +538,48 @@ fn parses_transaction_and_lock_blocks() {
          \x20       transaction\n\
          \x20           ^books(id).title = title\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let commit = parsed.file.function("commit").expect("commit function");
-    assert_eq!(commit.body.statements.len(), 1);
-    let Statement::Lock { path, body, .. } = &commit.body.statements[0] else {
-        panic!(
-            "expected lock statement, got {:?}",
-            commit.body.statements[0]
-        );
-    };
+    assert!(parsed.has_errors(), "expected lock rejection");
     assert!(
-        matches!(path, Some(Expression::Call { .. })),
-        "lock path should be ^books(id): {path:?}"
+        parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`lock` is reserved")
+        }),
+        "{:#?}",
+        parsed.diagnostics
     );
-    assert_eq!(body.statements.len(), 1);
-    let Statement::Transaction { body: txn_body, .. } = &body.statements[0] else {
-        panic!(
-            "expected transaction inside lock, got {:?}",
-            body.statements[0]
-        );
-    };
-    assert_eq!(txn_body.statements.len(), 1);
     assert!(
-        matches!(&txn_body.statements[0], Statement::Assign { .. }),
-        "transaction body should hold the assignment: {:?}",
-        txn_body.statements[0]
+        !parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected a statement")),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    let commit = parsed.file.function("commit").expect("commit function");
+    assert!(commit.body.statements.is_empty(), "{commit:#?}");
+}
+
+#[test]
+fn rejects_merge_as_reserved_statement() {
+    let parsed = parse_source(
+        "module app\n\
+         fn commit(id: Id(^books))\n\
+         \x20   merge ^books(id) = ^books(id)\n\
+         \x20   print(\"after\")\n",
+    );
+    assert!(parsed.has_errors(), "expected merge rejection");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`merge` is reserved")
+        }),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    let commit = parsed.file.function("commit").expect("commit function");
+    assert_eq!(commit.body.statements.len(), 1, "{commit:#?}");
+    assert!(
+        matches!(&commit.body.statements[0], Statement::Expr { .. }),
+        "{:#?}",
+        commit.body.statements[0]
     );
 }
 
@@ -1413,8 +1430,8 @@ fn quoted_keyword_field_name_parses() {
 }
 
 #[test]
-fn parses_named_and_moded_call_arguments() {
-    let parsed = parse_source("const Made = save(book: draft, out result, inout total)\n");
+fn parses_named_and_inout_call_arguments() {
+    let parsed = parse_source("const Made = save(book: draft, inout total)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
@@ -1422,12 +1439,24 @@ fn parses_named_and_moded_call_arguments() {
     let Some(Expression::Call { args, .. }) = &decl.value else {
         panic!("expected call, got {:?}", decl.value);
     };
-    assert_eq!(args.len(), 3);
+    assert_eq!(args.len(), 2);
     assert_eq!(args[0].name.as_deref(), Some("book"));
     assert_eq!(args[0].mode, None);
-    assert_eq!(args[1].mode, Some(ArgMode::Out));
+    assert_eq!(args[1].mode, Some(ArgMode::InOut));
     assert_eq!(args[1].name, None);
-    assert_eq!(args[2].mode, Some(ArgMode::InOut));
+}
+
+#[test]
+fn rejects_out_call_argument_as_reserved_surface() {
+    let parsed = parse_source("const Made = save(book: draft, out result)\n");
+    assert!(parsed.has_errors(), "expected out call-argument rejection");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`out` is reserved")
+        }),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
@@ -1642,6 +1671,24 @@ fn rejects_parameter_defaults() {
         !diagnostic.message.contains("expected"),
         "diagnostic should not fall back to a generic message, got {:?}",
         diagnostic.message
+    );
+}
+
+#[test]
+fn rejects_out_parameter_as_reserved_surface() {
+    let parsed = parse_source(
+        "module app\n\
+         fn parseInt(text: string, out value: int): bool\n\
+         \x20   return true\n",
+    );
+
+    assert!(parsed.has_errors(), "expected out parameter rejection");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`out` is reserved")
+        }),
+        "{:#?}",
+        parsed.diagnostics
     );
 }
 

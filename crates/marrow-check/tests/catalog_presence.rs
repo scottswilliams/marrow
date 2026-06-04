@@ -974,20 +974,20 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_assigned() {
 }
 
 #[test]
-fn if_exists_narrowing_expires_when_a_key_binding_is_passed_out() {
-    let root = temp_project("presence-if-exists-out-key", |root| {
+fn if_exists_narrowing_expires_when_a_key_binding_is_passed_inout() {
+    let root = temp_project("presence-if-exists-inout-key", |root| {
         write(
             root,
             "src/books.mw",
             "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
-             fn setTo(out value: int)\n\
+             fn setTo(inout value: int)\n\
              \x20   value = 2\n\
              fn guarded(id: int): string\n\
              \x20   var k: int = id\n\
              \x20   if exists(^books(k).subtitle)\n\
-             \x20       setTo(out k)\n\
+             \x20       setTo(inout k)\n\
              \x20       return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
         );
@@ -1040,8 +1040,8 @@ fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
 }
 
 #[test]
-fn if_exists_narrowing_expires_when_a_key_field_is_passed_out() {
-    let root = temp_project("presence-if-exists-out-key-field", |root| {
+fn if_exists_narrowing_expires_when_a_key_field_is_passed_inout() {
+    let root = temp_project("presence-if-exists-inout-key-field", |root| {
         write(
             root,
             "src/books.mw",
@@ -1050,12 +1050,12 @@ fn if_exists_narrowing_expires_when_a_key_field_is_passed_out() {
              \x20   required id: int\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
-             fn setTo(out value: int)\n\
+             fn setTo(inout value: int)\n\
              \x20   value = 2\n\
              fn guarded(id: int): string\n\
              \x20   var holder = Holder(id: id)\n\
              \x20   if exists(^books(holder.id).subtitle)\n\
-             \x20       setTo(out holder.id)\n\
+             \x20       setTo(inout holder.id)\n\
              \x20       return ^books(holder.id).subtitle\n\
              \x20   return \"untitled\"\n",
         );
@@ -1083,13 +1083,13 @@ fn if_exists_narrowing_expires_when_nested_condition_mutates_key() {
             "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
-             fn setTo(out value: int): bool\n\
+             fn setTo(inout value: int): bool\n\
              \x20   value = 2\n\
              \x20   return true\n\
              fn guarded(id: int): string\n\
              \x20   var k: int = id\n\
              \x20   if exists(^books(k).subtitle)\n\
-             \x20       if setTo(out k)\n\
+             \x20       if setTo(inout k)\n\
              \x20           return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
         );
@@ -1117,12 +1117,12 @@ fn if_exists_narrowing_ignores_condition_proofs_after_key_mutation() {
             "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
-             fn setTo(out value: int): bool\n\
+             fn setTo(inout value: int): bool\n\
              \x20   value = 2\n\
              \x20   return true\n\
              fn guarded(id: int): string\n\
              \x20   var k: int = id\n\
-             \x20   if exists(^books(k).subtitle) and setTo(out k)\n\
+             \x20   if exists(^books(k).subtitle) and setTo(inout k)\n\
              \x20       return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
         );

@@ -4,7 +4,8 @@ Resources are the center of Marrow `.mw`. A resource is a typed tree shape. The
 same shape can be used for local values, local keyed trees, or saved data.
 
 This page uses "saved data" for data marked with `^`. Saved data persists in
-the project database. Local data has no `^` and exists only while code runs.
+the project's typed tree store. Local data has no `^` and exists only while code
+runs.
 The `^` sigil is a semantic lifetime marker, not a promise that the bytes live
 on disk. The supported production saved-data backend is the native redb backend;
 the in-memory store is for tests, development, REPLs, and short runs. Future
@@ -335,7 +336,7 @@ Assignment to a typed saved resource is a managed write:
 ^books(id).shelf = "favorites"
 ```
 
-If `shelf` participates in an index, Marrow handles the full update:
+If `shelf` participates in an index, Marrow handles the full managed write:
 
 1. validate the new value,
 2. read the old indexed value,
@@ -348,7 +349,7 @@ storage error before success is visible. Ordinary app code does not call a
 special `set(...)` function for indexed fields. Untyped writes that bypass a
 managed store root are rejected; maintenance code still uses managed writes.
 
-Field writes update existing resources. To create a resource or keyed entry
+Field writes change existing resources. To create a resource or keyed entry
 with required fields, assign a whole tree value or use a transaction that
 builds it field by field and leaves it valid before commit. Outside an
 explicit transaction, a field write that would create a resource or entry with
@@ -477,7 +478,7 @@ child layers you need directly.
 
 Whole-resource assignment is exact. It replaces the saved resource for that
 identity, clearing every field, unkeyed group, and keyed child layer omitted from
-the assigned value. To preserve children while updating current state, write the
+the assigned value. To preserve children while changing current state, write the
 specific fields instead of using `=`.
 
 The compiler checks resource fields before runtime. Runtime reads from saved
@@ -528,21 +529,22 @@ delete ^books(id).subtitle
 delete ^books(id)
 ```
 
-When `delete` targets a managed saved resource, Marrow also updates the
+When `delete` targets a managed saved resource, Marrow also maintains the
 generated index entries for that store.
 
 Deleting a required field is rejected unless the surrounding keyed entry or
-resource is being deleted, or code is running in explicit maintenance mode.
+resource is being deleted, or a tool/admin maintenance run grants that
+capability.
 
-`merge` is a reserved word, not a v0.1 statement. For partial updates that keep
-existing data, write specific fields rather than a whole-record `=`.
+`merge` is a reserved word, not a v0.1 statement. To preserve existing data,
+write specific fields rather than a whole-record `=`.
 
 Deleting one store identity is ordinary application work. Deleting a whole
-managed root is maintenance work. Code must opt into maintenance mode. The
-operation may still fail with a typed storage limit when the selected store
-cannot delete that subtree safely. Delete does not follow identity values
-stored in other resources. Cascading cleanup is ordinary application or
-data-evolution code.
+managed root is maintenance work. Ordinary source syntax cannot opt into it;
+tools run with an explicit maintenance capability. The operation may still fail
+with a typed storage limit when the selected store cannot delete that subtree
+safely. Delete does not follow identity values stored in other resources.
+Cascading cleanup is ordinary application or data-evolution code.
 
 ## Backup And Restore
 
@@ -574,7 +576,7 @@ transaction
 
 Most single-record managed writes do not need an explicit transaction in app
 code. Use a transaction when a group of saved writes must stay coherent, such
-as a record update plus an audit entry or several resources that must change
+as a record write plus an audit entry or several resources that must change
 together.
 
 Nested transactions are savepoints. An inner transaction can roll back its own
@@ -615,7 +617,8 @@ own writer coordination outside the source language.
 When a store owns a saved root, writes under that root go through the
 store schema. Raw untyped writes to managed roots are rejected.
 Maintenance mode is selected by tools for data evolution, repair, restore, and
-root-wide work; ordinary application code does not enter it by accident.
+root-wide work. It is an admin capability, not source syntax available to
+ordinary application code.
 
 This protects managed indexes, history layers, and typed fields from
 accidental corruption while still allowing deliberate maintenance functions

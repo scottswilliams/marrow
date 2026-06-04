@@ -25,7 +25,7 @@ pub mod facts;
 mod infer;
 mod presence;
 pub mod program;
-mod prototype;
+mod rejected_surface;
 pub mod resolve;
 mod rules;
 mod typerules;
@@ -64,7 +64,7 @@ pub use program::{
     CheckedProgram, CheckedRuntimeConst, CheckedRuntimeFunction, CheckedRuntimeModule,
     CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType, ProgramCatalog,
 };
-pub(crate) use prototype::check_prototype_only;
+pub(crate) use rejected_surface::check_rejected_surface;
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 
 /// A library file declares a module name that does not match its path.
@@ -144,9 +144,8 @@ pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
 /// non-unique index branch. These shapes are valid for key traversal, but they do
 /// not have materialized values distinct from their keys.
 pub const CHECK_COLLECTION_UNSUPPORTED: &str = "check.collection_unsupported";
-/// A parsed construct belongs to the prototype language surface and is rejected
-/// for the v0.1 language contract.
-pub const CHECK_PROTOTYPE_ONLY: &str = "check.prototype_only";
+/// A parsed construct is outside the accepted v0.1 source surface.
+pub const CHECK_REJECTED_SURFACE: &str = "check.rejected_surface";
 /// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
 /// identity binding for a source declaration.
 pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
@@ -1326,7 +1325,6 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
         Statement::Assign { target, value, .. } => {
             expr_touches_saved_data(target) || expr_touches_saved_data(value)
         }
-        Statement::Merge { .. } => false,
         Statement::Delete { path, .. } => expr_touches_saved_data(path),
         Statement::Return { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
         Statement::Expr { value, .. } => expr_touches_saved_data(value),
@@ -1358,7 +1356,6 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
             expr_touches_saved_data(iterable) || block_touches_saved_data(body)
         }
         Statement::Transaction { body, .. } => block_touches_saved_data(body),
-        Statement::Lock { body, .. } => block_touches_saved_data(body),
         Statement::Try {
             body,
             catch,

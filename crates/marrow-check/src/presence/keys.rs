@@ -62,7 +62,6 @@ pub(super) fn argument_key(arg: &CheckedArg, scope: &NameScope) -> ExprKey {
     let mut text = String::new();
     if let Some(mode) = arg.mode {
         text.push_str(match mode {
-            CheckedArgMode::Out => "out:",
             CheckedArgMode::InOut => "inout:",
         });
     }

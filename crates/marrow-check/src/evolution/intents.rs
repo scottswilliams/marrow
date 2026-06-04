@@ -738,7 +738,7 @@ fn walk_statement_reads(statement: &Statement, reads: &mut Vec<OldFieldRead>) {
                 walk_expr_reads(value, reads);
             }
         }
-        Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+        Statement::Assign { target, value, .. } => {
             walk_expr_reads(target, reads);
             walk_expr_reads(value, reads);
         }
@@ -785,12 +785,6 @@ fn walk_statement_reads(statement: &Statement, reads: &mut Vec<OldFieldRead>) {
             walk_block_reads(body, reads);
         }
         Statement::Transaction { body, .. } => walk_block_reads(body, reads),
-        Statement::Lock { path, body, .. } => {
-            if let Some(path) = path {
-                walk_expr_reads(path, reads);
-            }
-            walk_block_reads(body, reads);
-        }
         Statement::Try {
             body,
             catch,

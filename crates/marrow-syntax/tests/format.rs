@@ -134,7 +134,7 @@ fn formats_expressions_to_canonical_source() {
         "^books(id).\"old-title\"",
         "nextId(^books)",
         "shelf::make(17)",
-        "save(book: draft, out result, inout total)",
+        "save(book: draft, inout total)",
         "60 * 60 + 1",
         "a and b or c",
         "not ready",
@@ -233,12 +233,11 @@ fn formats_a_range_for_with_a_by_step() {
 }
 
 #[test]
-fn formats_transaction_lock_and_try_blocks() {
+fn formats_transaction_and_try_blocks() {
     let source = "module app\n\
          fn commit(id: Id(^books))\n\
-         \x20   lock ^books(id)\n\
-         \x20       transaction\n\
-         \x20           ^books(id).title = title\n\
+         \x20   transaction\n\
+         \x20       ^books(id).title = title\n\
          \x20   try\n\
          \x20       risky()\n\
          \x20   catch err: Error\n\
@@ -246,9 +245,8 @@ fn formats_transaction_lock_and_try_blocks() {
          \x20   finally\n\
          \x20       cleanup()\n";
     let expected = "\
-         \x20   lock ^books(id)\n\
-         \x20       transaction\n\
-         \x20           ^books(id).title = title\n\
+         \x20   transaction\n\
+         \x20       ^books(id).title = title\n\
          \x20   try\n\
          \x20       risky()\n\
          \x20   catch err: Error\n\
@@ -351,12 +349,12 @@ fn formats_resource_declaration_with_members() {
 #[test]
 fn formats_function_declaration_with_params() {
     let source = "module app\n\
-         pub fn add(title: string, out result: int): int\n\
-         \x20   result = 1\n\
-         \x20   return result\n";
-    let expected = "pub fn add(title: string, out result: int): int\n\
-         \x20   result = 1\n\
-         \x20   return result";
+         pub fn add(title: string, inout total: int): int\n\
+         \x20   total = total + 1\n\
+         \x20   return total\n";
+    let expected = "pub fn add(title: string, inout total: int): int\n\
+         \x20   total = total + 1\n\
+         \x20   return total";
     assert_eq!(format_decl(source, 0), expected);
 }
 

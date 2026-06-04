@@ -13,8 +13,8 @@ compilation ideas live in [future/data-evolution.md](future/data-evolution.md).
 
 ## What A Change Requires
 
-A schema change is a source edit to a `resource` or `store` declaration. Some
-edits are safe on their own; others leave existing saved data that the new
+A schema change is a source change to a `resource` or `store` declaration. Some
+changes are safe on their own; others leave existing saved data that the new
 schema does not fully describe until explicit data-evolution work runs.
 
 | Change | What it needs today |
@@ -179,9 +179,9 @@ A stable ID is a random opaque value in the `cat_<16 lowercase hex>` shape. It i
 allocated independently of the source path, so it never changes when a path
 changes, and it is random rather than a counter so identity minted on two
 branches for different entities cannot collide when they merge. Once committed it
-is frozen and never recomputed. A duplicate ID — from a hand edit, a bad merge,
-or an astronomically unlikely clash — fails closed at check rather than corrupting
-storage.
+is frozen and never recomputed. A duplicate ID — from a manual catalog change,
+bad branch integration, or an astronomically unlikely clash — fails closed at
+check rather than corrupting storage.
 
 ## Activation Fencing
 
@@ -252,7 +252,7 @@ maintaining every active and building derived fact. The normal window supports a
 most one old epoch; a wider window needs an explicit architecture decision.
 
 Large key-shape, resource-shape, layout, or engine changes do not become raw
-store patches. They use a shadow-decant workflow when needed: build a new
+store rewrites. They use a shadow-decant workflow when needed: build a new
 store/layout in chunks, bridge a bounded set of writes, verify identity/count and
 checksum facts, publish a small binding change, then close the window and purge
 the old physical state.

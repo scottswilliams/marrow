@@ -1,6 +1,6 @@
 use marrow_check::{
     CheckedArg as ExecArg, CheckedArgMode as ArgMode, CheckedExpr as ExecExpr, CheckedParam,
-    CheckedParamMode as ParamMode, CheckedResourceConstructor, CheckedRuntimeValueType, MarrowType,
+    CheckedParamMode as ParamMode, CheckedResourceConstructor, CheckedRuntimeValueType,
 };
 use marrow_schema::{KeyDef, Type};
 use marrow_store::Decimal;
@@ -11,7 +11,6 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::path::{SavedPath, Terminal, lower};
 use crate::read::read_local_field;
 use crate::value::{Value, value_to_key};
 use crate::write_dispatch::write_local_field;
@@ -59,10 +58,6 @@ pub(crate) fn bind_arguments_with_modes(
                 let place = resolve_read_write_place(&arg.value, span)?;
                 let current = place.read(span, env)?;
                 (current, Some(place.into_write_place()))
-            }
-            Some(ArgMode::Out) => {
-                let place = resolve_write_place(&arg.value, span, env)?;
-                (out_seed(&param.ty), Some(place))
             }
         };
         place_argument(&mut slots, index, entry, params, span)?;
@@ -148,7 +143,10 @@ pub(crate) fn eval_resource_constructor(
     for arg in args {
         if arg.mode.is_some() {
             return Err(type_error(
-                &format!("`{}(...)` fields cannot be out arguments", constructor.name),
+                &format!(
+                    "`{}(...)` fields cannot be inout arguments",
+                    constructor.name
+                ),
                 span,
             ));
         }
@@ -282,16 +280,13 @@ fn identity_keys_match(declared: &[KeyDef], keys: &[SavedKey]) -> bool {
 fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
     matches!(
         (arg, param),
-        (None, None)
-            | (Some(ArgMode::Out), Some(ParamMode::Out))
-            | (Some(ArgMode::InOut), Some(ParamMode::InOut))
+        (None, None) | (Some(ArgMode::InOut), Some(ParamMode::InOut))
     )
 }
 
 pub(crate) enum Place {
     Local(String),
     LocalField { base: String, field: String },
-    Saved(Box<SavedPath>),
 }
 
 enum ReadWritePlace {
@@ -319,46 +314,6 @@ fn resolve_read_write_place(
         }
         _ => Err(unsupported(
             "an inout argument that is not a local assignable place",
-            span,
-        )),
-    }
-}
-
-fn resolve_write_place(
-    expr: &ExecExpr,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Place, RuntimeError> {
-    match expr {
-        ExecExpr::Name { segments, .. } if segments.len() == 1 => {
-            Ok(Place::Local(segments[0].clone()))
-        }
-        ExecExpr::Field { base, .. } if base.saved_place().is_some() => {
-            let path = lower(expr, env)?;
-            if !matches!(path.terminal, Terminal::Field { .. }) {
-                return Err(unsupported("this saved path", expr.span()));
-            }
-            Ok(Place::Saved(Box::new(path)))
-        }
-        ExecExpr::Field { base, name, .. } if matches!(base.as_ref(), ExecExpr::Name { segments, .. } if segments.len() == 1) =>
-        {
-            let ExecExpr::Name { segments, .. } = base.as_ref() else {
-                unreachable!("guarded by the match arm")
-            };
-            Ok(Place::LocalField {
-                base: segments[0].clone(),
-                field: name.clone(),
-            })
-        }
-        ExecExpr::Call { .. } if expr.saved_place().is_some() => {
-            let path = lower(expr, env)?;
-            if !path.layers.is_empty() || !matches!(path.terminal, Terminal::Record) {
-                return Err(unsupported("this saved path", expr.span()));
-            }
-            Ok(Place::Saved(Box::new(path)))
-        }
-        _ => Err(unsupported(
-            "an out/inout argument that is not an assignable place",
             span,
         )),
     }
@@ -398,7 +353,6 @@ impl Place {
                 .assign(&name, value)
                 .map_err(|error| assign_error(&name, error, span)),
             Place::LocalField { base, field } => write_local_field(&base, &field, value, span, env),
-            Place::Saved(path) => (*path).write(value, span, env),
         }
     }
 }
@@ -418,24 +372,13 @@ pub(crate) fn default_value(ty: &Type) -> Option<Value> {
     })
 }
 
-fn out_seed(ty: &MarrowType) -> Value {
-    let zero = match ty {
-        MarrowType::Primitive(
-            scalar @ (ScalarType::Int | ScalarType::Bool | ScalarType::Str | ScalarType::Bytes),
-        ) => default_value(&Type::Scalar(*scalar)),
-        _ => None,
-    };
-    zero.unwrap_or_else(|| Value::Resource(Vec::new()))
-}
-
 #[cfg(test)]
 mod default_value_tests {
-    use marrow_check::MarrowType;
     use marrow_schema::Type;
     use marrow_store::Decimal;
     use marrow_store::value::ScalarType;
 
-    use crate::call_args::{default_value, out_seed};
+    use crate::call_args::default_value;
     use crate::value::Value;
 
     #[test]
@@ -479,50 +422,5 @@ mod default_value_tests {
         assert_eq!(default_value(&Type::Identity("books".into())), None);
         assert_eq!(default_value(&Type::Named("Book".into())), None);
         assert_eq!(default_value(&Type::Unknown), None);
-    }
-
-    #[test]
-    fn out_seed_matches_the_runtime_contract() {
-        assert_eq!(
-            out_seed(&MarrowType::Primitive(ScalarType::Int)),
-            Value::Int(0)
-        );
-        assert_eq!(
-            out_seed(&MarrowType::Primitive(ScalarType::Bool)),
-            Value::Bool(false)
-        );
-        assert_eq!(
-            out_seed(&MarrowType::Primitive(ScalarType::Str)),
-            Value::Str(String::new())
-        );
-        assert_eq!(
-            out_seed(&MarrowType::Primitive(ScalarType::Bytes)),
-            Value::Bytes(Vec::new())
-        );
-        let empty = Value::Resource(Vec::new());
-        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Date)), empty);
-        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Instant)), empty);
-        assert_eq!(
-            out_seed(&MarrowType::Primitive(ScalarType::Duration)),
-            empty
-        );
-        assert_eq!(out_seed(&MarrowType::Primitive(ScalarType::Decimal)), empty);
-        assert_eq!(
-            out_seed(&MarrowType::Sequence(Box::new(MarrowType::Primitive(
-                ScalarType::Int
-            )))),
-            empty
-        );
-        assert_eq!(out_seed(&MarrowType::Resource("Book".into())), empty);
-        assert_eq!(
-            out_seed(&MarrowType::GroupEntry {
-                resource: "Book".into(),
-                layers: vec!["versions".into()],
-            }),
-            empty
-        );
-        assert_eq!(out_seed(&MarrowType::Identity("books".into())), empty);
-        assert_eq!(out_seed(&MarrowType::Error), empty);
-        assert_eq!(out_seed(&MarrowType::Unknown), empty);
     }
 }

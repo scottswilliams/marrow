@@ -1989,19 +1989,6 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
 }
 
 #[test]
-fn an_out_parameter_writes_back_to_a_local() {
-    // The callee fills an `out` parameter, and the caller's local sees the
-    // written value.
-    let program = checked_program(
-        "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 0\n    give(out n)\n    return n\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::main")),
-        Ok(Some(Value::Int(42)))
-    );
-}
-
-#[test]
 fn an_uninitialized_scalar_var_starts_at_its_zero() {
     // A typed `var` without an initializer is a writable place that starts at its
     // type's default, so plain declaration-then-use works.
@@ -2009,31 +1996,6 @@ fn an_uninitialized_scalar_var_starts_at_its_zero() {
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
         Ok(Some(Value::Int(0)))
-    );
-}
-
-#[test]
-fn an_out_parameter_writes_back_to_an_uninitialized_var() {
-    // The documented `out` pattern declares the place without a value:
-    // `var n: int` then `give(out n)`.
-    let program = checked_program(
-        "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int\n    give(out n)\n    return n\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::main")),
-        Ok(Some(Value::Int(42)))
-    );
-}
-
-#[test]
-fn an_out_parameter_ignores_the_caller_value_and_overwrites_it() {
-    // `out` does not read the caller's value; whatever the callee assigns wins.
-    let program = checked_program(
-        "fn give(out value: int)\n    value = 42\npub fn main(): int\n    var n: int = 99\n    give(out n)\n    return n\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::main")),
-        Ok(Some(Value::Int(42)))
     );
 }
 
@@ -2099,18 +2061,6 @@ fn an_inout_parameter_writes_back_to_a_local_resource_field() {
 }
 
 #[test]
-fn an_out_parameter_writes_back_to_a_local_resource_field() {
-    // `out` on a local resource field fills it without reading it first.
-    let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\nfn fill(out s: string)\n    s = \"FILLED\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    fill(out book.title)\n    return book.title\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::main")),
-        Ok(Some(Value::Str("FILLED".into())))
-    );
-}
-
-#[test]
 fn write_back_is_skipped_when_the_callee_throws() {
     // A callee that mutates an `inout` parameter then throws must not write back:
     // the caller's local keeps its pre-call value.
@@ -2126,7 +2076,7 @@ fn write_back_is_skipped_when_the_callee_throws() {
 #[test]
 fn an_argument_mode_must_match_the_parameter_mode() {
     checker_rejects(
-        "fn plain(n: int): int\n    return n\npub fn main(): int\n    var n: int = 1\n    return plain(out n)\n",
+        "fn plain(n: int): int\n    return n\npub fn main(): int\n    var n: int = 1\n    return plain(inout n)\n",
         "check.call_argument",
     );
 }
@@ -2294,63 +2244,6 @@ fn an_io_error_raises_a_catchable_error() {
     .expect("caught")
     .value;
     assert_eq!(code, Some(Value::Str("io.read".into())));
-}
-
-/// A resource and helper exercising `out` write-back to saved places.
-const SAVED_MODE_SAMPLE: &str = "\
-resource Account at ^accts(id: int)
-    balance: int
-
-fn give(out n: int)
-    n = 7
-
-pub fn produce()
-    give(out ^accts(1).balance)
-
-pub fn balanceOf(): int
-    return ^accts(1).balance ?? 0
-";
-
-#[test]
-fn out_creates_a_saved_field() {
-    let program = checked_program(SAVED_MODE_SAMPLE);
-    let store = TreeStore::memory();
-    // `out` never reads the place, so the field need not exist beforehand.
-    run_entry(&store, checked_entry!(&program, "test::produce")).expect("produce");
-    let balance = run_entry(&store, checked_entry!(&program, "test::balanceOf"))
-        .expect("read")
-        .value;
-    assert_eq!(balance, Some(Value::Int(7)));
-}
-
-/// A resource with a `versions(version)` group layer, for `out` into a field
-/// inside a keyed group entry.
-const GROUP_FIELD_MODE_SAMPLE: &str = "\
-resource Book at ^books(id: int)
-    title: string
-    versions(version: int)
-        title: string
-
-fn makeTitle(out t: string)
-    t = \"made\"
-
-pub fn produce()
-    makeTitle(out ^books(1).versions(3).title)
-
-pub fn producedTitle(): string
-    return ^books(1).versions(3).title ?? \"\"
-";
-
-#[test]
-fn out_creates_a_group_entry_field() {
-    // `out` never reads the place, so the group-entry field need not exist first.
-    let program = checked_program(GROUP_FIELD_MODE_SAMPLE);
-    let store = TreeStore::memory();
-    run_entry(&store, checked_entry!(&program, "test::produce")).expect("produce");
-    let title = run_entry(&store, checked_entry!(&program, "test::producedTitle"))
-        .expect("read")
-        .value;
-    assert_eq!(title, Some(Value::Str("made".into())));
 }
 
 #[test]
@@ -3045,11 +2938,11 @@ fn run_entry_rejects_ambiguous_bare_entries() {
 
 #[test]
 fn run_entry_rejects_host_values_for_moded_parameters() {
-    let program = checked_program("fn fill(out n: int)\n    n = 1\n");
+    let program = checked_program("fn fill(inout n: int)\n    n = 1\n");
     let error = rejected_entry_call(&program, "test::fill", vec![Value::Int(0)]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("out/inout"));
+    assert!(error.message.contains("inout"));
 }
 
 #[test]
@@ -10329,14 +10222,14 @@ fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
     );
 }
 
-/// An index branch is not an assignable place: `out ^books.byShelf(s)` is
+/// An index branch is not an assignable place: `inout ^books.byShelf(s)` is
 /// rejected, the same unsupported-path classification the lowering gives it.
 #[test]
 fn an_index_branch_is_not_an_assignable_place() {
     checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
-         fn give(out s: string)\n    s = \"x\"\n\n\
-         fn run_it()\n    give(out ^books.byShelf(\"a\"))\n",
+         fn give(inout s: string)\n    s = \"x\"\n\n\
+         fn run_it()\n    give(inout ^books.byShelf(\"a\"))\n",
         "check.untyped_value",
     );
 }

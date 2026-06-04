@@ -55,14 +55,12 @@ impl CheckedArg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckedArgMode {
-    Out,
     InOut,
 }
 
 impl CheckedArgMode {
     fn lower(mode: syntax::ArgMode) -> Self {
         match mode {
-            syntax::ArgMode::Out => Self::Out,
             syntax::ArgMode::InOut => Self::InOut,
         }
     }
@@ -70,14 +68,12 @@ impl CheckedArgMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckedParamMode {
-    Out,
     InOut,
 }
 
 impl CheckedParamMode {
     pub(crate) fn lower(mode: syntax::ParamMode) -> Self {
         match mode {
-            syntax::ParamMode::Out => Self::Out,
             syntax::ParamMode::InOut => Self::InOut,
         }
     }

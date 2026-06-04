@@ -172,15 +172,14 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
 }
 
 #[test]
-fn check_reports_prototype_only_constructs_for_a_project_directory() {
-    let dir = temp_project_dir("prototype-only");
+fn check_reports_reserved_merge_and_lock_as_parse_errors() {
+    let dir = temp_project_dir("reserved-merge-lock");
     fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
     fs::write(
         dir.join("src/shelf.mw"),
-        "module shelf\n\
+         "module shelf\n\
          resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn normalize(inout book: Book)\n    return\n\n\
-         fn f(id: int)\n    lock ^books(id)\n        print(\"locked\")\n    merge ^books(id) = ^books(id)\n    normalize(inout ^books(id))\n",
+         fn f(id: int)\n    lock ^books(id)\n        print(\"locked\")\n    merge ^books(id) = ^books(id)\n",
     )
     .expect("write source");
 
@@ -193,9 +192,35 @@ fn check_reports_prototype_only_constructs_for_a_project_directory() {
     fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.prototype_only"), "{stderr}");
-    assert!(stderr.contains("lock"), "{stderr}");
-    assert!(stderr.contains("merge"), "{stderr}");
+    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(stderr.contains("`lock` is reserved"), "{stderr}");
+    assert!(stderr.contains("`merge` is reserved"), "{stderr}");
+    assert!(!stderr.contains("check.rejected_surface"), "{stderr}");
+}
+
+#[test]
+fn check_rejects_saved_inout_for_a_project_directory() {
+    let dir = temp_project_dir("saved-inout");
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("src/shelf.mw"),
+        "module shelf\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn normalize(inout book: Book)\n    return\n\n\
+         fn f(id: int)\n    normalize(inout ^books(id))\n",
+    )
+    .expect("write source");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg(&dir)
+        .output()
+        .expect("run marrow check");
+
+    fs::remove_dir_all(&dir).ok();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.rejected_surface"), "{stderr}");
     assert!(stderr.contains("saved `inout`"), "{stderr}");
 }
 

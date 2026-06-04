@@ -5,11 +5,11 @@ use marrow_syntax::{
     Statement,
 };
 
-use crate::infer::{is_saved_path_expression, saved_layer_chain};
+use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
-use crate::{CHECK_PROTOTYPE_ONLY, CheckDiagnostic, CheckedProgram};
+use crate::{CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram};
 
-pub(crate) fn check_prototype_only(
+pub(crate) fn check_rejected_surface(
     program: &CheckedProgram,
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
@@ -71,20 +71,6 @@ fn check_statement(
         Statement::Delete { path, .. } => {
             check_expr(program, file, path, diagnostics);
         }
-        Statement::Merge {
-            target,
-            value,
-            span,
-        } => {
-            push(
-                file,
-                *span,
-                "`merge` is prototype-only; use explicit checked writes or a future checked transform",
-                diagnostics,
-            );
-            check_expr(program, file, target, diagnostics);
-            check_expr(program, file, value, diagnostics);
-        }
         Statement::Return { value, .. } => {
             if let Some(value) = value {
                 check_expr(program, file, value, diagnostics);
@@ -137,18 +123,6 @@ fn check_statement(
         Statement::Transaction { body, .. } => {
             check_block(program, file, body, diagnostics);
         }
-        Statement::Lock { path, body, span } => {
-            push(
-                file,
-                *span,
-                "`lock` is prototype-only; v0.1 uses transactions without a source-level lock primitive",
-                diagnostics,
-            );
-            if let Some(path) = path {
-                check_expr(program, file, path, diagnostics);
-            }
-            check_block(program, file, body, diagnostics);
-        }
         Statement::Try {
             body,
             catch,
@@ -187,25 +161,23 @@ fn check_expr(
         Expression::Call {
             callee, args, span, ..
         } => {
-            if let Some(method) = prototype_traversal_method(program, callee) {
+            if let Some(method) = rejected_traversal_method(program, callee) {
                 push(
                     file,
                     *span,
                     &format!(
-                        "saved traversal method `.{method}(...)` is prototype-only; v0.1 source streams durable iterables with ordinary `for` loops"
+                        "saved traversal method `.{method}(...)` is not a v0.1 source surface; stream durable iterables with ordinary `for` loops"
                     ),
                     diagnostics,
                 );
             }
             check_expr(program, file, callee, diagnostics);
             for arg in args {
-                if matches!(arg.mode, Some(ArgMode::InOut))
-                    && is_saved_path_expression(program, &arg.value)
-                {
+                if matches!(arg.mode, Some(ArgMode::InOut)) && saved_path_like_syntax(&arg.value) {
                     push(
                         file,
                         arg.value.span(),
-                        "saved `inout` is prototype-only; saved writes must be explicit checked effects",
+                        "saved `inout` is not a v0.1 source surface; saved writes must be explicit checked effects",
                         diagnostics,
                     );
                 }
@@ -233,7 +205,7 @@ fn check_expr(
     }
 }
 
-fn prototype_traversal_method<'a>(
+fn rejected_traversal_method<'a>(
     program: &CheckedProgram,
     callee: &'a Expression,
 ) -> Option<&'a str> {
@@ -286,7 +258,7 @@ fn saved_path_like_syntax(expr: &Expression) -> bool {
 
 fn push(file: &Path, span: SourceSpan, message: &str, diagnostics: &mut Vec<CheckDiagnostic>) {
     diagnostics.push(CheckDiagnostic {
-        code: CHECK_PROTOTYPE_ONLY,
+        code: CHECK_REJECTED_SURFACE,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: message.to_string(),

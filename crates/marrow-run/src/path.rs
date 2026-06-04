@@ -119,7 +119,7 @@ impl SavedPath {
 
     /// Write `value` to this lowered path, routing a scalar field or whole-record
     /// write the same way a direct assignment to the path would. Shared by direct
-    /// saved writes and saved `out` write-back.
+    /// saved writes.
     pub(crate) fn write(
         self,
         value: Value,
@@ -254,7 +254,8 @@ pub(crate) fn saved_path_present(
     data_exists(env.store, &address, span)
 }
 
-/// Evaluate a keyed lookup's arguments to saved key segments, rejecting named/out
+/// Evaluate a keyed lookup's arguments to saved key segments, rejecting named or
+/// mode arguments.
 /// arguments. When `allow_identity_splice` (the record-identity position), a sole
 /// identity-valued argument (`^root(id)` where `id: Id(^root)`) splices its
 /// lowered keys in as the full key vector and an identity mixed with raw keys is
@@ -272,7 +273,7 @@ pub(crate) fn lower_keys(
         .any(|arg| arg.mode.is_some() || arg.name.is_some())
     {
         return Err(unsupported(
-            "a keyed lookup with named or out arguments",
+            "a keyed lookup with named or inout arguments",
             span,
         ));
     }

@@ -81,10 +81,11 @@ Explicit traversal helpers:
 positions, map keys, or other addresses. Direct durable `for` loops already use
 that address-oriented shape, so `keys(...)` is mostly useful when an address list
 is passed around as a value. `values(...)` and `entries(...)` explicitly read
-stored values. Key-only collections such as sets and non-unique index branches
-do not have separate values; their generated marker values are an inspection
-detail. Deep saved-data walks belong to inspection, export, repair, and data
-evolution tools.
+stored values. Sequences and keyed maps are conveniences over saved tree layers,
+not separate database features. Key-only collections such as non-unique index
+branches do not have separate values; their generated marker values are an
+inspection detail. Deep saved-data walks belong to inspection, export, repair,
+and data evolution tools.
 
 ### Stored Entries In Key Order
 
@@ -169,7 +170,7 @@ as any maybe-present value. It composes with `??`:
 const following = next(^books(id)) ?? id
 ```
 
-## Sequence Updates
+## Sequence Writes
 
 `append(path, value)` appends to a sequence-like integer-keyed tree and returns
 the 1-based key it wrote:
@@ -222,8 +223,8 @@ Neither statement produces a value. Complex IO belongs in `std::io`.
 delete ^books(id).subtitle
 ```
 
-`merge` is a reserved word, not a v0.1 statement. For a partial update that keeps
-existing data, write specific fields rather than a whole-record `=`.
+`merge` is a reserved word, not a v0.1 statement. To preserve existing data,
+write specific fields rather than a whole-record `=`.
 
 ## Conversions
 

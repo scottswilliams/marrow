@@ -801,7 +801,7 @@ impl UseWalker<'_, '_> {
                     bind_type(type_scope, name, ty);
                 }
             }
-            Statement::Assign { target, value, .. } | Statement::Merge { target, value, .. } => {
+            Statement::Assign { target, value, .. } => {
                 self.walk_expr(target, scope);
                 self.walk_expr(value, scope);
             }
@@ -875,12 +875,6 @@ impl UseWalker<'_, '_> {
                 type_scope.pop();
             }
             Statement::Transaction { body, .. } => self.walk_block(body, scope, type_scope),
-            Statement::Lock { path, body, .. } => {
-                if let Some(path) = path {
-                    self.walk_expr(path, scope);
-                }
-                self.walk_block(body, scope, type_scope);
-            }
             Statement::Try {
                 body,
                 catch,

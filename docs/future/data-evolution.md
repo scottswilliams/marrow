@@ -27,7 +27,7 @@ The future planner can emit outcomes such as:
 
 - `NoOp`: source or catalog changed, but saved data and public compatibility are
   unaffected.
-- `CatalogOnly`: update stable identity records, aliases, epochs, docs, or
+- `CatalogOnly`: refresh stable identity records, aliases, epochs, docs, or
   fingerprints without rewriting saved data.
 - `DataProof`: inspect actual data to prove the change is valid without a
   rewrite.
@@ -90,7 +90,7 @@ an in-place backfill. Shadow decant writes a new store or layout in chunks,
 bridges a bounded set of writes, verifies identity/count/checksum facts, publishes
 a small binding change, and then closes the compatibility window. It is the
 Marrow-native version of online copy/cutover, still governed by source and
-catalog facts rather than raw store patches.
+catalog facts rather than raw store rewrites.
 
 ## Stable Identity
 

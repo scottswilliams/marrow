@@ -541,9 +541,6 @@ fn collect_call_args(
     let mutated = mutating_arg_bindings(args, scope);
     for arg in args {
         match arg.mode {
-            Some(CheckedArgMode::Out) => {
-                collect_write_target(program, &arg.value, narrowed, scope, diagnostics);
-            }
             Some(CheckedArgMode::InOut) => {
                 collect_bare_expr(program, &arg.value, narrowed, scope, diagnostics);
                 collect_write_target(program, &arg.value, narrowed, scope, diagnostics);

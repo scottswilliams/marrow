@@ -327,7 +327,7 @@ impl<'a> ExprParser<'a> {
         loop {
             let arg = self.argument()?;
             // After the first named argument, every remaining argument must be
-            // named: a plain positional one (no name, no `out`/`inout` mode)
+            // named: a plain positional one (no name and no `inout` mode)
             // would silently back-fill an earlier parameter. Mode arguments keep
             // their own rules and are not plain positionals.
             if seen_named && arg.name.is_none() && arg.mode.is_none() {
@@ -356,14 +356,20 @@ impl<'a> ExprParser<'a> {
     }
 
     fn argument(&mut self) -> Option<Argument> {
-        let mode = match self.peek() {
-            Some(TokenKind::Keyword(Keyword::Out)) => Some(ArgMode::Out),
-            Some(TokenKind::Keyword(Keyword::InOut)) => Some(ArgMode::InOut),
-            _ => None,
-        };
-        if mode.is_some() {
-            self.advance();
+        if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Out))) {
+            let token = self.advance();
+            self.error(
+                token.span,
+                "`out` is reserved; return a value or use `inout` for local mutation".to_string(),
+                None,
+            );
         }
+        let mode = if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::InOut))) {
+            self.advance();
+            Some(ArgMode::InOut)
+        } else {
+            None
+        };
         let name = if mode.is_none()
             && matches!(self.peek(), Some(TokenKind::Identifier))
             && matches!(self.peek_at(1), Some(TokenKind::Colon))

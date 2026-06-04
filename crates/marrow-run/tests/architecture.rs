@@ -476,7 +476,7 @@ fn production_runtime_enum_values_use_catalog_member_identity() {
 
     assert!(
         violations.is_empty(),
-        "runtime enum execution still uses ordinal prototype identity:\n{}",
+        "runtime enum execution still uses ordinal source identity:\n{}",
         violations.join("\n")
     );
 }

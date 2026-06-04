@@ -242,7 +242,7 @@ pub enum InterpolationPart {
 }
 
 /// One argument in a call expression. `name` is set for named arguments
-/// (`title: draft`); `mode` is set for `out`/`inout` arguments.
+/// (`title: draft`); `mode` is set for `inout` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Argument {
     pub mode: Option<ArgMode>,
@@ -252,7 +252,6 @@ pub struct Argument {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgMode {
-    Out,
     InOut,
 }
 
@@ -457,11 +456,6 @@ pub enum Statement {
         path: Expression,
         span: SourceSpan,
     },
-    Merge {
-        target: Expression,
-        value: Expression,
-        span: SourceSpan,
-    },
     Return {
         value: Option<Expression>,
         span: SourceSpan,
@@ -507,11 +501,6 @@ pub enum Statement {
         span: SourceSpan,
     },
     Transaction {
-        body: Block,
-        span: SourceSpan,
-    },
-    Lock {
-        path: Option<Expression>,
         body: Block,
         span: SourceSpan,
     },
@@ -586,7 +575,6 @@ impl Statement {
             | Self::Var { span, .. }
             | Self::Assign { span, .. }
             | Self::Delete { span, .. }
-            | Self::Merge { span, .. }
             | Self::Return { span, .. }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
@@ -596,7 +584,6 @@ impl Statement {
             | Self::While { span, .. }
             | Self::For { span, .. }
             | Self::Transaction { span, .. }
-            | Self::Lock { span, .. }
             | Self::Try { span, .. }
             | Self::Match { span, .. } => *span,
         }
@@ -616,7 +603,6 @@ pub struct ParamDecl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamMode {
-    Out,
     InOut,
 }
 

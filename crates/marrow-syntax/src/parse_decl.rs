@@ -53,7 +53,6 @@ fn is_compound_statement_keyword(keyword: Keyword) -> bool {
             | Keyword::While
             | Keyword::For
             | Keyword::Transaction
-            | Keyword::Lock
             | Keyword::Try
             | Keyword::Catch
             | Keyword::Finally
@@ -168,7 +167,10 @@ impl<'a> StmtParser<'a> {
             TokenKind::Keyword(Keyword::While) => return Some(self.while_stmt(None, None)),
             TokenKind::Keyword(Keyword::For) => return self.for_stmt(None, None),
             TokenKind::Keyword(Keyword::Transaction) => return Some(self.transaction_stmt()),
-            TokenKind::Keyword(Keyword::Lock) => return Some(self.lock_stmt()),
+            TokenKind::Keyword(Keyword::Lock) => {
+                self.skip_reserved_compound("lock");
+                return None;
+            }
             TokenKind::Keyword(Keyword::Try) => return Some(self.try_stmt()),
             TokenKind::Keyword(Keyword::Match) => return Some(self.match_stmt()),
             TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
@@ -372,17 +374,6 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    fn lock_stmt(&mut self) -> Statement {
-        let start = self.advance().span; // `lock`
-        let path = self.header_expression();
-        let body = self.block_body();
-        Statement::Lock {
-            span: join_spans(start, body.span),
-            path,
-            body,
-        }
-    }
-
     /// Parse `match <scrutinee>` followed by an indented block of arms. Each arm is
     /// a member path on its own line (`bengal`, `tiger::bengal`, or a category
     /// `tiger`), then an indented arm block — the scrutinee supplies the enum, so an
@@ -463,8 +454,8 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse the expression that ends the current header line (an `if`/`while`
-    /// condition or `lock` path), consuming up to and including its `NEWLINE`.
+    /// Parse the expression that ends the current header line, consuming up to
+    /// and including its `NEWLINE`.
     /// Returns `None`, after raising a syntax error, when the header does not
     /// parse as a complete expression.
     fn header_expression(&mut self) -> Option<Expression> {
@@ -633,6 +624,31 @@ impl<'a> StmtParser<'a> {
         self.error_span(join_spans(start, end), "expected a statement");
     }
 
+    /// A reserved block-shaped word that is not part of the v0.1 statement
+    /// grammar. Consume the header and nested block so its body does not leak
+    /// into the surrounding statement list.
+    fn skip_reserved_compound(&mut self, word: &str) {
+        let start = self.tokens[self.pos].span;
+        let mut end = start;
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Newline => {
+                    end = self.advance().span;
+                    break;
+                }
+                TokenKind::Indent | TokenKind::Dedent => break,
+                _ => end = self.advance().span,
+            }
+        }
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            end = self.skip_block();
+        }
+        self.error_span(
+            join_spans(start, end),
+            format!("`{word}` is reserved and is not a v0.1 statement"),
+        );
+    }
+
     fn error_span(&mut self, span: SourceSpan, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
@@ -699,7 +715,17 @@ fn parse_simple_statement(
                 value,
             })
         }
-        TokenKind::Keyword(Keyword::Merge) => parse_merge(source, line, diagnostics),
+        TokenKind::Keyword(Keyword::Merge) => {
+            diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                kind: "parse",
+                severity: Severity::Error,
+                message: "`merge` is reserved and is not a v0.1 statement".to_string(),
+                help: None,
+                span: line_span(line),
+            });
+            None
+        }
         TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(source, line, true),
         TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(source, line, false),
         _ => parse_assign_or_expr(source, line, diagnostics),
@@ -2241,7 +2267,7 @@ fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &
     })
 }
 
-/// Parse a `(out|inout)? name: type` parameter list. Parameters are separated by
+/// Parse an `inout? name: type` parameter list. Parameters are separated by
 /// commas, and in a multi-line list a line break separates one from the next just
 /// as a comma does, so the list reads cleanly written with commas, without them,
 /// or mixed. A run of `;;` doc lines directly above a parameter is its
@@ -2263,7 +2289,9 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, 
             .map(|token| doc_comment_text(token.text(source)))
             .collect();
         let (mode, rest) = match group.body.first().map(|token| token.kind) {
-            Some(TokenKind::Keyword(Keyword::Out)) => (Some(ParamMode::Out), &group.body[1..]),
+            Some(TokenKind::Keyword(Keyword::Out)) => {
+                return Err("`out` is reserved; return a value or use `inout` for local mutation");
+            }
             Some(TokenKind::Keyword(Keyword::InOut)) => (Some(ParamMode::InOut), &group.body[1..]),
             _ => (None, group.body),
         };
@@ -2295,7 +2323,7 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, 
 }
 
 /// One parameter's tokens: its leading `;;` doc-comment run and the body tokens
-/// that spell `(out|inout)? name: type`.
+/// that spell `inout? name: type`.
 struct ParamGroup<'a> {
     docs: Vec<&'a Token>,
     body: &'a [Token],
@@ -2582,23 +2610,6 @@ fn parse_return(
     Some(Statement::Return {
         span: join_spans(keyword.span, value.span()),
         value: Some(value),
-    })
-}
-
-fn parse_merge(
-    source: &str,
-    line: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Statement> {
-    let keyword = line[0];
-    let rest = &line[1..];
-    let equal = find_top_level_equal(rest)?;
-    let target = expr_of(source, &rest[..equal], diagnostics)?;
-    let value = expr_of(source, &rest[equal + 1..], diagnostics)?;
-    Some(Statement::Merge {
-        span: join_spans(keyword.span, value.span()),
-        target,
-        value,
     })
 }
 

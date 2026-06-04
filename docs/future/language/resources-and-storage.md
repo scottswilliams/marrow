@@ -6,7 +6,7 @@ Future counterpart of
 ## Catalog-Owned Stable IDs
 
 Stored entities need catalog-owned opaque stable identity. Tools may allocate or
-preserve those identities while editing, but the project catalog is the
+preserve those identities while changing source, but the project catalog is the
 authority. Because the identity is not name-shaped, a rename never desyncs it
 from the data it names.
 

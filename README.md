@@ -9,7 +9,7 @@ resource Task at ^tasks(id: int)
     required title: string
     status: string
 
-pub fn complete(id: Task::Id): bool
+pub fn complete(id: Id(^tasks)): bool
     if not exists(^tasks(id))
         return false
 
