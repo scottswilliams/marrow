@@ -19,7 +19,7 @@ central counter.
 
 ## Ephemeral roots
 
-ADR 0209 reserves `~` for typed ephemeral roots: process- or session-lived
+The `~` sigil is reserved for typed ephemeral roots: process- or session-lived
 resource-typed state that can be rebuilt and is never durable truth. v1 reserves
 the sigil only; it does not implement `~` declarations or writes.
 

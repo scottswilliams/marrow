@@ -4,7 +4,7 @@ The `marrow` binary is the single entry point for the language and its built-in
 database.
 
 ```
-marrow check [--format text|json|jsonl] <file.mw | projectdir>
+marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
@@ -379,6 +379,11 @@ checks the source first. It reports decode mismatches (`data.decode`), key type
 mismatches (`data.key_type`), orphaned managed cells (`data.orphan`), and corrupt
 typed tree-cell keys (`store.corruption`). Exits `0` on a clean store, `1` when
 any problem is found.
+
+Integrity walks the values that are actually stored. It does not verify
+required-field completeness: a record missing a required field has no stored
+cell to flag, so an incomplete record passes integrity. Completeness is enforced
+on the write path and by data evolution.
 
 ```console
 $ marrow data integrity ./proj

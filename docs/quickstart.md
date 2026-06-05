@@ -158,12 +158,15 @@ Count roots and records:
 marrow data stats .
 ```
 
+After the two runs above, four books are saved, each with three populated
+fields:
+
 ```text
 roots: 1
-records: 8
+records: 12
 ```
 
-Dump every saved path and value (after a single run):
+Dump every saved field path and value:
 
 ```sh
 marrow data dump .
@@ -176,12 +179,16 @@ marrow data dump .
 ^books(2).author	Terry Pratchett
 ^books(2).shelf	fiction
 ^books(2).title	Sourcery
-^books.byShelf("fiction")(1)	1
-^books.byShelf("fiction")(2)	1
+^books(3).author	Terry Pratchett
+^books(3).shelf	fiction
+^books(3).title	Small Gods
+^books(4).author	Terry Pratchett
+^books(4).shelf	fiction
+^books(4).title	Sourcery
 ```
 
-The `^books.byShelf(...)` rows are the generated index entries. Read a single
-path:
+`data dump` reports stored field values, not the generated index entries, which
+are derived data. Read a single path:
 
 ```sh
 marrow data get . '^books(1).title'
@@ -198,7 +205,7 @@ marrow data integrity .
 ```
 
 ```text
-ok: store integrity verified (8 records)
+ok: store integrity verified (12 records)
 ```
 
 Every `marrow data` subcommand also takes `--format text|json|jsonl` for
@@ -209,7 +216,7 @@ marrow data stats --format json .
 ```
 
 ```text
-{"project":"/path/to/shelf","records":8,"roots":1}
+{"project":"/path/to/shelf","records":12,"roots":1}
 ```
 
 `marrow data` is read-only. The `diff` and `load` subcommands are deferred —
@@ -236,8 +243,8 @@ pub fn addThenFind()
 ```
 
 `use shelf::books` imports the module so you can call `books::add`. Write
-equality assertions by passing a boolean to `std::assert::isTrue` — `=` is the
-equality operator. Run the tests:
+equality assertions by passing a boolean to `std::assert::isTrue` — `==` is the
+equality operator (`=` is assignment). Run the tests:
 
 ```sh
 marrow test .

@@ -108,7 +108,7 @@ function has that name. The CLI or host decodes boundary arguments before Marrow
 code runs.
 
 Test files are the project's `tests` patterns. They live outside the source
-roots and are scripts, so each is named from its project-relative path
+roots and are scripts, so each is named from its project-root-relative path
 (`tests/books_test.mw` → `tests::books_test`). `marrow test` runs every `pub fn`
 with no parameters in a test file against a fresh in-memory store, so tests are
 independent and never touch saved data. A `tests` pattern is the directory walk

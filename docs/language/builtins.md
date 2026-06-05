@@ -32,40 +32,11 @@ covered in detail under Operators in the syntax reference.
 
 ## Collection Traversal
 
-Direct iteration over a durable collection streams its addresses:
-
-```mw
-for id in ^books
-    write(^books(id).title)
-
-for pos in ^books(id).tags
-    write(^books(id).tags(pos))
-```
-
-A primary root streams store identities. A sequence or keyed layer streams its
-populated child keys. A non-unique index branch streams the identities in that
-lookup branch:
-
-```mw
-for id in ^books.byShelf("fiction")
-    write($"{id}")
-```
-
-Use two loop variables for the address and value together, or use `values(...)`
-when only values are wanted:
-
-```mw
-for id, book in ^books
-    write($"{id}: {book.title}")
-
-for pos, tag in ^books(id).tags
-    write($"{pos}: {tag}")
-
-for book in values(^books)
-    write(book.title)
-```
-
-Explicit traversal helpers:
+A durable collection — a store root, keyed child layer, or index branch — is an
+iterable. The `for`-loop forms that walk one, including single versus two loop
+variables and the lazy-streaming guarantee, are described under Loops in
+[Control Flow And Errors](control-flow-and-effects.md). The traversal builtins
+below are the expression forms of the same walk.
 
 | Builtin | Meaning |
 |---|---|
@@ -223,8 +194,9 @@ Neither statement produces a value. Complex IO belongs in `std::io`.
 delete ^books(id).subtitle
 ```
 
-`merge` is a reserved word, not a v0.1 statement. To preserve existing data,
-write specific fields rather than a whole-record `=`.
+`merge` is a reserved word, not a v0.1 statement; see Delete in
+[Resources And Saved Data](resources-and-storage.md) for how to preserve existing
+data without a whole-record `=`.
 
 ## Conversions
 

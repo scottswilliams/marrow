@@ -58,7 +58,7 @@ Storage errors include the failed operation and the capability or limit
 involved. Machine-readable facts belong in `data`; clients do not parse
 `message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.limit`, `store.cursor`, and `store.read_only`.
+`store.limit`, `store.cursor`, `store.transaction`, and `store.read_only`.
 Backends enforce no key or value size limit, so `store.limit` is produced only
 when Marrow framing cannot encode a tree-cell metadata or value-codec length
 above a `u32` field.
@@ -284,6 +284,7 @@ store fault met during a program read or write travels as `run.store` or
 | `store.corruption` | The store file, tree-cell metadata, or tree-cell index cell is corrupt and could not be opened or decoded. |
 | `store.limit` | A Marrow framing layer could not encode a tree-cell metadata or value-codec length above a `u32` field. Backends enforce no key/value size limit. |
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
+| `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
 | `store.read_only` | A write-capability operation was requested through a read-only store handle. |
 
 ### `protocol.*` — kind `protocol`
