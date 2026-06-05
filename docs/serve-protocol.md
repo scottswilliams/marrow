@@ -305,7 +305,7 @@ Observed replies:
   -> {"error":{"code":"protocol.bad_request","message":"request is missing `path`"},"id":15}
 
 {"id": 16, "op": "debug_data_walk", "path": [{"root": "books"}]}
-  -> {"error":{"code":"protocol.bad_request","message":"`debug_data_walk` requires an integer `limit`"},"id":16}
+  -> {"error":{"code":"protocol.bad_request","message":"`debug_data_walk` requires a positive integer `limit`"},"id":16}
 ```
 
 A line that cannot be parsed gets a `protocol.malformed` reply with `id: null`

@@ -56,11 +56,13 @@ fn shared_tooling_query_segments_are_canonical() {
 /// express the rule; this is a tidy identifier scan over `pub` declarations.
 ///
 /// `DebugDataPayload::as_bytes` is the one sanctioned raw-bytes accessor: the
-/// debug payload wrapper is the public type, and reading its bytes is the
-/// point. It is allowlisted by method name rather than full signature so a
-/// reformat does not trip the scan. The positive contract that ids never leak
-/// is proven by the `data_cli.rs` orphan tests, which assert no `cat_` text
-/// reaches any output.
+/// debug payload wrapper is the public type, and reading its borrowed bytes is
+/// the point. Only the `&[u8]` borrow is exempt, and only on a line that begins
+/// with `pub fn as_bytes(`, so an owned `Vec<u8>` payload stays forbidden even
+/// from that accessor and an unrelated method whose name merely contains
+/// `as_bytes` cannot smuggle raw bytes out. The positive contract that ids
+/// never leak is proven by the `data_cli.rs` orphan tests, which assert no
+/// `cat_` text reaches any output.
 #[test]
 fn public_tooling_signatures_hide_storage_locators_and_raw_payloads() {
     const FORBIDDEN: [&str; 6] = [
@@ -71,8 +73,11 @@ fn public_tooling_signatures_hide_storage_locators_and_raw_payloads() {
         "push_key",
         "&mut String",
     ];
-    const RAW_BYTES: [&str; 2] = ["Vec<u8>", "&[u8]"];
-    const RAW_BYTES_ACCESSOR: &str = "fn as_bytes";
+    // An owned `Vec<u8>` payload is never an acceptable public return; only the
+    // one sanctioned borrowed-bytes accessor may name `&[u8]`.
+    const ALWAYS_FORBIDDEN_BYTES: &str = "Vec<u8>";
+    const BORROWED_BYTES: &str = "&[u8]";
+    const SANCTIONED_BYTES_ACCESSOR: &str = "pub fn as_bytes(";
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let tooling_dir = manifest_dir.join("../marrow-check/src/tooling");
@@ -90,14 +95,12 @@ fn public_tooling_signatures_hide_storage_locators_and_raw_payloads() {
                 .copied()
                 .filter(|token| trimmed.contains(token))
                 .collect();
-            let is_bytes_accessor = trimmed.contains(RAW_BYTES_ACCESSOR);
-            if !is_bytes_accessor {
-                leaks.extend(
-                    RAW_BYTES
-                        .iter()
-                        .copied()
-                        .filter(|token| trimmed.contains(token)),
-                );
+            if trimmed.contains(ALWAYS_FORBIDDEN_BYTES) {
+                leaks.push(ALWAYS_FORBIDDEN_BYTES);
+            }
+            let sanctioned_borrow = trimmed.starts_with(SANCTIONED_BYTES_ACCESSOR);
+            if !sanctioned_borrow && trimmed.contains(BORROWED_BYTES) {
+                leaks.push(BORROWED_BYTES);
             }
             if let Some(token) = leaks.first() {
                 violations.push(format!(
