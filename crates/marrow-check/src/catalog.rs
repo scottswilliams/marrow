@@ -9,7 +9,9 @@ use marrow_syntax::{Severity, SourceSpan};
 use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
 use crate::program::{EvolveDefault, EvolveTransform};
-use crate::{CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CheckDiagnostic, CheckedProgram};
+use crate::{
+    CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CheckDiagnostic, CheckedProgram, DiagnosticPayload,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CatalogKey {
@@ -164,6 +166,7 @@ fn catalog_diagnostic(file: std::path::PathBuf, message: String) -> CheckDiagnos
         file,
         message,
         span: SourceSpan::default(),
+        payload: DiagnosticPayload::None,
     }
 }
 
@@ -296,6 +299,7 @@ fn catalog_binding(
             file: first_source_file(&source_entries),
             message: format!("proposed catalog metadata is not valid: {}", error.message),
             span: SourceSpan::default(),
+            payload: DiagnosticPayload::None,
         });
     }
 
@@ -840,6 +844,7 @@ fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec
         message: "evolve target does not name an accepted catalog entry to carry forward"
             .to_string(),
         span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1027,6 +1032,7 @@ fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<Chec
             source.path
         ),
         span: source.span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1040,6 +1046,7 @@ fn push_rename_source_declared(rename: &RenameIntent, diagnostics: &mut Vec<Chec
             rename.from_path
         ),
         span: rename.span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1053,6 +1060,7 @@ fn push_retire_source_declared(retire: &RetireIntent, diagnostics: &mut Vec<Chec
             retire.path
         ),
         span: retire.span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1066,6 +1074,7 @@ fn push_rename_conflict(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagno
             rename.from_path, rename.to_path
         ),
         span: rename.span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1079,6 +1088,7 @@ fn push_rename_target_live(source: &SourceCatalogEntry, diagnostics: &mut Vec<Ch
             source.path
         ),
         span: source.span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1096,6 +1106,7 @@ fn push_reserved_reuse(
             source.path, reserved.stable_id
         ),
         span: source.span,
+        payload: DiagnosticPayload::None,
     });
 }
 

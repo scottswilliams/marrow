@@ -14,7 +14,7 @@ use crate::enums::{normalize_program_named_types, resolve_type};
 use crate::infer::{bind, infer_type, local_binding};
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
-    CheckedModule, CheckedProgram, IO_READ, MarrowType, ProjectSources,
+    CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, MarrowType, ProjectSources,
     SCHEMA_DUPLICATE_ROOT_OWNER, TestResolutionSuppression, check_file_source, enum_visibility,
     module_path_error, read_source,
 };
@@ -188,6 +188,7 @@ pub(crate) fn analyze_source_project(
                         first.display()
                     ),
                     span: store.span,
+                    payload: DiagnosticPayload::None,
                 }),
                 None => {
                     root_owners.insert(store.root.root.clone(), file.path.clone());
@@ -212,6 +213,7 @@ pub(crate) fn analyze_source_project(
                                 first.display()
                             ),
                             span: module.span,
+                            payload: DiagnosticPayload::None,
                         });
                     } else {
                         declared.insert(expected.clone(), file.path.clone());
@@ -311,6 +313,7 @@ pub(crate) fn analyze_source_project(
                     declaration (its single-file script); declare a `module` for this file"
                     .to_string(),
                 span: SourceSpan::default(),
+                payload: DiagnosticPayload::None,
             });
         }
     }

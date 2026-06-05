@@ -8,7 +8,8 @@
 //! `resolve_function_in_module`) for module-aware function calls — short-form
 //! `use` aliases and visibility included — `find_resource_schema` plus the
 //! schema's field/layer/index lookup for saved data, and the same block
-//! traversal shape the A1 scope primitives use so a local's scope cannot drift
+//! traversal shape the checker's scope lowering uses (a frame per block, with
+//! loop and catch bindings scoped to their body) so a local's scope cannot drift
 //! from the one the checker builds.
 //!
 //! Spans. A *use* of a single-segment name (a local, parameter, module constant,
@@ -33,7 +34,7 @@ use marrow_syntax::{
 
 use crate::MarrowType;
 use crate::checks::{file_prelude, for_frame};
-use crate::enums::{resolve_enum, resolve_enum_member_path, resolve_type};
+use crate::enums::{enum_schema_in, resolve_enum, resolve_enum_member_path, resolve_type};
 use crate::infer::{infer_only, local_binding};
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
@@ -709,7 +710,7 @@ fn resource_decl<'a>(parsed: &'a ParsedSource, name: &str) -> Option<&'a Resourc
 }
 
 /// Walks a function body collecting identifier uses against a scope of local
-/// bindings, mirroring the block/statement traversal the A1 scope primitives use
+/// bindings, mirroring the checker's block/statement scope traversal
 /// (push a frame per block; record `const`/`var` bindings as they appear; push a
 /// loop/catch frame for the body that runs under it) so a local's scope cannot
 /// drift from the checker's.
@@ -848,80 +849,110 @@ impl UseWalker<'_, '_> {
                 iterable,
                 body,
                 ..
-            } => {
-                self.walk_expr(iterable, scope);
-                // The loop binding(s) are in scope only within the body. They have
-                // no AST span, so each is defined at the statement span.
-                let mut frame = HashMap::new();
-                frame.insert(binding.first.clone(), self.define_local(statement.span()));
-                if let Some(second) = &binding.second {
-                    frame.insert(second.clone(), self.define_local(statement.span()));
-                }
-                let type_frame = for_frame(
-                    self.builder.program,
-                    binding,
-                    iterable,
-                    type_scope,
-                    self.aliases,
-                    self.file,
-                );
-                scope.push(frame);
-                type_scope.push(type_frame);
-                // Body statements run under the loop frame plus their own block.
-                for inner in &body.statements {
-                    self.walk_statement(inner, scope, type_scope);
-                }
-                scope.pop();
-                type_scope.pop();
-            }
+            } => self.walk_for(statement.span(), binding, iterable, body, scope, type_scope),
             Statement::Transaction { body, .. } => self.walk_block(body, scope, type_scope),
             Statement::Try {
                 body,
                 catch,
                 finally,
                 ..
-            } => {
-                self.walk_block(body, scope, type_scope);
-                if let Some(clause) = catch {
-                    if let Some(ty) = &clause.ty {
-                        self.resolve_type_ref(ty);
-                    }
-                    // The caught error is bound for the catch block only.
-                    let mut frame = HashMap::new();
-                    let mut type_frame = HashMap::new();
-                    frame.insert(clause.name.clone(), self.define_local(clause.block.span));
-                    type_frame.insert(clause.name.clone(), MarrowType::Error);
-                    scope.push(frame);
-                    type_scope.push(type_frame);
-                    for inner in &clause.block.statements {
-                        self.walk_statement(inner, scope, type_scope);
-                    }
-                    scope.pop();
-                    type_scope.pop();
-                }
-                if let Some(finally) = finally {
-                    self.walk_block(finally, scope, type_scope);
-                }
-            }
+            } => self.walk_try(body, catch.as_ref(), finally.as_ref(), scope, type_scope),
             Statement::Match {
                 scrutinee, arms, ..
-            } => {
-                if let Some(scrutinee) = scrutinee {
-                    self.walk_expr(scrutinee, scope);
-                }
-                let enum_identity = scrutinee
-                    .as_ref()
-                    .and_then(|scrutinee| self.match_scrutinee_enum(scrutinee, type_scope));
-                if let Some((enum_module, enum_name)) = enum_identity {
-                    for arm in arms {
-                        self.resolve_match_arm(&enum_module, &enum_name, arm);
-                    }
-                }
-                for arm in arms {
-                    self.walk_block(&arm.block, scope, type_scope);
-                }
-            }
+            } => self.walk_match(scrutinee.as_ref(), arms, scope, type_scope),
             Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+
+    /// Walk a `for` over its iterable, then its body under a fresh frame holding
+    /// the loop binding(s). The loop variables have no AST span of their own, so
+    /// each is defined at the statement span.
+    fn walk_for(
+        &mut self,
+        statement_span: SourceSpan,
+        binding: &marrow_syntax::ForBinding,
+        iterable: &Expression,
+        body: &Block,
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
+        self.walk_expr(iterable, scope);
+        let mut frame = HashMap::new();
+        frame.insert(binding.first.clone(), self.define_local(statement_span));
+        if let Some(second) = &binding.second {
+            frame.insert(second.clone(), self.define_local(statement_span));
+        }
+        let type_frame = for_frame(
+            self.builder.program,
+            binding,
+            iterable,
+            type_scope,
+            self.aliases,
+            self.file,
+        );
+        scope.push(frame);
+        type_scope.push(type_frame);
+        for inner in &body.statements {
+            self.walk_statement(inner, scope, type_scope);
+        }
+        scope.pop();
+        type_scope.pop();
+    }
+
+    /// Walk a `try`: the body, then the catch block under a frame binding the
+    /// caught error, then the finally block. The catch binding is scoped to the
+    /// catch block only.
+    fn walk_try(
+        &mut self,
+        body: &Block,
+        catch: Option<&marrow_syntax::CatchClause>,
+        finally: Option<&Block>,
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
+        self.walk_block(body, scope, type_scope);
+        if let Some(clause) = catch {
+            if let Some(ty) = &clause.ty {
+                self.resolve_type_ref(ty);
+            }
+            let mut frame = HashMap::new();
+            let mut type_frame = HashMap::new();
+            frame.insert(clause.name.clone(), self.define_local(clause.block.span));
+            type_frame.insert(clause.name.clone(), MarrowType::Error);
+            scope.push(frame);
+            type_scope.push(type_frame);
+            for inner in &clause.block.statements {
+                self.walk_statement(inner, scope, type_scope);
+            }
+            scope.pop();
+            type_scope.pop();
+        }
+        if let Some(finally) = finally {
+            self.walk_block(finally, scope, type_scope);
+        }
+    }
+
+    /// Walk a `match`: the scrutinee, then resolve each arm's member path against
+    /// the scrutinee's enum, then each arm body under its own block frame.
+    fn walk_match(
+        &mut self,
+        scrutinee: Option<&Expression>,
+        arms: &[MatchArm],
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
+        if let Some(scrutinee) = scrutinee {
+            self.walk_expr(scrutinee, scope);
+        }
+        let enum_identity =
+            scrutinee.and_then(|scrutinee| self.match_scrutinee_enum(scrutinee, type_scope));
+        if let Some((enum_module, enum_name)) = enum_identity {
+            for arm in arms {
+                self.resolve_match_arm(&enum_module, &enum_name, arm);
+            }
+        }
+        for arm in arms {
+            self.walk_block(&arm.block, scope, type_scope);
         }
     }
 
@@ -1125,7 +1156,7 @@ impl UseWalker<'_, '_> {
             }
             let module = expand_module_alias(&segments[..enum_index].join("::"), self.aliases);
             if module == resolved_module
-                && self.enum_schema(&module, &segments[enum_index]).is_some()
+                && enum_schema_in(self.builder.program, &module, &segments[enum_index]).is_some()
             {
                 return Some(enum_index);
             }
@@ -1159,7 +1190,7 @@ impl UseWalker<'_, '_> {
     }
 
     fn resolve_match_arm(&mut self, enum_module: &str, enum_name: &str, arm: &MatchArm) {
-        let Some(schema) = self.enum_schema(enum_module, enum_name) else {
+        let Some(schema) = enum_schema_in(self.builder.program, enum_module, enum_name) else {
             return;
         };
         let segments: Vec<&str> = arm.path.iter().map(String::as_str).collect();
@@ -1188,21 +1219,6 @@ impl UseWalker<'_, '_> {
             match_arm_header_span(arm),
             SymbolKind::EnumMember,
         );
-    }
-
-    fn enum_schema(
-        &self,
-        enum_module: &str,
-        enum_name: &str,
-    ) -> Option<&marrow_schema::EnumSchema> {
-        self.builder
-            .program
-            .modules
-            .iter()
-            .find(|module| module.name == enum_module)?
-            .enums
-            .iter()
-            .find(|schema| schema.name == enum_name)
     }
 
     /// Resolve a call whose callee is a name to a function definition, expanding
@@ -1420,6 +1436,10 @@ fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpa
 
 fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
     let label_len = arm.path.join("::").len();
+    // `span_covers` treats `end_byte` as the last covered byte, so a label of
+    // length N starting at S ends at S + N - 1. A space or trailing comment after
+    // the label must not resolve as a member; an exclusive end would let the byte
+    // just past the label match.
     SourceSpan {
         start_byte: arm.span.start_byte,
         end_byte: arm

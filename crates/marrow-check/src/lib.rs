@@ -227,6 +227,24 @@ pub const IO_READ: &str = "io.read";
 /// project checker reports it rather than per-store schema compilation.
 pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 
+/// The offending name a resolution diagnostic carries, recovered without parsing
+/// the rendered message. Resolution-suppression branches on this typed identity:
+/// an import names the module it failed to resolve, an unresolved call names the
+/// (possibly qualified) function, and an unknown type names the type spelling. Any
+/// other diagnostic carries [`DiagnosticPayload::None`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DiagnosticPayload {
+    /// No resolution identity is attached.
+    #[default]
+    None,
+    /// `cannot resolve import`: the `use` path that named no module.
+    UnresolvedImport(String),
+    /// `function … is not defined`: the call's (possibly qualified) name.
+    UnresolvedCall(String),
+    /// `unknown type`: the type spelling the checker did not recognize.
+    UnknownType(String),
+}
+
 /// A problem found while checking a project, located in a specific file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckDiagnostic {
@@ -235,6 +253,10 @@ pub struct CheckDiagnostic {
     pub file: PathBuf,
     pub message: String,
     pub span: SourceSpan,
+    /// Typed resolution identity for the codes whose suppression needs it; `None`
+    /// for every other diagnostic. Set at the emit site so suppression never reads
+    /// the rendered message.
+    pub payload: DiagnosticPayload,
 }
 
 impl marrow_syntax::Diagnose for CheckDiagnostic {
@@ -576,13 +598,10 @@ pub(crate) fn resolve_function_in_module<'p>(
 /// each dispatched before user functions at runtime, so never a program function.
 fn is_builtin_call(segments: &[String]) -> bool {
     match segments {
-        // The single-name builtins, grouped by purpose. Each
-        // dispatches before user-function resolution at runtime, so none is ever a
-        // declared program function.
         [name] => is_builtin_name(name),
-        // A `std::module::op` builtin must name a real std module, mirroring
-        // import resolution (`is_std_module`/`std_modules`); an unknown submodule
-        // is not a builtin, so it is reported like a rejected `use std::bogus`.
+        // A `std::module::op` builtin must name a real std module, mirroring import
+        // resolution; an unknown submodule is not a builtin, so it is reported like a
+        // rejected `use std::bogus`.
         [first, module, _] => first == "std" && std_modules().contains(&module.as_str()),
         _ => false,
     }
@@ -773,20 +792,13 @@ impl TestResolutionSuppression {
     }
 
     fn should_suppress(&self, diagnostic: &CheckDiagnostic) -> bool {
-        match diagnostic.code {
-            CHECK_UNRESOLVED_IMPORT => {
-                diagnostic_message_name(&diagnostic.message, "cannot resolve import `", "`")
-                    .is_some_and(|name| self.references_hidden_module_exactly(name))
+        match &diagnostic.payload {
+            DiagnosticPayload::UnresolvedImport(name) => {
+                self.references_hidden_module_exactly(name)
             }
-            CHECK_UNRESOLVED_CALL => {
-                diagnostic_message_name(&diagnostic.message, "function `", "` is not defined")
-                    .is_some_and(|name| self.references_hidden_module_member(name))
-            }
-            CHECK_UNKNOWN_TYPE => {
-                diagnostic_message_name(&diagnostic.message, "unknown type `", "`")
-                    .is_some_and(|name| self.references_hidden_type(name))
-            }
-            _ => false,
+            DiagnosticPayload::UnresolvedCall(name) => self.references_hidden_module_member(name),
+            DiagnosticPayload::UnknownType(name) => self.references_hidden_type(name),
+            DiagnosticPayload::None => false,
         }
     }
 
@@ -841,10 +853,6 @@ fn is_type_name_like(text: &str) -> bool {
         saw_segment = true;
     }
     saw_segment
-}
-
-fn diagnostic_message_name<'a>(message: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
-    message.strip_prefix(prefix)?.strip_suffix(suffix)
 }
 
 pub(crate) struct CheckedTests {
@@ -914,61 +922,11 @@ pub(crate) fn check_tests_with_sources_analysis(
         parsed_files.push((file, parsed));
     }
 
-    for (file, parsed) in &parsed_files {
-        if parsed.has_errors() {
-            if let Some(module) = &file.module_name {
-                resolution_suppression.hide_declared_types(parsed, std::slice::from_ref(module));
-            } else {
-                resolution_suppression.hide_declared_types(parsed, &[]);
-            }
-        }
-    }
+    hide_types_from_broken_test_files(&mut resolution_suppression, &parsed_files);
 
-    // A clean test file is named from its project-root path. If that name
-    // collides with a source module, keeping both would make one qualified name
-    // point at two files depending on which resolver table was used.
-    let project_module_sources: HashMap<&str, &PathBuf> = project
-        .modules
-        .iter()
-        .filter(|module| !module.name.is_empty())
-        .map(|module| (module.name.as_str(), &module.source_file))
-        .collect();
-    let mut duplicate_test_module_names = HashSet::new();
-    let mut unique_modules = Vec::new();
-    for module in modules {
-        if let Some(first) = project_module_sources.get(module.name.as_str()) {
-            report.diagnostics.push(CheckDiagnostic {
-                code: CHECK_DUPLICATE_MODULE,
-                severity: Severity::Error,
-                file: module.source_file.clone(),
-                message: format!(
-                    "module `{}` is already declared by `{}`",
-                    module.name,
-                    first.display()
-                ),
-                span: SourceSpan::default(),
-            });
-            duplicate_test_module_names.insert(module.name);
-        } else {
-            unique_modules.push(module);
-        }
-    }
-    let modules = unique_modules;
-
-    // Imports in a test file resolve against the project's modules, the other
-    // test modules, and the standard library. The project's module-less script
-    // carries the empty name; a `use ""` is not spellable, so it is filtered out
-    // here — the import-safety invariant (a script is never importable) is kept
-    // local to this map rather than resting on a distant construction guard.
-    let mut resolvable: HashMap<String, PathBuf> = project
-        .modules
-        .iter()
-        .filter(|module| !module.name.is_empty())
-        .map(|module| (module.name.clone(), module.source_file.clone()))
-        .collect();
-    for module in &modules {
-        resolvable.insert(module.name.clone(), module.source_file.clone());
-    }
+    let (modules, duplicate_test_module_names) =
+        split_duplicate_test_modules(project, modules, &mut report);
+    let resolvable = test_resolvable_modules(project, &modules);
 
     // Run the same type-inference pass library files get, so a test file's std
     // argument/arity errors, `nextId` misuse, and ordinary type mismatches are
@@ -1042,6 +1000,86 @@ pub(crate) fn check_tests_with_sources_analysis(
     })
 }
 
+/// Hide the resource and enum types declared in test files that failed to parse,
+/// so a downstream reference into the broken file's namespace is suppressed rather
+/// than reported as an unknown type.
+fn hide_types_from_broken_test_files(
+    resolution_suppression: &mut TestResolutionSuppression,
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+) {
+    for (file, parsed) in parsed_files {
+        if parsed.has_errors() {
+            match &file.module_name {
+                Some(module) => {
+                    resolution_suppression.hide_declared_types(parsed, std::slice::from_ref(module))
+                }
+                None => resolution_suppression.hide_declared_types(parsed, &[]),
+            }
+        }
+    }
+}
+
+/// Split clean test modules into the ones whose path-derived name is unique and
+/// the ones that collide with a source module. A clean test file is named from its
+/// project-root path; keeping a collision would make one qualified name point at
+/// two files depending on which resolver table was used, so the colliding module is
+/// reported as a duplicate and its name returned for resolution-suppression.
+fn split_duplicate_test_modules(
+    project: &CheckedProgram,
+    modules: Vec<CheckedModule>,
+    report: &mut CheckReport,
+) -> (Vec<CheckedModule>, HashSet<String>) {
+    let project_module_sources: HashMap<&str, &PathBuf> = project
+        .modules
+        .iter()
+        .filter(|module| !module.name.is_empty())
+        .map(|module| (module.name.as_str(), &module.source_file))
+        .collect();
+    let mut duplicates = HashSet::new();
+    let mut unique = Vec::new();
+    for module in modules {
+        if let Some(first) = project_module_sources.get(module.name.as_str()) {
+            report.diagnostics.push(CheckDiagnostic {
+                code: CHECK_DUPLICATE_MODULE,
+                severity: Severity::Error,
+                file: module.source_file.clone(),
+                message: format!(
+                    "module `{}` is already declared by `{}`",
+                    module.name,
+                    first.display()
+                ),
+                span: SourceSpan::default(),
+                payload: DiagnosticPayload::None,
+            });
+            duplicates.insert(module.name);
+        } else {
+            unique.push(module);
+        }
+    }
+    (unique, duplicates)
+}
+
+/// The modules a test file's imports resolve against: the project's named modules
+/// and the unique test modules. The project's module-less script carries the empty
+/// name; a `use ""` is not spellable, so it is filtered out — the import-safety
+/// invariant (a script is never importable) is kept local to this map rather than
+/// resting on a distant construction guard.
+fn test_resolvable_modules(
+    project: &CheckedProgram,
+    test_modules: &[CheckedModule],
+) -> HashMap<String, PathBuf> {
+    let mut resolvable: HashMap<String, PathBuf> = project
+        .modules
+        .iter()
+        .filter(|module| !module.name.is_empty())
+        .map(|module| (module.name.clone(), module.source_file.clone()))
+        .collect();
+    for module in test_modules {
+        resolvable.insert(module.name.clone(), module.source_file.clone());
+    }
+    resolvable
+}
+
 /// The per-file result of [`check_file`]: the parsed source and the declaration
 /// lists collected for a [`CheckedModule`].
 struct CheckedFile {
@@ -1074,6 +1112,7 @@ fn read_source(
                 file: file_path.to_path_buf(),
                 message: format!("failed to read source: {error}"),
                 span: SourceSpan::default(),
+                payload: DiagnosticPayload::None,
             });
             None
         }
@@ -1100,6 +1139,7 @@ fn check_file_source(
             file: file_path.to_path_buf(),
             message: diagnostic.message.clone(),
             span: diagnostic.span,
+            payload: DiagnosticPayload::None,
         });
     }
 
@@ -1166,6 +1206,7 @@ fn check_file_source(
                             file: file_path.to_path_buf(),
                             message: error.message,
                             span: error.span,
+                            payload: DiagnosticPayload::None,
                         };
                         if !diagnostics.iter().any(|existing| {
                             existing.code == diagnostic.code
@@ -1187,6 +1228,7 @@ fn check_file_source(
                             store.resource, store.root.root
                         ),
                         span: store.span,
+                        payload: DiagnosticPayload::None,
                     });
                 }
             }
@@ -1199,6 +1241,7 @@ fn check_file_source(
                         file: file_path.to_path_buf(),
                         message: error.message,
                         span: error.span,
+                        payload: DiagnosticPayload::None,
                     });
                 }
                 enums.push(schema);
@@ -1284,6 +1327,7 @@ fn push_schema_error(
         file: file_path.to_path_buf(),
         message: error.message,
         span: error.span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1494,6 +1538,7 @@ fn module_path_error(
         file: file.path.clone(),
         message,
         span: module.span,
+        payload: DiagnosticPayload::None,
     }
 }
 
@@ -1542,6 +1587,7 @@ fn check_duplicate_declarations(
                     "`{name}` is a builtin name and cannot be used as a module-level {kind}"
                 ),
                 span: *span,
+                payload: DiagnosticPayload::None,
             });
             continue;
         }
@@ -1552,6 +1598,7 @@ fn check_duplicate_declarations(
                 file: file.to_path_buf(),
                 message: format!("`{name}` is already declared on line {}", first.line),
                 span: *span,
+                payload: DiagnosticPayload::None,
             }),
             None => {
                 first_seen.insert(name, *span);

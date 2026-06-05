@@ -7,7 +7,7 @@ use marrow_syntax::{
 
 use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
-use crate::{CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram};
+use crate::{CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram, DiagnosticPayload};
 
 pub(crate) fn check_rejected_surface(
     program: &CheckedProgram,
@@ -263,5 +263,6 @@ fn push(file: &Path, span: SourceSpan, message: &str, diagnostics: &mut Vec<Chec
         file: file.to_path_buf(),
         message: message.to_string(),
         span,
+        payload: DiagnosticPayload::None,
     });
 }

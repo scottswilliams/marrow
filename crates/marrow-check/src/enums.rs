@@ -16,8 +16,9 @@ use crate::{
     CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
     CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CheckDiagnostic, CheckedModule, CheckedProgram,
-    Def, DefItem, MarrowType, Resolution, ResolvableKind, TypeNames, build_alias_map, expand_alias,
-    expand_module_alias, module_of_file, resolve, resource_type_name,
+    Def, DefItem, DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames,
+    build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
+    resource_type_name,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -163,6 +164,7 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
                 "`match` requires an enum value, but the scrutinee's enum `{enum_name}` is not declared"
             ),
             span,
+            payload: DiagnosticPayload::None,
         });
         return;
     };
@@ -195,6 +197,7 @@ fn report_non_enum_match(env: &mut MatchEnv<'_>, scrutinee_type: &MarrowType, sp
                 marrow_type_name(scrutinee_type)
             ),
             span,
+            payload: DiagnosticPayload::None,
         });
     }
 }
@@ -220,6 +223,7 @@ fn check_match_coverage(
                     file: env.file.to_path_buf(),
                     message: format!("`{enum_name}` has no member `{arm_label}`"),
                     span: arm.span,
+                    payload: DiagnosticPayload::None,
                 });
                 continue;
             }
@@ -233,6 +237,7 @@ fn check_match_coverage(
                         join_or(&paths)
                     ),
                     span: arm.span,
+                    payload: DiagnosticPayload::None,
                 });
                 continue;
             }
@@ -248,6 +253,7 @@ fn check_match_coverage(
                 file: env.file.to_path_buf(),
                 message: format!("`match` has a duplicate arm for `{arm_label}`"),
                 span: arm.span,
+                payload: DiagnosticPayload::None,
             });
             had_overlap = true;
             continue;
@@ -274,6 +280,7 @@ fn check_match_coverage(
                     .join(", ")
             ),
             span,
+            payload: DiagnosticPayload::None,
         });
     }
 }
@@ -407,6 +414,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                     marrow_type_name(left_type)
                 ),
                 span,
+                payload: DiagnosticPayload::None,
             });
         }
         return bool_type;
@@ -418,6 +426,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
             file: file.to_path_buf(),
             message: format!("operator `is` requires a member of `{left_name}` on the right"),
             span,
+            payload: DiagnosticPayload::None,
         });
         return bool_type;
     };
@@ -430,6 +439,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                 "enum `{private}` is private to its module; mark it `pub` to use it from another module"
             ),
             span,
+            payload: DiagnosticPayload::None,
         });
         return bool_type;
     }
@@ -445,6 +455,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                 resolved.enum_name
             ),
             span,
+            payload: DiagnosticPayload::None,
         });
         return bool_type;
     }
@@ -464,6 +475,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                 join_or(&paths)
             ),
             span,
+            payload: DiagnosticPayload::None,
         }),
         MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic {
             code: CHECK_IS_TYPE,
@@ -471,6 +483,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
             file: file.to_path_buf(),
             message: format!("operator `is` requires a member of `{left_name}` on the right"),
             span,
+            payload: DiagnosticPayload::None,
         }),
     }
     bool_type

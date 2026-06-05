@@ -2632,6 +2632,57 @@ fn inout_markers_are_rejected_on_plain_call_targets() {
 }
 
 #[test]
+fn a_conversion_rejects_an_unsupported_source_and_lists_the_accepted_sources() {
+    // `bool(...)` accepts only `bool` or `int` sources, so a `string` argument is a
+    // `check.call_argument` mismatch. The diagnostic's source list is rendered from
+    // the same accepted-source set the predicate consults, so it names exactly the
+    // scalar sources the check admits plus `unknown`.
+    let found = check_module(
+        "convert-bool-from-string",
+        "module m\n\
+         fn caller(s: string): bool\n    return bool(s)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let message = &found[0].message;
+    assert!(
+        message.contains("`bool` cannot convert `string`"),
+        "{message}"
+    );
+    assert!(message.contains("`bool`, `int`, or `unknown`"), "{message}");
+}
+
+#[test]
+fn the_string_and_error_code_conversions_have_distinct_source_sets() {
+    // `string` and `ErrorCode` both store as a string scalar, so the source spelling
+    // — not the scalar — is the conversion's identity. `string(...)` accepts every
+    // scalar; `ErrorCode(...)` accepts only a string source. A `bytes` argument is
+    // therefore clean for `string` but a mismatch for `ErrorCode`.
+    let clean = check_module(
+        "convert-string-from-bytes",
+        "module m\n\
+         fn caller(b: bytes): string\n    return string(b)\n",
+        "check.call_argument",
+    );
+    assert!(clean.is_empty(), "{clean:#?}");
+
+    let rejected = check_module(
+        "convert-error-code-from-bytes",
+        "module m\n\
+         fn caller(b: bytes): ErrorCode\n    return ErrorCode(b)\n",
+        "check.call_argument",
+    );
+    assert_eq!(rejected.len(), 1, "{rejected:#?}");
+    assert!(
+        rejected[0]
+            .message
+            .contains("`ErrorCode` cannot convert `bytes`"),
+        "{:#?}",
+        rejected[0]
+    );
+}
+
+#[test]
 fn a_builtin_call_is_not_arity_checked_and_an_unknown_call_is_not_a_mismatch() {
     // `print` is a builtin (dispatched before user functions) and `mystery` does
     // not resolve to a declared function; neither is an arity/argument mismatch.

@@ -4,7 +4,7 @@ use marrow_schema::ScalarType;
 
 use crate::expand_alias;
 use crate::program::{CheckedProgram, MarrowType};
-use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
+use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve, resolve_store_by_root};
 
 use super::{
     CheckedArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedStdCall,
@@ -57,10 +57,8 @@ impl CheckedCallTarget {
     fn saved_path_call_target(callee: &CheckedExpr, program: &CheckedProgram) -> Option<Self> {
         if let CheckedExpr::Field { base, name, .. } = callee {
             if let CheckedExpr::SavedRoot { name: root, .. } = base.as_ref()
-                && program.modules.iter().any(|module| {
-                    module.stores.iter().any(|store| {
-                        store.root == *root && store.indexes.iter().any(|index| index.name == *name)
-                    })
+                && resolve_store_by_root(program, root).is_some_and(|store| {
+                    store.store.indexes.iter().any(|index| index.name == *name)
                 })
             {
                 return Some(Self::SavedIndexLookup);
@@ -172,5 +170,28 @@ impl CheckedBuiltinCall {
             "prev" => Self::Prev,
             other => Self::Conversion(ScalarType::from_scalar_name(other)?),
         })
+    }
+
+    /// Whether this builtin reads its path argument as attached saved data — the
+    /// tree-traversal and ordered-navigation builtins whose argument is a saved
+    /// collection rather than a plain value.
+    pub(crate) fn reads_attached_data(self) -> bool {
+        matches!(
+            self,
+            Self::Keys
+                | Self::Values
+                | Self::Entries
+                | Self::Count
+                | Self::Next
+                | Self::Prev
+                | Self::NextId
+                | Self::Reversed
+        )
+    }
+
+    /// Whether this builtin navigates to a neighbor key (`next`/`prev`), which
+    /// records a positional presence read.
+    pub(crate) fn is_neighbor_read(self) -> bool {
+        matches!(self, Self::Next | Self::Prev)
     }
 }

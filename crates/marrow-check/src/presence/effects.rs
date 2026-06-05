@@ -5,8 +5,8 @@ use super::target::{ReadPlace, ReadTarget, read_target_with_scope};
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
 use crate::{
-    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedExpr, CheckedForBinding,
-    CheckedInterpolationPart, CheckedProgram,
+    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget,
+    CheckedExpr, CheckedForBinding, CheckedInterpolationPart, CheckedProgram,
 };
 
 pub(super) fn condition_narrowings(
@@ -30,7 +30,9 @@ fn condition_effects_after_mutations(
     mutations: &[u32],
 ) -> ConditionEffects {
     match expr {
-        CheckedExpr::Call { callee, args, .. } if super::calls::is_exists_call(callee) => {
+        CheckedExpr::Call { target, args, .. }
+            if *target == CheckedCallTarget::Builtin(CheckedBuiltinCall::Exists) =>
+        {
             ConditionEffects {
                 narrowings: args
                     .first()
@@ -93,16 +95,16 @@ pub(super) fn traversal_narrowing(
 }
 
 fn traversal_key_path(expr: &CheckedExpr, two_name_loop: bool) -> Option<&CheckedExpr> {
-    if let Some(arg) = wrapper_arg(expr, "reversed") {
+    if let Some(arg) = wrapper_arg(expr, CheckedBuiltinCall::Reversed) {
         return traversal_key_path(arg, two_name_loop);
     }
-    if wrapper_arg(expr, "values").is_some() {
+    if wrapper_arg(expr, CheckedBuiltinCall::Values).is_some() {
         return None;
     }
-    if let Some(arg) = wrapper_arg(expr, "entries") {
+    if let Some(arg) = wrapper_arg(expr, CheckedBuiltinCall::Entries) {
         return two_name_loop.then_some(arg);
     }
-    if let Some(arg) = wrapper_arg(expr, "keys") {
+    if let Some(arg) = wrapper_arg(expr, CheckedBuiltinCall::Keys) {
         return (!two_name_loop).then_some(arg);
     }
     Some(expr)

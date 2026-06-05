@@ -1,6 +1,4 @@
-use super::calls::{
-    is_append_call, is_attached_data_call, is_exists_call, is_neighbor_read, std_path_arg_mask,
-};
+use super::calls::std_path_arg_mask;
 use super::effects::{
     condition_narrowings, invalidate_key_bindings, invalidate_removed_narrowings,
     invalidate_saved_narrowings, invalidate_written_target, mutating_arg_bindings,
@@ -13,9 +11,9 @@ use super::target::{ReadTarget, read_target_with_scope};
 use super::writes::call_writes_saved_data;
 use crate::executable::CheckedExecutableContext;
 use crate::{
-    CheckDiagnostic, CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedCallTarget,
-    CheckedCatchClause, CheckedElseIf, CheckedExpr, CheckedForBinding, CheckedInterpolationPart,
-    CheckedMatchArm, CheckedProgram, CheckedStmt,
+    CheckDiagnostic, CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
+    CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedExpr, CheckedForBinding,
+    CheckedInterpolationPart, CheckedMatchArm, CheckedProgram, CheckedStmt,
 };
 
 pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec<CheckDiagnostic>) {
@@ -445,21 +443,34 @@ fn collect_call_expr(
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if is_exists_call(callee) {
-        collect_exists_args(program, args, narrowed, scope, diagnostics);
-    } else if is_attached_data_call(callee) {
-        collect_args(
-            program,
-            args,
-            ReadContext::AttachedData,
-            narrowed,
-            scope,
-            diagnostics,
-        );
-    } else if is_append_call(callee) {
-        collect_append_args(program, args, narrowed, scope, diagnostics);
-    } else {
-        collect_plain_call(program, callee, args, target, narrowed, scope, diagnostics);
+    match builtin_of(target) {
+        Some(CheckedBuiltinCall::Exists) => {
+            collect_exists_args(program, args, narrowed, scope, diagnostics);
+        }
+        Some(CheckedBuiltinCall::Append) => {
+            collect_append_args(program, args, narrowed, scope, diagnostics);
+        }
+        Some(builtin) if builtin.reads_attached_data() => {
+            collect_args(
+                program,
+                args,
+                ReadContext::AttachedData,
+                narrowed,
+                scope,
+                diagnostics,
+            );
+        }
+        _ => collect_plain_call(program, callee, args, target, narrowed, scope, diagnostics),
+    }
+}
+
+/// The typed builtin a call resolved to, if any. The presence pass branches on
+/// this rather than re-matching the callee's name strings, so builtin identity has
+/// one owner.
+fn builtin_of(target: &CheckedCallTarget) -> Option<CheckedBuiltinCall> {
+    match target {
+        CheckedCallTarget::Builtin(builtin) => Some(*builtin),
+        _ => None,
     }
 }
 
@@ -521,7 +532,7 @@ fn collect_plain_call(
 ) {
     let writes_saved = call_writes_saved_data(program, target);
     collect_bare_expr(program, callee, narrowed, scope, diagnostics);
-    if let Some(path_args) = std_path_arg_mask(callee) {
+    if let Some(path_args) = std_path_arg_mask(target) {
         collect_std_args(program, args, &path_args, narrowed, scope, diagnostics);
     } else {
         collect_call_args(program, args, narrowed, scope, diagnostics);
@@ -606,7 +617,9 @@ fn collect_path_key_exprs(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     match expr {
-        CheckedExpr::Call { callee, args, .. } if is_neighbor_read(callee) => {
+        CheckedExpr::Call { target, args, .. }
+            if builtin_of(target).is_some_and(CheckedBuiltinCall::is_neighbor_read) =>
+        {
             if let Some(read) = read_proof(program, expr, ReadContext::Resolved, narrowed, scope) {
                 record_read(program, expr, read, ReadContext::Resolved, diagnostics);
             }
@@ -622,9 +635,14 @@ fn collect_path_key_exprs(
                 diagnostics,
             );
         }
-        CheckedExpr::Call { callee, args, .. } => {
+        CheckedExpr::Call {
+            callee,
+            args,
+            target,
+            ..
+        } => {
             collect_path_key_exprs(program, callee, narrowed, scope, diagnostics);
-            if let Some(path_args) = std_path_arg_mask(callee) {
+            if let Some(path_args) = std_path_arg_mask(target) {
                 collect_std_args(program, args, &path_args, narrowed, scope, diagnostics);
             } else {
                 collect_args(

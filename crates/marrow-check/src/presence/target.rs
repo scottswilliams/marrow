@@ -34,8 +34,13 @@ pub(super) fn read_target_with_scope(
     expr: &CheckedExpr,
     scope: &NameScope,
 ) -> Option<ReadTarget> {
-    if let CheckedExpr::Call { callee, args, .. } = expr
-        && let Some(read) = neighbor_read(callee)
+    if let CheckedExpr::Call {
+        callee,
+        args,
+        target: call_target,
+        ..
+    } = expr
+        && let Some(read) = neighbor_read(call_target)
     {
         let mut target = args
             .first()

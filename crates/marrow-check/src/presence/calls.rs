@@ -1,42 +1,18 @@
 use marrow_schema::stdlib::{self, ParamType};
 
-use crate::CheckedExpr;
 use crate::facts::PresenceProofRead;
+use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr};
 
-pub(super) fn is_exists_call(callee: &CheckedExpr) -> bool {
-    matches!(callee, CheckedExpr::Name { segments, .. } if segments.as_slice() == ["exists"])
-}
-
-pub(super) fn is_attached_data_call(callee: &CheckedExpr) -> bool {
-    let CheckedExpr::Name { segments, .. } = callee else {
-        return false;
-    };
-    matches!(
-        segments.as_slice(),
-        [name]
-            if matches!(
-                name.as_str(),
-                "keys" | "values" | "entries" | "count" | "next" | "prev" | "nextId" | "reversed"
-            )
-    )
-}
-
-pub(super) fn is_append_call(callee: &CheckedExpr) -> bool {
-    matches!(callee, CheckedExpr::Name { segments, .. } if segments.as_slice() == ["append"])
-}
-
-pub(super) fn std_path_arg_mask(callee: &CheckedExpr) -> Option<Vec<bool>> {
-    let CheckedExpr::Name { segments, .. } = callee else {
+/// The positional path-argument mask of a resolved `std::module::op` call: which
+/// of its arguments name saved data rather than plain values. Derived from the
+/// typed [`CheckedCallTarget::Std`] the checker already resolved, not from the
+/// callee's name segments.
+pub(super) fn std_path_arg_mask(target: &CheckedCallTarget) -> Option<Vec<bool>> {
+    let CheckedCallTarget::Std(std) = target else {
         return None;
     };
-    let [std, module, op] = segments.as_slice() else {
-        return None;
-    };
-    if std != "std" {
-        return None;
-    }
     Some(
-        stdlib::lookup(module, op)?
+        stdlib::lookup(std.module, std.op)?
             .params
             .iter()
             .map(|param| matches!(param, ParamType::Path))
@@ -44,29 +20,24 @@ pub(super) fn std_path_arg_mask(callee: &CheckedExpr) -> Option<Vec<bool>> {
     )
 }
 
-pub(super) fn neighbor_read(callee: &CheckedExpr) -> Option<PresenceProofRead> {
-    let CheckedExpr::Name { segments, .. } = callee else {
-        return None;
-    };
-    match segments.as_slice() {
-        [name] if name == "next" => Some(PresenceProofRead::Next),
-        [name] if name == "prev" => Some(PresenceProofRead::Prev),
+/// The neighbor read a `next`/`prev` call records, resolved from the call's typed
+/// builtin target.
+pub(super) fn neighbor_read(target: &CheckedCallTarget) -> Option<PresenceProofRead> {
+    match target {
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Next) => Some(PresenceProofRead::Next),
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Prev) => Some(PresenceProofRead::Prev),
         _ => None,
     }
 }
 
-pub(super) fn is_neighbor_read(callee: &CheckedExpr) -> bool {
-    neighbor_read(callee).is_some()
-}
-
-pub(super) fn wrapper_arg<'a>(expr: &'a CheckedExpr, wrapper: &str) -> Option<&'a CheckedExpr> {
-    let CheckedExpr::Call { callee, args, .. } = expr else {
+/// The sole path argument of a collection-view call (`keys`/`values`/`entries`/
+/// `reversed`), matched by its typed builtin target rather than the callee name,
+/// or `None` for any other call.
+pub(super) fn wrapper_arg(expr: &CheckedExpr, wrapper: CheckedBuiltinCall) -> Option<&CheckedExpr> {
+    let CheckedExpr::Call { target, args, .. } = expr else {
         return None;
     };
-    let CheckedExpr::Name { segments, .. } = callee.as_ref() else {
-        return None;
-    };
-    if segments.as_slice() != [wrapper] {
+    if *target != CheckedCallTarget::Builtin(wrapper) {
         return None;
     }
     match args.as_slice() {

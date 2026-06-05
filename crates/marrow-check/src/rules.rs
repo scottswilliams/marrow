@@ -16,7 +16,7 @@ use marrow_syntax::{
 
 use crate::checks::check_range_value;
 use crate::typerules::check_literal_range;
-use crate::{CHECK_TRY_HANDLER, CheckDiagnostic};
+use crate::{CHECK_TRY_HANDLER, CheckDiagnostic, DiagnosticPayload};
 
 /// A `finally` block must not let control flow escape it via `return`, `break`,
 /// or `continue`.
@@ -422,6 +422,7 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
             file: file.to_path_buf(),
             message: format!("catch type must be `Error`, found `{}`", ty.text),
             span: catch.block.span,
+            payload: DiagnosticPayload::None,
         });
     }
 }
@@ -449,7 +450,7 @@ fn walk_finally(
                 "`return` is not allowed in a `finally` block",
             )),
             Statement::Break { label, .. } | Statement::Continue { label, .. }
-                if finally_jump_escapes(label.as_deref(), loop_depth, loop_labels) =>
+                if !jump_resolves_in_scope(label.as_deref(), loop_depth, loop_labels) =>
             {
                 out.push(diagnostic_at(
                     CHECK_FINALLY_CONTROL_FLOW,
@@ -519,13 +520,15 @@ fn walk_finally(
     }
 }
 
-/// Does a `break`/`continue` in a finally block escape it? An unlabeled jump
-/// escapes when no enclosing loop is within the finally. A labeled jump escapes
-/// unless its target loop was introduced within the finally.
-fn finally_jump_escapes(label: Option<&str>, loop_depth: usize, loop_labels: &[String]) -> bool {
+/// Whether a `break`/`continue` resolves to a loop in scope. An unlabeled jump
+/// resolves when some enclosing loop is in scope (`loop_depth > 0`); a labeled jump
+/// resolves when its label names one of the enclosing loops (`loop_labels`). Both
+/// the in-scope loop rule and the finally-escape rule are this one question: a jump
+/// escapes a `finally` exactly when it does not resolve to a loop inside it.
+fn jump_resolves_in_scope(label: Option<&str>, loop_depth: usize, loop_labels: &[String]) -> bool {
     match label {
-        None => loop_depth == 0,
-        Some(label) => !loop_labels.iter().any(|known| known == label),
+        None => loop_depth > 0,
+        Some(label) => loop_labels.iter().any(|known| known == label),
     }
 }
 
@@ -546,7 +549,7 @@ fn walk_loop_control_flow(
     for statement in &block.statements {
         match statement {
             Statement::Break { label, .. } | Statement::Continue { label, .. }
-                if loop_jump_unresolved(label.as_deref(), loop_depth, loop_labels) =>
+                if !jump_resolves_in_scope(label.as_deref(), loop_depth, loop_labels) =>
             {
                 let message = match label {
                     Some(label) => {
@@ -616,16 +619,6 @@ fn walk_loop_control_flow(
             | Statement::Throw { .. }
             | Statement::Expr { .. } => {}
         }
-    }
-}
-
-/// Does a `break`/`continue` name no loop it can reach? An unlabeled jump is
-/// unresolved when no loop encloses it; a labeled jump is unresolved unless its
-/// label names an enclosing loop.
-fn loop_jump_unresolved(label: Option<&str>, loop_depth: usize, loop_labels: &[String]) -> bool {
-    match label {
-        None => loop_depth == 0,
-        Some(label) => !loop_labels.iter().any(|known| known == label),
     }
 }
 
@@ -898,6 +891,7 @@ fn diagnostic(
         file: file.to_path_buf(),
         message: message.to_string(),
         span,
+        payload: DiagnosticPayload::None,
     }
 }
 
@@ -915,5 +909,6 @@ fn diagnostic_at(
         file: file.to_path_buf(),
         message: message.to_string(),
         span,
+        payload: DiagnosticPayload::None,
     }
 }

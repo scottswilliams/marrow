@@ -23,7 +23,7 @@ use crate::program::TypeNames;
 use crate::typerules::{marrow_type_name, type_compatible};
 use crate::{
     CHECK_EVOLVE_TARGET, CHECK_EVOLVE_TRANSFORM, CHECK_EVOLVE_TYPE, CheckDiagnostic, CheckedBody,
-    CheckedModule, CheckedProgram, MarrowType,
+    CheckedModule, CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
 /// One declared rename: the entity is now spelled `to_path` and was formerly
@@ -240,6 +240,7 @@ pub(crate) fn check_transform_effects(
                 file: transform.file.clone(),
                 message: format!("an evolve transform body must be pure: {reason}"),
                 span: transform.body_span,
+                payload: DiagnosticPayload::None,
             });
         }
     }
@@ -454,6 +455,7 @@ impl TypeContext<'_> {
                     marrow_type_name(&member_type)
                 ),
                 span: value.span(),
+                payload: DiagnosticPayload::None,
             });
         }
     }
@@ -561,6 +563,7 @@ impl TypeContext<'_> {
             file: self.file.to_path_buf(),
             message,
             span,
+            payload: DiagnosticPayload::None,
         }
     }
 
@@ -893,6 +896,7 @@ fn report_target(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagn
             (a resource member, saved root, store index, enum, or enum member)"
             .to_string(),
         span,
+        payload: DiagnosticPayload::None,
     });
 }
 

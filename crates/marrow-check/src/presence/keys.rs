@@ -1,3 +1,17 @@
+//! Canonical narrowing keys for presence proofs.
+//!
+//! A presence proof compares read targets for identity: two reads narrow the same
+//! place when their key arguments are equal. The key is a span-stripped canonical
+//! form of a [`CheckedExpr`] — `CheckedExpr` derives `Eq`, but two textually equal
+//! reads carry different spans, so a structural comparison would treat them as
+//! distinct. [`expression_key`] is the *sole* owner of that canonical form: every
+//! variant maps to a tagged string (`lit:`, `binding:`, `call:`, `field:`,
+//! `interp:`, …) that ignores spans and resolves a single-segment name to its
+//! scope binding id, so the key is stable across read sites and a rebinding
+//! invalidates dependent narrowings. No other layer reproduces this formatting;
+//! `target.rs`, `effects.rs`, and the persisted `PresenceProofFact.keys` consume
+//! the strings this module produces, they do not build their own.
+
 use super::scope::NameScope;
 use super::util::extend_unique;
 use crate::{CheckedArg, CheckedArgMode, CheckedExpr, CheckedInterpolationPart};
@@ -10,6 +24,9 @@ pub(super) struct SavedPathParts {
     pub(super) key_bindings: Vec<u32>,
 }
 
+/// A canonical narrowing key (`text`) plus the scope binding ids it reads
+/// (`bindings`), so reassigning any of those bindings can invalidate a narrowing
+/// keyed on this expression. See the module docs for the canonical-form contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExprKey {
     pub(super) text: String,

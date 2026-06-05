@@ -8,7 +8,9 @@ use crate::facts::{
     PresenceProofDraft, PresenceProofPlace, PresenceProofRead, PresenceProofSource,
     PresenceProofStatus,
 };
-use crate::{CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedExpr, CheckedProgram};
+use crate::{
+    CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedExpr, CheckedProgram, DiagnosticPayload,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReadContext {
@@ -71,6 +73,7 @@ pub(super) fn record_read(
             file: read_file(program, &proof.place).unwrap_or_default(),
             message: "maybe-present saved read must be resolved at the read site".to_string(),
             span: expr.span(),
+            payload: DiagnosticPayload::None,
         });
     }
     program.facts.record_presence_proof(PresenceProofDraft {

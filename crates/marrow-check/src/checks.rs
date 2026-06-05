@@ -27,11 +27,12 @@ use crate::{
     CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM,
     CHECK_PRIVATE_FUNCTION, CHECK_RANGE, CHECK_RANGE_VALUE, CHECK_RETURN_TYPE, CHECK_RETURN_VALUE,
     CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
-    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram, Def, DefItem, MarrowType,
-    Resolution, ResolvableKind, TypeNames, build_alias_map, builtin_return_type,
-    check_rejected_surface, conversion_return_type, expand_alias, identity_type_for_store,
-    is_builtin_call, is_resolved_import, module_of_file, push_schema_error, resolve,
-    resolve_resource_schema_type, resource_type_name, std_call_params, std_call_return_type,
+    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram, Def, DefItem,
+    DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, build_alias_map,
+    builtin_return_type, check_rejected_surface, conversion_return_type, expand_alias,
+    identity_type_for_store, is_builtin_call, is_resolved_import, module_of_file,
+    push_schema_error, resolve, resolve_resource_schema_type, resource_type_name, std_call_params,
+    std_call_return_type,
 };
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
@@ -67,6 +68,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                     file: file.path.clone(),
                     message: format!("cannot resolve import `{}`", use_decl.name),
                     span: use_decl.span,
+                    payload: DiagnosticPayload::UnresolvedImport(use_decl.name.clone()),
                 });
             }
         }
@@ -84,22 +86,15 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
     let incomplete_modules =
         incomplete_module_names(files, parsed_files, module_name_policy, program);
     if !incomplete_modules.is_empty() {
-        report.diagnostics.retain(|diagnostic| {
-            if diagnostic.code == CHECK_UNRESOLVED_IMPORT
-                && unresolved_import_name(&diagnostic.message)
-                    .is_some_and(|name| incomplete_modules.contains(name))
-            {
-                return false;
-            }
-            if diagnostic.code == CHECK_UNRESOLVED_CALL
-                && unresolved_call_name(&diagnostic.message).is_some_and(|name| {
-                    references_incomplete_module_member(name, &incomplete_modules)
-                })
-            {
-                return false;
-            }
-            true
-        });
+        report
+            .diagnostics
+            .retain(|diagnostic| match &diagnostic.payload {
+                DiagnosticPayload::UnresolvedImport(name) => !incomplete_modules.contains(name),
+                DiagnosticPayload::UnresolvedCall(name) => {
+                    !references_incomplete_module_member(name, &incomplete_modules)
+                }
+                DiagnosticPayload::UnknownType(_) | DiagnosticPayload::None => true,
+            });
     }
 }
 
@@ -157,18 +152,6 @@ fn insert_incomplete_module(
     }
 }
 
-fn unresolved_call_name(message: &str) -> Option<&str> {
-    message
-        .strip_prefix("function `")?
-        .strip_suffix("` is not defined")
-}
-
-fn unresolved_import_name(message: &str) -> Option<&str> {
-    message
-        .strip_prefix("cannot resolve import `")?
-        .strip_suffix('`')
-}
-
 fn references_incomplete_module_member(name: &str, modules: &HashSet<String>) -> bool {
     modules.iter().any(|module| {
         name.strip_prefix(module)
@@ -207,9 +190,9 @@ pub(crate) fn file_prelude(
     // A module's top-level constants are in scope (bare) for its functions, an
     // annotated one carrying its annotation and an unannotated one its inferred
     // type, so a typed use like `var x: int = M` resolves rather than
-    // false-positiving `check.untyped_value`. Initializer diagnostics
-    // (constant-expression validity, literal range) come from `check_const_value`,
-    // so inference diagnostics are discarded here.
+    // false-positiving `check.untyped_value`. Initializer validity (constant
+    // expression, literal range) is owned by the const-value pass, so the
+    // inference diagnostics raised here are discarded.
     let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
@@ -314,6 +297,7 @@ pub(crate) fn check_file_types(
                             function.name
                         ),
                         span: function.span,
+                        payload: DiagnosticPayload::None,
                     });
                 }
             }
@@ -396,6 +380,7 @@ fn check_type_annotation(
                 "enum `{private}` is private to its module; mark it `pub` to use it from another module"
             ),
             span,
+            payload: DiagnosticPayload::None,
         });
         return;
     }
@@ -404,17 +389,14 @@ fn check_type_annotation(
         || unknown_identity.is_some()
         || !annotation_type_known(&schema_type, &resolved_type)
     {
+        let name = unknown_identity.unwrap_or_else(|| ty.text.trim().to_string());
         diagnostics.push(CheckDiagnostic {
             code: CHECK_UNKNOWN_TYPE,
             severity: Severity::Error,
             file: context.file.to_path_buf(),
-            message: format!(
-                "unknown type `{}`",
-                unknown_identity
-                    .as_deref()
-                    .unwrap_or_else(|| ty.text.trim())
-            ),
+            message: format!("unknown type `{name}`"),
             span,
+            payload: DiagnosticPayload::UnknownType(name),
         });
     }
 }
@@ -456,6 +438,7 @@ fn check_resource_identity_annotations(
                         file: context.file.to_path_buf(),
                         message: format!("unknown type `{identity}`"),
                         span: field.span,
+                        payload: DiagnosticPayload::UnknownType(identity),
                     });
                 }
             }
@@ -470,35 +453,18 @@ fn unknown_identity_type_ref(
     ty: &marrow_syntax::TypeRef,
     context: &TypeAnnotationContext<'_>,
 ) -> Option<String> {
-    unknown_identity_type(&Type::resolve(ty), Some(ty.text.trim()), context)
+    unknown_identity_type(&Type::resolve(ty), context)
 }
 
-fn unknown_identity_type(
-    ty: &Type,
-    source_text: Option<&str>,
-    context: &TypeAnnotationContext<'_>,
-) -> Option<String> {
+fn unknown_identity_type(ty: &Type, context: &TypeAnnotationContext<'_>) -> Option<String> {
     match ty {
-        Type::Identity(identity) if !identity_type_known(context, identity, source_text) => {
-            Some(render_identity_type(identity, source_text))
+        Type::Identity(identity) if !store_root_known(context.program, identity) => {
+            Some(format!("Id(^{identity})"))
         }
         Type::Identity(_) => None,
-        Type::Sequence(element) => unknown_identity_type(element, source_text, context),
+        Type::Sequence(element) => unknown_identity_type(element, context),
         Type::Scalar(_) | Type::Named(_) | Type::Unknown => None,
     }
-}
-
-fn render_identity_type(identity: &str, _source_text: Option<&str>) -> String {
-    format!("Id(^{identity})")
-}
-
-fn identity_type_known(
-    context: &TypeAnnotationContext<'_>,
-    identity: &str,
-    source_text: Option<&str>,
-) -> bool {
-    let _ = source_text;
-    store_root_known(context.program, identity)
 }
 
 fn store_root_known(program: &CheckedProgram, identity: &str) -> bool {
@@ -612,6 +578,7 @@ pub(crate) fn check_return_values(
                     file: file.to_path_buf(),
                     message: message.to_string(),
                     span: *span,
+                    payload: DiagnosticPayload::None,
                 });
             }
             Statement::If {
@@ -949,6 +916,7 @@ impl StatementCheck<'_> {
                 file: self.file.to_path_buf(),
                 message: "generated index branches cannot be assigned".to_string(),
                 span: target.span(),
+                payload: DiagnosticPayload::None,
             });
         }
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
@@ -963,6 +931,7 @@ impl StatementCheck<'_> {
                 file: self.file.to_path_buf(),
                 message: "generated index branches cannot be deleted".to_string(),
                 span: path.span(),
+                payload: DiagnosticPayload::None,
             });
         }
     }
@@ -1242,6 +1211,7 @@ fn check_for_collection_support(
         file: file.to_path_buf(),
         message: "a two-name loop over an index branch must yield identity values".to_string(),
         span: iterable.span(),
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -1503,6 +1473,7 @@ pub(crate) fn check_range_value(
                 file: file.to_path_buf(),
                 message: "a range can only be used as a `for` iterable".to_string(),
                 span: *span,
+                payload: DiagnosticPayload::None,
             });
             check_range_value(file, left, diagnostics);
             check_range_value(file, right, diagnostics);
@@ -1876,6 +1847,7 @@ fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiag
         file: file.to_path_buf(),
         message,
         span,
+        payload: DiagnosticPayload::None,
     }
 }
 
@@ -1901,6 +1873,7 @@ pub(crate) fn check_condition(
             file: file.to_path_buf(),
             message: format!("condition must be `bool`, found `{}`", primitive.name()),
             span,
+            payload: DiagnosticPayload::None,
         }),
         // Strict typing: a condition whose type cannot be resolved cannot be shown
         // to be `bool`.
@@ -1911,6 +1884,7 @@ pub(crate) fn check_condition(
                 file: file.to_path_buf(),
                 message: "condition has no known type; it must be `bool`".to_string(),
                 span,
+                payload: DiagnosticPayload::None,
             });
         }
         // `Error` is a concrete (non-scalar) type, not an unknown one, so it cannot
@@ -1921,6 +1895,7 @@ pub(crate) fn check_condition(
             file: file.to_path_buf(),
             message: "condition must be `bool`, found `Error`".to_string(),
             span,
+            payload: DiagnosticPayload::None,
         }),
         // A concrete non-scalar — an identity, whole record, or sequence — is not
         // `bool`, so it is flagged like a wrong scalar rather than swallowed.
@@ -1933,6 +1908,7 @@ pub(crate) fn check_condition(
                 marrow_type_name(&condition_type)
             ),
             span,
+            payload: DiagnosticPayload::None,
         }),
         _ => {}
     }
@@ -1958,6 +1934,7 @@ pub(crate) fn check_throw_type(
                 marrow_type_name(value_type)
             ),
             span,
+            payload: DiagnosticPayload::None,
         }),
     }
 }
@@ -1986,6 +1963,7 @@ pub(crate) fn check_return_type(
                 marrow_type_name(value_type),
             ),
             span,
+            payload: DiagnosticPayload::None,
         }),
         // Strict typing: a value with no known type returned where a convertible type
         // is declared must be converted first. A void function (unknown return type),
@@ -2001,6 +1979,7 @@ pub(crate) fn check_return_type(
                     marrow_type_name(return_type),
                 ),
                 span,
+                payload: DiagnosticPayload::None,
             });
         }
         None => {}
@@ -2038,6 +2017,7 @@ pub(crate) fn check_assignment(
                 file: file.to_path_buf(),
                 message: format!("expected `{expected}`, but the value is `{found}`"),
                 span,
+                payload: DiagnosticPayload::None,
             });
         }
         // A value the checker could not resolve, stored into a convertible place. An
@@ -2053,6 +2033,7 @@ pub(crate) fn check_assignment(
                     marrow_type_name(place),
                 ),
                 span,
+                payload: DiagnosticPayload::None,
             });
         }
         None => {}
@@ -2282,6 +2263,7 @@ pub(crate) fn key_type_diagnostic(
         file: file.to_path_buf(),
         message,
         span,
+        payload: DiagnosticPayload::None,
     }
 }
 
@@ -2643,6 +2625,7 @@ pub(crate) fn operator_diagnostic(
         file: file.to_path_buf(),
         message,
         span,
+        payload: DiagnosticPayload::None,
     }
 }
 
@@ -2865,6 +2848,7 @@ fn check_user_function_call(
                          from another module"
                     ),
                     span: env.span,
+                    payload: DiagnosticPayload::None,
                 });
             }
             return MarrowType::Unknown;
@@ -2885,18 +2869,21 @@ fn check_user_function_call(
                         "call to `{leaf}` is ambiguous; qualify it as one of {options}"
                     ),
                     span: env.span,
+                    payload: DiagnosticPayload::None,
                 });
             }
             return MarrowType::Unknown;
         }
         Resolution::Found(_) | Resolution::Unresolved => {
             if file_in_program(env.program, env.file) {
+                let name = segments.join("::");
                 env.diagnostics.push(CheckDiagnostic {
                     code: CHECK_UNRESOLVED_CALL,
                     severity: Severity::Error,
                     file: env.file.to_path_buf(),
-                    message: format!("function `{}` is not defined", segments.join("::")),
+                    message: format!("function `{name}` is not defined"),
                     span: env.span,
+                    payload: DiagnosticPayload::UnresolvedCall(name),
                 });
             }
             return MarrowType::Unknown;
@@ -2974,8 +2961,8 @@ fn check_builtin_call_args(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [name] = segments else { return };
-    if let Some(target) = ScalarType::from_scalar_name(name) {
-        check_conversion_arg(name, target, arg_types, span, file, diagnostics);
+    if let Some(target) = ConversionTarget::from_name(name) {
+        check_conversion_arg(target, arg_types, span, file, diagnostics);
     }
 }
 
@@ -2998,6 +2985,7 @@ fn check_value_materialization_args(
         file: file.to_path_buf(),
         message: format!("`{name}` cannot materialize values from an index branch; use `keys`"),
         span,
+        payload: DiagnosticPayload::None,
     });
 }
 
@@ -3032,79 +3020,134 @@ fn saved_layer_node<'p>(
         .descend_layers(&layers)
 }
 
+/// The target of a scalar-conversion builtin. The language spellings `string` and
+/// `ErrorCode` both store as [`ScalarType::Str`], so the source spelling — not the
+/// scalar — is the load-bearing identity; this enum carries it directly instead of
+/// re-deriving it from a raw name. Each variant owns the one set of accepted source
+/// scalars its check consults and the human source list its diagnostic renders, so
+/// the predicate and the message cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConversionTarget {
+    Bool,
+    Int,
+    Str,
+    ErrorCode,
+    Bytes,
+    Date,
+    Instant,
+    Duration,
+    Decimal,
+}
+
+impl ConversionTarget {
+    /// The conversion target a builtin spelling names, or `None` for a name that is
+    /// not a conversion builtin.
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "bool" => Self::Bool,
+            "int" => Self::Int,
+            "string" => Self::Str,
+            "ErrorCode" => Self::ErrorCode,
+            "bytes" => Self::Bytes,
+            "date" => Self::Date,
+            "instant" => Self::Instant,
+            "duration" => Self::Duration,
+            "decimal" => Self::Decimal,
+            _ => return None,
+        })
+    }
+
+    fn spelling(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Str => "string",
+            Self::ErrorCode => "ErrorCode",
+            Self::Bytes => "bytes",
+            Self::Date => "date",
+            Self::Instant => "instant",
+            Self::Duration => "duration",
+            Self::Decimal => "decimal",
+        }
+    }
+
+    /// The scalar source types this conversion statically accepts. The diagnostic's
+    /// human source list is rendered from this same set, so a source the message
+    /// names is always a source the check admits.
+    fn accepted_sources(self) -> &'static [ScalarType] {
+        use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
+        match self {
+            Self::Bool => &[Bool, Int],
+            Self::Int => &[Int, Str, Decimal],
+            Self::Str => &[Str, Int, Decimal, Bool, Bytes, Date, Instant, Duration],
+            Self::ErrorCode => &[Str],
+            Self::Bytes => &[Bytes, Str],
+            Self::Date => &[Date, Str],
+            Self::Instant => &[Instant, Str],
+            Self::Duration => &[Duration, Str],
+            Self::Decimal => &[Decimal, Int, Str],
+        }
+    }
+
+    fn accepts(self, source: &MarrowType) -> bool {
+        match source {
+            MarrowType::Unknown | MarrowType::Invalid => true,
+            MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
+            MarrowType::Enum { .. }
+            | MarrowType::Error
+            | MarrowType::GroupEntry { .. }
+            | MarrowType::Identity(_)
+            | MarrowType::LocalTree { .. }
+            | MarrowType::Resource(_)
+            | MarrowType::Sequence(_) => false,
+        }
+    }
+
+    /// The human source list for the diagnostic, built from [`accepted_sources`] so
+    /// it cannot list a source the predicate rejects (or omit one it admits). The
+    /// runtime owns the finer validity rules a source string or decimal must meet;
+    /// the static list names the source scalar types and `unknown`.
+    fn supported_sources_message(self) -> String {
+        let mut parts: Vec<String> = self
+            .accepted_sources()
+            .iter()
+            .map(|scalar| format!("`{}`", scalar.name()))
+            .collect();
+        parts.push("`unknown`".to_string());
+        join_or_list(&parts)
+    }
+}
+
+fn join_or_list(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} or {second}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
 fn check_conversion_arg(
-    target_name: &str,
-    target: ScalarType,
+    target: ConversionTarget,
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [arg_type] = arg_types else { return };
-    if conversion_source_supported(target_name, target, arg_type) {
+    if target.accepts(arg_type) {
         return;
     }
     diagnostics.push(call_diagnostic(
         file,
         span,
         format!(
-            "`{target_name}` cannot convert `{}`; supported sources are {}",
+            "`{}` cannot convert `{}`; supported sources are {}",
+            target.spelling(),
             marrow_type_name(arg_type),
-            conversion_supported_sources(target_name, target)
+            target.supported_sources_message()
         ),
     ));
-}
-
-fn conversion_source_supported(target_name: &str, target: ScalarType, source: &MarrowType) -> bool {
-    use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
-    match source {
-        MarrowType::Unknown | MarrowType::Invalid => true,
-        MarrowType::Primitive(source) => match target_name {
-            "ErrorCode" => *source == Str,
-            "bool" => matches!(source, Bool | Int),
-            "string" => matches!(
-                source,
-                Str | Int | Decimal | Bool | Bytes | Date | Instant | Duration
-            ),
-            _ => match target {
-                Int => matches!(source, Int | Str | Decimal),
-                Decimal => matches!(source, Decimal | Int | Str),
-                Bytes => matches!(source, Bytes | Str),
-                Date => matches!(source, Date | Str),
-                Instant => matches!(source, Instant | Str),
-                Duration => matches!(source, Duration | Str),
-                Str => *source == Str,
-                Bool => matches!(source, Bool | Int),
-            },
-        },
-        MarrowType::Enum { .. }
-        | MarrowType::Error
-        | MarrowType::GroupEntry { .. }
-        | MarrowType::Identity(_)
-        | MarrowType::LocalTree { .. }
-        | MarrowType::Resource(_)
-        | MarrowType::Sequence(_) => false,
-    }
-}
-
-fn conversion_supported_sources(target_name: &str, target: ScalarType) -> &'static str {
-    use ScalarType::{Bytes, Date, Decimal, Duration, Instant, Int};
-    match target_name {
-        "ErrorCode" => "`ErrorCode`, `string`, or `unknown`",
-        "bool" => "`bool`, `int`, or `unknown`",
-        "string" => {
-            "`string`, `int`, `decimal`, `bool`, `bytes`, `date`, `instant`, `duration`, or `unknown`"
-        }
-        _ => match target {
-            Int => "`int`, canonical integer `string`, integral `decimal`, or `unknown`",
-            Decimal => "`decimal`, `int`, canonical decimal `string`, or `unknown`",
-            Bytes => "`bytes`, UTF-8 `string`, or `unknown`",
-            Date => "`date`, canonical date `string`, or `unknown`",
-            Instant => "`instant`, canonical instant `string`, or `unknown`",
-            Duration => "`duration`, canonical duration `string`, or `unknown`",
-            _ => "`unknown`",
-        },
-    }
 }
 
 fn check_plain_call_modes(
@@ -3153,6 +3196,7 @@ fn check_call_mode(
             file: file.to_path_buf(),
             message: "inout argument is not a writable place".to_string(),
             span: arg.value.span(),
+            payload: DiagnosticPayload::None,
         });
     }
 }
@@ -3340,6 +3384,7 @@ pub(crate) fn check_one_arg(
                     marrow_type_name(parameter),
                 ),
                 span,
+                payload: DiagnosticPayload::None,
             });
         }
         None => {}
@@ -3413,6 +3458,7 @@ pub(crate) fn check_next_id(
             store.store.next_id_shape(),
         ),
         span,
+        payload: DiagnosticPayload::None,
     });
     MarrowType::Unknown
 }
@@ -3549,6 +3595,7 @@ pub(crate) fn neighbor_unsupported(
         file: file.to_path_buf(),
         message: format!("`{which}` cannot navigate {shape}"),
         span,
+        payload: DiagnosticPayload::None,
     });
     MarrowType::Unknown
 }
@@ -3583,6 +3630,7 @@ pub(crate) fn call_diagnostic(file: &Path, span: SourceSpan, message: String) ->
         file: file.to_path_buf(),
         message,
         span,
+        payload: DiagnosticPayload::None,
     }
 }
 

@@ -20,8 +20,9 @@ use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
-    CheckedProgram, MarrowType, build_alias_map, expand_module_alias, identity_type_for_store,
-    resolve_resource_schema_type, resolve_resource_type, resource_type_name,
+    CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map, expand_module_alias,
+    identity_type_for_store, resolve_resource_schema_type, resolve_resource_type,
+    resource_type_name,
 };
 
 /// Infer an expression's type without recording diagnostics. Resolution runs after
@@ -136,6 +137,7 @@ pub(crate) fn infer_type(
                 message: "generated index branches do not expose resource members or chained calls"
                     .to_string(),
                 span: expr.span(),
+                payload: DiagnosticPayload::None,
             }),
             SavedAccessRejection::KeyedRootMemberWithoutIdentity(root) => {
                 diagnostics.push(key_type_diagnostic(
@@ -184,6 +186,7 @@ pub(crate) fn infer_type(
                     file: file.to_path_buf(),
                     message: format!("`{name}` is not defined"),
                     span: *span,
+                    payload: DiagnosticPayload::None,
                 });
                 MarrowType::Unknown
             })
@@ -277,13 +280,7 @@ pub(crate) fn infer_type(
             // a function call; it types to the layer's declared leaf type. A whole
             // record read `^root(key…)` types to its resource.
             if matches!(call_type, MarrowType::Unknown) {
-                count_builtin_type(program, callee, args)
-                    .or_else(|| saved_leaf_type(program, callee))
-                    .or_else(|| singleton_saved_leaf_type(program, callee))
-                    .or_else(|| saved_index_identity_type(program, callee))
-                    .or_else(|| saved_resource_type(program, callee))
-                    .or_else(|| saved_group_entry_type(program, callee))
-                    .unwrap_or(MarrowType::Unknown)
+                saved_call_type(program, callee, args).unwrap_or(MarrowType::Unknown)
             } else {
                 call_type
             }
@@ -311,69 +308,7 @@ pub(crate) fn infer_type(
         // descendants and is not selectable, and a bare name duplicated under several
         // parents is ambiguous (the full path always disambiguates).
         Expression::Name { segments, span } if segments.len() >= 2 => {
-            let Some(resolved) = resolve_enum_member_path(program, expr, aliases, file) else {
-                // Not an enum: a cross-module name or identity path stays unknown.
-                return MarrowType::Unknown;
-            };
-            if let Some(private) = resolved.private {
-                diagnostics.push(CheckDiagnostic {
-                    code: CHECK_PRIVATE_ENUM,
-                    severity: Severity::Error,
-                    file: file.to_path_buf(),
-                    message: format!("enum `{private}` is private to its module; mark it `pub` to use it from another module"),
-                    span: *span,
-                });
-                return MarrowType::Invalid;
-            }
-            let enum_name = &resolved.enum_name;
-            match resolved.member {
-                MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_CATEGORY_NOT_SELECTABLE,
-                        severity: Severity::Error,
-                        file: file.to_path_buf(),
-                        message: format!(
-                            "`{}` is a category and cannot be selected; pick a concrete member under it",
-                            segments.join("::")
-                        ),
-                        span: *span,
-                    });
-                    MarrowType::Invalid
-                }
-                MemberPathResolution::Found(_) => MarrowType::Enum {
-                    module: resolved.module,
-                    name: enum_name.clone(),
-                },
-                // A bare name under several parents cannot pick one in value
-                // position either; the full path (`Cat::tiger::paw`) disambiguates.
-                MemberPathResolution::Ambiguous(paths) => {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_AMBIGUOUS_MEMBER,
-                        severity: Severity::Error,
-                        file: file.to_path_buf(),
-                        message: format!(
-                            "`{}` names more than one member of `{enum_name}`; qualify as {}",
-                            segments.join("::"),
-                            join_or(&paths)
-                        ),
-                        span: *span,
-                    });
-                    MarrowType::Invalid
-                }
-                MemberPathResolution::NotFound => {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNKNOWN_ENUM_MEMBER,
-                        severity: Severity::Error,
-                        file: file.to_path_buf(),
-                        message: format!(
-                            "`{enum_name}` has no member `{}`",
-                            segments[segments.len() - 1]
-                        ),
-                        span: *span,
-                    });
-                    MarrowType::Invalid
-                }
-            }
+            enum_member_value_type(program, expr, segments, *span, aliases, file, diagnostics)
         }
         // A bare `^root` naming a keyless singleton store reads the whole record
         // by its root, so it types to that resource shape — the same `Resource` a
@@ -382,6 +317,106 @@ pub(crate) fn infer_type(
         // multi-segment name has no known type.
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
+    }
+}
+
+/// The declared type of a call-shaped saved read, tried after a function call
+/// comes back `Unknown`: a `count(path)`, a keyed-leaf read, a singleton leaf, a
+/// unique-index identity, a whole-record read, or a group entry. The first matching
+/// shape wins; `None` when the callee names no saved read.
+fn saved_call_type(
+    program: &CheckedProgram,
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+) -> Option<MarrowType> {
+    count_builtin_type(program, callee, args)
+        .or_else(|| saved_leaf_type(program, callee))
+        .or_else(|| singleton_saved_leaf_type(program, callee))
+        .or_else(|| saved_index_identity_type(program, callee))
+        .or_else(|| saved_resource_type(program, callee))
+        .or_else(|| saved_group_entry_type(program, callee))
+}
+
+/// The type of a member-path literal `Enum::seg…` in value position, owning the
+/// private-enum, category-not-selectable, ambiguous-member, and unknown-member
+/// diagnostics. A category groups its descendants and is not selectable, and a bare
+/// name duplicated under several parents is ambiguous (the full path always
+/// disambiguates); a concrete leaf yields the enum's nominal `{module, name}`
+/// identity. A non-enum multi-segment name stays `Unknown` with no diagnostic.
+fn enum_member_value_type(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    segments: &[String],
+    span: SourceSpan,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    let Some(resolved) = resolve_enum_member_path(program, expr, aliases, file) else {
+        return MarrowType::Unknown;
+    };
+    if let Some(private) = resolved.private {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_PRIVATE_ENUM,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
+                "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+            ),
+            span,
+            payload: DiagnosticPayload::None,
+        });
+        return MarrowType::Invalid;
+    }
+    let enum_name = &resolved.enum_name;
+    match resolved.member {
+        MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_CATEGORY_NOT_SELECTABLE,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "`{}` is a category and cannot be selected; pick a concrete member under it",
+                    segments.join("::")
+                ),
+                span,
+                payload: DiagnosticPayload::None,
+            });
+            MarrowType::Invalid
+        }
+        MemberPathResolution::Found(_) => MarrowType::Enum {
+            module: resolved.module,
+            name: enum_name.clone(),
+        },
+        MemberPathResolution::Ambiguous(paths) => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_AMBIGUOUS_MEMBER,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "`{}` names more than one member of `{enum_name}`; qualify as {}",
+                    segments.join("::"),
+                    join_or(&paths)
+                ),
+                span,
+                payload: DiagnosticPayload::None,
+            });
+            MarrowType::Invalid
+        }
+        MemberPathResolution::NotFound => {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_UNKNOWN_ENUM_MEMBER,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!(
+                    "`{enum_name}` has no member `{}`",
+                    segments[segments.len() - 1]
+                ),
+                span,
+                payload: DiagnosticPayload::None,
+            });
+            MarrowType::Invalid
+        }
     }
 }
 
